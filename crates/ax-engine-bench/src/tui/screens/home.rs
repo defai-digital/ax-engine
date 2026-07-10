@@ -156,35 +156,50 @@ impl App {
         let installed = installed_variants(&self.families).len();
         let lines = vec![
             Line::from(vec![
+                Span::styled("  ⌘ ", Style::default().fg(Color::Cyan)),
                 Span::styled("Machine   ", Style::default().fg(Color::DarkGray)),
-                Span::raw(
+                Span::styled(
                     self.hardware
                         .chip
                         .clone()
                         .unwrap_or_else(|| "unknown".into()),
+                    Style::default().add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(vec![
+                Span::styled("  ≡ ", Style::default().fg(Color::Cyan)),
                 Span::styled("Memory    ", Style::default().fg(Color::DarkGray)),
                 Span::raw(format!("{ram} unified")),
             ]),
             Line::from(vec![
+                Span::styled("  ◉ ", Style::default().fg(Color::Cyan)),
                 Span::styled("Free disk ", Style::default().fg(Color::DarkGray)),
                 Span::raw(format!("{disk} on the download volume")),
             ]),
             Line::from(vec![
+                Span::styled("  ◈ ", Style::default().fg(Color::Cyan)),
                 Span::styled("Installed ", Style::default().fg(Color::DarkGray)),
-                Span::raw(format!(
-                    "{installed} model{}",
-                    if installed == 1 { "" } else { "s" }
-                )),
+                if installed > 0 {
+                    Span::styled(
+                        format!("{installed} model{}", if installed == 1 { "" } else { "s" }),
+                        Style::default().fg(Color::Green),
+                    )
+                } else {
+                    Span::styled("no models yet", Style::default().fg(Color::DarkGray))
+                },
             ]),
         ];
         frame.render_widget(
             Paragraph::new(lines).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" This machine "),
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(Span::styled(
+                        " This machine ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )),
             ),
             area,
         );
@@ -224,10 +239,27 @@ impl App {
     fn draw_home_installed(&self, frame: &mut Frame, area: Rect) {
         let pairs = installed_variants(&self.families);
         let lines: Vec<Line> = if pairs.is_empty() {
-            vec![Line::from(Span::styled(
-                "No models installed yet — Quick start will guide you.",
-                Style::default().fg(Color::Yellow),
-            ))]
+            vec![
+                Line::raw(""),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(" ◈ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+                    Span::raw(" "),
+                    Span::styled(
+                        "No models installed yet",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                ]),
+                Line::raw(""),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        " Quick start ",
+                        Style::default().fg(Color::Black).bg(Color::Cyan),
+                    ),
+                    Span::raw(" will guide you through your first download."),
+                ]),
+            ]
         } else {
             pairs
                 .iter()
@@ -238,13 +270,25 @@ impl App {
                         catalog::ram_fit(variant.size_estimate(), self.hardware.total_ram_bytes);
                     Line::from(vec![
                         Span::styled(
+                            "  ● ",
+                            Style::default().fg(match fit {
+                                RamFit::Fits => Color::Green,
+                                RamFit::Tight => Color::Yellow,
+                                RamFit::TooLarge => Color::Red,
+                                RamFit::Unknown => Color::DarkGray,
+                            }),
+                        ),
+                        Span::styled(
                             format!("{:<18}", family.key),
                             Style::default().add_modifier(Modifier::BOLD),
                         ),
-                        Span::raw(format!("{:<10}", variant.precision())),
+                        Span::styled(
+                            format!("{:<10}", variant.precision()),
+                            Style::default().fg(Color::Gray),
+                        ),
                         Span::styled(
                             format!("{:<12}", catalog::format_bytes(variant.size)),
-                            Style::default().fg(Color::Gray),
+                            Style::default().fg(Color::DarkGray),
                         ),
                         fit_span(fit),
                     ])
@@ -255,7 +299,13 @@ impl App {
             Paragraph::new(lines).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Installed models "),
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(Span::styled(
+                        " Installed models ",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )),
             ),
             area,
         );

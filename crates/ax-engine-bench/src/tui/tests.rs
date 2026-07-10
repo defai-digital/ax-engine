@@ -55,7 +55,6 @@ fn family_index(app: &App, key: &str) -> usize {
 
 fn test_task(job: Option<Job>) -> DownloadTask {
     DownloadTask {
-        id: 1,
         label: "gemma4-e2b 4-bit".into(),
         repo_id: "mlx-community/gemma-4-e2b-it-4bit",
         preset: Some("gemma4-e2b"),
@@ -273,14 +272,33 @@ fn number_keys_switch_screens() {
     assert_eq!(app.screen, Screen::Serve);
     app.on_key(key(KeyCode::Char('5')));
     assert_eq!(app.screen, Screen::Chat);
-    // On Chat, digits are text — leave with Esc instead.
+    // Without a ready server, Chat is a hint screen — digits still navigate.
     app.on_key(key(KeyCode::Char('1')));
-    assert_eq!(app.screen, Screen::Chat);
-    assert_eq!(app.chat.input, "1");
-    app.chat.input.clear();
-    app.chat.cursor = 0;
-    app.on_key(key(KeyCode::Esc));
     assert_eq!(app.screen, Screen::Home);
+}
+
+#[test]
+fn chat_hint_screen_never_traps() {
+    let mut app = new_app();
+    app.screen = Screen::Chat;
+    // No ready server: plain characters are ignored, not captured as input.
+    app.on_key(key(KeyCode::Char('z')));
+    assert!(app.chat.input.is_empty());
+    // Number keys switch screens, Left goes Home.
+    app.on_key(key(KeyCode::Char('4')));
+    assert_eq!(app.screen, Screen::Serve);
+    app.on_key(key(KeyCode::Char('5')));
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(app.screen, Screen::Home);
+}
+
+#[test]
+fn help_closes_on_any_key() {
+    let mut app = new_app();
+    app.on_key(key(KeyCode::Char('?')));
+    assert!(app.show_help);
+    app.on_key(key(KeyCode::Down));
+    assert!(!app.show_help, "any key closes help");
 }
 
 #[test]
@@ -318,6 +336,12 @@ fn quit_modal_can_be_dismissed() {
     app.on_key(key(KeyCode::Char('q')));
     assert!(matches!(app.modal, Some(Modal::Quit { .. })));
     app.on_key(key(KeyCode::Esc));
+    assert!(app.modal.is_none());
+    assert!(!app.quit);
+    // Left backs out too — arrow keys must never feel stuck in a dialog.
+    app.on_key(key(KeyCode::Char('q')));
+    assert!(matches!(app.modal, Some(Modal::Quit { .. })));
+    app.on_key(key(KeyCode::Left));
     assert!(app.modal.is_none());
     assert!(!app.quit);
 }
@@ -707,23 +731,24 @@ fn sse_lines_parse() {
 }
 
 #[test]
-fn chat_without_server_shows_hint_and_blocks_send() {
+fn chat_without_server_shows_hint() {
     let mut app = new_app();
     app.screen = Screen::Chat;
     assert!(render(&app).contains("No server running"));
+    // The hint screen is not an input: typing and Enter do nothing.
     for c in "hello".chars() {
         app.on_key(key(KeyCode::Char(c)));
     }
     app.on_key(key(KeyCode::Enter));
     assert!(app.chat.messages.is_empty());
-    assert!(app.chat.error.is_some());
-    assert_eq!(app.chat.input, "hello", "input preserved on failure");
+    assert!(app.chat.input.is_empty());
 }
 
 #[test]
 fn chat_input_edits_at_cursor_and_q_is_text() {
     let mut app = new_app();
     app.screen = Screen::Chat;
+    app.server_ready = true; // input capture only exists with a live server
     for c in "aq".chars() {
         app.on_key(key(KeyCode::Char(c)));
     }
@@ -749,6 +774,30 @@ fn chat_esc_leaves_screen_when_not_streaming() {
 }
 
 #[test]
+fn chat_scroll_detaches_and_reattaches_follow_mode() {
+    let mut app = new_app();
+    app.server = Some(Job::running_with_log(vec![]));
+    app.server_ready = true;
+    app.server_url = Some("http://127.0.0.1:8080".into());
+    app.screen = Screen::Chat;
+    for i in 0..80 {
+        app.chat.messages.push(super::screens::chat::ChatMessage {
+            from_user: i % 2 == 0,
+            content: format!("message {i}"),
+        });
+    }
+    assert!(app.chat.autoscroll, "follows new tokens by default");
+    let _ = render(&app); // records page size + jumps to bottom
+    app.on_key(key(KeyCode::PageUp));
+    assert!(!app.chat.autoscroll, "scrolling up detaches");
+    // Scrolling down until the offset stops moving re-attaches.
+    for _ in 0..200 {
+        app.on_key(key(KeyCode::Down));
+    }
+    assert!(app.chat.autoscroll, "hitting the bottom re-attaches");
+}
+
+#[test]
 fn chat_transcript_renders_when_server_ready() {
     let mut app = new_app();
     app.server = Some(Job::running_with_log(vec![]));
@@ -765,9 +814,9 @@ fn chat_transcript_renders_when_server_ready() {
         content: "A local inference engine.".into(),
     });
     let text = render(&app);
-    assert!(text.contains("You:"));
+    assert!(text.contains("You"));
     assert!(text.contains("What is AX?"));
-    assert!(text.contains("gemma4-e2b:"));
+    assert!(text.contains("gemma4-e2b"));
     assert!(text.contains("A local inference engine."));
     assert!(text.contains("Message — Enter sends"));
 }

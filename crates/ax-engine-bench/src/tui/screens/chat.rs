@@ -8,10 +8,11 @@ use std::process::Command;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use tui_scrollview::ScrollView;
 
 use crate::tui::jobs::Job;
 use crate::tui::{App, Screen};
@@ -26,8 +27,14 @@ pub(crate) struct ChatState {
     pub input: String,
     /// Cursor position in `input`, in characters.
     pub cursor: usize,
-    /// Lines scrolled up from the bottom of the transcript.
-    pub scroll_up: u16,
+    /// Transcript scroll position.  RefCell because rendering (which happens
+    /// with `&App`) has to clamp/apply the offset, mirroring the `Cell`
+    /// click-target pattern in `App`.
+    pub scroll: std::cell::RefCell<tui_scrollview::ScrollViewState>,
+    /// While true the transcript follows new tokens (jumps to the bottom on
+    /// every frame).  Scrolling up detaches; scrolling back to the bottom or
+    /// sending a message re-attaches.
+    pub autoscroll: bool,
     pub job: Option<Job>,
     pub error: Option<String>,
 }
@@ -38,7 +45,8 @@ impl ChatState {
             messages: Vec::new(),
             input: String::new(),
             cursor: 0,
-            scroll_up: 0,
+            scroll: std::cell::RefCell::new(tui_scrollview::ScrollViewState::new()),
+            autoscroll: true,
             job: None,
             error: None,
         }
@@ -161,11 +169,22 @@ pub(crate) fn parse_sse_line(line: &str) -> SseEvent {
 
 impl App {
     pub(crate) fn on_key_chat(&mut self, key: KeyEvent) {
+        // Hint screen (no ready server): a plain info page, not an input.
+        // Global keys (1-5, q, ?) were already handled; back keys go Home.
+        if !self.server_ready {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace
+            ) {
+                self.screen = Screen::Home;
+            }
+            return;
+        }
         // Esc first: stop a live stream, otherwise leave the screen.
         if key.code == KeyCode::Esc {
             if self.chat.streaming() {
                 self.chat.cancel();
-                self.toast("reply cancelled");
+                self.toast_warn("reply cancelled");
             } else {
                 self.screen = Screen::Home;
             }
@@ -196,19 +215,43 @@ impl App {
             }
             KeyCode::Home => self.chat.cursor = 0,
             KeyCode::End => self.chat.cursor = self.chat.input.chars().count(),
-            KeyCode::PageUp => self.chat.scroll_up = self.chat.scroll_up.saturating_add(5),
-            KeyCode::PageDown => self.chat.scroll_up = self.chat.scroll_up.saturating_sub(5),
-            KeyCode::Up => self.chat.scroll_up = self.chat.scroll_up.saturating_add(1),
-            KeyCode::Down => self.chat.scroll_up = self.chat.scroll_up.saturating_sub(1),
+            KeyCode::PageUp => self.scroll_transcript(true, true),
+            KeyCode::PageDown => self.scroll_transcript(false, true),
+            KeyCode::Up => self.scroll_transcript(true, false),
+            KeyCode::Down => self.scroll_transcript(false, false),
             _ => {}
         }
     }
 
     pub(crate) fn scroll_chat(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Up => self.chat.scroll_up = self.chat.scroll_up.saturating_add(1),
-            KeyCode::Down => self.chat.scroll_up = self.chat.scroll_up.saturating_sub(1),
+            KeyCode::Up => self.scroll_transcript(true, false),
+            KeyCode::Down => self.scroll_transcript(false, false),
             _ => {}
+        }
+    }
+
+    /// Scroll the transcript and maintain the follow-new-tokens attachment:
+    /// any upward scroll detaches, and scrolling down past the end (offset
+    /// stops moving) re-attaches.
+    fn scroll_transcript(&mut self, up: bool, page: bool) {
+        let mut state = self.chat.scroll.borrow_mut();
+        if up {
+            self.chat.autoscroll = false;
+            if page {
+                state.scroll_page_up();
+            } else {
+                state.scroll_up();
+            }
+        } else {
+            if page {
+                state.scroll_page_down();
+            } else {
+                state.scroll_down();
+            }
+            if state.is_at_bottom() {
+                self.chat.autoscroll = true;
+            }
         }
     }
 
@@ -223,7 +266,7 @@ impl App {
         let prompt = std::mem::take(&mut self.chat.input);
         self.chat.cursor = 0;
         self.chat.error = None;
-        self.chat.scroll_up = 0;
+        self.chat.autoscroll = true;
         self.chat.messages.push(ChatMessage {
             from_user: true,
             content: prompt,
@@ -272,13 +315,24 @@ impl App {
             frame.render_widget(
                 Paragraph::new(vec![
                     Line::raw(""),
-                    Line::from(Span::styled(
-                        "  No server running.",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )),
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(" ⚠ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+                        Span::raw(" "),
+                        Span::styled(
+                            "No server running.",
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
                     Line::raw(""),
                     Line::raw("  Start one on the Serve screen (press 4), then come back here"),
                     Line::raw("  to chat with the model."),
+                    Line::raw(""),
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(" 4 ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                        Span::raw(" go to Serve"),
+                    ]),
                 ])
                 .block(Block::default().borders(Borders::ALL).title(" Chat ")),
                 area,
@@ -291,65 +345,85 @@ impl App {
     }
 
     fn draw_chat_transcript(&self, frame: &mut Frame, area: Rect) {
-        let width = area.width.saturating_sub(2).max(1) as usize;
         let mut lines: Vec<Line> = Vec::new();
-        for message in &self.chat.messages {
-            let (who, style) = if message.from_user {
+        for (i, message) in self.chat.messages.iter().enumerate() {
+            if i > 0 {
+                lines.push(Line::from(Span::styled(
+                    "─".repeat(area.width.saturating_sub(4) as usize),
+                    Style::default().fg(Color::Rgb(40, 40, 40)),
+                )));
+            }
+            let (badge, badge_style, content_prefix) = if message.from_user {
                 (
-                    "You",
+                    " You ",
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
+                    "",
                 )
             } else {
                 (
-                    self.server_model.as_deref().unwrap_or("Model"),
+                    &format!(" {} ", self.server_model.as_deref().unwrap_or("Model"))[..],
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(Color::Black)
+                        .bg(Color::Green)
                         .add_modifier(Modifier::BOLD),
+                    "",
                 )
             };
-            lines.push(Line::from(Span::styled(format!("{who}:"), style)));
+            let _ = content_prefix;
+            lines.push(Line::from(Span::styled(badge.to_string(), badge_style)));
             let content = if !message.from_user && message.content.is_empty() {
                 if self.chat.streaming() { "…" } else { "" }
             } else {
                 &message.content
             };
             for part in content.split('\n') {
-                lines.push(Line::raw(format!("  {part}")));
+                lines.push(Line::from(Span::styled(
+                    format!("  {part}"),
+                    if message.from_user {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(Color::Rgb(200, 220, 200))
+                    },
+                )));
             }
             lines.push(Line::raw(""));
         }
         if let Some(error) = &self.chat.error {
-            lines.push(Line::from(Span::styled(
-                format!("⚠ {error}"),
-                Style::default().fg(Color::Red),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled(" ✗ ", Style::default().fg(Color::White).bg(Color::Red)),
+                Span::raw(" "),
+                Span::styled(error.clone(), Style::default().fg(Color::Red)),
+            ]));
         }
-        // Bottom-anchor: estimate wrapped rows so new tokens stay in view
-        // unless the user scrolled up.
-        let height = area.height.saturating_sub(2) as usize;
-        let wrapped: usize = lines
-            .iter()
-            .map(|line| {
-                let chars: usize = line.iter().map(|span| span.content.chars().count()).sum();
-                (chars.max(1)).div_ceil(width)
-            })
-            .sum();
-        let bottom_offset = wrapped.saturating_sub(height) as u16;
-        let offset = bottom_offset.saturating_sub(self.chat.scroll_up);
         let title = if self.chat.streaming() {
             " Chat — replying… (Esc cancels) "
         } else {
             " Chat "
         };
-        frame.render_widget(
-            Paragraph::new(lines)
-                .block(Block::default().borders(Borders::ALL).title(title))
-                .wrap(Wrap { trim: false })
-                .scroll((offset, 0)),
-            area,
-        );
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if self.chat.streaming() {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            }))
+            .title(title);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let text_width = inner.width.saturating_sub(1).max(1);
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let content_height = (paragraph.line_count(text_width) as u16).max(1);
+        let mut scroll_view = ScrollView::new(Size::new(text_width, content_height));
+        scroll_view.render_widget(paragraph, Rect::new(0, 0, text_width, content_height));
+        let mut state = self.chat.scroll.borrow_mut();
+        if self.chat.autoscroll {
+            state.scroll_to_bottom();
+        }
+        frame.render_stateful_widget(scroll_view, inner, &mut state);
     }
 
     fn draw_chat_input(&self, frame: &mut Frame, area: Rect) {
@@ -363,6 +437,12 @@ impl App {
             .unwrap_or_else(|| " ".into());
         let after: String = self.chat.input.chars().skip(self.chat.cursor + 1).collect();
         let line = Line::from(vec![
+            Span::styled(
+                " > ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(before),
             Span::styled(at, Style::default().bg(Color::Cyan).fg(Color::Black)),
             Span::raw(after),

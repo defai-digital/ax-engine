@@ -256,7 +256,6 @@ impl App {
             DownloadMode::Direct
         };
         let task = DownloadTask {
-            id: self.next_download_id,
             label: label.clone(),
             repo_id,
             preset: variant.profile.preset,
@@ -270,7 +269,6 @@ impl App {
             job: None,
             cancelled: false,
         };
-        self.next_download_id += 1;
         self.downloads.push(task);
         self.download_idx = self.downloads.len().saturating_sub(1);
         self.start_next_queued_download();
@@ -296,8 +294,8 @@ impl App {
         let label = format!("{} {}", self.families[family_idx].key, variant.precision());
         let dir = catalog::repo_cache_dir(variant.profile.repo_id);
         match std::fs::remove_dir_all(&dir) {
-            Ok(()) => self.toast(format!("{label} deleted")),
-            Err(err) => self.toast(format!("delete failed: {err}")),
+            Ok(()) => self.toast_success(format!("{label} deleted")),
+            Err(err) => self.toast_error(format!("delete failed: {err}")),
         }
         self.reload_families();
     }
@@ -527,9 +525,10 @@ impl App {
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
+                Style::default().fg(Color::Gray)
             };
-            Line::from(Span::styled(format!("  {label}  "), style))
+            let marker = if sel { "▸ " } else { "  " };
+            Line::from(Span::styled(format!("  {marker}{label}  "), style))
         };
         let text = vec![
             Line::from(vec![
@@ -554,14 +553,19 @@ impl App {
             opt("Yes — include MTP (recommended)", yes),
             opt("No — base weights only", !yes),
             Line::raw(""),
-            Line::from(Span::styled(
-                "[y]/[n] or ↑↓ + Enter   ·   Esc back",
-                Style::default().fg(Color::DarkGray),
-            )),
+            Line::from(vec![
+                Span::styled("  y", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::styled("/", Style::default().fg(Color::DarkGray)),
+                Span::styled("n", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::styled(" or ↑↓+Enter  ·  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::Black).bg(Color::Gray)),
+                Span::styled(" back", Style::default().fg(Color::DarkGray)),
+            ]),
         ];
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Optional speed-up ");
+            .border_style(Style::default().fg(Color::Magenta))
+            .title(" ⚡ Optional speed-up ");
         frame.render_widget(
             Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
             area,
@@ -605,18 +609,28 @@ impl App {
         };
         let row = |label: &str, value: String| {
             Line::from(vec![
-                Span::styled(format!("{label:<12}"), Style::default().fg(Color::DarkGray)),
-                Span::raw(value),
+                Span::styled(
+                    format!("  {label:<12}"),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(value, Style::default().fg(Color::White)),
             ])
         };
         let mut lines = vec![
+            Line::from(Span::styled(
+                "  ─── Download summary ───",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::raw(""),
             row("Model", format!("{} {}", family.key, variant.precision())),
             row(
                 "Speed-up",
                 if variant.mtp_alias.is_none() {
                     "not available for this model".into()
                 } else if pending.with_mtp {
-                    "MTP included".into()
+                    "⚡ MTP included".into()
                 } else {
                     "no".into()
                 },
@@ -636,52 +650,65 @@ impl App {
         }
         lines.push(Line::raw(""));
         match fit {
-            RamFit::TooLarge => lines.push(Line::from(Span::styled(
-                "⚠ This model likely exceeds this machine's memory and may not serve reliably.",
-                Style::default().fg(Color::Red),
-            ))),
-            RamFit::Tight => lines.push(Line::from(Span::styled(
-                "⚠ Fits, but leaves little headroom — expect memory pressure under load.",
-                Style::default().fg(Color::Yellow),
-            ))),
+            RamFit::TooLarge => lines.push(Line::from(vec![
+                Span::styled("  ⚠ ", Style::default().fg(Color::Black).bg(Color::Red)),
+                Span::raw(" "),
+                Span::styled(
+                    "This model likely exceeds this machine's memory and may not serve reliably.",
+                    Style::default().fg(Color::Red),
+                ),
+            ])),
+            RamFit::Tight => lines.push(Line::from(vec![
+                Span::styled("  ⚠ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+                Span::raw(" "),
+                Span::styled(
+                    "Fits, but leaves little headroom — expect memory pressure under load.",
+                    Style::default().fg(Color::Yellow),
+                ),
+            ])),
             _ => {}
         }
         if let (Some(free), Some(total)) = (free, total)
             && total > free
         {
-            lines.push(Line::from(Span::styled(
-                "⚠ Not enough free disk space for this download.",
-                Style::default().fg(Color::Red),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("  ⚠ ", Style::default().fg(Color::Black).bg(Color::Red)),
+                Span::raw(" "),
+                Span::styled(
+                    "Not enough free disk space for this download.",
+                    Style::default().fg(Color::Red),
+                ),
+            ]));
         }
         if variant.installed && !pending.with_mtp {
-            lines.push(Line::from(Span::styled(
-                "Already installed — confirming re-checks the cached copy (fast).",
-                Style::default().fg(Color::Green),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("  ✓ ", Style::default().fg(Color::Black).bg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(
+                    "Already installed — confirming re-checks the cached copy (fast).",
+                    Style::default().fg(Color::Green),
+                ),
+            ]));
         }
         lines.push(Line::raw(""));
         lines.push(Line::from(vec![
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" start download    "),
-            Span::styled("c", Style::default().fg(Color::Cyan)),
-            Span::raw(" choose a different folder    "),
-            Span::styled("d", Style::default().fg(Color::Cyan)),
-            Span::raw(" use default    "),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" back"),
+            Span::raw("  "),
+            Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::styled(" start download    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" c ", Style::default().fg(Color::Black).bg(Color::Gray)),
+            Span::styled(" folder    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" d ", Style::default().fg(Color::Black).bg(Color::Gray)),
+            Span::styled(" default    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" Esc ", Style::default().fg(Color::Black).bg(Color::Gray)),
+            Span::styled(" back", Style::default().fg(Color::DarkGray)),
         ]));
         frame.render_widget(
             Paragraph::new(lines)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Confirm download "),
+                        .border_style(Style::default().fg(Color::Cyan))
+                        .title(" ✓ Confirm download "),
                 )
                 .wrap(Wrap { trim: false }),
             area,

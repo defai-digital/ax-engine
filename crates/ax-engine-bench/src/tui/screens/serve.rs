@@ -89,9 +89,9 @@ impl App {
             .map(|status| status.success())
             .unwrap_or(false);
         if copied {
-            self.toast("URL copied");
+            self.toast_success("URL copied");
         } else {
-            self.toast("copy failed (pbcopy unavailable)");
+            self.toast_error("copy failed (pbcopy unavailable)");
         }
     }
 
@@ -105,10 +105,19 @@ impl App {
 
         let pairs = installed_variants(&self.families);
         let rows: Vec<ListItem> = if pairs.is_empty() {
-            vec![ListItem::new(Line::from(Span::styled(
-                "No installed models. Download one on the Models screen (2) first.",
-                Style::default().fg(Color::Yellow),
-            )))]
+            vec![
+                ListItem::new(Line::raw("")),
+                ListItem::new(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(" ▶ ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                    Span::raw(" No installed models"),
+                ])),
+                ListItem::new(Line::raw("")),
+                ListItem::new(Line::from(Span::styled(
+                    "  Download one on the Models screen (2) first.",
+                    Style::default().fg(Color::DarkGray),
+                ))),
+            ]
         } else {
             pairs
                 .iter()
@@ -159,6 +168,7 @@ impl App {
         let port_line = field_line("Port", &self.port, self.serve_focus == ServeFocus::Port);
         let status = match (&self.server_url, &self.server) {
             (Some(url), Some(job)) if job.done.is_none() && self.server_ready => Line::from(vec![
+                Span::styled(" ● ", Style::default().fg(Color::Green)),
                 Span::styled("running at ", Style::default().fg(Color::Green)),
                 Span::styled(
                     url.clone(),
@@ -168,22 +178,28 @@ impl App {
                 ),
                 Span::styled("   c copy · t chat", Style::default().fg(Color::DarkGray)),
             ]),
-            (Some(_), Some(job)) if job.done.is_none() => Line::from(Span::styled(
-                "starting… (large models can take a minute to load)",
-                Style::default().fg(Color::Yellow),
-            )),
-            (_, Some(job)) if job.done.is_some() => Line::from(Span::styled(
-                format!(
-                    "failed: {}",
-                    self.server_error_line()
-                        .unwrap_or_else(|| "see log below".into())
+            (Some(_), Some(job)) if job.done.is_none() => Line::from(vec![
+                Span::styled(" ◌ ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    "starting… (large models can take a minute to load)",
+                    Style::default().fg(Color::Yellow),
                 ),
-                Style::default().fg(Color::Red),
-            )),
-            _ => Line::from(Span::styled(
-                "stopped",
-                Style::default().fg(Color::DarkGray),
-            )),
+            ]),
+            (_, Some(job)) if job.done.is_some() => Line::from(vec![
+                Span::styled(" ✗ ", Style::default().fg(Color::Red)),
+                Span::styled(
+                    format!(
+                        "failed: {}",
+                        self.server_error_line()
+                            .unwrap_or_else(|| "see log below".into())
+                    ),
+                    Style::default().fg(Color::Red),
+                ),
+            ]),
+            _ => Line::from(vec![
+                Span::styled(" ○ ", Style::default().fg(Color::DarkGray)),
+                Span::styled("stopped", Style::default().fg(Color::DarkGray)),
+            ]),
         };
         let error_line = match self.port_error() {
             Some(err) => Line::from(Span::styled(err, Style::default().fg(Color::Red))),

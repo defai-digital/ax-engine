@@ -16,6 +16,7 @@ mod catalog;
 mod hardware;
 mod jobs;
 mod screens;
+mod theme;
 mod widgets;
 
 #[cfg(test)]
@@ -26,7 +27,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
@@ -94,12 +95,12 @@ enum Screen {
     Chat,
 }
 
-const SCREENS: [(&str, Screen); 5] = [
-    ("Home", Screen::Home),
-    ("Models", Screen::Models),
-    ("Downloads", Screen::Downloads),
-    ("Serve", Screen::Serve),
-    ("Chat", Screen::Chat),
+const SCREENS: [(&str, &str, Screen); 5] = [
+    ("⌂", "Home", Screen::Home),
+    ("◈", "Models", Screen::Models),
+    ("↓", "Downloads", Screen::Downloads),
+    ("▶", "Serve", Screen::Serve),
+    ("💬", "Chat", Screen::Chat),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -180,7 +181,6 @@ struct App {
     // Downloads
     downloads: Vec<DownloadTask>,
     download_idx: usize,
-    next_download_id: u64,
 
     // Serve
     serve_focus: ServeFocus,
@@ -200,6 +200,8 @@ struct App {
     // Click-target rects recorded during the last draw (immediate-mode hit-testing).
     sidebar_rect: Cell<Rect>,
     content_list_rect: Cell<Rect>,
+    /// Rect of the wizard step header row (for breadcrumb clicks).
+    step_header_rect: Cell<Rect>,
 }
 
 impl App {
@@ -227,7 +229,6 @@ impl App {
             filtering: false,
             downloads: Vec::new(),
             download_idx: 0,
-            next_download_id: 1,
             serve_focus: ServeFocus::List,
             serve_idx: 0,
             host: "127.0.0.1".into(),
@@ -239,6 +240,7 @@ impl App {
             chat: ChatState::new(),
             sidebar_rect: Cell::new(Rect::default()),
             content_list_rect: Cell::new(Rect::default()),
+            step_header_rect: Cell::new(Rect::default()),
         }
     }
 
@@ -247,10 +249,19 @@ impl App {
     }
 
     fn toast(&mut self, text: impl Into<String>) {
-        self.toasts.push(Toast {
-            text: text.into(),
-            at: Instant::now(),
-        });
+        self.toasts.push(widgets::Toast::info(text.into()));
+    }
+
+    fn toast_success(&mut self, text: impl Into<String>) {
+        self.toasts.push(widgets::Toast::success(text.into()));
+    }
+
+    fn toast_warn(&mut self, text: impl Into<String>) {
+        self.toasts.push(widgets::Toast::warning(text.into()));
+    }
+
+    fn toast_error(&mut self, text: impl Into<String>) {
+        self.toasts.push(widgets::Toast::error(text.into()));
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
@@ -284,7 +295,7 @@ impl App {
             }
         }
         for label in finished {
-            self.toast(format!("{label} ready"));
+            self.toast_success(format!("{label} ready"));
             self.reload_families();
         }
         self.start_next_queued_download();
@@ -308,12 +319,9 @@ impl App {
             return;
         }
         if self.show_help {
-            if matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
-            ) {
-                self.show_help = false;
-            }
+            // Any key dismisses help — an overlay that only Esc can close
+            // reads as a stuck screen.
+            self.show_help = false;
             return;
         }
         if !self.typing() {
@@ -327,7 +335,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char(c @ '1'..='5') => {
-                    self.screen = SCREENS[(c as usize) - ('1' as usize)].1;
+                    self.screen = SCREENS[(c as usize) - ('1' as usize)].2;
                     return;
                 }
                 _ => {}
@@ -348,7 +356,9 @@ impl App {
         match self.screen {
             Screen::Models => self.stage == WizardStage::Families && self.filtering,
             Screen::Serve => matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port),
-            Screen::Chat => true,
+            // Without a ready server, Chat is a static hint screen — capturing
+            // keys there would trap the user (no input box is even visible).
+            Screen::Chat => self.server_ready,
             _ => false,
         }
     }
@@ -375,7 +385,7 @@ impl App {
         match modal {
             Modal::Quit { .. } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => self.quit = true,
-                KeyCode::Esc | KeyCode::Char('n') => {}
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
             },
             Modal::ServeReady { download_idx } => match code {
@@ -383,7 +393,7 @@ impl App {
                     self.start_server_for_download(download_idx);
                     self.screen = Screen::Serve;
                 }
-                KeyCode::Esc | KeyCode::Char('n') => {}
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
             },
             Modal::ServeInstalled {
@@ -396,7 +406,7 @@ impl App {
                     self.stage = WizardStage::Families;
                     self.pending = None;
                 }
-                KeyCode::Esc | KeyCode::Char('n') => {}
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
             },
             Modal::CancelDownload { download_idx } => match code {
@@ -404,11 +414,11 @@ impl App {
                     if let Some(task) = self.downloads.get_mut(download_idx) {
                         task.cancel();
                         let label = task.label.clone();
-                        self.toast(format!("{label} cancelled"));
+                        self.toast_warn(format!("{label} cancelled"));
                     }
                     self.start_next_queued_download();
                 }
-                KeyCode::Esc | KeyCode::Char('n') => {}
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
             },
             Modal::DeleteModel {
@@ -416,7 +426,7 @@ impl App {
                 variant_idx,
                 mut typed,
             } => match code {
-                KeyCode::Esc => {}
+                KeyCode::Esc | KeyCode::Left => {}
                 KeyCode::Enter if typed == "delete" => {
                     self.delete_installed_variant(family_idx, variant_idx);
                 }
@@ -447,13 +457,20 @@ impl App {
             Modal::StopServer => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
                     self.stop_server();
-                    self.toast("server stopped");
+                    self.toast_warn("server stopped");
                 }
-                KeyCode::Esc | KeyCode::Char('n') => {}
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
             },
             Modal::DestPicker(mut picker) => match code {
                 KeyCode::Esc => {}
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if let Some(parent) = picker.current.parent().map(std::path::Path::to_path_buf)
+                    {
+                        picker.set_current(parent);
+                    }
+                    self.modal = Some(Modal::DestPicker(picker));
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     picker.selected = picker.selected.saturating_sub(1);
                     self.modal = Some(Modal::DestPicker(picker));
@@ -518,7 +535,7 @@ impl App {
     fn on_click(&mut self, col: u16, row: u16) {
         // Sidebar click switches screens directly.
         if let Some(idx) = widgets::row_in_rect(self.sidebar_rect.get(), col, row) {
-            if let Some(&(_, screen)) = SCREENS.get(idx) {
+            if let Some(&(_, _, screen)) = SCREENS.get(idx) {
                 self.screen = screen;
             }
             return;
@@ -798,50 +815,175 @@ impl App {
     fn draw_sidebar(&self, frame: &mut Frame, area: Rect) {
         self.sidebar_rect.set(area);
         let running_downloads = self.downloads.iter().filter(|t| t.is_running()).count();
-        let items = SCREENS.iter().enumerate().map(|(i, (name, screen))| {
+        let items = SCREENS.iter().map(|(icon, name, screen)| {
             let selected = self.screen == *screen;
-            let marker = if selected { "▸" } else { " " };
             let badge = match screen {
-                Screen::Downloads if running_downloads > 0 => format!(" ({running_downloads})"),
-                Screen::Serve if self.server_ready => " ●".to_string(),
+                Screen::Downloads if running_downloads > 0 => {
+                    format!(" {}", theme::spinner_dot(running_downloads))
+                }
+                Screen::Serve if self.server_ready => format!(" {}", theme::OK_DOT),
                 _ => String::new(),
             };
-            let mut style = Style::default();
-            if selected {
-                style = style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
-            }
-            ListItem::new(Line::from(format!("{marker}{} {name}{badge}", i + 1))).style(style)
+            let label = format!(
+                " {} {} {}{}",
+                if selected { "▸" } else { " " },
+                icon,
+                name,
+                badge
+            );
+            let style = if selected {
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .bg(Color::Rgb(20, 40, 50))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(label)).style(style)
         });
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(" AX Engine ");
+            .border_style(Style::default().fg(theme::MUTED))
+            .title(Span::styled(
+                " AX Engine ",
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ));
         frame.render_widget(List::new(items.collect::<Vec<_>>()).block(block), area);
     }
 
     fn footer(&self) -> Line<'static> {
-        let help = if self.modal.is_some() {
-            "follow the dialog · Esc closes"
+        use theme::{key_chip, key_chip_dim, key_sep};
+        let spans: Vec<Span> = if self.modal.is_some() {
+            vec![
+                key_chip("Esc"),
+                key_sep(),
+                Span::styled("close dialog", Style::default().fg(theme::DIM)),
+            ]
         } else {
             match self.screen {
-                Screen::Home => "↑↓ move · Enter select · 1-5 screens · ? help · q quit",
+                Screen::Home => vec![
+                    key_chip("↑↓"),
+                    Span::styled(" move", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip("Enter"),
+                    Span::styled(" select", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("?"),
+                    Span::styled(" help", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("q"),
+                    Span::styled(" quit", Style::default().fg(theme::DIM)),
+                ],
                 Screen::Models => match self.stage {
-                    WizardStage::Families if self.filtering => "type to filter · Enter/Esc apply",
-                    WizardStage::Families => "↑↓ move · Enter next · / filter · Esc home · ? help",
-                    WizardStage::Precision => {
-                        "↑↓ move · Enter next · x delete installed · Esc back · ? help"
-                    }
-                    WizardStage::Options => "y/n or ↑↓+Enter · Esc back",
-                    WizardStage::Confirm => "Enter start download · c custom folder · Esc back",
+                    WizardStage::Families if self.filtering => vec![
+                        Span::styled("type to filter", Style::default().fg(theme::ACCENT)),
+                        key_sep(),
+                        key_chip("Enter"),
+                        Span::styled(" apply", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip_dim("Esc"),
+                        Span::styled(" cancel", Style::default().fg(theme::DIM)),
+                    ],
+                    WizardStage::Families => vec![
+                        key_chip("↑↓"),
+                        Span::styled(" move", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip("Enter"),
+                        Span::styled(" next", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip_dim("/"),
+                        Span::styled(" filter", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip_dim("Esc"),
+                        Span::styled(" home", Style::default().fg(theme::DIM)),
+                    ],
+                    WizardStage::Precision => vec![
+                        key_chip("↑↓"),
+                        Span::styled(" move", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip("Enter"),
+                        Span::styled(" next", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip_dim("x"),
+                        Span::styled(" delete", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip_dim("Esc"),
+                        Span::styled(" back", Style::default().fg(theme::DIM)),
+                    ],
+                    WizardStage::Options => vec![
+                        key_chip("y"),
+                        Span::styled(" yes", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip("n"),
+                        Span::styled(" no", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip_dim("Esc"),
+                        Span::styled(" back", Style::default().fg(theme::DIM)),
+                    ],
+                    WizardStage::Confirm => vec![
+                        key_chip("Enter"),
+                        Span::styled(" download", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip_dim("c"),
+                        Span::styled(" folder", Style::default().fg(theme::DIM)),
+                        key_sep(),
+                        key_chip_dim("Esc"),
+                        Span::styled(" back", Style::default().fg(theme::DIM)),
+                    ],
                 },
-                Screen::Downloads => "↑↓ move · Enter serve ready · x cancel · Esc home · ? help",
-                Screen::Serve => {
-                    "↑↓ move · Enter start · x stop · c copy URL · t chat · Tab fields · Esc home"
-                }
-                Screen::Chat => "type + Enter send · PgUp/PgDn scroll · Esc home",
+                Screen::Downloads => vec![
+                    key_chip("↑↓"),
+                    Span::styled(" move", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip("Enter"),
+                    Span::styled(" serve", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("x"),
+                    Span::styled(" cancel", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("Esc"),
+                    Span::styled(" home", Style::default().fg(theme::DIM)),
+                ],
+                Screen::Serve => vec![
+                    key_chip("Enter"),
+                    Span::styled(" start", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("x"),
+                    Span::styled(" stop", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("c"),
+                    Span::styled(" copy", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("t"),
+                    Span::styled(" chat", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("Tab"),
+                    Span::styled(" fields", Style::default().fg(theme::DIM)),
+                ],
+                Screen::Chat if !self.server_ready => vec![
+                    key_chip("4"),
+                    Span::styled(" serve screen", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("Esc"),
+                    Span::styled(" home", Style::default().fg(theme::DIM)),
+                ],
+                Screen::Chat => vec![
+                    key_chip("Enter"),
+                    Span::styled(" send", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("PgUp/Dn"),
+                    Span::styled(" scroll", Style::default().fg(theme::DIM)),
+                    key_sep(),
+                    key_chip_dim("Esc"),
+                    Span::styled(" home", Style::default().fg(theme::DIM)),
+                ],
             }
         };
-        Line::from(format!("  {help}"))
+        let mut out = vec![Span::raw("  ")];
+        out.extend(spans);
+        Line::from(out)
     }
 
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
@@ -871,7 +1013,7 @@ impl App {
             Line::raw("t opens Chat. Host/port are editable via Tab."),
             Line::raw(""),
             Line::from(Span::styled(
-                "Esc or ? closes help. Esc otherwise steps back, never quits.",
+                "Press any key to close this help. Esc elsewhere steps back, never quits.",
                 Style::default().fg(Color::DarkGray),
             )),
         ];
@@ -902,7 +1044,18 @@ impl App {
                     "Quit AX Engine?",
                     Style::default().add_modifier(Modifier::BOLD),
                 )));
-                widgets::draw_modal(frame, area, "Quit", lines, "Enter/y quit · Esc/n stay");
+                widgets::draw_modal_with(
+                    frame,
+                    area,
+                    "⚠ Quit",
+                    lines,
+                    vec![
+                        theme::key_chip_danger("y quit"),
+                        theme::key_sep(),
+                        theme::key_chip_dim("Esc stay"),
+                    ],
+                    theme::WARN,
+                );
             }
             Modal::ServeReady { download_idx } => {
                 let label = self
@@ -910,12 +1063,17 @@ impl App {
                     .get(*download_idx)
                     .map(|t| t.label.clone())
                     .unwrap_or_default();
-                widgets::draw_modal(
+                widgets::draw_modal_with(
                     frame,
                     area,
-                    "Serve model",
+                    "✓ Serve model",
                     vec![Line::raw(format!("Start the server with {label}?"))],
-                    "Enter/y serve · Esc/n not now",
+                    vec![
+                        theme::key_chip("y serve"),
+                        theme::key_sep(),
+                        theme::key_chip_dim("Esc not now"),
+                    ],
+                    theme::OK,
                 );
             }
             Modal::ServeInstalled {
@@ -928,15 +1086,20 @@ impl App {
                     .and_then(|f| f.variants.get(*variant_idx))
                     .map(|v| format!("{} {}", self.families[*family_idx].key, v.precision()))
                     .unwrap_or_default();
-                widgets::draw_modal(
+                widgets::draw_modal_with(
                     frame,
                     area,
-                    "Already installed",
+                    "✓ Already installed",
                     vec![
                         Line::raw(format!("{label} is already downloaded.")),
                         Line::raw("Serve it now instead?"),
                     ],
-                    "Enter/y serve · Esc/n back",
+                    vec![
+                        theme::key_chip("y serve"),
+                        theme::key_sep(),
+                        theme::key_chip_dim("Esc back"),
+                    ],
+                    theme::OK,
                 );
             }
             Modal::CancelDownload { download_idx } => {
@@ -945,14 +1108,19 @@ impl App {
                     .get(*download_idx)
                     .map(|t| t.label.clone())
                     .unwrap_or_default();
-                widgets::draw_modal(
+                widgets::draw_modal_with(
                     frame,
                     area,
-                    "Cancel download",
+                    "⚠ Cancel download",
                     vec![Line::raw(format!(
                         "Stop downloading {label}? Partial data resumes if you retry later."
                     ))],
-                    "Enter/y cancel it · Esc/n keep going",
+                    vec![
+                        theme::key_chip_danger("y cancel"),
+                        theme::key_sep(),
+                        theme::key_chip_dim("Esc keep"),
+                    ],
+                    theme::WARN,
                 );
             }
             Modal::DeleteModel {
@@ -976,33 +1144,47 @@ impl App {
                     .unwrap_or_default();
                 let armed = typed == "delete";
                 let typed_style = if armed {
-                    Style::default().fg(Color::Green)
+                    Style::default().fg(theme::OK)
                 } else {
-                    Style::default().fg(Color::Yellow)
+                    Style::default().fg(theme::WARN)
                 };
-                widgets::draw_modal(
+                widgets::draw_modal_with(
                     frame,
                     area,
-                    "Delete model",
+                    "⚠ Delete model",
                     vec![
                         Line::raw(format!("Remove {label} ({size}) from disk?")),
-                        Line::from(Span::styled(path, Style::default().fg(Color::DarkGray))),
+                        Line::from(Span::styled(path, Style::default().fg(theme::MUTED))),
                         Line::raw(""),
                         Line::from(vec![
                             Span::raw("Type 'delete' to confirm: "),
                             Span::styled(format!("{typed}_"), typed_style),
                         ]),
                     ],
-                    "Enter delete (once armed) · Esc keep",
+                    if armed {
+                        vec![
+                            theme::key_chip_danger("Enter delete"),
+                            theme::key_sep(),
+                            theme::key_chip_dim("Esc keep"),
+                        ]
+                    } else {
+                        vec![theme::key_chip_dim("Esc keep")]
+                    },
+                    theme::DANGER,
                 );
             }
             Modal::StopServer => {
-                widgets::draw_modal(
+                widgets::draw_modal_with(
                     frame,
                     area,
-                    "Stop server",
+                    "⚠ Stop server",
                     vec![Line::raw("Stop the running server?")],
-                    "Enter/y stop · Esc/n keep running",
+                    vec![
+                        theme::key_chip_danger("y stop"),
+                        theme::key_sep(),
+                        theme::key_chip_dim("Esc keep"),
+                    ],
+                    theme::WARN,
                 );
             }
             Modal::DestPicker(picker) => self.draw_dest_picker(frame, area, picker),

@@ -22,8 +22,17 @@ base64 = "0.22"
 fs2 = "0.4"
 hound = "3"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png"] }
-ratatui = "0.30"
+# unstable-rendered-line-info: exposes Paragraph::line_count, which the TUI
+# chat transcript uses to size its scroll buffer to the exact wrapped height.
+# Semver-exempt upstream, so a minor ratatui bump may require touching that
+# one call site (crates/ax-engine-bench/src/tui/screens/chat.rs).
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 serde = { version = "1", features = ["derive"] }
+# NOTE: tui-textarea (chat input editor) is deliberately absent: as of 0.7.0 it
+# still links ratatui 0.29, which cannot type-unify with ratatui 0.30 widgets
+# and would introduce a duplicate ratatui in the tree. Revisit when it releases
+# ratatui 0.30 support.
+tui-scrollview = "0.6"
 serde_json = "1"
 sha2 = "0.10"
 symphonia = { version = "0.5", default-features = false, features = ["mp3"] }

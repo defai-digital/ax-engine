@@ -11,12 +11,72 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
+use super::theme;
+
 pub(super) const TOAST_TTL: Duration = Duration::from_secs(4);
 const TOAST_MAX_VISIBLE: usize = 3;
+
+/// Toast severity for color differentiation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ToastLevel {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
 
 pub(super) struct Toast {
     pub text: String,
     pub at: Instant,
+    pub level: ToastLevel,
+}
+
+impl Toast {
+    pub fn info(text: String) -> Self {
+        Self {
+            text,
+            at: Instant::now(),
+            level: ToastLevel::Info,
+        }
+    }
+    pub fn success(text: String) -> Self {
+        Self {
+            text,
+            at: Instant::now(),
+            level: ToastLevel::Success,
+        }
+    }
+    pub fn warning(text: String) -> Self {
+        Self {
+            text,
+            at: Instant::now(),
+            level: ToastLevel::Warning,
+        }
+    }
+    pub fn error(text: String) -> Self {
+        Self {
+            text,
+            at: Instant::now(),
+            level: ToastLevel::Error,
+        }
+    }
+    fn style(&self) -> Style {
+        let color = match self.level {
+            ToastLevel::Info => theme::ACCENT,
+            ToastLevel::Success => theme::OK,
+            ToastLevel::Warning => theme::WARN,
+            ToastLevel::Error => theme::DANGER,
+        };
+        Style::default().fg(Color::Black).bg(color)
+    }
+    fn icon(&self) -> &'static str {
+        match self.level {
+            ToastLevel::Info => "ℹ",
+            ToastLevel::Success => "✓",
+            ToastLevel::Warning => "⚠",
+            ToastLevel::Error => "✗",
+        }
+    }
 }
 
 /// Drop expired toasts (called once per tick).
@@ -27,7 +87,7 @@ pub(super) fn expire_toasts(toasts: &mut Vec<Toast>) {
 /// Newest-first stack of small notices in the top-right corner.
 pub(super) fn draw_toasts(frame: &mut Frame, area: Rect, toasts: &[Toast]) {
     for (i, toast) in toasts.iter().rev().take(TOAST_MAX_VISIBLE).enumerate() {
-        let text = format!(" {} ", toast.text);
+        let text = format!(" {} {} ", toast.icon(), toast.text);
         let width = (text.chars().count() as u16).min(area.width.saturating_sub(2));
         let rect = Rect {
             x: area.x + area.width.saturating_sub(width + 1),
@@ -36,10 +96,7 @@ pub(super) fn draw_toasts(frame: &mut Frame, area: Rect, toasts: &[Toast]) {
             height: 1,
         };
         frame.render_widget(Clear, rect);
-        frame.render_widget(
-            Paragraph::new(text).style(Style::default().fg(Color::Black).bg(Color::Cyan)),
-            rect,
-        );
+        frame.render_widget(Paragraph::new(text).style(toast.style()), rect);
     }
 }
 
@@ -51,38 +108,49 @@ pub(super) fn draw_status_strip(
     download: Option<(String, Color)>,
 ) {
     let mut spans = vec![
-        Span::styled("  server ", Style::default().fg(Color::DarkGray)),
-        Span::styled(server.0, Style::default().fg(server.1)),
+        Span::styled("  ● server ", Style::default().fg(theme::MUTED)),
+        Span::styled(
+            server.0,
+            Style::default().fg(server.1).add_modifier(Modifier::BOLD),
+        ),
     ];
     if let Some((text, color)) = download {
         spans.push(Span::styled(
-            "   ·   download ",
-            Style::default().fg(Color::DarkGray),
+            "   │   ↓ download ",
+            Style::default().fg(theme::MUTED),
         ));
-        spans.push(Span::styled(text, Style::default().fg(color)));
+        spans.push(Span::styled(
+            text,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(15, 15, 15))),
+        area,
+    );
 }
 
-/// Centered modal with a title, body lines, and a key-hint footer line.
-/// Callers own key handling; this only draws.
-pub(super) fn draw_modal(frame: &mut Frame, area: Rect, title: &str, lines: Vec<Line>, hint: &str) {
+/// Modal variant with severity-colored border and styled key hints.
+pub(super) fn draw_modal_with(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    mut lines: Vec<Line>,
+    hints: Vec<Span<'static>>,
+    border_color: Color,
+) {
     let width = 64.min(area.width.saturating_sub(4)).max(20);
     let height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
     let popup = centered_rect(width, height, area);
-    let mut body = lines;
-    body.push(Line::raw(""));
-    body.push(Line::from(Span::styled(
-        hint.to_string(),
-        Style::default().fg(Color::DarkGray),
-    )));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(hints));
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(body)
+        Paragraph::new(lines)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
+                    .border_style(Style::default().fg(border_color))
                     .title(format!(" {title} ")),
             )
             .wrap(Wrap { trim: false }),
@@ -113,18 +181,15 @@ pub(super) fn render_list(
     click_target: &std::cell::Cell<Rect>,
 ) {
     click_target.set(area);
-    let border = if active { Color::Cyan } else { Color::DarkGray };
+    let border = if active { theme::ACCENT } else { theme::MUTED };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
         .title(title.to_string());
     let highlight = if active {
-        Style::default()
-            .bg(Color::Cyan)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD)
+        theme::highlight_active()
     } else {
-        Style::default().add_modifier(Modifier::REVERSED)
+        theme::highlight_inactive()
     };
     let list = List::new(rows)
         .block(block)
@@ -155,23 +220,46 @@ pub(super) fn row_in_rect(rect: Rect, col: u16, row: u16) -> Option<usize> {
 
 pub(super) fn field_line(label: &str, value: &str, active: bool) -> Line<'static> {
     let value_style = if active {
-        Style::default().fg(Color::Black).bg(Color::Cyan)
+        Style::default().fg(Color::Black).bg(theme::ACCENT)
     } else {
-        Style::default().fg(Color::Gray)
+        Style::default().fg(theme::DIM)
     };
+    let prefix = if active { "● " } else { "  " };
     Line::from(vec![
+        Span::styled(
+            prefix,
+            Style::default().fg(if active { theme::ACCENT } else { theme::MUTED }),
+        ),
         Span::raw(format!("{label}: ")),
         Span::styled(format!(" {value} "), value_style),
     ])
 }
 
 /// Scrolling log pane fed from a job's captured output.
+/// Applies basic coloring to ERROR/WARN/INFO lines for scannability.
 pub(super) fn draw_log(frame: &mut Frame, area: Rect, log: Option<&[String]>, title: &str) {
     let height = area.height.saturating_sub(2) as usize;
     let lines: Vec<Line> = match log {
         Some(log) => {
             let start = log.len().saturating_sub(height);
-            log[start..].iter().map(|l| Line::raw(l.clone())).collect()
+            log[start..]
+                .iter()
+                .map(|l| {
+                    let style = if l.contains("ERROR") || l.contains("error") || l.contains("panic")
+                    {
+                        Style::default().fg(theme::DANGER)
+                    } else if l.contains("WARN") || l.contains("warn") {
+                        Style::default().fg(theme::WARN)
+                    } else if l.contains("INFO") || l.contains("info") {
+                        Style::default().fg(theme::OK)
+                    } else if l.contains("listening on") {
+                        Style::default().fg(theme::OK).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme::DIM)
+                    };
+                    Line::from(Span::styled(l.clone(), style))
+                })
+                .collect()
         }
         None => vec![Line::raw("")],
     };
@@ -179,6 +267,7 @@ pub(super) fn draw_log(frame: &mut Frame, area: Rect, log: Option<&[String]>, ti
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::MUTED))
                 .title(title.to_string()),
         ),
         area,

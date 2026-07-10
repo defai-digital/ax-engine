@@ -208,7 +208,6 @@ impl DownloadMode {
 }
 
 pub(super) struct DownloadTask {
-    pub id: u64,
     pub label: String,
     pub repo_id: &'static str,
     pub preset: Option<&'static str>,

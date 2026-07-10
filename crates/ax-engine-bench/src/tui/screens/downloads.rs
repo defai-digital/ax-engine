@@ -25,7 +25,7 @@ impl App {
                     self.download_idx += 1;
                 }
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if self
                     .downloads
                     .get(self.download_idx)
@@ -48,7 +48,7 @@ impl App {
                 } else if task.is_queued() {
                     task.cancel();
                     let label = task.label.clone();
-                    self.toast(format!("{label} removed from queue"));
+                    self.toast_warn(format!("{label} removed from queue"));
                 }
             }
             KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => self.screen = Screen::Home,
@@ -64,10 +64,19 @@ impl App {
         ])
         .split(area);
         let rows: Vec<ListItem> = if self.downloads.is_empty() {
-            vec![ListItem::new(Line::from(Span::styled(
-                "No downloads yet. Pick a model on the Models screen (2).",
-                Style::default().fg(Color::Yellow),
-            )))]
+            vec![
+                ListItem::new(Line::raw("")),
+                ListItem::new(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(" ↓ ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                    Span::raw(" No downloads yet"),
+                ])),
+                ListItem::new(Line::raw("")),
+                ListItem::new(Line::from(Span::styled(
+                    "  Pick a model on the Models screen (2) to get started.",
+                    Style::default().fg(Color::DarkGray),
+                ))),
+            ]
         } else {
             self.downloads
                 .iter()
@@ -85,16 +94,25 @@ impl App {
                     } else {
                         "    ".into()
                     };
+                    let status_icon = match task.status_label().as_str() {
+                        "cancelled" => "○",
+                        "queued" => "◌",
+                        "ready" => "✓",
+                        "running" => "●",
+                        _ => "✗",
+                    };
                     let status_style = match task.status_label().as_str() {
                         "cancelled" => Style::default().fg(Color::DarkGray),
                         "queued" => Style::default().fg(Color::Yellow),
                         "ready" => Style::default().fg(Color::Green),
-                        "running" => Style::default().fg(Color::Cyan),
+                        "running" => Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
                         _ => Style::default().fg(Color::Red),
                     };
                     ListItem::new(Line::from(vec![
-                        Span::styled(format!("#{:<3}", task.id), Style::default().fg(Color::Gray)),
-                        Span::styled(format!("{:<13}", task.status_label()), status_style),
+                        Span::styled(format!("{status_icon} "), status_style),
+                        Span::styled(format!("{:<11}", task.status_label()), status_style),
                         Span::raw(format!("{spin} {pct} ")),
                         Span::styled(
                             format!("{:<24}", task.label),
@@ -104,11 +122,12 @@ impl App {
                             format!("{:<7}", task.mode.label()),
                             Style::default().fg(Color::Gray),
                         ),
-                        Span::raw(
+                        Span::styled(
                             task.dest
                                 .as_ref()
                                 .map(|path| path.display().to_string())
                                 .unwrap_or_else(|| "HF cache".into()),
+                            Style::default().fg(Color::DarkGray),
                         ),
                     ]))
                 })
