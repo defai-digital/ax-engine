@@ -2,9 +2,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ax_engine_sdk::{
     EngineSessionError, EngineTokenizer, EngineTokenizerError, GenerateFinishReason,
-    GenerateRequest, GenerateStreamEvent, GenerateStreamState, LlamaCppChatGenerateRequest,
-    LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend,
-    finish_reason_from_mlx_lm,
+    GenerateRequest, GenerateStreamEvent, LlamaCppChatGenerateRequest, LlamaCppStreamHandle,
+    MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend, finish_reason_from_mlx_lm,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -15,11 +14,10 @@ use tokio::sync::mpsc;
 use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
 use crate::chat::{Gemma4ChannelIds, strip_gemma4_channel_name_header};
-use crate::errors::{ErrorResponse, error_response, map_session_error};
+use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::generation::streaming::{
-    StreamCancelFlag, StreamEventSender, StreamStateSource, build_keep_alive_stream,
-    build_stream_state, drive_stream_events, send_stream_error, spawn_sse_blocking_stream_task,
-    spawn_stream_task,
+    StreamCancelFlag, StreamEventSender, build_keep_alive_stream, build_stream_state,
+    drive_stream_events, send_stream_error, spawn_sse_blocking_stream_task, spawn_stream_task,
 };
 use crate::openai::chunks::{
     chat_delta_chunk, chat_final_chunk, completion_delta_chunk, completion_final_chunk,
@@ -38,36 +36,14 @@ pub(crate) async fn stream_openai_request(
     request: GenerateRequest,
     stream_kind: OpenAiStreamKind,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let (stream_state, stream_context) = build_stream_state(&state, &live, request).await?;
+    let stream_context = build_stream_state(&state, &live, request).await?;
     let tokenizer = native_mlx_openai_stream_tokenizer(&live)?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    spawn_stream_task(
-        tx,
-        stream_state,
-        move |stream_state, tx, cancel| match stream_context {
-            StreamStateSource::Stateless(context) => {
-                drive_openai_stream_state(
-                    stream_state,
-                    tx,
-                    cancel,
-                    stream_kind,
-                    |state| context.next_stream_event(state),
-                    tokenizer,
-                );
-            }
-            StreamStateSource::Stateful(mut session) => {
-                drive_openai_stream_state(
-                    stream_state,
-                    tx,
-                    cancel,
-                    stream_kind,
-                    |state| session.next_stream_event(state),
-                    tokenizer,
-                );
-            }
-        },
-    );
+    spawn_stream_task(tx, stream_context, move |next_event, tx, cancel| {
+        drive_openai_stream_state(tx, cancel, stream_kind, next_event, tokenizer);
+    })
+    .map_err(crate::errors::map_generation_service_error)?;
 
     Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
 }
@@ -77,19 +53,29 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     live: LiveState,
     request: MlxLmChatGenerateRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let permit = state
+        .admission
+        .try_admit()
+        .map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
     let runtime = live.runtime_report.clone();
     let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
-    let stream = run_blocking_session_task(move || {
-        mlx_lm::start_chat_stream(&runtime, &mlx_lm_backend, &request)
+    let (stream, permit) = run_blocking_session_task(move || {
+        let stream = mlx_lm::start_chat_stream(&runtime, &mlx_lm_backend, &request)?;
+        Ok((stream, permit))
     })
     .await?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    spawn_sse_blocking_stream_task(tx, "openai mlx_lm chat stream", move |tx, cancel| {
-        drive_openai_mlx_lm_chat_stream(tx, &cancel, request_id, model_id, stream);
-    });
+    spawn_sse_blocking_stream_task(
+        tx,
+        "openai mlx_lm chat stream",
+        permit,
+        move |tx, cancel| {
+            drive_openai_mlx_lm_chat_stream(tx, &cancel, request_id, model_id, stream);
+        },
+    );
 
     Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
 }
@@ -99,32 +85,41 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     live: LiveState,
     request: LlamaCppChatGenerateRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let permit = state
+        .admission
+        .try_admit()
+        .map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
     let runtime = live.runtime_report.clone();
     let llama_backend = llama_cpp::config(&live).map_err(map_session_error)?;
-    let stream = run_blocking_session_task(move || {
-        llama_cpp::start_streaming_chat_generate(&runtime, &llama_backend, &request)
+    let (stream, permit) = run_blocking_session_task(move || {
+        let stream = llama_cpp::start_streaming_chat_generate(&runtime, &llama_backend, &request)?;
+        Ok((stream, permit))
     })
     .await?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    spawn_sse_blocking_stream_task(tx, "openai llama.cpp chat stream", move |tx, cancel| {
-        drive_openai_llama_cpp_chat_stream(tx, &cancel, request_id, model_id, stream);
-    });
+    spawn_sse_blocking_stream_task(
+        tx,
+        "openai llama.cpp chat stream",
+        permit,
+        move |tx, cancel| {
+            drive_openai_llama_cpp_chat_stream(tx, &cancel, request_id, model_id, stream);
+        },
+    );
 
     Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
 }
 
 fn drive_openai_stream_state<N>(
-    state: &mut GenerateStreamState,
     tx: StreamEventSender,
     cancel: StreamCancelFlag,
     stream_kind: OpenAiStreamKind,
     next_event: N,
     tokenizer: Option<EngineTokenizer>,
 ) where
-    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+    N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
     let mut chat_role_emitted = false;
     // Chat streams over the native token path strip Gemma 4 thinking-channel
@@ -142,7 +137,6 @@ fn drive_openai_stream_state<N>(
     let mut decoder = tokenizer.map(IncrementalDecoder::new);
 
     drive_stream_events(
-        state,
         &tx,
         &cancel,
         next_event,

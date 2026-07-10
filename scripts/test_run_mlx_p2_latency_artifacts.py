@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT_DIR = Path(__file__).parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -36,6 +37,39 @@ def prompt(index: int = 0) -> object:
 
 
 class P2LatencyRunnerTests(unittest.TestCase):
+    def test_run_one_request_uses_client_observed_ttft(self) -> None:
+        result = {
+            "ttft_ms": 0.0,
+            "client_wall_ttft_ms": 125.0,
+            "decode_tok_s": 80.0,
+        }
+        with mock.patch.object(runner.bench, "axengine_one_run", return_value=result):
+            observation = runner.run_one_request(19091, prompt(0), None)
+
+        self.assertEqual(observation["ttft_ms"], 125.0)
+        self.assertEqual(observation["ttft_source"], "client_wall_first_output")
+
+    def test_start_direct_server_passes_model_identity(self) -> None:
+        process = mock.Mock()
+        with (
+            mock.patch.object(runner.bench, "start_axengine", return_value=process) as start,
+            mock.patch.object(runner.bench, "wait_for_server", return_value=True),
+        ):
+            returned, _spawn_ms, _ready_ms = runner.start_direct_server(
+                Path("/tmp/model"),
+                "published/model-id",
+                19091,
+            )
+
+        self.assertIs(returned, process)
+        start.assert_called_once_with(
+            runner.bench.AX_ENGINE_SERVER,
+            Path("/tmp/model"),
+            19091,
+            model_id="published/model-id",
+            direct_mode=True,
+        )
+
     def test_parse_concurrency_levels_adds_single_request_baseline(self) -> None:
         self.assertEqual(runner.parse_concurrency_levels("2,4"), [1, 2, 4])
 

@@ -292,7 +292,38 @@ AX_NGRAM_TELEMETRY_PREFIXES: tuple[str, ...] = (
 # Keys whose values are categorical/enum (not additive counters) and must be
 # aggregated with max() across repetitions instead of sum().  Naming convention:
 # any key whose suffix matches one of these strings is treated as max-merge.
-_AX_NGRAM_MAX_MERGE_SUFFIXES: tuple[str, ...] = ("_code", "_variant")
+_AX_NGRAM_STABLE_GAUGE_SUFFIXES: tuple[str, ...] = ("_code", "_variant")
+_AX_MTP_STABLE_GAUGE_KEYS: frozenset[str] = frozenset(
+    {
+        "ax_mtp_correctness_mode",
+        "ax_mtp_proposal_law",
+        "ax_mtp_draft_mode",
+        "ax_mtp_hurt_gate_mode",
+        "ax_mtp_ngram_acceptance_mode",
+        "ax_mtp_ngram_gate_policy",
+        "ax_mtp_ngram_utility_min_emitted_tokens",
+        "ax_mtp_ngram_utility_min_ngram_tokens",
+    }
+)
+_AX_MTP_DERIVED_COST_KEYS: frozenset[str] = frozenset(
+    {
+        "ax_mtp_ngram_utility_baseline_cost_per_emitted_token_us",
+        "ax_mtp_ngram_utility_stacked_cost_per_emitted_token_us",
+    }
+)
+
+MTP_CORRECTNESS_MODE_NAMES: dict[int, str] = {
+    0: "unknown",
+    1: "greedy_exact",
+    2: "sampled_exact",
+    3: "approximate_optimistic",
+    4: "direct_fallback",
+}
+MTP_PROPOSAL_LAW_NAMES: dict[int, str] = {
+    0: "unknown",
+    1: "deterministic_delta",
+    2: "stochastic",
+}
 
 # PRD §8 Phase 6 helper: stable ordered list of the accept-at-depth keys so
 # downstream aggregation can iterate without re-deriving the count.
@@ -1214,6 +1245,8 @@ def ax_decode_claim_status(
     if mtp_disable_ngram_stacking:
         if int(telemetry.get("ax_mtp_ngram_hit_steps", 0)) > 0:
             return "mtp_head_only_contract_violation"
+        if int(telemetry.get("ax_mtp_correctness_mode", 0)) == 4:
+            return "mtp_head_only_direct_fallback"
         if int(telemetry.get("ax_mtp_draft_tokens", 0)) > 0:
             return "mtp_head_only_effective"
         return "mtp_head_only_no_observed_draft_path"
@@ -1310,6 +1343,8 @@ def ax_decode_effective_route(
             return "mtp_head_only_contract_violation"
         if int(telemetry.get("ax_mtp_draft_tokens", 0)) > 0:
             return "mtp_head_only_verify_loop"
+        if int(telemetry.get("ax_mtp_correctness_mode", 0)) == 4:
+            return "mtp_direct_fallback"
         return "mtp_head_only_not_observed"
 
     draft_attempts = int(telemetry.get("ax_ngram_draft_attempts", 0))
@@ -1410,6 +1445,7 @@ def ax_decode_claim_mode(
     sampler: dict[str, Any] | None = None,
     *,
     mtp_disable_ngram_stacking: bool = False,
+    telemetry: dict[str, int] | None = None,
 ) -> str:
     """Return the *correctness mode* an n-gram or direct row is claiming.
 
@@ -1423,6 +1459,9 @@ def ax_decode_claim_mode(
       sampling. May be promoted to a same-policy baseline-equivalent claim if
       the direct baseline row has identical model identity, prompt hash, seed,
       token budget, and sampler config, *and* the generated token IDs match.
+    - Pure-MTP rows derive their claim from runtime correctness telemetry and
+      fail closed when the mode is unknown, approximate, mixed, or a direct
+      fallback.
     - ``direct_sampling_not_distribution_exact``: direct decode with
       ``temperature > 0`` or top-p / top-k / repetition penalty active.
     - ``ngram_sampling_not_distribution_exact``: n-gram-accelerated decode
@@ -1439,13 +1478,120 @@ def ax_decode_claim_mode(
         return "direct_sampling_not_distribution_exact"
     if direct_mode:
         return "direct_greedy_exact_baseline"
-    if mtp_disable_ngram_stacking and sampling_active:
-        return "mtp_sampling_distribution_corrected"
     if mtp_disable_ngram_stacking:
-        return "mtp_greedy_exact_candidate"
+        correctness = summarize_mtp_correctness(
+            telemetry or {}, sampler=sampler, mtp_requested=True
+        )
+        return str(correctness["claim_mode"])
     if sampling_active:
         return "ngram_sampling_not_distribution_exact"
     return "ngram_greedy_exact_candidate"
+
+
+def summarize_mtp_correctness(
+    telemetry: dict[str, int],
+    *,
+    sampler: dict[str, Any] | None,
+    mtp_requested: bool,
+) -> dict[str, Any]:
+    sampling_active = _sampler_breaks_greedy_exactness(sampler)
+    mode_code = int(telemetry.get("ax_mtp_correctness_mode", 0) or 0)
+    proposal_code = int(telemetry.get("ax_mtp_proposal_law", 0) or 0)
+    mode_conflicts = int(telemetry.get("ax_mtp_correctness_mode_conflicts", 0) or 0)
+    proposal_conflicts = int(telemetry.get("ax_mtp_proposal_law_conflicts", 0) or 0)
+    optimistic_steps = int(telemetry.get("ax_mtp_optimistic_steps", 0) or 0)
+    direct_fallback_steps = int(telemetry.get("ax_mtp_direct_fallback_steps", 0) or 0)
+    residual_corrections = int(
+        telemetry.get("ax_mtp_residual_correction_tokens", 0) or 0
+    )
+    mode = MTP_CORRECTNESS_MODE_NAMES.get(mode_code, f"invalid_{mode_code}")
+    proposal_law = MTP_PROPOSAL_LAW_NAMES.get(
+        proposal_code, f"invalid_{proposal_code}"
+    )
+    reasons: list[str] = []
+    if not mtp_requested:
+        reasons.append("mtp_not_requested")
+    if mode_code not in MTP_CORRECTNESS_MODE_NAMES:
+        reasons.append("invalid_correctness_mode")
+    if proposal_code not in MTP_PROPOSAL_LAW_NAMES:
+        reasons.append("invalid_proposal_law")
+    if mode_code in (1, 2) and proposal_code == 0:
+        reasons.append("missing_effective_proposal_law")
+    if mode_conflicts:
+        reasons.append("correctness_mode_changed_across_run")
+    if proposal_conflicts:
+        reasons.append("proposal_law_changed_across_run")
+    if optimistic_steps and mode_code != 3:
+        reasons.append("optimistic_steps_without_approximate_mode")
+
+    if mode_code == 1:
+        claim_mode = "mtp_greedy_exact"
+        if sampling_active:
+            reasons.append("greedy_exact_mode_with_sampling_request")
+    elif mode_code == 2:
+        claim_mode = "mtp_sampled_exact"
+        if not sampling_active:
+            reasons.append("sampled_exact_mode_without_sampling_request")
+    elif mode_code == 3:
+        claim_mode = "mtp_approximate_optimistic_speed_ceiling"
+        reasons.append("approximate_optimistic_not_exact")
+    elif mode_code == 4:
+        claim_mode = "mtp_sampling_direct_fallback" if sampling_active else "mtp_direct_fallback"
+        reasons.append("mtp_not_effective_direct_fallback")
+    else:
+        claim_mode = "mtp_correctness_unknown_not_publishable"
+        reasons.append("missing_effective_correctness_mode")
+
+    exact_claim_eligible = (
+        mode_code in (1, 2)
+        and not reasons
+        and optimistic_steps == 0
+        and direct_fallback_steps == 0
+    )
+    return {
+        "schema_version": "ax.mtp_correctness.v1",
+        "requested_sampler_class": "sampled" if sampling_active else "greedy",
+        "effective_mode": mode,
+        "effective_mode_code": mode_code,
+        "proposal_law": proposal_law,
+        "proposal_law_code": proposal_code,
+        "optimistic_steps": optimistic_steps,
+        "direct_fallback_steps": direct_fallback_steps,
+        "residual_correction_tokens": residual_corrections,
+        "exact_claim_eligible": exact_claim_eligible,
+        "publication_candidate": exact_claim_eligible,
+        "claim_mode": claim_mode,
+        "reasons": reasons,
+    }
+
+
+def summarize_artifact_mtp_correctness(
+    results: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    rows = [
+        row
+        for row in results
+        if isinstance(row.get("ax_mtp_correctness"), dict)
+    ]
+    if not rows:
+        return None
+    failed = [
+        {
+            "prompt_case_id": row.get("prompt_case_id"),
+            "claim_mode": row.get("ax_decode_claim_mode"),
+            "reasons": list(row["ax_mtp_correctness"].get("reasons") or []),
+        }
+        for row in rows
+        if row["ax_mtp_correctness"].get("publication_candidate") is not True
+    ]
+    return {
+        "schema_version": "ax.mtp_correctness_summary.v1",
+        "row_count": len(rows),
+        "eligible_row_count": len(rows) - len(failed),
+        "ineligible_row_count": len(failed),
+        "ineligible_rows": failed,
+        "publication_candidate": not failed,
+    }
 
 
 def _sampler_breaks_greedy_exactness(sampler: dict[str, Any] | None) -> bool:
@@ -1501,6 +1647,16 @@ def assert_no_distribution_exact_promotion_under_sampling(row: dict[str, Any]) -
                 "sampling-mode n-gram row cannot be promoted as distribution-exact "
                 "without a probability-ratio acceptance + residual-correction implementation; "
                 f"got mode={mode!r}, status={status!r}"
+            )
+
+    if str(mode).startswith("mtp_") and bool(
+        row.get("ax_decode_distribution_exact_claim")
+    ):
+        correctness = row.get("ax_mtp_correctness") or {}
+        if correctness.get("exact_claim_eligible") is not True:
+            raise ValueError(
+                "MTP row cannot claim exactness without an eligible effective "
+                f"correctness mode; got {correctness!r}"
             )
 
 
@@ -2288,6 +2444,7 @@ def start_axengine(
     gemma4_assistant_mtp: bool = False,
     mtp_max_depth: int | None = None,
     mtp_disable_ngram_stacking: bool = False,
+    mtp_approximate_optimistic: bool = False,
     mtp_fast_tail_topk_sampling: bool = False,
     prefill_chunk: int | None = None,
     max_batch_tokens: int | None = None,
@@ -2355,6 +2512,8 @@ def start_axengine(
         env["AX_MLX_MTP_MAX_DEPTH"] = str(mtp_max_depth)
         if gemma4_assistant_mtp:
             env["AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH"] = str(mtp_max_depth)
+    if mtp_approximate_optimistic:
+        env["AX_MLX_MTP_OPTIMISTIC"] = "1"
     if mtp_fast_tail_topk_sampling:
         env["AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING"] = "1"
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
@@ -2362,6 +2521,11 @@ def start_axengine(
         print(f"  [ax-engine] AX_MLX_MTP_MAX_DEPTH={mtp_max_depth}", file=sys.stderr)
     if mtp_disable_ngram_stacking:
         print("  [ax-engine] MTP n-gram stacking disabled", file=sys.stderr)
+    if mtp_approximate_optimistic:
+        print(
+            "  [ax-engine] AX_MLX_MTP_OPTIMISTIC=1 (approximate speed ceiling)",
+            file=sys.stderr,
+        )
     if mtp_fast_tail_topk_sampling:
         print("  [ax-engine] AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING=1", file=sys.stderr)
     if gemma4_assistant_mtp:
@@ -2644,16 +2808,71 @@ def route_for_linear_attention_profile(
     return prefill_route or final_route
 
 
+def telemetry_aggregation_kind(key: str) -> str:
+    if key == AX_NGRAM_ACCEPT_RATE_KEY:
+        return "ratio_from_summed_counters"
+    if key in _AX_MTP_DERIVED_COST_KEYS:
+        return "ratio_from_summed_counters"
+    if key.endswith("_x1000"):
+        return "median_gauge"
+    if key in _AX_MTP_STABLE_GAUGE_KEYS or any(
+        key.endswith(suffix) for suffix in _AX_NGRAM_STABLE_GAUGE_SUFFIXES
+    ):
+        return "stable_gauge"
+    return "sum_counter"
+
+
 def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
-    totals: dict[str, int] = {}
+    values_by_key: dict[str, list[int]] = {}
     for run in runs:
         for key, value in (run.get("ngram_acceleration_telemetry") or {}).items():
-            if key == AX_NGRAM_ACCEPT_RATE_KEY:
+            if key == AX_NGRAM_ACCEPT_RATE_KEY or key in _AX_MTP_DERIVED_COST_KEYS:
                 continue
-            if any(key.endswith(s) for s in _AX_NGRAM_MAX_MERGE_SUFFIXES):
-                totals[key] = max(totals.get(key, 0), int(value))
-            else:
-                totals[key] = totals.get(key, 0) + int(value)
+            values_by_key.setdefault(key, []).append(int(value))
+
+    totals: dict[str, int] = {}
+    for key, values in values_by_key.items():
+        kind = telemetry_aggregation_kind(key)
+        if kind == "median_gauge":
+            if any(value < 0 or value > 1000 for value in values):
+                raise ValueError(f"{key} must stay within 0..=1000; got {values}")
+            totals[key] = int(round(statistics.median(values)))
+        elif kind == "stable_gauge":
+            if len(values) != len(runs):
+                raise ValueError(
+                    f"{key} missing from one or more repetitions; got {len(values)}/{len(runs)}"
+                )
+            distinct = set(values)
+            if len(distinct) != 1:
+                raise ValueError(
+                    f"{key} changed across repetitions; expected one effective mode, got {values}"
+                )
+            totals[key] = values[0]
+        else:
+            totals[key] = sum(values)
+
+    for depth in range(3):
+        drafted = totals.get(f"ax_mtp_drafted_depth{depth}", 0)
+        accepted = totals.get(f"ax_mtp_accepted_depth{depth}", 0)
+        if drafted > 0:
+            totals[f"ax_mtp_accept_rate_depth{depth}_x1000"] = int(
+                round(accepted * 1000 / drafted)
+            )
+
+    if totals.get("ax_mtp_ngram_utility_baseline_emitted_tokens", 0) > 0:
+        totals["ax_mtp_ngram_utility_baseline_cost_per_emitted_token_us"] = int(
+            round(
+                totals.get("ax_mtp_ngram_utility_baseline_wall_us", 0)
+                / totals["ax_mtp_ngram_utility_baseline_emitted_tokens"]
+            )
+        )
+    if totals.get("ax_mtp_ngram_utility_stacked_emitted_tokens", 0) > 0:
+        totals["ax_mtp_ngram_utility_stacked_cost_per_emitted_token_us"] = int(
+            round(
+                totals.get("ax_mtp_ngram_utility_stacked_wall_us", 0)
+                / totals["ax_mtp_ngram_utility_stacked_emitted_tokens"]
+            )
+        )
     if totals.get("ax_ngram_draft_tokens", 0) > 0:
         totals[AX_NGRAM_ACCEPT_RATE_KEY] = int(
             round(
@@ -2663,6 +2882,10 @@ def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
             )
         )
     return totals
+
+
+def telemetry_aggregation_contract(telemetry: dict[str, int]) -> dict[str, str]:
+    return {key: telemetry_aggregation_kind(key) for key in sorted(telemetry)}
 
 
 def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
@@ -3946,6 +4169,15 @@ def bench_axengine(
         ax_mlx_telemetry=ax_mlx_telemetry,
         mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
     )
+    mtp_correctness = (
+        summarize_mtp_correctness(
+            ngram_summary,
+            sampler=sampler,
+            mtp_requested=True,
+        )
+        if mtp_disable_ngram_stacking and not direct_mode
+        else None
+    )
     row = {
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
@@ -3975,6 +4207,7 @@ def bench_axengine(
             direct_mode,
             sampler=sampler,
             mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
+            telemetry=ngram_summary,
         ),
         "ax_mtp_draft_source": (
             "gemma4_assistant_head_only"
@@ -4010,6 +4243,9 @@ def bench_axengine(
         "decode_s": summarize_runs(runs, "decode_s"),
         "run_stability": summarize_run_stability(runs, "decode_tok_s"),
         "ngram_acceleration_telemetry": ngram_summary,
+        "ngram_acceleration_telemetry_aggregation": telemetry_aggregation_contract(
+            ngram_summary
+        ),
         "ngram_accept_at_depth": summarize_ngram_accept_at_depth(ngram_summary),
         # Sampler config (PRD §7.1 release-claim artifact requirement).
         # Greedy by default; non-None when --ax-sampling is active.
@@ -4052,6 +4288,14 @@ def bench_axengine(
         "ax_mlx_decode_profile": summarize_ax_mlx_decode_profile(runs),
         "trials": runs,
     }
+    if mtp_correctness is not None:
+        row["ax_mtp_correctness"] = mtp_correctness
+        row["ax_decode_distribution_exact_claim"] = bool(
+            mtp_correctness["exact_claim_eligible"]
+        )
+        row["publication_candidate"] = bool(
+            mtp_correctness["publication_candidate"]
+        )
     direct_cpp_linear_inputs = summarize_ax_mlx_direct_cpp_linear_attention_inputs(
         ax_mlx_telemetry
     )
@@ -4112,6 +4356,7 @@ def bench_axengine(
         )
     if compression_summary:
         row["kv_compression_telemetry"] = compression_summary
+    assert_no_distribution_exact_promotion_under_sampling(row)
     return row
 
 
@@ -5010,7 +5255,7 @@ def main() -> None:
         ),
     )
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
-    parser.add_argument("--warmup-repetitions", type=int, default=1)
+    parser.add_argument("--warmup-repetitions", type=int, default=2)
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN)
     parser.add_argument(
         "--max-load-average",
@@ -5184,6 +5429,14 @@ def main() -> None:
             "Set AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING=1 for AX server rows. "
             "Diagnostic only: samples the correction token from top-k logits on GPU "
             "and does not apply top-p filtering."
+        ),
+    )
+    parser.add_argument(
+        "--ax-mtp-approximate-optimistic",
+        action="store_true",
+        help=(
+            "Set AX_MLX_MTP_OPTIMISTIC=1 for an explicitly approximate MTP "
+            "speed-ceiling row. Such rows are never exact publication candidates."
         ),
     )
     parser.add_argument(
@@ -5436,6 +5689,12 @@ def main() -> None:
         )
     if args.ax_mtp_disable_ngram_stacking and args.skip_ax_engine:
         parser.error("--ax-mtp-disable-ngram-stacking requires AX rows")
+    if args.ax_mtp_approximate_optimistic and (
+        args.ax_direct or args.skip_ax_engine
+    ):
+        parser.error(
+            "--ax-mtp-approximate-optimistic requires an MTP/speculative AX row"
+        )
     if args.ax_gemma4_assistant_mtp and args.skip_ax_engine:
         parser.error("--ax-gemma4-assistant-mtp requires AX rows")
     if args.ax_gemma4_assistant_mtp and (
@@ -5913,6 +6172,7 @@ def main() -> None:
                     gemma4_assistant_mtp=gemma4_assistant_mtp,
                     mtp_max_depth=args.ax_mtp_max_depth,
                     mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
+                    mtp_approximate_optimistic=args.ax_mtp_approximate_optimistic,
                     mtp_fast_tail_topk_sampling=args.ax_mtp_fast_tail_topk_sampling,
                     prefill_chunk=args.prefill_step_size,
                     # Scheduler caps per-step prefill at max_batch_tokens. To
@@ -6119,6 +6379,7 @@ def main() -> None:
         "prefill_step_size": args.prefill_step_size,
         "ax_mtp_max_depth": args.ax_mtp_max_depth,
         "ax_mtp_disable_ngram_stacking": bool(args.ax_mtp_disable_ngram_stacking),
+        "ax_mtp_approximate_optimistic": bool(args.ax_mtp_approximate_optimistic),
         "ax_mtp_fast_tail_topk_sampling": bool(args.ax_mtp_fast_tail_topk_sampling),
         "ax_prefix_cache_mode": (
             AX_PREFIX_CACHE_ENABLED_MODE
@@ -6177,6 +6438,9 @@ def main() -> None:
         peak_bandwidth_gb_s=args.peak_bandwidth_gb_s,
         peak_bandwidth_source=args.peak_bandwidth_source,
     )
+    mtp_correctness_summary = summarize_artifact_mtp_correctness(results)
+    if mtp_correctness_summary is not None:
+        doc["mtp_correctness_summary"] = mtp_correctness_summary
     if gateddelta_prefill_profile_contract:
         doc["gateddelta_prefill_profile"] = gateddelta_prefill_profile_contract
     if args.reuse_reference_results_from:

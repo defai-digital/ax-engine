@@ -261,6 +261,13 @@ pub struct EngineSession {
 }
 
 impl EngineSession {
+    /// Clear process-global native compiled closures after all work for the
+    /// current model has drained and before constructing a replacement model.
+    pub fn clear_native_model_compile_caches() {
+        #[cfg(feature = "mlx-native")]
+        ax_engine_mlx::per_layer_compile::clear_all_layer_decode_caches();
+    }
+
     fn uses_mlx_runtime(&self) -> bool {
         self.config.resolved_backend.selected_backend.is_mlx()
     }

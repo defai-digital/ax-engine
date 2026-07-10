@@ -63,6 +63,18 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         "gRPC responses observed with a non-OK grpc-status response header (e.g. auth rejections).",
         metrics.grpc_status_error_total.load(Ordering::Relaxed),
     );
+    append_gauge(
+        &mut body,
+        "ax_engine_jobs_in_flight",
+        "Engine jobs holding shared HTTP and gRPC admission capacity.",
+        state.admission.active_jobs() as u64,
+    );
+    append_gauge(
+        &mut body,
+        "ax_engine_generation_jobs_pending",
+        "Commands and active streams owned by the persistent generation worker.",
+        state.snapshot().generation_service.pending_jobs() as u64,
+    );
 
     // Engine-step gauges come from the snapshot cached by the endpoints that
     // actually drive steps; scraping must never call `step_report` itself

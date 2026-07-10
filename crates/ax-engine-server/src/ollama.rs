@@ -4,8 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_sdk::{
-    EngineSessionError, EngineTokenizer, GenerateResponse, GenerateStreamEvent,
-    GenerateStreamState, SelectedBackend,
+    EngineSessionError, EngineTokenizer, GenerateResponse, GenerateStreamEvent, SelectedBackend,
 };
 use axum::Json;
 use axum::body::Body;
@@ -20,7 +19,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
 use crate::chat::{ChatPromptTemplate, Gemma4ChannelIds, strip_gemma4_channel_name_header};
-use crate::errors::{ErrorResponse, error_response, map_session_error};
+use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
 use crate::generation::streaming::{StreamStateSource, build_stream_state};
 use crate::metadata::{MODEL_OWNER, context_length};
@@ -414,8 +413,7 @@ async fn stream_ollama_native(
             "failed to load tokenizer for native MLX Ollama stream decode: {error}"
         ))
     })?;
-    let (stream_state, stream_context) =
-        build_stream_state(&state, &live, generate_request).await?;
+    let stream_context = build_stream_state(&state, &live, generate_request).await?;
 
     let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(128);
     let cancel = Arc::new(AtomicBool::new(false));
@@ -425,27 +423,39 @@ async fn stream_ollama_native(
         monitor_tx.closed().await;
         cancel_monitor.store(true, Ordering::Relaxed);
     });
-    tokio::task::spawn_blocking(move || {
-        let mut stream_state = stream_state;
-        match stream_context {
-            StreamStateSource::Stateless(context) => drive_ollama_native_events(
-                &mut stream_state,
-                kind,
-                &tx,
-                &cancel,
-                tokenizer,
-                |state| context.next_stream_event(state),
-            ),
-            StreamStateSource::Stateful(mut session) => drive_ollama_native_events(
-                &mut stream_state,
-                kind,
-                &tx,
-                &cancel,
-                tokenizer,
-                |state| session.next_stream_event(state),
-            ),
+    match stream_context {
+        StreamStateSource::Service(mut events) => {
+            tokio::task::spawn_blocking(move || {
+                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, || {
+                    events.blocking_recv().transpose()
+                });
+            });
         }
-    });
+        StreamStateSource::Stateless {
+            mut state,
+            context,
+            permit,
+        } => {
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, || {
+                    context.next_stream_event(&mut state)
+                });
+            });
+        }
+        StreamStateSource::Stateful {
+            mut state,
+            mut session,
+            permit,
+        } => {
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, || {
+                    session.next_stream_event(&mut state)
+                });
+            });
+        }
+    }
 
     Ok((
         StatusCode::OK,
@@ -456,14 +466,13 @@ async fn stream_ollama_native(
 }
 
 fn drive_ollama_native_events<N>(
-    state: &mut GenerateStreamState,
     kind: OllamaNativeStreamKind,
     tx: &mpsc::Sender<Result<String, std::io::Error>>,
     cancel: &AtomicBool,
     tokenizer: EngineTokenizer,
     mut next: N,
 ) where
-    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+    N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
     // Chat streams strip Gemma 4 thinking-channel framing (mirrors the OpenAI
     // SSE chat path); raw generate streams keep the verbatim decode.
@@ -478,7 +487,7 @@ fn drive_ollama_native_events<N>(
             tracing::debug!("Ollama stream cancelled: client disconnected");
             return;
         }
-        match next(state) {
+        match next() {
             Ok(None) => return,
             Err(error) => {
                 // Ollama surfaces mid-stream failures as an NDJSON error line.
@@ -829,7 +838,12 @@ async fn run_ollama_chat_completion(
         let request_id = state.allocate_request_id();
         let runtime = live.runtime_report.clone();
         let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
+        let permit = state
+            .admission
+            .try_admit()
+            .map_err(admission_error_response)?;
         let response = run_blocking_session_task(move || {
+            let _permit = permit;
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
         })
         .await?;
@@ -851,7 +865,12 @@ async fn run_ollama_chat_completion(
         let request_id = state.allocate_request_id();
         let runtime = live.runtime_report.clone();
         let llama_backend = llama_cpp::config(&live).map_err(map_session_error)?;
+        let permit = state
+            .admission
+            .try_admit()
+            .map_err(admission_error_response)?;
         let response = run_blocking_session_task(move || {
+            let _permit = permit;
             llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
         })
         .await?;

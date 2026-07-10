@@ -28,6 +28,8 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
         !body.contains("ax_engine_step_scheduled_requests"),
         "engine-step gauges must stay hidden until a step is observed"
     );
+    assert!(body.contains("ax_engine_jobs_in_flight 0\n"));
+    assert!(body.contains("ax_engine_generation_jobs_pending 0\n"));
 
     metrics.record_step_report(&EngineStepReport {
         scheduled_requests: 3,

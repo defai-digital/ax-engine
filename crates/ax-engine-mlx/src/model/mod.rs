@@ -2853,6 +2853,7 @@ mod tests {
 
     fn cfg(attn_output_gate: bool) -> ModelConfig {
         ModelConfig {
+            compile_cache_identity: 1,
             model_family: "qwen3".to_string(),
             layer_count: 1,
             hidden_size: 16,

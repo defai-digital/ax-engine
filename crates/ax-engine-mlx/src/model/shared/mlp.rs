@@ -1375,8 +1375,11 @@ pub(crate) fn ffn_swiglu(
         let (inputs, schema) = flatten_dense_ffn_inputs(x, Some(packed), down_qw, post_norm);
         let input_refs: Vec<&MlxArray> = inputs.iter().collect();
         let eps = cfg.rms_norm_eps;
-        let compiled_result =
-            apply_layer_dense_ffn_decode(layer_idx, &input_refs, move |inputs: &MlxVectorArray| {
+        let compiled_result = apply_layer_dense_ffn_decode(
+            cfg.compile_cache_identity,
+            layer_idx,
+            &input_refs,
+            move |inputs: &MlxVectorArray| {
                 let x = inputs.get(0);
                 let (gate_up_qw, down_qw, post_norm) = schema.rebuild(inputs);
                 let gate_up = gate_up_qw
@@ -1395,7 +1398,8 @@ pub(crate) fn ffn_swiglu(
                 } else {
                     vec![out]
                 }
-            });
+            },
+        );
         if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
             return result;
         }

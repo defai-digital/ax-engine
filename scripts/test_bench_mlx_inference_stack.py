@@ -1297,6 +1297,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "decode_tok_s": 20.0,
             "output_tokens": 3.0,
             "ngram_acceleration_telemetry": {
+                "ax_mtp_correctness_mode": 1,
+                "ax_mtp_proposal_law": 1,
+                "ax_mtp_correctness_mode_conflicts": 0,
+                "ax_mtp_proposal_law_conflicts": 0,
+                "ax_mtp_optimistic_steps": 0,
+                "ax_mtp_direct_fallback_steps": 0,
                 "ax_mtp_draft_tokens": 6,
                 "ax_mtp_accepted_tokens": 4,
                 "ax_mtp_ngram_hit_steps": 0,
@@ -1322,9 +1328,28 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(row["engine"], "ax_engine_mlx_pure_mtp")
         self.assertEqual(row["ax_decode_policy"], "mtp_head_only_no_ngram_stacking")
         self.assertEqual(row["ax_decode_claim_status"], "mtp_head_only_effective")
-        self.assertEqual(row["ax_decode_claim_mode"], "mtp_greedy_exact_candidate")
+        self.assertEqual(row["ax_decode_claim_mode"], "mtp_greedy_exact")
+        self.assertTrue(row["ax_mtp_correctness"]["exact_claim_eligible"])
+        self.assertTrue(row["publication_candidate"])
         self.assertEqual(row["ax_decode_effective_route"], "mtp_head_only_verify_loop")
         self.assertEqual(row["ax_mtp_draft_source"], "mtp_head_only")
+
+    def test_mtp_exact_claim_requires_recorded_proposal_law(self) -> None:
+        correctness = bench.summarize_mtp_correctness(
+            {
+                "ax_mtp_correctness_mode": 1,
+                "ax_mtp_proposal_law": 0,
+                "ax_mtp_correctness_mode_conflicts": 0,
+                "ax_mtp_proposal_law_conflicts": 0,
+                "ax_mtp_optimistic_steps": 0,
+                "ax_mtp_direct_fallback_steps": 0,
+            },
+            sampler={"temperature": 0.0, "top_p": 1.0, "top_k": 0},
+            mtp_requested=True,
+        )
+
+        self.assertFalse(correctness["exact_claim_eligible"])
+        self.assertIn("missing_effective_proposal_law", correctness["reasons"])
 
     def test_axengine_gemma4_assistant_mtp_row_summarizes_route_metadata(self) -> None:
         run = {
@@ -1335,6 +1360,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "decode_tok_s": 20.0,
             "output_tokens": 3.0,
             "ngram_acceleration_telemetry": {
+                "ax_mtp_correctness_mode": 1,
+                "ax_mtp_proposal_law": 1,
+                "ax_mtp_correctness_mode_conflicts": 0,
+                "ax_mtp_proposal_law_conflicts": 0,
+                "ax_mtp_optimistic_steps": 0,
+                "ax_mtp_direct_fallback_steps": 0,
                 "ax_mtp_draft_tokens": 2,
                 "ax_mtp_accepted_tokens": 1,
             },
@@ -1466,8 +1497,26 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 False,
                 sampler={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
                 mtp_disable_ngram_stacking=True,
+                telemetry={
+                    "ax_mtp_correctness_mode": 4,
+                    "ax_mtp_proposal_law": 0,
+                    "ax_mtp_direct_fallback_steps": 8,
+                },
             ),
-            "mtp_sampling_distribution_corrected",
+            "mtp_sampling_direct_fallback",
+        )
+        self.assertEqual(
+            bench.ax_decode_effective_route(
+                direct_mode=False,
+                model_metadata={},
+                telemetry={
+                    "ax_mtp_correctness_mode": 4,
+                    "ax_mtp_direct_fallback_steps": 8,
+                },
+                ax_mlx_telemetry={"ax_mlx_single_decode_steps": 8},
+                mtp_disable_ngram_stacking=True,
+            ),
+            "mtp_direct_fallback",
         )
 
     def test_axengine_row_captures_output_token_ids_only_when_requested(self) -> None:
@@ -2574,6 +2623,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_ngram_policy_variant": 1,
                         "ax_ngram_adaptive_draft_len_total": 6,
                         "ax_ngram_accept_rate_micros": 500000,
+                        "ax_mtp_accept_rate_depth0_x1000": 1000,
+                        "ax_mtp_drafted_depth0": 4,
+                        "ax_mtp_accepted_depth0": 4,
+                        "ax_mtp_correctness_mode": 1,
                     }
                 },
                 {
@@ -2585,6 +2638,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_ngram_policy_variant": 1,
                         "ax_ngram_adaptive_draft_len_total": 8,
                         "ax_ngram_accept_rate_micros": 916667,
+                        "ax_mtp_accept_rate_depth0_x1000": 1000,
+                        "ax_mtp_drafted_depth0": 6,
+                        "ax_mtp_accepted_depth0": 6,
+                        "ax_mtp_correctness_mode": 1,
                     }
                 },
             ]
@@ -2597,6 +2654,25 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_ngram_policy_variant"], 1)
         self.assertEqual(summary["ax_ngram_adaptive_draft_len_total"], 14)
         self.assertEqual(summary["ax_ngram_accept_rate_micros"], 750000)
+        self.assertEqual(summary["ax_mtp_accept_rate_depth0_x1000"], 1000)
+        self.assertEqual(summary["ax_mtp_correctness_mode"], 1)
+
+    def test_ax_mtp_telemetry_rejects_mixed_effective_modes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "changed across repetitions"):
+            bench.summarize_telemetry(
+                [
+                    {
+                        "ngram_acceleration_telemetry": {
+                            "ax_mtp_correctness_mode": 1,
+                        }
+                    },
+                    {
+                        "ngram_acceleration_telemetry": {
+                            "ax_mtp_correctness_mode": 3,
+                        }
+                    },
+                ]
+            )
 
     def test_ax_decode_claim_status_distinguishes_no_draft_fallback(self) -> None:
         self.assertEqual(

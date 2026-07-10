@@ -203,12 +203,12 @@ pub struct ServerArgs {
     #[arg(long = "grpc-bind-address")]
     pub grpc_bind_address: Option<String>,
 
-    /// Opt-in cap on the number of in-flight HTTP requests. Unset (or
-    /// non-positive) means no limit, preserving the default behavior. Falls
-    /// back to AX_ENGINE_MAX_CONCURRENT_REQUESTS. Operators running the
-    /// server multi-tenant set this to bound concurrent GPU work and shed
-    /// load with HTTP 429 instead of exhausting memory under a request
-    /// flood.
+    /// Opt-in cap on engine jobs shared by HTTP and gRPC. A permit remains
+    /// held until blocking generation, streaming, embedding, or stepwise work
+    /// reaches a terminal state, even if its transport times out or disconnects.
+    /// Unset (or non-positive) means no limit. Falls back to
+    /// AX_ENGINE_MAX_CONCURRENT_REQUESTS. Saturated HTTP calls receive 429 and
+    /// saturated gRPC calls receive RESOURCE_EXHAUSTED.
     #[arg(long = "max-concurrent-requests")]
     pub max_concurrent_requests: Option<usize>,
 

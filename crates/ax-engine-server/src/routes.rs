@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use tokio::sync::Semaphore;
+use std::sync::Arc;
 
 use super::anthropic::anthropic_messages;
 use super::app_state::{AppState, ServerMetrics};
@@ -62,35 +60,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/v1/generate/stream", post(generate_stream))
         .route("/v1/generate", post(generate));
 
-    // Apply the concurrency limiter (when enabled) closest to the handlers, so a
-    // rejected request never starts engine work. Requests beyond the limit get
-    // an immediate 429 rather than queueing unboundedly.
-    let router = match state.limits.max_concurrent_requests {
-        Some(limit) => {
-            let semaphore = Arc::new(Semaphore::new(limit));
-            router.layer(middleware::from_fn(move |request: Request, next: Next| {
-                let semaphore = Arc::clone(&semaphore);
-                async move {
-                    match semaphore.try_acquire_owned() {
-                        Ok(permit) => {
-                            let response = next.run(request).await;
-                            drop(permit);
-                            response
-                        }
-                        Err(_) => (
-                            StatusCode::TOO_MANY_REQUESTS,
-                            "server is at its maximum concurrent request limit; retry shortly",
-                        )
-                            .into_response(),
-                    }
-                }
-            }))
-        }
-        None => router,
-    };
-
-    // Global rate limit (when enabled), applied just after the concurrency
-    // limiter so both shed load before any real handler work starts.
+    // Global rate limit (when enabled) sheds transport load before handlers.
+    // Engine concurrency is enforced inside generation/embedding handlers so
+    // its permit follows the real blocking job rather than the HTTP response.
     let router = match state.limits.rate_limit {
         Some(cfg) => {
             let bucket = Arc::new(TokenBucket::new(cfg.burst));

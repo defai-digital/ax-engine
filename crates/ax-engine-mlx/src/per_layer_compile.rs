@@ -66,19 +66,19 @@ fn try_apply_with_abort_safety(
 
 /// Per-layer MoE decode closure cache.
 ///
-/// Maps `(layer_index, thread_id)` to a compiled closure that performs
+/// Maps `(model_identity, layer_index, thread_id)` to a compiled closure that performs
 /// a single MoE layer's decode step (router output → expert forward →
 /// weighted sum). Inputs are `(hidden, top_k_indices, top_k_weights)`.
 // Value is `Option<MlxClosure>`: `Some` is a working compiled closure reused
 // across decode steps; `None` records a layer whose compiled MoE closure failed
 // to compile or apply, so we fall back to the imperative path permanently
 // instead of retrying (and re-flooding MLX errors) on every step.
-type MoeDecodeCache = OnceLock<Mutex<HashMap<(usize, ThreadId), Option<MlxClosure>>>>;
+type MoeDecodeCache = OnceLock<Mutex<HashMap<(u64, usize, ThreadId), Option<MlxClosure>>>>;
 static LAYER_MOE_DECODE_CACHE: MoeDecodeCache = OnceLock::new();
 
 /// Per-layer dense FFN decode closure cache.
 ///
-/// Maps `(layer_index, thread_id)` to a compiled closure that performs
+/// Maps `(model_identity, layer_index, thread_id)` to a compiled closure that performs
 /// a single dense FFN layer's decode step (gate_up → split → activation →
 /// down → optional post-norm). All weight tensors are passed as explicit
 /// inputs to satisfy MLX's no-uncaptured-inputs contract.
@@ -89,10 +89,10 @@ static LAYER_MOE_DECODE_CACHE: MoeDecodeCache = OnceLock::new();
 // every step.
 /// Per-layer dense FFN compiled closure cache.
 ///
-/// Maps `(layer_index, thread_id)` to an optional compiled closure. `Some`
+/// Maps `(model_identity, layer_index, thread_id)` to an optional compiled closure. `Some`
 /// is a working closure; `None` marks a layer that permanently fell back
 /// to the imperative path.
-type DenseFfnCache = Mutex<HashMap<(usize, ThreadId), (Option<MlxClosure>, u64)>>;
+type DenseFfnCache = Mutex<HashMap<(u64, usize, ThreadId), (Option<MlxClosure>, u64)>>;
 
 static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<DenseFfnCache> = OnceLock::new();
 
@@ -111,11 +111,11 @@ static COMPILE_CACHE_REFRESH_THRESHOLD: LazyLock<u64> = LazyLock::new(|| {
 
 /// Per-layer Gemma4 dual-path (dense + expert) decode closure cache.
 ///
-/// Maps `(layer_index, thread_id)` to a compiled closure that performs the
+/// Maps `(model_identity, layer_index, thread_id)` to a compiled closure that performs the
 /// entire dual-path MoE block: dense sub-block + expert sub-block + combine.
 #[allow(clippy::type_complexity)]
 static LAYER_GEMMA4_DUAL_PATH_CACHE: OnceLock<
-    Mutex<HashMap<(usize, ThreadId), Option<MlxClosure>>>,
+    Mutex<HashMap<(u64, usize, ThreadId), Option<MlxClosure>>>,
 > = OnceLock::new();
 
 /// Apply a compiled MoE decode closure for a single layer.
@@ -131,7 +131,7 @@ static LAYER_GEMMA4_DUAL_PATH_CACHE: OnceLock<
 ///
 /// The closure returns `outputs[0]`: the MoE block output `[1, 1, hidden_dim]`.
 ///
-/// The compiled closure is cached per `(layer_index, thread_id)` and reused
+/// The compiled closure is cached per `(model_identity, layer_index, thread_id)` and reused
 /// across decode steps. `shapeless=true` is safe because hidden dim and top_k
 /// are constant per model; the only varying dimension (seq) is always 1 in
 /// decode.
@@ -139,6 +139,7 @@ static LAYER_GEMMA4_DUAL_PATH_CACHE: OnceLock<
 /// Gated by `AX_MLX_MOE_LAYER_COMPILE` (default ON). Returns `None` when the
 /// flag is off, compilation fails, or the closure cannot be applied.
 pub fn apply_layer_moe_decode(
+    model_identity: u64,
     layer_index: usize,
     inputs: &[&MlxArray],
     moe_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
@@ -148,22 +149,22 @@ pub fn apply_layer_moe_decode(
     }
     let cache = LAYER_MOE_DECODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let tid = std::thread::current().id();
+    let key = (model_identity, layer_index, tid);
 
     let mut guard = cache.lock().ok()?;
     // Scope the read so the immutable borrow is released before
     // we potentially call `guard.remove()`.
-    let apply_result: Option<Option<Vec<MlxArray>>> =
-        if let Some(entry) = guard.get(&(layer_index, tid)) {
-            let closure_ref: Option<&MlxClosure> = match entry {
-                Some(c) => Some(c),
-                None => None,
-            };
-            // Known-incompatible: `?` returns None directly.
-            let c = closure_ref?;
-            Some(try_apply_with_abort_safety(c, inputs))
-        } else {
-            None
+    let apply_result: Option<Option<Vec<MlxArray>>> = if let Some(entry) = guard.get(&key) {
+        let closure_ref: Option<&MlxClosure> = match entry {
+            Some(c) => Some(c),
+            None => None,
         };
+        // Known-incompatible: `?` returns None directly.
+        let c = closure_ref?;
+        Some(try_apply_with_abort_safety(c, inputs))
+    } else {
+        None
+    };
     if let Some(result) = apply_result {
         if result.is_none() {
             tracing::warn!(
@@ -172,14 +173,14 @@ pub fn apply_layer_moe_decode(
                 layer = layer_index,
                 "compiled_closure_apply_failed; removing entry for recompilation"
             );
-            guard.remove(&(layer_index, tid));
+            guard.remove(&key);
         }
         return result;
     }
     drop(guard);
 
     let mut guard = cache.lock().ok()?;
-    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
+    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry(key) {
         let closure = MlxClosure::new_dyn(moe_fn);
         if let Ok(compiled) = closure.compile(true) {
             // Use catch_unwind for the first apply as well — compilation
@@ -226,7 +227,7 @@ pub fn apply_layer_moe_decode(
 /// The closure returns `outputs[0]`: the dense FFN output
 /// `[1, 1, hidden_dim]`.
 ///
-/// The compiled closure is cached per `(layer_index, thread_id)` and
+/// The compiled closure is cached per `(model_identity, layer_index, thread_id)` and
 /// reused across decode steps. `shapeless=true` is safe because hidden
 /// dim is constant per model; the only varying dimension (seq) is always
 /// 1 in decode.
@@ -235,6 +236,7 @@ pub fn apply_layer_moe_decode(
 /// `None` when the flag is off, compilation fails, or the closure cannot be
 /// applied.
 pub fn apply_layer_dense_ffn_decode(
+    model_identity: u64,
     layer_index: usize,
     inputs: &[&MlxArray],
     ffn_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
@@ -244,6 +246,7 @@ pub fn apply_layer_dense_ffn_decode(
     }
     let cache = LAYER_DENSE_FFN_DECODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let tid = std::thread::current().id();
+    let key = (model_identity, layer_index, tid);
     let threshold = *COMPILE_CACHE_REFRESH_THRESHOLD;
 
     let mut guard = cache.lock().ok()?;
@@ -253,7 +256,7 @@ pub fn apply_layer_dense_ffn_decode(
     // recompilation must remove the key rather than clear the closure
     // in place.
     let apply_result: Option<(Option<Vec<MlxArray>>, bool)> =
-        if let Some((entry, generation)) = guard.get_mut(&(layer_index, tid)) {
+        if let Some((entry, generation)) = guard.get_mut(&key) {
             let closure_ref: Option<&MlxClosure> = match &*entry {
                 Some(c) => Some(c),
                 None => None,
@@ -286,14 +289,14 @@ pub fn apply_layer_dense_ffn_decode(
             );
         }
         if evict {
-            guard.remove(&(layer_index, tid));
+            guard.remove(&key);
         }
         return result;
     }
     drop(guard);
 
     let mut guard = cache.lock().ok()?;
-    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
+    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry(key) {
         let closure = MlxClosure::new_dyn(ffn_fn);
         if let Ok(compiled) = closure.compile(true) {
             let result = try_apply_with_abort_safety(&compiled, inputs);
@@ -365,6 +368,7 @@ pub fn clear_layer_moe_decode_cache() {
 /// optimization is analogous). Returns `None` when the flag is off, compilation
 /// fails, or the closure cannot be applied.
 pub fn apply_layer_gemma4_dual_path_decode(
+    model_identity: u64,
     layer_index: usize,
     inputs: &[&MlxArray],
     dual_path_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
@@ -374,21 +378,21 @@ pub fn apply_layer_gemma4_dual_path_decode(
     }
     let cache = LAYER_GEMMA4_DUAL_PATH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let tid = std::thread::current().id();
+    let key = (model_identity, layer_index, tid);
 
     let mut guard = cache.lock().ok()?;
     // Scope the read so the immutable borrow is released before
     // we potentially call `guard.remove()`.
-    let apply_result: Option<Option<Vec<MlxArray>>> =
-        if let Some(entry) = guard.get(&(layer_index, tid)) {
-            let closure_ref: Option<&MlxClosure> = match entry {
-                Some(c) => Some(c),
-                None => None,
-            };
-            let c = closure_ref?;
-            Some(try_apply_with_abort_safety(c, inputs))
-        } else {
-            None
+    let apply_result: Option<Option<Vec<MlxArray>>> = if let Some(entry) = guard.get(&key) {
+        let closure_ref: Option<&MlxClosure> = match entry {
+            Some(c) => Some(c),
+            None => None,
         };
+        let c = closure_ref?;
+        Some(try_apply_with_abort_safety(c, inputs))
+    } else {
+        None
+    };
     if let Some(result) = apply_result {
         if result.is_none() {
             tracing::warn!(
@@ -397,14 +401,14 @@ pub fn apply_layer_gemma4_dual_path_decode(
                 layer = layer_index,
                 "compiled_closure_apply_failed; removing entry for recompilation"
             );
-            guard.remove(&(layer_index, tid));
+            guard.remove(&key);
         }
         return result;
     }
     drop(guard);
 
     let mut guard = cache.lock().ok()?;
-    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
+    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry(key) {
         let closure = MlxClosure::new_dyn(dual_path_fn);
         if let Ok(compiled) = closure.compile(true) {
             let result = try_apply_with_abort_safety(&compiled, inputs);
@@ -440,6 +444,13 @@ pub fn clear_layer_gemma4_dual_path_cache() {
     }
 }
 
+/// Clear every compiled per-layer decode closure before a drained model swap.
+pub fn clear_all_layer_decode_caches() {
+    clear_layer_moe_decode_cache();
+    clear_layer_dense_ffn_decode_cache();
+    clear_layer_gemma4_dual_path_cache();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,12 +471,18 @@ mod tests {
     }
 
     #[test]
+    fn test_clear_all_layer_decode_caches_does_not_panic() {
+        clear_all_layer_decode_caches();
+    }
+
+    #[test]
     fn dense_ffn_refresh_threshold_evicts_key_for_recompilation() {
         use mlx_sys::MlxDtype;
 
         // Layer index far above any real model's layer count so this test
         // never collides with entries from other tests on the same thread.
         const LAYER: usize = 900_001;
+        const MODEL: u64 = 700_001;
         if !crate::fastpath::dense_ffn_compile_enabled() {
             return;
         }
@@ -482,7 +499,7 @@ mod tests {
         let ffn =
             |inputs: &MlxVectorArray| vec![mlx_sys::add(&inputs.get(0), &inputs.get(0), None)];
 
-        let first = apply_layer_dense_ffn_decode(LAYER, &[&x], ffn);
+        let first = apply_layer_dense_ffn_decode(MODEL, LAYER, &[&x], ffn);
         assert!(first.is_some(), "first apply should compile and succeed");
 
         // Fast-forward the per-key generation to one below the refresh
@@ -491,13 +508,13 @@ mod tests {
             let cache = LAYER_DENSE_FFN_DECODE_CACHE.get().expect("cache exists");
             let mut guard = cache.lock().expect("cache lock");
             let entry = guard
-                .get_mut(&(LAYER, tid))
+                .get_mut(&(MODEL, LAYER, tid))
                 .expect("entry cached after first apply");
             assert!(entry.0.is_some(), "cached closure should be live");
             entry.1 = threshold - 1;
         }
 
-        let at_threshold = apply_layer_dense_ffn_decode(LAYER, &[&x], ffn);
+        let at_threshold = apply_layer_dense_ffn_decode(MODEL, LAYER, &[&x], ffn);
         assert!(
             at_threshold.is_some(),
             "apply at refresh threshold should still succeed"
@@ -510,12 +527,12 @@ mod tests {
             let cache = LAYER_DENSE_FFN_DECODE_CACHE.get().expect("cache exists");
             let guard = cache.lock().expect("cache lock");
             assert!(
-                !guard.contains_key(&(LAYER, tid)),
+                !guard.contains_key(&(MODEL, LAYER, tid)),
                 "refresh threshold must evict the key so the next call recompiles"
             );
         }
 
-        let recompiled = apply_layer_dense_ffn_decode(LAYER, &[&x], ffn);
+        let recompiled = apply_layer_dense_ffn_decode(MODEL, LAYER, &[&x], ffn);
         assert!(
             recompiled.is_some(),
             "post-refresh apply should recompile, not fall back permanently"
@@ -524,10 +541,46 @@ mod tests {
             let cache = LAYER_DENSE_FFN_DECODE_CACHE.get().expect("cache exists");
             let mut guard = cache.lock().expect("cache lock");
             let entry = guard
-                .get(&(LAYER, tid))
+                .get(&(MODEL, LAYER, tid))
                 .expect("recompiled entry should be cached");
             assert!(entry.0.is_some(), "recompiled closure should be live");
-            guard.remove(&(LAYER, tid));
+            guard.remove(&(MODEL, LAYER, tid));
         }
+    }
+
+    #[test]
+    fn dense_ffn_cache_separates_model_identities_on_same_thread() {
+        use mlx_sys::MlxDtype;
+
+        const LAYER: usize = 900_002;
+        const MODEL_A: u64 = 700_002;
+        const MODEL_B: u64 = 700_003;
+        if !crate::fastpath::dense_ffn_compile_enabled() {
+            return;
+        }
+        let tid = std::thread::current().id();
+        let data: [f32; 2] = [2.0, 3.0];
+        let x = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(&data),
+            &[1, 1, 2],
+            MlxDtype::Float32,
+        );
+
+        let add =
+            |inputs: &MlxVectorArray| vec![mlx_sys::add(&inputs.get(0), &inputs.get(0), None)];
+        let multiply =
+            |inputs: &MlxVectorArray| vec![mlx_sys::multiply(&inputs.get(0), &inputs.get(0), None)];
+        let first = apply_layer_dense_ffn_decode(MODEL_A, LAYER, &[&x], add);
+        let second = apply_layer_dense_ffn_decode(MODEL_B, LAYER, &[&x], multiply);
+        assert!(first.is_some());
+        assert!(second.is_some());
+
+        let cache = LAYER_DENSE_FFN_DECODE_CACHE.get().expect("cache exists");
+        let mut guard = cache.lock().expect("cache lock");
+        assert!(guard.contains_key(&(MODEL_A, LAYER, tid)));
+        assert!(guard.contains_key(&(MODEL_B, LAYER, tid)));
+        guard.remove(&(MODEL_A, LAYER, tid));
+        guard.remove(&(MODEL_B, LAYER, tid));
     }
 }

@@ -3,6 +3,9 @@ use axum::Json;
 use axum::http::StatusCode;
 use serde::Serialize;
 
+use crate::admission::AdmissionError;
+use crate::generation::service::GenerationServiceError;
+
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorResponse {
     pub(crate) error: ErrorBody,
@@ -46,6 +49,22 @@ pub(crate) fn error_response(
             },
         }),
     )
+}
+
+pub(crate) fn admission_error_response(error: AdmissionError) -> (StatusCode, Json<ErrorResponse>) {
+    match error {
+        AdmissionError::Draining => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "model_loading",
+            "the current model is draining for replacement; retry after loading completes"
+                .to_string(),
+        ),
+        AdmissionError::Saturated => error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "concurrency_limit",
+            "server is at its maximum concurrent engine-job limit; retry shortly".to_string(),
+        ),
+    }
 }
 
 pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorResponse>) {
@@ -130,6 +149,19 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
             StatusCode::INTERNAL_SERVER_ERROR,
             "engine_error",
             error.to_string(),
+        ),
+    }
+}
+
+pub(crate) fn map_generation_service_error(
+    error: GenerationServiceError,
+) -> (StatusCode, Json<ErrorResponse>) {
+    match error {
+        GenerationServiceError::Engine(error) => map_session_error(error),
+        GenerationServiceError::Unavailable => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "service_unavailable",
+            "native generation worker is unavailable".to_string(),
         ),
     }
 }

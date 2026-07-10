@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -6,8 +7,10 @@ use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
     RuntimeReport, StatelessGenerateContext,
 };
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
+use crate::admission::{AdmissionController, AdmissionPermit};
+use crate::generation::service::NativeGenerationService;
 use crate::generation::streaming::StreamDeadlines;
 use crate::rate_limit::RateLimitConfig;
 
@@ -21,7 +24,7 @@ pub(crate) struct LiveState {
     pub(crate) session_config: Arc<EngineSessionConfig>,
     pub(crate) stateless_generate_context: Arc<StatelessGenerateContext>,
     pub(crate) runtime_report: RuntimeReport,
-    pub(crate) request_session: Arc<Mutex<EngineSession>>,
+    pub(crate) generation_service: Arc<NativeGenerationService>,
     pub(crate) embedding_batcher: Arc<EmbeddingMicroBatcher>,
 }
 
@@ -34,6 +37,8 @@ pub(crate) struct AppState {
     /// Set to true while a model load is in progress; prevents concurrent loads.
     pub(crate) loading: Arc<AtomicBool>,
     pub(crate) limits: Arc<ServerLimits>,
+    pub(crate) admission: Arc<AdmissionController>,
+    pub(crate) stepwise_admission: Arc<parking_lot::Mutex<HashMap<u64, AdmissionPermit>>>,
     next_request_id: Arc<AtomicU64>,
 }
 
@@ -45,6 +50,8 @@ impl AppState {
             metrics: Arc::new(ServerMetrics::default()),
             loading: Arc::new(AtomicBool::new(false)),
             limits: Arc::new(ServerLimits::default()),
+            admission: Arc::new(AdmissionController::new(None)),
+            stepwise_admission: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             next_request_id: Arc::new(AtomicU64::new(1)),
         }
     }
@@ -71,6 +78,7 @@ impl AppState {
     }
 
     pub(crate) fn with_limits(mut self, limits: ServerLimits) -> Self {
+        self.admission = Arc::new(AdmissionController::new(limits.max_concurrent_requests));
         self.limits = Arc::new(limits);
         self
     }
@@ -218,14 +226,14 @@ pub(crate) fn build_live_state(
     let stateless_generate_context =
         StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
     let runtime_report = session.runtime_report();
-    let request_session = Arc::new(Mutex::new(session));
-    let embedding_batcher = EmbeddingMicroBatcher::spawn(request_session.clone());
+    let generation_service = NativeGenerationService::spawn(session);
+    let embedding_batcher = EmbeddingMicroBatcher::spawn(generation_service.clone());
     Ok(LiveState {
         model_id: Arc::new(model_id),
         session_config: Arc::new(session_config),
         stateless_generate_context,
         runtime_report,
-        request_session,
+        generation_service,
         embedding_batcher,
     })
 }
@@ -286,6 +294,7 @@ pub(crate) struct EmbeddingBatchItem {
     pub(crate) input: Vec<u32>,
     pub(crate) pooling: EmbeddingPooling,
     pub(crate) normalize: bool,
+    pub(crate) admission_permit: AdmissionPermit,
     pub(crate) response_tx: oneshot::Sender<Result<Vec<f32>, EngineSessionError>>,
 }
 

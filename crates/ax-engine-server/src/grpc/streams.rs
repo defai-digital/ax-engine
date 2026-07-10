@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use ax_engine_sdk::{
-    EngineSessionError, EngineTokenizer, GenerateRequest, GenerateStreamEvent, GenerateStreamState,
-    SelectedBackend,
+    EngineSessionError, EngineTokenizer, GenerateRequest, GenerateStreamEvent, SelectedBackend,
 };
 use axum::http::StatusCode;
 use tokio::sync::mpsc;
@@ -11,8 +10,10 @@ use tonic::Status;
 
 use super::conversions::{sdk_stream_event_to_proto, unix_now};
 use super::proto;
+use crate::admission::AdmissionPermit;
 use crate::app_state::{AppState, LiveState};
 use crate::chat::{Gemma4ChannelIds, strip_gemma4_channel_name_header};
+use crate::generation::service::GenerationServiceError;
 use crate::generation::streaming::StreamStateSource;
 use crate::openai::streaming::{Gemma4ChannelStreamFilter, IncrementalDecoder};
 
@@ -48,13 +49,17 @@ pub(super) fn session_error_status(error: EngineSessionError) -> Status {
 fn spawn_grpc_blocking_stream_task<T, F>(
     tx: mpsc::Sender<Result<T, Status>>,
     task_name: &'static str,
+    permit: AdmissionPermit,
     driver: F,
 ) where
     T: Send + 'static,
     F: FnOnce(mpsc::Sender<Result<T, Status>>) + Send + 'static,
 {
     let monitor_tx = tx.clone();
-    let handle = tokio::task::spawn_blocking(move || driver(tx));
+    let handle = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        driver(tx);
+    });
     tokio::spawn(async move {
         if let Err(error) = handle.await {
             tracing::error!(%error, task = task_name, "gRPC stream task failed");
@@ -63,6 +68,60 @@ fn spawn_grpc_blocking_stream_task<T, F>(
                     "{task_name} task failed: {error}"
                 ))))
                 .await;
+        }
+    });
+}
+
+fn spawn_grpc_stream_task<T, F>(
+    tx: mpsc::Sender<Result<T, Status>>,
+    task_name: &'static str,
+    stream_context: StreamStateSource,
+    driver: F,
+) -> Result<(), GenerationServiceError>
+where
+    T: Send + 'static,
+    F: FnOnce(
+            mpsc::Sender<Result<T, Status>>,
+            &mut dyn FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+        ) + Send
+        + 'static,
+{
+    match stream_context {
+        StreamStateSource::Service(mut events) => {
+            let handle = tokio::task::spawn_blocking(move || {
+                let mut next_event = || events.blocking_recv().transpose();
+                driver(tx, &mut next_event);
+            });
+            monitor_grpc_stream_task(handle, task_name);
+        }
+        StreamStateSource::Stateless {
+            mut state,
+            context,
+            permit,
+        } => {
+            spawn_grpc_blocking_stream_task(tx, task_name, permit, move |tx| {
+                let mut next_event = || context.next_stream_event(&mut state);
+                driver(tx, &mut next_event);
+            });
+        }
+        StreamStateSource::Stateful {
+            mut state,
+            mut session,
+            permit,
+        } => {
+            spawn_grpc_blocking_stream_task(tx, task_name, permit, move |tx| {
+                let mut next_event = || session.next_stream_event(&mut state);
+                driver(tx, &mut next_event);
+            });
+        }
+    }
+    Ok(())
+}
+
+fn monitor_grpc_stream_task(handle: tokio::task::JoinHandle<()>, task_name: &'static str) {
+    tokio::spawn(async move {
+        if let Err(error) = handle.await {
+            tracing::error!(%error, task = task_name, "gRPC stream task failed");
         }
     });
 }
@@ -129,8 +188,21 @@ pub(super) async fn build_grpc_stream_state(
     state: &AppState,
     live: &LiveState,
     request: GenerateRequest,
-) -> Result<(GenerateStreamState, StreamStateSource), Status> {
+) -> Result<StreamStateSource, Status> {
+    let permit = state
+        .admission
+        .try_admit()
+        .map_err(super::admission_status)?;
     let request_id = state.allocate_request_id();
+
+    if live.runtime_report.selected_backend.is_mlx() {
+        let generation_service = live.generation_service.clone();
+        let events = generation_service
+            .start_stream(request_id, request, permit)
+            .await
+            .map_err(super::generation_service_status)?;
+        return Ok(StreamStateSource::Service(events));
+    }
 
     if live
         .stateless_generate_context
@@ -138,53 +210,59 @@ pub(super) async fn build_grpc_stream_state(
     {
         let ctx = Arc::clone(&live.stateless_generate_context);
         let stream_ctx = Arc::clone(&ctx);
-        let ss = run_blocking(move || stream_ctx.stream_state_with_request_id(request_id, request))
-            .await?;
-        return Ok((ss, StreamStateSource::Stateless(ctx)));
+        let (ss, permit) = run_blocking(move || {
+            let ss = stream_ctx.stream_state_with_request_id(request_id, request)?;
+            Ok((ss, permit))
+        })
+        .await?;
+        return Ok(StreamStateSource::Stateless {
+            state: ss,
+            context: ctx,
+            permit,
+        });
     }
 
     let stateful_context = Arc::clone(&live.stateless_generate_context);
-    let (session, ss) = run_blocking(move || {
+    let (session, ss, permit) = run_blocking(move || {
         let mut session = stateful_context.build_stateful_session()?;
         let ss = session.stream_generate_state_with_request_id(request_id, request)?;
-        Ok((session, ss))
+        Ok((session, ss, permit))
     })
     .await?;
 
-    Ok((ss, StreamStateSource::Stateful(Box::new(session))))
+    Ok(StreamStateSource::Stateful {
+        state: ss,
+        session: Box::new(session),
+        permit,
+    })
 }
 
 pub(super) fn spawn_grpc_generate_stream(
-    stream_state: GenerateStreamState,
     tx: mpsc::Sender<Result<proto::GenerateStreamEvent, Status>>,
     stream_context: StreamStateSource,
-) {
-    spawn_grpc_blocking_stream_task(tx, "grpc generate stream", move |tx| {
-        let mut ss = stream_state;
-        let result = match stream_context {
-            StreamStateSource::Stateless(ctx) => {
-                drive_grpc_generate_events(&mut ss, &tx, |s| ctx.next_stream_event(s))
+) -> Result<(), GenerationServiceError> {
+    spawn_grpc_stream_task(
+        tx,
+        "grpc generate stream",
+        stream_context,
+        move |tx, next_event| {
+            let result = drive_grpc_generate_events(&tx, next_event);
+            if let Err(status) = result {
+                let _ = tx.blocking_send(Err(status));
             }
-            StreamStateSource::Stateful(mut session) => {
-                drive_grpc_generate_events(&mut ss, &tx, |s| session.next_stream_event(s))
-            }
-        };
-        if let Err(status) = result {
-            let _ = tx.blocking_send(Err(status));
-        }
-    });
+        },
+    )
 }
 
 fn drive_grpc_generate_events<N>(
-    state: &mut GenerateStreamState,
     tx: &mpsc::Sender<Result<proto::GenerateStreamEvent, Status>>,
     mut next: N,
 ) -> Result<(), Status>
 where
-    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+    N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
     loop {
-        match next(state) {
+        match next() {
             Ok(Some(event)) => {
                 if tx
                     .blocking_send(Ok(sdk_stream_event_to_proto(event)))
@@ -200,49 +278,40 @@ where
 }
 
 pub(super) fn spawn_grpc_chat_stream(
-    stream_state: GenerateStreamState,
     model_id: String,
     tx: mpsc::Sender<Result<proto::ChatCompletionChunk, Status>>,
     stream_context: StreamStateSource,
     tokenizer: Option<EngineTokenizer>,
-) {
-    spawn_grpc_blocking_stream_task(tx, "grpc chat stream", move |tx| {
-        let mut ss = stream_state;
-        let mut chat_role_emitted = false;
-        // Mirror the HTTP SSE chat path: strip Gemma 4 thinking-channel
-        // framing from the native token stream before incremental decode.
-        let mut channel_filter = tokenizer.as_ref().and_then(|tokenizer| {
-            let ids = Gemma4ChannelIds::from_tokenizer(tokenizer)?;
-            Some(Gemma4ChannelStreamFilter::new(
-                ids,
-                tokenizer.token_to_id("thought"),
-            ))
-        });
-        let mut decoder = tokenizer.map(IncrementalDecoder::new);
-        let result = match stream_context {
-            StreamStateSource::Stateless(ctx) => drive_grpc_chat_events(
-                &mut ss,
+) -> Result<(), GenerationServiceError> {
+    spawn_grpc_stream_task(
+        tx,
+        "grpc chat stream",
+        stream_context,
+        move |tx, next_event| {
+            let mut chat_role_emitted = false;
+            // Mirror the HTTP SSE chat path: strip Gemma 4 thinking-channel
+            // framing from the native token stream before incremental decode.
+            let mut channel_filter = tokenizer.as_ref().and_then(|tokenizer| {
+                let ids = Gemma4ChannelIds::from_tokenizer(tokenizer)?;
+                Some(Gemma4ChannelStreamFilter::new(
+                    ids,
+                    tokenizer.token_to_id("thought"),
+                ))
+            });
+            let mut decoder = tokenizer.map(IncrementalDecoder::new);
+            let result = drive_grpc_chat_events(
                 &model_id,
                 &mut chat_role_emitted,
                 &tx,
                 decoder.as_mut(),
                 channel_filter.as_mut(),
-                |s| ctx.next_stream_event(s),
-            ),
-            StreamStateSource::Stateful(mut session) => drive_grpc_chat_events(
-                &mut ss,
-                &model_id,
-                &mut chat_role_emitted,
-                &tx,
-                decoder.as_mut(),
-                channel_filter.as_mut(),
-                |s| session.next_stream_event(s),
-            ),
-        };
-        if let Err(status) = result {
-            let _ = tx.blocking_send(Err(status));
-        }
-    });
+                next_event,
+            );
+            if let Err(status) = result {
+                let _ = tx.blocking_send(Err(status));
+            }
+        },
+    )
 }
 
 fn chat_delta_chunk_proto(
@@ -266,7 +335,6 @@ fn chat_delta_chunk_proto(
 
 #[allow(clippy::too_many_arguments)]
 fn drive_grpc_chat_events<N>(
-    state: &mut GenerateStreamState,
     model_id: &str,
     chat_role_emitted: &mut bool,
     tx: &mpsc::Sender<Result<proto::ChatCompletionChunk, Status>>,
@@ -275,10 +343,10 @@ fn drive_grpc_chat_events<N>(
     mut next: N,
 ) -> Result<(), Status>
 where
-    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+    N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
     loop {
-        match next(state) {
+        match next() {
             Ok(None) => return Ok(()),
             Err(e) => return Err(session_error_status(e)),
             Ok(Some(GenerateStreamEvent::Request(_))) => {}
@@ -349,45 +417,36 @@ where
 }
 
 pub(super) fn spawn_grpc_completion_stream(
-    stream_state: GenerateStreamState,
     model_id: String,
     tx: mpsc::Sender<Result<proto::CompletionChunk, Status>>,
     stream_context: StreamStateSource,
     tokenizer: Option<EngineTokenizer>,
-) {
-    spawn_grpc_blocking_stream_task(tx, "grpc completion stream", move |tx| {
-        let mut ss = stream_state;
-        let mut decoder = tokenizer.map(IncrementalDecoder::new);
-        let result = match stream_context {
-            StreamStateSource::Stateless(ctx) => {
-                drive_grpc_completion_events(&mut ss, &model_id, &tx, decoder.as_mut(), |s| {
-                    ctx.next_stream_event(s)
-                })
+) -> Result<(), GenerationServiceError> {
+    spawn_grpc_stream_task(
+        tx,
+        "grpc completion stream",
+        stream_context,
+        move |tx, next_event| {
+            let mut decoder = tokenizer.map(IncrementalDecoder::new);
+            let result = drive_grpc_completion_events(&model_id, &tx, decoder.as_mut(), next_event);
+            if let Err(status) = result {
+                let _ = tx.blocking_send(Err(status));
             }
-            StreamStateSource::Stateful(mut session) => {
-                drive_grpc_completion_events(&mut ss, &model_id, &tx, decoder.as_mut(), |s| {
-                    session.next_stream_event(s)
-                })
-            }
-        };
-        if let Err(status) = result {
-            let _ = tx.blocking_send(Err(status));
-        }
-    });
+        },
+    )
 }
 
 fn drive_grpc_completion_events<N>(
-    state: &mut GenerateStreamState,
     model_id: &str,
     tx: &mpsc::Sender<Result<proto::CompletionChunk, Status>>,
     mut decoder: Option<&mut IncrementalDecoder>,
     mut next: N,
 ) -> Result<(), Status>
 where
-    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+    N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
     loop {
-        match next(state) {
+        match next() {
             Ok(None) => return Ok(()),
             Err(e) => return Err(session_error_status(e)),
             Ok(Some(GenerateStreamEvent::Request(_) | GenerateStreamEvent::Response(_))) => {}
@@ -419,5 +478,51 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc as std_mpsc;
+    use std::time::Duration;
+
+    use crate::admission::{AdmissionController, AdmissionError};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn disconnected_grpc_response_keeps_admission_until_producer_exits() {
+        let controller = Arc::new(AdmissionController::new(Some(1)));
+        let permit = controller
+            .try_admit()
+            .expect("stream producer should be admitted");
+        let (entered_tx, entered_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let (tx, rx) = mpsc::channel::<Result<proto::GenerateStreamEvent, Status>>(1);
+
+        spawn_grpc_blocking_stream_task(tx, "admission lifetime test", permit, move |_| {
+            entered_tx.send(()).expect("test should receive entry");
+            release_rx.recv().expect("test should release producer");
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("producer should start");
+        drop(rx);
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            controller.try_admit().err(),
+            Some(AdmissionError::Saturated)
+        );
+        assert_eq!(controller.active_jobs(), 1);
+
+        release_tx.send(()).expect("producer should release");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while controller.active_jobs() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("producer should release its permit");
     }
 }

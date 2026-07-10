@@ -8,7 +8,8 @@ use crate::app_state::AppState;
 use crate::embeddings::{
     parse_embedding_max_tokens, parse_embedding_pooling, parse_embedding_timeout_ms,
 };
-use crate::errors::{ErrorResponse, error_response, map_session_error};
+use crate::errors::map_generation_service_error;
+use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::openai::schema::{
     OpenAiEmbeddingObject, OpenAiEmbeddingRequest, OpenAiEmbeddingResponse, OpenAiEmbeddingUsage,
 };
@@ -70,6 +71,10 @@ pub(crate) async fn openai_embeddings(
         DEFAULT_EMBED_TIMEOUT_MS,
     );
     let timeout = Duration::from_millis(embed_timeout);
+    let permit = state
+        .admission
+        .try_admit()
+        .map_err(admission_error_response)?;
 
     // Single input -> microbatcher (lets concurrent callers coalesce into
     // one batched runner call). Multi-input -> direct `embed_batch_flat`
@@ -83,7 +88,8 @@ pub(crate) async fn openai_embeddings(
         vec![
             tokio::time::timeout(
                 timeout,
-                live.embedding_batcher.embed(single, pooling, normalize),
+                live.embedding_batcher
+                    .embed(single, pooling, normalize, permit),
             )
             .await
             .map_err(|_| {
@@ -96,12 +102,12 @@ pub(crate) async fn openai_embeddings(
             .map_err(map_session_error)?,
         ]
     } else {
-        let session = live.request_session.clone();
+        let generation_service = live.generation_service.clone();
         tokio::time::timeout(
             timeout,
-            tokio::task::spawn_blocking(move || {
-                let s = session.blocking_lock();
-                s.embed_batch_flat(&batch, pooling, normalize)
+            generation_service.execute(move |session| {
+                let _permit = permit;
+                session.embed_batch_flat(&batch, pooling, normalize)
             }),
         )
         .await
@@ -112,14 +118,7 @@ pub(crate) async fn openai_embeddings(
                 format!("embedding request timed out after {embed_timeout}ms"),
             )
         })?
-        .map_err(|_| {
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "embedding worker join failed".into(),
-            )
-        })?
-        .map_err(map_session_error)
+        .map_err(map_generation_service_error)
         .map(|m| {
             (0..m.batch_size)
                 .map(|i| m.row(i).to_vec())

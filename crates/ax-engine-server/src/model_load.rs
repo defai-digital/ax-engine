@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::{AppState, build_live_state};
-use crate::errors::{ErrorResponse, error_response};
+use crate::errors::{ErrorResponse, error_response, map_generation_service_error};
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
 
@@ -61,68 +61,56 @@ pub(crate) async fn load_model(
             "a model load is already in progress".to_string(),
         ));
     }
-
-    // Reject the swap while the current session has non-terminal stepwise
-    // (/v1/requests, /v1/step) work. Request state lives entirely inside the
-    // EngineSession instance with no cross-session registry, so replacing it
-    // mid-flight would silently orphan those requests: the client's next
-    // /v1/requests/:id or /v1/step call would find nothing (a bare "not
-    // found" instead of a real terminal state), and the request's GPU/KV
-    // resources would only be reclaimed once the old session's last Arc
-    // reference drops. Fail closed instead — mirrors the concurrent-load 409
-    // above.
-    if state
-        .snapshot()
-        .request_session
-        .lock()
-        .await
-        .has_active_stepwise_requests()
-    {
-        state.loading.store(false, Ordering::Release);
-        return Err(error_response(
-            StatusCode::CONFLICT,
-            "requests_in_flight",
-            "the current session has non-terminal /v1/requests work; drain or cancel it before \
-             loading a new model"
-                .to_string(),
-        ));
-    }
-
-    // Clone the current config and swap in the new model artifacts dir.
-    // All other KV / backend settings are inherited from the running config.
-    // Only the MLX-native backend reads mlx_model_artifacts_dir — on a
-    // delegated backend (mlx-lm, llama.cpp) the rebuilt session would silently
-    // keep serving the old model under the new model_id, so reject up front.
-    let new_config = {
-        let live = state.snapshot();
-        if !live
-            .session_config
-            .resolved_backend
-            .selected_backend
-            .is_mlx()
-        {
-            state.loading.store(false, Ordering::Release);
-            return Err(error_response(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "unsupported_backend",
-                "model load is only supported on the MLX-native backend".to_string(),
-            ));
-        }
-        Arc::unwrap_or_clone(live.session_config).with_mlx_model_artifacts_dir(model_path.clone())
-    };
+    let drain_guard = state.admission.begin_drain();
 
     let model_id = request.model_id.clone();
+    let generation_service = state.snapshot().generation_service;
 
     // Run load + swap in a detached task: axum drops handler futures when the
     // client disconnects, and the load must still complete (or fail) and clear
     // the loading flag either way.
     let state_clone = state.clone();
     let load_task = tokio::spawn(async move {
+        let _drain_guard = drain_guard;
+        let _loading_guard = LoadingFlagGuard(state_clone.clone());
+        let has_active_stepwise_requests = generation_service
+            .execute(|session| Ok(session.has_active_stepwise_requests()))
+            .await
+            .map_err(map_generation_service_error)?;
+        if has_active_stepwise_requests {
+            return Err(error_response(
+                StatusCode::CONFLICT,
+                "requests_in_flight",
+                "the current session has non-terminal /v1/requests work; drain or cancel it \
+                 before loading a new model"
+                    .to_string(),
+            ));
+        }
+        // Clone the current config and swap in the new model artifacts dir.
+        // Only MLX-native consumes this field; delegated backends would keep
+        // serving the old model under a new identifier.
+        let live = state_clone.snapshot();
+        if !live
+            .session_config
+            .resolved_backend
+            .selected_backend
+            .is_mlx()
+        {
+            return Err(error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "unsupported_backend",
+                "model load is only supported on the MLX-native backend".to_string(),
+            ));
+        }
+        let new_config =
+            Arc::unwrap_or_clone(live.session_config).with_mlx_model_artifacts_dir(model_path);
+        state_clone.admission.wait_for_idle().await;
+
         // Load the session on the blocking thread pool — weight loading can take
         // tens of seconds; blocking the async runtime would stall all other requests.
         let result =
             tokio::task::spawn_blocking(move || build_new_session(model_id, new_config)).await;
-        let response = match result {
+        match result {
             Ok(Ok(live)) => {
                 let ctx_len = crate::metadata::context_length(&live);
                 state_clone.swap_live(live);
@@ -138,10 +126,7 @@ pub(crate) async fn load_model(
                 "server_error",
                 format!("load task panicked: {e}"),
             )),
-        };
-        // Always clear the loading flag, even on failure.
-        state_clone.loading.store(false, Ordering::Release);
-        response
+        }
     });
 
     match load_task.await {
@@ -159,10 +144,19 @@ pub(crate) async fn load_model(
     }
 }
 
+struct LoadingFlagGuard(AppState);
+
+impl Drop for LoadingFlagGuard {
+    fn drop(&mut self) {
+        self.0.loading.store(false, Ordering::Release);
+    }
+}
+
 fn build_new_session(
     model_id: String,
     config: EngineSessionConfig,
 ) -> Result<crate::app_state::LiveState, EngineSessionError> {
+    EngineSession::clear_native_model_compile_caches();
     let session = EngineSession::new(config)?;
     build_live_state(model_id, session)
 }

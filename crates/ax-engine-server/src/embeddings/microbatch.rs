@@ -3,21 +3,23 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ax_engine_sdk::{EmbeddingPooling, EngineSession, EngineSessionError};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use ax_engine_sdk::{EmbeddingPooling, EngineSessionError};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, sleep_until};
 
+use crate::admission::AdmissionPermit;
 use crate::app_state::{
     EmbeddingBatchItem, EmbeddingBatchKey, EmbeddingBatchRequestOptions, EmbeddingBatchRunItem,
     EmbeddingMicroBatcher,
 };
+use crate::generation::service::NativeGenerationService;
 
 const DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS: u64 = 2;
 const DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH: usize = 32;
 const DEFAULT_EMBEDDING_MICROBATCH_QUEUE_CAPACITY: usize = 1024;
 
 impl EmbeddingMicroBatcher {
-    pub(crate) fn spawn(request_session: Arc<Mutex<EngineSession>>) -> Arc<Self> {
+    pub(crate) fn spawn(generation_service: std::sync::Arc<NativeGenerationService>) -> Arc<Self> {
         let capacity = embedding_microbatch_queue_capacity();
         let (sender, receiver) = mpsc::channel(capacity);
         let batch_window = embedding_microbatch_window();
@@ -29,7 +31,7 @@ impl EmbeddingMicroBatcher {
         // forever on every swap.
         tokio::spawn(run_embedding_microbatch_worker(
             receiver,
-            request_session,
+            generation_service,
             batch_window,
             max_batch,
         ));
@@ -41,6 +43,7 @@ impl EmbeddingMicroBatcher {
         input: Vec<u32>,
         pooling: EmbeddingPooling,
         normalize: bool,
+        admission_permit: AdmissionPermit,
     ) -> Result<Vec<f32>, EngineSessionError> {
         let (response_tx, response_rx) = oneshot::channel();
         self.sender
@@ -48,6 +51,7 @@ impl EmbeddingMicroBatcher {
                 input,
                 pooling,
                 normalize,
+                admission_permit,
                 response_tx,
             })
             .await
@@ -65,7 +69,7 @@ impl EmbeddingMicroBatcher {
 
 async fn run_embedding_microbatch_worker(
     mut receiver: mpsc::Receiver<EmbeddingBatchItem>,
-    request_session: Arc<Mutex<EngineSession>>,
+    generation_service: std::sync::Arc<NativeGenerationService>,
     batch_window: Duration,
     max_batch: usize,
 ) {
@@ -80,9 +84,10 @@ async fn run_embedding_microbatch_worker(
                 normalize: item.normalize,
             })
             .collect();
-        let responses = run_embedding_batch(request_session.clone(), run_items).await;
+        let responses = run_embedding_batch(generation_service.clone(), run_items).await;
         for (item, response) in batch.into_iter().zip(responses) {
             let _ = item.response_tx.send(response);
+            drop(item.admission_permit);
         }
     }
 }
@@ -127,7 +132,7 @@ async fn collect_embedding_microbatch(
 }
 
 async fn run_embedding_batch(
-    request_session: Arc<Mutex<EngineSession>>,
+    generation_service: std::sync::Arc<NativeGenerationService>,
     items: Vec<EmbeddingBatchRunItem>,
 ) -> Vec<Result<Vec<f32>, EngineSessionError>> {
     let groups = collect_embedding_batch_groups(
@@ -141,62 +146,67 @@ async fn run_embedding_batch(
     );
 
     let item_count = items.len();
-    match tokio::task::spawn_blocking(move || {
-        let session = request_session.blocking_lock();
-        let mut outputs: Vec<Option<Result<Vec<f32>, EngineSessionError>>> =
-            (0..item_count).map(|_| None).collect();
+    match generation_service
+        .execute(move |session| {
+            let mut outputs: Vec<Option<Result<Vec<f32>, EngineSessionError>>> =
+                (0..item_count).map(|_| None).collect();
 
-        for (key, indices) in groups {
-            let pooling = pooling_from_code(key.pooling_code);
-            let batch_inputs: Vec<Vec<u32>> = indices
-                .iter()
-                .map(|index| items[*index].input.clone())
-                .collect();
+            for (key, indices) in groups {
+                let pooling = pooling_from_code(key.pooling_code);
+                let batch_inputs: Vec<Vec<u32>> = indices
+                    .iter()
+                    .map(|index| items[*index].input.clone())
+                    .collect();
 
-            // Prefer the contiguous `embed_batch_flat` path: it does
-            // one device-to-host read per group instead of B, so the
-            // microbatcher's response dispatch loop walks a `&[f32]`
-            // slice rather than allocating `B` separate `Vec<f32>`s.
-            // We still need a `Vec<f32>` per request for the JSON
-            // response, so slice + to_vec on the way out.
-            match session.embed_batch_flat(&batch_inputs, pooling, key.normalize) {
-                Ok(matrix) if matrix.batch_size == indices.len() => {
-                    for (index, sentence_idx) in indices.iter().copied().zip(0..matrix.batch_size) {
-                        outputs[index] = Some(Ok(matrix.row(sentence_idx).to_vec()));
+                // Prefer the contiguous `embed_batch_flat` path: it does
+                // one device-to-host read per group instead of B, so the
+                // microbatcher's response dispatch loop walks a `&[f32]`
+                // slice rather than allocating `B` separate `Vec<f32>`s.
+                // We still need a `Vec<f32>` per request for the JSON
+                // response, so slice + to_vec on the way out.
+                match session.embed_batch_flat(&batch_inputs, pooling, key.normalize) {
+                    Ok(matrix) if matrix.batch_size == indices.len() => {
+                        for (index, sentence_idx) in
+                            indices.iter().copied().zip(0..matrix.batch_size)
+                        {
+                            outputs[index] = Some(Ok(matrix.row(sentence_idx).to_vec()));
+                        }
                     }
-                }
-                Ok(_) | Err(_) => {
-                    // Fallback preserves per-request error behavior even if grouped execution fails.
-                    for index in indices {
-                        outputs[index] = Some(session.embed(
-                            &items[index].input,
-                            items[index].pooling,
-                            items[index].normalize,
-                        ));
+                    Ok(_) | Err(_) => {
+                        // Fallback preserves per-request error behavior even if grouped execution fails.
+                        for index in indices {
+                            outputs[index] = Some(session.embed(
+                                &items[index].input,
+                                items[index].pooling,
+                                items[index].normalize,
+                            ));
+                        }
                     }
                 }
             }
-        }
 
-        outputs
-            .into_iter()
-            .map(|value| {
-                value.unwrap_or(Err(EngineSessionError::EmbeddingFailed {
-                    message: "embedding microbatch output missing",
-                }))
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
+            Ok(outputs
+                .into_iter()
+                .map(|value| {
+                    value.unwrap_or(Err(EngineSessionError::EmbeddingFailed {
+                        message: "embedding microbatch output missing",
+                    }))
+                })
+                .collect::<Vec<_>>())
+        })
+        .await
     {
         Ok(outputs) => outputs,
-        Err(_) => (0..item_count)
-            .map(|_| {
-                Err(EngineSessionError::EmbeddingFailed {
-                    message: "embedding microbatch worker failed",
+        Err(error) => {
+            tracing::error!(%error, "embedding microbatch worker failed");
+            (0..item_count)
+                .map(|_| {
+                    Err(EngineSessionError::EmbeddingFailed {
+                        message: "embedding microbatch worker failed",
+                    })
                 })
-            })
-            .collect(),
+                .collect()
+        }
     }
 }
 

@@ -101,23 +101,13 @@ pub(crate) async fn health(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     let live = state.snapshot();
-    // `/health` is the readiness probe most callers (bench harness,
-    // k8s, load balancers) poll while a server starts. Returning 200
-    // when the server has bound a port but the inference session is
-    // wedged (deadlocked on another in-flight call, runtime panicked,
-    // weights not loadable on this device, etc.) sends those callers
-    // into the failure pattern below. A `try_lock` is a sub-us probe
-    // that confirms the session mutex is grabbable, which is the
-    // strongest "ready" signal we can give without doing real work.
-    let session_lock = live.request_session.try_lock();
-    if session_lock.is_err() {
+    if !live.generation_service.is_ready() {
         return Err(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "session_busy",
             "ax-engine-server has not finished initialising its inference session".into(),
         ));
     }
-    drop(session_lock);
     Ok(Json(json!({
         "status": "ok",
         "service": "ax-engine-server",

@@ -1163,6 +1163,7 @@ mod tests {
             v_norm_no_scale: false,
         };
         ModelConfig {
+            compile_cache_identity: 2,
             model_family: "gemma4_unified".to_string(),
             layer_count: 2,
             hidden_size: 1,

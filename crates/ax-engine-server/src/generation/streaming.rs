@@ -14,9 +14,12 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+use crate::admission::AdmissionPermit;
 use crate::app_state::{AppState, LiveState};
-use crate::errors::{ErrorResponse, map_session_error};
+use crate::errors::map_generation_service_error;
+use crate::errors::{ErrorResponse, admission_error_response, map_session_error};
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
+use crate::generation::service::GenerationServiceError;
 use crate::openai::validation::validate_model;
 use crate::tasks::run_blocking_session_task;
 
@@ -37,32 +40,29 @@ pub(crate) async fn generate_stream(
     validate_model(&live, request.model.as_deref())?;
 
     let request = build_generate_request(&live, request);
-    let (stream_state, stream_context) = build_stream_state(&state, &live, request).await?;
+    let stream_context = build_stream_state(&state, &live, request).await?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    spawn_stream_task(
-        tx,
-        stream_state,
-        move |stream_state, tx, cancel| match stream_context {
-            StreamStateSource::Stateless(context) => {
-                drive_generate_stream_state(stream_state, tx, cancel, |state| {
-                    context.next_stream_event(state)
-                });
-            }
-            StreamStateSource::Stateful(mut session) => {
-                drive_generate_stream_state(stream_state, tx, cancel, |state| {
-                    session.next_stream_event(state)
-                });
-            }
-        },
-    );
+    spawn_stream_task(tx, stream_context, move |next_event, tx, cancel| {
+        drive_generate_stream_state(tx, cancel, next_event);
+    })
+    .map_err(map_generation_service_error)?;
 
     Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines))
 }
 
 pub(crate) enum StreamStateSource {
-    Stateless(Arc<ax_engine_sdk::StatelessGenerateContext>),
-    Stateful(Box<EngineSession>),
+    Stateless {
+        state: GenerateStreamState,
+        context: Arc<ax_engine_sdk::StatelessGenerateContext>,
+        permit: AdmissionPermit,
+    },
+    Stateful {
+        state: GenerateStreamState,
+        session: Box<EngineSession>,
+        permit: AdmissionPermit,
+    },
+    Service(mpsc::Receiver<Result<GenerateStreamEvent, EngineSessionError>>),
 }
 
 /// Builds stream state against the caller's `LiveState` snapshot, so the
@@ -72,42 +72,67 @@ pub(crate) async fn build_stream_state(
     state: &AppState,
     live: &LiveState,
     request: GenerateRequest,
-) -> Result<(GenerateStreamState, StreamStateSource), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StreamStateSource, (StatusCode, Json<ErrorResponse>)> {
+    let permit = state
+        .admission
+        .try_admit()
+        .map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
+    if live.runtime_report.selected_backend.is_mlx() {
+        let generation_service = live.generation_service.clone();
+        let events = generation_service
+            .start_stream(request_id, request, permit)
+            .await
+            .map_err(map_generation_service_error)?;
+        return Ok(StreamStateSource::Service(events));
+    }
+
     if live
         .stateless_generate_context
         .supports_stateless_streaming()
     {
         let stateless_generate_context = Arc::clone(&live.stateless_generate_context);
         let stream_context = Arc::clone(&stateless_generate_context);
-        let stream_state = run_blocking_session_task(move || {
-            stream_context.stream_state_with_request_id(request_id, request)
+        let (stream_state, permit) = run_blocking_session_task(move || {
+            let stream_state = stream_context.stream_state_with_request_id(request_id, request)?;
+            Ok((stream_state, permit))
         })
         .await?;
 
-        return Ok((
-            stream_state,
-            StreamStateSource::Stateless(stateless_generate_context),
-        ));
+        return Ok(StreamStateSource::Stateless {
+            state: stream_state,
+            context: stateless_generate_context,
+            permit,
+        });
     }
 
     let stateful_context = Arc::clone(&live.stateless_generate_context);
-    let (session, stream_state) = run_blocking_session_task(move || {
+    let (session, stream_state, permit) = run_blocking_session_task(move || {
         let mut session = stateful_context.build_stateful_session()?;
         let stream_state = session.stream_generate_state_with_request_id(request_id, request)?;
-        Ok((session, stream_state))
+        Ok((session, stream_state, permit))
     })
     .await?;
 
-    Ok((stream_state, StreamStateSource::Stateful(Box::new(session))))
+    Ok(StreamStateSource::Stateful {
+        state: stream_state,
+        session: Box::new(session),
+        permit,
+    })
 }
 
 pub(crate) fn spawn_stream_task<F>(
     tx: StreamEventSender,
-    stream_state: GenerateStreamState,
+    stream_context: StreamStateSource,
     driver: F,
-) where
-    F: FnOnce(&mut GenerateStreamState, StreamEventSender, StreamCancelFlag) + Send + 'static,
+) -> Result<(), GenerationServiceError>
+where
+    F: FnOnce(
+            &mut dyn FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+            StreamEventSender,
+            StreamCancelFlag,
+        ) + Send
+        + 'static,
 {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_monitor = Arc::clone(&cancel);
@@ -119,10 +144,47 @@ pub(crate) fn spawn_stream_task<F>(
         monitor_tx.closed().await;
         cancel_monitor.store(true, Ordering::Relaxed);
     });
-    let handle = tokio::task::spawn_blocking(move || {
-        let mut stream_state = stream_state;
-        driver(&mut stream_state, tx, cancel);
-    });
+    match stream_context {
+        StreamStateSource::Service(mut events) => {
+            let handle = tokio::task::spawn_blocking(move || {
+                let mut next_event = || events.blocking_recv().transpose();
+                driver(&mut next_event, tx, cancel);
+            });
+            monitor_stream_task(handle, cancel_monitor_handle, error_monitor_tx);
+        }
+        StreamStateSource::Stateless {
+            mut state,
+            context,
+            permit,
+        } => {
+            let handle = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let mut next_event = || context.next_stream_event(&mut state);
+                driver(&mut next_event, tx, cancel);
+            });
+            monitor_stream_task(handle, cancel_monitor_handle, error_monitor_tx);
+        }
+        StreamStateSource::Stateful {
+            mut state,
+            mut session,
+            permit,
+        } => {
+            let handle = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let mut next_event = || session.next_stream_event(&mut state);
+                driver(&mut next_event, tx, cancel);
+            });
+            monitor_stream_task(handle, cancel_monitor_handle, error_monitor_tx);
+        }
+    }
+    Ok(())
+}
+
+fn monitor_stream_task(
+    handle: tokio::task::JoinHandle<()>,
+    cancel_monitor_handle: tokio::task::JoinHandle<()>,
+    error_monitor_tx: StreamEventSender,
+) {
     tokio::spawn(async move {
         let result = handle.await;
         cancel_monitor_handle.abort();
@@ -140,6 +202,7 @@ pub(crate) fn spawn_stream_task<F>(
 pub(crate) fn spawn_sse_blocking_stream_task<F>(
     tx: StreamEventSender,
     task_name: &'static str,
+    permit: AdmissionPermit,
     driver: F,
 ) where
     F: FnOnce(StreamEventSender, StreamCancelFlag) + Send + 'static,
@@ -152,7 +215,10 @@ pub(crate) fn spawn_sse_blocking_stream_task<F>(
         monitor_tx.closed().await;
         cancel_monitor.store(true, Ordering::Relaxed);
     });
-    let handle = tokio::task::spawn_blocking(move || driver(tx, cancel));
+    let handle = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        driver(tx, cancel);
+    });
     tokio::spawn(async move {
         let result = handle.await;
         cancel_monitor_handle.abort();
@@ -167,16 +233,11 @@ pub(crate) fn spawn_sse_blocking_stream_task<F>(
     });
 }
 
-fn drive_generate_stream_state<N>(
-    state: &mut GenerateStreamState,
-    tx: StreamEventSender,
-    cancel: StreamCancelFlag,
-    next_event: N,
-) where
-    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+fn drive_generate_stream_state<N>(tx: StreamEventSender, cancel: StreamCancelFlag, next_event: N)
+where
+    N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
     drive_stream_events(
-        state,
         &tx,
         &cancel,
         next_event,
@@ -186,14 +247,13 @@ fn drive_generate_stream_state<N>(
 }
 
 pub(crate) fn drive_stream_events<N, E, D>(
-    state: &mut GenerateStreamState,
     tx: &StreamEventSender,
     cancel: &AtomicBool,
     mut next_event: N,
     mut emit_event: E,
     mut on_done: D,
 ) where
-    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+    N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
     E: FnMut(GenerateStreamEvent) -> bool,
     D: FnMut(),
 {
@@ -202,7 +262,7 @@ pub(crate) fn drive_stream_events<N, E, D>(
             tracing::debug!("stream cancelled: client disconnected");
             return;
         }
-        match next_event(state) {
+        match next_event() {
             Ok(Some(event)) => {
                 if !emit_event(event) {
                     return;
@@ -376,6 +436,10 @@ async fn send_stream_error_async(tx: &StreamEventSender, error: ErrorResponse) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc as std_mpsc;
+
+    use crate::admission::{AdmissionController, AdmissionError};
+
     use super::*;
 
     /// A stalled consumer (never drains `relay_rx`) must not block the
@@ -461,5 +525,41 @@ mod tests {
             relay_rx.recv().await.is_none(),
             "relay should close its side once the producer finishes"
         );
+    }
+
+    #[tokio::test]
+    async fn disconnected_sse_response_keeps_admission_until_producer_exits() {
+        let controller = Arc::new(AdmissionController::new(Some(1)));
+        let permit = controller
+            .try_admit()
+            .expect("stream producer should be admitted");
+        let (entered_tx, entered_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
+
+        spawn_sse_blocking_stream_task(tx, "admission lifetime test", permit, move |_, _| {
+            entered_tx.send(()).expect("test should receive entry");
+            release_rx.recv().expect("test should release producer");
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("producer should start");
+        drop(rx);
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            controller.try_admit().err(),
+            Some(AdmissionError::Saturated)
+        );
+        assert_eq!(controller.active_jobs(), 1);
+
+        release_tx.send(()).expect("producer should release");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while controller.active_jobs() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("producer should release its permit");
     }
 }

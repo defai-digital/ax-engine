@@ -161,12 +161,17 @@ def common_artifact_metadata(
     }
 
 
-def start_direct_server(model_dir: Path, port: int) -> tuple[subprocess.Popen[Any], float, float]:
+def start_direct_server(
+    model_dir: Path,
+    model_id: str,
+    port: int,
+) -> tuple[subprocess.Popen[Any], float, float]:
     started = time.perf_counter()
     proc = bench.start_axengine(
         bench.AX_ENGINE_SERVER,
         model_dir,
         port,
+        model_id=model_id,
         direct_mode=True,
     )
     process_spawn_ms = (time.perf_counter() - started) * 1000.0
@@ -187,8 +192,12 @@ def run_one_request(port: int, prompt: PromptDoc, server_pid: int | None) -> dic
         server_pid=server_pid,
     )
     wall_ms = (time.perf_counter() - started) * 1000.0
+    client_ttft_ms = run.get("client_wall_ttft_ms")
+    if client_ttft_ms is None:
+        client_ttft_ms = run["ttft_ms"]
     return {
-        "ttft_ms": float(run["ttft_ms"]),
+        "ttft_ms": float(client_ttft_ms),
+        "ttft_source": "client_wall_first_output",
         "decode_tok_s": float(run["decode_tok_s"]),
         "wall_ms": wall_ms,
         "peak_memory_gb": float(run.get("peak_memory_gb", 0.0)),
@@ -254,7 +263,7 @@ def capture_startup_artifact(
     model_load_ms: list[float] = []
 
     for index in range(repetitions):
-        proc, spawn_ms, ready_ms = start_direct_server(model_dir, port)
+        proc, spawn_ms, ready_ms = start_direct_server(model_dir, model_id, port)
         try:
             process_start_ms.append(max(spawn_ms, 0.001))
             server_ready_ms.append(ready_ms)
@@ -268,7 +277,7 @@ def capture_startup_artifact(
     model_warm_observations: list[dict[str, float]] = []
     model_warm_load_ms: list[float] = []
     for index in range(repetitions):
-        proc, spawn_ms, ready_ms = start_direct_server(model_dir, port)
+        proc, spawn_ms, ready_ms = start_direct_server(model_dir, model_id, port)
         try:
             bench.axengine_one_run(port, prompt.token_ids, prompt.generation_tokens, server_pid=proc.pid)
             model_warm_load_ms.append(max(ready_ms - spawn_ms, 0.001))
@@ -278,7 +287,7 @@ def capture_startup_artifact(
         if cooldown > 0 and index < repetitions - 1:
             time.sleep(cooldown)
 
-    proc, _spawn_ms, _ready_ms = start_direct_server(model_dir, port)
+    proc, _spawn_ms, _ready_ms = start_direct_server(model_dir, model_id, port)
     try:
         bench.axengine_one_run(port, prompt.token_ids, prompt.generation_tokens, server_pid=proc.pid)
         benchmark_warm_observations = [
@@ -523,7 +532,7 @@ def capture_concurrent_artifact(
     cooldown: float,
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
-    proc, _spawn_ms, _ready_ms = start_direct_server(model_dir, port)
+    proc, _spawn_ms, _ready_ms = start_direct_server(model_dir, model_id, port)
     try:
         baseline_prompt = prompt_groups[1][0]
         bench.axengine_one_run(

@@ -26,6 +26,9 @@ Environment:
   AX_TARGET_TIMEOUT_SECS  Timeout for each targeted gate command (default: 900).
   AX_FULL_TIMEOUT_SECS    Timeout for each full-workspace command (default: 1800).
   AX_CARGO_JOBS           Cargo job count for full-workspace mode (default: 1).
+
+This gate is model-independent and ignores AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR.
+Use scripts/run-serving-stress.sh for model-bound serving probes.
 EOF
 }
 
@@ -100,6 +103,10 @@ PY
 }
 
 cd "$ROOT_DIR"
+
+# Keep this gate deterministic when invoked from a shell configured for local
+# model probes. Model-bound serving invariants have a separate stress gate.
+unset AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR
 
 # Match the CI clippy gate: ADR-001 restriction lints stay warnings, otherwise
 # a cold clippy cache re-lints workspace deps (ax-engine-core test code) and

@@ -24,9 +24,10 @@ README_PATH = REPO_ROOT / "README.md"
 
 GENERATED_TOKENS = 1000
 REPETITIONS = 5
+WARMUP_REPETITIONS = 2
 COOLDOWN_S = 15.0
 INTER_CASE_COOLDOWN_S = 10.0
-MTP_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
+MTP_SAMPLING = {"temperature": 0.0, "top_p": 1.0, "top_k": 0}
 DEFAULT_SUITES = ("flappy", "long_code", "python_modules_long")
 NGRAM_ZERO_KEYS = (
     "ax_ngram_accepted_tokens",
@@ -182,6 +183,8 @@ def bench_cmd(
         str(args.generated_tokens),
         "--repetitions",
         str(args.repetitions),
+        "--warmup-repetitions",
+        str(args.warmup_repetitions),
         "--cooldown",
         str(args.cooldown),
         "--inter-case-cooldown",
@@ -215,6 +218,8 @@ def bench_cmd(
                 str(target.mtp_depth),
             ]
         )
+    if getattr(args, "approximate_speed_ceiling", False):
+        cmd.append("--ax-mtp-approximate-optimistic")
     return cmd
 
 
@@ -284,6 +289,71 @@ def load_artifact(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def validate_exact_mtp_artifact(path: Path, artifact: dict[str, Any]) -> None:
+    correctness = artifact.get("mtp_correctness_summary") or {}
+    if correctness.get("publication_candidate") is not True:
+        raise ValueError(
+            f"{path} is not an exact MTP publication candidate: "
+            f"{correctness.get('ineligible_rows') or 'missing correctness summary'}"
+        )
+
+
+def validate_approximate_mtp_artifact(path: Path, artifact: dict[str, Any]) -> None:
+    rows = [
+        row
+        for row in artifact.get("results", [])
+        if row.get("prompt_case_id") is not None
+    ]
+    if not rows or any(
+        (row.get("ax_mtp_correctness") or {}).get("effective_mode")
+        != "approximate_optimistic"
+        for row in rows
+    ):
+        raise ValueError(f"{path} is not an effective approximate MTP speed ceiling")
+    if any(row.get("publication_candidate") is True for row in rows):
+        raise ValueError(f"{path} incorrectly marks an approximate row publishable")
+
+
+def validate_exact_token_equivalence(
+    direct_path: Path,
+    direct: dict[str, Any],
+    mtp_path: Path,
+    mtp: dict[str, Any],
+) -> None:
+    direct_rows = {
+        str(row.get("prompt_case_id")): row
+        for row in direct.get("results", [])
+        if row.get("prompt_case_id") is not None
+    }
+    mtp_rows = {
+        str(row.get("prompt_case_id")): row
+        for row in mtp.get("results", [])
+        if row.get("prompt_case_id") is not None
+    }
+    if not direct_rows or direct_rows.keys() != mtp_rows.keys():
+        raise ValueError(
+            f"direct/MTP prompt cases differ: {direct_path} vs {mtp_path}"
+        )
+    for case_id, direct_row in direct_rows.items():
+        direct_tokens = [
+            trial.get("output_token_ids") for trial in direct_row.get("trials", [])
+        ]
+        mtp_tokens = [
+            trial.get("output_token_ids") for trial in mtp_rows[case_id].get("trials", [])
+        ]
+        if (
+            not direct_tokens
+            or not mtp_tokens
+            or any(tokens != direct_tokens[0] for tokens in direct_tokens)
+            or any(tokens != mtp_tokens[0] for tokens in mtp_tokens)
+            or direct_tokens[0] != mtp_tokens[0]
+        ):
+            raise ValueError(
+                f"exact MTP token-equivalence oracle failed for {case_id}: "
+                f"{direct_path} vs {mtp_path}"
+            )
+
+
 def build_summary(
     output_dir: Path,
     args: argparse.Namespace,
@@ -297,6 +367,13 @@ def build_summary(
             mtp_path = output_dir / target.key / suite / "ax_mtp.json"
             direct = load_artifact(direct_path)
             mtp = load_artifact(mtp_path)
+            if args.approximate_speed_ceiling:
+                validate_approximate_mtp_artifact(mtp_path, mtp)
+            else:
+                validate_exact_mtp_artifact(mtp_path, mtp)
+                validate_exact_token_equivalence(
+                    direct_path, direct, mtp_path, mtp
+                )
             direct_decode = metric_median(direct, "decode_tok_s")
             mtp_decode = metric_median(mtp, "decode_tok_s")
             row = {
@@ -319,17 +396,26 @@ def build_summary(
             }
             rows.append(row)
     return {
-        "schema": "ax.mtp_6bit_ax_acceleration_summary.v2",
+        "schema": (
+            "ax.mtp_6bit_approximate_speed_ceiling_summary.v1"
+            if args.approximate_speed_ceiling
+            else "ax.mtp_6bit_ax_acceleration_summary.v3"
+        ),
         "run_dir": str(output_dir.relative_to(REPO_ROOT)),
         "methodology": {
             "targets": [target.key for target in targets],
             "suites": list(suites),
             "generated_tokens": args.generated_tokens,
             "repetitions": args.repetitions,
-            "warmup": "1 AX warmup per prompt case from bench_mlx_inference_stack.py",
+            "warmup_repetitions": args.warmup_repetitions,
             "cooldown_s": args.cooldown,
             "inter_case_cooldown_s": args.inter_case_cooldown,
             "sampling": MTP_SAMPLING,
+            "correctness_contract": (
+                "explicit approximate optimistic speed ceiling; not exact and not publication eligible"
+                if args.approximate_speed_ceiling
+                else "exact MTP requires token-equivalence oracle; currently disabled"
+            ),
             "comparison": "AX MTP decode median divided by AX direct decode median for the same model package and prompt suite.",
             "mtp_ngram": "disabled; no MTP+n-gram rows are run or promoted",
         },
@@ -452,11 +538,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--generated-tokens", type=int, default=GENERATED_TOKENS)
     parser.add_argument("--repetitions", type=int, default=REPETITIONS)
+    parser.add_argument(
+        "--warmup-repetitions", type=int, default=WARMUP_REPETITIONS
+    )
     parser.add_argument("--cooldown", type=float, default=COOLDOWN_S)
     parser.add_argument(
         "--inter-case-cooldown", type=float, default=INTER_CASE_COOLDOWN_S
     )
     parser.add_argument("--skip-existing", action="store_true")
+    parser.add_argument(
+        "--approximate-speed-ceiling",
+        action="store_true",
+        help=(
+            "Run explicit optimistic MTP as a non-publishable approximate speed ceiling. "
+            "Exact MTP refreshes remain disabled until token equivalence passes."
+        ),
+    )
     parser.add_argument("--no-build-ax-engine", action="store_true")
     parser.add_argument("--update-readme", action="store_true")
     return parser.parse_args()
@@ -464,6 +561,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.repetitions <= 0 or args.warmup_repetitions < 0:
+        raise ValueError("repetitions must be positive and warmups must be non-negative")
+    if not args.approximate_speed_ceiling:
+        raise ValueError(
+            "exact MTP refresh is disabled because the current verifier failed the "
+            "direct token-equivalence oracle; use --approximate-speed-ceiling only "
+            "for explicitly non-publishable diagnostics"
+        )
+    if args.update_readme:
+        raise ValueError("approximate MTP speed ceilings cannot update README claims")
     args.output_dir = args.output_dir.resolve()
     target_keys = parse_csv(args.targets)
     unknown_targets = [key for key in target_keys if key not in TARGETS_BY_KEY]

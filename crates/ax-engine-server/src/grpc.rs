@@ -12,6 +12,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use super::app_state::AppState;
+use super::generation::service::GenerationServiceError;
 use super::metadata::MODEL_OWNER;
 
 mod conversions;
@@ -23,6 +24,7 @@ pub mod proto {
     tonic::include_proto!("ax_engine.v1");
 }
 
+use crate::admission::AdmissionError;
 use conversions::{finish_reason_str, proto_to_generate_request, sdk_response_to_proto, unix_now};
 use proto::ax_engine_server::AxEngine;
 use requests::{
@@ -54,12 +56,45 @@ impl AxEngineGrpcService {
 }
 
 async fn run_grpc_generate_request(
+    state: &AppState,
     live: &crate::app_state::LiveState,
     request_id: u64,
     request: ax_engine_sdk::GenerateRequest,
 ) -> Result<ax_engine_sdk::GenerateResponse, Status> {
+    let permit = state.admission.try_admit().map_err(admission_status)?;
+    if live.runtime_report.selected_backend.is_mlx() {
+        let generation_service = live.generation_service.clone();
+        return generation_service
+            .generate(request_id, request, permit)
+            .await
+            .map_err(generation_service_status);
+    }
     let ctx = Arc::clone(&live.stateless_generate_context);
-    run_blocking(move || ctx.generate_with_request_id(request_id, request)).await
+    run_blocking(move || {
+        let _permit = permit;
+        ctx.generate_with_request_id(request_id, request)
+    })
+    .await
+}
+
+fn admission_status(error: AdmissionError) -> Status {
+    match error {
+        AdmissionError::Draining => Status::unavailable(
+            "the current model is draining for replacement; retry after loading completes",
+        ),
+        AdmissionError::Saturated => Status::resource_exhausted(
+            "server is at its maximum concurrent engine-job limit; retry shortly",
+        ),
+    }
+}
+
+fn generation_service_status(error: GenerationServiceError) -> Status {
+    match error {
+        GenerationServiceError::Engine(error) => streams::session_error_status(error),
+        GenerationServiceError::Unavailable => {
+            Status::unavailable("native generation worker is unavailable")
+        }
+    }
 }
 
 // ─── Service implementation ───────────────────────────────────────────────────
@@ -71,14 +106,11 @@ impl AxEngine for AxEngineGrpcService {
         _request: Request<proto::HealthRequest>,
     ) -> Result<Response<proto::HealthResponse>, Status> {
         let live = self.state.snapshot();
-        let session_lock = live.request_session.try_lock();
-        if session_lock.is_err() {
+        if !live.generation_service.is_ready() {
             return Err(Status::unavailable(
                 "ax-engine-server has not finished initialising its inference session",
             ));
         }
-        drop(session_lock);
-
         Ok(Response::new(proto::HealthResponse {
             status: "ok".to_string(),
             service: "ax-engine-server".to_string(),
@@ -110,7 +142,7 @@ impl AxEngine for AxEngineGrpcService {
         let live = self.state.snapshot();
         let req = proto_to_generate_request(&live, request.into_inner());
         let request_id = self.state.allocate_request_id();
-        let response = run_grpc_generate_request(&live, request_id, req).await?;
+        let response = run_grpc_generate_request(&self.state, &live, request_id, req).await?;
         Ok(Response::new(sdk_response_to_proto(response)))
     }
 
@@ -124,9 +156,9 @@ impl AxEngine for AxEngineGrpcService {
     ) -> Result<Response<Self::StreamGenerateStream>, Status> {
         let live = self.state.snapshot();
         let req = proto_to_generate_request(&live, request.into_inner());
-        let (ss, ctx) = build_grpc_stream_state(&self.state, &live, req).await?;
+        let stream = build_grpc_stream_state(&self.state, &live, req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
-        spawn_grpc_generate_stream(ss, tx, ctx);
+        spawn_grpc_generate_stream(tx, stream).map_err(generation_service_status)?;
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
@@ -140,7 +172,7 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let generate_req = build_chat_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
-        let r = run_grpc_generate_request(&live, request_id, generate_req).await?;
+        let r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
         let content = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::ChatCompletionResponse {
@@ -177,9 +209,10 @@ impl AxEngine for AxEngineGrpcService {
         let model_id = live.model_id.to_string();
         let generate_req = build_chat_generate_request(&live, &req)?;
         let tokenizer = native_grpc_stream_tokenizer(&live)?;
-        let (ss, ctx) = build_grpc_stream_state(&self.state, &live, generate_req).await?;
+        let stream = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
-        spawn_grpc_chat_stream(ss, model_id, tx, ctx, tokenizer);
+        spawn_grpc_chat_stream(model_id, tx, stream, tokenizer)
+            .map_err(generation_service_status)?;
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
@@ -193,7 +226,7 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let generate_req = build_completion_generate_request(&live, &req);
         let request_id = self.state.allocate_request_id();
-        let r = run_grpc_generate_request(&live, request_id, generate_req).await?;
+        let r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
         let text = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::CompletionResponse {
@@ -227,9 +260,10 @@ impl AxEngine for AxEngineGrpcService {
         let model_id = live.model_id.to_string();
         let generate_req = build_completion_generate_request(&live, &req);
         let tokenizer = native_grpc_stream_tokenizer(&live)?;
-        let (ss, ctx) = build_grpc_stream_state(&self.state, &live, generate_req).await?;
+        let stream = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
-        spawn_grpc_completion_stream(ss, model_id, tx, ctx, tokenizer);
+        spawn_grpc_completion_stream(model_id, tx, stream, tokenizer)
+            .map_err(generation_service_status)?;
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
@@ -260,35 +294,33 @@ impl AxEngine for AxEngineGrpcService {
                 "embedding input must not be empty",
             ));
         }
+        let permit = self.state.admission.try_admit().map_err(admission_status)?;
         let prompt_tokens = grpc_embedding_prompt_tokens(&batch);
         let embeddings = if batch.len() == 1 {
+            let input = batch
+                .into_iter()
+                .next()
+                .ok_or_else(|| Status::invalid_argument("embedding input must not be empty"))?;
             vec![
                 live.embedding_batcher
-                    .embed(
-                        batch
-                            .into_iter()
-                            .next()
-                            .expect("batch has one item after len check"),
-                        pooling,
-                        req.normalize,
-                    )
+                    .embed(input, pooling, req.normalize, permit)
                     .await
                     .map_err(|e| Status::internal(e.to_string()))?,
             ]
         } else {
-            let session = live.request_session.clone();
-            tokio::task::spawn_blocking(move || {
-                let session = session.blocking_lock();
-                session.embed_batch_flat(&batch, pooling, req.normalize)
-            })
-            .await
-            .map_err(|_| Status::internal("embedding worker join failed"))?
-            .map_err(|e| Status::internal(e.to_string()))
-            .map(|matrix| {
-                (0..matrix.batch_size)
-                    .map(|index| matrix.row(index).to_vec())
-                    .collect::<Vec<_>>()
-            })?
+            let generation_service = live.generation_service.clone();
+            generation_service
+                .execute(move |session| {
+                    let _permit = permit;
+                    session.embed_batch_flat(&batch, pooling, req.normalize)
+                })
+                .await
+                .map_err(generation_service_status)
+                .map(|matrix| {
+                    (0..matrix.batch_size)
+                        .map(|index| matrix.row(index).to_vec())
+                        .collect::<Vec<_>>()
+                })?
         };
 
         Ok(Response::new(proto::EmbeddingsResponse {

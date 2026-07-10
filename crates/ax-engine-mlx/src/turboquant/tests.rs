@@ -4,6 +4,7 @@ use crate::model::{LayerConfig, LinearAttentionConfig};
 
 fn support_test_model(layer_count: usize, head_dim: usize) -> ModelConfig {
     ModelConfig {
+        compile_cache_identity: 3,
         model_family: "qwen3".to_string(),
         layer_count,
         hidden_size: 0,

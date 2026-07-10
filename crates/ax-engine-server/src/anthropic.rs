@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::app_state::AppState;
 use crate::backends::{llama_cpp, mlx_lm};
-use crate::errors::{ErrorResponse, error_response, map_session_error};
+use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
 use crate::openai::generation::populate_native_mlx_output_text;
 use crate::openai::requests::{
@@ -251,7 +251,12 @@ async fn run_anthropic_messages_generation(
         let request_id = state.allocate_request_id();
         let runtime = live.runtime_report.clone();
         let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
+        let permit = state
+            .admission
+            .try_admit()
+            .map_err(admission_error_response)?;
         let response = run_blocking_session_task(move || {
+            let _permit = permit;
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
         })
         .await?;
@@ -268,7 +273,12 @@ async fn run_anthropic_messages_generation(
         let request_id = state.allocate_request_id();
         let runtime = live.runtime_report.clone();
         let llama_backend = llama_cpp::config(&live).map_err(map_session_error)?;
+        let permit = state
+            .admission
+            .try_admit()
+            .map_err(admission_error_response)?;
         let response = run_blocking_session_task(move || {
+            let _permit = permit;
             llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
         })
         .await?;

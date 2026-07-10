@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 
 use crate::app_state::{AppState, LiveState};
-use crate::errors::ErrorResponse;
+use crate::errors::{ErrorResponse, admission_error_response, map_generation_service_error};
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
 use crate::openai::validation::validate_model;
 use crate::tasks::run_blocking_session_task;
@@ -32,11 +32,26 @@ pub(crate) async fn run_stateless_generate_request(
     live: &LiveState,
     request: GenerateRequest,
 ) -> Result<(u64, GenerateResponse), (StatusCode, Json<ErrorResponse>)> {
+    let permit = state
+        .admission
+        .try_admit()
+        .map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
+    if live.runtime_report.selected_backend.is_mlx() {
+        let generation_service = live.generation_service.clone();
+        let response = generation_service
+            .generate(request_id, request, permit)
+            .await
+            .map_err(map_generation_service_error)?;
+        return Ok((request_id, response));
+    }
+
     let context = Arc::clone(&live.stateless_generate_context);
-    let response =
-        run_blocking_session_task(move || context.generate_with_request_id(request_id, request))
-            .await?;
+    let response = run_blocking_session_task(move || {
+        let _permit = permit;
+        context.generate_with_request_id(request_id, request)
+    })
+    .await?;
 
     Ok((request_id, response))
 }

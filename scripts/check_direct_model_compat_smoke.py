@@ -94,7 +94,8 @@ def resolve_smoke_targets(
     args: argparse.Namespace,
     env: Mapping[str, str] | None = None,
 ) -> list[SmokeTarget]:
-    env = env or os.environ
+    if env is None:
+        env = os.environ
     qwen = args.qwen_artifacts or _env_path(env, QWEN_ARTIFACTS_ENV)
     if qwen is None:
         qwen = _env_path(env, LEGACY_MLX_ARTIFACTS_ENV)

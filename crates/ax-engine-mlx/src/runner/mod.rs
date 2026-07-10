@@ -376,6 +376,69 @@ enum MtpModelAcceptanceMode {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum MtpCorrectnessMode {
+    #[default]
+    Unknown,
+    GreedyExact,
+    ApproximateOptimistic,
+    DirectFallback,
+}
+
+impl MtpCorrectnessMode {
+    const fn route_code(self) -> u32 {
+        match self {
+            Self::Unknown => 0,
+            Self::GreedyExact => 1,
+            // Route code 2 is reserved for SampledExact once Phase 0C lands.
+            Self::ApproximateOptimistic => 3,
+            Self::DirectFallback => 4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum MtpProposalLaw {
+    #[default]
+    Unknown,
+    DeterministicDelta,
+    Stochastic,
+}
+
+impl MtpProposalLaw {
+    const fn route_code(self) -> u32 {
+        match self {
+            Self::Unknown => 0,
+            Self::DeterministicDelta => 1,
+            Self::Stochastic => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MtpRequestRoute {
+    DirectFallback,
+    StrictMtp,
+    Other,
+}
+
+const fn mtp_request_route(
+    has_mtp: bool,
+    mtp_requested: bool,
+    approximate_profile: bool,
+    mtp_bypassed: bool,
+) -> MtpRequestRoute {
+    if has_mtp && mtp_requested {
+        if approximate_profile && !mtp_bypassed {
+            MtpRequestRoute::StrictMtp
+        } else {
+            MtpRequestRoute::DirectFallback
+        }
+    } else {
+        MtpRequestRoute::Other
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct NgramSelfTuneState {
     drafted: u32,
     accepted: u32,
@@ -400,6 +463,13 @@ impl NgramSelfTuneState {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct MtpTelemetry {
+    correctness_mode: MtpCorrectnessMode,
+    proposal_law: MtpProposalLaw,
+    correctness_mode_conflicts: u32,
+    proposal_law_conflicts: u32,
+    optimistic_steps: u32,
+    direct_fallback_steps: u32,
+    residual_correction_tokens: u32,
     draft_tokens: u32,
     accepted_tokens: u32,
     decode_steps: u32,
@@ -512,6 +582,34 @@ struct MtpStepTimings {
 }
 
 impl MtpTelemetry {
+    fn record_correctness_mode(
+        &mut self,
+        correctness_mode: MtpCorrectnessMode,
+        proposal_law: MtpProposalLaw,
+    ) {
+        if self.correctness_mode == MtpCorrectnessMode::Unknown {
+            self.correctness_mode = correctness_mode;
+        } else if self.correctness_mode != correctness_mode {
+            self.correctness_mode_conflicts = self.correctness_mode_conflicts.saturating_add(1);
+        }
+        if proposal_law != MtpProposalLaw::Unknown {
+            if self.proposal_law == MtpProposalLaw::Unknown {
+                self.proposal_law = proposal_law;
+            } else if self.proposal_law != proposal_law {
+                self.proposal_law_conflicts = self.proposal_law_conflicts.saturating_add(1);
+            }
+        }
+    }
+
+    fn record_direct_fallback(&mut self) {
+        self.record_correctness_mode(MtpCorrectnessMode::DirectFallback, MtpProposalLaw::Unknown);
+        self.direct_fallback_steps = self.direct_fallback_steps.saturating_add(1);
+    }
+
+    fn record_optimistic_step(&mut self) {
+        self.optimistic_steps = self.optimistic_steps.saturating_add(1);
+    }
+
     fn record_step(
         &mut self,
         drafted: usize,
@@ -794,6 +892,33 @@ impl MtpTelemetry {
     }
 
     fn merge_from(&mut self, other: Self) {
+        if self.correctness_mode == MtpCorrectnessMode::Unknown {
+            self.correctness_mode = other.correctness_mode;
+        } else if other.correctness_mode != MtpCorrectnessMode::Unknown
+            && self.correctness_mode != other.correctness_mode
+        {
+            self.correctness_mode_conflicts = self.correctness_mode_conflicts.saturating_add(1);
+        }
+        if self.proposal_law == MtpProposalLaw::Unknown {
+            self.proposal_law = other.proposal_law;
+        } else if other.proposal_law != MtpProposalLaw::Unknown
+            && self.proposal_law != other.proposal_law
+        {
+            self.proposal_law_conflicts = self.proposal_law_conflicts.saturating_add(1);
+        }
+        self.correctness_mode_conflicts = self
+            .correctness_mode_conflicts
+            .saturating_add(other.correctness_mode_conflicts);
+        self.proposal_law_conflicts = self
+            .proposal_law_conflicts
+            .saturating_add(other.proposal_law_conflicts);
+        self.optimistic_steps = self.optimistic_steps.saturating_add(other.optimistic_steps);
+        self.direct_fallback_steps = self
+            .direct_fallback_steps
+            .saturating_add(other.direct_fallback_steps);
+        self.residual_correction_tokens = self
+            .residual_correction_tokens
+            .saturating_add(other.residual_correction_tokens);
         self.draft_tokens = self.draft_tokens.saturating_add(other.draft_tokens);
         self.accepted_tokens = self.accepted_tokens.saturating_add(other.accepted_tokens);
         self.decode_steps = self.decode_steps.saturating_add(other.decode_steps);
@@ -1029,6 +1154,22 @@ impl MtpTelemetry {
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
         let entries = [
+            (
+                "ax_mtp_correctness_mode",
+                self.correctness_mode.route_code(),
+            ),
+            ("ax_mtp_proposal_law", self.proposal_law.route_code()),
+            (
+                "ax_mtp_correctness_mode_conflicts",
+                self.correctness_mode_conflicts,
+            ),
+            ("ax_mtp_proposal_law_conflicts", self.proposal_law_conflicts),
+            ("ax_mtp_optimistic_steps", self.optimistic_steps),
+            ("ax_mtp_direct_fallback_steps", self.direct_fallback_steps),
+            (
+                "ax_mtp_residual_correction_tokens",
+                self.residual_correction_tokens,
+            ),
             ("ax_mtp_draft_tokens", self.draft_tokens),
             ("ax_mtp_accepted_tokens", self.accepted_tokens),
             ("ax_mtp_decode_steps", self.decode_steps),
@@ -7546,7 +7687,9 @@ impl MlxRunner {
         // Greedy mode the EWMA tracks argmax match rate directly, which is
         // already the stricter metric — if it reaches 0.99, optimistic is safe.
         let optimistic_allowed = mtp_optimistic_allowed(self.weights.glm_mtp.is_some());
-        let can_auto_optimistic = optimistic_allowed
+        let auto_optimistic_enabled = mtp_auto_optimistic_enabled_from_env();
+        let can_auto_optimistic = auto_optimistic_enabled
+            && optimistic_allowed
             && !pending.is_empty()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples
                 >= mtp_auto_optimistic_min_samples();
@@ -7573,6 +7716,23 @@ impl MlxRunner {
             && (self.mtp_optimistic || auto_optimistic)
             && !pending.is_empty()
             && all_drafts_optimistic_eligible;
+        let proposal_law = match crate::mtp::mtp_draft_mode_from_env() {
+            crate::mtp::MtpDraftMode::Greedy => MtpProposalLaw::DeterministicDelta,
+            crate::mtp::MtpDraftMode::Stochastic => MtpProposalLaw::Stochastic,
+        };
+        let approximate_profile =
+            optimistic_allowed && (self.mtp_optimistic || auto_optimistic_enabled);
+        state.mtp_telemetry.record_correctness_mode(
+            if approximate_profile {
+                MtpCorrectnessMode::ApproximateOptimistic
+            } else {
+                MtpCorrectnessMode::GreedyExact
+            },
+            proposal_law,
+        );
+        if optimistic {
+            state.mtp_telemetry.record_optimistic_step();
+        }
         if auto_optimistic && !self.mtp_optimistic {
             state.mtp_telemetry.auto_optimistic_steps =
                 state.mtp_telemetry.auto_optimistic_steps.saturating_add(1);
@@ -7610,7 +7770,7 @@ impl MlxRunner {
             predicted,
         ) = if has_linear_attention {
             if optimistic {
-                // ── Optimistic shortcut (default ON; kill-switch AX_MLX_MTP_OPTIMISTIC=0) ──
+                // ── Explicit approximate optimistic shortcut ──
                 // Accept all drafts without rejection sampling. The full draft
                 // commits, so no rollback can occur — verify directly on the
                 // request cache. Cloning here (as the rejection path below must)
@@ -7794,7 +7954,7 @@ impl MlxRunner {
         } else {
             // Non-linear-attention: run directly, trim on rejection.
             if optimistic {
-                // ── Optimistic shortcut (default ON; kill-switch AX_MLX_MTP_OPTIMISTIC=0) ──
+                // ── Explicit approximate optimistic shortcut ──
                 let ac = pending.len();
                 let needs_predicted =
                     sampling.temperature <= 0.0 || (auto_optimistic && !self.mtp_optimistic);
@@ -8825,16 +8985,28 @@ impl MlxRunner {
         // ngram_acceleration_disabled_for_request, which run_non_ngram_decode
         // intercepts before we'd ever reach MTP).  Repetition-penalty sampling
         // is incompatible with speculative decode and is excluded.
-        // Acceptance uses rejection sampling when draft log-probs are available;
-        // correction/bonus tokens are sampled with the request's temperature.
+        // MTP requests fall back to the direct single-token sampler until the
+        // exact verifier passes the token-equivalence oracle. The only current
+        // opt-in acceleration route is the explicitly approximate optimistic
+        // speed-ceiling profile.
         // The per-request bypass (state.mtp_bypassed) short-circuits MTP when
         // the acceptance EWMA has shown MTP is not paying for itself.
-        if self.has_mtp()
-            && !self.disable_ngram_acceleration
-            && !sampling.uses_repetition_penalty()
-            && !state.mtp_bypassed
-        {
-            return self.run_mtp_decode(state, last_token, sampling, ctx);
+        let approximate_profile = mtp_optimistic_allowed(self.weights.glm_mtp.is_some())
+            && (self.mtp_optimistic || mtp_auto_optimistic_enabled_from_env());
+        match mtp_request_route(
+            self.has_mtp(),
+            !self.disable_ngram_acceleration,
+            approximate_profile,
+            state.mtp_bypassed,
+        ) {
+            MtpRequestRoute::DirectFallback => {
+                state.mtp_telemetry.record_direct_fallback();
+                return self.run_single_decode(state, last_token, sampling);
+            }
+            MtpRequestRoute::StrictMtp => {
+                return self.run_mtp_decode(state, last_token, sampling, ctx);
+            }
+            MtpRequestRoute::Other => {}
         }
 
         if let Some(result) =
@@ -10663,21 +10835,29 @@ fn mtp_disable_ngram_stacking_from_env() -> bool {
     })
 }
 
-/// **Default: ON** (kill-switch via `AX_MLX_MTP_OPTIMISTIC=0`).
+/// **Default: OFF** (explicit opt-in via `AX_MLX_MTP_OPTIMISTIC=1`).
 ///
 /// MTP verify always accepts all draft tokens without computing the
 /// rejection-sampling acceptance ratio.  Eliminates full-vocab softmax for
 /// target distribution, the accept/reject loop, and cache rollback on rejection.
-/// Safe for native MTP heads with >85% acceptance (Qwen3.6 27B achieves 99%+).
-/// The verify forward still computes argmax for the correction/bonus token and
-/// EWMA tracking, so the rare mismatch between draft and target argmax is
-/// handled correctly.  Set to `0` to restore the full rejection-sampling path.
+/// This is an approximate speed-ceiling profile: draft/target mismatches are
+/// committed, so it is not eligible for an exact correctness claim.
 fn mtp_optimistic_from_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
-        !matches!(
+        matches!(
             std::env::var("AX_MLX_MTP_OPTIMISTIC").as_deref(),
-            Ok("0") | Ok("false") | Ok("FALSE")
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    })
+}
+
+fn mtp_auto_optimistic_enabled_from_env() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        matches!(
+            std::env::var("AX_MLX_MTP_AUTO_OPTIMISTIC").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
         )
     })
 }
@@ -11604,6 +11784,10 @@ mod tests {
     #[test]
     fn mtp_telemetry_tracks_acceptance_step_classes() {
         let mut telemetry = MtpTelemetry::default();
+        telemetry.record_correctness_mode(
+            MtpCorrectnessMode::GreedyExact,
+            MtpProposalLaw::DeterministicDelta,
+        );
 
         let mtp_sources = [MtpDraftSource::Mtp; 3];
         telemetry.record_step(3, 3, &mtp_sources, None, 3);
@@ -11629,6 +11813,11 @@ mod tests {
         let mut decisions = Vec::new();
         telemetry.append_route_decisions(&mut decisions);
 
+        assert!(decisions.contains(&("ax_mtp_correctness_mode".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_proposal_law".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_correctness_mode_conflicts".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_optimistic_steps".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_direct_fallback_steps".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_draft_tokens".into(), 9)));
         assert!(decisions.contains(&("ax_mtp_accepted_tokens".into(), 4)));
         assert!(decisions.contains(&("ax_mtp_decode_steps".into(), 3)));
@@ -11677,6 +11866,61 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_ngram_utility_baseline_emitted_tokens".into(), 4)));
         assert!(decisions.contains(&("ax_mtp_ngram_utility_stacked_steps".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_ngram_acceptance_mode".into(), 0)));
+    }
+
+    #[test]
+    fn mtp_telemetry_fails_closed_on_mixed_correctness_modes() {
+        let mut telemetry = MtpTelemetry::default();
+        telemetry.record_correctness_mode(
+            MtpCorrectnessMode::GreedyExact,
+            MtpProposalLaw::DeterministicDelta,
+        );
+        telemetry.record_correctness_mode(
+            MtpCorrectnessMode::ApproximateOptimistic,
+            MtpProposalLaw::DeterministicDelta,
+        );
+        telemetry.record_optimistic_step();
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+
+        assert!(decisions.contains(&("ax_mtp_correctness_mode".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_correctness_mode_conflicts".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_optimistic_steps".into(), 1)));
+    }
+
+    #[test]
+    fn mtp_telemetry_records_sampled_direct_fallback() {
+        let mut telemetry = MtpTelemetry::default();
+        telemetry.record_direct_fallback();
+        telemetry.record_direct_fallback();
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+
+        assert!(decisions.contains(&("ax_mtp_correctness_mode".into(), 4)));
+        assert!(decisions.contains(&("ax_mtp_direct_fallback_steps".into(), 2)));
+        assert!(decisions.contains(&("ax_mtp_decode_steps".into(), 0)));
+    }
+
+    #[test]
+    fn mtp_request_route_only_accelerates_explicit_approximate_profile() {
+        assert_eq!(
+            mtp_request_route(true, true, true, false),
+            MtpRequestRoute::StrictMtp
+        );
+        assert_eq!(
+            mtp_request_route(true, true, false, false),
+            MtpRequestRoute::DirectFallback
+        );
+        assert_eq!(
+            mtp_request_route(true, false, false, false),
+            MtpRequestRoute::Other
+        );
+        assert_eq!(
+            mtp_request_route(true, true, true, true),
+            MtpRequestRoute::DirectFallback
+        );
     }
 
     #[test]

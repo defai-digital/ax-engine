@@ -540,6 +540,7 @@ mod tests {
 
     fn text_only_config() -> ModelConfig {
         ModelConfig {
+            compile_cache_identity: 4,
             model_family: "gemma4_unified".to_string(),
             layer_count: 0,
             hidden_size: 1,

@@ -104,9 +104,15 @@ env var fallback (CLI flag wins when both are set):
 
 Notes:
 
-- The concurrency limit and rate limit shed load *before* engine work starts,
-  returning HTTP 429 with a distinct message per limiter so an operator can
-  tell them apart.
+- The concurrency limit is shared by HTTP and gRPC engine jobs. Generation,
+  streaming, embedding, and stepwise requests hold capacity until their
+  blocking job is terminal, even after a transport timeout or disconnect.
+  Saturated HTTP calls return 429; saturated gRPC calls return
+  `RESOURCE_EXHAUSTED`. Health, metrics, and metadata reads do not consume
+  engine capacity.
+- The HTTP rate limit sheds transport load before handler work and returns a
+  distinct 429 message, so operators can distinguish it from engine
+  saturation.
 - The rate limit is a single global token bucket, not per-client/per-IP —
   the server binds to `127.0.0.1` by default, so this is meant to shed a
   runaway local client rather than police a multi-tenant edge.
@@ -124,13 +130,19 @@ Notes:
 
 `GET /metrics` serves a Prometheus text exposition with HTTP request counters
 (total, in-flight, 2xx/4xx/5xx), gRPC request counters (total, in-flight,
-ok/error), and engine-step gauges (scheduled requests and tokens, KV block
-usage, accumulated prefix-cache hits). The endpoint is read-only: engine-step
-values are snapshots cached when generation endpoints drive real steps, never
-sampled by stepping the engine from the scrape path. Engine-step gauges
-appear only after at least one step has been observed via `POST /v1/step`.
+ok/error), shared engine-job admission (`ax_engine_jobs_in_flight`), persistent
+generation-worker work (`ax_engine_generation_jobs_pending`), and engine-step
+gauges (scheduled requests and tokens, KV block usage, accumulated prefix-cache
+hits). The endpoint is read-only: engine-step values are snapshots cached when
+generation endpoints drive real steps, never sampled by stepping the engine
+from the scrape path. Engine-step gauges appear only after at least one step
+has been observed via `POST /v1/step`.
 `/metrics` requires the API key when authentication is enabled and never
 exposes prompts, outputs, or credentials.
+
+HTTP and gRPC health probes remain healthy while inference is active. They
+report unavailable only if the persistent native worker is no longer alive;
+normal busy state is exposed through `/slots` and the metrics above.
 
 The gRPC ok/error counters have one known gap: `grpc-status` for a
 successful unary response and for *all* streaming RPCs lives in HTTP/2
@@ -804,10 +816,19 @@ The response includes:
   `resolution_policy`, capability reporting, host diagnostics, and Metal
   toolchain availability
 
-`POST /v1/generate` remains a stateless convenience endpoint that creates a
-fresh SDK session for one blocking request.
-That endpoint now preserves one process-local request-id sequence even though
-it creates fresh SDK sessions internally.
+Repo-owned MLX generation, streaming, stepwise lifecycle calls, and embeddings
+all use one persistent worker-owned `EngineSession`. The server loads native
+weights once at startup, submits every native request into that session, and
+keeps request KV/cancellation ownership on the same worker through terminal
+cleanup. Unary generation is collected from the same event stream used by SSE
+and gRPC; it does not construct a request-local model session. Delegated
+`llama_cpp` and `mlx_lm_delegated` requests keep their stateless adapter paths.
+All paths share one process-local request-id sequence.
+
+The persistent session lets the scheduler observe overlapping native requests.
+Runner-level fused batching remains separately gated: unsupported model
+families still execute scheduler batch items individually and must not be
+described as continuous-batching speedups without server-path evidence.
 For native MLX Gemma4 unified models, `/v1/generate` and
 `/v1/generate/stream` also accept preprocessed
 `multimodal_inputs.gemma4_unified` image/audio/video tensors. AX does not
@@ -841,6 +862,14 @@ lifecycle contract as the SDK.
 The server allocates request ids from one process-local sequence across both
 paths so transport logs and client correlation do not collide when clients mix
 blocking and stepwise APIs.
+
+`POST /v1/model/load` closes native admission before draining the old service.
+It rejects a swap while non-terminal stepwise work exists, waits for generation,
+streaming, and embedding permits to reach zero, clears process-global compiled
+layer closures, builds the replacement session, and only then atomically
+publishes the new `LiveState`. A disconnected load client does not cancel this
+cleanup sequence. Requests arriving during the drain receive HTTP 503 or gRPC
+`UNAVAILABLE` and can retry after the load finishes.
 The `mlx_lm_delegated` backend supports blocking `/v1/generate` and SSE
 `/v1/generate/stream` through `mlx_lm.server` `/v1/completions`. It also
 supports streamed OpenAI-compatible completion/chat endpoints by forwarding

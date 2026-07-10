@@ -114,6 +114,7 @@ fn layer_shell_post_attention(
                         schema.moe_experts_per_token = cfg.moe_experts_per_token;
                         let input_refs: Vec<&MlxArray> = inputs.iter().collect();
                         apply_layer_gemma4_dual_path_decode(
+                            cfg.compile_cache_identity,
                             layer_idx,
                             &input_refs,
                             move |inputs: &MlxVectorArray| vec![schema.forward(inputs, &cfg_clone)],
@@ -239,13 +240,19 @@ fn layer_shell_post_attention(
                     shared_out.as_ref(),
                 );
                 let input_refs: Vec<&MlxArray> = inputs.iter().collect();
-                apply_layer_moe_decode(layer_idx, &input_refs, move |inputs: &MlxVectorArray| {
-                    let (x, indices, weights, gate_up, gate, up, down, shared) =
-                        schema.rebuild(inputs);
-                    vec![moe_experts_forward_with_cloned_weights(
-                        &cfg_clone, &x, &indices, &weights, gate_up, gate, up, down, shared, None,
-                    )]
-                })
+                apply_layer_moe_decode(
+                    cfg.compile_cache_identity,
+                    layer_idx,
+                    &input_refs,
+                    move |inputs: &MlxVectorArray| {
+                        let (x, indices, weights, gate_up, gate, up, down, shared) =
+                            schema.rebuild(inputs);
+                        vec![moe_experts_forward_with_cloned_weights(
+                            &cfg_clone, &x, &indices, &weights, gate_up, gate, up, down, shared,
+                            None,
+                        )]
+                    },
+                )
             } else {
                 None
             };

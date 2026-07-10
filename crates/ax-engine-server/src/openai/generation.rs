@@ -14,7 +14,7 @@ use crate::chat::{
     ChatPromptTemplate, decode_gemma4_chat_output, decode_gemma4_chat_output_with_reasoning,
     decode_glm_chat_output,
 };
-use crate::errors::{ErrorResponse, error_response, map_session_error};
+use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
 use crate::generation::streaming::{StreamEvent, build_keep_alive_stream};
 use crate::openai::chunks::{
@@ -51,7 +51,12 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
     let request_id = state.allocate_request_id();
     let runtime = live.runtime_report.clone();
     let llama_backend = llama_cpp::config(&live).map_err(map_session_error)?;
+    let permit = state
+        .admission
+        .try_admit()
+        .map_err(admission_error_response)?;
     let response = run_blocking_session_task(move || {
+        let _permit = permit;
         llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
     })
     .await?;
@@ -85,7 +90,12 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
     let request_id = state.allocate_request_id();
     let runtime = live.runtime_report.clone();
     let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
+    let permit = state
+        .admission
+        .try_admit()
+        .map_err(admission_error_response)?;
     let response = run_blocking_session_task(move || {
+        let _permit = permit;
         mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
     })
     .await?;

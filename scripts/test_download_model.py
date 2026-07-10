@@ -161,6 +161,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 *,
                 quiet: bool = False,
                 progress_json: bool = False,
+                progress_bar: bool = False,
             ) -> Path:
                 calls.append(model)
                 return snapshot
@@ -189,6 +190,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 *,
                 quiet: bool = False,
                 progress_json: bool = False,
+                progress_bar: bool = False,
             ) -> Path:
                 calls.append(model)
                 snapshot.mkdir(parents=True)
@@ -215,6 +217,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 *,
                 quiet: bool = False,
                 progress_json: bool = False,
+                progress_bar: bool = False,
             ) -> Path:
                 calls.append(model)
                 snapshot.mkdir(parents=True)
@@ -242,7 +245,13 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             snapshot = root / "snapshot"
 
-            def fake_hf_download(model, *, quiet=False, progress_json=False):
+            def fake_hf_download(
+                model,
+                *,
+                quiet=False,
+                progress_json=False,
+                progress_bar=False,
+            ):
                 snapshot.mkdir(parents=True)
                 (snapshot / "config.json").write_text('{"model_type":"qwen3"}')
                 (snapshot / "model.safetensors").write_bytes(b"new")

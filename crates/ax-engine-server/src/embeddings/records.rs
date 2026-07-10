@@ -10,7 +10,9 @@ use serde_json::Value;
 
 use crate::app_state::{AppState, LiveState};
 use crate::embeddings::{parse_embedding_pooling, parse_embedding_timeout_ms};
-use crate::errors::{ErrorResponse, error_response, map_session_error};
+use crate::errors::{
+    ErrorResponse, admission_error_response, error_response, map_generation_service_error,
+};
 use crate::openai::validation::validate_model;
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
@@ -130,17 +132,21 @@ pub(crate) async fn embedding_records(
         .map(|chunk| chunk.token_ids.clone())
         .collect::<Vec<_>>();
     let token_count = chunks.iter().map(|chunk| chunk.token_count).sum();
-    let session = live.request_session.clone();
+    let generation_service = live.generation_service.clone();
     let timeout_ms = parse_embedding_timeout_ms(
         std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS").ok(),
         DEFAULT_EMBED_RECORDS_TIMEOUT_MS,
     );
     let timeout = Duration::from_millis(timeout_ms);
+    let permit = state
+        .admission
+        .try_admit()
+        .map_err(admission_error_response)?;
 
     let matrix = tokio::time::timeout(
         timeout,
-        tokio::task::spawn_blocking(move || {
-            let session = session.blocking_lock();
+        generation_service.execute(move |session| {
+            let _permit = permit;
             session.embed_batch_flat(&batch, pooling, normalize)
         }),
     )
@@ -152,14 +158,7 @@ pub(crate) async fn embedding_records(
             format!("embedding records timed out after {timeout_ms}ms"),
         )
     })?
-    .map_err(|_| {
-        error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "engine_error",
-            "embedding records worker join failed".into(),
-        )
-    })?
-    .map_err(map_session_error)?;
+    .map_err(map_generation_service_error)?;
 
     let data = chunks
         .into_iter()

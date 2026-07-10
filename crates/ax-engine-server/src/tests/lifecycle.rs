@@ -89,6 +89,7 @@ async fn llama_cpp_stepwise_request_endpoints_share_sdk_lifecycle() {
 
     assert_eq!(status, StatusCode::CREATED);
     let request_id = 1u64;
+    assert_eq!(state.admission.active_jobs(), 1);
 
     let mut sdk_session = sdk_session_for_state(&state);
     sdk_session
@@ -167,6 +168,7 @@ async fn llama_cpp_stepwise_request_endpoints_share_sdk_lifecycle() {
     .await;
     assert_eq!(terminal_status, StatusCode::OK);
     assert_eq!(terminal_json, expected_terminal);
+    assert_eq!(state.admission.active_jobs(), 0);
 
     llama_cpp_server_handle
         .join()
@@ -234,6 +236,7 @@ async fn llama_cpp_stepwise_request_endpoints_aggregate_multiple_active_requests
     .await;
     assert_eq!(first_submit_status, StatusCode::CREATED);
     assert_eq!(second_submit_status, StatusCode::CREATED);
+    assert_eq!(state.admission.active_jobs(), 2);
 
     let first_request_id = first_submit_json
         .get("request_id")
@@ -294,6 +297,7 @@ async fn llama_cpp_stepwise_request_endpoints_aggregate_multiple_active_requests
             assert_eq!(snapshot_json, expected_snapshot);
         }
     }
+    assert_eq!(state.admission.active_jobs(), 0);
 
     llama_cpp_server_handle
         .join()
@@ -314,7 +318,8 @@ async fn llama_cpp_cancel_endpoint_surfaces_cancelled_snapshot() {
             assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
         },
     );
-    let app = build_router(llama_cpp_server_state(llama_server_url));
+    let state = llama_cpp_server_state(llama_server_url);
+    let app = build_router(state.clone());
     let (_, submit_json) = json_response(
         &app,
         Request::builder()
@@ -354,6 +359,65 @@ async fn llama_cpp_cancel_endpoint_surfaces_cancelled_snapshot() {
             .and_then(|value| value.as_bool()),
         Some(true)
     );
+    assert_eq!(state.admission.active_jobs(), 0);
+
+    llama_cpp_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+}
+
+#[tokio::test]
+async fn step_error_retains_admission_until_request_is_cancelled() {
+    let (llama_server_url, llama_cpp_server_handle) =
+        spawn_llama_cpp_completion_stream_server(1, vec![], |_| {});
+    let state = llama_cpp_server_state(llama_server_url);
+    let app = build_router(state.clone());
+    let (submit_status, submit_json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/requests")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&sample_http_request(
+                &[7, 8, 9],
+                2,
+            ))))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(submit_status, StatusCode::CREATED);
+    let request_id = submit_json
+        .get("request_id")
+        .and_then(Value::as_u64)
+        .expect("request_id should exist");
+
+    let (step_status, _) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/step")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(step_status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(state.admission.active_jobs(), 1);
+
+    let (cancel_status, cancel_json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/requests/{request_id}/cancel"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(cancel_status, StatusCode::OK);
+    assert_eq!(
+        cancel_json.get("state").and_then(Value::as_str),
+        Some("cancelled")
+    );
+    assert_eq!(state.admission.active_jobs(), 0);
 
     llama_cpp_server_handle
         .join()

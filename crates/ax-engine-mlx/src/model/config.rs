@@ -1,5 +1,9 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use ax_engine_core::NativeModelManifest;
 use mlx_sys::MlxArray;
+
+static NEXT_COMPILE_CACHE_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
 /// Per-layer hyperparameters for interleaved-SWA models (Gemma4).
 #[derive(Clone, Debug)]
@@ -365,6 +369,11 @@ impl DiffusionConfig {
 /// Hyperparameters extracted from the manifest.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
+    /// Unique for each model-config construction and retained by clones.
+    /// Per-layer compiled closures include this identity in their cache key so
+    /// a blocking-pool thread cannot reuse an old model's captured graph schema
+    /// after hot-swap.
+    pub compile_cache_identity: u64,
     /// Model family string from the manifest (e.g. "gemma4", "qwen3", "llama3").
     /// Used for named dispatch in `layer_forward_with_turboquant_context`.
     pub model_family: String,
@@ -513,6 +522,7 @@ impl ModelConfig {
         };
 
         Self {
+            compile_cache_identity: NEXT_COMPILE_CACHE_IDENTITY.fetch_add(1, Ordering::Relaxed),
             model_family: m.model_family.clone(),
             layer_count: m.layer_count as usize,
             hidden_size: m.hidden_size as usize,

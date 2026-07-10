@@ -316,7 +316,7 @@ pub(crate) struct SlotEntry {
 
 pub(crate) async fn slots(State(state): State<AppState>) -> Json<Vec<SlotEntry>> {
     let live = state.snapshot();
-    let busy = live.request_session.try_lock().is_err();
+    let busy = live.generation_service.is_busy();
     let (slot_state, state_str) = if busy {
         (1u32, "processing")
     } else {
