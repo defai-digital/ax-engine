@@ -1190,7 +1190,7 @@ def render_mtp_6bit_ax_acceleration_chart(
         )
         label_y += MTP_6BIT_ROW_GAP
 
-    version_label = "Runtime: AX Engine v6.8.2 (2026-07-11); MLX 0.32.0 / mlx-lm 0.31.3."
+    version_label = f"Runtime: AX Engine v6.8.2 ({run_date}); MLX 0.32.0 / mlx-lm 0.31.3."
     source_label = (
         f"Source: {summary_path.parent.as_posix()} / summary.json. "
         "Pure MTP; no MTP+n-gram stacking."
