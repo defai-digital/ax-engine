@@ -19,14 +19,15 @@ LABEL_TO_SLUG = {
 }
 
 PROMPT_TOKENS = (128, 512, 2048)
+AX_ENGINE_CHART_LABEL = "AX Engine v6.8.2 (2026-07-10)"
 
 SERIES = [
     ("llama_cpp_metal", "llama.cpp b9910", "#f97316", "#c2410c"),
     ("mlx_lm", "mlx-lm 0.31.3", "#f2b705", "#9a6a00"),
-    ("ax_engine_mlx", "AX Engine v6.8.2", "#2eaf5f", "#176c37"),
-    ("ax_engine_mlx_ngram_accel", "AX+ngram v6.8.2", "#137a3d", "#0b4f28"),
+    ("ax_engine_mlx", AX_ENGINE_CHART_LABEL, "#2eaf5f", "#176c37"),
+    ("ax_engine_mlx_ngram_accel", "AX+ngram v6.8.2 (2026-07-10)", "#137a3d", "#0b4f28"),
 ]
-DIRECT_VERSIONS_FOOTNOTE = "llama.cpp b9910 · mlx-lm 0.31.3 · AX Engine v6.8.2"
+DIRECT_VERSIONS_FOOTNOTE = "llama.cpp b9910 · mlx-lm 0.31.3 · AX Engine v6.8.2 (2026-07-10)"
 
 FAMILY_SLUGS: dict[str, list[str]] = {
     "gemma4": [
@@ -1185,7 +1186,7 @@ def render_mtp_6bit_ax_acceleration_chart(
         )
         label_y += MTP_6BIT_ROW_GAP
 
-    version_label = "Runtime: AX Engine v6.8.2; MLX 0.32.0 / mlx-lm 0.31.3."
+    version_label = "Runtime: AX Engine v6.8.2 (2026-07-10); MLX 0.32.0 / mlx-lm 0.31.3."
     source_label = (
         f"Source: {summary_path.parent.as_posix()} / summary.json. "
         "Pure MTP; no MTP+n-gram stacking."
@@ -1212,7 +1213,7 @@ MTP_PEER_COLORS = {
     "lightning_mlx": "#2563eb",
 }
 MTP_PEER_LABELS = {
-    "ax_engine": "AX Engine",
+    "ax_engine": AX_ENGINE_CHART_LABEL,
     "mtplx": "MTPLX",
     "lightning_mlx": "lightning-mlx",
 }
@@ -1222,7 +1223,7 @@ MTP_PEER_LABELS = {
 #   MTPLX         = /opt/homebrew/var/mtplx/venv-2.0.1 (pip: mtplx 2.0.1)
 #   lightning-mlx = .internal/reference/lightning-mlx v0.7.0 (git rev ec19b3d, incl. post-tag streaming fix #3)
 MTP_PEER_VERSIONS = {
-    "ax_engine": "6.8.2",
+    "ax_engine": "6.8.2 (2026-07-10)",
     "mtplx": "2.0.1",
     "lightning_mlx": "0.7.0",
 }
@@ -2450,7 +2451,7 @@ def render_embedding_box_chart(
             EMBEDDING_BOX_REFERENCE_COLOR,
             EMBEDDING_BOX_REFERENCE_DOT_COLOR,
         ),
-        ("AX Engine", EMBEDDING_BOX_AX_COLOR, EMBEDDING_BOX_AX_DOT_COLOR),
+        (AX_ENGINE_CHART_LABEL, EMBEDDING_BOX_AX_COLOR, EMBEDDING_BOX_AX_DOT_COLOR),
     ]
     legend_x = FAMILY_LEFT
     for label, color, stroke in legend_items:

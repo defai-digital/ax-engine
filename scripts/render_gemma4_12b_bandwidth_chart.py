@@ -50,7 +50,7 @@ BAR_PAD = (BAR_STEP - BAR_H) / 2
 HEADROOM_COLOR = "#e5e7eb"
 HEADROOM_STROKE = "#cbd5e1"
 SUBTITLE = "Why the upstream 4bit snapshot was slower: bytes read per decoded token"
-TITLE = "Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.7.1"
+TITLE = "Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.8.2 (2026-07-10)"
 FOOTNOTE = "Gray row is diagnostic only: upstream 4bit snapshot keeps FFN tensors at 8-bit"
 
 

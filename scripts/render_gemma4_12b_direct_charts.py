@@ -35,7 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FONT = "Inter,Segoe UI,Arial,sans-serif"
 RED = "#dc2626"
 PROMPT_TOKENS = (128, 512, 2048)
-AX_ENGINE_VERSION = "v6.5.2"
+AX_ENGINE_VERSION = "v6.8.2 (2026-07-10)"
 LLAMA_CPP_VERSION = "b9700"
 
 # (engine key in artifact, legend label, fill, stroke) — palette matches the
