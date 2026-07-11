@@ -180,12 +180,11 @@ impl App {
             if matches!(
                 key.code,
                 KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace
-            ) {
-                if !self.go_back_screen() {
-                    self.screen = Screen::Home;
-                    self.focus_tabs = false;
-                    self.previous_screen = None;
-                }
+            ) && !self.go_back_screen()
+            {
+                self.screen = Screen::Home;
+                self.focus_tabs = false;
+                self.previous_screen = None;
             }
             return;
         }

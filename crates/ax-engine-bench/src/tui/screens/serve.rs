@@ -52,12 +52,10 @@ impl App {
                 }
                 KeyCode::Char('c') => self.copy_server_url(),
                 KeyCode::Char('t') => self.navigate_to(Screen::Chat),
-                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
-                    if !self.go_back_screen() {
-                        self.screen = Screen::Home;
-                        self.focus_tabs = false;
-                        self.previous_screen = None;
-                    }
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc if !self.go_back_screen() => {
+                    self.screen = Screen::Home;
+                    self.focus_tabs = false;
+                    self.previous_screen = None;
                 }
                 _ => {}
             },

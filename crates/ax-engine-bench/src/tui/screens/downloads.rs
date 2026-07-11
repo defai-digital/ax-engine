@@ -61,12 +61,10 @@ impl App {
                     self.toast_warn(format!("{label} removed from queue"));
                 }
             }
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
-                if !self.go_back_screen() {
-                    self.screen = Screen::Home;
-                    self.focus_tabs = false;
-                    self.previous_screen = None;
-                }
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc if !self.go_back_screen() => {
+                self.screen = Screen::Home;
+                self.focus_tabs = false;
+                self.previous_screen = None;
             }
             _ => {}
         }

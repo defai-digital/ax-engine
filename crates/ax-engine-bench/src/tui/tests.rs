@@ -260,13 +260,13 @@ fn app_starts_on_home_with_hardware_summary() {
     assert_eq!(app.screen, Screen::Home);
     let text = render(&app);
     assert!(
-        text.contains("This machine") || text.contains("Live load") || text.contains("Test Chip")
+        text.contains("This Mac")
+            || text.contains("Memory")
+            || text.contains("Quick start")
+            || text.contains("CPU")
     );
-    assert!(text.contains("Test Chip") || text.contains("Quick start"));
     assert!(text.contains("Quick start"));
     assert!(text.contains("Browse all models"));
-    // Journey banner is present when there is a clear next step (first-run
-    // prompt, or download/server status on machines with installed models).
     assert!(
         text.contains("Get started")
             || text.contains("Start here")
@@ -274,7 +274,7 @@ fn app_starts_on_home_with_hardware_summary() {
             || text.contains("Downloading")
             || text.contains("Server")
             || text.contains("Actions")
-            || text.contains("Live load")
+            || text.contains("This Mac")
     );
 }
 

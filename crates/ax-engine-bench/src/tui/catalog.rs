@@ -75,7 +75,7 @@ pub(super) fn family_display_name(key: &str) -> String {
         other => {
             // Fallback: turn `foo-bar` into title-ish text without inventing facts.
             other
-                .split(|c: char| c == '-' || c == '_')
+                .split(['-', '_'])
                 .map(|part| {
                     let mut chars = part.chars();
                     match chars.next() {
