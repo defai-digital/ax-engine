@@ -57,19 +57,22 @@ ax-engine download qwen36-35b --dest /path/to/explicit-copy
 ```
 
 For an interactive flow, run `ax-engine tui`. The TUI has five screens
-(switch with `1`-`5` or the sidebar): Home shows the machine's chip, RAM, and
-free disk plus a Quick start action; Models is a four-step wizard — family →
-precision (size estimate and RAM-fit badge per variant) → optional MTP
-speed-up (explained in plain language, with the extra package size) → a
-confirm summary before anything downloads. The destination defaults to the
+(switch with `1`-`5`, or `Ctrl+1`-`5` while typing in Chat/fields): Home
+shows the machine's chip, RAM, and free disk plus a Quick start action;
+Models is a four-step wizard — family → size (estimate and RAM-fit badge per
+variant) → optional speed-up (plain language, with the extra package size) →
+a confirm summary before anything downloads. The destination defaults to the
 shared Hugging Face Hub cache and can be changed on the confirm step; direct
 downloads use `--dest`, and MTP packages use `--output`. Downloads run in a
 background queue with a progress bar, speed, ETA, and phase labels (driven by
 `--progress-json`); Serve launches `ax-engine-server` and shows the URL with a
 copyable curl example; Chat streams replies from the running server over
-`/v1/chat/completions`. `Esc` steps back (never quits), and quitting with `q`
-asks for confirmation while downloads or the server are running. Installed
-precisions can be deleted from the wizard with `x` (typed confirmation).
+`/v1/chat/completions` (Enter sends, Ctrl+J / Shift+Enter inserts a newline).
+When a download finishes the TUI jumps to Downloads with the ready item
+selected; when the server binds it toasts a Chat handoff. `Esc` steps back
+(never quits), and quitting with `q` asks for confirmation while downloads or
+the server are running. Installed sizes can be deleted from the wizard with
+`x` (typed confirmation).
 
 The older `ax-engine ui-downloader` and `ax-engine download --interactive`
 prompts remain available for compatibility. TTY-gated non-interactive behavior

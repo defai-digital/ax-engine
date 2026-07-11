@@ -5,20 +5,25 @@
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, ListItem, Paragraph, Sparkline};
+use ratatui::widgets::{Gauge, ListItem, Paragraph, Sparkline};
 
 use crate::tui::catalog;
 use crate::tui::jobs::{self, SPINNER};
-use crate::tui::widgets;
+use crate::tui::theme;
+use crate::tui::widgets::{self, ToastLevel};
 use crate::tui::{App, Modal, Screen};
 
 impl App {
     pub(crate) fn on_key_downloads(&mut self, code: KeyCode) {
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
-                self.download_idx = self.download_idx.saturating_sub(1);
+                if self.download_idx == 0 {
+                    self.focus_tab_bar();
+                } else {
+                    self.download_idx = self.download_idx.saturating_sub(1);
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if self.download_idx + 1 < self.downloads.len() {
@@ -57,23 +62,96 @@ impl App {
     }
 
     pub(crate) fn draw_downloads(&self, frame: &mut Frame, area: Rect) {
-        // Horizontal split: left panel = download queue list, right panel = details + log.
-        let panels = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
+        let selected_ready = self
+            .downloads
+            .get(self.download_idx)
+            .is_some_and(|t| t.is_ready());
+        let banner = if selected_ready {
+            Some((
+                ToastLevel::Success,
+                "Ready — press Enter to serve this model".to_string(),
+            ))
+        } else if let Some(task) = self.downloads.iter().find(|t| t.is_running()) {
+            let pct = task
+                .progress_ratio()
+                .map(|r| format!("{:.0}%", r * 100.0))
+                .unwrap_or_else(|| "…".into());
+            Some((
+                ToastLevel::Info,
+                format!("Downloading {} · {pct}", task.label),
+            ))
+        } else {
+            None
+        };
 
-        // Left panel: download queue.
+        let body_area = if let Some((kind, text)) = &banner {
+            let split = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+            widgets::draw_banner(frame, split[0], *kind, text);
+            split[1]
+        } else {
+            area
+        };
+
+        // Stack details under the list when the terminal is narrow.
+        let narrow = body_area.width < 100;
+        if narrow {
+            let panels = Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)])
+                .split(body_area);
+            self.draw_download_queue(frame, panels[0]);
+            let right =
+                Layout::vertical([Constraint::Length(7), Constraint::Min(3)]).split(panels[1]);
+            self.draw_download_details(frame, right[0]);
+            widgets::draw_log(
+                frame,
+                right[1],
+                self.downloads
+                    .get(self.download_idx)
+                    .and_then(|task| task.job.as_ref())
+                    .map(|job| job.log.as_slice()),
+                " Log ",
+            );
+        } else {
+            let panels =
+                Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
+                    .split(body_area);
+            self.draw_download_queue(frame, panels[0]);
+            let right =
+                Layout::vertical([Constraint::Length(7), Constraint::Min(3)]).split(panels[1]);
+            self.draw_download_details(frame, right[0]);
+            widgets::draw_log(
+                frame,
+                right[1],
+                self.downloads
+                    .get(self.download_idx)
+                    .and_then(|task| task.job.as_ref())
+                    .map(|job| job.log.as_slice()),
+                " Log ",
+            );
+        }
+    }
+
+    fn draw_download_queue(&self, frame: &mut Frame, area: Rect) {
         let rows: Vec<ListItem> = if self.downloads.is_empty() {
             vec![
                 ListItem::new(Line::raw("")),
                 ListItem::new(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled("No downloads yet", Style::default().fg(Color::Yellow)),
+                    Span::styled("No downloads yet", theme::warn()),
                 ])),
                 ListItem::new(Line::raw("")),
-                ListItem::new(Line::from(Span::styled(
-                    "  Pick a model on the Models tab to get started.",
-                    Style::default().fg(Color::DarkGray),
-                ))),
+                ListItem::new(Line::from(vec![
+                    Span::styled("  Press ", theme::label()),
+                    Span::styled(
+                        "2",
+                        Style::default()
+                            .fg(theme::ACCENT)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        " Models to pick a model and queue a download.",
+                        theme::label(),
+                    ),
+                ])),
             ]
         } else {
             self.downloads
@@ -93,72 +171,55 @@ impl App {
                         "    ".into()
                     };
                     let status_icon = match task.status_label().as_str() {
-                        "cancelled" => "○",
-                        "queued" => "◌",
-                        "ready" => "✓",
-                        "running" => "●",
-                        _ => "✗",
+                        "cancelled" => theme::icon::IDLE,
+                        "queued" => theme::icon::QUEUED,
+                        "ready" => theme::icon::OK,
+                        "running" => theme::icon::RUNNING,
+                        _ => theme::icon::ERROR,
                     };
                     let status_style = match task.status_label().as_str() {
-                        "cancelled" => Style::default().fg(Color::DarkGray),
-                        "queued" => Style::default().fg(Color::Yellow),
-                        "ready" => Style::default().fg(Color::Green),
+                        "cancelled" => theme::label(),
+                        "queued" => theme::warn(),
+                        "ready" => theme::ok(),
                         "running" => Style::default()
-                            .fg(Color::Cyan)
+                            .fg(theme::ACCENT)
                             .add_modifier(Modifier::BOLD),
-                        _ => Style::default().fg(Color::Red),
+                        _ => theme::danger(),
                     };
+                    let dest_short = task
+                        .dest
+                        .as_ref()
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                        .unwrap_or_else(|| "cache".into());
                     ListItem::new(Line::from(vec![
                         Span::styled(format!("{status_icon} "), status_style),
-                        Span::styled(format!("{:<11}", task.status_label()), status_style),
-                        Span::raw(format!("{spin} {pct} ")),
+                        Span::styled(format!("{:<7}", task.status_label()), status_style),
+                        Span::raw(format!("{spin}{pct} ")),
                         Span::styled(
-                            format!("{:<24}", task.label),
-                            Style::default().add_modifier(Modifier::BOLD),
+                            format!("{:<18}", task.label),
+                            Style::default()
+                                .fg(theme::TEXT)
+                                .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(
-                            format!("{:<7}", task.mode.label()),
-                            Style::default().fg(Color::Gray),
-                        ),
-                        Span::styled(
-                            task.dest
-                                .as_ref()
-                                .map(|path| path.display().to_string())
-                                .unwrap_or_else(|| "HF cache".into()),
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::styled(format!("{:<4}", task.mode.label()), theme::body_dim()),
+                        Span::styled(dest_short, theme::label()),
                     ]))
                 })
                 .collect()
         };
         widgets::render_list(
             frame,
-            panels[0],
-            " Downloads ",
+            area,
+            " Queue ",
             rows,
             self.download_idx,
             true,
             &self.content_list_rect,
         );
-
-        // Right panel: details on top, log on bottom.
-        let right = Layout::vertical([Constraint::Length(8), Constraint::Min(3)]).split(panels[1]);
-        self.draw_download_details(frame, right[0]);
-        widgets::draw_log(
-            frame,
-            right[1],
-            self.downloads
-                .get(self.download_idx)
-                .and_then(|task| task.job.as_ref())
-                .map(|job| job.log.as_slice()),
-            " Download log ",
-        );
     }
 
     fn draw_download_details(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Selected download (Enter serve when ready · x cancel) ");
+        let block = widgets::active_block(" Progress ");
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let Some(task) = self.downloads.get(self.download_idx) else {
@@ -190,8 +251,6 @@ impl App {
                     format!(
                         "{:.0}% · {} of ~{} · {}/s{eta}",
                         ratio * 100.0,
-                        // A watch dir can pre-exist with old revisions (cache
-                        // hit / resume), so cap the shown bytes at the total.
                         catalog::format_bytes(bytes.min(total)),
                         catalog::format_bytes(total),
                         catalog::format_bytes(speed as u64),
@@ -211,7 +270,7 @@ impl App {
         };
         frame.render_widget(
             Gauge::default()
-                .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+                .gauge_style(Style::default().fg(theme::ACCENT).bg(theme::MUTED))
                 .ratio(ratio)
                 .label(gauge_label),
             chunks[0],
@@ -229,25 +288,26 @@ impl App {
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("phase:  ", Style::default().fg(Color::DarkGray)),
-                Span::raw(phase),
+                Span::styled("phase:  ", theme::label()),
+                Span::styled(phase, theme::body()),
             ])),
             chunks[1],
         );
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("target: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(task.target.clone()),
+                Span::styled("target: ", theme::label()),
+                Span::styled(task.target.clone(), theme::body()),
             ])),
             chunks[2],
         );
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("output: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(
+                Span::styled("output: ", theme::label()),
+                Span::styled(
                     task.output_path()
                         .map(|path| path.display().to_string())
                         .unwrap_or_else(|| "pending".into()),
+                    theme::body_dim(),
                 ),
             ])),
             chunks[3],
@@ -260,7 +320,7 @@ impl App {
         frame.render_widget(
             Sparkline::default()
                 .data(history)
-                .style(Style::default().fg(Color::Cyan)),
+                .style(Style::default().fg(theme::ACCENT)),
             chunks[4],
         );
     }

@@ -100,7 +100,7 @@ pub(super) fn draw_toasts(frame: &mut Frame, area: Rect, toasts: &[Toast]) {
     }
 }
 
-/// Modal variant with severity-colored border and styled key hints.
+/// Modal variant with dimmed scrim, severity-colored border, and key chips.
 pub(super) fn draw_modal_with(
     frame: &mut Frame,
     area: Rect,
@@ -109,6 +109,11 @@ pub(super) fn draw_modal_with(
     hints: Vec<Span<'static>>,
     border_color: Color,
 ) {
+    // Dim the whole screen so the dialog clearly owns focus.
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(Color::Black).fg(theme::MUTED)),
+        area,
+    );
     let width = 64.min(area.width.saturating_sub(4)).max(20);
     let height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
     let popup = centered_rect(width, height, area);
@@ -121,7 +126,12 @@ pub(super) fn draw_modal_with(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(border_color))
-                    .title(format!(" {title} ")),
+                    .title(Span::styled(
+                        format!(" {title} "),
+                        Style::default()
+                            .fg(border_color)
+                            .add_modifier(Modifier::BOLD),
+                    )),
             )
             .wrap(Wrap { trim: false }),
         popup,
@@ -139,7 +149,68 @@ pub(super) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
+/// Panel chrome: active gets a full accent frame; inactive keeps a light left bar
+/// so the UI is less “box of boxes”.
+pub(super) fn panel_block(title: &str, active: bool) -> Block<'static> {
+    let (borders, border) = if active {
+        (Borders::ALL, theme::BORDER_ACTIVE)
+    } else {
+        (Borders::LEFT, theme::BORDER_INACTIVE)
+    };
+    Block::default()
+        .borders(borders)
+        .border_style(Style::default().fg(border))
+        .title(Span::styled(
+            title.to_string(),
+            if active {
+                theme::title()
+            } else {
+                theme::label()
+            },
+        ))
+}
+
+/// Soft section block (left accent only) for secondary content.
+pub(super) fn soft_block(title: &str) -> Block<'static> {
+    panel_block(title, false)
+}
+
+/// Full active block for the focused panel.
+pub(super) fn active_block(title: &str) -> Block<'static> {
+    panel_block(title, true)
+}
+
+/// One-line guided next-step banner (fills `area` height 1).
+pub(super) fn draw_banner(frame: &mut Frame, area: Rect, kind: ToastLevel, text: &str) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let (icon, style) = match kind {
+        ToastLevel::Info => (
+            theme::icon::SELECT,
+            Style::default().fg(theme::ON_ACCENT).bg(theme::ACCENT),
+        ),
+        ToastLevel::Success => (
+            theme::icon::OK,
+            Style::default().fg(theme::ON_ACCENT).bg(theme::OK),
+        ),
+        ToastLevel::Warning => (
+            theme::icon::WARN,
+            Style::default().fg(theme::ON_ACCENT).bg(theme::WARN),
+        ),
+        ToastLevel::Error => (
+            theme::icon::ERROR,
+            Style::default().fg(theme::TEXT).bg(theme::DANGER),
+        ),
+    };
+    let line = format!(" {icon}  {text} ");
+    frame.render_widget(Paragraph::new(line).style(style), area);
+}
+
 /// Bordered stateful list; records `area` into `click_target` for hit-testing.
+///
+/// Active lists use a full frame; inactive lists use a left accent only.
+/// Hit-testing still uses the full `area` rect.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_list(
     frame: &mut Frame,
@@ -150,16 +221,12 @@ pub(super) fn render_list(
     active: bool,
     click_target: &std::cell::Cell<Rect>,
 ) {
-    click_target.set(area);
-    let border = if active {
-        theme::BORDER_ACTIVE
-    } else {
-        theme::BORDER_INACTIVE
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border))
-        .title(title.to_string());
+    // Only the focused list is clickable; inactive side panels must not steal
+    // (or mis-map) hit-testing — they use thinner left-only chrome.
+    if active {
+        click_target.set(area);
+    }
+    let block = panel_block(title, active);
     let highlight = if active {
         theme::highlight_active()
     } else {
@@ -168,43 +235,68 @@ pub(super) fn render_list(
     let list = List::new(rows)
         .block(block)
         .highlight_style(highlight)
-        .highlight_symbol("▸ ");
+        .highlight_symbol(format!("{} ", theme::icon::SELECT));
     let mut state = ListState::default();
     state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// Inner row index of a click inside a bordered widget, if it landed on a content row.
+/// Inner row index of a click inside a list panel, if it landed on a content row.
 ///
-/// Assumes a 1-cell border and no vertical scroll offset (the lists are short
-/// enough to always fit), so inner row `n` maps to item `n`.  Callers bounds-check
-/// the returned index against the actual item count.
+/// Active lists use a 1-cell full border; inactive lists use a left bar only
+/// (title sits on the first row). Callers pass `active` to match `render_list`.
+/// No vertical scroll offset — lists are short enough to always fit.
 pub(super) fn row_in_rect(rect: Rect, col: u16, row: u16) -> Option<usize> {
-    if rect.width < 2 || rect.height < 2 {
+    row_in_rect_ex(rect, col, row, true)
+}
+
+/// Like [`row_in_rect`], with an explicit active/inactive chrome mode.
+pub(super) fn row_in_rect_ex(rect: Rect, col: u16, row: u16, active: bool) -> Option<usize> {
+    if rect.width < 2 || rect.height < 1 {
         return None;
     }
-    let inside_x = col > rect.x && col < rect.x + rect.width - 1;
-    let inside_y = row > rect.y && row < rect.y + rect.height - 1;
-    if inside_x && inside_y {
-        Some((row - rect.y - 1) as usize)
+    if active {
+        if rect.height < 2 {
+            return None;
+        }
+        let inside_x = col > rect.x && col < rect.x + rect.width - 1;
+        let inside_y = row > rect.y && row < rect.y + rect.height - 1;
+        if inside_x && inside_y {
+            Some((row - rect.y - 1) as usize)
+        } else {
+            None
+        }
     } else {
-        None
+        // Left border only: content starts at x+1, title/content from y.
+        let inside_x = col > rect.x && col < rect.x + rect.width;
+        let inside_y = row >= rect.y && row < rect.y + rect.height;
+        if inside_x && inside_y {
+            // Title occupies the first row of the block; skip it when present.
+            let inner = row.saturating_sub(rect.y).saturating_sub(1);
+            Some(inner as usize)
+        } else {
+            None
+        }
     }
 }
 
 pub(super) fn field_line(label: &str, value: &str, active: bool) -> Line<'static> {
     let value_style = if active {
-        Style::default().fg(Color::Black).bg(theme::ACCENT)
+        Style::default().fg(theme::ON_ACCENT).bg(theme::ACCENT)
     } else {
         Style::default().fg(theme::DIM)
     };
-    let prefix = if active { "● " } else { "  " };
+    let prefix = if active {
+        format!("{} ", theme::icon::RUNNING)
+    } else {
+        "  ".into()
+    };
     Line::from(vec![
         Span::styled(
             prefix,
             Style::default().fg(if active { theme::ACCENT } else { theme::MUTED }),
         ),
-        Span::raw(format!("{label}: ")),
+        Span::styled(format!("{label}: "), theme::label()),
         Span::styled(format!(" {value} "), value_style),
     ])
 }
@@ -212,7 +304,7 @@ pub(super) fn field_line(label: &str, value: &str, active: bool) -> Line<'static
 /// Scrolling log pane fed from a job's captured output.
 /// Applies basic coloring to ERROR/WARN/INFO lines for scannability.
 pub(super) fn draw_log(frame: &mut Frame, area: Rect, log: Option<&[String]>, title: &str) {
-    let height = area.height.saturating_sub(2) as usize;
+    let height = area.height.saturating_sub(1) as usize; // left bar chrome
     let lines: Vec<Line> = match log {
         Some(log) => {
             let start = log.len().saturating_sub(height);
@@ -237,15 +329,7 @@ pub(super) fn draw_log(frame: &mut Frame, area: Rect, log: Option<&[String]>, ti
         }
         None => vec![Line::raw("")],
     };
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::MUTED))
-                .title(title.to_string()),
-        ),
-        area,
-    );
+    frame.render_widget(Paragraph::new(lines).block(soft_block(title)), area);
 }
 
 // ---------------------------------------------------------------------------
@@ -258,14 +342,26 @@ pub(super) struct TabDef {
     pub label: &'static str,
 }
 
+/// Optional badge text shown after a tab label (e.g. download count).
+pub(super) struct TabBadge {
+    pub text: String,
+    pub style: Style,
+}
+
 /// Render the horizontal tab bar.  Returns the tab hit-test regions as a
 /// `Vec<(Rect, usize)>` where `usize` is the screen index.
+///
+/// Active tab is a filled accent chip. Optional `badges[i]` appends a compact
+/// status mark after tab `i`'s label. When `tabs_focused`, the bar is visually
+/// emphasized so keyboard users can see ↑ reached the chrome.
 pub(super) fn draw_tab_bar(
     frame: &mut Frame,
     area: Rect,
     tabs: &[TabDef],
     active: usize,
     status_spans: Vec<Span<'static>>,
+    badges: &[Option<TabBadge>],
+    tabs_focused: bool,
 ) -> Vec<(Rect, usize)> {
     let mut hits = Vec::new();
     // Row 0: title + tabs + status.
@@ -283,26 +379,42 @@ pub(super) fn draw_tab_bar(
         height: 1,
     };
 
-    // Build tab line.
-    let title = Span::styled(
-        " AX Engine  ",
-        Style::default()
-            .fg(theme::ACCENT)
-            .add_modifier(Modifier::BOLD),
-    );
-    let mut spans: Vec<Span> = vec![Span::raw(" "), title];
-    let mut col_cursor: u16 = 13; // " AX Engine  " is 12 chars, plus leading " " = 13
+    let brand = " AX Engine ";
+    let mut spans: Vec<Span> = vec![
+        Span::raw(" "),
+        Span::styled(brand, theme::title()),
+        Span::raw(" "),
+    ];
+    // leading space + brand + trailing space
+    let mut col_cursor: u16 = 1 + brand.chars().count() as u16 + 1;
 
     for (i, tab) in tabs.iter().enumerate() {
         let is_active = i == active;
-        let label_text = format!(" {} {} ", tab.num, tab.label);
+        let badge = badges.get(i).and_then(|b| b.as_ref());
+        let label_text = match badge {
+            Some(b) if !b.text.is_empty() => {
+                format!(" {} {} {} ", tab.num, tab.label, b.text)
+            }
+            _ => format!(" {} {} ", tab.num, tab.label),
+        };
         let label_width = label_text.chars().count() as u16;
-        let style = if is_active {
+        let style = if is_active && tabs_focused {
+            // Keyboard focus on the bar: brighter filled chip + reverse edge.
             Style::default()
-                .fg(theme::ACCENT)
+                .fg(theme::ON_ACCENT)
+                .bg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if is_active {
+            theme::tab_active()
+        } else if tabs_focused {
+            // Other tabs stay readable while the bar owns focus.
+            Style::default().fg(theme::TEXT)
+        } else if let Some(b) = badge.filter(|b| !b.text.is_empty()) {
+            // Inactive tab with a status badge: keep dim label, tint badge via
+            // the whole chip so the count remains visible.
+            b.style.add_modifier(Modifier::DIM)
         } else {
-            Style::default().fg(theme::DIM)
+            theme::tab_inactive()
         };
         spans.push(Span::styled(label_text, style));
         let tab_rect = Rect {
@@ -313,6 +425,7 @@ pub(super) fn draw_tab_bar(
         };
         hits.push((tab_rect, i));
         col_cursor += label_width + 1; // 1 space between tabs
+        spans.push(Span::raw(" "));
     }
 
     // Right-align status spans by padding with spaces.
@@ -330,10 +443,14 @@ pub(super) fn draw_tab_bar(
 
     frame.render_widget(Paragraph::new(Line::from(spans)), row0);
 
-    // Separator line.
+    // Separator: accent while the tab bar owns keyboard focus.
     let sep = "─".repeat(area.width as usize);
     frame.render_widget(
-        Paragraph::new(sep).style(Style::default().fg(theme::BORDER_INACTIVE)),
+        Paragraph::new(sep).style(Style::default().fg(if tabs_focused {
+            theme::ACCENT
+        } else {
+            theme::BORDER_INACTIVE
+        })),
         row1,
     );
 

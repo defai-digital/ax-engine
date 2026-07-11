@@ -1,5 +1,6 @@
 //! Serve screen: pick an installed model, start/stop `ax-engine-server`,
 //! copy the URL, see a ready-to-paste curl example, and jump to Chat.
+//! When the server is live, the layout prioritizes status + chat handoff.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -7,12 +8,13 @@ use std::process::{Command, Stdio};
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
+use ratatui::widgets::{ListItem, Paragraph};
 
 use crate::tui::catalog::{self, installed_variants};
-use crate::tui::widgets::{self, field_line};
+use crate::tui::theme;
+use crate::tui::widgets::{self, ToastLevel, field_line};
 use crate::tui::{App, Modal, Screen, ServeFocus};
 
 impl App {
@@ -20,7 +22,11 @@ impl App {
         match self.serve_focus {
             ServeFocus::List => match code {
                 KeyCode::Up | KeyCode::Char('k') => {
-                    self.serve_idx = self.serve_idx.saturating_sub(1)
+                    if self.serve_idx == 0 {
+                        self.focus_tab_bar();
+                    } else {
+                        self.serve_idx = self.serve_idx.saturating_sub(1);
+                    }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if self.serve_idx + 1 < installed_variants(&self.families).len() {
@@ -96,27 +102,87 @@ impl App {
     }
 
     pub(crate) fn draw_serve(&self, frame: &mut Frame, area: Rect) {
-        // Two-panel layout: model list on top, server config + log below.
-        let panels = Layout::vertical([
-            Constraint::Min(3),
-            Constraint::Length(8),
-            Constraint::Min(3),
-        ])
-        .split(area);
+        let banner = if self.server_ready {
+            Some((
+                ToastLevel::Success,
+                "Running — press t Chat · c copy URL · x stop".to_string(),
+            ))
+        } else if self.server_running() {
+            Some((
+                ToastLevel::Warning,
+                "Starting… large models can take a minute to load".to_string(),
+            ))
+        } else {
+            None
+        };
 
+        let body = if let Some((kind, text)) = &banner {
+            let split = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+            widgets::draw_banner(frame, split[0], *kind, text);
+            split[1]
+        } else {
+            area
+        };
+
+        // Live server: status first, compact model list, then log.
+        // Idle: model list first, then config + log.
+        let panels = if self.server_ready || self.server_running() {
+            Layout::vertical([
+                Constraint::Length(7),
+                Constraint::Min(3),
+                Constraint::Min(3),
+            ])
+            .split(body)
+        } else {
+            Layout::vertical([
+                Constraint::Min(3),
+                Constraint::Length(7),
+                Constraint::Min(3),
+            ])
+            .split(body)
+        };
+
+        if self.server_ready || self.server_running() {
+            self.draw_server_panel(frame, panels[0]);
+            self.draw_serve_model_list(frame, panels[1]);
+            widgets::draw_log(
+                frame,
+                panels[2],
+                self.server.as_ref().map(|job| job.log.as_slice()),
+                " Log ",
+            );
+        } else {
+            self.draw_serve_model_list(frame, panels[0]);
+            self.draw_server_panel(frame, panels[1]);
+            widgets::draw_log(
+                frame,
+                panels[2],
+                self.server.as_ref().map(|job| job.log.as_slice()),
+                " Log ",
+            );
+        }
+    }
+
+    fn draw_serve_model_list(&self, frame: &mut Frame, area: Rect) {
         let pairs = installed_variants(&self.families);
         let rows: Vec<ListItem> = if pairs.is_empty() {
             vec![
                 ListItem::new(Line::raw("")),
                 ListItem::new(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled("No installed models", Style::default().fg(Color::Yellow)),
+                    Span::styled("No installed models", theme::warn()),
                 ])),
                 ListItem::new(Line::raw("")),
-                ListItem::new(Line::from(Span::styled(
-                    "  Download one on the Models tab first.",
-                    Style::default().fg(Color::DarkGray),
-                ))),
+                ListItem::new(Line::from(vec![
+                    Span::styled("  Press ", theme::label()),
+                    Span::styled(
+                        "2",
+                        Style::default()
+                            .fg(theme::ACCENT)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" Models to download one first.", theme::label()),
+                ])),
             ]
         } else {
             pairs
@@ -130,15 +196,18 @@ impl App {
                     ));
                     ListItem::new(Line::from(vec![
                         Span::styled(
-                            format!("{:<22}", v.profile.label),
-                            Style::default().add_modifier(Modifier::BOLD),
+                            format!("{:<16}", family.display_name()),
+                            Style::default()
+                                .fg(theme::TEXT)
+                                .add_modifier(Modifier::BOLD),
                         ),
+                        Span::styled(format!("{:<7}", v.precision()), theme::body_dim()),
                         Span::styled(
-                            format!("{:<12}", catalog::format_bytes(v.size)),
-                            Style::default().fg(Color::Gray),
+                            format!("{:>9}", catalog::format_bytes(v.size)),
+                            theme::body_dim(),
                         ),
+                        Span::raw(" "),
                         fit,
-                        Span::raw(v.profile.repo_id),
                     ]))
                 })
                 .collect()
@@ -146,20 +215,12 @@ impl App {
         let list_active = self.serve_focus == ServeFocus::List;
         widgets::render_list(
             frame,
-            panels[0],
-            " Installed models — Enter to serve ",
+            area,
+            " Models — Enter to serve ",
             rows,
             self.serve_idx,
             list_active,
             &self.content_list_rect,
-        );
-
-        self.draw_server_panel(frame, panels[1]);
-        widgets::draw_log(
-            frame,
-            panels[2],
-            self.server.as_ref().map(|job| job.log.as_slice()),
-            " Server log ",
         );
     }
 
@@ -168,41 +229,41 @@ impl App {
         let port_line = field_line("Port", &self.port, self.serve_focus == ServeFocus::Port);
         let status = match (&self.server_url, &self.server) {
             (Some(url), Some(job)) if job.done.is_none() && self.server_ready => Line::from(vec![
-                Span::styled(" ● ", Style::default().fg(Color::Green)),
-                Span::styled("running at ", Style::default().fg(Color::Green)),
+                Span::styled(format!(" {} ", theme::icon::RUNNING), theme::ok()),
+                Span::styled("running at ", theme::ok()),
                 Span::styled(
                     url.clone(),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme::OK).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("   c copy · t chat", Style::default().fg(Color::DarkGray)),
+                Span::raw("  "),
+                Span::styled(" t chat ", theme::cta()),
+                Span::styled("  c copy", theme::label()),
             ]),
             (Some(_), Some(job)) if job.done.is_none() => Line::from(vec![
-                Span::styled(" ◌ ", Style::default().fg(Color::Yellow)),
+                Span::styled(format!(" {} ", theme::icon::QUEUED), theme::warn()),
                 Span::styled(
                     "starting… (large models can take a minute to load)",
-                    Style::default().fg(Color::Yellow),
+                    theme::warn(),
                 ),
             ]),
             (_, Some(job)) if job.done.is_some() => Line::from(vec![
-                Span::styled(" ✗ ", Style::default().fg(Color::Red)),
+                Span::styled(format!(" {} ", theme::icon::ERROR), theme::danger()),
                 Span::styled(
                     format!(
                         "failed: {}",
                         self.server_error_line()
                             .unwrap_or_else(|| "see log below".into())
                     ),
-                    Style::default().fg(Color::Red),
+                    theme::danger(),
                 ),
             ]),
             _ => Line::from(vec![
-                Span::styled(" ○ ", Style::default().fg(Color::DarkGray)),
-                Span::styled("stopped", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!(" {} ", theme::icon::IDLE), theme::label()),
+                Span::styled("stopped — pick a model and press Enter", theme::label()),
             ]),
         };
         let error_line = match self.port_error() {
-            Some(err) => Line::from(Span::styled(err, Style::default().fg(Color::Red))),
+            Some(err) => Line::from(Span::styled(err, theme::danger())),
             None => Line::raw(""),
         };
         let curl_line = match (&self.server_url, self.server_ready) {
@@ -210,15 +271,20 @@ impl App {
                 format!(
                     "curl {url}/v1/chat/completions -H 'Content-Type: application/json' -d '{{\"messages\":[{{\"role\":\"user\",\"content\":\"Hi\"}}]}}'"
                 ),
-                Style::default().fg(Color::DarkGray),
+                theme::label(),
             )),
             _ => Line::raw(""),
         };
+        let active = matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port)
+            || self.server_ready
+            || self.server_running();
         frame.render_widget(
             Paragraph::new(vec![host_line, port_line, error_line, status, curl_line]).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Server (Enter start · x stop · Tab fields) "),
+                if active {
+                    widgets::active_block(" Server ")
+                } else {
+                    widgets::soft_block(" Server ")
+                },
             ),
             area,
         );

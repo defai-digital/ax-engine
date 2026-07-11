@@ -55,13 +55,13 @@ pub(crate) fn cmd_tui(args: &[OsString]) -> Result<u8, String> {
             "ax-engine tui — guided model downloader, server launcher, and chat.\n\n\
              Screens: 1 Home · 2 Models · 3 Downloads · 4 Serve · 5 Chat.\n\
              Home shows your hardware and a Quick start action.  The Models\n\
-             wizard walks family -> precision (with size and RAM-fit info) ->\n\
-             optional MTP speed-up -> a confirm summary before anything is\n\
-             downloaded.  Downloads run in a background queue with live\n\
-             progress; Serve launches ax-engine-server; Chat streams replies\n\
-             from the running server.\n\
-             Keys: 1-5 screens · ↑↓ move · Enter select · Esc back · ? help · q quit\n\
-             (quitting asks first while downloads or the server are running)."
+             wizard walks family -> size (with RAM-fit info) -> optional\n\
+             speed-up -> a confirm summary before anything is downloaded.\n\
+             Downloads run in a background queue with live progress; Serve\n\
+             launches ax-engine-server; Chat streams replies from the server.\n\
+             Keys: 1-5 screens (Ctrl+1-5 while typing) · ↑↓ move · Enter select\n\
+             · Esc back one level · ? help · q quit\n\
+             (quitting asks first while jobs are running)."
         );
         return Ok(0);
     }
@@ -224,6 +224,10 @@ struct App {
     // Chat
     pub chat: ChatState,
 
+    /// When true, keyboard focus is on the top tab bar (1–5 screens).
+    /// Up from the first content row enters this mode; Down/Enter leaves it.
+    pub focus_tabs: bool,
+
     // Click-target rects recorded during the last draw (immediate-mode hit-testing).
     tab_hits: Cell<Vec<(Rect, usize)>>,
     pub content_list_rect: Cell<Rect>,
@@ -265,6 +269,7 @@ impl App {
             server_ready: false,
             server_model: None,
             chat: ChatState::new(),
+            focus_tabs: false,
             tab_hits: Cell::new(Vec::new()),
             content_list_rect: Cell::new(Rect::default()),
             step_header_rect: Cell::new(Rect::default()),
@@ -315,23 +320,70 @@ impl App {
 
     /// Advance all background jobs and time-based UI state by one poll cycle.
     fn tick(&mut self) {
-        let mut finished: Vec<String> = Vec::new();
-        for task in &mut self.downloads {
+        let mut finished: Vec<(usize, String)> = Vec::new();
+        for (idx, task) in self.downloads.iter_mut().enumerate() {
             if task.tick() {
-                finished.push(task.label.clone());
+                finished.push((idx, task.label.clone()));
             }
         }
-        for label in finished {
-            self.toast_success(format!("{label} ready"));
+        for (idx, label) in finished {
+            self.toast_success(format!("{label} ready — Enter to serve"));
             self.reload_families();
+            // Guided handoff: jump to Downloads and select the ready item,
+            // unless the user is mid-chat.
+            if self.screen != Screen::Chat {
+                self.screen = Screen::Downloads;
+                self.download_idx = idx;
+            }
         }
         self.start_next_queued_download();
         if let Some(job) = &mut self.server {
             job.tick();
         }
+        let was_ready = self.server_ready;
         self.update_server_ready();
+        if self.server_ready && !was_ready {
+            self.toast_success("Server ready — press t Chat");
+        }
         self.chat.tick();
         widgets::expire_toasts(&mut self.toasts);
+        self.clamp_list_indices();
+    }
+
+    /// Keep selection indices in range after installs/deletes/queue changes.
+    fn clamp_list_indices(&mut self) {
+        let n_dl = self.downloads.len();
+        if n_dl == 0 {
+            self.download_idx = 0;
+        } else if self.download_idx >= n_dl {
+            self.download_idx = n_dl - 1;
+        }
+        let n_serve = installed_variants(&self.families).len();
+        if n_serve == 0 {
+            self.serve_idx = 0;
+        } else if self.serve_idx >= n_serve {
+            self.serve_idx = n_serve - 1;
+        }
+        if self.families.is_empty() {
+            self.family_idx = 0;
+            self.precision_idx = 0;
+        } else {
+            if self.family_idx >= self.families.len() {
+                self.family_idx = self.families.len() - 1;
+            }
+            let n_var = self.families[self.family_idx].variants.len();
+            if n_var == 0 {
+                self.precision_idx = 0;
+            } else if self.precision_idx >= n_var {
+                self.precision_idx = n_var - 1;
+            }
+        }
+        let n_home = self.home_actions().len();
+        if n_home == 0 {
+            self.home_idx = 0;
+        } else if self.home_idx >= n_home {
+            self.home_idx = n_home - 1;
+        }
     }
 
     // -- input ----------------------------------------------------------------
@@ -350,6 +402,35 @@ impl App {
             self.show_help = false;
             return;
         }
+        // Ctrl+1–5 always switches screens, even while typing in Chat / fields.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && let KeyCode::Char(c @ '1'..='5') = key.code
+        {
+            self.goto_screen(SCREENS[(c as usize) - ('1' as usize)]);
+            return;
+        }
+        // While the tab bar owns focus, navigation shortcuts always apply —
+        // do not let Chat/host/filter typing swallow 1–5 / q / arrows.
+        if self.focus_tabs {
+            match key.code {
+                KeyCode::Char('?') => {
+                    self.show_help = true;
+                    return;
+                }
+                KeyCode::Char('q') => {
+                    self.request_quit();
+                    return;
+                }
+                KeyCode::Char(c @ '1'..='5') => {
+                    self.goto_screen(SCREENS[(c as usize) - ('1' as usize)]);
+                    return;
+                }
+                _ => {}
+            }
+            if self.on_key_tabs(key.code) {
+                return;
+            }
+        }
         if !self.typing() {
             match key.code {
                 KeyCode::Char('?') => {
@@ -361,7 +442,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char(c @ '1'..='5') => {
-                    self.screen = SCREENS[(c as usize) - ('1' as usize)];
+                    self.goto_screen(SCREENS[(c as usize) - ('1' as usize)]);
                     return;
                 }
                 _ => {}
@@ -376,8 +457,59 @@ impl App {
         }
     }
 
+    /// Switch screens and drop tab-bar focus back into content (unless staying
+    /// on the bar after Left/Right while already focused).
+    fn goto_screen(&mut self, screen: Screen) {
+        self.screen = screen;
+        self.focus_tabs = false;
+    }
+
+    /// Move keyboard focus onto the top tab bar (1 Home · 2 Models · …).
+    /// Leaves any text-entry sub-mode so the bar actually owns the keyboard.
+    pub(crate) fn focus_tab_bar(&mut self) {
+        self.focus_tabs = true;
+        self.filtering = false;
+        if matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port) {
+            self.serve_focus = ServeFocus::List;
+        }
+    }
+
+    /// Handle keys while the tab bar owns focus. Returns true if consumed.
+    fn on_key_tabs(&mut self, code: KeyCode) -> bool {
+        let idx = screen_index(self.screen);
+        match code {
+            KeyCode::Left | KeyCode::Char('h') => {
+                if idx > 0 {
+                    self.screen = SCREENS[idx - 1];
+                }
+                true
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if idx + 1 < SCREENS.len() {
+                    self.screen = SCREENS[idx + 1];
+                }
+                true
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter => {
+                self.focus_tabs = false;
+                true
+            }
+            KeyCode::Up | KeyCode::Char('k') => true, // already on the bar
+            KeyCode::Esc => {
+                self.focus_tabs = false;
+                true
+            }
+            // Any other key leaves the bar so screen handlers can run.
+            _ => {
+                self.focus_tabs = false;
+                false
+            }
+        }
+    }
+
     /// True while a screen is consuming plain characters (filter, host/port,
     /// chat input), so global single-letter shortcuts must stay inert.
+    /// Screen switches remain available via Ctrl+1–5.
     fn typing(&self) -> bool {
         match self.screen {
             Screen::Models => self.stage == WizardStage::Families && self.filtering,
@@ -547,6 +679,10 @@ impl App {
 
     /// Wheel scroll routes to the active screen's existing up/down handler.
     fn scroll(&mut self, code: KeyCode) {
+        if self.focus_tabs {
+            let _ = self.on_key_tabs(code);
+            return;
+        }
         match self.screen {
             Screen::Home => self.on_key_home(code),
             Screen::Models => self.on_key_models(code),
@@ -568,9 +704,11 @@ impl App {
         });
         self.tab_hits.set(tab_hits);
         if let Some(idx) = clicked_tab {
-            self.screen = SCREENS[idx];
+            self.goto_screen(SCREENS[idx]);
             return;
         }
+        // Clicking content leaves tab-bar focus.
+        self.focus_tabs = false;
         // Step header click (breadcrumb navigation) on the Models screen.
         if self.screen == Screen::Models {
             let hdr = self.step_header_rect.get();
@@ -625,7 +763,12 @@ impl App {
     }
 
     fn serve_installed(&mut self, family_idx: usize, variant_idx: usize) {
-        if self.port_error().is_some() || self.server_running() {
+        if let Some(err) = self.port_error() {
+            self.toast_error(err);
+            return;
+        }
+        if self.server_running() {
+            self.toast_warn("stop the running server first (x on Serve)");
             return;
         }
         let Some(variant) = self
@@ -641,7 +784,12 @@ impl App {
     }
 
     fn start_server_for_download(&mut self, download_idx: usize) {
-        if self.port_error().is_some() || self.server_running() {
+        if let Some(err) = self.port_error() {
+            self.toast_error(err);
+            return;
+        }
+        if self.server_running() {
+            self.toast_warn("stop the running server first (x on Serve)");
             return;
         }
         let Some(task) = self.downloads.get(download_idx) else {
@@ -776,11 +924,11 @@ impl App {
                 .filter(|job| job.speed > 0.0)
                 .map(|job| format!(" · {}/s", catalog::format_bytes(job.speed as u64)))
                 .unwrap_or_default();
-            return Some((format!("{}{pct}{speed}", task.label), Color::Cyan));
+            return Some((format!("{}{pct}{speed}", task.label), theme::ACCENT));
         }
         let queued = self.downloads.iter().filter(|t| t.is_queued()).count();
         if queued > 0 {
-            return Some((format!("{queued} queued"), Color::Yellow));
+            return Some((format!("{queued} queued"), theme::WARN));
         }
         None
     }
@@ -792,11 +940,13 @@ impl App {
                     "{} @ {url}",
                     self.server_model.as_deref().unwrap_or("model")
                 ),
-                Color::Green,
+                theme::OK,
             ),
-            (Some(_), Some(job)) if job.done.is_none() => ("starting…".into(), Color::Yellow),
-            (_, Some(job)) if job.done.is_some() => ("failed (see Serve log)".into(), Color::Red),
-            _ => ("stopped".into(), Color::DarkGray),
+            (Some(_), Some(job)) if job.done.is_none() => ("starting…".into(), theme::WARN),
+            (_, Some(job)) if job.done.is_some() => {
+                ("failed (see Serve log)".into(), theme::DANGER)
+            }
+            _ => ("stopped".into(), theme::MUTED),
         }
     }
 
@@ -812,14 +962,17 @@ impl App {
         ])
         .split(frame.area());
 
-        // Build compact status spans for the tab bar.
+        // Build compact status spans and per-tab badges for the tab bar.
         let status_spans = self.build_status_spans();
+        let badges = self.build_tab_badges();
         let hits = widgets::draw_tab_bar(
             frame,
             outer[0],
             &TABS,
             screen_index(self.screen),
             status_spans,
+            &badges,
+            self.focus_tabs,
         );
         self.tab_hits.set(hits);
 
@@ -849,10 +1002,16 @@ impl App {
         let mut spans = Vec::new();
         let (_server_text, server_color) = self.server_summary();
         let short_server = match server_color {
-            c if c == Color::Green => "● running".to_string(),
-            c if c == Color::Yellow => "◌ starting".to_string(),
-            c if c == Color::Red => "✗ failed".to_string(),
-            _ => "○ stopped".to_string(),
+            c if c == theme::OK || c == Color::Green => {
+                format!("{} running", theme::icon::RUNNING)
+            }
+            c if c == theme::WARN || c == Color::Yellow => {
+                format!("{} starting", theme::icon::QUEUED)
+            }
+            c if c == theme::DANGER || c == Color::Red => {
+                format!("{} failed", theme::icon::ERROR)
+            }
+            _ => format!("{} stopped", theme::icon::IDLE),
         };
         spans.push(Span::styled(
             short_server,
@@ -870,10 +1029,67 @@ impl App {
         spans
     }
 
+    /// Compact badges drawn inside tab labels (download count, serve live).
+    fn build_tab_badges(&self) -> Vec<Option<widgets::TabBadge>> {
+        let active_dl = self
+            .downloads
+            .iter()
+            .filter(|t| t.is_running() || t.is_queued())
+            .count();
+        let ready_dl = self.downloads.iter().filter(|t| t.is_ready()).count();
+        let downloads_badge = if active_dl > 0 {
+            Some(widgets::TabBadge {
+                text: format!("·{active_dl}"),
+                style: Style::default().fg(theme::ACCENT),
+            })
+        } else if ready_dl > 0 {
+            Some(widgets::TabBadge {
+                text: format!("·{ready_dl}"),
+                style: Style::default().fg(theme::OK),
+            })
+        } else {
+            None
+        };
+        let serve_badge = if self.server_ready {
+            Some(widgets::TabBadge {
+                text: theme::icon::RUNNING.into(),
+                style: Style::default().fg(theme::OK),
+            })
+        } else if self.server_running() {
+            Some(widgets::TabBadge {
+                text: theme::icon::QUEUED.into(),
+                style: Style::default().fg(theme::WARN),
+            })
+        } else {
+            None
+        };
+        vec![
+            None, // Home
+            None, // Models
+            downloads_badge,
+            serve_badge,
+            None, // Chat
+        ]
+    }
+
     fn footer_line(&self) -> Line<'static> {
         use theme::{key_hint, key_label, key_sep};
         let hints: Vec<Span> = if self.modal.is_some() {
             vec![key_hint("Esc"), key_label(" close")]
+        } else if self.focus_tabs {
+            vec![
+                key_hint("←→"),
+                key_label(" screen"),
+                key_sep(),
+                key_hint("↓/Enter"),
+                key_label(" content"),
+                key_sep(),
+                key_hint("1-5"),
+                key_label(" jump"),
+                key_sep(),
+                key_hint("Esc"),
+                key_label(" content"),
+            ]
         } else {
             match self.screen {
                 Screen::Home => vec![
@@ -883,8 +1099,8 @@ impl App {
                     key_hint("Enter"),
                     key_label(" select"),
                     key_sep(),
-                    key_hint("?"),
-                    key_label(" help"),
+                    key_hint("Esc"),
+                    key_label(" back"),
                     key_sep(),
                     key_hint("q"),
                     key_label(" quit"),
@@ -977,7 +1193,7 @@ impl App {
                 ],
                 Screen::Chat if !self.server_ready => vec![
                     key_hint("4"),
-                    key_label(" serve screen"),
+                    key_label(" Serve"),
                     key_sep(),
                     key_hint("Esc"),
                     key_label(" home"),
@@ -986,11 +1202,14 @@ impl App {
                     key_hint("Enter"),
                     key_label(" send"),
                     key_sep(),
-                    key_hint("PgUp/Dn"),
-                    key_label(" scroll"),
+                    key_hint("Ctrl+J"),
+                    key_label(" newline"),
+                    key_sep(),
+                    key_hint("Ctrl+1-5"),
+                    key_label(" screens"),
                     key_sep(),
                     key_hint("Esc"),
-                    key_label(" home"),
+                    key_label(" leave"),
                 ],
             }
         };
@@ -1000,40 +1219,52 @@ impl App {
     }
 
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
-        let popup = widgets::centered_rect(74, 24, area);
+        let popup = widgets::centered_rect(74, 22, area);
+        let contextual = match self.screen {
+            Screen::Home => "Home: ↑↓ move · Enter run the highlighted action",
+            Screen::Models => "Models: wizard steps · / filter · Enter next · Esc back",
+            Screen::Downloads => "Downloads: Enter serve when ready · x cancel",
+            Screen::Serve => "Serve: Enter start · x stop · c copy URL · t chat · Tab fields",
+            Screen::Chat => "Chat: type and Enter to send · Ctrl+1-5 switch screens · Esc leave",
+        };
         let lines = vec![
             Line::from(Span::styled(
-                "AX Engine TUI",
-                Style::default().add_modifier(Modifier::BOLD),
+                "AX Engine",
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(theme::ACCENT),
             )),
             Line::raw(""),
-            Line::raw("Screens: press 1-5 (or click the tab bar) at any time."),
-            Line::raw("  1 Home       hardware summary and quick actions"),
-            Line::raw("  2 Models     wizard: family -> precision -> options -> confirm"),
-            Line::raw("  3 Downloads  background queue with live progress"),
-            Line::raw("  4 Serve      launch/stop ax-engine-server for an installed model"),
-            Line::raw("  5 Chat       talk to the running server"),
+            Line::from(Span::styled(contextual, Style::default().fg(theme::TEXT))),
             Line::raw(""),
-            Line::raw("Models"),
-            Line::raw("  Sizes are estimates; the fit badge compares them to this"),
-            Line::raw("  machine's RAM. Nothing downloads until you confirm the summary."),
-            Line::raw("  x on an installed precision deletes it (asks you to type 'delete')."),
+            Line::raw("Screens: 1-5 (or click tabs). While typing, use Ctrl+1-5."),
+            Line::raw("  1 Home        this Mac + quick start"),
+            Line::raw("  2 Models      pick family → size → optional speed-up → confirm"),
+            Line::raw("  3 Downloads   queue with live progress"),
+            Line::raw("  4 Serve       start/stop the local server"),
+            Line::raw("  5 Chat        talk to the running model"),
             Line::raw(""),
-            Line::raw("Downloads keep running while you browse; they are cancelled only"),
-            Line::raw("when you confirm quitting. Partial downloads resume next time."),
-            Line::raw(""),
-            Line::raw("Serve: Enter starts, x stops (confirmed), c copies the URL,"),
-            Line::raw("t opens Chat. Host/port are editable via Tab."),
+            Line::raw("Fit badges compare download size to this Mac's memory."),
+            Line::raw("Nothing downloads until you confirm. Partials resume later."),
             Line::raw(""),
             Line::from(Span::styled(
-                "Press any key to close this help. Esc elsewhere steps back, never quits.",
-                Style::default().fg(Color::DarkGray),
+                "Any key closes help. Esc steps back one level; q quits.",
+                Style::default().fg(theme::MUTED),
             )),
         ];
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(Color::Black)),
+            area,
+        );
         frame.render_widget(ratatui::widgets::Clear, popup);
         frame.render_widget(
             Paragraph::new(lines)
-                .block(Block::default().borders(Borders::ALL).title(" Help "))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme::ACCENT))
+                        .title(Span::styled(" Help ", theme::title())),
+                )
                 .wrap(Wrap { trim: false }),
             popup,
         );
@@ -1097,7 +1328,13 @@ impl App {
                     .families
                     .get(*family_idx)
                     .and_then(|f| f.variants.get(*variant_idx))
-                    .map(|v| format!("{} {}", self.families[*family_idx].key, v.precision()))
+                    .map(|v| {
+                        format!(
+                            "{} {}",
+                            self.families[*family_idx].display_name(),
+                            v.precision()
+                        )
+                    })
                     .unwrap_or_default();
                 widgets::draw_modal_with(
                     frame,
@@ -1147,7 +1384,11 @@ impl App {
                     .and_then(|f| f.variants.get(*variant_idx))
                     .map(|v| {
                         (
-                            format!("{} {}", self.families[*family_idx].key, v.precision()),
+                            format!(
+                                "{} {}",
+                                self.families[*family_idx].display_name(),
+                                v.precision()
+                            ),
                             catalog::repo_cache_dir(v.profile.repo_id)
                                 .display()
                                 .to_string(),

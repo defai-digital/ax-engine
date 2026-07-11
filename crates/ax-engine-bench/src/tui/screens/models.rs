@@ -7,14 +7,15 @@ use std::path::PathBuf;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{ListItem, Paragraph, Wrap};
 
 use crate::tui::catalog::{self, RamFit};
 use crate::tui::jobs::{DownloadMode, DownloadTask};
+use crate::tui::theme;
 use crate::tui::widgets::{self, DirectoryPicker};
-use crate::tui::{App, Modal, PendingDownload, Screen, WizardStage, theme};
+use crate::tui::{App, Modal, PendingDownload, Screen, WizardStage};
 
 impl App {
     // -- wizard input -----------------------------------------------------------
@@ -34,8 +35,14 @@ impl App {
                 _ => {}
             },
             WizardStage::Families => match code {
-                KeyCode::Up | KeyCode::Char('k') => self.move_family_selection(-1),
-                KeyCode::Down | KeyCode::Char('j') => self.move_family_selection(1),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if !self.move_family_selection(-1) {
+                        self.focus_tab_bar();
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let _ = self.move_family_selection(1);
+                }
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                     self.precision_idx = 0;
                     self.stage = WizardStage::Precision;
@@ -52,7 +59,11 @@ impl App {
             },
             WizardStage::Precision => match code {
                 KeyCode::Up | KeyCode::Char('k') => {
-                    self.precision_idx = self.precision_idx.saturating_sub(1)
+                    if self.precision_idx == 0 {
+                        self.focus_tab_bar();
+                    } else {
+                        self.precision_idx = self.precision_idx.saturating_sub(1);
+                    }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     let n = self.families[self.family_idx].variants.len();
@@ -90,8 +101,15 @@ impl App {
                 _ => {}
             },
             WizardStage::Options => match code {
-                KeyCode::Up | KeyCode::Down | KeyCode::Char('k') | KeyCode::Char('j') => {
-                    self.mtp_idx ^= 1;
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.mtp_idx == 0 {
+                        self.focus_tab_bar();
+                    } else {
+                        self.mtp_idx = 0;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.mtp_idx = 1;
                 }
                 KeyCode::Char('y') => self.begin_confirm(true),
                 KeyCode::Char('n') => self.begin_confirm(false),
@@ -104,6 +122,7 @@ impl App {
                 _ => {}
             },
             WizardStage::Confirm => match code {
+                KeyCode::Up | KeyCode::Char('k') => self.focus_tab_bar(),
                 KeyCode::Enter | KeyCode::Right => self.confirm_download(),
                 KeyCode::Char('c') => {
                     self.modal = Some(Modal::DestPicker(DirectoryPicker::new()));
@@ -185,27 +204,36 @@ impl App {
         self.families
             .iter()
             .enumerate()
-            .filter(|(_, f)| f.key.to_ascii_lowercase().contains(&needle))
+            .filter(|(_, f)| {
+                f.key.to_ascii_lowercase().contains(&needle)
+                    || f.display_name().to_ascii_lowercase().contains(&needle)
+            })
             .map(|(i, _)| i)
             .collect()
     }
 
     /// Move `family_idx` to the previous/next entry within the filtered list.
-    fn move_family_selection(&mut self, delta: i32) {
+    /// Returns false when an Up press is already at the first row (caller may
+    /// promote focus to the tab bar).
+    fn move_family_selection(&mut self, delta: i32) -> bool {
         let indices = self.filtered_family_indices();
         if indices.is_empty() {
-            return;
+            return false;
         }
         let pos = indices
             .iter()
             .position(|&i| i == self.family_idx)
             .unwrap_or(0);
+        if delta < 0 && pos == 0 {
+            return false;
+        }
         let new_pos = if delta < 0 {
             pos.saturating_sub(1)
         } else {
             (pos + 1).min(indices.len() - 1)
         };
         self.family_idx = indices[new_pos];
+        true
     }
 
     /// After the filter text changes, snap `family_idx` back into the filtered set if needed.
@@ -278,7 +306,7 @@ impl App {
             .unwrap_or_else(|| catalog::repo_cache_dir(repo_id));
         let label = format!(
             "{} {}",
-            self.families[pending.family_idx].key,
+            self.families[pending.family_idx].display_name(),
             variant.precision()
         );
         let mode = if pending.with_mtp {
@@ -319,7 +347,11 @@ impl App {
         else {
             return;
         };
-        let label = format!("{} {}", self.families[family_idx].key, variant.precision());
+        let label = format!(
+            "{} {}",
+            self.families[family_idx].display_name(),
+            variant.precision()
+        );
         let dir = catalog::repo_cache_dir(variant.profile.repo_id);
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => self.toast_success(format!("{label} deleted")),
@@ -332,18 +364,23 @@ impl App {
 
     /// Wizard steps for the header: Options only exists for MTP-capable variants.
     fn wizard_steps(&self) -> Vec<(&'static str, WizardStage)> {
-        let has_options = match self.stage {
-            WizardStage::Families => self.families[self.family_idx].has_mtp(),
-            _ => self.families[self.family_idx].variants[self.precision_idx]
-                .mtp_alias
-                .is_some(),
-        };
+        let has_options = self
+            .families
+            .get(self.family_idx)
+            .map(|family| match self.stage {
+                WizardStage::Families => family.has_mtp(),
+                _ => family
+                    .variants
+                    .get(self.precision_idx)
+                    .is_some_and(|v| v.mtp_alias.is_some()),
+            })
+            .unwrap_or(false);
         let mut steps = vec![
             ("Model", WizardStage::Families),
-            ("Precision", WizardStage::Precision),
+            ("Size", WizardStage::Precision),
         ];
         if has_options {
-            steps.push(("Options", WizardStage::Options));
+            steps.push(("Speed-up", WizardStage::Options));
         }
         steps.push(("Confirm", WizardStage::Confirm));
         steps
@@ -375,30 +412,72 @@ impl App {
 
     fn draw_right_hint(&self, frame: &mut Frame, area: Rect) {
         let family = &self.families[self.family_idx];
-        let lines = vec![
+        let mut lines = vec![
             Line::raw(""),
             Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    format!("{}", family.key),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    family.display_name(),
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(" selected"),
+            ]),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{} · ", family.key), theme::label()),
+                Span::styled(compact_quant_summary(family), theme::body_dim()),
+                if family.has_mtp() {
+                    Span::styled(
+                        format!("  {} speed-up", theme::icon::SPEED),
+                        theme::feature(),
+                    )
+                } else {
+                    Span::raw("")
+                },
             ]),
             Line::raw(""),
-            Line::from(Span::styled(
-                "  Press Enter or → to choose a precision.",
-                Style::default().fg(Color::DarkGray),
-            )),
+            Line::from(Span::styled("  Sizes on this machine:", theme::label())),
         ];
+        for (i, v) in family.variants.iter().enumerate() {
+            let fit = catalog::ram_fit(v.size_estimate(), self.hardware.total_ram_bytes);
+            let rec = if self.is_recommended_variant(self.family_idx, i) {
+                format!(" {}", theme::icon::STAR)
+            } else {
+                String::new()
+            };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("{:<7}{rec}", v.precision()),
+                    Style::default().fg(theme::TEXT),
+                ),
+                Span::styled(
+                    format!("{:>9}  ", catalog::format_approx_bytes(v.size_estimate())),
+                    theme::body_dim(),
+                ),
+                super::home::fit_span(fit),
+                if v.installed {
+                    Span::styled(format!(" {}", theme::icon::OK), theme::ok())
+                } else {
+                    Span::raw("")
+                },
+            ]));
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" or → pick a size", theme::label()),
+        ]));
         frame.render_widget(
             Paragraph::new(lines)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray))
-                        .title(" Details "),
-                )
+                .block(widgets::soft_block(" Details "))
                 .wrap(Wrap { trim: false }),
             area,
         );
@@ -414,29 +493,29 @@ impl App {
             .unwrap_or(0);
         let mut spans = vec![Span::styled(
             format!(" Step {} of {} — ", current + 1, steps.len()),
-            Style::default().fg(Color::DarkGray),
+            theme::label(),
         )];
         for (index, (label, _)) in steps.iter().enumerate() {
             if index > 0 {
-                spans.push(Span::styled(" › ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(" › ", theme::label()));
             }
             let style = if index == current {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD)
             } else if index < current {
                 Style::default()
-                    .fg(Color::Blue)
+                    .fg(theme::OK)
                     .add_modifier(Modifier::UNDERLINED)
             } else {
-                Style::default().fg(Color::DarkGray)
+                theme::label()
             };
             spans.push(Span::styled(*label, style));
         }
         // Selection breadcrumb.
         let mut selection = Vec::new();
         if self.stage != WizardStage::Families {
-            selection.push(self.families[self.family_idx].key.clone());
+            selection.push(self.families[self.family_idx].display_name());
             selection.push(self.families[self.family_idx].variants[self.precision_idx].precision());
         }
         if matches!(self.stage, WizardStage::Confirm)
@@ -446,17 +525,14 @@ impl App {
                 .is_some()
         {
             selection.push(if pending.with_mtp {
-                "with MTP".into()
+                "with speed-up".into()
             } else {
-                "no MTP".into()
+                "no speed-up".into()
             });
         }
         if !selection.is_empty() {
             spans.push(Span::raw("   "));
-            spans.push(Span::styled(
-                selection.join(" · "),
-                Style::default().fg(Color::Gray),
-            ));
+            spans.push(Span::styled(selection.join(" · "), theme::body_dim()));
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
@@ -470,29 +546,40 @@ impl App {
                 let family = &self.families[i];
                 let installed = family.installed_count();
                 let status = if installed == family.variants.len() {
-                    Span::styled("✓all", Style::default().fg(Color::Green))
+                    Span::styled(format!("{}all", theme::icon::OK), theme::ok())
                 } else if installed > 0 {
                     Span::styled(
                         format!("{installed}/{}", family.variants.len()),
-                        Style::default().fg(Color::Green),
+                        theme::ok(),
                     )
                 } else {
-                    Span::styled("--", Style::default().fg(Color::DarkGray))
+                    Span::styled("--", theme::label())
                 };
                 let mtp = if family.has_mtp() {
-                    Span::styled(" ⚡", Style::default().fg(theme::FEATURE))
+                    Span::styled(format!(" {}", theme::icon::SPEED), theme::feature())
                 } else {
                     Span::raw("")
                 };
+                let name = family.display_name();
+                let name_w = 14usize;
+                let name_cell = if name.chars().count() > name_w {
+                    name.chars()
+                        .take(name_w.saturating_sub(1))
+                        .collect::<String>()
+                        + "…"
+                } else {
+                    format!("{name:<name_w$}")
+                };
+                // Compact quant: "4–8b" when multi, else single.
+                let quant = compact_quant_summary(family);
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{:<12}", family.key),
-                        Style::default().add_modifier(Modifier::BOLD),
+                        name_cell,
+                        Style::default()
+                            .fg(theme::TEXT)
+                            .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!("{:<18}", family.quant_summary()),
-                        Style::default().fg(Color::Gray),
-                    ),
+                    Span::styled(format!(" {quant:<8}"), theme::body_dim()),
                     status,
                     mtp,
                 ]))
@@ -500,8 +587,8 @@ impl App {
             .collect();
         let rows = if rows.is_empty() {
             vec![ListItem::new(Line::from(Span::styled(
-                "No families match the filter.",
-                Style::default().fg(Color::Yellow),
+                "No models match the filter.",
+                theme::warn(),
             )))]
         } else {
             rows
@@ -536,41 +623,45 @@ impl App {
             .iter()
             .enumerate()
             .map(|(i, v)| {
-                let mut precision = v.precision();
-                if i == 0 {
-                    precision.push_str("  ★ recommended");
-                }
+                let rec = if self.is_recommended_variant(self.family_idx, i) {
+                    format!(" {}rec", theme::icon::STAR)
+                } else {
+                    String::new()
+                };
                 let size = Span::styled(
-                    format!("{:<12}", catalog::format_approx_bytes(v.size_estimate())),
-                    Style::default().fg(Color::Gray),
+                    format!("{:>9}", catalog::format_approx_bytes(v.size_estimate())),
+                    theme::body_dim(),
                 );
                 let fit = super::home::fit_span(catalog::ram_fit(
                     v.size_estimate(),
                     self.hardware.total_ram_bytes,
                 ));
                 let mtp = if v.mtp_alias.is_some() {
-                    Span::styled("⚡MTP ", Style::default().fg(theme::FEATURE))
+                    Span::styled(format!(" {}", theme::icon::SPEED), theme::feature())
                 } else {
-                    Span::raw("     ")
+                    Span::raw("  ")
                 };
                 let status = if v.installed {
-                    Span::styled("✓", Style::default().fg(Color::Green))
+                    Span::styled(format!(" {}", theme::icon::OK), theme::ok())
                 } else {
-                    Span::styled("--", Style::default().fg(Color::DarkGray))
+                    Span::raw("  ")
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{precision:<20}"),
-                        Style::default().add_modifier(Modifier::BOLD),
+                        format!("{:<7}{rec}", v.precision()),
+                        Style::default()
+                            .fg(theme::TEXT)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     size,
+                    Span::raw(" "),
                     fit,
                     mtp,
                     status,
                 ]))
             })
             .collect();
-        let title = format!(" {} — precision ", family.key);
+        let title = format!(" {} — size ", family.display_name());
         widgets::render_list(
             frame,
             chunks[0],
@@ -582,8 +673,11 @@ impl App {
         );
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "  ★ recommended · ↑↓ move · Enter select",
-                Style::default().fg(Color::DarkGray),
+                format!(
+                    "  {} = Quick start pick · ↑↓ move · Enter select",
+                    theme::icon::STAR
+                ),
+                theme::label(),
             ))),
             chunks[1],
         );
@@ -598,46 +692,49 @@ impl App {
             .map(|(_, extra)| catalog::format_approx_bytes(extra))
             .unwrap_or_else(|| "size varies".into());
         let opt = |label: &str, sel: bool| {
-            let style = if sel {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+            let style = if sel { theme::cta() } else { theme::body_dim() };
+            let marker = if sel {
+                format!("{} ", theme::icon::SELECT)
             } else {
-                Style::default().fg(Color::Gray)
+                "  ".into()
             };
-            let marker = if sel { "▸ " } else { "  " };
             Line::from(Span::styled(format!("  {marker}{label}  "), style))
         };
         let text = vec![
             Line::from(vec![
                 Span::styled(
-                    format!("{} {}", family.key, variant.precision()),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    format!("{} {}", family.display_name(), variant.precision()),
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(" has an optional speed-up available."),
+                Span::styled(" can run faster with an optional package.", theme::body()),
             ]),
             Line::raw(""),
-            Line::raw("MTP (multi-token prediction) downloads a small extra package"),
-            Line::from(format!(
-                "({extra}) and makes text generation noticeably faster."
+            Line::from(Span::styled(
+                format!("Faster generation downloads a small extra package ({extra})"),
+                theme::body_dim(),
             )),
-            Line::raw("There is no quality cost."),
+            Line::from(Span::styled(
+                "and speeds up replies. Quality stays the same.",
+                theme::body_dim(),
+            )),
             Line::raw(""),
             Line::from(Span::styled(
                 "Include the speed-up?",
-                Style::default().add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
-            opt("Yes — include MTP (recommended)", yes),
-            opt("No — base weights only", !yes),
+            opt("Yes — faster generation (recommended)", yes),
+            opt("No — base model only", !yes),
         ];
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::FEATURE))
-            .title(" ⚡ Optional speed-up ");
+        let block = widgets::active_block(&format!(" {} Optional speed-up ", theme::icon::SPEED));
         frame.render_widget(
-            Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
+            Paragraph::new(text)
+                .block(block.border_style(Style::default().fg(theme::FEATURE)))
+                .wrap(Wrap { trim: false }),
             area,
         );
     }
@@ -646,7 +743,7 @@ impl App {
         let Some(pending) = self.pending else {
             frame.render_widget(
                 Paragraph::new("Nothing selected yet — pick a model first.")
-                    .block(Block::default().borders(Borders::ALL).title(" Confirm ")),
+                    .block(widgets::soft_block(" Confirm ")),
                 area,
             );
             return;
@@ -668,7 +765,7 @@ impl App {
             .display()
             .to_string(),
             None => format!(
-                "{} (shared HF cache)",
+                "{} (default cache)",
                 crate::default_hf_cache_root().display()
             ),
         };
@@ -679,28 +776,28 @@ impl App {
         };
         let row = |label: &str, value: String| {
             Line::from(vec![
-                Span::styled(
-                    format!("  {label:<12}"),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(value, Style::default().fg(Color::White)),
+                Span::styled(format!("  {label:<12}"), theme::label()),
+                Span::styled(value, theme::body()),
             ])
         };
         let mut lines = vec![
             Line::from(Span::styled(
-                "  ─── Download summary ───",
+                "  Download summary",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
-            row("Model", format!("{} {}", family.key, variant.precision())),
+            row(
+                "Model",
+                format!("{} {}", family.display_name(), variant.precision()),
+            ),
             row(
                 "Speed-up",
                 if variant.mtp_alias.is_none() {
                     "not available".into()
                 } else if pending.with_mtp {
-                    "⚡ MTP included".into()
+                    format!("{} included", theme::icon::SPEED)
                 } else {
                     "no".into()
                 },
@@ -718,23 +815,29 @@ impl App {
                 ),
             ));
         }
+        if !fit.plain().is_empty() {
+            lines.push(row("Memory", fit.plain().into()));
+        }
         lines.push(Line::raw(""));
         match fit {
             RamFit::TooLarge => lines.push(Line::from(vec![
-                Span::styled("  ⚠ ", Style::default().fg(Color::Black).bg(Color::Red)),
+                Span::styled(
+                    format!("  {} ", theme::icon::WARN),
+                    Style::default().fg(theme::ON_ACCENT).bg(theme::DANGER),
+                ),
                 Span::raw(" "),
                 Span::styled(
-                    "This model likely exceeds this machine's memory.",
-                    Style::default().fg(Color::Red),
+                    "This model likely exceeds this Mac's memory.",
+                    theme::danger(),
                 ),
             ])),
             RamFit::Tight => lines.push(Line::from(vec![
-                Span::styled("  ⚠ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-                Span::raw(" "),
                 Span::styled(
-                    "Fits, but leaves little headroom.",
-                    Style::default().fg(Color::Yellow),
+                    format!("  {} ", theme::icon::WARN),
+                    Style::default().fg(theme::ON_ACCENT).bg(theme::WARN),
                 ),
+                Span::raw(" "),
+                Span::styled("Fits, but leaves little headroom.", theme::warn()),
             ])),
             _ => {}
         }
@@ -742,32 +845,39 @@ impl App {
             && total > free
         {
             lines.push(Line::from(vec![
-                Span::styled("  ⚠ ", Style::default().fg(Color::Black).bg(Color::Red)),
-                Span::raw(" "),
                 Span::styled(
-                    "Not enough free disk space.",
-                    Style::default().fg(Color::Red),
+                    format!("  {} ", theme::icon::WARN),
+                    Style::default().fg(theme::ON_ACCENT).bg(theme::DANGER),
                 ),
+                Span::raw(" "),
+                Span::styled("Not enough free disk space.", theme::danger()),
             ]));
         }
         if variant.installed && !pending.with_mtp {
             lines.push(Line::from(vec![
-                Span::styled("  ✓ ", Style::default().fg(Color::Black).bg(Color::Green)),
+                Span::styled(
+                    format!("  {} ", theme::icon::OK),
+                    Style::default().fg(theme::ON_ACCENT).bg(theme::OK),
+                ),
                 Span::raw(" "),
                 Span::styled(
                     "Already installed — re-checks the cached copy.",
-                    Style::default().fg(Color::Green),
+                    theme::ok(),
                 ),
             ]));
         }
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(" Enter download ", theme::cta()),
+            Span::styled("  c change folder  ·  Esc back", theme::label()),
+        ]));
         frame.render_widget(
             Paragraph::new(lines)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Cyan))
-                        .title(" ✓ Confirm download "),
-                )
+                .block(widgets::active_block(&format!(
+                    " {} Confirm download ",
+                    theme::icon::OK
+                )))
                 .wrap(Wrap { trim: false }),
             area,
         );
@@ -785,18 +895,20 @@ impl App {
         let error = picker
             .error
             .as_ref()
-            .map(|err| Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red))))
+            .map(|err| Line::from(Span::styled(err.clone(), theme::danger())))
             .unwrap_or_else(|| {
                 Line::from(Span::styled(
                     "Enter open · s use this folder · d default cache · ~ home · Esc cancel",
-                    Style::default().fg(Color::DarkGray),
+                    theme::label(),
                 ))
             });
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
                     " Download into a custom folder ",
-                    Style::default().add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .add_modifier(Modifier::BOLD),
                 )),
                 error,
             ]),
@@ -816,6 +928,24 @@ impl App {
             true,
             &self.content_list_rect,
         );
+    }
+}
+
+/// Compact quant range for dense family rows (`4–8b` / `6b`).
+fn compact_quant_summary(family: &crate::tui::catalog::Family) -> String {
+    let bits: Vec<u32> = family.variants.iter().filter_map(|v| v.bits).collect();
+    match bits.as_slice() {
+        [] => "--".into(),
+        [one] => format!("{one}b"),
+        many => {
+            let lo = many.iter().copied().min().unwrap_or(0);
+            let hi = many.iter().copied().max().unwrap_or(0);
+            if lo == hi {
+                format!("{lo}b")
+            } else {
+                format!("{lo}–{hi}b")
+            }
+        }
     }
 }
 

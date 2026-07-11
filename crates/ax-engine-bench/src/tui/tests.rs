@@ -259,6 +259,16 @@ fn app_starts_on_home_with_hardware_summary() {
     assert!(text.contains("Test Chip"));
     assert!(text.contains("Quick start"));
     assert!(text.contains("Browse all models"));
+    // Journey banner is present when there is a clear next step (first-run
+    // prompt, or download/server status on machines with installed models).
+    assert!(
+        text.contains("Get started")
+            || text.contains("Start here")
+            || text.contains("ready")
+            || text.contains("Downloading")
+            || text.contains("Server")
+            || text.contains("Actions")
+    );
 }
 
 #[test]
@@ -275,6 +285,71 @@ fn number_keys_switch_screens() {
     // Without a ready server, Chat is a hint screen — digits still navigate.
     app.on_key(key(KeyCode::Char('1')));
     assert_eq!(app.screen, Screen::Home);
+}
+
+#[test]
+fn up_from_first_row_focuses_tab_bar_then_left_right_switch() {
+    let mut app = new_app();
+    assert_eq!(app.screen, Screen::Home);
+    assert!(!app.focus_tabs);
+    // Home starts on the first action — further Up reaches the tab bar.
+    app.on_key(key(KeyCode::Up));
+    assert!(app.focus_tabs, "Up at top of content focuses the tab bar");
+    let text = render(&app);
+    assert!(text.contains("Home") && text.contains("Models"));
+    // Left/Right while focused switch screens and stay on the bar.
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(app.screen, Screen::Models);
+    assert!(app.focus_tabs);
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(app.screen, Screen::Downloads);
+    // Down returns focus to content.
+    app.on_key(key(KeyCode::Down));
+    assert!(!app.focus_tabs);
+    assert_eq!(app.screen, Screen::Downloads);
+}
+
+#[test]
+fn tab_bar_focus_works_even_when_chat_is_typing() {
+    // Regression: focus_tabs used to be ignored while Chat was in typing mode,
+    // so the bar looked focused but keys still went into the composer.
+    let mut app = new_app();
+    app.screen = Screen::Chat;
+    app.server_ready = true;
+    app.server_url = Some("http://127.0.0.1:8080".into());
+    app.focus_tab_bar();
+    assert!(app.focus_tabs);
+    // Chat is the last tab — Left goes to Serve and stays on the bar.
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(app.screen, Screen::Serve);
+    assert!(app.focus_tabs);
+    // Digits jump screens while the bar is focused (not typed into chat).
+    app.on_key(key(KeyCode::Char('5')));
+    assert_eq!(app.screen, Screen::Chat);
+    assert!(!app.focus_tabs);
+    assert!(
+        app.chat.input.is_empty(),
+        "tab focus must not type into chat"
+    );
+    // Re-focus bar from chat and ensure 'q' quits instead of typing.
+    app.focus_tab_bar();
+    app.on_key(key(KeyCode::Char('q')));
+    assert!(app.quit);
+    assert!(app.chat.input.is_empty());
+}
+
+#[test]
+fn serve_while_running_surfaces_toast_instead_of_silent_no_op() {
+    let mut app = new_app();
+    app.server = Some(Job::running_with_log(vec![]));
+    app.server_url = Some("http://127.0.0.1:8080".into());
+    app.serve_installed(0, 0);
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.text.contains("stop the running")),
+        "expected a warning toast when a server is already running"
+    );
 }
 
 #[test]
@@ -302,7 +377,7 @@ fn help_closes_on_any_key() {
 }
 
 #[test]
-fn esc_steps_back_and_never_quits() {
+fn esc_steps_back_one_level_and_never_quits() {
     let mut app = new_app();
     app.screen = Screen::Models;
     app.stage = WizardStage::Precision;
@@ -310,8 +385,13 @@ fn esc_steps_back_and_never_quits() {
     assert_eq!(app.stage, WizardStage::Families);
     app.on_key(key(KeyCode::Esc));
     assert_eq!(app.screen, Screen::Home);
+    // On Home, Esc moves up to the tab bar — never quits.
     app.on_key(key(KeyCode::Esc));
-    assert!(!app.quit, "Esc must never quit");
+    assert!(app.focus_tabs);
+    assert!(!app.quit, "Esc never quits; use q");
+    app.on_key(key(KeyCode::Esc));
+    assert!(!app.focus_tabs);
+    assert!(!app.quit);
 }
 
 #[test]
@@ -405,8 +485,8 @@ fn family_list_renders_with_sizes_and_mtp_badge() {
     app.screen = Screen::Models;
     let text = render(&app);
     assert!(text.contains("Models"));
-    assert!(text.contains("gemma4-e2b"));
-    assert!(text.contains("qwen3.6-35b"));
+    assert!(text.contains("Gemma 4 E2B"));
+    assert!(text.contains("Qwen 3.6 35B"));
     assert!(text.contains("bit"), "family rows show quant bits");
     assert!(text.contains('⚡'), "MTP badge should render");
     assert!(text.contains("Step 1 of"), "step header present");
@@ -420,15 +500,20 @@ fn precision_screen_lists_quants_with_fit_badges() {
     app.on_key_models(KeyCode::Enter);
     assert_eq!(app.stage, WizardStage::Precision);
     let text = render(&app);
-    assert!(text.contains("precision"));
+    assert!(text.contains("size"));
     assert!(text.contains("4-bit"));
-    assert!(text.contains("recommended"));
     assert!(text.contains("6-bit"));
     assert!(
         text.contains("fits"),
         "fit badge rendered for 64GB test RAM"
     );
-    assert!(text.contains("Step 2 of 4"), "gemma4-12b has an MTP step");
+    // Recommended star only marks the Quick start pick (smallest fit), not
+    // every family's first variant — gemma4-12b is not Quick start.
+    assert!(
+        text.contains("Step 2 of 4"),
+        "gemma4-12b has a speed-up step"
+    );
+    assert!(text.contains("Speed-up") || text.contains("Size"));
 }
 
 #[test]
@@ -460,10 +545,13 @@ fn confirm_step_shows_summary_and_default_destination() {
     assert_eq!(app.stage, WizardStage::Confirm);
     let text = render(&app);
     assert!(text.contains("Confirm download"));
-    assert!(text.contains("gemma4-e2b"));
-    assert!(text.contains("shared HF cache"));
+    assert!(text.contains("Gemma 4 E2B"));
+    assert!(text.contains("default cache"));
     assert!(text.contains("Free disk"));
-    assert!(text.contains("Step 3 of 3"), "no MTP step for gemma4-e2b");
+    assert!(
+        text.contains("Step 3 of 3"),
+        "no speed-up step for gemma4-e2b"
+    );
 }
 
 #[test]
@@ -553,7 +641,7 @@ fn filter_narrows_family_list_and_drill_in_maps_back() {
     let text = render(&app);
     assert!(text.contains("filter: gemma4-12b"));
     assert!(
-        !text.contains("gemma4-e2b"),
+        !text.contains("Gemma 4 E2B") && !text.contains("gemma4-e2b"),
         "non-matching family should be hidden"
     );
 
@@ -719,7 +807,7 @@ fn downloads_screen_renders_queue_and_gauge() {
     app.downloads
         .push(test_task(Some(Job::failed("queued test".into()))));
     let text = render(&app);
-    assert!(text.contains("Downloads"));
+    assert!(text.contains("Queue") || text.contains("Downloads"));
     assert!(text.contains("gemma4-e2b"));
     assert!(text.contains("/tmp/gemma4-e2b"));
     assert!(text.contains("queued test"));
@@ -764,7 +852,7 @@ fn serve_screen_renders_fields() {
     let mut app = new_app();
     app.screen = Screen::Serve;
     let text = render(&app);
-    assert!(text.contains("Installed models"));
+    assert!(text.contains("Models") || text.contains("Installed"));
     assert!(text.contains("Host"));
     assert!(text.contains("Port"));
 }
@@ -891,6 +979,71 @@ fn chat_input_edits_at_cursor_and_q_is_text() {
 }
 
 #[test]
+fn chat_ctrl_j_inserts_newline_and_enter_sends_structure() {
+    let mut app = new_app();
+    app.screen = Screen::Chat;
+    app.server_ready = true;
+    app.server_url = Some("http://127.0.0.1:8080".into());
+    for c in "hi".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    let mut nl = key(KeyCode::Char('j'));
+    nl.modifiers = KeyModifiers::CONTROL;
+    app.on_key(nl);
+    for c in "there".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    assert_eq!(app.chat.input, "hi\nthere");
+    // Vertical motion stays in the draft.
+    app.on_key(key(KeyCode::Up));
+    assert!(app.chat.cursor <= 2, "up moves onto first line");
+    app.on_key(key(KeyCode::Home));
+    assert_eq!(app.chat.cursor, 0);
+    // Shift+Enter also inserts a newline.
+    let mut shift_enter = key(KeyCode::Enter);
+    shift_enter.modifiers = KeyModifiers::SHIFT;
+    app.on_key(shift_enter);
+    assert!(
+        app.chat.input.starts_with('\n')
+            || app.chat.input.contains("\n\n")
+            || app.chat.input.matches('\n').count() >= 2
+    );
+}
+
+#[test]
+fn chat_ctrl_digit_switches_screens_while_typing() {
+    let mut app = new_app();
+    app.screen = Screen::Chat;
+    app.server_ready = true;
+    app.on_key(key(KeyCode::Char('h')));
+    assert_eq!(app.chat.input, "h");
+    // Bare digit is text while chat is ready.
+    app.on_key(key(KeyCode::Char('2')));
+    assert_eq!(app.chat.input, "h2");
+    assert_eq!(app.screen, Screen::Chat);
+    // Ctrl+2 always jumps to Models.
+    let mut jump = key(KeyCode::Char('2'));
+    jump.modifiers = KeyModifiers::CONTROL;
+    app.on_key(jump);
+    assert_eq!(app.screen, Screen::Models);
+}
+
+#[test]
+fn recommended_star_matches_quick_start_target() {
+    let mut app = new_app();
+    let (fi, vi) = app.quick_start_target().expect("catalog is not empty");
+    assert!(app.is_recommended_variant(fi, vi));
+    app.screen = Screen::Models;
+    app.family_idx = fi;
+    app.stage = WizardStage::Precision;
+    let text = render(&app);
+    assert!(
+        text.contains('★') || text.contains("rec") || text.contains("recommended"),
+        "Quick start variant should show the recommended star"
+    );
+}
+
+#[test]
 fn chat_esc_leaves_screen_when_not_streaming() {
     let mut app = new_app();
     app.screen = Screen::Chat;
@@ -943,6 +1096,9 @@ fn chat_transcript_renders_when_server_ready() {
     assert!(text.contains("What is AX?"));
     assert!(text.contains("gemma4-e2b"));
     assert!(text.contains("A local inference engine."));
-    // Input is now inline (no bordered block title).
-    assert!(text.contains(">"), "input prompt should render");
+    assert!(text.contains("Message"), "composer block should render");
+    assert!(
+        text.contains('›') || text.contains(">"),
+        "input prompt should render"
+    );
 }

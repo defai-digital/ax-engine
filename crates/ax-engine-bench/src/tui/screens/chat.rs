@@ -9,12 +9,13 @@ use std::process::Command;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect, Size};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tui_scrollview::ScrollView;
 
 use crate::tui::jobs::Job;
+use crate::tui::theme;
 use crate::tui::{App, Screen, widgets};
 
 pub(crate) struct ChatMessage {
@@ -172,6 +173,10 @@ impl App {
         // Hint screen (no ready server): a plain info page, not an input.
         // Global keys (1-5, q, ?) were already handled; back keys go Home.
         if !self.server_ready {
+            if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
+                self.focus_tab_bar();
+                return;
+            }
             if matches!(
                 key.code,
                 KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace
@@ -195,13 +200,21 @@ impl App {
             self.chat.cursor = 0;
             return;
         }
+        // Multi-line: Ctrl+J / Shift+Enter / Alt+Enter insert a newline; bare Enter sends.
+        if key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.insert_chat_char('\n');
+            return;
+        }
+        if key.code == KeyCode::Enter
+            && (key.modifiers.contains(KeyModifiers::SHIFT)
+                || key.modifiers.contains(KeyModifiers::ALT))
+        {
+            self.insert_chat_char('\n');
+            return;
+        }
         match key.code {
             KeyCode::Enter => self.send_chat_message(),
-            KeyCode::Char(c) => {
-                let byte_idx = char_to_byte_idx(&self.chat.input, self.chat.cursor);
-                self.chat.input.insert(byte_idx, c);
-                self.chat.cursor += 1;
-            }
+            KeyCode::Char(c) => self.insert_chat_char(c),
             KeyCode::Backspace => {
                 if self.chat.cursor > 0 {
                     self.chat.cursor -= 1;
@@ -213,13 +226,106 @@ impl App {
             KeyCode::Right => {
                 self.chat.cursor = (self.chat.cursor + 1).min(self.chat.input.chars().count());
             }
-            KeyCode::Home => self.chat.cursor = 0,
-            KeyCode::End => self.chat.cursor = self.chat.input.chars().count(),
+            KeyCode::Home => {
+                // Start of current line (after last newline), in char indices.
+                let before: Vec<char> = self.chat.input.chars().take(self.chat.cursor).collect();
+                self.chat.cursor = before
+                    .iter()
+                    .rposition(|c| *c == '\n')
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+            }
+            KeyCode::End => {
+                // End of current line (before next newline), in char indices.
+                let after: Vec<char> = self.chat.input.chars().skip(self.chat.cursor).collect();
+                if let Some(rel) = after.iter().position(|c| *c == '\n') {
+                    self.chat.cursor += rel;
+                } else {
+                    self.chat.cursor = self.chat.input.chars().count();
+                }
+            }
             KeyCode::PageUp => self.scroll_transcript(true, true),
             KeyCode::PageDown => self.scroll_transcript(false, true),
-            KeyCode::Up => self.scroll_transcript(true, false),
-            KeyCode::Down => self.scroll_transcript(false, false),
+            // Prefer vertical cursor motion inside multi-line drafts; otherwise scroll.
+            // Empty draft + at top of transcript: further Up focuses the tab bar.
+            KeyCode::Up => {
+                if self.chat.input.contains('\n') {
+                    // Top of multi-line draft → tab bar.
+                    if !self.move_chat_cursor_vert(-1) {
+                        self.focus_tab_bar();
+                    }
+                } else if self.chat.input.is_empty() {
+                    // Empty composer: scroll transcript, then promote to tabs.
+                    let at_top = self.chat.scroll.borrow().offset().y == 0;
+                    if at_top {
+                        self.focus_tab_bar();
+                    } else {
+                        self.scroll_transcript(true, false);
+                    }
+                } else {
+                    self.scroll_transcript(true, false);
+                }
+            }
+            KeyCode::Down => {
+                if self.chat.input.contains('\n') {
+                    let _ = self.move_chat_cursor_vert(1);
+                } else {
+                    self.scroll_transcript(false, false);
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn insert_chat_char(&mut self, c: char) {
+        let byte_idx = char_to_byte_idx(&self.chat.input, self.chat.cursor);
+        self.chat.input.insert(byte_idx, c);
+        self.chat.cursor += 1;
+    }
+
+    /// Move the cursor up/down by one line within a multi-line draft.
+    /// Returns false when the move is already blocked (top/bottom of draft).
+    fn move_chat_cursor_vert(&mut self, dir: i32) -> bool {
+        let text = &self.chat.input;
+        let chars: Vec<char> = text.chars().collect();
+        let cursor = self.chat.cursor.min(chars.len());
+        // Find start of current line and column.
+        let line_start = chars[..cursor]
+            .iter()
+            .rposition(|c| *c == '\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let col = cursor - line_start;
+        if dir < 0 {
+            if line_start == 0 {
+                return false;
+            }
+            let prev_end = line_start - 1; // the newline
+            let prev_start = chars[..prev_end]
+                .iter()
+                .rposition(|c| *c == '\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let prev_len = prev_end - prev_start;
+            self.chat.cursor = prev_start + col.min(prev_len);
+            true
+        } else {
+            let next_nl = chars[cursor..]
+                .iter()
+                .position(|c| *c == '\n')
+                .map(|i| cursor + i);
+            let Some(nl) = next_nl else {
+                return false;
+            };
+            let next_start = nl + 1;
+            let next_end = chars[next_start..]
+                .iter()
+                .position(|c| *c == '\n')
+                .map(|i| next_start + i)
+                .unwrap_or(chars.len());
+            let next_len = next_end - next_start;
+            self.chat.cursor = next_start + col.min(next_len);
+            true
         }
     }
 
@@ -260,7 +366,7 @@ impl App {
             return;
         }
         let Some(url) = self.server_url.clone().filter(|_| self.server_ready) else {
-            self.chat.error = Some("start a server first (Serve screen, 4)".into());
+            self.chat.error = Some("start a server first (press 4 Serve)".into());
             return;
         };
         let prompt = std::mem::take(&mut self.chat.input);
@@ -313,8 +419,8 @@ impl App {
     pub(crate) fn draw_chat(&self, frame: &mut Frame, area: Rect) {
         if !self.server_ready {
             // Centered "no server" card.
-            let card_w = 52u16.min(area.width.saturating_sub(4));
-            let card_h = 7u16.min(area.height.saturating_sub(2));
+            let card_w = 54u16.min(area.width.saturating_sub(4));
+            let card_h = 8u16.min(area.height.saturating_sub(2));
             let card = widgets::centered_rect(card_w, card_h, area);
             let lines = vec![
                 Line::raw(""),
@@ -322,37 +428,47 @@ impl App {
                     Span::raw("  "),
                     Span::styled(
                         "No server running",
-                        Style::default().add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(theme::TEXT)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ]),
                 Line::raw(""),
-                Line::from(vec![Span::raw(
-                    "  Start one on the Serve screen, then come back.",
-                )]),
+                Line::from(Span::styled(
+                    "  Start a model, then come back to chat.",
+                    theme::label(),
+                )),
                 Line::raw(""),
                 Line::from(vec![
-                    Span::raw("  "),
+                    Span::raw("  Press "),
                     Span::styled(
                         "4",
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(theme::ACCENT)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(" go to Serve", Style::default().fg(Color::DarkGray)),
+                    Span::styled(" for Serve", theme::label()),
                 ]),
             ];
             frame.render_widget(
                 Paragraph::new(lines).block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray))
-                        .title(" Chat "),
+                        .border_style(Style::default().fg(theme::BORDER_INACTIVE))
+                        .title(Span::styled(" Chat ", theme::title())),
                 ),
                 card,
             );
             return;
         }
-        let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(area);
+        // Grow the composer with hard newlines + soft wrap (cap height).
+        let input_inner_cols = area.width.saturating_sub(4).max(8) as usize;
+        let visual_lines = count_visual_lines(&self.chat.input, input_inner_cols).clamp(1, 6);
+        let input_height = ((visual_lines as u16) + 2)
+            .min(area.height.saturating_sub(4))
+            .max(3);
+        let chunks =
+            Layout::vertical([Constraint::Min(3), Constraint::Length(input_height)]).split(area);
         self.draw_chat_transcript(frame, chunks[0]);
         self.draw_chat_input(frame, chunks[1]);
     }
@@ -360,35 +476,6 @@ impl App {
     fn draw_chat_transcript(&self, frame: &mut Frame, area: Rect) {
         let mut lines: Vec<Line> = Vec::new();
         for message in self.chat.messages.iter() {
-            // Inline badge on the same line as the content.
-            let (badge, badge_style, content_style) = if message.from_user {
-                (
-                    "[You]",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                    Style::default().fg(Color::White),
-                )
-            } else {
-                let model_name = self.server_model.as_deref().unwrap_or("Model");
-                // Truncate long model names for the badge.
-                let short = if model_name.len() > 16 {
-                    &model_name[..14]
-                } else {
-                    model_name
-                };
-                let badge_text = format!("[{short}]");
-                // We need a &'static str for Span::styled, but we own the string.
-                // Use Span::raw for dynamic content.
-                let _ = badge_text;
-                (
-                    "",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                    Style::default().fg(Color::Rgb(200, 220, 200)),
-                )
-            };
             let content = if !message.from_user && message.content.is_empty() {
                 if self.chat.streaming() { "…" } else { "" }
             } else {
@@ -396,43 +483,50 @@ impl App {
             };
             let first_line = if message.from_user {
                 Line::from(vec![
-                    Span::styled(format!("{badge} "), badge_style),
                     Span::styled(
-                        content.lines().next().unwrap_or("").to_string(),
-                        content_style,
-                    ),
-                ])
-            } else {
-                let model_name = self.server_model.as_deref().unwrap_or("Model");
-                let short = if model_name.len() > 16 {
-                    &model_name[..14]
-                } else {
-                    model_name
-                };
-                Line::from(vec![
-                    Span::styled(
-                        format!("[{short}] "),
+                        "You  ",
                         Style::default()
-                            .fg(Color::Green)
+                            .fg(theme::ACCENT)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         content.lines().next().unwrap_or("").to_string(),
-                        content_style,
+                        theme::body(),
+                    ),
+                ])
+            } else {
+                let model_name = self.server_model.as_deref().unwrap_or("Model");
+                let short: String = model_name.chars().take(14).collect();
+                Line::from(vec![
+                    Span::styled(
+                        format!("{short}  "),
+                        Style::default().fg(theme::OK).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        content.lines().next().unwrap_or("").to_string(),
+                        theme::body_dim(),
                     ),
                 ])
             };
             lines.push(first_line);
             // Additional lines (indented to align after badge).
+            let indent = if message.from_user { "     " } else { "      " };
             for part in content.lines().skip(1) {
-                lines.push(Line::from(Span::styled(format!("  {part}"), content_style)));
+                lines.push(Line::from(Span::styled(
+                    format!("{indent}{part}"),
+                    if message.from_user {
+                        theme::body()
+                    } else {
+                        theme::body_dim()
+                    },
+                )));
             }
             lines.push(Line::raw(""));
         }
         if let Some(error) = &self.chat.error {
             lines.push(Line::from(vec![
-                Span::styled("✗ ", Style::default().fg(Color::Red)),
-                Span::styled(error.clone(), Style::default().fg(Color::Red)),
+                Span::styled(format!("{} ", theme::icon::ERROR), theme::danger()),
+                Span::styled(error.clone(), theme::danger()),
             ]));
         }
         let title = if self.chat.streaming() {
@@ -440,14 +534,11 @@ impl App {
         } else {
             " Chat "
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(if self.chat.streaming() {
-                Color::Yellow
-            } else {
-                Color::DarkGray
-            }))
-            .title(title);
+        let block = if self.chat.streaming() {
+            widgets::active_block(title).border_style(Style::default().fg(theme::WARN))
+        } else {
+            widgets::soft_block(title)
+        };
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
@@ -464,28 +555,65 @@ impl App {
     }
 
     fn draw_chat_input(&self, frame: &mut Frame, area: Rect) {
-        let before: String = self.chat.input.chars().take(self.chat.cursor).collect();
-        let at: String = self
-            .chat
-            .input
-            .chars()
-            .nth(self.chat.cursor)
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| " ".into());
-        let after: String = self.chat.input.chars().skip(self.chat.cursor + 1).collect();
-        let line = Line::from(vec![
-            Span::styled(
-                " > ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(before),
-            Span::styled(at, Style::default().bg(Color::Cyan).fg(Color::Black)),
-            Span::raw(after),
-        ]);
-        // Single-line inline input — no bordered block.
-        frame.render_widget(Paragraph::new(line), area);
+        let prompt = format!("{} ", theme::icon::SELECT);
+        let mut cells: Vec<(char, bool)> = prompt.chars().map(|c| (c, false)).collect();
+        for (i, c) in self.chat.input.chars().enumerate() {
+            if i == self.chat.cursor {
+                // Cursor sits on this char (or a trailing space if at end).
+            }
+            cells.push((c, i == self.chat.cursor));
+        }
+        if self.chat.cursor >= self.chat.input.chars().count() {
+            cells.push((' ', true));
+        }
+        let cols = area.width.saturating_sub(2).max(8) as usize;
+        let visual = layout_cells(&cells, cols);
+        let mut lines: Vec<Line> = visual
+            .into_iter()
+            .map(|row| {
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                let mut run = String::new();
+                let mut run_is_cursor = false;
+                for (ch, is_cursor) in row {
+                    if is_cursor != run_is_cursor && !run.is_empty() {
+                        let style = if run_is_cursor {
+                            Style::default().bg(theme::ACCENT).fg(theme::ON_ACCENT)
+                        } else {
+                            theme::body()
+                        };
+                        spans.push(Span::styled(std::mem::take(&mut run), style));
+                    }
+                    run_is_cursor = is_cursor;
+                    // Newlines are structural only — show a soft space at EOL.
+                    run.push(if ch == '\n' { ' ' } else { ch });
+                }
+                if !run.is_empty() || run_is_cursor {
+                    let style = if run_is_cursor {
+                        Style::default().bg(theme::ACCENT).fg(theme::ON_ACCENT)
+                    } else {
+                        theme::body()
+                    };
+                    spans.push(Span::styled(run, style));
+                }
+                if spans.is_empty() {
+                    spans.push(Span::styled(" ", theme::body()));
+                }
+                Line::from(spans)
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(Line::from(Span::styled(" ", theme::body())));
+        }
+        if (lines.len() as u16) + 1 < area.height {
+            lines.push(Line::from(Span::styled(
+                "Enter send · Ctrl+J / Shift+Enter newline · Ctrl+1-5 screens · Esc leave",
+                theme::label(),
+            )));
+        }
+        frame.render_widget(
+            Paragraph::new(lines).block(widgets::active_block(" Message ")),
+            area,
+        );
     }
 }
 
@@ -494,4 +622,47 @@ fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
         .nth(char_idx)
         .map(|(i, _)| i)
         .unwrap_or(text.len())
+}
+
+/// Soft-wrap + hard-newline visual line count for the composer.
+fn count_visual_lines(text: &str, cols: usize) -> usize {
+    let cols = cols.max(1);
+    let mut lines = 1usize;
+    // Leading prompt is ~2 cols.
+    let mut col = 2usize;
+    for c in text.chars() {
+        if c == '\n' {
+            lines += 1;
+            col = 0;
+        } else {
+            if col >= cols {
+                lines += 1;
+                col = 0;
+            }
+            col += 1;
+        }
+    }
+    lines
+}
+
+/// Lay out cells into visual rows, wrapping at `cols` and breaking on `\n`.
+fn layout_cells(cells: &[(char, bool)], cols: usize) -> Vec<Vec<(char, bool)>> {
+    let cols = cols.max(1);
+    let mut rows: Vec<Vec<(char, bool)>> = vec![Vec::new()];
+    let mut col = 0usize;
+    for &(ch, is_cursor) in cells {
+        if ch == '\n' {
+            rows.last_mut().unwrap().push(('\n', is_cursor));
+            rows.push(Vec::new());
+            col = 0;
+            continue;
+        }
+        if col >= cols {
+            rows.push(Vec::new());
+            col = 0;
+        }
+        rows.last_mut().unwrap().push((ch, is_cursor));
+        col += 1;
+    }
+    rows
 }

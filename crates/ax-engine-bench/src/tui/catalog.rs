@@ -52,21 +52,42 @@ impl Family {
         self.variants.iter().any(|v| v.mtp_alias.is_some())
     }
 
-    pub fn quant_summary(&self) -> String {
-        let bits: Vec<String> = self
-            .variants
-            .iter()
-            .filter_map(|v| v.bits.map(|b| format!("{b}-bit")))
-            .collect();
-        if bits.is_empty() {
-            "--".into()
-        } else {
-            bits.join(", ")
-        }
+    /// Human-readable family name for UI (alias `key` stays for filter/CLI).
+    pub fn display_name(&self) -> String {
+        family_display_name(&self.key)
     }
 
     pub fn installed_count(&self) -> usize {
         self.variants.iter().filter(|v| v.installed).count()
+    }
+}
+
+/// Friendly display name for a catalog family key.
+pub(super) fn family_display_name(key: &str) -> String {
+    match key {
+        "gemma4-e2b" => "Gemma 4 E2B".into(),
+        "gemma4-12b" => "Gemma 4 12B".into(),
+        "gemma4-26b" => "Gemma 4 26B".into(),
+        "gemma4-31b" => "Gemma 4 31B".into(),
+        "glm4.7-flash" => "GLM 4.7 Flash".into(),
+        "qwen3.6-27b" => "Qwen 3.6 27B".into(),
+        "qwen3.6-35b" => "Qwen 3.6 35B".into(),
+        other => {
+            // Fallback: turn `foo-bar` into title-ish text without inventing facts.
+            other
+                .split(|c: char| c == '-' || c == '_')
+                .map(|part| {
+                    let mut chars = part.chars();
+                    match chars.next() {
+                        Some(first) => {
+                            format!("{}{}", first.to_uppercase(), chars.as_str())
+                        }
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
     }
 }
 
@@ -247,11 +268,22 @@ pub(super) enum RamFit {
 }
 
 impl RamFit {
+    /// Short badge text for list rows (keep "fits" so scanners stay familiar).
     pub fn label(self) -> &'static str {
         match self {
             RamFit::Fits => "fits",
             RamFit::Tight => "tight",
             RamFit::TooLarge => "too large",
+            RamFit::Unknown => "",
+        }
+    }
+
+    /// Plain-language outcome for home / confirm copy.
+    pub fn plain(self) -> &'static str {
+        match self {
+            RamFit::Fits => "good for this Mac",
+            RamFit::Tight => "may be slow under load",
+            RamFit::TooLarge => "likely won't fit in memory",
             RamFit::Unknown => "",
         }
     }
