@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_state::{AppState, build_replacement_live_state};
 use crate::errors::{ErrorResponse, error_response, map_generation_service_error};
+use crate::generation::service::{GenerationServiceError, NativeGenerationService};
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
 
@@ -85,13 +86,7 @@ pub(crate) async fn load_model(
     let load_task = tokio::spawn(async move {
         let _drain_guard = drain_guard;
         let _loading_guard = LoadingFlagGuard(state_clone.clone());
-        if generation_service
-            .has_active_stepwise()
-            .await
-            .map_err(map_generation_service_error)?
-        {
-            return Err(active_stepwise_load_error());
-        }
+        ensure_no_active_stepwise(&generation_service).await?;
         // Clone the current config and swap in the new model artifacts dir.
         // Only MLX-native consumes this field; delegated backends would keep
         // serving the old model under a new identifier.
@@ -170,16 +165,10 @@ pub(crate) async fn load_model(
 
 async fn wait_for_idle_without_stepwise(
     state: &AppState,
-    generation_service: &crate::generation::service::NativeGenerationService,
+    generation_service: &NativeGenerationService,
 ) -> Result<(), HttpErrorResponse> {
     loop {
-        let has_active_stepwise_requests = generation_service
-            .has_active_stepwise()
-            .await
-            .map_err(map_generation_service_error)?;
-        if has_active_stepwise_requests {
-            return Err(active_stepwise_load_error());
-        }
+        ensure_no_active_stepwise(generation_service).await?;
         if state.admission.active_jobs() == 0 {
             return Ok(());
         }
@@ -189,6 +178,26 @@ async fn wait_for_idle_without_stepwise(
         {
             return Ok(());
         }
+    }
+}
+
+async fn ensure_no_active_stepwise(
+    generation_service: &NativeGenerationService,
+) -> Result<(), HttpErrorResponse> {
+    if !generation_service.is_ready() {
+        return Ok(());
+    }
+
+    check_active_stepwise_status(generation_service.has_active_stepwise().await)
+}
+
+fn check_active_stepwise_status(
+    status: Result<bool, GenerationServiceError>,
+) -> Result<(), HttpErrorResponse> {
+    match status {
+        Ok(false) | Err(GenerationServiceError::Unavailable) => Ok(()),
+        Ok(true) => Err(active_stepwise_load_error()),
+        Err(error) => Err(map_generation_service_error(error)),
     }
 }
 
@@ -212,7 +221,27 @@ impl Drop for LoadingFlagGuard {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use ax_engine_sdk::{
+        EngineSessionConfig, PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier,
+    };
+
+    use crate::app_state::build_app_state;
+
     use super::*;
+
+    fn delegated_config() -> EngineSessionConfig {
+        EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
+            backend_request: PreviewBackendRequest {
+                support_tier: SupportTier::LlamaCpp,
+                llama_model_path: Some(PathBuf::from("fake-model.gguf")),
+                ..PreviewBackendRequest::default()
+            },
+            ..PreviewSessionConfigRequest::default()
+        })
+        .expect("preview session config should build")
+    }
 
     #[test]
     fn load_policy_defaults_to_availability_first() {
@@ -235,5 +264,29 @@ mod tests {
         .expect("request should parse");
 
         assert_eq!(request.load_policy, LoadModelPolicy::MemoryConstrained);
+    }
+
+    #[test]
+    fn worker_stopping_during_stepwise_check_does_not_block_recovery() {
+        check_active_stepwise_status(Err(GenerationServiceError::Unavailable))
+            .expect("an unavailable worker has no live stepwise state");
+    }
+
+    #[tokio::test]
+    async fn stopped_worker_does_not_block_recovery_load() {
+        let state = build_app_state("old".to_string(), delegated_config())
+            .expect("test app state should build");
+        let generation_service = state.snapshot().generation_service;
+        generation_service
+            .shutdown()
+            .await
+            .expect("worker should stop");
+
+        ensure_no_active_stepwise(&generation_service)
+            .await
+            .expect("a stopped worker has no live stepwise state");
+        wait_for_idle_without_stepwise(&state, &generation_service)
+            .await
+            .expect("recovery load should proceed after the worker stopped");
     }
 }

@@ -877,6 +877,9 @@ resident until its replacement is ready, preserving rollback at the cost of a
 temporary two-model memory peak. Memory-constrained shuts down and joins the old
 generation worker before loading the replacement; this lowers peak memory but
 intentionally leaves the server unavailable if replacement loading fails.
+Inference remains unavailable in that state, but `/v1/model/load` stays usable
+so an operator can retry with valid artifacts and recover without restarting
+the server process.
 The `mlx_lm_delegated` backend supports blocking `/v1/generate` and SSE
 `/v1/generate/stream` through `mlx_lm.server` `/v1/completions`. It also
 supports streamed OpenAI-compatible completion/chat endpoints by forwarding
