@@ -354,7 +354,7 @@ pub(super) fn parse_ps_top_rss(raw: &str, limit: usize) -> Vec<TopProc> {
             name,
         });
     }
-    rows.sort_by(|a, b| b.rss_bytes.cmp(&a.rss_bytes));
+    rows.sort_by_key(|process| std::cmp::Reverse(process.rss_bytes));
     rows.truncate(limit);
     rows
 }

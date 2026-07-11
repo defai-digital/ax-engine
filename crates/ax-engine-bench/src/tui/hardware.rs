@@ -7,8 +7,6 @@ use std::path::Path;
 use std::process::Command;
 
 pub(super) struct HardwareInfo {
-    /// e.g. "Apple M5 Max".
-    pub chip: Option<String>,
     pub total_ram_bytes: Option<u64>,
     /// Free space on the volume holding the HF cache (the download target).
     pub free_disk_bytes: Option<u64>,
@@ -18,7 +16,6 @@ impl HardwareInfo {
     pub fn probe() -> Self {
         let cache_root = crate::default_hf_cache_root();
         HardwareInfo {
-            chip: sysctl_string("machdep.cpu.brand_string"),
             total_ram_bytes: sysctl_string("hw.memsize").and_then(|s| s.parse().ok()),
             free_disk_bytes: free_disk_bytes(&cache_root),
         }
@@ -27,7 +24,6 @@ impl HardwareInfo {
     #[cfg(test)]
     pub fn for_tests() -> Self {
         HardwareInfo {
-            chip: Some("Test Chip".into()),
             total_ram_bytes: Some(64 * 1024 * 1024 * 1024),
             free_disk_bytes: Some(500 * 1024 * 1024 * 1024),
         }

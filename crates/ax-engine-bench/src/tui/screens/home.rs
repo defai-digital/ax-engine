@@ -299,57 +299,6 @@ impl App {
         // Click target = hero + action list share; set list rect to action area only later.
     }
 
-    fn draw_home_hardware(&self, frame: &mut Frame, area: Rect) {
-        let ram = self
-            .hardware
-            .total_ram_bytes
-            .map(catalog::format_bytes)
-            .unwrap_or_else(|| "unknown".into());
-        let disk = self
-            .hardware
-            .free_disk_bytes
-            .map(catalog::format_bytes)
-            .unwrap_or_else(|| "unknown".into());
-        let installed = installed_variants(&self.families).len();
-        let lines = vec![
-            Line::from(vec![
-                Span::styled("  Chip      ", theme::label()),
-                Span::styled(
-                    self.hardware
-                        .chip
-                        .clone()
-                        .unwrap_or_else(|| "unknown".into()),
-                    Style::default()
-                        .fg(theme::TEXT)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("  Memory    ", theme::label()),
-                Span::styled(format!("{ram} unified"), theme::body()),
-            ]),
-            Line::from(vec![
-                Span::styled("  Free disk ", theme::label()),
-                Span::styled(disk, theme::body()),
-            ]),
-            Line::from(vec![
-                Span::styled("  Installed ", theme::label()),
-                if installed > 0 {
-                    Span::styled(
-                        format!("{installed} model{}", if installed == 1 { "" } else { "s" }),
-                        theme::ok(),
-                    )
-                } else {
-                    Span::styled("no models yet", theme::label())
-                },
-            ]),
-        ];
-        frame.render_widget(
-            Paragraph::new(lines).block(widgets::soft_block(" This machine ")),
-            area,
-        );
-    }
-
     fn draw_home_actions(&self, frame: &mut Frame, area: Rect, first_run: bool) {
         let rows: Vec<ListItem> = self
             .home_actions()
