@@ -58,7 +58,8 @@ ax-engine download qwen36-35b --dest /path/to/explicit-copy
 
 For an interactive flow, run `ax-engine tui`. The TUI has five screens
 (switch with `1`-`5`, or `Ctrl+1`-`5` while typing in Chat/fields): Home
-shows the machine's chip, RAM, and free disk plus a Quick start action;
+shows the machine's chip, free disk, live Memory/CPU gauges with sparklines,
+and installed-model footprint vs unified RAM, plus a Quick start action;
 Models is a four-step wizard — family → size (estimate and RAM-fit badge per
 variant) → optional speed-up (plain language, with the extra package size) →
 a confirm summary before anything downloads. The destination defaults to the

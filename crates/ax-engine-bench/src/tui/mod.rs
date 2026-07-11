@@ -14,6 +14,7 @@
 mod catalog;
 mod hardware;
 mod jobs;
+mod metrics;
 mod screens;
 mod theme;
 mod widgets;
@@ -42,6 +43,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use catalog::{Family, build_families, installed_variants};
 use hardware::HardwareInfo;
 use jobs::{DownloadMode, DownloadTask, Job};
+use metrics::LiveMetrics;
 use screens::chat::ChatState;
 use widgets::{DirectoryPicker, Toast};
 
@@ -192,6 +194,8 @@ struct App {
 
     // Home
     pub home_idx: usize,
+    /// Live host load (memory / CPU / models footprint); sampled on tick.
+    pub live_metrics: LiveMetrics,
 
     // Models wizard
     pub stage: WizardStage,
@@ -252,6 +256,7 @@ impl App {
     }
 
     pub fn with_hardware(hardware: HardwareInfo) -> App {
+        let total_ram = hardware.total_ram_bytes;
         App {
             quit: false,
             screen: Screen::Home,
@@ -261,6 +266,7 @@ impl App {
             toasts: Vec::new(),
             show_help: false,
             home_idx: 0,
+            live_metrics: LiveMetrics::new(total_ram),
             stage: WizardStage::Families,
             family_idx: 0,
             precision_idx: 0,
@@ -378,6 +384,12 @@ impl App {
         self.chat.tick();
         widgets::expire_toasts(&mut self.toasts);
         self.clamp_list_indices();
+        // Host load for Home gauges/sparklines (~1 Hz throttle inside sampler).
+        let models_bytes: u64 = installed_variants(&self.families)
+            .into_iter()
+            .map(|(fi, vi)| self.families[fi].variants[vi].size)
+            .sum();
+        self.live_metrics.tick(models_bytes);
     }
 
     /// Keep selection indices in range after installs/deletes/queue changes.

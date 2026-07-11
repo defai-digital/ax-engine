@@ -194,26 +194,33 @@ impl App {
         }
     }
 
-    /// Full-width hero: primary CTA, then compact machine strip + secondary actions.
+    /// Full-width hero: primary CTA, live load, then secondary actions.
     fn draw_home_first_run(&self, frame: &mut Frame, area: Rect) {
         let rows = Layout::vertical([
             Constraint::Length(7),
-            Constraint::Length(3),
+            Constraint::Length(11),
             Constraint::Min(0),
         ])
         .split(area);
 
         self.draw_home_hero(frame, rows[0]);
-        self.draw_home_machine_strip(frame, rows[1]);
+        super::metrics_panel::draw_live_metrics(frame, rows[1], &self.live_metrics);
         self.draw_home_actions(frame, rows[2], true);
     }
 
     fn draw_home_returning(&self, frame: &mut Frame, area: Rect) {
         let columns = Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)])
             .split(area);
-        let left = Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).split(columns[0]);
+        // Left: static machine facts + live load (Gauge + Sparkline) + installed.
+        let left = Layout::vertical([
+            Constraint::Length(5),
+            Constraint::Length(11),
+            Constraint::Min(0),
+        ])
+        .split(columns[0]);
         self.draw_home_hardware(frame, left[0]);
-        self.draw_home_installed(frame, left[1]);
+        super::metrics_panel::draw_live_metrics(frame, left[1], &self.live_metrics);
+        self.draw_home_installed(frame, left[2]);
         self.draw_home_actions(frame, columns[1], false);
     }
 
@@ -292,37 +299,6 @@ impl App {
         ];
         frame.render_widget(Paragraph::new(lines), inner);
         // Click target = hero + action list share; set list rect to action area only later.
-    }
-
-    fn draw_home_machine_strip(&self, frame: &mut Frame, area: Rect) {
-        let ram = self
-            .hardware
-            .total_ram_bytes
-            .map(catalog::format_bytes)
-            .unwrap_or_else(|| "?".into());
-        let disk = self
-            .hardware
-            .free_disk_bytes
-            .map(catalog::format_bytes)
-            .unwrap_or_else(|| "?".into());
-        let chip = self.hardware.chip.clone().unwrap_or_else(|| "Mac".into());
-        let line = Line::from(vec![
-            Span::styled("  ", theme::label()),
-            Span::styled(
-                chip,
-                Style::default()
-                    .fg(theme::TEXT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  ·  ", theme::label()),
-            Span::styled(format!("{ram} memory"), theme::body()),
-            Span::styled("  ·  ", theme::label()),
-            Span::styled(format!("{disk} free"), theme::body()),
-        ]);
-        frame.render_widget(
-            Paragraph::new(vec![line]).block(widgets::soft_block(" This machine ")),
-            area,
-        );
     }
 
     fn draw_home_hardware(&self, frame: &mut Frame, area: Rect) {

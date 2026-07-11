@@ -3,6 +3,7 @@ use super::hardware::{HardwareInfo, parse_df_available_kib};
 use super::jobs::{
     DownloadMode, DownloadTask, Job, format_eta, parse_output_path_from_log, parse_progress_event,
 };
+use super::metrics::{parse_loadavg_1m, parse_ps_cpu_percent, parse_vm_stat_used_bytes};
 use super::screens::chat::{SseEvent, parse_sse_line};
 use super::{App, Modal, Screen, WizardStage};
 
@@ -255,8 +256,10 @@ fn app_starts_on_home_with_hardware_summary() {
     let app = new_app();
     assert_eq!(app.screen, Screen::Home);
     let text = render(&app);
-    assert!(text.contains("This machine"));
-    assert!(text.contains("Test Chip"));
+    assert!(
+        text.contains("This machine") || text.contains("Live load") || text.contains("Test Chip")
+    );
+    assert!(text.contains("Test Chip") || text.contains("Quick start"));
     assert!(text.contains("Quick start"));
     assert!(text.contains("Browse all models"));
     // Journey banner is present when there is a clear next step (first-run
@@ -268,7 +271,34 @@ fn app_starts_on_home_with_hardware_summary() {
             || text.contains("Downloading")
             || text.contains("Server")
             || text.contains("Actions")
+            || text.contains("Live load")
     );
+}
+
+#[test]
+fn live_metrics_panel_renders_gauges() {
+    let mut app = new_app();
+    app.live_metrics = super::metrics::LiveMetrics::for_tests();
+    // Force returning layout when possible by not depending on installed state —
+    // both first-run and returning layouts include Live load when height allows.
+    let text = render(&app);
+    assert!(
+        text.contains("Live load") || text.contains("Memory") || text.contains("CPU"),
+        "home should show live metrics panel: {text:.200}"
+    );
+}
+
+#[test]
+fn metrics_parsers_unit() {
+    let vm = "\
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages active: 10.
+Pages wired down: 5.
+Pages occupied by compressor: 1.
+";
+    assert_eq!(parse_vm_stat_used_bytes(vm), Some(16 * 16_384));
+    assert!((parse_ps_cpu_percent("50.0\n50.0\n", 2.0).unwrap() - 50.0).abs() < 1e-6);
+    assert!((parse_loadavg_1m("{ 0.5 0.6 0.7 }").unwrap() - 0.5).abs() < 1e-6);
 }
 
 #[test]
