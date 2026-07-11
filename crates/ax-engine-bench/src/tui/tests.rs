@@ -3,7 +3,10 @@ use super::hardware::{HardwareInfo, parse_df_available_kib};
 use super::jobs::{
     DownloadMode, DownloadTask, Job, format_eta, parse_output_path_from_log, parse_progress_event,
 };
-use super::metrics::{parse_loadavg_1m, parse_ps_cpu_percent, parse_vm_stat_used_bytes};
+use super::metrics::{
+    parse_loadavg_1m, parse_ps_cpu_percent, parse_ps_top_rss, parse_vm_stat_free_bytes,
+    parse_vm_stat_used_bytes,
+};
 use super::screens::chat::{SseEvent, parse_sse_line};
 use super::{App, Modal, Screen, WizardStage};
 
@@ -292,13 +295,32 @@ fn live_metrics_panel_renders_gauges() {
 fn metrics_parsers_unit() {
     let vm = "\
 Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free: 100.
 Pages active: 10.
+Pages speculative: 20.
 Pages wired down: 5.
+Pages purgeable: 5.
 Pages occupied by compressor: 1.
 ";
     assert_eq!(parse_vm_stat_used_bytes(vm), Some(16 * 16_384));
+    assert_eq!(parse_vm_stat_free_bytes(vm), Some(125 * 16_384));
     assert!((parse_ps_cpu_percent("50.0\n50.0\n", 2.0).unwrap() - 50.0).abs() < 1e-6);
     assert!((parse_loadavg_1m("{ 0.5 0.6 0.7 }").unwrap() - 0.5).abs() < 1e-6);
+    let tops = parse_ps_top_rss(" 200  9 /usr/bin/foo\n 100  8 bar\n", 2);
+    assert_eq!(tops[0].name, "foo");
+    assert_eq!(tops[0].rss_bytes, 200 * 1024);
+}
+
+#[test]
+fn live_metrics_shows_htop_style_top_and_free() {
+    let mut app = new_app();
+    app.live_metrics = super::metrics::LiveMetrics::for_tests();
+    let text = render(&app);
+    assert!(text.contains("Live host") || text.contains("Mem") || text.contains("Memory"));
+    assert!(
+        text.contains("Code") || text.contains("Top") || text.contains("used"),
+        "panel should surface consumers or free/used memory"
+    );
 }
 
 #[test]

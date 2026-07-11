@@ -197,8 +197,8 @@ impl App {
     /// Full-width hero: primary CTA, live load, then secondary actions.
     fn draw_home_first_run(&self, frame: &mut Frame, area: Rect) {
         let rows = Layout::vertical([
-            Constraint::Length(7),
-            Constraint::Length(11),
+            Constraint::Length(6),
+            Constraint::Length(13),
             Constraint::Min(0),
         ])
         .split(area);
@@ -209,12 +209,12 @@ impl App {
     }
 
     fn draw_home_returning(&self, frame: &mut Frame, area: Rect) {
-        let columns = Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)])
+        let columns = Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
             .split(area);
-        // Left: static machine facts + live load (Gauge + Sparkline) + installed.
+        // Left: static facts + nvtop/htop-style live meters + installed list.
         let left = Layout::vertical([
             Constraint::Length(5),
-            Constraint::Length(11),
+            Constraint::Length(13),
             Constraint::Min(0),
         ])
         .split(columns[0]);

@@ -389,7 +389,8 @@ impl App {
             .into_iter()
             .map(|(fi, vi)| self.families[fi].variants[vi].size)
             .sum();
-        self.live_metrics.tick(models_bytes);
+        let cache_root = crate::default_hf_cache_root();
+        self.live_metrics.tick(models_bytes, &cache_root);
     }
 
     /// Keep selection indices in range after installs/deletes/queue changes.
