@@ -2896,11 +2896,10 @@ fn dense_ffn_gate_up_packing_supported(
     gate: &QuantizedWeight,
     up: &QuantizedWeight,
 ) -> bool {
-    // Keep these families/encodings on split projections until their packed
-    // gate/up path is token-exact against mlx_lm across correctness prompts.
-    // Qwen3.6 dense FFNs also stay split so the opt-in decode matvec route can
-    // consume the original gate/up weights without changing prefill behavior.
-    if matches!(model_family, "glm4_moe_lite" | "qwen3_5") {
+    // Qwen dense FFNs always prefer their split runtime route, which also owns
+    // the opt-in decode matvec fast path. Building a second packed projection
+    // only adds load-time GPU work and memory without being consumed.
+    if model_family.starts_with("qwen") || model_family == "glm4_moe_lite" {
         return false;
     }
     gate.bits != 5 && up.bits != 5
@@ -4304,14 +4303,22 @@ mod tests {
     }
 
     #[test]
-    fn dense_ffn_gate_up_packing_support_rejects_glm_qwen_and_five_bit() {
+    fn dense_ffn_gate_up_packing_support_keeps_split_runtime_families_unpacked() {
         let q4_gate = glm_quantized_weight(64, 4, true);
         let q4_up = glm_quantized_weight(64, 4, true);
         let q5_gate = glm_quantized_weight(64, 5, true);
         let q5_up = glm_quantized_weight(64, 5, true);
 
         assert!(!dense_ffn_gate_up_packing_supported(
+            "qwen3", &q4_gate, &q4_up
+        ));
+        assert!(!dense_ffn_gate_up_packing_supported(
             "qwen3_5", &q4_gate, &q4_up
+        ));
+        assert!(!dense_ffn_gate_up_packing_supported(
+            "qwen3_next",
+            &q4_gate,
+            &q4_up,
         ));
         assert!(!dense_ffn_gate_up_packing_supported(
             "glm4_moe_lite",
@@ -4319,7 +4326,10 @@ mod tests {
             &q4_up,
         ));
         assert!(!dense_ffn_gate_up_packing_supported(
-            "qwen3_5", &q5_gate, &q5_up
+            "llama", &q5_gate, &q5_up
+        ));
+        assert!(dense_ffn_gate_up_packing_supported(
+            "llama", &q4_gate, &q4_up
         ));
     }
 

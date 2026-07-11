@@ -229,8 +229,9 @@ env_flag_default_on!(
     /// `AX_MLX_PACK_DENSE_FFN_GATE_UP=0`).
     ///
     /// Collapses the dense FFN gate and up matmuls into one quantized matmul
-    /// plus a last-dim slice when the artifact ships split projections and the
-    /// quantization metadata is compatible.
+    /// plus a last-dim slice when the artifact ships split projections, the
+    /// quantization metadata is compatible, and the family runtime consumes
+    /// the packed route. Qwen runtimes intentionally keep split projections.
     dense_ffn_gate_up_packing_enabled,
     "AX_MLX_PACK_DENSE_FFN_GATE_UP"
 );
