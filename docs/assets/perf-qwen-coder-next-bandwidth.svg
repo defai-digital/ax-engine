@@ -51,7 +51,7 @@
 <text x="208.8" y="296.8" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">+6.6% decode</text>
 <text x="208.8" y="308.8" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#176c37">same weights, AX kernels</text>
 <circle cx="226.8" cy="296.9" r="7.5" fill="#2eaf5f" fill-opacity="0.92" stroke="#176c37" stroke-width="2"/>
-<text x="239.8" y="285.9" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">AX Engine 6.5.2</text>
+<text x="239.8" y="285.9" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">AX Engine v6.8.2 (2026-07-11)</text>
 <text x="239.8" y="297.9" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">105.7 tok/s · 1.96 GB/tok · 36% of peak</text>
 <circle cx="226.8" cy="302.7" r="7.5" fill="#f2b705" fill-opacity="0.92" stroke="#9a6a00" stroke-width="2"/>
 <text x="239.8" y="317.7" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">mlx-lm 0.31.3</text>

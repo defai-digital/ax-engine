@@ -21,7 +21,7 @@
       "decode_tok_s": 63.004,
       "effective_output_bandwidth_gb_s": 1065.008,
       "engine": "ax_engine",
-      "engine_label": "AX Engine",
+      "engine_label": "AX Engine v6.8.2 (2026-07-11)",
       "percent_of_peak_reference": 184.58,
       "target": "Qwen3.6 27B 4-bit"
     },
@@ -76,7 +76,7 @@
       "decode_tok_s": 172.427,
       "effective_output_bandwidth_gb_s": 299.982,
       "engine": "ax_engine",
-      "engine_label": "AX Engine",
+      "engine_label": "AX Engine v6.8.2 (2026-07-11)",
       "percent_of_peak_reference": 51.99,
       "target": "Qwen3.6 35B-A3B 4-bit"
     },

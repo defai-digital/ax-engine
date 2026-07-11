@@ -42,7 +42,7 @@ PEAK_GBS = 577.0
 
 # (key, label, quant, bytes_per_token_gb, decode_tok_s, fill, stroke)
 POINTS = [
-    ("ax", "AX Engine v6.8.2 (2026-07-10)", "MLX 4-bit + fused expert block", 1.9648, 105.7, "#2eaf5f", "#176c37"),
+    ("ax", "AX Engine v6.8.2 (2026-07-11)", "MLX 4-bit + fused expert block", 1.9648, 105.7, "#2eaf5f", "#176c37"),
     ("mlx", "mlx-lm 0.31.3", "MLX 4-bit", 1.9648, 99.2, "#f2b705", "#9a6a00"),
     ("llama", "llama.cpp b9700", "Q4_K_M", 2.8275, 85.5, "#f97316", "#c2410c"),
 ]

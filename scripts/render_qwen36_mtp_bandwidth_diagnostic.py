@@ -44,7 +44,7 @@ PEER_PACKAGE_ACTIVE_BYTE_FALLBACKS = {
 }
 
 ENGINE_LABELS = {
-    "ax_engine": "AX Engine v6.8.2 (2026-07-10)",
+    "ax_engine": "AX Engine v6.8.2 (2026-07-11)",
     "mtplx": "MTPLX",
     "lightning_mlx": "lightning-mlx",
 }

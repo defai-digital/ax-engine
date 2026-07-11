@@ -815,7 +815,7 @@ and the bandwidth diagnostic live in
 [`2026-07-08-acceptance-075-first-block/summary.json`](benchmarks/results/inference/diffusion-gemma-direct/2026-07-08-acceptance-075-first-block/summary.json)
 (release build, 1 warmup + 5 measured repetitions, 15 s cooldown, medians).
 
-<!-- readme-performance-artifacts: reference=benchmarks/results/inference/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-qwen36-direct-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/; ax-base=benchmarks/results/inference/mlx-inference/2026-06-27-ax-direct-only/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/; reference=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-05-gemma4-e2b-e4b-6bit-ax-refresh-r2/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-qwen-publishable/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-07-gemma4-26b-4bit-ax-direct-refresh-gen128/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-clean-r4/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/inference/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-qwen36-direct-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/; reference=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-qwen-publishable/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-07-gemma4-26b-4bit-ax-direct-refresh-gen128/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-clean-r6/ -->
 
 #### Gemma 4 and Qwen 3.6
 
@@ -886,6 +886,8 @@ claims.
 
 > **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are **not** prompt-hash parity with the other columns. No percentage delta is shown. MLX bit-widths are mapped to the nearest Unsloth GGUF quant (4→Q4_K_M, 6→Q6_K), with explicit UD-* Unsloth Dynamic rows only when no standard root-level K-quant is published. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
 
+The E2B 6-bit AX cells were rerun on 2026-07-11 in `benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-clean-r6/` from clean commit `1b14e603`, using the 2-warmup, 5-measurement, generation=128 contract; the table records those latest medians.
+
 <details>
 <summary>Benchmark provenance and methodology</summary>
 
@@ -910,12 +912,12 @@ Qwen 3.6 direct-mode verdict: AX is faster against `mlx_lm` in every refreshed 2
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Gemma 4 E2B | 4-bit | 128 | 3,729.7 | 2,338.1 | 2,212.5 (-5.4%) |
-|  |  | 512 | 7,095.0 | 7,870.0 | 5,004.3 (-36.4%) |
-|  |  | 2048 | 7,136.7 | 18,014.7 | 7,475.7 (-58.5%) |
-| Gemma 4 E2B | 6-bit | 128 | 3,612.1 | 1,823.5 | 1,788.3 (-1.9%) |
-|  |  | 512 | 7,071.5 | 6,046.6 | 4,507.2 (-25.5%) |
-|  |  | 2048 | 7,247.1 | 15,332.1 | 7,185.8 (-53.1%) |
+| Gemma 4 E2B | 4-bit | 128 | 3,729.7 | 2,338.1 | 6,123.5 (+161.9%) |
+|  |  | 512 | 7,095.0 | 7,870.0 | 17,314.3 (+120.1%) |
+|  |  | 2048 | 7,136.7 | 18,014.7 | 24,664.6 (+36.9%) |
+| Gemma 4 E2B | 6-bit | 128 | 3,612.1 | 1,823.5 | 1,821.4 (-0.1%) |
+|  |  | 512 | 7,071.5 | 6,046.6 | 4,503.8 (-25.5%) |
+|  |  | 2048 | 7,247.1 | 15,332.1 | 7,186.2 (-53.2%) |
 | Gemma 4 E4B | 4-bit | 128 | 2,285.2 | 1,513.2 | 1,143.9 (-24.4%) |
 |  |  | 512 | 4,173.1 | 4,195.5 | 2,013.1 (-52.0%) |
 |  |  | 2048 | 4,197.6 | 7,325.4 | 2,469.7 (-66.3%) |
@@ -951,12 +953,12 @@ Qwen 3.6 direct-mode verdict: AX is faster against `mlx_lm` in every refreshed 2
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Gemma 4 E2B | 4-bit | 128 | 161.0 | 214.0 | **220.5 (+3.0%)** |
-|  |  | 512 | 161.5 | 210.3 | **210.5 (+0.1%)** |
-|  |  | 2048 | 156.2 | 200.9 | **209.3 (+4.2%)** |
-| Gemma 4 E2B | 6-bit | 128 | 142.7 | 172.2 | **176.0 (+2.2%)** |
-|  |  | 512 | 141.2 | 166.3 | **169.8 (+2.1%)** |
-|  |  | 2048 | 137.3 | 162.5 | **169.0 (+4.0%)** |
+| Gemma 4 E2B | 4-bit | 128 | 161.0 | 214.0 | **234.8 (+9.7%)** |
+|  |  | 512 | 161.5 | 210.3 | **227.4 (+8.1%)** |
+|  |  | 2048 | 156.2 | 200.9 | **217.6 (+8.3%)** |
+| Gemma 4 E2B | 6-bit | 128 | 142.7 | 172.2 | **175.5 (+1.9%)** |
+|  |  | 512 | 141.2 | 166.3 | **169.3 (+1.8%)** |
+|  |  | 2048 | 137.3 | 162.5 | **168.6 (+3.8%)** |
 | Gemma 4 E4B | 4-bit | 128 | 104.5 | 137.1 | 136.8 (-0.2%) |
 |  |  | 512 | 103.4 | 133.6 | **134.0 (+0.3%)** |
 |  |  | 2048 | 101.6 | 130.6 | **130.7 (+0.0%)** |
@@ -996,10 +998,10 @@ Qwen 3.6 direct-mode verdict: AX is faster against `mlx_lm` in every refreshed 2
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Gemma 4 E2B | 4-bit | 128 | 34.3 | 54.7 | 57.9 (+5.8%) |
-|  |  | 512 | 72.2 | 65.1 | 102.3 (+57.2%) |
-|  |  | 2048 | 287.0 | 113.7 | 274.0 (+140.9%) |
-| Gemma 4 E2B | 6-bit | 128 | 35.4 | 70.2 | 71.6 (+2.0%) |
+| Gemma 4 E2B | 4-bit | 128 | 34.3 | 54.7 | 20.9 (-61.8%) |
+|  |  | 512 | 72.2 | 65.1 | 29.6 (-54.6%) |
+|  |  | 2048 | 287.0 | 113.7 | 83.0 (-27.0%) |
+| Gemma 4 E2B | 6-bit | 128 | 35.4 | 70.2 | 70.3 (+0.1%) |
 |  |  | 512 | 72.4 | 84.7 | 113.6 (+34.1%) |
 |  |  | 2048 | 282.6 | 133.6 | 285.0 (+113.3%) |
 | Gemma 4 E4B | 4-bit | 128 | 56.0 | 84.6 | 111.9 (+32.3%) |
@@ -1048,14 +1050,15 @@ sustained-ingest claim.
 
 #### Qwen3-Embedding ingest scale
 
-**The latest Qwen3-Embedding sustained-ingest refresh is AX-only:** the
-2026-07-06 run below measures current AX Engine medians across the same 18
-chunk/batch shapes without rerunning `mlx-lm` in the same session.
+**The latest completed Qwen3-Embedding sustained-ingest refresh is AX-only for
+the 0.6B model:** the 2026-07-11 run measures all six 0.6B chunk/batch shapes.
+The 4B and 8B rows remain the retained 2026-07-06 records because their
+full-contract rerun was interrupted during the available runtime window.
 
 For larger RAG ingest jobs, use the sustained scale harness instead of
 extrapolating from one isolated batch. The scale harness keeps the same
 contiguous CPU `float32 [B,H]` output layout but embeds a fixed corpus of 512
-chunks per trial, divided into batches. The 2026-07-06 AX-only refresh uses 2
+chunks per trial, divided into batches. The 2026-07-11 0.6B AX-only refresh uses 2
 warmups, 5 measured trials, and a 15-second cooldown. Each measured pass is a
 multi-batch ingest run. p95 batch latency is shown because larger batches
 increase per-flush latency even when throughput (tok/s) is steady.
@@ -1063,8 +1066,8 @@ increase per-flush latency even when throughput (tok/s) is steady.
 The previous same-session `mlx-lm` comparison remains available in
 `benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/2026-07-02-215823/`
 for parity analysis, but the table below is intentionally AX-only.
-Compared with the retained 2026-07-03 Qwen AX high-water mark, this refresh is
-faster on all 18 matching chunk/batch shapes, with gains from +0.5% to +14.1%.
+The 0.6B rows below are direct measurements from the 2026-07-11 artifact; they
+are not compared with the retained 4B/8B rows.
 
 The chart uses the retained same-session `mlx-lm` rows (yellow) plus the
 current AX-only refresh (green); each box summarizes the six chunk/batch shapes
@@ -1074,12 +1077,12 @@ per model.
 
 | Model | Workload | Batch | Batches/trial | AX tok/s | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 48,940.1 | 191.2 | 40.7 |
-|  |  | 32 | 16 | 50,773.2 | 198.3 | 174.1 |
-|  |  | 64 | 8 | 50,715.4 | 198.1 | 357.6 |
-|  | 512 x 512-token chunks | 8 | 64 | 49,367.6 | 96.4 | 83.7 |
-|  |  | 32 | 16 | 49,602.3 | 96.9 | 348.8 |
-|  |  | 64 | 8 | 49,742.4 | 97.2 | 689.8 |
+| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 15,882.5 | 62.0 | 131.8 |
+|  |  | 32 | 16 | 16,010.6 | 62.5 | 544.3 |
+|  |  | 64 | 8 | 16,015.7 | 62.6 | 1,058.3 |
+|  | 512 x 512-token chunks | 8 | 64 | 15,387.1 | 30.1 | 292.6 |
+|  |  | 32 | 16 | 15,355.3 | 30.0 | 1,115.6 |
+|  |  | 64 | 8 | 15,274.9 | 29.8 | 2,210.7 |
 | Qwen3-Embedding 4B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 6,776.1 | 26.5 | 314.6 |
 |  |  | 32 | 16 | 6,721.9 | 26.3 | 1,274.8 |
 |  |  | 64 | 8 | 6,710.9 | 26.2 | 2,551.1 |
@@ -1118,8 +1121,10 @@ box summarizes the six chunk/batch shapes listed below.
 |  |  | 64 | 8 | 132,121.8 | 135,667.0 | +2.7% | 265.0 | 263.1 |
 
 Sources:
-Qwen sustained-scale rows come from the AX-only artifact
+Qwen 4B/8B sustained-scale rows come from the retained AX-only artifact
 `benchmarks/results/embedding/embedding-scale/2026-07-06-qwen-causal-final-attn-target-refresh/2026-07-06-230340/`.
+The completed 0.6B rerun comes from
+`benchmarks/results/embedding/2026-07-11-ax-only-qwen06/2026-07-11-051522/`.
 EmbeddingGemma sustained-scale reference rows come from
 `benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`
 and fresh AX rows from

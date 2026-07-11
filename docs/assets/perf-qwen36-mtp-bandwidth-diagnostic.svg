@@ -21,7 +21,7 @@
 <text x="680.0" y="258" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">200%</text>
 <line x1="445.0" y1="96" x2="445.0" y2="238" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="5 4"/>
 <text x="450.0" y="116" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" font-weight="700" fill="#dc2626">100% physical reference</text>
-<text x="198" y="140" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine</text>
+<text x="198" y="140" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine v6.8.2 (2026-07-11)</text>
 <rect x="210" y="124" width="433.8" height="22" rx="4" fill="#2eaf5f" fill-opacity="0.82"/>
 <line x1="643.8" y1="124" x2="643.8" y2="146" stroke="#176c37" stroke-width="1.4"/>
 <text x="635.8" y="140" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">185%</text>
@@ -40,7 +40,7 @@
 <text x="720" y="208" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="400" fill="#374151">942 GB/s</text>
 <text x="840" y="208" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">55.7 tok/s</text>
 <rect x="36" y="273" width="10" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.82" stroke="#176c37"/>
-<text x="50" y="282" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine</text>
+<text x="50" y="282" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine v6.8.2 (2026-07-11)</text>
 <rect x="166" y="273" width="10" height="10" rx="2" fill="#f2b705" fill-opacity="0.82" stroke="#9a6a00"/>
 <text x="180" y="282" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX</text>
 <rect x="296" y="273" width="10" height="10" rx="2" fill="#2563eb" fill-opacity="0.82" stroke="#1d4ed8"/>

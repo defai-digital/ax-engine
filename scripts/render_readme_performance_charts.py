@@ -19,15 +19,15 @@ LABEL_TO_SLUG = {
 }
 
 PROMPT_TOKENS = (128, 512, 2048)
-AX_ENGINE_CHART_LABEL = "AX Engine v6.8.2 (2026-07-10)"
+AX_ENGINE_CHART_LABEL = "AX Engine v6.8.2 (2026-07-11)"
 
 SERIES = [
     ("llama_cpp_metal", "llama.cpp b9910", "#f97316", "#c2410c"),
     ("mlx_lm", "mlx-lm 0.31.3", "#f2b705", "#9a6a00"),
     ("ax_engine_mlx", AX_ENGINE_CHART_LABEL, "#2eaf5f", "#176c37"),
-    ("ax_engine_mlx_ngram_accel", "AX+ngram v6.8.2 (2026-07-10)", "#137a3d", "#0b4f28"),
+    ("ax_engine_mlx_ngram_accel", "AX+ngram v6.8.2 (2026-07-11)", "#137a3d", "#0b4f28"),
 ]
-DIRECT_VERSIONS_FOOTNOTE = "llama.cpp b9910 · mlx-lm 0.31.3 · AX Engine v6.8.2 (2026-07-10)"
+DIRECT_VERSIONS_FOOTNOTE = "llama.cpp b9910 · mlx-lm 0.31.3 · AX Engine v6.8.2 (2026-07-11)"
 
 FAMILY_SLUGS: dict[str, list[str]] = {
     "gemma4": [
@@ -254,6 +254,10 @@ EMBEDDING_SCALE_AX_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
     "2026-07-06-qwen-causal-final-attn-target-refresh/"
     "2026-07-06-230340/embedding_ingest_scale.json"
+)
+EMBEDDING_SCALE_AX_OVERLAY_ARTIFACT = Path(
+    "benchmarks/results/embedding/2026-07-11-ax-only-qwen06/"
+    "2026-07-11-051522/embedding_ingest_scale.json"
 )
 EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
@@ -1186,7 +1190,7 @@ def render_mtp_6bit_ax_acceleration_chart(
         )
         label_y += MTP_6BIT_ROW_GAP
 
-    version_label = "Runtime: AX Engine v6.8.2 (2026-07-10); MLX 0.32.0 / mlx-lm 0.31.3."
+    version_label = "Runtime: AX Engine v6.8.2 (2026-07-11); MLX 0.32.0 / mlx-lm 0.31.3."
     source_label = (
         f"Source: {summary_path.parent.as_posix()} / summary.json. "
         "Pure MTP; no MTP+n-gram stacking."
@@ -1223,7 +1227,7 @@ MTP_PEER_LABELS = {
 #   MTPLX         = /opt/homebrew/var/mtplx/venv-2.0.1 (pip: mtplx 2.0.1)
 #   lightning-mlx = .internal/reference/lightning-mlx v0.7.0 (git rev ec19b3d, incl. post-tag streaming fix #3)
 MTP_PEER_VERSIONS = {
-    "ax_engine": "6.8.2 (2026-07-10)",
+    "ax_engine": "6.8.2 (2026-07-11)",
     "mtplx": "2.0.1",
     "lightning_mlx": "0.7.0",
 }
@@ -2237,9 +2241,16 @@ def load_embedding_paired_scale_delta_rows(
 
 
 def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
-    return load_embedding_overlay_scale_delta_rows(
+    retained_rows = load_embedding_overlay_scale_delta_rows(
         repo_root, EMBEDDING_SCALE_REFERENCE_ARTIFACT, EMBEDDING_SCALE_AX_ARTIFACT
     )
+    fresh_06_rows = load_embedding_overlay_scale_delta_rows(
+        repo_root, EMBEDDING_SCALE_REFERENCE_ARTIFACT, EMBEDDING_SCALE_AX_OVERLAY_ARTIFACT
+    )
+    fresh_06_labels = {row.label for row in fresh_06_rows if "0.6B" in row.label}
+    return [
+        row for row in retained_rows if row.label not in fresh_06_labels
+    ] + [row for row in fresh_06_rows if row.label in fresh_06_labels]
 
 
 def format_embedding_delta_pct(delta_pct: float) -> str:
@@ -2648,8 +2659,7 @@ def main() -> int:
             "chunk/batch shapes."
         ),
         source_label=(
-            "Sources: 2026-07-03 Qwen retained mlx-lm reference + "
-            "2026-07-06 AX-only refresh"
+            "Sources: retained Qwen reference + 2026-07-11 AX-only 0.6B refresh"
         ),
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
