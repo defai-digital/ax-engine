@@ -31,9 +31,21 @@ prompt tokens. Peer rows and model-specific boundaries are kept visible.
   Qwen3.6 family because it carries a coding-first architecture and validation
   path.
 
+## Choose Your Path
+
+| Goal | Start here |
+| --- | --- |
+| Install AX Engine and run the first local request | [Quick Start](#quick-start) |
+| Pick, download, serve, and chat with a model interactively | [Getting a Model](#getting-a-model) |
+| Check hardware sizing before downloading large packages | [Typical Hardware](#typical-hardware) |
+| Compare runtime modes and benchmark claims | [Performance](#performance) |
+| Integrate from an app or agent framework | [SDKs](#sdks) and [Server Usage](#server-usage) |
+| Work on the repo or reproduce benchmark gates | [Development](#development) and [Benchmarks](docs/BENCHMARKS.md) |
+
 ## Table of Contents
 
 - [Why AX Engine](#why-ax-engine)
+- [Choose Your Path](#choose-your-path)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
 - [Getting a Model](#getting-a-model)
@@ -89,8 +101,9 @@ ax-engine doctor
 
 ```bash
 ax-engine download-mtp gemma-4-12b-4bit
-# Then run the printed "ax-engine serve ..." command.
 ```
+
+Then run the `ax-engine serve ...` command printed by the downloader.
 
 **Send one request from another terminal:**
 
@@ -117,41 +130,64 @@ diagnostics, or rebuilding AX Metal kernels.
 ## Getting a Model
 
 AX Engine loads pre-sanitized MLX safetensors plus an AX
-`model-manifest.json`. Use `ax-engine tui` for an interactive picker,
-`ax-engine download --list` for direct-decode aliases, `ax-engine serve <alias>
---download` for one-command serving, and `ax-engine download-mtp <target>` for
-supported MTP packages.
+`model-manifest.json`. Most users should start with `ax-engine tui`: it shows
+installed models, machine fit, quick serve actions, downloads, and chat in one
+terminal UI. Use the non-interactive commands below for scripts, CI, or remote
+shells.
 Detailed aliases, MTP targets, raw checkpoint conversion, cache behavior, and
 manifest commands live in
 [Supported Models](docs/SUPPORTED-MODELS.md#getting-model-artifacts) and the
 [CLI reference](docs/CLI.md#ax-engine).
 
+Guided TUI flow:
+
 ```bash
-# Guided flow: pick a model, download with live progress, serve, and chat.
 ax-engine tui
+```
 
-# Serve a direct model in one command.
+Serve a direct model in one command:
+
+```bash
 ax-engine serve qwen36-35b --download --port 8080
+```
 
-# Or inspect and download direct-model artifacts separately.
+Inspect and download direct-model artifacts separately:
+
+```bash
 ax-engine download --list
 ax-engine download qwen36-35b --json
+```
 
-# Prepare a Gemma 4 12B MTP package.
+Prepare a Gemma 4 12B MTP package:
+
+```bash
 ax-engine download-mtp gemma-4-12b-4bit
 ```
 
 `ax-engine tui` opens on a Home screen with your hardware summary and a Quick
-start action, then walks a four-step wizard: model family → precision (with
-download-size estimates and a RAM-fit badge per variant) → an optional
-plain-language MTP speed-up step → a confirm summary showing total size, free
-disk, and the destination (the shared Hugging Face Hub cache by default; a
-custom folder is one keypress away). Downloads run in a background queue with
-a live progress bar, speed, and ETA; a ready item can be served in place, and
-the built-in Chat screen streams replies from the running server so you can
-verify the model end-to-end without leaving the terminal. Quitting while jobs
-are running asks first. Scripts and CI keep the non-interactive `download`
-behavior and JSON output.
+start action.
+
+The TUI covers the normal local workflow:
+
+- Pick a model family and precision, with download-size estimates and RAM-fit
+  badges per variant.
+- Choose an optional plain-language MTP speed-up step, then confirm total size,
+  free disk, and destination.
+- Download in the background with live progress, speed, and ETA.
+- Serve a ready model in place and use the built-in Chat screen to verify
+  streaming replies without leaving the terminal.
+
+The shared Hugging Face Hub cache is the default destination; choosing a custom
+folder is one keypress away. Quitting while jobs are running asks first.
+Scripts and CI keep the non-interactive `download` behavior and JSON output.
+
+<p align="center">
+  <img
+    src="docs/assets/ax-engine-tui-home.png"
+    width="920"
+    alt="AX Engine TUI Home screen showing installed models, hardware utilization, quick actions, and server status"
+  >
+</p>
 
 Common acquisition paths:
 
@@ -247,6 +283,10 @@ Full result tables and interpretation live in
 methodology, test setup, and reproduction details live in
 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
+This README keeps the headline charts and tables close to the project entry
+point. Use the linked docs when you need full methodology, raw artifact review,
+or reproduction commands.
+
 **Benchmarking session baseline (8-Jul-2026):** AX Engine benchmark rows use
 AX Engine `v6.8.2`. Direct-mode peer benchmarking is limited to the existing
 local `llama.cpp` and `mlx-lm` versions: `llama.cpp` `b9910` / `ggml` `0.15.3`
@@ -299,18 +339,22 @@ packages are comparison artifacts for peer MTP engines rather than normal
 #### Download and serve an MTP package
 
 Install with the download extra, prepare a target, then run the serve command
-printed by the CLI:
+printed by the CLI.
 
 ```bash
 python3 -m pip install -U "ax-engine[download]>=6.8.2,<7"
-
 ax-engine download-mtp gemma-4-12b-4bit
-# or: ax-engine download-mtp qwen3.6-27b-6bit
-# or: ax-engine download-mtp glm-4.7-flash
-
-# The command prints the prepared package path and a matching:
-# ax-engine serve <prepared-mtp-package> --port 8080
 ```
+
+Other supported targets use the same shape:
+
+```bash
+ax-engine download-mtp qwen3.6-27b-6bit
+ax-engine download-mtp glm-4.7-flash
+```
+
+The command prints the prepared package path and a matching
+`ax-engine serve <prepared-mtp-package> --port 8080` command.
 
 By default, packages are written as synthetic Hugging Face cache snapshots under
 the active HF cache root. Use `--output <dir>` when you need an explicit

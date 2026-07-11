@@ -194,13 +194,19 @@ impl App {
         }
     }
 
-    /// First-run: hero + actions on top; full-width host monitor (big chart) at bottom.
+    /// First-run: hero + actions on top; host monitor fills all remaining height.
     fn draw_home_first_run(&self, frame: &mut Frame, area: Rect) {
-        let host_h = host_monitor_height(area.height);
+        let launcher_h = launcher_band_height(area.height);
+        // Split launcher ~40/60 hero/actions.
+        let hero_h = (launcher_h * 5 / 12)
+            .max(4)
+            .min(launcher_h.saturating_sub(4));
+        let actions_h = launcher_h.saturating_sub(hero_h);
+        // Min(0) host = every leftover row goes to chart/procs (no dead space).
         let rows = Layout::vertical([
-            Constraint::Length(5),
-            Constraint::Min(3),
-            Constraint::Length(host_h), // chart panel at bottom
+            Constraint::Length(hero_h),
+            Constraint::Length(actions_h),
+            Constraint::Min(14),
         ])
         .split(area);
 
@@ -209,14 +215,11 @@ impl App {
         super::metrics_panel::draw_live_metrics(frame, rows[2], &self.live_metrics);
     }
 
-    /// Returning: actions + installed on top; full-width host monitor at bottom.
+    /// Returning: installed + actions on top; host monitor fills all remaining height.
     fn draw_home_returning(&self, frame: &mut Frame, area: Rect) {
-        let host_h = host_monitor_height(area.height);
-        let rows = Layout::vertical([
-            Constraint::Min(8),
-            Constraint::Length(host_h), // full width, bottom — large chart
-        ])
-        .split(area);
+        let launcher_h = launcher_band_height(area.height);
+        let rows =
+            Layout::vertical([Constraint::Length(launcher_h), Constraint::Min(14)]).split(area);
 
         let top = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(rows[0]);
@@ -374,8 +377,11 @@ impl App {
                 ]),
             ]
         } else {
-            pairs
+            // Compact band: show a few rows; overflow summarized (space goes to chart).
+            let max_rows = area.height.saturating_sub(2).max(1) as usize;
+            let mut lines: Vec<Line> = pairs
                 .iter()
+                .take(max_rows.saturating_sub(usize::from(pairs.len() > max_rows)))
                 .map(|&(fi, vi)| {
                     let family = &self.families[fi];
                     let variant = &family.variants[vi];
@@ -405,7 +411,15 @@ impl App {
                         fit_span(fit),
                     ])
                 })
-                .collect()
+                .collect();
+            if pairs.len() > lines.len() {
+                let more = pairs.len() - lines.len();
+                lines.push(Line::from(Span::styled(
+                    format!("  … +{more} more · Models tab"),
+                    theme::label(),
+                )));
+            }
+            lines
         };
         frame.render_widget(
             Paragraph::new(lines).block(widgets::soft_block(" Installed models ")),
@@ -414,15 +428,14 @@ impl App {
     }
 }
 
-/// Full-width host monitor height — prefer a large bottom chart (~55% of Home).
-fn host_monitor_height(content_h: u16) -> u16 {
+/// Fixed height for installed + actions (readable, not growing with the terminal).
+/// Remaining Home rows all go to the host panel so the chart can expand.
+fn launcher_band_height(content_h: u16) -> u16 {
     use super::metrics_panel::PREFERRED_HEIGHT;
-    // Leave ≥8 rows for launcher content; give the monitor most of the rest.
-    let max_for_monitor = content_h.saturating_sub(8).max(10);
-    let want = (content_h.saturating_mul(55) / 100).max(14);
-    want.min(max_for_monitor)
-        .min(PREFERRED_HEIGHT.max(want))
-        .max(12)
+    // Prefer 8–12 rows for launcher; leave at least PREFERRED_HEIGHT for host when possible.
+    let reserve_host = PREFERRED_HEIGHT.min(content_h.saturating_sub(8));
+    let max = content_h.saturating_sub(reserve_host).min(12);
+    max.max(8).min(content_h.saturating_sub(10).max(4))
 }
 
 /// Colored fit badge used across Home / wizard / Serve rows.

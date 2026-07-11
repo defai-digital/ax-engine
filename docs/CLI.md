@@ -93,6 +93,38 @@ ax-engine ui-downloader            # compatibility prompt
 ax-engine download --interactive   # compatibility prompt
 ```
 
+### Capturing the TUI for README (GIF / PNG)
+
+Use [VHS](https://github.com/charmbracelet/vhs) to record a short Home → Models →
+Home clip with the live host chart:
+
+```bash
+brew install vhs          # once; pulls ttyd + ffmpeg on typical Homebrew installs
+bash scripts/capture-tui.sh
+```
+
+Defaults:
+
+- Tape: [`docs/assets/tui-demo.tape`](assets/tui-demo.tape)
+- Outputs: `docs/assets/tui-demo.gif` and `docs/assets/tui-demo.png`
+
+Options: `--skip-build`, `--release`, `--tape <path>`. The tape waits ~12s on
+Home so the 2s host-metric samples can draw a utilization trail.
+
+Still PNG only (manual macOS window grab):
+
+```bash
+cargo run -p ax-engine-bench --bin ax-engine -- tui
+# then: ⇧⌘4 → space → click the terminal, or:
+# screencapture -i docs/assets/tui-home.png
+```
+
+Embed in Markdown:
+
+```markdown
+![AX Engine TUI](docs/assets/tui-demo.gif)
+```
+
 `download` wraps the same workflow as `scripts/download_model.py`: download
 through Hugging Face Hub, validate `config.json` and safetensors, and run
 `ax-engine-bench generate-manifest` when available. The JSON output is the

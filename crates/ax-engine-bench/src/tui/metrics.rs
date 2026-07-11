@@ -21,10 +21,11 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// Samples kept for chart history (~60s at ~1 Hz).
-pub(super) const HISTORY_LEN: usize = 60;
+/// Samples kept for chart history (~4 min at one sample / 2 s).
+pub(super) const HISTORY_LEN: usize = 120;
 
-const SAMPLE_INTERVAL: Duration = Duration::from_millis(900);
+/// How often host probes append a chart point (slower = calmer trend line).
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// One row in the process strip.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -105,18 +106,19 @@ impl LiveMetrics {
             gpu_cores: Some(40),
             gpu_percent: Some(22.0),
             gpu_mem_bytes: Some(1500 * 1024 * 1024),
-            top_procs: vec![
-                TopProc {
-                    pid: 1,
-                    rss_bytes: 3 * 1024 * 1024 * 1024,
-                    name: "Code".into(),
-                },
-                TopProc {
-                    pid: 2,
-                    rss_bytes: 1500 * 1024 * 1024,
-                    name: "ax-engine-server".into(),
-                },
-            ],
+            top_procs: (1..=10)
+                .map(|i| TopProc {
+                    pid: i,
+                    rss_bytes: (11 - i) as u64 * 200 * 1024 * 1024,
+                    name: if i == 1 {
+                        "Code".into()
+                    } else if i == 2 {
+                        "ax-engine-server".into()
+                    } else {
+                        format!("proc{i}")
+                    },
+                })
+                .collect(),
             identity_probed: true,
             ..Default::default()
         };
@@ -207,7 +209,9 @@ impl LiveMetrics {
         self.free_disk_bytes = free_disk_bytes(cache_root);
 
         // Lockstep histories: always push all three so series share an x-axis.
-        // Missing probes keep the previous sample (or 0) so lengths stay equal.
+        // On probe miss, **hold last value** (never invent a dip to 0) so the
+        // chart does not show false gaps. First sample may still be 0 until
+        // that metric has been seen once.
         let mem = self
             .mem_ratio()
             .map(|r| (r * 100.0).round().clamp(0.0, 100.0) as u64)
@@ -333,7 +337,7 @@ impl LiveMetrics {
             return;
         };
         let text = String::from_utf8_lossy(&out.stdout);
-        self.top_procs = parse_ps_top_rss(&text, 5);
+        self.top_procs = parse_ps_top_rss(&text, 10);
     }
 }
 

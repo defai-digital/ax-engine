@@ -1,46 +1,50 @@
-//! Host monitor for Apple Silicon — compact meters on top, **large charts at bottom**.
+//! Host monitor for Apple Silicon — compact meters + **one multi-series chart**.
 //!
-//! ## Layout
+//! ## Balancing continuous lines vs 3 colours + slow sampling
+//!
+//! | Goal | Approach |
+//! |---|---|
+//! | One chart, 3 colours | Single plot area, Mem / CPU / GPU |
+//! | No “missing” gaps | **Line-only** Canvas (no scatter points that erase cells) |
+//! | Slow 2 s samples | **Right-align** samples in a fixed time window so early
+//! | | history does not stretch 3 points across the full width |
+//! | Probe failure | Hold last value (lockstep histories in `metrics.rs`) |
+//! | Right edge = gauges | Last point forced to live MEM/CPU/GPU % |
 //!
 //! ```text
-//! ┌ This Mac · Apple M5 Max · 18 CPU · 40 GPU · 128G unified ──────────┐
-//! │ MEM ████ 28%  │ CPU ██ 12%  │ GPU █ 5% · 1.0G mem                  │
-//! │ PID  RSS  %MEM  COMMAND                                            │
-//! ├────────────────────────────────────────────────────────────────────┤
-//! │ Mem  38%  ──────────────── continuous line (own row) ────────────  │
-//! │ CPU  12%  ──────────────── continuous line (own row) ────────────  │
-//! │ GPU   5%  ──────────────── continuous line (own row) ────────────  │
-//! └────────────────────────────────────────────────────────────────────┘
+//! ┌ This Mac · chip · CPU · GPU · unified RAM ─────────────────────────┐
+//! │ MEM ████  │ CPU ██  │ GPU █                                       │
+//! │ PID  RSS  %MEM  COMMAND                                           │
+//! │ Utilization  Mem 38% · CPU 12% · GPU 5%                           │
+//! │ 100 ┤                                    ╭─ growing from "now"    │
+//! │   0 ┴────────────────────────────────────┴─────────────────────── │
+//! │    ~4m                                                    now     │
+//! └───────────────────────────────────────────────────────────────────┘
 //! ```
-//!
-//! Each metric gets its **own** chart row. Overlaying three Braille series in
-//! one Chart makes later series erase earlier cells — the CPU line looked
-//! broken even when history was fine. Stacked single-series charts fix that.
-//!
-//! Right edge of each series is forced to the live gauge value.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Axis, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, Paragraph, Row, Table,
-};
+use ratatui::widgets::canvas::{Canvas, Line as CanvasLine};
+use ratatui::widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table};
 
 use crate::tui::catalog;
-use crate::tui::metrics::{LiveMetrics, PressureBand};
+use crate::tui::metrics::{HISTORY_LEN, LiveMetrics, PressureBand};
 use crate::tui::theme;
 
-/// Preferred total panel height (meters + procs + stacked charts).
-pub(crate) const PREFERRED_HEIGHT: u16 = 22;
+/// Preferred minimum host panel height when callers size explicitly.
+pub(crate) const PREFERRED_HEIGHT: u16 = 26;
 
-/// Fixed header (identity + meters).
 const STRIP_H: u16 = 2;
-/// Compact process strip.
-const PROCS_H: u16 = 4;
+/// Header + up to 10 process rows (title sits on the border). Fixed — extra
+/// vertical space always goes to the utilization chart.
+const PROCS_H: u16 = 12;
+/// Never shrink the utilization chart below this.
+const CHART_MIN_H: u16 = 10;
 
-/// Draw the host monitor. Charts sit at the **bottom** and take leftover height.
+/// Draw the host monitor. Chart sits at the **bottom** and takes all leftover height.
 pub(crate) fn draw_live_metrics(frame: &mut Frame, area: Rect, metrics: &LiveMetrics) {
     if area.height < 5 {
         draw_device_strip(frame, area, metrics);
@@ -54,18 +58,27 @@ pub(crate) fn draw_live_metrics(frame: &mut Frame, area: Rect, metrics: &LiveMet
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
-    // Charts last (bottom) with Constraint::Min so they eat remaining rows.
-    let chunks = if inner.height >= 12 {
+    // strip (fixed) → top-10 procs (fixed) → chart (Min = all remaining rows).
+    let chunks = if inner.height >= STRIP_H + PROCS_H + CHART_MIN_H {
         Layout::vertical([
             Constraint::Length(STRIP_H),
-            Constraint::Length(PROCS_H.min(inner.height.saturating_sub(STRIP_H + 6))),
-            Constraint::Min(6),
+            Constraint::Length(PROCS_H),
+            Constraint::Min(CHART_MIN_H),
+        ])
+        .split(inner)
+    } else if inner.height >= STRIP_H + 6 + CHART_MIN_H {
+        // Mid height: shrink process table first so the chart still grows.
+        let procs = (inner.height - STRIP_H - CHART_MIN_H).clamp(4, PROCS_H);
+        Layout::vertical([
+            Constraint::Length(STRIP_H),
+            Constraint::Length(procs),
+            Constraint::Min(CHART_MIN_H),
         ])
         .split(inner)
     } else if inner.height >= 8 {
         Layout::vertical([
             Constraint::Length(STRIP_H),
-            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Min(4),
         ])
         .split(inner)
@@ -75,14 +88,13 @@ pub(crate) fn draw_live_metrics(frame: &mut Frame, area: Rect, metrics: &LiveMet
 
     draw_device_strip(frame, chunks[0], metrics);
     if chunks.len() == 2 {
-        draw_util_charts(frame, chunks[1], metrics);
+        draw_util_chart(frame, chunks[1], metrics);
         return;
     }
     draw_process_table(frame, chunks[1], metrics);
-    draw_util_charts(frame, chunks[2], metrics);
+    draw_util_chart(frame, chunks[2], metrics);
 }
 
-/// Identity line + MEM / CPU / GPU meters (same colors as chart series).
 fn draw_device_strip(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
     if area.height == 0 {
         return;
@@ -183,8 +195,8 @@ fn draw_inline_meter(
     );
 }
 
-/// Three stacked single-series charts (Mem / CPU / GPU) — no Braille overdraw.
-fn draw_util_charts(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
+/// Single multi-series chart: line-only Canvas, fixed time window, right-aligned.
+fn draw_util_chart(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
     if area.height == 0 {
         return;
     }
@@ -193,156 +205,184 @@ fn draw_util_charts(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
     let cpu_now = m.cpu_percent.map(|p| p.clamp(0.0, 100.0));
     let gpu_now = m.gpu_percent.map(|p| p.clamp(0.0, 100.0));
 
-    let mem_pts = series_points(&m.mem_history, mem_now);
-    let cpu_pts = series_points(&m.cpu_history, cpu_now);
-    let gpu_pts = series_points(&m.gpu_history, gpu_now);
+    // Fixed window = history capacity so sparse early samples sit at "now"
+    // instead of being stretched across the full width (which looks broken).
+    let window = HISTORY_LEN.max(2);
+    let mem_pts = series_points(&m.mem_history, mem_now, window);
+    let cpu_pts = series_points(&m.cpu_history, cpu_now, window);
+    let gpu_pts = series_points(&m.gpu_history, gpu_now, window);
 
-    // Give each series its own band so lines never erase each other.
-    let bands = if area.height >= 9 {
-        Layout::vertical([
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-        ])
-        .split(area)
-    } else if area.height >= 6 {
-        Layout::vertical([
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-        ])
-        .split(area)
-    } else {
-        // Tiny: fall back to CPU-only so at least one continuous line shows.
-        draw_one_series(frame, area, "CPU", cpu_now, &cpu_pts, theme::OK, true);
-        return;
-    };
+    let title = Line::from(vec![
+        Span::styled(" Utilization  ", theme::label()),
+        Span::styled(
+            format!("Mem {} ", fmt_pct(mem_now)),
+            Style::default().fg(theme::ACCENT),
+        ),
+        Span::styled(
+            format!("CPU {} ", fmt_pct(cpu_now)),
+            Style::default().fg(theme::OK),
+        ),
+        Span::styled(
+            format!("GPU {} ", fmt_pct(gpu_now)),
+            Style::default().fg(theme::FEATURE),
+        ),
+    ]);
 
-    draw_one_series(
-        frame,
-        bands[0],
-        "Mem",
-        mem_now,
-        &mem_pts,
-        theme::ACCENT,
-        true,
-    );
-    draw_one_series(frame, bands[1], "CPU", cpu_now, &cpu_pts, theme::OK, true);
-    draw_one_series(
-        frame,
-        bands[2],
-        "GPU",
-        gpu_now,
-        &gpu_pts,
-        theme::FEATURE,
-        true,
-    );
-}
-
-fn draw_one_series(
-    frame: &mut Frame,
-    area: Rect,
-    name: &str,
-    now: Option<f64>,
-    pts: &[(f64, f64)],
-    color: Color,
-    show_y_labels: bool,
-) {
-    if area.height == 0 {
-        return;
-    }
-    let title = format!(" {name} {} ", fmt_pct(now));
-    if pts.len() < 2 {
+    let has_any = mem_pts.len() >= 2 || cpu_pts.len() >= 2 || gpu_pts.len() >= 2;
+    if !has_any {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                format!("  {name}: collecting samples…"),
+                "  collecting Mem / CPU / GPU samples…",
                 theme::label(),
             )))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(theme::MUTED))
-                    .title(Span::styled(title, Style::default().fg(color))),
+                    .title(title),
             ),
             area,
         );
         return;
     }
 
-    let x_max = (pts.len().saturating_sub(1)).max(1) as f64;
-    let dataset = Dataset::default()
-        .name(name)
-        .marker(symbols::Marker::Braille)
-        .graph_type(GraphType::Line)
-        .style(Style::default().fg(color))
-        .data(pts);
+    let x_max = (window.saturating_sub(1)).max(1) as f64;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::MUTED))
+        .title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let y_labels = if show_y_labels && area.height >= 3 {
-        vec![
-            Span::styled("0", theme::label()),
-            Span::styled("100", theme::label()),
-        ]
+    // Y labels | canvas | bottom labels
+    let body = if inner.height >= 4 {
+        Layout::vertical([Constraint::Min(2), Constraint::Length(1)]).split(inner)
     } else {
-        vec![]
+        Layout::vertical([Constraint::Min(1)]).split(inner)
+    };
+    let plot_row = body[0];
+    let cols = if plot_row.width >= 8 {
+        Layout::horizontal([Constraint::Length(4), Constraint::Min(4)]).split(plot_row)
+    } else {
+        Layout::horizontal([Constraint::Length(0), Constraint::Min(1)]).split(plot_row)
     };
 
-    let mut y_axis = Axis::default()
-        .style(Style::default().fg(theme::MUTED))
-        .bounds([0.0, 100.0]);
-    if !y_labels.is_empty() {
-        y_axis = y_axis.labels(y_labels);
+    if cols[0].width > 0 && cols[0].height > 0 {
+        let y_labels = if cols[0].height >= 3 {
+            Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(cols[0])
+        } else {
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(cols[0])
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled("100", theme::label())),
+            y_labels[0],
+        );
+        if y_labels.len() >= 3 {
+            frame.render_widget(
+                Paragraph::new(Span::styled("  0", theme::label())),
+                y_labels[2],
+            );
+        }
     }
 
-    let chart = Chart::new(vec![dataset])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::MUTED))
-                .title(Span::styled(
-                    title,
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                )),
-        )
-        .x_axis(
-            Axis::default()
-                .style(Style::default().fg(theme::MUTED))
-                .bounds([0.0, x_max]),
-        )
-        .y_axis(y_axis);
+    // Line-only: no scatter Points layer (that was erasing series mid-line).
+    // Draw order Mem → GPU → CPU so CPU wins residual cell collisions.
+    let mem_pts_c = mem_pts.clone();
+    let cpu_pts_c = cpu_pts.clone();
+    let gpu_pts_c = gpu_pts.clone();
+    let canvas = Canvas::default()
+        .marker(symbols::Marker::Braille)
+        .x_bounds([0.0, x_max])
+        .y_bounds([0.0, 100.0])
+        .paint(move |ctx| {
+            draw_polyline(ctx, &mem_pts_c, theme::ACCENT);
+            draw_polyline(ctx, &gpu_pts_c, theme::FEATURE);
+            draw_polyline(ctx, &cpu_pts_c, theme::OK);
+        });
+    frame.render_widget(canvas, cols[1]);
 
-    frame.render_widget(chart, area);
+    if body.len() >= 2 {
+        let x_row = Layout::horizontal([Constraint::Length(4), Constraint::Min(1)]).split(body[1]);
+        if x_row[1].width >= 8 {
+            let ends = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(x_row[1]);
+            frame.render_widget(Paragraph::new(Span::styled("~4m", theme::label())), ends[0]);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled("now", theme::label())).right_aligned()),
+                ends[1],
+            );
+        }
+    }
 }
 
-/// Build chart points from history, ending at the live gauge value.
+fn draw_polyline(
+    ctx: &mut ratatui::widgets::canvas::Context<'_>,
+    pts: &[(f64, f64)],
+    color: Color,
+) {
+    if pts.len() < 2 {
+        return;
+    }
+    for pair in pts.windows(2) {
+        ctx.draw(&CanvasLine {
+            x1: pair[0].0,
+            y1: pair[0].1,
+            x2: pair[1].0,
+            y2: pair[1].1,
+            color,
+        });
+    }
+}
+
+/// Build right-aligned points in a fixed `[0, window)` time axis.
 ///
-/// - History samples become x=0..n-1
-/// - Live `now` overwrites the last y (or seeds two points if empty) so the
-///   right edge always matches the meters above.
-/// - Never inserts a gap: if live is missing, keep history as-is.
-fn series_points(history: &std::collections::VecDeque<u64>, now: Option<f64>) -> Vec<(f64, f64)> {
-    let mut pts: Vec<(f64, f64)> = history
+/// Slow sampling + left-growing x made 3–5 points stretch across the whole
+/// chart (looked like missing data). Right-align so the trail grows from `now`
+/// backward as history fills.
+fn series_points(
+    history: &std::collections::VecDeque<u64>,
+    now: Option<f64>,
+    window: usize,
+) -> Vec<(f64, f64)> {
+    let window = window.max(2);
+    let mut vals: Vec<f64> = history
         .iter()
-        .enumerate()
-        .map(|(i, v)| (i as f64, (*v as f64).clamp(0.0, 100.0)))
+        .map(|v| (*v as f64).clamp(0.0, 100.0))
         .collect();
 
     if let Some(y) = now {
         let y = y.clamp(0.0, 100.0);
-        if let Some(last) = pts.last_mut() {
-            last.1 = y;
+        if let Some(last) = vals.last_mut() {
+            *last = y;
         } else {
-            // No history yet: flat line at live value so the series is visible.
-            pts.push((0.0, y));
-            pts.push((1.0, y));
+            vals.push(y);
         }
     }
 
-    // Line graph needs ≥2 points to draw a segment.
-    if pts.len() == 1 {
-        let y = pts[0].1;
-        pts.push((1.0, y));
+    if vals.is_empty() {
+        return Vec::new();
     }
-    pts
+    if vals.len() == 1 {
+        // Need a segment; hold flat for one step left of "now".
+        vals.insert(0, vals[0]);
+    }
+
+    // Cap to window; drop oldest if we somehow exceed.
+    if vals.len() > window {
+        let skip = vals.len() - window;
+        vals = vals[skip..].to_vec();
+    }
+
+    let start = window.saturating_sub(vals.len());
+    vals.into_iter()
+        .enumerate()
+        .map(|(i, y)| ((start + i) as f64, y))
+        .collect()
 }
 
 fn fmt_pct(v: Option<f64>) -> String {
@@ -352,7 +392,6 @@ fn fmt_pct(v: Option<f64>) -> String {
     }
 }
 
-/// Process table: PID · RSS · %MEM · COMMAND.
 fn draw_process_table(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
     let header = Row::new(vec!["PID", "RSS", "%MEM", "COMMAND"]).style(
         Style::default()
@@ -399,7 +438,7 @@ fn draw_process_table(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
             .borders(Borders::TOP)
             .border_style(Style::default().fg(theme::MUTED))
             .title(Span::styled(
-                " Top memory (host RSS) · GPU mem is unified, not VRAM ",
+                " Top 10 memory (host RSS) · unified, not VRAM ",
                 theme::label(),
             )),
     )
@@ -447,19 +486,21 @@ mod series_tests {
         hist.push_back(10);
         hist.push_back(20);
         hist.push_back(30);
-        let pts = series_points(&hist, Some(42.0));
+        let pts = series_points(&hist, Some(42.0), 10);
         assert_eq!(pts.len(), 3);
         assert!((pts.last().unwrap().1 - 42.0).abs() < 1e-9);
-        assert!((pts[0].1 - 10.0).abs() < 1e-9);
-        assert!((pts[1].1 - 20.0).abs() < 1e-9);
+        // Right-aligned into window of 10 → x starts at 7.
+        assert!((pts[0].0 - 7.0).abs() < 1e-9);
+        assert!((pts.last().unwrap().0 - 9.0).abs() < 1e-9);
     }
 
     #[test]
-    fn empty_history_seeds_from_live() {
+    fn empty_history_seeds_from_live_right_aligned() {
         let hist = VecDeque::new();
-        let pts = series_points(&hist, Some(55.0));
+        let pts = series_points(&hist, Some(55.0), 8);
         assert!(pts.len() >= 2);
         assert!(pts.iter().all(|(_, y)| (*y - 55.0).abs() < 1e-9));
+        assert!((pts.last().unwrap().0 - 7.0).abs() < 1e-9);
     }
 
     #[test]
@@ -468,8 +509,22 @@ mod series_tests {
         for v in [5u64, 10, 15, 20] {
             hist.push_back(v);
         }
-        let pts = series_points(&hist, None);
+        let pts = series_points(&hist, None, 20);
         assert_eq!(pts.len(), 4);
         assert!((pts[3].1 - 20.0).abs() < 1e-9);
+        // Right-aligned: last x = 19.
+        assert!((pts[3].0 - 19.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn full_window_starts_at_zero() {
+        let mut hist = VecDeque::new();
+        for v in 0..10u64 {
+            hist.push_back(v);
+        }
+        let pts = series_points(&hist, Some(9.0), 10);
+        assert_eq!(pts.len(), 10);
+        assert!((pts[0].0 - 0.0).abs() < 1e-9);
+        assert!((pts[9].0 - 9.0).abs() < 1e-9);
     }
 }

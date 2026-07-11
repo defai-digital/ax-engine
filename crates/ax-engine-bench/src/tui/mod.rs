@@ -384,7 +384,7 @@ impl App {
         self.chat.tick();
         widgets::expire_toasts(&mut self.toasts);
         self.clamp_list_indices();
-        // Host load for Home gauges/sparklines (~1 Hz throttle inside sampler).
+        // Host load for Home gauges/chart (~2 s throttle inside sampler).
         let models_bytes: u64 = installed_variants(&self.families)
             .into_iter()
             .map(|(fi, vi)| self.families[fi].variants[vi].size)
