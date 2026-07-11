@@ -411,11 +411,12 @@ impl App {
     }
 }
 
-/// Compact Mac host card height — never dominate the Home launcher.
+/// Host monitor height — leave room for chart while keeping launcher usable.
 fn host_card_height(content_h: u16) -> u16 {
     use super::metrics_panel::PREFERRED_HEIGHT;
-    let max = content_h.saturating_sub(8).max(6);
-    PREFERRED_HEIGHT.min(max).max(6)
+    // Keep at least ~8 rows for actions/hero; chart needs ≥10 to look good.
+    let max = content_h.saturating_sub(7).max(8);
+    PREFERRED_HEIGHT.min(max).max(8)
 }
 
 /// Colored fit badge used across Home / wizard / Serve rows.

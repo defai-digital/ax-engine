@@ -1,33 +1,32 @@
 //! Live host metrics for the TUI Home panel (Mac / Apple Silicon).
 //!
-//! ## Honest Mac metrics (not an nvtop port)
+//! ## What macOS actually exposes (no sudo)
 //!
-//! nvtop assumes discrete GPUs (util, VRAM, clocks, multi-device plots).
-//! Apple Silicon is **unified memory**; we only sample what macOS exposes
-//! cheaply and without privilege:
+//! | Metric | Source | Notes |
+//! |---|---|---|
+//! | Unified memory used/free/total | `vm_stat` + `hw.memsize` | not discrete VRAM |
+//! | CPU average % | `ps -A -o %cpu=` / ncpu | host-wide |
+//! | Load average · P/E cores | `vm.loadavg`, `hw.perflevel*` | |
+//! | GPU util % | `ioreg` IOAccelerator `Device Utilization %` | AGX snapshot |
+//! | GPU memory in use | `ioreg` `In use system memory` | from unified pool |
+//! | Chip · GPU cores | `ioreg` model / `gpu-core-count` | static identity |
+//! | Free disk | `df` on HF cache root | |
+//! | Top RSS processes | `ps` | host processes |
 //!
-//! | Metric | Source |
-//! |---|---|
-//! | Memory used / free / total | `vm_stat` + `hw.memsize` |
-//! | CPU average % | `ps -A -o %cpu=` / logical CPUs |
-//! | Load average | `vm.loadavg` |
-//! | Free disk (model cache) | `df` on HF cache root |
-//! | Top memory users | `ps` RSS (host processes, not GPU clients) |
-//! | Model headroom | installed weights on disk vs unified RAM |
-//!
-//! Omitted: discrete GPU util, VRAM, fan, board power, encode engines.
+//! Omitted: discrete VRAM totals, fan, board power, encode engines
+//! (`powermetrics` needs root).
 
 use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// Samples kept for each sparkline (~60s at ~1 Hz).
+/// Samples kept for chart history (~60s at ~1 Hz).
 pub(super) const HISTORY_LEN: usize = 60;
 
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(900);
 
-/// One row in the htop-style “who is using memory” strip.
+/// One row in the process strip.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct TopProc {
     pub pid: u32,
@@ -45,19 +44,33 @@ pub(super) struct LiveMetrics {
     /// Average CPU utilization 0.0–100.0 across logical CPUs.
     pub cpu_percent: Option<f64>,
     pub logical_cpus: Option<u32>,
+    /// Performance / efficiency core counts when available.
+    pub perf_cpus: Option<u32>,
+    pub eff_cpus: Option<u32>,
     pub load_1m: Option<f64>,
     /// Free space on the HF-cache volume (download target).
     pub free_disk_bytes: Option<u64>,
     /// Installed model footprint (bytes) — AX serving headroom proxy.
     pub models_bytes: u64,
-    /// Top RSS processes (htop-style consumers).
+    /// Top RSS processes.
     pub top_procs: Vec<TopProc>,
+
+    /// Chip label from AGX / CPU brand (e.g. "Apple M5 Max").
+    pub chip_name: Option<String>,
+    /// GPU core count from `gpu-core-count`.
+    pub gpu_cores: Option<u32>,
+    /// Device utilization 0–100 from IOAccelerator.
+    pub gpu_percent: Option<f64>,
+    /// GPU “In use system memory” (bytes from unified pool, not VRAM).
+    pub gpu_mem_bytes: Option<u64>,
 
     pub mem_history: VecDeque<u64>,
     pub cpu_history: VecDeque<u64>,
+    pub gpu_history: VecDeque<u64>,
     pub models_history: VecDeque<u64>,
 
     last_sample: Option<Instant>,
+    identity_probed: bool,
 }
 
 impl LiveMetrics {
@@ -65,6 +78,10 @@ impl LiveMetrics {
         LiveMetrics {
             total_ram_bytes,
             logical_cpus: sysctl_u32("hw.logicalcpu"),
+            perf_cpus: sysctl_u32("hw.perflevel0.logicalcpu")
+                .or_else(|| sysctl_u32("hw.perflevel0.physicalcpu")),
+            eff_cpus: sysctl_u32("hw.perflevel1.logicalcpu")
+                .or_else(|| sysctl_u32("hw.perflevel1.physicalcpu")),
             load_1m: parse_loadavg_1m(&sysctl_string("vm.loadavg").unwrap_or_default()),
             free_disk_bytes: None,
             ..Default::default()
@@ -79,9 +96,15 @@ impl LiveMetrics {
             free_ram_bytes: Some(40 * 1024 * 1024 * 1024),
             cpu_percent: Some(18.5),
             logical_cpus: Some(12),
+            perf_cpus: Some(8),
+            eff_cpus: Some(4),
             load_1m: Some(1.2),
             free_disk_bytes: Some(500 * 1024 * 1024 * 1024),
             models_bytes: 8 * 1024 * 1024 * 1024,
+            chip_name: Some("Apple M-series".into()),
+            gpu_cores: Some(40),
+            gpu_percent: Some(22.0),
+            gpu_mem_bytes: Some(1500 * 1024 * 1024),
             top_procs: vec![
                 TopProc {
                     pid: 1,
@@ -94,11 +117,13 @@ impl LiveMetrics {
                     name: "ax-engine-server".into(),
                 },
             ],
+            identity_probed: true,
             ..Default::default()
         };
         for v in [20, 25, 30, 28, 35, 40, 38] {
             m.mem_history.push_back(v);
             m.cpu_history.push_back(v.saturating_sub(10));
+            m.gpu_history.push_back(v.saturating_sub(5));
             m.models_history.push_back(12);
         }
         m
@@ -117,6 +142,10 @@ impl LiveMetrics {
         self.cpu_percent.map(|p| (p / 100.0).clamp(0.0, 1.0))
     }
 
+    pub fn gpu_ratio(&self) -> Option<f64> {
+        self.gpu_percent.map(|p| (p / 100.0).clamp(0.0, 1.0))
+    }
+
     pub fn models_ratio(&self) -> Option<f64> {
         let total = self.total_ram_bytes?;
         if total == 0 {
@@ -125,7 +154,7 @@ impl LiveMetrics {
         Some((self.models_bytes as f64 / total as f64).clamp(0.0, 1.0))
     }
 
-    /// nvidia-htop style pressure band from a 0–1 ratio.
+    /// Pressure band from a 0–1 ratio (green / yellow / red gauges).
     pub fn pressure_band(ratio: f64) -> PressureBand {
         if ratio >= 0.85 {
             PressureBand::High
@@ -156,8 +185,12 @@ impl LiveMetrics {
         if self.logical_cpus.is_none() {
             self.logical_cpus = sysctl_u32("hw.logicalcpu");
         }
+        if !self.identity_probed {
+            self.probe_identity();
+        }
         self.sample_memory();
         self.sample_cpu();
+        self.sample_gpu();
         self.sample_top_procs();
         self.load_1m = parse_loadavg_1m(&sysctl_string("vm.loadavg").unwrap_or_default());
         self.free_disk_bytes = free_disk_bytes(cache_root);
@@ -168,8 +201,41 @@ impl LiveMetrics {
         if let Some(p) = self.cpu_percent {
             push_hist(&mut self.cpu_history, p.round().clamp(0.0, 100.0) as u64);
         }
+        if let Some(p) = self.gpu_percent {
+            push_hist(&mut self.gpu_history, p.round().clamp(0.0, 100.0) as u64);
+        }
         if let Some(r) = self.models_ratio() {
             push_hist(&mut self.models_history, (r * 100.0).round() as u64);
+        }
+    }
+
+    fn probe_identity(&mut self) {
+        self.identity_probed = true;
+        if self.perf_cpus.is_none() {
+            self.perf_cpus = sysctl_u32("hw.perflevel0.logicalcpu")
+                .or_else(|| sysctl_u32("hw.perflevel0.physicalcpu"));
+        }
+        if self.eff_cpus.is_none() {
+            self.eff_cpus = sysctl_u32("hw.perflevel1.logicalcpu")
+                .or_else(|| sysctl_u32("hw.perflevel1.physicalcpu"));
+        }
+        // Prefer AGX model; fall back to CPU brand string.
+        if self.chip_name.is_none()
+            && let Some(out) = Command::new("ioreg")
+                .args(["-r", "-d", "1", "-c", "IOAccelerator"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+        {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let sample = parse_ioreg_gpu(&text);
+            self.chip_name = sample.chip_name;
+            if self.gpu_cores.is_none() {
+                self.gpu_cores = sample.gpu_cores;
+            }
+        }
+        if self.chip_name.is_none() {
+            self.chip_name = sysctl_string("machdep.cpu.brand_string");
         }
     }
 
@@ -194,6 +260,30 @@ impl LiveMetrics {
         self.cpu_percent = parse_ps_cpu_percent(&text, ncpu);
     }
 
+    fn sample_gpu(&mut self) {
+        let output = Command::new("ioreg")
+            .args(["-r", "-d", "1", "-c", "IOAccelerator"])
+            .output()
+            .ok();
+        let Some(out) = output.filter(|o| o.status.success()) else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let sample = parse_ioreg_gpu(&text);
+        if sample.gpu_percent.is_some() {
+            self.gpu_percent = sample.gpu_percent;
+        }
+        if sample.gpu_mem_bytes.is_some() {
+            self.gpu_mem_bytes = sample.gpu_mem_bytes;
+        }
+        if self.chip_name.is_none() {
+            self.chip_name = sample.chip_name;
+        }
+        if self.gpu_cores.is_none() {
+            self.gpu_cores = sample.gpu_cores;
+        }
+    }
+
     fn sample_top_procs(&mut self) {
         // rss is KiB on macOS; sort by RSS descending, take a few.
         let output = Command::new("ps")
@@ -213,6 +303,14 @@ pub(super) enum PressureBand {
     Low,
     Medium,
     High,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct GpuSample {
+    pub chip_name: Option<String>,
+    pub gpu_cores: Option<u32>,
+    pub gpu_percent: Option<f64>,
+    pub gpu_mem_bytes: Option<u64>,
 }
 
 fn push_hist(hist: &mut VecDeque<u64>, value: u64) {
@@ -263,6 +361,77 @@ pub(super) fn parse_ps_cpu_percent(raw: &str, ncpu: f64) -> Option<f64> {
         return None;
     }
     Some((sum / ncpu).clamp(0.0, 100.0))
+}
+
+/// Parse IOAccelerator `ioreg` text for Device Utilization % and identity.
+///
+/// Looks for keys inside `PerformanceStatistics` and top-level AGX properties.
+/// Works without sudo (unlike `powermetrics`).
+pub(super) fn parse_ioreg_gpu(raw: &str) -> GpuSample {
+    let mut sample = GpuSample::default();
+
+    // Prefer the first matching value; AGX accelerator is usually first.
+    if let Some(v) = find_ioreg_number(raw, "Device Utilization %") {
+        sample.gpu_percent = Some(v.clamp(0.0, 100.0));
+    } else if let Some(v) = find_ioreg_number(raw, "Renderer Utilization %") {
+        // Fallback when Device util is absent on some chips/OS versions.
+        sample.gpu_percent = Some(v.clamp(0.0, 100.0));
+    }
+
+    if let Some(v) = find_ioreg_number(raw, "In use system memory") {
+        // Bytes (integer). Ignore the "(driver)" variant by matching exact key
+        // with word-boundary style: we scan for `"In use system memory"=`.
+        sample.gpu_mem_bytes = Some(v as u64);
+    }
+
+    if let Some(v) = find_ioreg_number(raw, "gpu-core-count") {
+        sample.gpu_cores = Some(v as u32);
+    }
+
+    if let Some(name) = find_ioreg_string(raw, "model") {
+        // Prefer Apple chip model over generic IO names.
+        if name.contains("Apple") || name.starts_with('M') {
+            sample.chip_name = Some(name);
+        } else {
+            sample.chip_name.get_or_insert(name);
+        }
+    }
+
+    sample
+}
+
+fn find_ioreg_number(raw: &str, key: &str) -> Option<f64> {
+    // ioreg text: "Key"=123  or  "Key" = 123
+    let needle = format!("\"{key}\"");
+    let mut search = raw;
+    while let Some(idx) = search.find(&needle) {
+        let after = &search[idx + needle.len()..];
+        let after = after.trim_start();
+        let after = after.strip_prefix('=')?.trim_start();
+        // Skip the driver variant when looking for "In use system memory"
+        // because ioreg may also have "In use system memory (driver)".
+        // We already matched the exact quoted key, so this is fine.
+        let digits: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+            .collect();
+        if let Ok(v) = digits.parse::<f64>() {
+            return Some(v);
+        }
+        search = &search[idx + needle.len()..];
+    }
+    None
+}
+
+fn find_ioreg_string(raw: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let idx = raw.find(&needle)?;
+    let after = &raw[idx + needle.len()..];
+    let after = after.trim_start().strip_prefix('=')?.trim_start();
+    let after = after.strip_prefix('"')?;
+    let end = after.find('"')?;
+    let value = after[..end].trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
 }
 
 /// Used ≈ (active + wired + compressor) × page_size.
@@ -343,7 +512,6 @@ pub(super) fn parse_ps_top_rss(raw: &str, limit: usize) -> Vec<TopProc> {
         if name_raw.is_empty() {
             continue;
         }
-        // Basename only for long paths.
         let name = Path::new(&name_raw)
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -414,9 +582,37 @@ Pages occupied by compressor:              100.
     }
 
     #[test]
-    fn pressure_bands_match_nvidia_htop_style() {
+    fn pressure_bands_match_thresholds() {
         assert_eq!(LiveMetrics::pressure_band(0.2), PressureBand::Low);
         assert_eq!(LiveMetrics::pressure_band(0.6), PressureBand::Medium);
         assert_eq!(LiveMetrics::pressure_band(0.9), PressureBand::High);
+    }
+
+    #[test]
+    fn ioreg_gpu_parses_device_util_and_identity() {
+        let raw = r#"
++-o AGXAcceleratorG17X  <class AGXAcceleratorG17X>
+    {
+      "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=2188197888,"Tiler Utilization %"=3,"Renderer Utilization %"=11,"Device Utilization %"=27,"In use system memory"=1014890496}
+      "model" = "Apple M5 Max"
+      "gpu-core-count" = 40
+    }
+"#;
+        let s = parse_ioreg_gpu(raw);
+        assert!((s.gpu_percent.unwrap() - 27.0).abs() < 1e-6);
+        assert_eq!(s.gpu_cores, Some(40));
+        assert_eq!(s.chip_name.as_deref(), Some("Apple M5 Max"));
+        assert_eq!(s.gpu_mem_bytes, Some(1_014_890_496));
+    }
+
+    #[test]
+    fn ioreg_falls_back_to_renderer_util() {
+        let raw = r#"
+"PerformanceStatistics" = {"Renderer Utilization %"=15,"In use system memory"=1000}
+"model" = "Apple M4"
+"#;
+        let s = parse_ioreg_gpu(raw);
+        assert!((s.gpu_percent.unwrap() - 15.0).abs() < 1e-6);
+        assert_eq!(s.gpu_mem_bytes, Some(1000));
     }
 }

@@ -58,7 +58,8 @@ ax-engine download qwen36-35b --dest /path/to/explicit-copy
 
 For an interactive flow, run `ax-engine tui`. The TUI has five screens
 (switch with `1`-`5`, or `Ctrl+1`-`5` while typing in Chat/fields): Home
-shows a **Mac host card** (unified memory used/free, CPU load, installed-model
+shows a **This Mac** host monitor (CPU/GPU util + unified memory chart from
+`vm_stat`/`ps`/`ioreg`, process strip, installed-model
 headroom vs RAM, top memory processes — only metrics macOS can provide without
 privileged GPU tooling), plus Quick start actions and installed models;
 Models is a four-step wizard — family → size (estimate and RAM-fit badge per

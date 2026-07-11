@@ -285,10 +285,12 @@ fn live_metrics_panel_renders_gauges() {
     let text = render(&app);
     assert!(
         text.contains("This Mac")
-            || text.contains("Memory")
             || text.contains("CPU")
+            || text.contains("GPU")
+            || text.contains("MEM")
+            || text.contains("Utilization")
             || text.contains("unified"),
-        "home should show Mac host card: {text:.240}"
+        "home should show Mac host monitor with CPU/GPU: {text:.240}"
     );
 }
 
@@ -318,17 +320,35 @@ fn live_metrics_shows_htop_style_top_and_free() {
     app.live_metrics = super::metrics::LiveMetrics::for_tests();
     let text = render(&app);
     assert!(
-        text.contains("Memory") || text.contains("CPU") || text.contains("This Mac"),
-        "Mac host card meters expected"
+        text.contains("CPU")
+            || text.contains("GPU")
+            || text.contains("This Mac")
+            || text.contains("MEM"),
+        "Mac host monitor meters expected: {text:.200}"
     );
     assert!(
         text.contains("Code")
-            || text.contains("Using")
+            || text.contains("RSS")
+            || text.contains("COMMAND")
             || text.contains("free")
-            || text.contains("used")
-            || text.contains("Models"),
-        "should surface free/used memory, models headroom, or top processes"
+            || text.contains("unified"),
+        "should surface process strip or identity: {text:.200}"
     );
+}
+
+#[test]
+fn ioreg_gpu_parser_unit() {
+    use super::metrics::parse_ioreg_gpu;
+    let raw = r#"
+"PerformanceStatistics" = {"Device Utilization %"=42,"In use system memory"=2048}
+"model" = "Apple M4 Pro"
+"gpu-core-count" = 20
+"#;
+    let s = parse_ioreg_gpu(raw);
+    assert!((s.gpu_percent.unwrap() - 42.0).abs() < 1e-6);
+    assert_eq!(s.gpu_cores, Some(20));
+    assert_eq!(s.chip_name.as_deref(), Some("Apple M4 Pro"));
+    assert_eq!(s.gpu_mem_bytes, Some(2048));
 }
 
 #[test]
