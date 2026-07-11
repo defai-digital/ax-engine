@@ -120,11 +120,21 @@ impl LiveMetrics {
             identity_probed: true,
             ..Default::default()
         };
-        for v in [20, 25, 30, 28, 35, 40, 38] {
+        // Histories end at the same values as the live gauges (18.5 / 22 / 37.5%).
+        for v in [20u64, 25, 30, 28, 35, 40, 38] {
             m.mem_history.push_back(v);
             m.cpu_history.push_back(v.saturating_sub(10));
             m.gpu_history.push_back(v.saturating_sub(5));
             m.models_history.push_back(12);
+        }
+        if let Some(last) = m.mem_history.back_mut() {
+            *last = 38; // ~24/64 used
+        }
+        if let Some(last) = m.cpu_history.back_mut() {
+            *last = 19;
+        }
+        if let Some(last) = m.gpu_history.back_mut() {
+            *last = 22;
         }
         m
     }
@@ -166,6 +176,10 @@ impl LiveMetrics {
     }
 
     /// Refresh probes when the sample interval has elapsed.
+    ///
+    /// On each successful sample we push **MEM · CPU · GPU** histories in
+    /// lockstep (same length, same timestamp) so the multi-series chart lines
+    /// stay aligned with the gauges.
     pub fn tick(&mut self, models_bytes: u64, cache_root: &Path) {
         self.models_bytes = models_bytes;
         let now = Instant::now();
@@ -173,9 +187,6 @@ impl LiveMetrics {
             .last_sample
             .is_some_and(|t| now.duration_since(t) < SAMPLE_INTERVAL)
         {
-            if let Some(r) = self.models_ratio() {
-                push_hist(&mut self.models_history, (r * 100.0).round() as u64);
-            }
             return;
         }
         self.last_sample = Some(now);
@@ -195,15 +206,26 @@ impl LiveMetrics {
         self.load_1m = parse_loadavg_1m(&sysctl_string("vm.loadavg").unwrap_or_default());
         self.free_disk_bytes = free_disk_bytes(cache_root);
 
-        if let Some(r) = self.mem_ratio() {
-            push_hist(&mut self.mem_history, (r * 100.0).round() as u64);
-        }
-        if let Some(p) = self.cpu_percent {
-            push_hist(&mut self.cpu_history, p.round().clamp(0.0, 100.0) as u64);
-        }
-        if let Some(p) = self.gpu_percent {
-            push_hist(&mut self.gpu_history, p.round().clamp(0.0, 100.0) as u64);
-        }
+        // Lockstep histories: always push all three so series share an x-axis.
+        // Missing probes keep the previous sample (or 0) so lengths stay equal.
+        let mem = self
+            .mem_ratio()
+            .map(|r| (r * 100.0).round().clamp(0.0, 100.0) as u64)
+            .or_else(|| self.mem_history.back().copied())
+            .unwrap_or(0);
+        let cpu = self
+            .cpu_percent
+            .map(|p| p.round().clamp(0.0, 100.0) as u64)
+            .or_else(|| self.cpu_history.back().copied())
+            .unwrap_or(0);
+        let gpu = self
+            .gpu_percent
+            .map(|p| p.round().clamp(0.0, 100.0) as u64)
+            .or_else(|| self.gpu_history.back().copied())
+            .unwrap_or(0);
+        push_hist(&mut self.mem_history, mem);
+        push_hist(&mut self.cpu_history, cpu);
+        push_hist(&mut self.gpu_history, gpu);
         if let Some(r) = self.models_ratio() {
             push_hist(&mut self.models_history, (r * 100.0).round() as u64);
         }
@@ -251,13 +273,30 @@ impl LiveMetrics {
     }
 
     fn sample_cpu(&mut self) {
+        // Prefer host-level sample from `top` (user+sys). `ps %cpu` sum/ncpu is
+        // noisy on macOS and can briefly fail/empty, which used to clear the
+        // gauge and leave gaps in the chart.
+        if let Some(out) = Command::new("top")
+            .args(["-l", "1", "-n", "0", "-s", "0"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+        {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if let Some(p) = parse_top_cpu_percent(&text) {
+                self.cpu_percent = Some(p);
+                return;
+            }
+        }
         let output = Command::new("ps").args(["-A", "-o", "%cpu="]).output().ok();
         let Some(out) = output.filter(|o| o.status.success()) else {
-            return;
+            return; // keep previous cpu_percent
         };
         let text = String::from_utf8_lossy(&out.stdout);
         let ncpu = self.logical_cpus.unwrap_or(1).max(1) as f64;
-        self.cpu_percent = parse_ps_cpu_percent(&text, ncpu);
+        if let Some(p) = parse_ps_cpu_percent(&text, ncpu) {
+            self.cpu_percent = Some(p);
+        }
     }
 
     fn sample_gpu(&mut self) {
@@ -347,7 +386,48 @@ pub(super) fn parse_loadavg_1m(raw: &str) -> Option<f64> {
     cleaned.split_whitespace().next()?.parse().ok()
 }
 
-/// Parse `ps -A -o %cpu=` into average utilization 0–100.
+/// Parse macOS `top -l 1` host CPU line into busy percent 0–100.
+///
+/// Accepts forms like:
+/// `CPU usage: 1.42% user, 5.71% sys, 92.85% idle`
+/// Prefer `100 - idle` when idle is present; else `user + sys`.
+pub(super) fn parse_top_cpu_percent(raw: &str) -> Option<f64> {
+    for line in raw.lines() {
+        let line = line.trim();
+        if !line.starts_with("CPU usage:") && !line.to_ascii_lowercase().starts_with("cpu usage:") {
+            continue;
+        }
+        let idle = parse_top_field_percent(line, "idle");
+        if let Some(idle) = idle {
+            return Some((100.0 - idle).clamp(0.0, 100.0));
+        }
+        let user = parse_top_field_percent(line, "user").unwrap_or(0.0);
+        let sys = parse_top_field_percent(line, "sys")
+            .or_else(|| parse_top_field_percent(line, "system"))
+            .unwrap_or(0.0);
+        if user > 0.0 || sys > 0.0 {
+            return Some((user + sys).clamp(0.0, 100.0));
+        }
+    }
+    None
+}
+
+fn parse_top_field_percent(line: &str, field: &str) -> Option<f64> {
+    // Match "12.3% user" / "12.3% idle" (order is value then unit then label).
+    let lower = line.to_ascii_lowercase();
+    let field = field.to_ascii_lowercase();
+    let needle = format!("% {field}");
+    let idx = lower.find(&needle)?;
+    // Walk left from '%' to collect the number.
+    let before = &line[..idx];
+    let num_start = before
+        .rfind(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    before[num_start..].trim().parse().ok()
+}
+
+/// Parse `ps -A -o %cpu=` into average utilization 0–100 (fallback).
 pub(super) fn parse_ps_cpu_percent(raw: &str, ncpu: f64) -> Option<f64> {
     let mut sum = 0.0_f64;
     let mut any = false;
@@ -550,6 +630,26 @@ Pages occupied by compressor:              100.
     fn ps_cpu_averages_across_cores() {
         let raw = "10.0\n20.0\n30.0\n";
         assert!((parse_ps_cpu_percent(raw, 4.0).unwrap() - 15.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn top_cpu_parses_user_sys_idle() {
+        let raw = "\
+Processes: 675 total
+Load Avg: 2.17, 2.24, 2.31
+CPU usage: 1.42% user, 5.71% sys, 92.85% idle
+PhysMem: 33G used
+";
+        let p = parse_top_cpu_percent(raw).unwrap();
+        // 100 - 92.85 = 7.15
+        assert!((p - 7.15).abs() < 1e-6, "got {p}");
+    }
+
+    #[test]
+    fn top_cpu_falls_back_to_user_plus_sys() {
+        let raw = "CPU usage: 10.0% user, 5.0% sys\n";
+        let p = parse_top_cpu_percent(raw).unwrap();
+        assert!((p - 15.0).abs() < 1e-6);
     }
 
     #[test]

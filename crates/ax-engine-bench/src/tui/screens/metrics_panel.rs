@@ -1,26 +1,23 @@
-//! Host monitor for Apple Silicon — big utilization chart + CPU/GPU meters.
+//! Host monitor for Apple Silicon — compact meters on top, **large charts at bottom**.
 //!
-//! ## Layout (chart-first, Mac-honest data)
+//! ## Layout
 //!
 //! ```text
-//! ┌ This Mac · Apple M5 Max · 18 CPU (8P+10E) · 40 GPU · 128G unified ─┐
-//! │ MEM ████░░ 28% 36G/128G │ CPU ██ 12% │ GPU █ 5%  · 1.0G GPU mem   │
-//! │ ┌ Utilization % · CPU · GPU · Mem ──────────────────────────────┐ │
-//! │ │ 100% ┤         ╭─ multi-series Chart (Braille lines)          │ │
-//! │ │      │    ╭────╯                                              │ │
-//! │ │   0% ┴────────────────────────────────────────────────        │ │
-//! │ └───────────────────────────────────────────────────────────────┘ │
-//! │ PID      RSS     %MEM  COMMAND                                    │
-//! └───────────────────────────────────────────────────────────────────┘
+//! ┌ This Mac · Apple M5 Max · 18 CPU · 40 GPU · 128G unified ──────────┐
+//! │ MEM ████ 28%  │ CPU ██ 12%  │ GPU █ 5% · 1.0G mem                  │
+//! │ PID  RSS  %MEM  COMMAND                                            │
+//! ├────────────────────────────────────────────────────────────────────┤
+//! │ Mem  38%  ──────────────── continuous line (own row) ────────────  │
+//! │ CPU  12%  ──────────────── continuous line (own row) ────────────  │
+//! │ GPU   5%  ──────────────── continuous line (own row) ────────────  │
+//! └────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ## Sources (no sudo)
-//! - CPU % · load · P/E cores — `ps` / `sysctl`
-//! - GPU util % · GPU mem in use · chip · cores — `ioreg` IOAccelerator
-//! - Unified memory — `vm_stat` (not discrete VRAM)
+//! Each metric gets its **own** chart row. Overlaying three Braille series in
+//! one Chart makes later series erase earlier cells — the CPU line looked
+//! broken even when history was fine. Stacked single-series charts fix that.
 //!
-//! Chart series are real: CPU, GPU device util, unified mem pressure.
-//! We do **not** invent discrete VRAM/power/fan plots.
+//! Right edge of each series is forced to the live gauge value.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -28,18 +25,22 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Axis, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, LegendPosition, Paragraph, Row,
-    Table,
+    Axis, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, Paragraph, Row, Table,
 };
 
 use crate::tui::catalog;
 use crate::tui::metrics::{LiveMetrics, PressureBand};
 use crate::tui::theme;
 
-/// Preferred height so the chart has room (device strip + plot + processes).
-pub(crate) const PREFERRED_HEIGHT: u16 = 16;
+/// Preferred total panel height (meters + procs + stacked charts).
+pub(crate) const PREFERRED_HEIGHT: u16 = 22;
 
-/// Draw the host monitor. Best at height ≥ 12; degrades cleanly below that.
+/// Fixed header (identity + meters).
+const STRIP_H: u16 = 2;
+/// Compact process strip.
+const PROCS_H: u16 = 4;
+
+/// Draw the host monitor. Charts sit at the **bottom** and take leftover height.
 pub(crate) fn draw_live_metrics(frame: &mut Frame, area: Rect, metrics: &LiveMetrics) {
     if area.height < 5 {
         draw_device_strip(frame, area, metrics);
@@ -53,37 +54,35 @@ pub(crate) fn draw_live_metrics(frame: &mut Frame, area: Rect, metrics: &LiveMet
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
-    // Proportions: identity meters, large chart, optional process table.
-    let chunks = if inner.height >= 14 {
+    // Charts last (bottom) with Constraint::Min so they eat remaining rows.
+    let chunks = if inner.height >= 12 {
         Layout::vertical([
-            Constraint::Length(2), // identity + meters
-            Constraint::Min(6),    // chart
-            Constraint::Length(5), // process table
+            Constraint::Length(STRIP_H),
+            Constraint::Length(PROCS_H.min(inner.height.saturating_sub(STRIP_H + 6))),
+            Constraint::Min(6),
         ])
         .split(inner)
-    } else if inner.height >= 10 {
+    } else if inner.height >= 8 {
         Layout::vertical([
+            Constraint::Length(STRIP_H),
             Constraint::Length(2),
             Constraint::Min(4),
-            Constraint::Length(3),
         ])
         .split(inner)
-    } else if inner.height >= 7 {
-        Layout::vertical([Constraint::Length(2), Constraint::Min(3)]).split(inner)
     } else {
-        Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).split(inner)
+        Layout::vertical([Constraint::Length(STRIP_H), Constraint::Min(2)]).split(inner)
     };
 
     draw_device_strip(frame, chunks[0], metrics);
-    if chunks.len() >= 2 {
-        draw_util_chart(frame, chunks[1], metrics);
+    if chunks.len() == 2 {
+        draw_util_charts(frame, chunks[1], metrics);
+        return;
     }
-    if chunks.len() >= 3 {
-        draw_process_table(frame, chunks[2], metrics);
-    }
+    draw_process_table(frame, chunks[1], metrics);
+    draw_util_charts(frame, chunks[2], metrics);
 }
 
-/// Identity line + MEM / CPU / GPU meters.
+/// Identity line + MEM / CPU / GPU meters (same colors as chart series).
 fn draw_device_strip(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
     if area.height == 0 {
         return;
@@ -184,115 +183,173 @@ fn draw_inline_meter(
     );
 }
 
-/// Multi-series utilization chart (0–100%): CPU · GPU · Mem.
-fn draw_util_chart(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
-    let cpu_pts: Vec<(f64, f64)> = m
-        .cpu_history
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (i as f64, *v as f64))
-        .collect();
-    let gpu_pts: Vec<(f64, f64)> = m
-        .gpu_history
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (i as f64, *v as f64))
-        .collect();
-    let mem_pts: Vec<(f64, f64)> = m
-        .mem_history
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (i as f64, *v as f64))
-        .collect();
-
-    let x_max = cpu_pts
-        .len()
-        .max(gpu_pts.len())
-        .max(mem_pts.len())
-        .saturating_sub(1)
-        .max(1) as f64;
-
-    let mut datasets = Vec::new();
-    if !cpu_pts.is_empty() {
-        datasets.push(
-            Dataset::default()
-                .name("CPU %")
-                .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(theme::OK))
-                .data(&cpu_pts),
-        );
-    }
-    if !gpu_pts.is_empty() {
-        datasets.push(
-            Dataset::default()
-                .name("GPU %")
-                .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(theme::FEATURE))
-                .data(&gpu_pts),
-        );
-    }
-    if !mem_pts.is_empty() {
-        datasets.push(
-            Dataset::default()
-                .name("Mem %")
-                .marker(symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(theme::ACCENT))
-                .data(&mem_pts),
-        );
+/// Three stacked single-series charts (Mem / CPU / GPU) — no Braille overdraw.
+fn draw_util_charts(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
+    if area.height == 0 {
+        return;
     }
 
-    if datasets.is_empty() {
+    let mem_now = m.mem_ratio().map(|r| (r * 100.0).clamp(0.0, 100.0));
+    let cpu_now = m.cpu_percent.map(|p| p.clamp(0.0, 100.0));
+    let gpu_now = m.gpu_percent.map(|p| p.clamp(0.0, 100.0));
+
+    let mem_pts = series_points(&m.mem_history, mem_now);
+    let cpu_pts = series_points(&m.cpu_history, cpu_now);
+    let gpu_pts = series_points(&m.gpu_history, gpu_now);
+
+    // Give each series its own band so lines never erase each other.
+    let bands = if area.height >= 9 {
+        Layout::vertical([
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ])
+        .split(area)
+    } else if area.height >= 6 {
+        Layout::vertical([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+        ])
+        .split(area)
+    } else {
+        // Tiny: fall back to CPU-only so at least one continuous line shows.
+        draw_one_series(frame, area, "CPU", cpu_now, &cpu_pts, theme::OK, true);
+        return;
+    };
+
+    draw_one_series(
+        frame,
+        bands[0],
+        "Mem",
+        mem_now,
+        &mem_pts,
+        theme::ACCENT,
+        true,
+    );
+    draw_one_series(frame, bands[1], "CPU", cpu_now, &cpu_pts, theme::OK, true);
+    draw_one_series(
+        frame,
+        bands[2],
+        "GPU",
+        gpu_now,
+        &gpu_pts,
+        theme::FEATURE,
+        true,
+    );
+}
+
+fn draw_one_series(
+    frame: &mut Frame,
+    area: Rect,
+    name: &str,
+    now: Option<f64>,
+    pts: &[(f64, f64)],
+    color: Color,
+    show_y_labels: bool,
+) {
+    if area.height == 0 {
+        return;
+    }
+    let title = format!(" {name} {} ", fmt_pct(now));
+    if pts.len() < 2 {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "  collecting CPU / GPU / mem samples…",
+                format!("  {name}: collecting samples…"),
                 theme::label(),
             )))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(theme::MUTED))
-                    .title(" Utilization % "),
+                    .title(Span::styled(title, Style::default().fg(color))),
             ),
             area,
         );
         return;
     }
 
-    let chart = Chart::new(datasets)
+    let x_max = (pts.len().saturating_sub(1)).max(1) as f64;
+    let dataset = Dataset::default()
+        .name(name)
+        .marker(symbols::Marker::Braille)
+        .graph_type(GraphType::Line)
+        .style(Style::default().fg(color))
+        .data(pts);
+
+    let y_labels = if show_y_labels && area.height >= 3 {
+        vec![
+            Span::styled("0", theme::label()),
+            Span::styled("100", theme::label()),
+        ]
+    } else {
+        vec![]
+    };
+
+    let mut y_axis = Axis::default()
+        .style(Style::default().fg(theme::MUTED))
+        .bounds([0.0, 100.0]);
+    if !y_labels.is_empty() {
+        y_axis = y_axis.labels(y_labels);
+    }
+
+    let chart = Chart::new(vec![dataset])
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme::MUTED))
                 .title(Span::styled(
-                    " Utilization % · CPU · GPU · Mem (unified) ",
-                    theme::label(),
+                    title,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
                 )),
         )
         .x_axis(
             Axis::default()
                 .style(Style::default().fg(theme::MUTED))
-                .bounds([0.0, x_max])
-                .labels(vec![
-                    Span::styled("past", theme::label()),
-                    Span::styled("now", theme::label()),
-                ]),
+                .bounds([0.0, x_max]),
         )
-        .y_axis(
-            Axis::default()
-                .style(Style::default().fg(theme::MUTED))
-                .bounds([0.0, 100.0])
-                .labels(vec![
-                    Span::styled("0", theme::label()),
-                    Span::styled("50", theme::label()),
-                    Span::styled("100", theme::label()),
-                ]),
-        )
-        .legend_position(Some(LegendPosition::TopRight));
+        .y_axis(y_axis);
 
     frame.render_widget(chart, area);
+}
+
+/// Build chart points from history, ending at the live gauge value.
+///
+/// - History samples become x=0..n-1
+/// - Live `now` overwrites the last y (or seeds two points if empty) so the
+///   right edge always matches the meters above.
+/// - Never inserts a gap: if live is missing, keep history as-is.
+fn series_points(history: &std::collections::VecDeque<u64>, now: Option<f64>) -> Vec<(f64, f64)> {
+    let mut pts: Vec<(f64, f64)> = history
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (i as f64, (*v as f64).clamp(0.0, 100.0)))
+        .collect();
+
+    if let Some(y) = now {
+        let y = y.clamp(0.0, 100.0);
+        if let Some(last) = pts.last_mut() {
+            last.1 = y;
+        } else {
+            // No history yet: flat line at live value so the series is visible.
+            pts.push((0.0, y));
+            pts.push((1.0, y));
+        }
+    }
+
+    // Line graph needs ≥2 points to draw a segment.
+    if pts.len() == 1 {
+        let y = pts[0].1;
+        pts.push((1.0, y));
+    }
+    pts
+}
+
+fn fmt_pct(v: Option<f64>) -> String {
+    match v {
+        Some(p) => format!("{p:.0}%"),
+        None => "—".into(),
+    }
 }
 
 /// Process table: PID · RSS · %MEM · COMMAND.
@@ -376,5 +433,43 @@ fn gpu_bar_label(m: &LiveMetrics) -> String {
         (Some(p), None) => format!("{p:.0}%"),
         (None, Some(mem)) => format!("— · {} mem", catalog::format_bytes(mem)),
         (None, None) => "—".into(),
+    }
+}
+
+#[cfg(test)]
+mod series_tests {
+    use super::series_points;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn series_ends_at_live_gauge() {
+        let mut hist = VecDeque::new();
+        hist.push_back(10);
+        hist.push_back(20);
+        hist.push_back(30);
+        let pts = series_points(&hist, Some(42.0));
+        assert_eq!(pts.len(), 3);
+        assert!((pts.last().unwrap().1 - 42.0).abs() < 1e-9);
+        assert!((pts[0].1 - 10.0).abs() < 1e-9);
+        assert!((pts[1].1 - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn empty_history_seeds_from_live() {
+        let hist = VecDeque::new();
+        let pts = series_points(&hist, Some(55.0));
+        assert!(pts.len() >= 2);
+        assert!(pts.iter().all(|(_, y)| (*y - 55.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn missing_live_keeps_history_continuous() {
+        let mut hist = VecDeque::new();
+        for v in [5u64, 10, 15, 20] {
+            hist.push_back(v);
+        }
+        let pts = series_points(&hist, None);
+        assert_eq!(pts.len(), 4);
+        assert!((pts[3].1 - 20.0).abs() < 1e-9);
     }
 }

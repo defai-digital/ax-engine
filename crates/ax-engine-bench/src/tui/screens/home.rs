@@ -194,32 +194,35 @@ impl App {
         }
     }
 
-    /// First-run: hero CTA first, compact Mac host card, then actions.
+    /// First-run: hero + actions on top; full-width host monitor (big chart) at bottom.
     fn draw_home_first_run(&self, frame: &mut Frame, area: Rect) {
-        let host_h = host_card_height(area.height);
+        let host_h = host_monitor_height(area.height);
         let rows = Layout::vertical([
             Constraint::Length(5),
-            Constraint::Length(host_h),
             Constraint::Min(3),
+            Constraint::Length(host_h), // chart panel at bottom
         ])
         .split(area);
 
         self.draw_home_hero(frame, rows[0]);
-        super::metrics_panel::draw_live_metrics(frame, rows[1], &self.live_metrics);
-        self.draw_home_actions(frame, rows[2], true);
+        self.draw_home_actions(frame, rows[1], true);
+        super::metrics_panel::draw_live_metrics(frame, rows[2], &self.live_metrics);
     }
 
-    /// Returning: host card + installed on left; actions primary on right.
+    /// Returning: actions + installed on top; full-width host monitor at bottom.
     fn draw_home_returning(&self, frame: &mut Frame, area: Rect) {
-        let host_h = host_card_height(area.height);
-        let columns = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
+        let host_h = host_monitor_height(area.height);
+        let rows = Layout::vertical([
+            Constraint::Min(8),
+            Constraint::Length(host_h), // full width, bottom — large chart
+        ])
+        .split(area);
 
-        let left =
-            Layout::vertical([Constraint::Length(host_h), Constraint::Min(0)]).split(columns[0]);
-        super::metrics_panel::draw_live_metrics(frame, left[0], &self.live_metrics);
-        self.draw_home_installed(frame, left[1]);
-        self.draw_home_actions(frame, columns[1], false);
+        let top = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(rows[0]);
+        self.draw_home_installed(frame, top[0]);
+        self.draw_home_actions(frame, top[1], false);
+        super::metrics_panel::draw_live_metrics(frame, rows[1], &self.live_metrics);
     }
 
     fn draw_home_hero(&self, frame: &mut Frame, area: Rect) {
@@ -411,12 +414,15 @@ impl App {
     }
 }
 
-/// Host monitor height — leave room for chart while keeping launcher usable.
-fn host_card_height(content_h: u16) -> u16 {
+/// Full-width host monitor height — prefer a large bottom chart (~55% of Home).
+fn host_monitor_height(content_h: u16) -> u16 {
     use super::metrics_panel::PREFERRED_HEIGHT;
-    // Keep at least ~8 rows for actions/hero; chart needs ≥10 to look good.
-    let max = content_h.saturating_sub(7).max(8);
-    PREFERRED_HEIGHT.min(max).max(8)
+    // Leave ≥8 rows for launcher content; give the monitor most of the rest.
+    let max_for_monitor = content_h.saturating_sub(8).max(10);
+    let want = (content_h.saturating_mul(55) / 100).max(14);
+    want.min(max_for_monitor)
+        .min(PREFERRED_HEIGHT.max(want))
+        .max(12)
 }
 
 /// Colored fit badge used across Home / wizard / Serve rows.
