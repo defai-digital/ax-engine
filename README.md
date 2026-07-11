@@ -815,7 +815,7 @@ and the bandwidth diagnostic live in
 [`2026-07-08-acceptance-075-first-block/summary.json`](benchmarks/results/inference/diffusion-gemma-direct/2026-07-08-acceptance-075-first-block/summary.json)
 (release build, 1 warmup + 5 measured repetitions, 15 s cooldown, medians).
 
-<!-- readme-performance-artifacts: reference=benchmarks/results/inference/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-qwen36-direct-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/; ax-base=benchmarks/results/inference/mlx-inference/2026-06-27-ax-direct-only/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/; reference=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-05-gemma4-e2b-e4b-6bit-ax-refresh-r2/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-qwen-publishable/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-07-gemma4-26b-4bit-ax-direct-refresh-gen128/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-clean-r3/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/inference/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-qwen36-direct-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/; ax-base=benchmarks/results/inference/mlx-inference/2026-06-27-ax-direct-only/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/; reference=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-05-gemma4-e2b-e4b-6bit-ax-refresh-r2/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-qwen-publishable/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-07-gemma4-26b-4bit-ax-direct-refresh-gen128/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-clean-r4/ -->
 
 #### Gemma 4 and Qwen 3.6
 
@@ -913,9 +913,9 @@ Qwen 3.6 direct-mode verdict: AX is faster against `mlx_lm` in every refreshed 2
 | Gemma 4 E2B | 4-bit | 128 | 3,729.7 | 2,338.1 | 2,212.5 (-5.4%) |
 |  |  | 512 | 7,095.0 | 7,870.0 | 5,004.3 (-36.4%) |
 |  |  | 2048 | 7,136.7 | 18,014.7 | 7,475.7 (-58.5%) |
-| Gemma 4 E2B | 6-bit | 128 | 3,612.1 | 1,823.5 | 1,784.1 (-2.2%) |
-|  |  | 512 | 7,071.5 | 6,046.6 | 4,461.6 (-26.2%) |
-|  |  | 2048 | 7,247.1 | 15,332.1 | 7,178.8 (-53.2%) |
+| Gemma 4 E2B | 6-bit | 128 | 3,612.1 | 1,823.5 | 1,788.3 (-1.9%) |
+|  |  | 512 | 7,071.5 | 6,046.6 | 4,507.2 (-25.5%) |
+|  |  | 2048 | 7,247.1 | 15,332.1 | 7,185.8 (-53.1%) |
 | Gemma 4 E4B | 4-bit | 128 | 2,285.2 | 1,513.2 | 1,143.9 (-24.4%) |
 |  |  | 512 | 4,173.1 | 4,195.5 | 2,013.1 (-52.0%) |
 |  |  | 2048 | 4,197.6 | 7,325.4 | 2,469.7 (-66.3%) |
@@ -954,9 +954,9 @@ Qwen 3.6 direct-mode verdict: AX is faster against `mlx_lm` in every refreshed 2
 | Gemma 4 E2B | 4-bit | 128 | 161.0 | 214.0 | **220.5 (+3.0%)** |
 |  |  | 512 | 161.5 | 210.3 | **210.5 (+0.1%)** |
 |  |  | 2048 | 156.2 | 200.9 | **209.3 (+4.2%)** |
-| Gemma 4 E2B | 6-bit | 128 | 142.7 | 172.2 | **175.4 (+1.9%)** |
-|  |  | 512 | 141.2 | 166.3 | **169.2 (+1.7%)** |
-|  |  | 2048 | 137.3 | 162.5 | **168.6 (+3.8%)** |
+| Gemma 4 E2B | 6-bit | 128 | 142.7 | 172.2 | **176.0 (+2.2%)** |
+|  |  | 512 | 141.2 | 166.3 | **169.8 (+2.1%)** |
+|  |  | 2048 | 137.3 | 162.5 | **169.0 (+4.0%)** |
 | Gemma 4 E4B | 4-bit | 128 | 104.5 | 137.1 | 136.8 (-0.2%) |
 |  |  | 512 | 103.4 | 133.6 | **134.0 (+0.3%)** |
 |  |  | 2048 | 101.6 | 130.6 | **130.7 (+0.0%)** |
@@ -999,9 +999,9 @@ Qwen 3.6 direct-mode verdict: AX is faster against `mlx_lm` in every refreshed 2
 | Gemma 4 E2B | 4-bit | 128 | 34.3 | 54.7 | 57.9 (+5.8%) |
 |  |  | 512 | 72.2 | 65.1 | 102.3 (+57.2%) |
 |  |  | 2048 | 287.0 | 113.7 | 274.0 (+140.9%) |
-| Gemma 4 E2B | 6-bit | 128 | 35.4 | 70.2 | 71.7 (+2.2%) |
-|  |  | 512 | 72.4 | 84.7 | 114.8 (+35.5%) |
-|  |  | 2048 | 282.6 | 133.6 | 285.3 (+113.5%) |
+| Gemma 4 E2B | 6-bit | 128 | 35.4 | 70.2 | 71.6 (+2.0%) |
+|  |  | 512 | 72.4 | 84.7 | 113.6 (+34.1%) |
+|  |  | 2048 | 282.6 | 133.6 | 285.0 (+113.3%) |
 | Gemma 4 E4B | 4-bit | 128 | 56.0 | 84.6 | 111.9 (+32.3%) |
 |  |  | 512 | 122.7 | 122.0 | 254.3 (+108.5%) |
 |  |  | 2048 | 487.9 | 279.6 | 829.2 (+196.6%) |
