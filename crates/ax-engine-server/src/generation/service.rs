@@ -376,8 +376,7 @@ impl NativeGenerationService {
         match sender.send(command) {
             Ok(()) => Ok(()),
             Err(_) => {
-                self.state.queued_commands.fetch_sub(1, Ordering::AcqRel);
-                self.state.pending_jobs.fetch_sub(1, Ordering::AcqRel);
+                rollback_failed_enqueue(&self.state);
                 Err(GenerationServiceError::Unavailable)
             }
         }
@@ -1121,6 +1120,20 @@ fn begin_command(state: &ServiceState) {
     }
 }
 
+fn rollback_failed_enqueue(state: &ServiceState) {
+    // WorkerExitGuard may reset both counters before send observes the closed receiver.
+    let _ = state
+        .queued_commands
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+            queued.checked_sub(1)
+        });
+    let _ = state
+        .pending_jobs
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+            pending.checked_sub(1)
+        });
+}
+
 fn record_step_report(state: &ServiceState, report: &EngineStepReport) {
     let observer = state.step_observer.read().clone();
     if let Some(observer) = observer {
@@ -1369,6 +1382,27 @@ mod tests {
         }
         assert_eq!(service.queued_commands(), 0);
         assert_eq!(service.pending_jobs(), 0);
+    }
+
+    #[test]
+    fn failed_enqueue_rollback_tolerates_worker_exit_reset() {
+        let state = ServiceState {
+            alive: AtomicBool::new(false),
+            pending_jobs: AtomicUsize::new(1),
+            queued_commands: AtomicUsize::new(1),
+            active_streams: AtomicUsize::new(0),
+            buffered_stream_events: AtomicUsize::new(0),
+            step_observer: parking_lot::RwLock::new(None),
+            pressure_observer: parking_lot::RwLock::new(None),
+        };
+
+        rollback_failed_enqueue(&state);
+        assert_eq!(state.queued_commands.load(Ordering::Acquire), 0);
+        assert_eq!(state.pending_jobs.load(Ordering::Acquire), 0);
+
+        rollback_failed_enqueue(&state);
+        assert_eq!(state.queued_commands.load(Ordering::Acquire), 0);
+        assert_eq!(state.pending_jobs.load(Ordering::Acquire), 0);
     }
 
     #[test]
