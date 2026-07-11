@@ -11,11 +11,12 @@
 //! | Discrete GPU plot | Models footprint vs RAM (unified-memory headroom) |
 //! | Color free/mod/full | Green / yellow / red gauge thresholds |
 //!
-//! ## Widget choice (ratatui)
+//! ## Widget choice (ratatui) — matches nvtop screenshot layout
 //!
-//! - **Gauge** = current level (nvtop/htop “meter”)
-//! - **Sparkline** = recent trend (nvtop-style history, no axis clutter)
-//! - Skip full `Chart` on Home; skip `BarChart` for live load
+//! - **Device strip + Gauge** = header meters (MEM / CPU), like nvtop top bars
+//! - **Chart** (0–100%, multi-series) = main utilization plot (CPU · Mem · Models)
+//! - **Table** = process strip (PID · RSS · %MEM · COMMAND), htop/nvtop footer
+//! - No discrete GPU clocks/temp/power on Mac without privileged probes
 
 use std::collections::VecDeque;
 use std::path::Path;

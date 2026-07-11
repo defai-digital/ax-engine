@@ -282,12 +282,14 @@ fn app_starts_on_home_with_hardware_summary() {
 fn live_metrics_panel_renders_gauges() {
     let mut app = new_app();
     app.live_metrics = super::metrics::LiveMetrics::for_tests();
-    // Force returning layout when possible by not depending on installed state —
-    // both first-run and returning layouts include Live load when height allows.
     let text = render(&app);
     assert!(
-        text.contains("Live load") || text.contains("Memory") || text.contains("CPU"),
-        "home should show live metrics panel: {text:.200}"
+        text.contains("Host monitor")
+            || text.contains("Utilization")
+            || text.contains("MEM")
+            || text.contains("CPU")
+            || text.contains("Device"),
+        "home should show nvtop-style host panel: {text:.240}"
     );
 }
 
@@ -316,10 +318,17 @@ fn live_metrics_shows_htop_style_top_and_free() {
     let mut app = new_app();
     app.live_metrics = super::metrics::LiveMetrics::for_tests();
     let text = render(&app);
-    assert!(text.contains("Live host") || text.contains("Mem") || text.contains("Memory"));
     assert!(
-        text.contains("Code") || text.contains("Top") || text.contains("used"),
-        "panel should surface consumers or free/used memory"
+        text.contains("Host monitor") || text.contains("MEM") || text.contains("CPU"),
+        "nvtop-style header meters expected"
+    );
+    assert!(
+        text.contains("Code")
+            || text.contains("PID")
+            || text.contains("COMMAND")
+            || text.contains("RSS")
+            || text.contains("Top"),
+        "process table / consumers should appear"
     );
 }
 

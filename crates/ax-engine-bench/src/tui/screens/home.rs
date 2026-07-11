@@ -194,12 +194,14 @@ impl App {
         }
     }
 
-    /// Full-width hero: primary CTA, live load, then secondary actions.
+    /// First-run: hero CTA, then full-width nvtop-style monitor, then actions.
     fn draw_home_first_run(&self, frame: &mut Frame, area: Rect) {
+        // nvtop uses most of the terminal for the plot; keep a compact CTA.
+        let monitor_h = monitor_height(area.height, /*first_run*/ true);
         let rows = Layout::vertical([
-            Constraint::Length(6),
-            Constraint::Length(13),
-            Constraint::Min(0),
+            Constraint::Length(5),
+            Constraint::Length(monitor_h),
+            Constraint::Min(3),
         ])
         .split(area);
 
@@ -208,20 +210,21 @@ impl App {
         self.draw_home_actions(frame, rows[2], true);
     }
 
+    /// Returning: full-width host monitor (nvtop), then actions | installed.
     fn draw_home_returning(&self, frame: &mut Frame, area: Rect) {
-        let columns = Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
-            .split(area);
-        // Left: static facts + nvtop/htop-style live meters + installed list.
-        let left = Layout::vertical([
-            Constraint::Length(5),
-            Constraint::Length(13),
-            Constraint::Min(0),
-        ])
-        .split(columns[0]);
+        let monitor_h = monitor_height(area.height, /*first_run*/ false);
+        let rows =
+            Layout::vertical([Constraint::Length(monitor_h), Constraint::Min(6)]).split(area);
+
+        super::metrics_panel::draw_live_metrics(frame, rows[0], &self.live_metrics);
+
+        let bottom = Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
+            .split(rows[1]);
+        // Machine facts + installed share left; actions stay primary on right.
+        let left = Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).split(bottom[0]);
         self.draw_home_hardware(frame, left[0]);
-        super::metrics_panel::draw_live_metrics(frame, left[1], &self.live_metrics);
-        self.draw_home_installed(frame, left[2]);
-        self.draw_home_actions(frame, columns[1], false);
+        self.draw_home_installed(frame, left[1]);
+        self.draw_home_actions(frame, bottom[1], false);
     }
 
     fn draw_home_hero(&self, frame: &mut Frame, area: Rect) {
@@ -462,6 +465,14 @@ impl App {
             area,
         );
     }
+}
+
+/// Budget rows for the nvtop-style host panel from available content height.
+fn monitor_height(content_h: u16, first_run: bool) -> u16 {
+    // Leave room for CTA/actions; give the plot most of the rest (nvtop priority).
+    let reserved = if first_run { 9u16 } else { 8u16 };
+    let available = content_h.saturating_sub(reserved);
+    available.clamp(8, 22)
 }
 
 /// Colored fit badge used across Home / wizard / Serve rows.
