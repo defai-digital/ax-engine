@@ -1,7 +1,7 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype,
-    gather_mm, gather_qmm, matmul, multiply, quantized_matmul, reshape, slice_last_dim, tanh,
-    transpose,
+    concatenate, contiguous, gather_mm, gather_qmm, matmul, multiply, quantized_matmul, reshape,
+    slice, slice_last_dim, tanh, transpose,
 };
 use std::sync::OnceLock;
 
@@ -15,6 +15,13 @@ pub(crate) struct QkvSlices {
     pub gate: Option<(i32, i32)>,
     pub k: (i32, i32),
     pub v: (i32, i32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProjectionBatchPolicy {
+    Shared,
+    /// Preserve the single-row reduction graph for every decode row.
+    RowExact,
 }
 
 pub(crate) fn qkv_slices(cfg: &ModelConfig, head_dim: usize) -> QkvSlices {
@@ -35,6 +42,33 @@ pub(crate) fn qkv_slices(cfg: &ModelConfig, head_dim: usize) -> QkvSlices {
 }
 
 pub(crate) fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
+    qw_with_policy(x, qw, ProjectionBatchPolicy::Shared)
+}
+
+pub(crate) fn qw_with_policy(
+    x: &MlxArray,
+    qw: &QuantizedWeight,
+    policy: ProjectionBatchPolicy,
+) -> MlxArray {
+    let shape = x.shape();
+    if policy == ProjectionBatchPolicy::RowExact
+        && shape.len() == 3
+        && shape[0] > 1
+        && shape[1] == 1
+    {
+        let rows: Vec<MlxArray> = (0..shape[0])
+            .map(|row| {
+                let row = slice(x, &[row, 0, 0], &[row + 1, 1, shape[2]], &[1, 1, 1], None);
+                qw_direct(&contiguous(&row, None), qw)
+            })
+            .collect();
+        let refs: Vec<&MlxArray> = rows.iter().collect();
+        return concatenate(&refs, 0, None);
+    }
+    qw_direct(x, qw)
+}
+
+fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     if let Some(scales) = &qw.scales {
         quantized_matmul(
             x,
@@ -239,7 +273,7 @@ pub(crate) fn qw_gather(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mlx_sys::eval;
+    use mlx_sys::{MlxQuantizationMode, eval, quantize};
 
     fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
         MlxArray::from_raw_data(
@@ -263,6 +297,57 @@ mod tests {
 
         assert_eq!(direct.shape(), vec![2, 3]);
         assert_eq!(direct.data_f32(), reference.data_f32());
+    }
+
+    #[test]
+    fn row_exact_projection_matches_independent_quantized_rows() {
+        let input_dim = 64;
+        let output_dim = 64;
+        let weight_data: Vec<f32> = (0..input_dim * output_dim)
+            .map(|index| ((index % 127) as f32 - 63.0) * 0.015625)
+            .collect();
+        let weight = array_f32(&weight_data, &[output_dim as i32, input_dim as i32]);
+        let quantized = quantize(
+            &weight,
+            Some(64),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let weight = QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(quantized[1].clone()),
+            biases: Some(quantized[2].clone()),
+            group_size: 64,
+            bits: 4,
+        };
+        let input_data: Vec<f32> = (0..2 * input_dim)
+            .map(|index| ((index % 31) as f32 - 15.0) * 0.03125)
+            .collect();
+        let input = array_f32(&input_data, &[2, 1, input_dim as i32]);
+        let batched = qw_with_policy(&input, &weight, ProjectionBatchPolicy::RowExact);
+
+        for row in 0..2 {
+            let row_start = row * input_dim;
+            let single_input = array_f32(
+                &input_data[row_start..row_start + input_dim],
+                &[1, 1, input_dim as i32],
+            );
+            let expected = qw(&single_input, &weight);
+            let actual = contiguous(
+                &slice(
+                    &batched,
+                    &[row as i32, 0, 0],
+                    &[row as i32 + 1, 1, output_dim as i32],
+                    &[1, 1, 1],
+                    None,
+                ),
+                None,
+            );
+            eval(&[&actual, &expected]);
+            assert_eq!(actual.data_f32(), expected.data_f32(), "row {row}");
+        }
     }
 
     #[test]

@@ -10,13 +10,15 @@ use super::super::profile::{
 };
 use super::super::shared::{
     KVConcatBuffer, add_then_multiply_scalar, attention_mask_array, attention_output_projection,
-    bidirectional_attention, direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu,
+    attention_output_projection_batched, bidirectional_attention,
+    direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, ffn_swiglu_batched,
     flatten_attention_output_bhsd, flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs,
     full_precision_attention, moe_experts_forward, moe_experts_forward_gemma4,
     moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared, moe_router_gemma4,
     moe_router_glm, moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
-    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qw, rms_norm_opt,
-    shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
+    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project,
+    qkv_project_batched, qw, rms_norm_opt, shape_element_count, shared_expert_forward,
+    turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
@@ -799,10 +801,10 @@ pub(crate) fn layer_forward(
 /// families (Qwen3, Llama, Mistral) — milestone 2a of batched MLX decode.
 ///
 /// Runs one decode token for each of B rows (`hidden` is `[B, 1, hidden]`)
-/// through the SAME per-layer graph as `layer_forward`, reusing the identical
-/// `qkv_project` / `qk_norm` / `rope` / `full_precision_attention` /
-/// `attention_output_projection` / `ffn_swiglu` helpers — all batch-aware. It
-/// differs only where the design requires: it appends to a [`BatchedKvCache`]
+/// through the same per-layer graph as `layer_forward`. Projection helpers use
+/// the row-exact policy so every row preserves the single-sequence quantized
+/// reduction graph; the remaining QK norm, RoPE, attention, activation, and
+/// residual operations stay batched. It appends to a [`BatchedKvCache`]
 /// (whose `append_decode_layer` returns the current-token-inclusive
 /// `[B, H, key_len, D]` view) and passes the batched validity `mask`
 /// (`[B, 1, 1, key_len]`) to attention.
@@ -856,7 +858,7 @@ pub fn layer_forward_batched(
 
     let seq = 1usize;
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
-    let (q_raw, k_raw, v_raw, attn_gate) = qkv_project(cfg, w, &normed, head_dim);
+    let (q_raw, k_raw, v_raw, attn_gate) = qkv_project_batched(cfg, w, &normed, head_dim);
     let kv_heads = (k_raw.shape()[2] as usize)
         .checked_div(head_dim)
         .expect("k projection output must divide by head_dim");
@@ -921,7 +923,7 @@ pub fn layer_forward_batched(
     let attn_sdpa =
         full_precision_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, seq, mask);
     let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
-    let attn_proj = attention_output_projection(
+    let attn_proj = attention_output_projection_batched(
         &attn_flat,
         attn_gate.as_ref(),
         w.o_proj
@@ -935,7 +937,7 @@ pub fn layer_forward_batched(
     };
     let hidden = add(hidden, &attn_proj, None);
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
-    let ffn_out = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx);
+    let ffn_out = ffn_swiglu_batched(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx);
     add(&hidden, &ffn_out, None)
 }
 

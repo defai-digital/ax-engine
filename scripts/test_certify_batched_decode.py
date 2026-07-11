@@ -32,7 +32,7 @@ class CertifyBatchedDecodeTests(unittest.TestCase):
             "engine_version": "6.8.2",
             "mlx_version": "0.29.3",
             "device_architecture": "applegpu_test",
-            "runtime_contract": "ax.mlx.batched_decode.runtime.v1",
+            "runtime_contract": "ax.mlx.batched_decode.runtime.v2",
             "numerics_env_sha256": "environment",
             "required_scenarios": [self.scenario()],
         }

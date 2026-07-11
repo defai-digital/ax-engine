@@ -448,8 +448,10 @@ pub fn embed_decode_tokens_batched(
 /// tokens via [`crate::batched_sampling::argmax_batched`] / `sample_batched_host`.
 ///
 /// Mirrors the single-sequence `forward_with_turboquant_context` embed prologue
-/// (bf16 cast + optional `hidden_states_scale`) and final norm + lm_head, so a
-/// row's logits match a batch=1 decode of that row at the same position.
+/// (bf16 cast + optional `hidden_states_scale`) and final norm + lm_head. Every
+/// projection uses the row-exact policy because MLX selects a numerically
+/// different quantized reduction kernel when the leading batch dimension is
+/// greater than one; all non-projection operations remain shared across rows.
 pub fn decode_batched_forward(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -486,7 +488,7 @@ pub fn decode_batched_forward(
     cache.advance_all(1);
 
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
-    let logits = qw(&normed, &weights.lm_head);
+    let logits = qw_with_policy(&normed, &weights.lm_head, ProjectionBatchPolicy::RowExact);
     finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::Full)
 }
 

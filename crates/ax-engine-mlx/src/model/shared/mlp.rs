@@ -22,8 +22,8 @@ use super::super::profile::{
     record_qwen_dense_ffn_gate_up_matvec_metal_hit, saturating_profile_us,
 };
 use super::utils::{
-    mlx_slice_last_dim, qkv_slices, qw, qw_gather, scalar_like, scale_hidden, shape_element_count,
-    squeeze_switch_singleton,
+    ProjectionBatchPolicy, mlx_slice_last_dim, qkv_slices, qw, qw_gather, qw_with_policy,
+    scalar_like, scale_hidden, shape_element_count, squeeze_switch_singleton,
 };
 
 static GELU_MUL_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -79,7 +79,16 @@ pub(crate) fn qkv_project(
     x: &MlxArray,
     head_dim: usize,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
-    qkv_project_inner(cfg, w, x, head_dim, false)
+    qkv_project_inner(cfg, w, x, head_dim, false, ProjectionBatchPolicy::Shared)
+}
+
+pub(crate) fn qkv_project_batched(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    head_dim: usize,
+) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
+    qkv_project_inner(cfg, w, x, head_dim, false, ProjectionBatchPolicy::RowExact)
 }
 
 /// Embedding variant of `qkv_project`: forces the packed-QKV single-matmul
@@ -94,7 +103,14 @@ pub(crate) fn qkv_project_embed(
     let batch = x.shape().first().copied().unwrap_or(1);
     let seq = x.shape().get(1).copied().unwrap_or(1);
     let auto_short_qwen = cfg.model_family.starts_with("qwen") && batch > 1 && seq > 0 && seq <= 16;
-    qkv_project_inner(cfg, w, x, head_dim, auto_short_qwen)
+    qkv_project_inner(
+        cfg,
+        w,
+        x,
+        head_dim,
+        auto_short_qwen,
+        ProjectionBatchPolicy::Shared,
+    )
 }
 
 fn qkv_project_inner(
@@ -103,12 +119,17 @@ fn qkv_project_inner(
     x: &MlxArray,
     head_dim: usize,
     force_packed: bool,
+    projection_policy: ProjectionBatchPolicy,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
     let slices = qkv_slices(cfg, head_dim);
     let batch = x.shape().first().copied().unwrap_or(1);
-    let prefer_split = !force_packed && batch > 1 && w.q_proj.is_some() && w.k_proj.is_some();
+    let prefer_split = !force_packed
+        && projection_policy == ProjectionBatchPolicy::Shared
+        && batch > 1
+        && w.q_proj.is_some()
+        && w.k_proj.is_some();
     if !prefer_split && let Some(packed) = &w.qkv_packed {
-        let out = qw(x, packed);
+        let out = qw_with_policy(x, packed, projection_policy);
         let (q, gate) = if let Some((gate_start, gate_end)) = slices.gate {
             // attn_output_gate=true: the q section of the packed output preserves
             // q_proj's per-head interleaved layout `[h0_q, h0_gate, h1_q, h1_gate, ...]`,
@@ -143,7 +164,7 @@ fn qkv_project_inner(
         let v = mlx_slice_last_dim(&out, slices.v.0, slices.v.1);
         (q, k, v, gate)
     } else {
-        let q_full = qw(x, w.q_proj.as_ref().unwrap());
+        let q_full = qw_with_policy(x, w.q_proj.as_ref().unwrap(), projection_policy);
         let (q, gate) = if slices.gate.is_some() {
             // attn_output_gate=true: q_proj output is [B, L, n_heads, 2*head_dim] interleaved.
             // Split by reshaping to [B, L, n_heads, 2*head_dim] and slicing last dim,
@@ -169,11 +190,11 @@ fn qkv_project_inner(
             // q_proj output is exactly [B, L, n_heads * head_dim] — no slice needed.
             (q_full, None)
         };
-        let k = qw(x, w.k_proj.as_ref().unwrap());
+        let k = qw_with_policy(x, w.k_proj.as_ref().unwrap(), projection_policy);
         let v = w
             .v_proj
             .as_ref()
-            .map(|v_proj| qw(x, v_proj))
+            .map(|v_proj| qw_with_policy(x, v_proj, projection_policy))
             .unwrap_or_else(|| k.clone());
         (q, k, v, gate)
     }
@@ -184,12 +205,39 @@ pub(crate) fn attention_output_projection(
     attn_gate: Option<&MlxArray>,
     o_proj: &QuantizedWeight,
 ) -> MlxArray {
+    attention_output_projection_with_policy(
+        attn_flat,
+        attn_gate,
+        o_proj,
+        ProjectionBatchPolicy::Shared,
+    )
+}
+
+pub(crate) fn attention_output_projection_batched(
+    attn_flat: &MlxArray,
+    attn_gate: Option<&MlxArray>,
+    o_proj: &QuantizedWeight,
+) -> MlxArray {
+    attention_output_projection_with_policy(
+        attn_flat,
+        attn_gate,
+        o_proj,
+        ProjectionBatchPolicy::RowExact,
+    )
+}
+
+fn attention_output_projection_with_policy(
+    attn_flat: &MlxArray,
+    attn_gate: Option<&MlxArray>,
+    o_proj: &QuantizedWeight,
+    projection_policy: ProjectionBatchPolicy,
+) -> MlxArray {
     let gated = if let Some(gate) = attn_gate {
         multiply(attn_flat, &mlx_sys::ops::sigmoid(gate, None), None)
     } else {
         attn_flat.clone()
     };
-    qw(&gated, o_proj)
+    qw_with_policy(&gated, o_proj, projection_policy)
 }
 
 /// Gemma-family GeGLU activation.
@@ -1328,6 +1376,41 @@ pub(crate) fn ffn_swiglu(
     post_norm: Option<&MlxArray>,
     layer_idx: usize,
 ) -> MlxArray {
+    ffn_swiglu_with_policy(
+        cfg,
+        w,
+        x,
+        post_norm,
+        layer_idx,
+        ProjectionBatchPolicy::Shared,
+    )
+}
+
+pub(crate) fn ffn_swiglu_batched(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    post_norm: Option<&MlxArray>,
+    layer_idx: usize,
+) -> MlxArray {
+    ffn_swiglu_with_policy(
+        cfg,
+        w,
+        x,
+        post_norm,
+        layer_idx,
+        ProjectionBatchPolicy::RowExact,
+    )
+}
+
+fn ffn_swiglu_with_policy(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    post_norm: Option<&MlxArray>,
+    layer_idx: usize,
+    projection_policy: ProjectionBatchPolicy,
+) -> MlxArray {
     let seq = x.shape().get(1).copied().unwrap_or(1);
     let leading_elements = x.shape()[..x.shape().len().saturating_sub(1)]
         .iter()
@@ -1385,14 +1468,14 @@ pub(crate) fn ffn_swiglu(
                 let gate_up = gate_up_qw
                     .as_ref()
                     .expect("dense FFN compile: gate_up weight required");
-                let gate_up_out = qw(&x, gate_up);
+                let gate_up_out = qw_with_policy(&x, gate_up, projection_policy);
                 let gate = slice_last_dim(&gate_up_out, 0, half_dim, None);
                 let up = slice_last_dim(&gate_up_out, half_dim, half_dim * 2, None);
                 let ffn_hidden = silu_mul(&gate, &up, None);
                 let down = down_qw
                     .as_ref()
                     .expect("dense FFN compile: down weight required");
-                let out = qw(&ffn_hidden, down);
+                let out = qw_with_policy(&ffn_hidden, down, projection_policy);
                 if let Some(norm_w) = post_norm {
                     vec![rms_norm(&out, Some(&norm_w), eps, None)]
                 } else {
@@ -1411,7 +1494,7 @@ pub(crate) fn ffn_swiglu(
     let qwen_dense_ffn = !cfg.uses_geglu && cfg.model_family.starts_with("qwen");
     let prefer_split_gate_up = qwen_dense_ffn && w.gate_proj.is_some() && w.up_proj.is_some();
     let (gate_out, up_out) = if !prefer_split_gate_up && let Some(packed) = &w.gate_up_packed {
-        let out = qw(x, packed);
+        let out = qw_with_policy(x, packed, projection_policy);
         let packed_dim = out
             .shape()
             .last()
@@ -1452,6 +1535,7 @@ pub(crate) fn ffn_swiglu(
                 if let Some(norm_w) = post_norm {
                     if !profile_decode
                         && !profile_prefill
+                        && projection_policy == ProjectionBatchPolicy::Shared
                         && fastpath::dense_qmatmul_rms_norm_enabled()
                         && let Some(scales) = down.scales.as_ref()
                     {
@@ -1475,7 +1559,7 @@ pub(crate) fn ffn_swiglu(
                         );
                         return out;
                     }
-                    let out = qw(&ffn_hidden, down);
+                    let out = qw_with_policy(&ffn_hidden, down, projection_policy);
                     forward_profile_eval_elapsed(
                         profile_decode,
                         profile_prefill,
@@ -1485,7 +1569,7 @@ pub(crate) fn ffn_swiglu(
                     );
                     return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
                 }
-                let out = qw(&ffn_hidden, down);
+                let out = qw_with_policy(&ffn_hidden, down, projection_policy);
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
@@ -1524,6 +1608,7 @@ pub(crate) fn ffn_swiglu(
                 if let Some(norm_w) = post_norm {
                     if !profile_decode
                         && !profile_prefill
+                        && projection_policy == ProjectionBatchPolicy::Shared
                         && fastpath::dense_qmatmul_rms_norm_enabled()
                         && let Some(scales) = down.scales.as_ref()
                     {
@@ -1547,7 +1632,7 @@ pub(crate) fn ffn_swiglu(
                         );
                         return out;
                     }
-                    let out = qw(&ffn_hidden, down);
+                    let out = qw_with_policy(&ffn_hidden, down, projection_policy);
                     forward_profile_eval_elapsed(
                         profile_decode,
                         profile_prefill,
@@ -1557,7 +1642,7 @@ pub(crate) fn ffn_swiglu(
                     );
                     return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
                 }
-                let out = qw(&ffn_hidden, down);
+                let out = qw_with_policy(&ffn_hidden, down, projection_policy);
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
@@ -1599,6 +1684,7 @@ pub(crate) fn ffn_swiglu(
             if let Some(norm_w) = post_norm {
                 if !profile_decode
                     && !profile_prefill
+                    && projection_policy == ProjectionBatchPolicy::Shared
                     && fastpath::dense_qmatmul_rms_norm_enabled()
                     && let Some(scales) = down.scales.as_ref()
                 {
@@ -1622,7 +1708,7 @@ pub(crate) fn ffn_swiglu(
                     );
                     return out;
                 }
-                let out = qw(&ffn_hidden, down);
+                let out = qw_with_policy(&ffn_hidden, down, projection_policy);
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
@@ -1632,7 +1718,7 @@ pub(crate) fn ffn_swiglu(
                 );
                 return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
             }
-            let out = qw(&ffn_hidden, down);
+            let out = qw_with_policy(&ffn_hidden, down, projection_policy);
             forward_profile_eval_elapsed(
                 profile_decode,
                 profile_prefill,
@@ -1643,8 +1729,8 @@ pub(crate) fn ffn_swiglu(
             return out;
         }
         packed_gate_up = None;
-        let gate = qw(x, gate_w);
-        let up = qw(x, up_w);
+        let gate = qw_with_policy(x, gate_w, projection_policy);
+        let up = qw_with_policy(x, up_w, projection_policy);
         (gate, up)
     };
     if (profile_decode || profile_prefill) && !gate_up_profile_recorded {
@@ -1688,6 +1774,7 @@ pub(crate) fn ffn_swiglu(
     if let Some(norm_w) = post_norm {
         if !profile_decode
             && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
             && fastpath::dense_qmatmul_rms_norm_enabled()
             && let Some(scales) = down.scales.as_ref()
         {
@@ -1711,7 +1798,7 @@ pub(crate) fn ffn_swiglu(
             );
             return out;
         }
-        let out = qw(&ffn_hidden, down);
+        let out = qw_with_policy(&ffn_hidden, down, projection_policy);
         forward_profile_eval_elapsed(
             profile_decode,
             profile_prefill,
@@ -1721,7 +1808,7 @@ pub(crate) fn ffn_swiglu(
         );
         return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
     }
-    let out = qw(&ffn_hidden, down);
+    let out = qw_with_policy(&ffn_hidden, down, projection_policy);
     forward_profile_eval_elapsed(
         profile_decode,
         profile_prefill,

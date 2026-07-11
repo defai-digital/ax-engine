@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 pub const BATCHED_DECODE_CERTIFICATION_FILE: &str = "batched-decode-certification.json";
 pub const BATCHED_DECODE_CERTIFICATION_SCHEMA: &str = "ax.mlx.batched_decode_certification.v1";
-pub const BATCHED_DECODE_RUNTIME_CONTRACT: &str = "ax.mlx.batched_decode.runtime.v1";
+pub const BATCHED_DECODE_RUNTIME_CONTRACT: &str = "ax.mlx.batched_decode.runtime.v2";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BatchedDecodeCertificationScenario {
