@@ -284,12 +284,11 @@ fn live_metrics_panel_renders_gauges() {
     app.live_metrics = super::metrics::LiveMetrics::for_tests();
     let text = render(&app);
     assert!(
-        text.contains("Host monitor")
-            || text.contains("Utilization")
-            || text.contains("MEM")
+        text.contains("This Mac")
+            || text.contains("Memory")
             || text.contains("CPU")
-            || text.contains("Device"),
-        "home should show nvtop-style host panel: {text:.240}"
+            || text.contains("unified"),
+        "home should show Mac host card: {text:.240}"
     );
 }
 
@@ -319,16 +318,16 @@ fn live_metrics_shows_htop_style_top_and_free() {
     app.live_metrics = super::metrics::LiveMetrics::for_tests();
     let text = render(&app);
     assert!(
-        text.contains("Host monitor") || text.contains("MEM") || text.contains("CPU"),
-        "nvtop-style header meters expected"
+        text.contains("Memory") || text.contains("CPU") || text.contains("This Mac"),
+        "Mac host card meters expected"
     );
     assert!(
         text.contains("Code")
-            || text.contains("PID")
-            || text.contains("COMMAND")
-            || text.contains("RSS")
-            || text.contains("Top"),
-        "process table / consumers should appear"
+            || text.contains("Using")
+            || text.contains("free")
+            || text.contains("used")
+            || text.contains("Models"),
+        "should surface free/used memory, models headroom, or top processes"
     );
 }
 

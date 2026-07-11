@@ -1,22 +1,21 @@
 //! Live host metrics for the TUI Home panel (Mac / Apple Silicon).
 //!
-//! ## Design inspiration (htop · nvidia-htop · nvtop)
+//! ## Honest Mac metrics (not an nvtop port)
 //!
-//! | nvidia-htop / nvtop | AX TUI on Mac (what we can honestly show) |
+//! nvtop assumes discrete GPUs (util, VRAM, clocks, multi-device plots).
+//! Apple Silicon is **unified memory**; we only sample what macOS exposes
+//! cheaply and without privilege:
+//!
+//! | Metric | Source |
 //! |---|---|
-//! | GPU-Util % | CPU avg % across cores (`ps` sum / ncpu) |
-//! | VRAM used / total | Unified memory used / total (`vm_stat`) |
-//! | Process GPU MEM table | Top host RSS consumers (htop-style) |
-//! | Power / temp / fan | Not exposed without privileged probes — omitted |
-//! | Discrete GPU plot | Models footprint vs RAM (unified-memory headroom) |
-//! | Color free/mod/full | Green / yellow / red gauge thresholds |
+//! | Memory used / free / total | `vm_stat` + `hw.memsize` |
+//! | CPU average % | `ps -A -o %cpu=` / logical CPUs |
+//! | Load average | `vm.loadavg` |
+//! | Free disk (model cache) | `df` on HF cache root |
+//! | Top memory users | `ps` RSS (host processes, not GPU clients) |
+//! | Model headroom | installed weights on disk vs unified RAM |
 //!
-//! ## Widget choice (ratatui) — matches nvtop screenshot layout
-//!
-//! - **Device strip + Gauge** = header meters (MEM / CPU), like nvtop top bars
-//! - **Chart** (0–100%, multi-series) = main utilization plot (CPU · Mem · Models)
-//! - **Table** = process strip (PID · RSS · %MEM · COMMAND), htop/nvtop footer
-//! - No discrete GPU clocks/temp/power on Mac without privileged probes
+//! Omitted: discrete GPU util, VRAM, fan, board power, encode engines.
 
 use std::collections::VecDeque;
 use std::path::Path;

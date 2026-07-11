@@ -194,13 +194,12 @@ impl App {
         }
     }
 
-    /// First-run: hero CTA, then full-width nvtop-style monitor, then actions.
+    /// First-run: hero CTA first, compact Mac host card, then actions.
     fn draw_home_first_run(&self, frame: &mut Frame, area: Rect) {
-        // nvtop uses most of the terminal for the plot; keep a compact CTA.
-        let monitor_h = monitor_height(area.height, /*first_run*/ true);
+        let host_h = host_card_height(area.height);
         let rows = Layout::vertical([
             Constraint::Length(5),
-            Constraint::Length(monitor_h),
+            Constraint::Length(host_h),
             Constraint::Min(3),
         ])
         .split(area);
@@ -210,21 +209,17 @@ impl App {
         self.draw_home_actions(frame, rows[2], true);
     }
 
-    /// Returning: full-width host monitor (nvtop), then actions | installed.
+    /// Returning: host card + installed on left; actions primary on right.
     fn draw_home_returning(&self, frame: &mut Frame, area: Rect) {
-        let monitor_h = monitor_height(area.height, /*first_run*/ false);
-        let rows =
-            Layout::vertical([Constraint::Length(monitor_h), Constraint::Min(6)]).split(area);
+        let host_h = host_card_height(area.height);
+        let columns = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
 
-        super::metrics_panel::draw_live_metrics(frame, rows[0], &self.live_metrics);
-
-        let bottom = Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
-            .split(rows[1]);
-        // Machine facts + installed share left; actions stay primary on right.
-        let left = Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).split(bottom[0]);
-        self.draw_home_hardware(frame, left[0]);
+        let left =
+            Layout::vertical([Constraint::Length(host_h), Constraint::Min(0)]).split(columns[0]);
+        super::metrics_panel::draw_live_metrics(frame, left[0], &self.live_metrics);
         self.draw_home_installed(frame, left[1]);
-        self.draw_home_actions(frame, bottom[1], false);
+        self.draw_home_actions(frame, columns[1], false);
     }
 
     fn draw_home_hero(&self, frame: &mut Frame, area: Rect) {
@@ -467,12 +462,11 @@ impl App {
     }
 }
 
-/// Budget rows for the nvtop-style host panel from available content height.
-fn monitor_height(content_h: u16, first_run: bool) -> u16 {
-    // Leave room for CTA/actions; give the plot most of the rest (nvtop priority).
-    let reserved = if first_run { 9u16 } else { 8u16 };
-    let available = content_h.saturating_sub(reserved);
-    available.clamp(8, 22)
+/// Compact Mac host card height — never dominate the Home launcher.
+fn host_card_height(content_h: u16) -> u16 {
+    use super::metrics_panel::PREFERRED_HEIGHT;
+    let max = content_h.saturating_sub(8).max(6);
+    PREFERRED_HEIGHT.min(max).max(6)
 }
 
 /// Colored fit badge used across Home / wizard / Serve rows.
