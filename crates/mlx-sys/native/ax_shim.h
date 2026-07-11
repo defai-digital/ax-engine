@@ -99,6 +99,10 @@ typedef struct mlx_optional_dtype_ {
  * error slot (and invokes the error handler) and returns 1. */
 int ax_shim_check_mlx_version(void);
 
+/* Return the version reported by the loaded libmlx. The pointer is owned by
+ * MLX and remains valid for the process lifetime. */
+const char* ax_shim_mlx_version(void);
+
 /* ================================================================
  * Error handling
  * ================================================================ */
@@ -151,6 +155,8 @@ int mlx_device_info_get(mlx_device_info* info, mlx_device dev);
 int mlx_device_info_free(mlx_device_info info);
 int mlx_device_info_get_size(
     size_t* value, mlx_device_info info, const char* key);
+int mlx_device_info_get_string(
+    const char** value, mlx_device_info info, const char* key);
 
 /* ================================================================
  * Ops — arithmetic, shape, math, reduction, creation

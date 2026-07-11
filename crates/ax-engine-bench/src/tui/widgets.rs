@@ -1,6 +1,6 @@
-//! Shared rendering primitives: bordered lists with click bookkeeping, the
-//! global status strip, toast overlays, confirm modals, and the directory
-//! picker reused by the wizard's custom-destination modal.
+//! Shared rendering primitives: tab bar, bordered lists with click
+//! bookkeeping, toast overlays, confirm modals, and the directory picker
+//! reused by the wizard's custom-destination modal.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -91,43 +91,13 @@ pub(super) fn draw_toasts(frame: &mut Frame, area: Rect, toasts: &[Toast]) {
         let width = (text.chars().count() as u16).min(area.width.saturating_sub(2));
         let rect = Rect {
             x: area.x + area.width.saturating_sub(width + 1),
-            y: area.y + 1 + i as u16,
+            y: area.y + 2 + i as u16,
             width,
             height: 1,
         };
         frame.render_widget(Clear, rect);
         frame.render_widget(Paragraph::new(text).style(toast.style()), rect);
     }
-}
-
-/// One-line engine summary shown on every screen, above the footer.
-pub(super) fn draw_status_strip(
-    frame: &mut Frame,
-    area: Rect,
-    server: (String, Color),
-    download: Option<(String, Color)>,
-) {
-    let mut spans = vec![
-        Span::styled("  ● server ", Style::default().fg(theme::MUTED)),
-        Span::styled(
-            server.0,
-            Style::default().fg(server.1).add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if let Some((text, color)) = download {
-        spans.push(Span::styled(
-            "   │   ↓ download ",
-            Style::default().fg(theme::MUTED),
-        ));
-        spans.push(Span::styled(
-            text,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ));
-    }
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(15, 15, 15))),
-        area,
-    );
 }
 
 /// Modal variant with severity-colored border and styled key hints.
@@ -181,7 +151,11 @@ pub(super) fn render_list(
     click_target: &std::cell::Cell<Rect>,
 ) {
     click_target.set(area);
-    let border = if active { theme::ACCENT } else { theme::MUTED };
+    let border = if active {
+        theme::BORDER_ACTIVE
+    } else {
+        theme::BORDER_INACTIVE
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
@@ -272,6 +246,98 @@ pub(super) fn draw_log(frame: &mut Frame, area: Rect, log: Option<&[String]>, ti
         ),
         area,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tab bar
+// ---------------------------------------------------------------------------
+
+/// One tab definition: (number, label, screen enum variant).
+pub(super) struct TabDef {
+    pub num: char,
+    pub label: &'static str,
+}
+
+/// Render the horizontal tab bar.  Returns the tab hit-test regions as a
+/// `Vec<(Rect, usize)>` where `usize` is the screen index.
+pub(super) fn draw_tab_bar(
+    frame: &mut Frame,
+    area: Rect,
+    tabs: &[TabDef],
+    active: usize,
+    status_spans: Vec<Span<'static>>,
+) -> Vec<(Rect, usize)> {
+    let mut hits = Vec::new();
+    // Row 0: title + tabs + status.
+    // Row 1: thin separator line.
+    let row0 = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: 1,
+    };
+    let row1 = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: 1,
+    };
+
+    // Build tab line.
+    let title = Span::styled(
+        " AX Engine  ",
+        Style::default()
+            .fg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut spans: Vec<Span> = vec![Span::raw(" "), title];
+    let mut col_cursor: u16 = 13; // " AX Engine  " is 12 chars, plus leading " " = 13
+
+    for (i, tab) in tabs.iter().enumerate() {
+        let is_active = i == active;
+        let label_text = format!(" {} {} ", tab.num, tab.label);
+        let label_width = label_text.chars().count() as u16;
+        let style = if is_active {
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(theme::DIM)
+        };
+        spans.push(Span::styled(label_text, style));
+        let tab_rect = Rect {
+            x: area.x + col_cursor,
+            y: row0.y,
+            width: label_width,
+            height: 1,
+        };
+        hits.push((tab_rect, i));
+        col_cursor += label_width + 1; // 1 space between tabs
+    }
+
+    // Right-align status spans by padding with spaces.
+    let status_width: u16 = status_spans
+        .iter()
+        .map(|s| s.content.chars().count() as u16)
+        .sum();
+    let used = col_cursor;
+    let pad = area.width.saturating_sub(used + status_width + 2);
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad as usize)));
+    }
+    spans.extend(status_spans);
+    spans.push(Span::raw(" "));
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), row0);
+
+    // Separator line.
+    let sep = "─".repeat(area.width as usize);
+    frame.render_widget(
+        Paragraph::new(sep).style(Style::default().fg(theme::BORDER_INACTIVE)),
+        row1,
+    );
+
+    hits
 }
 
 // ---------------------------------------------------------------------------

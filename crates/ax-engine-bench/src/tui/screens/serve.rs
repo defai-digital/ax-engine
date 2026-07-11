@@ -96,7 +96,8 @@ impl App {
     }
 
     pub(crate) fn draw_serve(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::vertical([
+        // Two-panel layout: model list on top, server config + log below.
+        let panels = Layout::vertical([
             Constraint::Min(3),
             Constraint::Length(8),
             Constraint::Min(3),
@@ -109,12 +110,11 @@ impl App {
                 ListItem::new(Line::raw("")),
                 ListItem::new(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(" ▶ ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-                    Span::raw(" No installed models"),
+                    Span::styled("No installed models", Style::default().fg(Color::Yellow)),
                 ])),
                 ListItem::new(Line::raw("")),
                 ListItem::new(Line::from(Span::styled(
-                    "  Download one on the Models screen (2) first.",
+                    "  Download one on the Models tab first.",
                     Style::default().fg(Color::DarkGray),
                 ))),
             ]
@@ -146,7 +146,7 @@ impl App {
         let list_active = self.serve_focus == ServeFocus::List;
         widgets::render_list(
             frame,
-            chunks[0],
+            panels[0],
             " Installed models — Enter to serve ",
             rows,
             self.serve_idx,
@@ -154,10 +154,10 @@ impl App {
             &self.content_list_rect,
         );
 
-        self.draw_server_panel(frame, chunks[1]);
+        self.draw_server_panel(frame, panels[1]);
         widgets::draw_log(
             frame,
-            chunks[2],
+            panels[2],
             self.server.as_ref().map(|job| job.log.as_slice()),
             " Server log ",
         );

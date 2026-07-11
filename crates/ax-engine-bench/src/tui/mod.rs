@@ -1,7 +1,7 @@
 //! ratatui terminal UI for `ax-engine tui`.
 //!
 //! A guided launcher over the existing CLI subcommands: pick a model in a
-//! four-step wizard (family -> precision -> options -> confirm), watch the
+//! split-panel wizard (family -> precision -> options -> confirm), watch the
 //! download queue with real progress, serve an installed model, and talk to it
 //! on the Chat screen.  All work runs as background child processes
 //! (`ax-engine download`, `ax-engine-server`, `curl`) streamed into the UI, so
@@ -9,8 +9,7 @@
 //! jobs are live.
 //!
 //! It is a child module of the `ax-engine` binary, so it reuses that binary's
-//! private catalog and helpers directly via `crate::` (`MODEL_PROFILES`,
-//! `default_hf_cache_root`, `find_executable`, ...).
+//! private catalog and helpers directly via `crate::`.
 
 mod catalog;
 mod hardware;
@@ -38,7 +37,7 @@ use ratatui::crossterm::event::{
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use catalog::{Family, build_families, installed_variants};
 use hardware::HardwareInfo;
@@ -87,7 +86,7 @@ pub(crate) fn cmd_tui(args: &[OsString]) -> Result<u8, String> {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Screen {
+pub(super) enum Screen {
     Home,
     Models,
     Downloads,
@@ -95,16 +94,44 @@ enum Screen {
     Chat,
 }
 
-const SCREENS: [(&str, &str, Screen); 5] = [
-    ("⌂", "Home", Screen::Home),
-    ("◈", "Models", Screen::Models),
-    ("↓", "Downloads", Screen::Downloads),
-    ("▶", "Serve", Screen::Serve),
-    ("💬", "Chat", Screen::Chat),
+/// Tab definitions for the horizontal tab bar.
+const TABS: [widgets::TabDef; 5] = [
+    widgets::TabDef {
+        num: '1',
+        label: "Home",
+    },
+    widgets::TabDef {
+        num: '2',
+        label: "Models",
+    },
+    widgets::TabDef {
+        num: '3',
+        label: "Downloads",
+    },
+    widgets::TabDef {
+        num: '4',
+        label: "Serve",
+    },
+    widgets::TabDef {
+        num: '5',
+        label: "Chat",
+    },
 ];
 
+const SCREENS: [Screen; 5] = [
+    Screen::Home,
+    Screen::Models,
+    Screen::Downloads,
+    Screen::Serve,
+    Screen::Chat,
+];
+
+fn screen_index(screen: Screen) -> usize {
+    SCREENS.iter().position(|s| *s == screen).unwrap_or(0)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WizardStage {
+pub(super) enum WizardStage {
     Families,
     Precision,
     Options,
@@ -112,17 +139,17 @@ enum WizardStage {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum ServeFocus {
+pub(super) enum ServeFocus {
     List,
     Host,
     Port,
 }
 
 #[derive(Clone, Copy)]
-struct PendingDownload {
-    family_idx: usize,
-    precision_idx: usize,
-    with_mtp: bool,
+pub(super) struct PendingDownload {
+    pub family_idx: usize,
+    pub precision_idx: usize,
+    pub with_mtp: bool,
 }
 
 /// Overlay that captures all input while open.  Exactly one may be open.
@@ -155,61 +182,61 @@ enum Modal {
 }
 
 struct App {
-    quit: bool,
-    screen: Screen,
-    hardware: HardwareInfo,
-    families: Vec<Family>,
-    modal: Option<Modal>,
-    toasts: Vec<Toast>,
-    show_help: bool,
+    pub quit: bool,
+    pub screen: Screen,
+    pub hardware: HardwareInfo,
+    pub families: Vec<Family>,
+    pub modal: Option<Modal>,
+    pub toasts: Vec<Toast>,
+    pub show_help: bool,
 
     // Home
-    home_idx: usize,
+    pub home_idx: usize,
 
     // Models wizard
-    stage: WizardStage,
-    family_idx: usize,
-    precision_idx: usize,
-    mtp_idx: usize, // 0 = yes, 1 = no
-    pending: Option<PendingDownload>,
+    pub stage: WizardStage,
+    pub family_idx: usize,
+    pub precision_idx: usize,
+    pub mtp_idx: usize, // 0 = yes, 1 = no
+    pub pending: Option<PendingDownload>,
     /// Custom destination chosen on the confirm step (None = shared HF cache).
-    confirm_dest: Option<PathBuf>,
+    pub confirm_dest: Option<PathBuf>,
     /// Case-insensitive substring filter over the family list (`/` to edit).
-    filter: String,
-    filtering: bool,
+    pub filter: String,
+    pub filtering: bool,
 
     // Downloads
-    downloads: Vec<DownloadTask>,
-    download_idx: usize,
+    pub downloads: Vec<DownloadTask>,
+    pub download_idx: usize,
 
     // Serve
-    serve_focus: ServeFocus,
-    serve_idx: usize,
-    host: String,
-    port: String,
-    server: Option<Job>,
-    server_url: Option<String>,
+    pub serve_focus: ServeFocus,
+    pub serve_idx: usize,
+    pub host: String,
+    pub port: String,
+    pub server: Option<Job>,
+    pub server_url: Option<String>,
     /// Set once the server job's log confirms it actually bound (not just spawned).
-    server_ready: bool,
+    pub server_ready: bool,
     /// Label of the model the running server was started with (chat request body).
-    server_model: Option<String>,
+    pub server_model: Option<String>,
 
     // Chat
-    chat: ChatState,
+    pub chat: ChatState,
 
     // Click-target rects recorded during the last draw (immediate-mode hit-testing).
-    sidebar_rect: Cell<Rect>,
-    content_list_rect: Cell<Rect>,
+    tab_hits: Cell<Vec<(Rect, usize)>>,
+    pub content_list_rect: Cell<Rect>,
     /// Rect of the wizard step header row (for breadcrumb clicks).
-    step_header_rect: Cell<Rect>,
+    pub step_header_rect: Cell<Rect>,
 }
 
 impl App {
-    fn new() -> App {
+    pub fn new() -> App {
         App::with_hardware(HardwareInfo::probe())
     }
 
-    fn with_hardware(hardware: HardwareInfo) -> App {
+    pub fn with_hardware(hardware: HardwareInfo) -> App {
         App {
             quit: false,
             screen: Screen::Home,
@@ -238,29 +265,29 @@ impl App {
             server_ready: false,
             server_model: None,
             chat: ChatState::new(),
-            sidebar_rect: Cell::new(Rect::default()),
+            tab_hits: Cell::new(Vec::new()),
             content_list_rect: Cell::new(Rect::default()),
             step_header_rect: Cell::new(Rect::default()),
         }
     }
 
-    fn reload_families(&mut self) {
+    pub fn reload_families(&mut self) {
         self.families = build_families();
     }
 
-    fn toast(&mut self, text: impl Into<String>) {
+    pub fn toast(&mut self, text: impl Into<String>) {
         self.toasts.push(widgets::Toast::info(text.into()));
     }
 
-    fn toast_success(&mut self, text: impl Into<String>) {
+    pub fn toast_success(&mut self, text: impl Into<String>) {
         self.toasts.push(widgets::Toast::success(text.into()));
     }
 
-    fn toast_warn(&mut self, text: impl Into<String>) {
+    pub fn toast_warn(&mut self, text: impl Into<String>) {
         self.toasts.push(widgets::Toast::warning(text.into()));
     }
 
-    fn toast_error(&mut self, text: impl Into<String>) {
+    pub fn toast_error(&mut self, text: impl Into<String>) {
         self.toasts.push(widgets::Toast::error(text.into()));
     }
 
@@ -309,7 +336,7 @@ impl App {
 
     // -- input ----------------------------------------------------------------
 
-    fn on_key(&mut self, key: KeyEvent) {
+    pub fn on_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.request_quit();
             return;
@@ -319,8 +346,7 @@ impl App {
             return;
         }
         if self.show_help {
-            // Any key dismisses help — an overlay that only Esc can close
-            // reads as a stuck screen.
+            // Any key dismisses help.
             self.show_help = false;
             return;
         }
@@ -335,7 +361,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char(c @ '1'..='5') => {
-                    self.screen = SCREENS[(c as usize) - ('1' as usize)].2;
+                    self.screen = SCREENS[(c as usize) - ('1' as usize)];
                     return;
                 }
                 _ => {}
@@ -356,8 +382,6 @@ impl App {
         match self.screen {
             Screen::Models => self.stage == WizardStage::Families && self.filtering,
             Screen::Serve => matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port),
-            // Without a ready server, Chat is a static hint screen — capturing
-            // keys there would trap the user (no input box is even visible).
             Screen::Chat => self.server_ready,
             _ => false,
         }
@@ -532,12 +556,19 @@ impl App {
         }
     }
 
-    fn on_click(&mut self, col: u16, row: u16) {
-        // Sidebar click switches screens directly.
-        if let Some(idx) = widgets::row_in_rect(self.sidebar_rect.get(), col, row) {
-            if let Some(&(_, _, screen)) = SCREENS.get(idx) {
-                self.screen = screen;
-            }
+    pub fn on_click(&mut self, col: u16, row: u16) {
+        // Tab bar click switches screens.
+        let tab_hits = self.tab_hits.take();
+        let clicked_tab = tab_hits.iter().find_map(|(rect, idx)| {
+            (col >= rect.x
+                && col < rect.x + rect.width
+                && row >= rect.y
+                && row < rect.y + rect.height)
+                .then_some(*idx)
+        });
+        self.tab_hits.set(tab_hits);
+        if let Some(idx) = clicked_tab {
+            self.screen = SCREENS[idx];
             return;
         }
         // Step header click (breadcrumb navigation) on the Models screen.
@@ -578,7 +609,7 @@ impl App {
     // -- server lifecycle -------------------------------------------------------
 
     /// Validation message for the port field, if it holds non-empty, non-numeric, or out-of-range text.
-    fn port_error(&self) -> Option<&'static str> {
+    pub fn port_error(&self) -> Option<&'static str> {
         let trimmed = self.port.trim();
         if trimmed.is_empty() {
             return None;
@@ -589,7 +620,7 @@ impl App {
         }
     }
 
-    fn server_running(&self) -> bool {
+    pub fn server_running(&self) -> bool {
         self.server.as_ref().is_some_and(|j| j.done.is_none())
     }
 
@@ -605,11 +636,6 @@ impl App {
             return;
         };
         let profile = variant.profile;
-        // Prefer the exact snapshot directory over the preset+hf-cache scan: with
-        // more than one precision of a model family installed, the scan can't
-        // tell them apart (they share the preset's alias substring) and errors
-        // out with "multiple Hugging Face cache candidates". Knowing the repo id
-        // here means there's no ambiguity to resolve.
         let artifacts_dir = catalog::repo_snapshot_dir(profile.repo_id);
         self.spawn_server(profile.preset, artifacts_dir, profile.label);
     }
@@ -660,13 +686,6 @@ impl App {
             .arg("--port")
             .arg(&port)
             .arg("--mlx");
-        // `--preset` (when known) carries model_id/support_tier metadata and is
-        // not mutually exclusive with an explicit artifacts dir. The dir always
-        // wins for *locating* the weights: it's unambiguous by construction,
-        // whereas `--resolve-model-artifacts hf-cache` scans the whole HF cache
-        // by alias substring and errors out the moment more than one installed
-        // precision/snapshot matches. Only fall back to that scan when the exact
-        // directory genuinely couldn't be resolved.
         if let Some(preset) = preset {
             cmd.arg("--preset").arg(preset);
         }
@@ -699,7 +718,7 @@ impl App {
     }
 
     /// Flip `server_ready` once the server job's log confirms it actually bound.
-    fn update_server_ready(&mut self) {
+    pub fn update_server_ready(&mut self) {
         if self.server_ready {
             return;
         }
@@ -724,7 +743,7 @@ impl App {
     }
 
     /// Most recent non-empty server log line, surfaced when startup fails.
-    fn server_error_line(&self) -> Option<String> {
+    pub fn server_error_line(&self) -> Option<String> {
         let job = self.server.as_ref()?;
         job.done?;
         job.log
@@ -736,7 +755,7 @@ impl App {
 
     // -- download queue ---------------------------------------------------------
 
-    fn start_next_queued_download(&mut self) {
+    pub fn start_next_queued_download(&mut self) {
         if self.downloads.iter().any(DownloadTask::is_running) {
             return;
         }
@@ -783,33 +802,37 @@ impl App {
 
     // -- rendering ------------------------------------------------------------
 
-    fn draw(&self, frame: &mut Frame) {
-        // Cleared each frame; the active content list re-records it, so screens
-        // without a list leave no stale click target.
+    pub fn draw(&self, frame: &mut Frame) {
+        // Cleared each frame; the active content list re-records it.
         self.content_list_rect.set(Rect::default());
         let outer = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(2), // tab bar + separator
+            Constraint::Min(0),    // content
+            Constraint::Length(1), // footer
         ])
         .split(frame.area());
-        let body = Layout::horizontal([Constraint::Length(18), Constraint::Min(0)]).split(outer[0]);
-        self.draw_sidebar(frame, body[0]);
-        match self.screen {
-            Screen::Home => self.draw_home(frame, body[1]),
-            Screen::Models => self.draw_models(frame, body[1]),
-            Screen::Downloads => self.draw_downloads(frame, body[1]),
-            Screen::Serve => self.draw_serve(frame, body[1]),
-            Screen::Chat => self.draw_chat(frame, body[1]),
-        }
-        widgets::draw_status_strip(
+
+        // Build compact status spans for the tab bar.
+        let status_spans = self.build_status_spans();
+        let hits = widgets::draw_tab_bar(
             frame,
-            outer[1],
-            self.server_summary(),
-            self.active_download_summary(),
+            outer[0],
+            &TABS,
+            screen_index(self.screen),
+            status_spans,
         );
+        self.tab_hits.set(hits);
+
+        match self.screen {
+            Screen::Home => self.draw_home(frame, outer[1]),
+            Screen::Models => self.draw_models(frame, outer[1]),
+            Screen::Downloads => self.draw_downloads(frame, outer[1]),
+            Screen::Serve => self.draw_serve(frame, outer[1]),
+            Screen::Chat => self.draw_chat(frame, outer[1]),
+        }
+
         frame.render_widget(
-            Paragraph::new(self.footer()).style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new(self.footer_line()).style(Style::default().fg(theme::DIM)),
             outer[2],
         );
         widgets::draw_toasts(frame, frame.area(), &self.toasts);
@@ -821,177 +844,158 @@ impl App {
         }
     }
 
-    fn draw_sidebar(&self, frame: &mut Frame, area: Rect) {
-        self.sidebar_rect.set(area);
-        let running_downloads = self.downloads.iter().filter(|t| t.is_running()).count();
-        let items = SCREENS.iter().map(|(icon, name, screen)| {
-            let selected = self.screen == *screen;
-            let badge = match screen {
-                Screen::Downloads if running_downloads > 0 => {
-                    format!(" {}", theme::spinner_dot(running_downloads))
-                }
-                Screen::Serve if self.server_ready => format!(" {}", theme::OK_DOT),
-                _ => String::new(),
-            };
-            let label = format!(
-                " {} {} {}{}",
-                if selected { "▸" } else { " " },
-                icon,
-                name,
-                badge
-            );
-            let style = if selected {
-                Style::default()
-                    .fg(theme::ACCENT)
-                    .bg(Color::Rgb(20, 40, 50))
-                    .add_modifier(Modifier::BOLD)
+    /// Build compact status spans for the right side of the tab bar.
+    fn build_status_spans(&self) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        let (_server_text, server_color) = self.server_summary();
+        let short_server = match server_color {
+            c if c == Color::Green => "● running".to_string(),
+            c if c == Color::Yellow => "◌ starting".to_string(),
+            c if c == Color::Red => "✗ failed".to_string(),
+            _ => "○ stopped".to_string(),
+        };
+        spans.push(Span::styled(
+            short_server,
+            Style::default().fg(server_color),
+        ));
+        if let Some((dl_text, dl_color)) = self.active_download_summary() {
+            let short_dl = if dl_text.contains('%') {
+                format!("  ↓ {}", dl_text.split('%').next().unwrap_or("").trim())
             } else {
-                Style::default().fg(Color::White)
+                format!("  ↓ {dl_text}")
             };
-            ListItem::new(Line::from(label)).style(style)
-        });
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::MUTED))
-            .title(Span::styled(
-                " AX Engine ",
-                Style::default()
-                    .fg(theme::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        frame.render_widget(List::new(items.collect::<Vec<_>>()).block(block), area);
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(short_dl, Style::default().fg(dl_color)));
+        }
+        spans
     }
 
-    fn footer(&self) -> Line<'static> {
-        use theme::{key_chip, key_chip_dim, key_sep};
-        let spans: Vec<Span> = if self.modal.is_some() {
-            vec![
-                key_chip("Esc"),
-                key_sep(),
-                Span::styled("close dialog", Style::default().fg(theme::DIM)),
-            ]
+    fn footer_line(&self) -> Line<'static> {
+        use theme::{key_hint, key_label, key_sep};
+        let hints: Vec<Span> = if self.modal.is_some() {
+            vec![key_hint("Esc"), key_label(" close")]
         } else {
             match self.screen {
                 Screen::Home => vec![
-                    key_chip("↑↓"),
-                    Span::styled(" move", Style::default().fg(theme::DIM)),
+                    key_hint("↑↓"),
+                    key_label(" move"),
                     key_sep(),
-                    key_chip("Enter"),
-                    Span::styled(" select", Style::default().fg(theme::DIM)),
+                    key_hint("Enter"),
+                    key_label(" select"),
                     key_sep(),
-                    key_chip_dim("?"),
-                    Span::styled(" help", Style::default().fg(theme::DIM)),
+                    key_hint("?"),
+                    key_label(" help"),
                     key_sep(),
-                    key_chip_dim("q"),
-                    Span::styled(" quit", Style::default().fg(theme::DIM)),
+                    key_hint("q"),
+                    key_label(" quit"),
                 ],
                 Screen::Models => match self.stage {
                     WizardStage::Families if self.filtering => vec![
                         Span::styled("type to filter", Style::default().fg(theme::ACCENT)),
                         key_sep(),
-                        key_chip("Enter"),
-                        Span::styled(" apply", Style::default().fg(theme::DIM)),
+                        key_hint("Enter"),
+                        key_label(" apply"),
                         key_sep(),
-                        key_chip_dim("Esc"),
-                        Span::styled(" cancel", Style::default().fg(theme::DIM)),
+                        key_hint("Esc"),
+                        key_label(" cancel"),
                     ],
                     WizardStage::Families => vec![
-                        key_chip("↑↓"),
-                        Span::styled(" move", Style::default().fg(theme::DIM)),
+                        key_hint("↑↓"),
+                        key_label(" move"),
                         key_sep(),
-                        key_chip("Enter"),
-                        Span::styled(" next", Style::default().fg(theme::DIM)),
+                        key_hint("Enter"),
+                        key_label(" next"),
                         key_sep(),
-                        key_chip_dim("/"),
-                        Span::styled(" filter", Style::default().fg(theme::DIM)),
+                        key_hint("/"),
+                        key_label(" filter"),
                         key_sep(),
-                        key_chip_dim("Esc"),
-                        Span::styled(" home", Style::default().fg(theme::DIM)),
+                        key_hint("Esc"),
+                        key_label(" home"),
                     ],
                     WizardStage::Precision => vec![
-                        key_chip("↑↓"),
-                        Span::styled(" move", Style::default().fg(theme::DIM)),
+                        key_hint("↑↓"),
+                        key_label(" move"),
                         key_sep(),
-                        key_chip("Enter"),
-                        Span::styled(" next", Style::default().fg(theme::DIM)),
+                        key_hint("Enter"),
+                        key_label(" next"),
                         key_sep(),
-                        key_chip_dim("x"),
-                        Span::styled(" delete", Style::default().fg(theme::DIM)),
+                        key_hint("x"),
+                        key_label(" delete"),
                         key_sep(),
-                        key_chip_dim("Esc"),
-                        Span::styled(" back", Style::default().fg(theme::DIM)),
+                        key_hint("Esc"),
+                        key_label(" back"),
                     ],
                     WizardStage::Options => vec![
-                        key_chip("y"),
-                        Span::styled(" yes", Style::default().fg(theme::DIM)),
+                        key_hint("y"),
+                        key_label(" yes"),
                         key_sep(),
-                        key_chip("n"),
-                        Span::styled(" no", Style::default().fg(theme::DIM)),
+                        key_hint("n"),
+                        key_label(" no"),
                         key_sep(),
-                        key_chip_dim("Esc"),
-                        Span::styled(" back", Style::default().fg(theme::DIM)),
+                        key_hint("Esc"),
+                        key_label(" back"),
                     ],
                     WizardStage::Confirm => vec![
-                        key_chip("Enter"),
-                        Span::styled(" download", Style::default().fg(theme::DIM)),
+                        key_hint("Enter"),
+                        key_label(" download"),
                         key_sep(),
-                        key_chip_dim("c"),
-                        Span::styled(" folder", Style::default().fg(theme::DIM)),
+                        key_hint("c"),
+                        key_label(" folder"),
                         key_sep(),
-                        key_chip_dim("Esc"),
-                        Span::styled(" back", Style::default().fg(theme::DIM)),
+                        key_hint("Esc"),
+                        key_label(" back"),
                     ],
                 },
                 Screen::Downloads => vec![
-                    key_chip("↑↓"),
-                    Span::styled(" move", Style::default().fg(theme::DIM)),
+                    key_hint("↑↓"),
+                    key_label(" move"),
                     key_sep(),
-                    key_chip("Enter"),
-                    Span::styled(" serve", Style::default().fg(theme::DIM)),
+                    key_hint("Enter"),
+                    key_label(" serve"),
                     key_sep(),
-                    key_chip_dim("x"),
-                    Span::styled(" cancel", Style::default().fg(theme::DIM)),
+                    key_hint("x"),
+                    key_label(" cancel"),
                     key_sep(),
-                    key_chip_dim("Esc"),
-                    Span::styled(" home", Style::default().fg(theme::DIM)),
+                    key_hint("Esc"),
+                    key_label(" home"),
                 ],
                 Screen::Serve => vec![
-                    key_chip("Enter"),
-                    Span::styled(" start", Style::default().fg(theme::DIM)),
+                    key_hint("Enter"),
+                    key_label(" start"),
                     key_sep(),
-                    key_chip_dim("x"),
-                    Span::styled(" stop", Style::default().fg(theme::DIM)),
+                    key_hint("x"),
+                    key_label(" stop"),
                     key_sep(),
-                    key_chip_dim("c"),
-                    Span::styled(" copy", Style::default().fg(theme::DIM)),
+                    key_hint("c"),
+                    key_label(" copy"),
                     key_sep(),
-                    key_chip_dim("t"),
-                    Span::styled(" chat", Style::default().fg(theme::DIM)),
+                    key_hint("t"),
+                    key_label(" chat"),
                     key_sep(),
-                    key_chip_dim("Tab"),
-                    Span::styled(" fields", Style::default().fg(theme::DIM)),
+                    key_hint("Tab"),
+                    key_label(" fields"),
                 ],
                 Screen::Chat if !self.server_ready => vec![
-                    key_chip("4"),
-                    Span::styled(" serve screen", Style::default().fg(theme::DIM)),
+                    key_hint("4"),
+                    key_label(" serve screen"),
                     key_sep(),
-                    key_chip_dim("Esc"),
-                    Span::styled(" home", Style::default().fg(theme::DIM)),
+                    key_hint("Esc"),
+                    key_label(" home"),
                 ],
                 Screen::Chat => vec![
-                    key_chip("Enter"),
-                    Span::styled(" send", Style::default().fg(theme::DIM)),
+                    key_hint("Enter"),
+                    key_label(" send"),
                     key_sep(),
-                    key_chip_dim("PgUp/Dn"),
-                    Span::styled(" scroll", Style::default().fg(theme::DIM)),
+                    key_hint("PgUp/Dn"),
+                    key_label(" scroll"),
                     key_sep(),
-                    key_chip_dim("Esc"),
-                    Span::styled(" home", Style::default().fg(theme::DIM)),
+                    key_hint("Esc"),
+                    key_label(" home"),
                 ],
             }
         };
         let mut out = vec![Span::raw("  ")];
-        out.extend(spans);
+        out.extend(hints);
         Line::from(out)
     }
 
@@ -1003,7 +1007,7 @@ impl App {
                 Style::default().add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
-            Line::raw("Screens: press 1-5 (or click the sidebar) at any time."),
+            Line::raw("Screens: press 1-5 (or click the tab bar) at any time."),
             Line::raw("  1 Home       hardware summary and quick actions"),
             Line::raw("  2 Models     wizard: family -> precision -> options -> confirm"),
             Line::raw("  3 Downloads  background queue with live progress"),

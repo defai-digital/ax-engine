@@ -1,5 +1,6 @@
-//! Home screen: hardware summary, engine status, installed models, and the
-//! guided entry points (Quick start first for new users).
+//! Home screen: two-column dashboard with hardware info and actions.
+//! Left column: hardware info + installed models.
+//! Right column: actions with prominent Quick Start card.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -20,8 +21,7 @@ pub(crate) enum HomeAction {
 }
 
 impl App {
-    /// (label, action) rows for the Home action list.  Quick start resolves to
-    /// the smallest model that fits this machine's RAM.
+    /// (label, action) rows for the Home action list.
     pub(crate) fn home_actions(&self) -> Vec<(String, HomeAction)> {
         let mut actions = Vec::new();
         let quick = match self.quick_start_target() {
@@ -52,8 +52,7 @@ impl App {
         actions
     }
 
-    /// Smallest catalog variant that fits in RAM (preferring a comfortable
-    /// fit over a tight one), as (family_idx, variant_idx).
+    /// Smallest catalog variant that fits in RAM.
     pub(crate) fn quick_start_target(&self) -> Option<(usize, usize)> {
         let mut best: Option<(usize, usize, u64, RamFit)> = None;
         for (fi, family) in self.families.iter().enumerate() {
@@ -103,8 +102,7 @@ impl App {
         }
     }
 
-    /// Jump the wizard straight to the recommended model: installed -> offer
-    /// to serve it; MTP-capable -> options step; otherwise -> confirm step.
+    /// Jump the wizard straight to the recommended model.
     fn quick_start(&mut self) {
         let Some((fi, vi)) = self.quick_start_target() else {
             self.stage = WizardStage::Families;
@@ -130,16 +128,18 @@ impl App {
         }
     }
 
+    /// Two-column dashboard layout.
     pub(crate) fn draw_home(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::vertical([
-            Constraint::Length(6),
-            Constraint::Length(5),
-            Constraint::Min(0),
-        ])
-        .split(area);
-        self.draw_home_hardware(frame, chunks[0]);
-        self.draw_home_actions(frame, chunks[1]);
-        self.draw_home_installed(frame, chunks[2]);
+        let columns = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+
+        // Left column: hardware + installed models.
+        let left = Layout::vertical([Constraint::Length(6), Constraint::Min(0)]).split(columns[0]);
+        self.draw_home_hardware(frame, left[0]);
+        self.draw_home_installed(frame, left[1]);
+
+        // Right column: actions.
+        self.draw_home_actions(frame, columns[1]);
     }
 
     fn draw_home_hardware(&self, frame: &mut Frame, area: Rect) {
@@ -174,7 +174,7 @@ impl App {
             Line::from(vec![
                 Span::styled("  ◉ ", Style::default().fg(Color::Cyan)),
                 Span::styled("Free disk ", Style::default().fg(Color::DarkGray)),
-                Span::raw(format!("{disk} on the download volume")),
+                Span::raw(format!("{disk}")),
             ]),
             Line::from(vec![
                 Span::styled("  ◈ ", Style::default().fg(Color::Cyan)),
@@ -221,7 +221,7 @@ impl App {
             })
             .collect();
         let title = if first_run {
-            " Get started — download a model, serve it, then chat with it "
+            " Get started "
         } else {
             " Actions "
         };
@@ -243,22 +243,16 @@ impl App {
                 Line::raw(""),
                 Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(" ◈ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-                    Span::raw(" "),
                     Span::styled(
                         "No models installed yet",
                         Style::default().fg(Color::Yellow),
                     ),
                 ]),
                 Line::raw(""),
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        " Quick start ",
-                        Style::default().fg(Color::Black).bg(Color::Cyan),
-                    ),
-                    Span::raw(" will guide you through your first download."),
-                ]),
+                Line::from(Span::styled(
+                    "  Pick a model on the Models tab to get started.",
+                    Style::default().fg(Color::DarkGray),
+                )),
             ]
         } else {
             pairs

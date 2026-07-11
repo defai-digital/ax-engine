@@ -1,4 +1,4 @@
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::sync::LazyLock;
 
 use crate::array::MlxArray;
@@ -208,6 +208,33 @@ pub fn max_recommended_working_set_size() -> usize {
     }
 }
 
+/// Return the MLX GPU architecture identifier used for kernel selection.
+pub fn gpu_device_architecture() -> Result<String, String> {
+    unsafe {
+        prepare_error_capture();
+        let dev = ffi::mlx_device_new_type(1, 0);
+        let mut info = ffi::mlx_device_info_new();
+        let info_rc = ffi::mlx_device_info_get(&mut info, dev);
+        ffi::mlx_device_free(dev);
+        if info_rc != 0 {
+            ffi::mlx_device_info_free(info);
+            return Err(crate::error::last_error_message("mlx_device_info_get"));
+        }
+
+        static KEY: LazyLock<CString> =
+            LazyLock::new(|| CString::new("architecture").expect("static key has no NUL"));
+        let mut value = std::ptr::null();
+        let value_rc = ffi::mlx_device_info_get_string(&mut value, info, KEY.as_ptr());
+        let architecture = if value_rc == 0 && !value.is_null() {
+            Ok(CStr::from_ptr(value).to_string_lossy().into_owned())
+        } else {
+            Err(String::from("MLX GPU architecture is unavailable"))
+        };
+        ffi::mlx_device_info_free(info);
+        architecture
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +246,12 @@ mod tests {
         let token = argmax(&logits, None);
 
         assert_eq!(eval_first_u32(&token), 1);
+    }
+
+    #[test]
+    fn gpu_device_architecture_is_available() {
+        let architecture = gpu_device_architecture().expect("GPU architecture should be present");
+        assert!(!architecture.is_empty());
     }
 
     #[test]

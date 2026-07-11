@@ -19,6 +19,7 @@ use std::sync::OnceLock;
 
 use mlx_sys::{MlxArray, slice};
 
+use crate::batched_decode_certification::BatchedDecodeCertificationStatus;
 use crate::batched_kv_cache::BatchedKvCache;
 use crate::batched_sampling::argmax_batched;
 use crate::kv_cache::MlxKVCache;
@@ -77,8 +78,7 @@ pub fn batched_decode_allow_uncertified() -> bool {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BatchedDecodeCapabilities {
-    has_supported_family: bool,
-    numerically_certified: bool,
+    certification_status: BatchedDecodeCertificationStatus,
     has_mtp: bool,
     is_diffusion: bool,
     kv_compression_on: bool,
@@ -92,20 +92,15 @@ pub(crate) struct BatchedDecodeCapabilities {
 
 impl BatchedDecodeCapabilities {
     pub(crate) fn from_loaded_model(
-        model_family: &str,
         has_mtp: bool,
         is_diffusion: bool,
         kv_compression_on: bool,
         layer_windows: &[Option<usize>],
         layers: &[LayerWeights],
+        certification_status: BatchedDecodeCertificationStatus,
     ) -> Self {
         Self {
-            has_supported_family: model_family == "qwen3",
-            // Family-only certification is unsound: batch invariance also
-            // depends on the artifact, quantization, MLX version, prompt
-            // shape, and active numerical fast paths. No current contract has
-            // passed that matrix, so production routing must fail closed.
-            numerically_certified: false,
+            certification_status,
             has_mtp,
             is_diffusion,
             kv_compression_on,
@@ -140,11 +135,8 @@ impl BatchedDecodeCapabilities {
         if self.kv_compression_on {
             reasons.push("kv_compression");
         }
-        if !self.has_supported_family {
-            reasons.push("model_family");
-        }
-        if self.has_supported_family && !self.numerically_certified && !allow_uncertified {
-            reasons.push("numerical_equivalence");
+        if !self.certification_status.is_certified() && !allow_uncertified {
+            reasons.push(self.certification_status.route_reason());
         }
         if self.has_sliding_window {
             reasons.push("sliding_window");
@@ -339,69 +331,72 @@ mod tests {
     #[test]
     fn model_eligibility_guards() {
         let no_windows: [Option<usize>; 0] = [];
-        let qwen = BatchedDecodeCapabilities::from_loaded_model(
-            "qwen3",
+        let uncertified = BatchedDecodeCapabilities::from_loaded_model(
             false,
             false,
             false,
             &no_windows,
             &[],
+            BatchedDecodeCertificationStatus::Missing,
         );
-        assert!(!qwen.eligible(false));
-        assert!(qwen.eligible(true));
-        assert_eq!(qwen.rejection_reasons(false), vec!["numerical_equivalence"]);
+        assert!(!uncertified.eligible(false));
+        assert!(uncertified.eligible(true));
+        assert_eq!(
+            uncertified.rejection_reasons(false),
+            vec!["certification_missing"]
+        );
+        assert!(
+            BatchedDecodeCapabilities::from_loaded_model(
+                false,
+                false,
+                false,
+                &no_windows,
+                &[],
+                BatchedDecodeCertificationStatus::Certified,
+            )
+            .eligible(false)
+        );
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
-                "qwen3",
                 true,
                 false,
                 false,
                 &no_windows,
-                &[]
+                &[],
+                BatchedDecodeCertificationStatus::Missing,
             )
             .eligible(true)
         );
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
-                "qwen3",
                 false,
                 true,
                 false,
                 &no_windows,
-                &[]
+                &[],
+                BatchedDecodeCertificationStatus::Missing,
             )
             .eligible(true)
         );
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
-                "qwen3",
                 false,
                 false,
                 true,
                 &no_windows,
-                &[]
+                &[],
+                BatchedDecodeCertificationStatus::Missing,
             )
             .eligible(true)
         );
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
-                "gemma4",
-                false,
-                false,
-                false,
-                &no_windows,
-                &[]
-            )
-            .eligible(true)
-        );
-        assert!(
-            !BatchedDecodeCapabilities::from_loaded_model(
-                "qwen3",
                 false,
                 false,
                 false,
                 &[Some(4096)],
-                &[]
+                &[],
+                BatchedDecodeCertificationStatus::Missing,
             )
             .eligible(true)
         );
@@ -410,12 +405,12 @@ mod tests {
     #[test]
     fn model_rejection_reasons_preserve_all_independent_gates() {
         let reasons = BatchedDecodeCapabilities::from_loaded_model(
-            "qwen3_linear",
             true,
             true,
             true,
             &[Some(4096)],
             &[],
+            BatchedDecodeCertificationStatus::Missing,
         )
         .rejection_reasons(false);
 
@@ -425,7 +420,7 @@ mod tests {
                 "mtp",
                 "diffusion",
                 "kv_compression",
-                "model_family",
+                "certification_missing",
                 "sliding_window"
             ]
         );

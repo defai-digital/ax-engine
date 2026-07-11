@@ -8,11 +8,12 @@
 //!    harness constructs `RunnerInput`s the way the engine does (so its verdicts
 //!    are trustworthy).
 //! 2. **Batched == sequential.** N requests decoded with all their decode items
-//!    in ONE `run()` call per step produce the same per-request streams as
-//!    decoding them one at a time. Today the runner processes both the same way
-//!    (per-item loop), so this is a baseline; once the `run()` batched-decode
-//!    interception lands (2b-ii, behind `AX_MLX_BATCHED_DECODE`), the SAME test
-//!    with the flag on validates it — token-exact is the promotion gate.
+//!    in one `run()` call per step produce the same per-request streams as
+//!    decoding them one at a time.
+//! 3. **Shared-forward engagement.** Route telemetry proves that the comparison
+//!    exercised the batched forward rather than a structurally rejected
+//!    per-item fallback. Token-exact output plus route engagement is the
+//!    certification gate.
 //!
 //! The MLX runner keys per-request KV by `request_id` in its own `MlxKVCache`
 //! and does NOT read `input.block_tables`, so the harness passes an empty block
@@ -20,7 +21,8 @@
 //!
 //! Usage:
 //!   cargo run --release --bin batched_decode_e2e_probe -- <dense_model_dir>
-//! Env: AX_BATCH (default 3), AX_PROMPT_LEN (default 24), AX_GEN (default 16).
+//! Env: AX_BATCH (default 3), AX_PROMPT_LEN (default 24), AX_GEN (default 16),
+//! AX_PROMPT_SEED (default 0), and AX_RAGGED=1 for unequal prompt lengths.
 //!
 //! Sampling (gate 3): `AX_SAMPLING` selects the per-request sampler — `greedy`
 //! (default), `topp` (temp 0.7, top-p 0.9), `topk` (temp 0.7, top-k 40), or
@@ -198,11 +200,28 @@ fn runner_input(
 
 /// `request_id → output token` for one `run()` call.
 fn run_outputs(runner: &MlxRunner, input: RunnerInput) -> Vec<(u64, u32)> {
+    run_outputs_with_batched_forward_rows(runner, input).0
+}
+
+/// Output tokens plus the number of rows that entered the shared forward.
+fn run_outputs_with_batched_forward_rows(
+    runner: &MlxRunner,
+    input: RunnerInput,
+) -> (Vec<(u64, u32)>, u32) {
     let out = runner.run(input);
-    out.request_updates
+    let batched_forward_rows = out
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .filter(|(name, _)| name == "ax_mlx_batched_decode_forward_rows")
+        .map(|(_, rows)| *rows)
+        .sum();
+    let tokens = out
+        .request_updates
         .iter()
         .filter_map(|u| u.output_token.map(|t| (u.request_id.0, t)))
-        .collect()
+        .collect();
+    (tokens, batched_forward_rows)
 }
 
 /// Reference: greedy decode via `model::forward` (the 2a-probe oracle path).
@@ -246,7 +265,6 @@ fn decode_sequential(
     runner: &MlxRunner,
     prompts: &[Vec<u32>],
     sampling: &SamplingCfg,
-    prompt_len: usize,
     gen_len: usize,
 ) -> Vec<Vec<u32>> {
     let mut streams = Vec::with_capacity(prompts.len());
@@ -269,8 +287,13 @@ fn decode_sequential(
             let generated_len = s + 1;
             let input = runner_input(
                 step_id,
-                vec![item(req, ExecutionMode::Decode, vec![tok], prompt_len + s)],
-                vec![ctx(req, prompt_len, generated_len, gen_len + 4, sampling)],
+                vec![item(
+                    req,
+                    ExecutionMode::Decode,
+                    vec![tok],
+                    prompt.len() + s,
+                )],
+                vec![ctx(req, prompt.len(), generated_len, gen_len + 4, sampling)],
             );
             step_id += 1;
             tok = run_outputs(runner, input)
@@ -286,20 +309,34 @@ fn decode_sequential(
 }
 
 fn build_prompts(batch: usize, len: usize, vocab: usize) -> Vec<Vec<u32>> {
+    let prompt_seed = env::var("AX_PROMPT_SEED")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let ragged = env::var_os("AX_RAGGED").is_some();
     (0..batch)
         .map(|r| {
-            (0..len)
-                .map(|i| ((r * 31 + i * 7 + 3) % (vocab - 1)) as u32 + 1)
+            let row_len = if ragged {
+                len.saturating_sub(3 * r).max(len / 2).max(1)
+            } else {
+                len
+            };
+            (0..row_len)
+                .map(|i| ((prompt_seed + r * 31 + i * 7 + 3) % (vocab - 1)) as u32 + 1)
                 .collect()
         })
         .collect()
 }
 
 fn main() {
-    let model_dir = env::args().nth(1).unwrap_or_else(|| {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    let model_dir = args.first().cloned().unwrap_or_else(|| {
         eprintln!("usage: batched_decode_e2e_probe <dense_model_dir>");
         std::process::exit(2);
     });
+    let certification_context_json = args
+        .iter()
+        .any(|argument| argument == "--certification-context-json");
     let batch: usize = env::var("AX_BATCH")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -317,6 +354,18 @@ fn main() {
 
     let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("artifacts");
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    if certification_context_json {
+        let context =
+            ax_engine_mlx::batched_decode_certification::batched_decode_certification_context(
+                &artifacts,
+            )
+            .expect("certification context");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&context).expect("serialize certification context")
+        );
+        return;
+    }
     let weights = load_weights(&artifacts).expect("weights");
     let prompts = build_prompts(batch, prompt_len, cfg.vocab_size);
 
@@ -386,6 +435,8 @@ fn main() {
     // runner processes them per item (B sequential forwards) — the runner-level
     // A/B (run the harness once per flag value, same batch, and compare).
     let decode_started = std::time::Instant::now();
+    let mut batched_forward_steps = 0usize;
+    let mut batched_forward_row_mismatch = false;
     for s in 0..gen_len {
         let generated_len = s + 1; // prefill produced token #1
         let items: Vec<ExecutionItem> = (0..batch)
@@ -394,14 +445,27 @@ fn main() {
                     r as u64,
                     ExecutionMode::Decode,
                     vec![cur[r]],
-                    prompt_len + s,
+                    prompts[r].len() + s,
                 )
             })
             .collect();
         let contexts: Vec<RunnerRequestContext> = (0..batch)
-            .map(|r| ctx(r as u64, prompt_len, generated_len, gen_len + 4, &sampling))
+            .map(|r| {
+                ctx(
+                    r as u64,
+                    prompts[r].len(),
+                    generated_len,
+                    gen_len + 4,
+                    &sampling,
+                )
+            })
             .collect();
-        let outs = run_outputs(&runner, runner_input(step_id, items, contexts));
+        let (outs, batched_forward_rows) =
+            run_outputs_with_batched_forward_rows(&runner, runner_input(step_id, items, contexts));
+        if batched_forward_rows > 0 {
+            batched_forward_steps += 1;
+            batched_forward_row_mismatch |= batched_forward_rows != batch as u32;
+        }
         step_id += 1;
         for (id, tok) in outs {
             let r = id as usize;
@@ -418,6 +482,19 @@ fn main() {
     );
 
     let mut failed = false;
+    let minimum_batched_forward_steps = gen_len.saturating_sub(1).max(1);
+    if batched_forward_steps >= minimum_batched_forward_steps && !batched_forward_row_mismatch {
+        println!(
+            "BATCHED-PATH: PASS ({batched_forward_steps}/{gen_len} decode steps used the shared {batch}-row forward)"
+        );
+    } else if batched_forward_steps > 0 || uncertified_override {
+        println!(
+            "BATCHED-PATH: FAIL ({batched_forward_steps}/{gen_len} shared-forward steps, expected at least {minimum_batched_forward_steps}; row_mismatch={batched_forward_row_mismatch})"
+        );
+        failed = true;
+    } else {
+        println!("BATCHED-PATH: SKIP (certification or diagnostic override did not engage it)");
+    }
 
     // Verdict 1 (greedy only): harness fidelity vs the model::forward oracle.
     if let Some(refs) = &refs {
@@ -456,7 +533,7 @@ fn main() {
         KvCompressionConfig::disabled(),
     )
     .expect("sequential runner");
-    let seq_streams = decode_sequential(&seq_runner, &prompts, &sampling, prompt_len, gen_len);
+    let seq_streams = decode_sequential(&seq_runner, &prompts, &sampling, gen_len);
     let mut ok = true;
     for r in 0..batch {
         if streams[r] != seq_streams[r] {

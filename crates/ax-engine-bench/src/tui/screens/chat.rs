@@ -15,14 +15,14 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tui_scrollview::ScrollView;
 
 use crate::tui::jobs::Job;
-use crate::tui::{App, Screen};
+use crate::tui::{App, Screen, widgets};
 
 pub(crate) struct ChatMessage {
     pub from_user: bool,
     pub content: String,
 }
 
-pub(crate) struct ChatState {
+pub(in crate::tui) struct ChatState {
     pub messages: Vec<ChatMessage>,
     pub input: String,
     /// Cursor position in `input`, in characters.
@@ -312,89 +312,126 @@ impl App {
 
     pub(crate) fn draw_chat(&self, frame: &mut Frame, area: Rect) {
         if !self.server_ready {
+            // Centered "no server" card.
+            let card_w = 52u16.min(area.width.saturating_sub(4));
+            let card_h = 7u16.min(area.height.saturating_sub(2));
+            let card = widgets::centered_rect(card_w, card_h, area);
+            let lines = vec![
+                Line::raw(""),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "No server running",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::raw(""),
+                Line::from(vec![Span::raw(
+                    "  Start one on the Serve screen, then come back.",
+                )]),
+                Line::raw(""),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "4",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" go to Serve", Style::default().fg(Color::DarkGray)),
+                ]),
+            ];
             frame.render_widget(
-                Paragraph::new(vec![
-                    Line::raw(""),
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(" ⚠ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-                        Span::raw(" "),
-                        Span::styled(
-                            "No server running.",
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                    ]),
-                    Line::raw(""),
-                    Line::raw("  Start one on the Serve screen (press 4), then come back here"),
-                    Line::raw("  to chat with the model."),
-                    Line::raw(""),
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(" 4 ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-                        Span::raw(" go to Serve"),
-                    ]),
-                ])
-                .block(Block::default().borders(Borders::ALL).title(" Chat ")),
-                area,
+                Paragraph::new(lines).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title(" Chat "),
+                ),
+                card,
             );
             return;
         }
-        let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(area);
+        let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(area);
         self.draw_chat_transcript(frame, chunks[0]);
         self.draw_chat_input(frame, chunks[1]);
     }
 
     fn draw_chat_transcript(&self, frame: &mut Frame, area: Rect) {
         let mut lines: Vec<Line> = Vec::new();
-        for (i, message) in self.chat.messages.iter().enumerate() {
-            if i > 0 {
-                lines.push(Line::from(Span::styled(
-                    "─".repeat(area.width.saturating_sub(4) as usize),
-                    Style::default().fg(Color::Rgb(40, 40, 40)),
-                )));
-            }
-            let (badge, badge_style, content_prefix) = if message.from_user {
+        for message in self.chat.messages.iter() {
+            // Inline badge on the same line as the content.
+            let (badge, badge_style, content_style) = if message.from_user {
                 (
-                    " You ",
+                    "[You]",
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
+                        .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
-                    "",
+                    Style::default().fg(Color::White),
                 )
             } else {
+                let model_name = self.server_model.as_deref().unwrap_or("Model");
+                // Truncate long model names for the badge.
+                let short = if model_name.len() > 16 {
+                    &model_name[..14]
+                } else {
+                    model_name
+                };
+                let badge_text = format!("[{short}]");
+                // We need a &'static str for Span::styled, but we own the string.
+                // Use Span::raw for dynamic content.
+                let _ = badge_text;
                 (
-                    &format!(" {} ", self.server_model.as_deref().unwrap_or("Model"))[..],
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
                     "",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::Rgb(200, 220, 200)),
                 )
             };
-            let _ = content_prefix;
-            lines.push(Line::from(Span::styled(badge.to_string(), badge_style)));
             let content = if !message.from_user && message.content.is_empty() {
                 if self.chat.streaming() { "…" } else { "" }
             } else {
                 &message.content
             };
-            for part in content.split('\n') {
-                lines.push(Line::from(Span::styled(
-                    format!("  {part}"),
-                    if message.from_user {
-                        Style::default().fg(Color::White)
-                    } else {
-                        Style::default().fg(Color::Rgb(200, 220, 200))
-                    },
-                )));
+            let first_line = if message.from_user {
+                Line::from(vec![
+                    Span::styled(format!("{badge} "), badge_style),
+                    Span::styled(
+                        content.lines().next().unwrap_or("").to_string(),
+                        content_style,
+                    ),
+                ])
+            } else {
+                let model_name = self.server_model.as_deref().unwrap_or("Model");
+                let short = if model_name.len() > 16 {
+                    &model_name[..14]
+                } else {
+                    model_name
+                };
+                Line::from(vec![
+                    Span::styled(
+                        format!("[{short}] "),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        content.lines().next().unwrap_or("").to_string(),
+                        content_style,
+                    ),
+                ])
+            };
+            lines.push(first_line);
+            // Additional lines (indented to align after badge).
+            for part in content.lines().skip(1) {
+                lines.push(Line::from(Span::styled(format!("  {part}"), content_style)));
             }
             lines.push(Line::raw(""));
         }
         if let Some(error) = &self.chat.error {
             lines.push(Line::from(vec![
-                Span::styled(" ✗ ", Style::default().fg(Color::White).bg(Color::Red)),
-                Span::raw(" "),
+                Span::styled("✗ ", Style::default().fg(Color::Red)),
                 Span::styled(error.clone(), Style::default().fg(Color::Red)),
             ]));
         }
@@ -447,15 +484,8 @@ impl App {
             Span::styled(at, Style::default().bg(Color::Cyan).fg(Color::Black)),
             Span::raw(after),
         ]);
-        frame.render_widget(
-            Paragraph::new(line).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
-                    .title(" Message — Enter sends "),
-            ),
-            area,
-        );
+        // Single-line inline input — no bordered block.
+        frame.render_widget(Paragraph::new(line), area);
     }
 }
 

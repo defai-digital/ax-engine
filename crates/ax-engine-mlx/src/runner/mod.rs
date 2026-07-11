@@ -74,6 +74,7 @@ use ax_engine_core::{
     RequestMultimodalInputs, RunnerInput, RunnerOutput, StopReason, upsert_route_decision,
 };
 
+use crate::batched_decode_certification::load_batched_decode_certification;
 use crate::batched_decode_session::{
     BatchedDecodeCapabilities, BatchedDecodeSession, batched_decode_allow_uncertified,
     batched_decode_enabled, batched_decode_sampling_enabled,
@@ -4257,13 +4258,14 @@ impl MlxRunner {
         let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
         let has_mtp =
             weights.mtp.is_some() || weights.glm_mtp.is_some() || gemma4_assistant_mtp.is_some();
+        let batched_decode_certification = load_batched_decode_certification(artifacts);
         let batched_decode_capabilities = BatchedDecodeCapabilities::from_loaded_model(
-            cfg.model_family.as_str(),
             has_mtp,
             cfg.diffusion.is_some(),
             kv_compression.mode != ax_engine_core::KvCompressionMode::Disabled,
             &kv_layer_windows,
             &weights.layers,
+            batched_decode_certification,
         );
         let allow_uncertified_batched_decode = batched_decode_allow_uncertified();
         let batched_decode_model_eligible =
@@ -4680,6 +4682,7 @@ impl ExecutionRunner for MlxRunner {
         // forward; every other item — and the whole thing when the flag is off
         // or the model is ineligible — stays byte-for-byte on the per-item path.
         let mut batched_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut batched_forward_rows = 0usize;
         let batched_enabled = batched_decode_enabled();
         let decode_candidate_count = input
             .execution_batch
@@ -4795,6 +4798,7 @@ impl ExecutionRunner for MlxRunner {
                     &input.request_contexts,
                 );
                 request_updates.extend(updates);
+                batched_forward_rows = group.len();
                 batched_idx = group.into_iter().collect();
             }
         }
@@ -4802,6 +4806,12 @@ impl ExecutionRunner for MlxRunner {
             route_metadata.crossover_decisions.push((
                 "ax_mlx_batched_decode_rows".into(),
                 batched_idx.len() as u32,
+            ));
+        }
+        if batched_forward_rows > 0 {
+            route_metadata.crossover_decisions.push((
+                "ax_mlx_batched_decode_forward_rows".into(),
+                batched_forward_rows as u32,
             ));
         }
 

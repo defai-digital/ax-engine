@@ -1,8 +1,6 @@
-//! Models wizard: Step 1 family -> Step 2 precision -> Step 3 options (MTP,
-//! only when available) -> Step 4 confirm.  Nothing is downloaded until the
-//! confirm step is accepted; the destination defaults to the shared HF cache
-//! and is only surfaced there (as a changeable field) instead of being a
-//! mandatory directory-browsing stage.
+//! Models wizard: split-panel layout with family list on the left and
+//! precision/options/confirm on the right.  The left panel is always visible
+//! so the user never loses context when navigating between wizard steps.
 
 use std::path::PathBuf;
 
@@ -16,7 +14,7 @@ use ratatui::widgets::{Block, Borders, ListItem, Paragraph, Wrap};
 use crate::tui::catalog::{self, RamFit};
 use crate::tui::jobs::{DownloadMode, DownloadTask};
 use crate::tui::widgets::{self, DirectoryPicker};
-use crate::tui::{App, Modal, PendingDownload, Screen, WizardStage};
+use crate::tui::{App, Modal, PendingDownload, Screen, WizardStage, theme};
 
 impl App {
     // -- wizard input -----------------------------------------------------------
@@ -143,13 +141,11 @@ impl App {
                 self.on_key_models(KeyCode::Enter);
             }
             WizardStage::Options => {
-                // Row 0 = Yes (with MTP), Row 1 = No (base only).
                 if idx == 0 {
                     self.mtp_idx = 0;
                 } else if idx == 1 {
                     self.mtp_idx = 1;
                 }
-                // Clicking an option selects it and advances to Confirm.
                 self.on_key_models(KeyCode::Enter);
             }
             _ => {}
@@ -314,10 +310,7 @@ impl App {
         self.screen = Screen::Downloads;
     }
 
-    /// Remove an installed variant's HF-cache directory.  `models rm` refuses
-    /// cache paths by design, so the TUI owns this deletion — it only ever
-    /// targets the `models--org--name` directory it derived itself, after the
-    /// typed confirmation in the modal.
+    /// Remove an installed variant's HF-cache directory.
     pub(crate) fn delete_installed_variant(&mut self, family_idx: usize, variant_idx: usize) {
         let Some(variant) = self
             .families
@@ -356,18 +349,62 @@ impl App {
         steps
     }
 
+    /// Split-panel layout: left panel (40%) is the family list, right panel
+    /// (60%) shows precision/options/confirm depending on the wizard stage.
     pub(crate) fn draw_models(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-        self.draw_step_header(frame, chunks[0]);
+        let panels = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(area);
+
+        // Left panel: family list (always visible).
+        let left_active = self.stage == WizardStage::Families;
+        self.draw_families_panel(frame, panels[0], left_active);
+
+        // Right panel: step header + content.
+        let right = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(panels[1]);
+        self.draw_step_header(frame, right[0]);
         match self.stage {
-            WizardStage::Families => self.draw_families(frame, chunks[1]),
-            WizardStage::Precision => self.draw_precision(frame, chunks[1]),
-            WizardStage::Options => self.draw_options(frame, chunks[1]),
-            WizardStage::Confirm => self.draw_confirm(frame, chunks[1]),
+            WizardStage::Families => {
+                // Show a helpful hint when no family is selected yet.
+                self.draw_right_hint(frame, right[1]);
+            }
+            WizardStage::Precision => self.draw_precision(frame, right[1]),
+            WizardStage::Options => self.draw_options(frame, right[1]),
+            WizardStage::Confirm => self.draw_confirm(frame, right[1]),
         }
     }
 
-    /// `Step 2 of 4 — Model › Precision › Options › Confirm` header line.
+    fn draw_right_hint(&self, frame: &mut Frame, area: Rect) {
+        let family = &self.families[self.family_idx];
+        let lines = vec![
+            Line::raw(""),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("{}", family.key),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" selected"),
+            ]),
+            Line::raw(""),
+            Line::from(Span::styled(
+                "  Press Enter or → to choose a precision.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title(" Details "),
+                )
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+    }
+
+    /// Compact step header: `Step 2 of 4 — Model › Precision › Options › Confirm`
     fn draw_step_header(&self, frame: &mut Frame, area: Rect) {
         self.step_header_rect.set(area);
         let steps = self.wizard_steps();
@@ -376,7 +413,7 @@ impl App {
             .position(|(_, stage)| *stage == self.stage)
             .unwrap_or(0);
         let mut spans = vec![Span::styled(
-            format!("Step {} of {} — ", current + 1, steps.len()),
+            format!(" Step {} of {} — ", current + 1, steps.len()),
             Style::default().fg(Color::DarkGray),
         )];
         for (index, (label, _)) in steps.iter().enumerate() {
@@ -396,7 +433,7 @@ impl App {
             };
             spans.push(Span::styled(*label, style));
         }
-        spans.push(Span::raw("   "));
+        // Selection breadcrumb.
         let mut selection = Vec::new();
         if self.stage != WizardStage::Families {
             selection.push(self.families[self.family_idx].key.clone());
@@ -415,6 +452,7 @@ impl App {
             });
         }
         if !selection.is_empty() {
+            spans.push(Span::raw("   "));
             spans.push(Span::styled(
                 selection.join(" · "),
                 Style::default().fg(Color::Gray),
@@ -423,7 +461,8 @@ impl App {
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
-    fn draw_families(&self, frame: &mut Frame, area: Rect) {
+    /// Family list panel — always visible on the left.
+    fn draw_families_panel(&self, frame: &mut Frame, area: Rect, active: bool) {
         let indices = self.filtered_family_indices();
         let rows: Vec<ListItem> = indices
             .iter()
@@ -431,34 +470,27 @@ impl App {
                 let family = &self.families[i];
                 let installed = family.installed_count();
                 let status = if installed == family.variants.len() {
-                    Span::styled("installed", Style::default().fg(Color::Green))
+                    Span::styled("✓all", Style::default().fg(Color::Green))
                 } else if installed > 0 {
                     Span::styled(
-                        format!("{installed}/{} installed", family.variants.len()),
+                        format!("{installed}/{}", family.variants.len()),
                         Style::default().fg(Color::Green),
                     )
                 } else {
                     Span::styled("--", Style::default().fg(Color::DarkGray))
                 };
                 let mtp = if family.has_mtp() {
-                    Span::styled("  ⚡MTP", Style::default().fg(Color::Magenta))
+                    Span::styled(" ⚡", Style::default().fg(theme::FEATURE))
                 } else {
                     Span::raw("")
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{:<16}", family.key),
+                        format!("{:<12}", family.key),
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!("{:<29}", family.quant_summary()),
-                        Style::default().fg(Color::Gray),
-                    ),
-                    Span::styled(
-                        format!(
-                            "from {:<12}",
-                            catalog::format_approx_bytes(family.min_size_estimate())
-                        ),
+                        format!("{:<18}", family.quant_summary()),
                         Style::default().fg(Color::Gray),
                     ),
                     status,
@@ -479,11 +511,11 @@ impl App {
             .position(|&i| i == self.family_idx)
             .unwrap_or(0);
         let title = if self.filtering {
-            format!(" Choose a model — filter: {}_ ", self.filter)
+            format!(" Models — filter: {}_ ", self.filter)
         } else if !self.filter.is_empty() {
-            format!(" Choose a model — filter: {} (Esc clears) ", self.filter)
+            format!(" Models — filter: {} ", self.filter)
         } else {
-            " Choose a model — / to filter ".to_string()
+            " Models — / to filter ".to_string()
         };
         widgets::render_list(
             frame,
@@ -491,7 +523,7 @@ impl App {
             &title,
             rows,
             selected,
-            true,
+            active,
             &self.content_list_rect,
         );
     }
@@ -506,10 +538,10 @@ impl App {
             .map(|(i, v)| {
                 let mut precision = v.precision();
                 if i == 0 {
-                    precision.push_str("  (recommended)");
+                    precision.push_str("  ★ recommended");
                 }
                 let size = Span::styled(
-                    format!("{:<14}", catalog::format_approx_bytes(v.size_estimate())),
+                    format!("{:<12}", catalog::format_approx_bytes(v.size_estimate())),
                     Style::default().fg(Color::Gray),
                 );
                 let fit = super::home::fit_span(catalog::ram_fit(
@@ -517,18 +549,18 @@ impl App {
                     self.hardware.total_ram_bytes,
                 ));
                 let mtp = if v.mtp_alias.is_some() {
-                    Span::styled("⚡MTP  ", Style::default().fg(Color::Magenta))
+                    Span::styled("⚡MTP ", Style::default().fg(theme::FEATURE))
                 } else {
-                    Span::raw("      ")
+                    Span::raw("     ")
                 };
                 let status = if v.installed {
-                    Span::styled("installed", Style::default().fg(Color::Green))
+                    Span::styled("✓", Style::default().fg(Color::Green))
                 } else {
                     Span::styled("--", Style::default().fg(Color::DarkGray))
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{precision:<24}"),
+                        format!("{precision:<20}"),
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
                     size,
@@ -538,7 +570,7 @@ impl App {
                 ]))
             })
             .collect();
-        let title = format!(" {} — choose a precision ", family.key);
+        let title = format!(" {} — precision ", family.key);
         widgets::render_list(
             frame,
             chunks[0],
@@ -550,7 +582,7 @@ impl App {
         );
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "  Lower bits → smaller download, faster generation · higher bits → better quality",
+                "  ★ recommended · ↑↓ move · Enter select",
                 Style::default().fg(Color::DarkGray),
             ))),
             chunks[1],
@@ -586,11 +618,11 @@ impl App {
                 Span::raw(" has an optional speed-up available."),
             ]),
             Line::raw(""),
-            Line::raw("MTP (multi-token prediction) downloads a small extra package alongside"),
+            Line::raw("MTP (multi-token prediction) downloads a small extra package"),
             Line::from(format!(
-                "the weights ({extra}) and makes text generation noticeably faster.",
+                "({extra}) and makes text generation noticeably faster."
             )),
-            Line::raw("There is no quality cost — the model's answers stay the same."),
+            Line::raw("There is no quality cost."),
             Line::raw(""),
             Line::from(Span::styled(
                 "Include the speed-up?",
@@ -599,19 +631,10 @@ impl App {
             Line::raw(""),
             opt("Yes — include MTP (recommended)", yes),
             opt("No — base weights only", !yes),
-            Line::raw(""),
-            Line::from(vec![
-                Span::styled("  y", Style::default().fg(Color::Black).bg(Color::Cyan)),
-                Span::styled("/", Style::default().fg(Color::DarkGray)),
-                Span::styled("n", Style::default().fg(Color::Black).bg(Color::Cyan)),
-                Span::styled(" or ↑↓+Enter  ·  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Esc", Style::default().fg(Color::Black).bg(Color::Gray)),
-                Span::styled(" back", Style::default().fg(Color::DarkGray)),
-            ]),
         ];
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta))
+            .border_style(Style::default().fg(theme::FEATURE))
             .title(" ⚡ Optional speed-up ");
         frame.render_widget(
             Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
@@ -675,7 +698,7 @@ impl App {
             row(
                 "Speed-up",
                 if variant.mtp_alias.is_none() {
-                    "not available for this model".into()
+                    "not available".into()
                 } else if pending.with_mtp {
                     "⚡ MTP included".into()
                 } else {
@@ -701,7 +724,7 @@ impl App {
                 Span::styled("  ⚠ ", Style::default().fg(Color::Black).bg(Color::Red)),
                 Span::raw(" "),
                 Span::styled(
-                    "This model likely exceeds this machine's memory and may not serve reliably.",
+                    "This model likely exceeds this machine's memory.",
                     Style::default().fg(Color::Red),
                 ),
             ])),
@@ -709,7 +732,7 @@ impl App {
                 Span::styled("  ⚠ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
                 Span::raw(" "),
                 Span::styled(
-                    "Fits, but leaves little headroom — expect memory pressure under load.",
+                    "Fits, but leaves little headroom.",
                     Style::default().fg(Color::Yellow),
                 ),
             ])),
@@ -722,7 +745,7 @@ impl App {
                 Span::styled("  ⚠ ", Style::default().fg(Color::Black).bg(Color::Red)),
                 Span::raw(" "),
                 Span::styled(
-                    "Not enough free disk space for this download.",
+                    "Not enough free disk space.",
                     Style::default().fg(Color::Red),
                 ),
             ]));
@@ -732,23 +755,11 @@ impl App {
                 Span::styled("  ✓ ", Style::default().fg(Color::Black).bg(Color::Green)),
                 Span::raw(" "),
                 Span::styled(
-                    "Already installed — confirming re-checks the cached copy (fast).",
+                    "Already installed — re-checks the cached copy.",
                     Style::default().fg(Color::Green),
                 ),
             ]));
         }
-        lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-            Span::styled(" start download    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(" c ", Style::default().fg(Color::Black).bg(Color::Gray)),
-            Span::styled(" folder    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(" d ", Style::default().fg(Color::Black).bg(Color::Gray)),
-            Span::styled(" default    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(" Esc ", Style::default().fg(Color::Black).bg(Color::Gray)),
-            Span::styled(" back", Style::default().fg(Color::DarkGray)),
-        ]));
         frame.render_widget(
             Paragraph::new(lines)
                 .block(

@@ -56,6 +56,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/bench_mlx_inference_stack.py \
   scripts/test_bench_mlx_inference_stack.py \
+  scripts/certify_batched_decode.py \
+  scripts/test_certify_batched_decode.py \
   scripts/bench_mtp_differential.py \
   scripts/check_mtp_sidecar_provenance.py \
   scripts/prepare_qwen36_mtp_sidecar.py \
@@ -210,6 +212,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_bench_ax_only_sweep.py \
   scripts/test_bench_llama_cpp_metal_sweep.py \
   scripts/test_bench_mtp_differential.py \
+  scripts/test_certify_batched_decode.py \
   scripts/test_check_mtp_sidecar_provenance.py \
   scripts/test_prepare_qwen36_mtp_sidecar.py \
   scripts/test_prepare_mtp_sidecar.py \

@@ -139,10 +139,35 @@ compression is structurally supported, but it is not numerically certified:
 real-weight sequential-oracle probes diverge for some prompt lengths because
 MLX batched and single-row numerical paths can select different greedy tokens.
 Production routing therefore fails closed even when `AX_MLX_BATCHED_DECODE=1`.
+At model load, the runner looks for `batched-decode-certification.json` beside
+`model-manifest.json`. Evidence only certifies when it matches the
+content-addressed tensor artifact, AX and MLX versions, batched runtime contract,
+GPU architecture, numerical environment, and every required
+batch/prompt/seed/ragged oracle case. The generator also requires telemetry
+proving that each scenario actually entered the shared forward, so a
+structurally rejected model cannot certify a vacuous sequential comparison.
+Missing, failed, incomplete, or stale evidence remains on per-item decode.
+The diagnostic route is not tied to a Qwen-only allowlist: a future dense model
+that passes the existing structural gates can exercise the oracle with the
+uncertified override. It becomes production-eligible only after evidence for
+that exact model family and artifact certifies.
 Diagnostics may additionally set
 `AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED=1`; this override is not a production
-setting. Promotion requires an artifact-, quantization-, MLX-version-, prompt-,
-and fastpath-aware equivalence matrix plus KV/preemption and throughput gates.
+setting.
+
+Generate evidence with the release probe. `--install` is accepted only when the
+entire matrix passes:
+
+```bash
+cargo build -p ax-engine-mlx --release --bin batched_decode_e2e_probe
+python3 scripts/certify_batched_decode.py \
+  --model-dir /path/to/model \
+  --output .internal/benchmarks/batched-decode-certification.json \
+  --install
+```
+
+Promotion still requires KV/preemption and server-level throughput gates; the
+certificate only proves the numerical sequential-oracle contract.
 
 ### Custom Metal kernels
 

@@ -60,6 +60,18 @@ pub fn install_recoverable_error_handler() {
     });
 }
 
+/// Return the version reported by the loaded MLX runtime.
+pub fn runtime_version() -> Result<String, String> {
+    install_recoverable_error_handler();
+    let version = unsafe { ffi::ax_shim_mlx_version() };
+    if version.is_null() {
+        return Err(String::from("libmlx returned a null version string"));
+    }
+    Ok(unsafe { CStr::from_ptr(version) }
+        .to_string_lossy()
+        .into_owned())
+}
+
 /// Ensure the recording error handler is installed, *without* clearing the slot.
 ///
 /// Hot per-op call sites (the `ops`/`fast` FFI macros) use this instead of
@@ -155,6 +167,19 @@ mod tests {
             "mlx_bad failed with an unreported MLX error"
         );
         assert!(status_to_result("mlx_ok", 0).is_ok());
+    }
+
+    #[test]
+    fn runtime_version_is_available() {
+        let version = runtime_version().expect("loaded MLX should report its version");
+        let components = version.split('.').collect::<Vec<_>>();
+        assert!(components.len() >= 3, "unexpected MLX version: {version}");
+        for component in components.iter().take(3) {
+            assert!(
+                component.parse::<u64>().is_ok(),
+                "unexpected MLX version: {version}"
+            );
+        }
     }
 
     #[test]

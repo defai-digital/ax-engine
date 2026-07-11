@@ -23,7 +23,6 @@ pub const WARN: Color = Color::Yellow;
 pub const DANGER: Color = Color::Red;
 
 /// Special / featured — MTP badges, action highlights.
-#[allow(dead_code)]
 pub const FEATURE: Color = Color::Magenta;
 
 /// Muted labels, secondary text, dimmed borders.
@@ -31,6 +30,12 @@ pub const MUTED: Color = Color::DarkGray;
 
 /// Neutral secondary — values, descriptions.
 pub const DIM: Color = Color::Gray;
+
+/// Active border color for focused widgets.
+pub const BORDER_ACTIVE: Color = ACCENT;
+
+/// Inactive border color for unfocused widgets.
+pub const BORDER_INACTIVE: Color = MUTED;
 
 // ---------------------------------------------------------------------------
 // Reusable style constructors
@@ -49,15 +54,27 @@ pub fn highlight_inactive() -> Style {
     Style::default().add_modifier(Modifier::REVERSED)
 }
 
-/// A styled key chip like `[Enter]` for footer / modal hints.
-pub fn key_chip(label: &str) -> Span<'static> {
+/// Separator between key hints in footers.
+pub fn key_sep() -> Span<'static> {
+    Span::styled(" · ", Style::default().fg(MUTED))
+}
+
+/// A key hint span: bold key in white, no background chip.
+pub fn key_hint(key: &str) -> Span<'static> {
     Span::styled(
-        format!(" {label} "),
-        Style::default().fg(Color::Black).bg(ACCENT),
+        key.to_string(),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
     )
 }
 
-/// A muted key chip for secondary actions.
+/// A key hint label (the description after the key).
+pub fn key_label(label: &str) -> Span<'static> {
+    Span::styled(label.to_string(), Style::default().fg(DIM))
+}
+
+/// A muted key chip for modal secondary actions.
 pub fn key_chip_dim(label: &str) -> Span<'static> {
     Span::styled(
         format!(" {label} "),
@@ -73,23 +90,10 @@ pub fn key_chip_danger(label: &str) -> Span<'static> {
     )
 }
 
-/// Separator between key chips in footers.
-pub fn key_sep() -> Span<'static> {
-    Span::styled("  ", Style::default())
-}
-
-// ---------------------------------------------------------------------------
-// Status indicators
-// ---------------------------------------------------------------------------
-
-/// Green dot for "running" / "ready" status in sidebar badges.
-pub const OK_DOT: char = '●';
-
-/// A dot character indicating the count of running downloads.
-pub fn spinner_dot(count: usize) -> String {
-    if count == 0 {
-        String::new()
-    } else {
-        format!("({count})")
-    }
+/// A primary key chip for modal primary actions.
+pub fn key_chip(label: &str) -> Span<'static> {
+    Span::styled(
+        format!(" {label} "),
+        Style::default().fg(Color::Black).bg(ACCENT),
+    )
 }

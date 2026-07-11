@@ -65,14 +65,6 @@ impl Family {
         }
     }
 
-    /// Smallest download estimate across variants, for the family list.
-    pub fn min_size_estimate(&self) -> Option<u64> {
-        self.variants
-            .iter()
-            .filter_map(Variant::size_estimate)
-            .min()
-    }
-
     pub fn installed_count(&self) -> usize {
         self.variants.iter().filter(|v| v.installed).count()
     }

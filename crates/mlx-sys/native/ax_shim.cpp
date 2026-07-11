@@ -100,6 +100,10 @@ extern "C" int ax_shim_check_mlx_version(void) {
   } AX_CATCH
 }
 
+extern "C" const char* ax_shim_mlx_version(void) {
+  return mx::version();
+}
+
 /* ================================================================
  * Helper inline functions
  * ================================================================ */
@@ -332,6 +336,15 @@ extern "C" int mlx_device_info_get_size(size_t* val, mlx_device_info info, const
     auto it = m.find(key);
     if (it == m.end()) return 2;
     if (auto* p = std::get_if<size_t>(&it->second)) { *val = *p; return 0; }
+    return 2;
+  } AX_CATCH
+}
+extern "C" int mlx_device_info_get_string(const char** val, mlx_device_info info, const char* key) {
+  AX_TRY {
+    auto& m = diref(info);
+    auto it = m.find(key);
+    if (it == m.end()) return 2;
+    if (auto* p = std::get_if<std::string>(&it->second)) { *val = p->c_str(); return 0; }
     return 2;
   } AX_CATCH
 }

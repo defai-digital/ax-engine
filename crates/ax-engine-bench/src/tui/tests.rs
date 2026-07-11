@@ -347,21 +347,29 @@ fn quit_modal_can_be_dismissed() {
 }
 
 #[test]
-fn click_on_sidebar_switches_screen() {
+fn click_on_tab_bar_switches_screen() {
     let mut app = new_app();
-    let _ = render(&app); // records sidebar_rect
-    let rect = app.sidebar_rect.get();
-    // Inner row 1 == "Models", row 2 == "Downloads".
-    app.on_click(rect.x + 2, rect.y + 2);
+    let _ = render(&app); // records tab_hits
+    let hits = app.tab_hits.take();
+    assert!(
+        hits.len() >= 3,
+        "expected at least 3 tabs, got {}",
+        hits.len()
+    );
+    let models_rect = hits[1].0;
+    let downloads_rect = hits[2].0;
+    app.tab_hits.set(hits);
+    app.on_click(models_rect.x + 1, models_rect.y);
     assert_eq!(app.screen, Screen::Models);
-    app.on_click(rect.x + 2, rect.y + 3);
+    app.on_click(downloads_rect.x + 1, downloads_rect.y);
     assert_eq!(app.screen, Screen::Downloads);
 }
 
 #[test]
-fn status_strip_reports_server_state() {
+fn tab_bar_reports_server_state() {
     let app = new_app();
-    assert!(render(&app).contains("server stopped"));
+    // Tab bar now shows compact status: "○ stopped".
+    assert!(render(&app).contains("stopped"));
 }
 
 #[test]
@@ -396,10 +404,10 @@ fn family_list_renders_with_sizes_and_mtp_badge() {
     let mut app = new_app();
     app.screen = Screen::Models;
     let text = render(&app);
-    assert!(text.contains("Choose a model"));
+    assert!(text.contains("Models"));
     assert!(text.contains("gemma4-e2b"));
     assert!(text.contains("qwen3.6-35b"));
-    assert!(text.contains("from ~"), "family rows show a size estimate");
+    assert!(text.contains("bit"), "family rows show quant bits");
     assert!(text.contains('⚡'), "MTP badge should render");
     assert!(text.contains("Step 1 of"), "step header present");
 }
@@ -412,7 +420,7 @@ fn precision_screen_lists_quants_with_fit_badges() {
     app.on_key_models(KeyCode::Enter);
     assert_eq!(app.stage, WizardStage::Precision);
     let text = render(&app);
-    assert!(text.contains("choose a precision"));
+    assert!(text.contains("precision"));
     assert!(text.contains("4-bit"));
     assert!(text.contains("recommended"));
     assert!(text.contains("6-bit"));
@@ -579,6 +587,105 @@ fn mtp_badge_is_magenta_not_yellow() {
     assert!(
         !colors.contains(&ratatui::style::Color::Yellow),
         "MTP badge must not reuse the queued-status yellow: {colors:?}"
+    );
+}
+
+#[test]
+fn right_key_advances_through_wizard_steps() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    assert_eq!(app.stage, WizardStage::Families);
+    // Right on Families advances to Precision.
+    app.on_key_models(KeyCode::Right);
+    assert_eq!(app.stage, WizardStage::Precision);
+    // Right on Precision advances to Options (gemma4-12b has MTP).
+    app.family_idx = family_index(&app, "gemma4-12b");
+    app.precision_idx = 0;
+    app.on_key_models(KeyCode::Right);
+    assert_eq!(app.stage, WizardStage::Options);
+    // Right on Options advances to Confirm.
+    app.on_key_models(KeyCode::Right);
+    assert_eq!(app.stage, WizardStage::Confirm);
+}
+
+#[test]
+fn left_key_steps_back_through_wizard() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.family_idx = family_index(&app, "gemma4-12b");
+    app.precision_idx = 0;
+    app.stage = WizardStage::Confirm;
+    app.pending = Some(super::PendingDownload {
+        family_idx: app.family_idx,
+        precision_idx: 0,
+        with_mtp: true,
+    });
+    // Left on Confirm with MTP variant goes back to Options.
+    app.on_key_models(KeyCode::Left);
+    assert_eq!(app.stage, WizardStage::Options);
+    // Left on Options goes back to Precision.
+    app.on_key_models(KeyCode::Left);
+    assert_eq!(app.stage, WizardStage::Precision);
+    // Left on Precision goes back to Families.
+    app.on_key_models(KeyCode::Left);
+    assert_eq!(app.stage, WizardStage::Families);
+    // Left on Families (with empty filter) goes Home.
+    app.on_key_models(KeyCode::Left);
+    assert_eq!(app.screen, Screen::Home);
+}
+
+#[test]
+fn right_key_on_confirm_triggers_download() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.family_idx = family_index(&app, "gemma4-e2b");
+    app.precision_idx = 0;
+    app.begin_confirm(false);
+    assert_eq!(app.stage, WizardStage::Confirm);
+    // Right on Confirm confirms the download (same as Enter).
+    app.on_key_models(KeyCode::Right);
+    assert_eq!(app.screen, Screen::Downloads);
+    assert_eq!(app.downloads.len(), 1);
+}
+
+#[test]
+fn click_on_options_selects_and_advances() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.family_idx = family_index(&app, "gemma4-12b");
+    app.precision_idx = 0;
+    app.stage = WizardStage::Options;
+    // Click row 0 (Yes with MTP).
+    app.on_click_models(0);
+    assert_eq!(app.mtp_idx, 0);
+    assert_eq!(app.stage, WizardStage::Confirm);
+    assert!(app.pending.is_some_and(|p| p.with_mtp));
+
+    // Reset and click row 1 (No MTP).
+    app.stage = WizardStage::Options;
+    app.pending = None;
+    app.on_click_models(1);
+    assert_eq!(app.mtp_idx, 1);
+    assert_eq!(app.stage, WizardStage::Confirm);
+    assert!(app.pending.is_some_and(|p| !p.with_mtp));
+}
+
+#[test]
+fn click_on_precision_row_selects_and_advances() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.family_idx = family_index(&app, "gemma4-e2b");
+    app.stage = WizardStage::Precision;
+    let _ = render(&app);
+    let rect = app.content_list_rect.get();
+    assert!(rect.height >= 2);
+    // Click the first precision row (4-bit).
+    app.on_click(rect.x + 2, rect.y + 1);
+    assert_eq!(app.precision_idx, 0);
+    // Should leave Precision: either Confirm (not installed) or a modal (installed).
+    assert!(
+        app.stage != WizardStage::Precision || app.modal.is_some(),
+        "clicking a precision row must advance or open a modal"
     );
 }
 
@@ -836,5 +943,6 @@ fn chat_transcript_renders_when_server_ready() {
     assert!(text.contains("What is AX?"));
     assert!(text.contains("gemma4-e2b"));
     assert!(text.contains("A local inference engine."));
-    assert!(text.contains("Message — Enter sends"));
+    // Input is now inline (no bordered block title).
+    assert!(text.contains(">"), "input prompt should render");
 }

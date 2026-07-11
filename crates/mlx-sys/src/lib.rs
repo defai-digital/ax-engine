@@ -49,7 +49,7 @@ pub mod ffi {
 
 pub use array::{MlxArray, MlxDtype};
 pub use closure::{MlxClosure, MlxVectorArray};
-pub use error::{install_recoverable_error_handler, take_last_error};
+pub use error::{install_recoverable_error_handler, runtime_version, take_last_error};
 pub use fast::{
     ScaledDotProductAttentionMask, rms_norm, rope, rope_dynamic, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask,
@@ -78,6 +78,6 @@ pub use ops::{
 pub use stream::MlxStream;
 pub use transforms::{
     async_eval, clear_cache, enable_compile, eval, eval_first_u32, get_cache_memory,
-    get_peak_memory, max_recommended_working_set_size, reset_peak_memory, set_cache_limit,
-    set_memory_limit, set_wired_limit, try_eval,
+    get_peak_memory, gpu_device_architecture, max_recommended_working_set_size, reset_peak_memory,
+    set_cache_limit, set_memory_limit, set_wired_limit, try_eval,
 };

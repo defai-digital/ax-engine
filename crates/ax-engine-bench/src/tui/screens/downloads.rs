@@ -57,23 +57,21 @@ impl App {
     }
 
     pub(crate) fn draw_downloads(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::vertical([
-            Constraint::Min(6),
-            Constraint::Length(7),
-            Constraint::Min(5),
-        ])
-        .split(area);
+        // Horizontal split: left panel = download queue list, right panel = details + log.
+        let panels = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+
+        // Left panel: download queue.
         let rows: Vec<ListItem> = if self.downloads.is_empty() {
             vec![
                 ListItem::new(Line::raw("")),
                 ListItem::new(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(" ↓ ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-                    Span::raw(" No downloads yet"),
+                    Span::styled("No downloads yet", Style::default().fg(Color::Yellow)),
                 ])),
                 ListItem::new(Line::raw("")),
                 ListItem::new(Line::from(Span::styled(
-                    "  Pick a model on the Models screen (2) to get started.",
+                    "  Pick a model on the Models tab to get started.",
                     Style::default().fg(Color::DarkGray),
                 ))),
             ]
@@ -135,7 +133,7 @@ impl App {
         };
         widgets::render_list(
             frame,
-            chunks[0],
+            panels[0],
             " Downloads ",
             rows,
             self.download_idx,
@@ -143,10 +141,12 @@ impl App {
             &self.content_list_rect,
         );
 
-        self.draw_download_details(frame, chunks[1]);
+        // Right panel: details on top, log on bottom.
+        let right = Layout::vertical([Constraint::Length(8), Constraint::Min(3)]).split(panels[1]);
+        self.draw_download_details(frame, right[0]);
         widgets::draw_log(
             frame,
-            chunks[2],
+            right[1],
             self.downloads
                 .get(self.download_idx)
                 .and_then(|task| task.job.as_ref())
