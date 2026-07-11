@@ -2,6 +2,8 @@
 //! (watched bytes vs. the static catalog total), phase labels from
 //! `--progress-json`, speed sparkline, and the child process log.
 
+use std::process::Command;
+
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -41,12 +43,15 @@ impl App {
                     });
                 }
             }
+            KeyCode::Char('r') => self.retry_selected_download(),
+            KeyCode::Char('o') => self.reveal_selected_download(),
+            KeyCode::Backspace | KeyCode::Delete => self.remove_selected_if_done(),
+            KeyCode::Char('d') => self.clear_finished_downloads(),
             KeyCode::Char('x') | KeyCode::Char('c') => {
                 let Some(task) = self.downloads.get_mut(self.download_idx) else {
                     return;
                 };
                 if task.is_running() {
-                    // Confirmed: multi-GB progress is at stake.
                     self.modal = Some(Modal::CancelDownload {
                         download_idx: self.download_idx,
                     });
@@ -56,8 +61,85 @@ impl App {
                     self.toast_warn(format!("{label} removed from queue"));
                 }
             }
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => self.screen = Screen::Home,
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
+                if !self.go_back_screen() {
+                    self.screen = Screen::Home;
+                    self.focus_tabs = false;
+                    self.previous_screen = None;
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn retry_selected_download(&mut self) {
+        let Some(task) = self.downloads.get_mut(self.download_idx) else {
+            return;
+        };
+        if !(task.is_failed() || task.cancelled) {
+            self.toast_warn("only failed or cancelled downloads can be retried");
+            return;
+        }
+        let label = task.label.clone();
+        task.requeue();
+        self.start_next_queued_download();
+        self.toast(format!("{label} re-queued"));
+    }
+
+    fn remove_selected_if_done(&mut self) {
+        let Some(task) = self.downloads.get(self.download_idx) else {
+            return;
+        };
+        if task.is_running() || task.is_queued() {
+            self.toast_warn("cancel the download first (x)");
+            return;
+        }
+        if !task.is_done() {
+            return;
+        }
+        let label = task.label.clone();
+        self.downloads.remove(self.download_idx);
+        self.clamp_list_indices();
+        self.toast(format!("{label} removed from list"));
+    }
+
+    fn clear_finished_downloads(&mut self) {
+        let before = self.downloads.len();
+        // Keep only active work; drop ready / failed / cancelled rows.
+        self.downloads.retain(|t| t.is_running() || t.is_queued());
+        let removed = before.saturating_sub(self.downloads.len());
+        self.clamp_list_indices();
+        if removed == 0 {
+            self.toast("no finished items to clear");
+        } else {
+            self.toast_success(format!(
+                "cleared {removed} finished item{}",
+                if removed == 1 { "" } else { "s" }
+            ));
+        }
+    }
+
+    fn reveal_selected_download(&mut self) {
+        let Some(task) = self.downloads.get(self.download_idx) else {
+            return;
+        };
+        let path = task
+            .output_path()
+            .or_else(|| Some(task.watch_dir.clone()))
+            .filter(|p| p.exists());
+        let Some(path) = path else {
+            self.toast_warn("no local path to open yet");
+            return;
+        };
+        let opened = Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map(|mut child| child.wait().map(|s| s.success()).unwrap_or(false))
+            .unwrap_or(false);
+        if opened {
+            self.toast_success(format!("opened {}", path.display()));
+        } else {
+            self.toast_error("could not open path (open unavailable)");
         }
     }
 
@@ -69,7 +151,7 @@ impl App {
         let banner = if selected_ready {
             Some((
                 ToastLevel::Success,
-                "Ready — press Enter to serve this model".to_string(),
+                "Ready — click or Enter to serve this model".to_string(),
             ))
         } else if let Some(task) = self.downloads.iter().find(|t| t.is_running()) {
             let pct = task
@@ -80,19 +162,28 @@ impl App {
                 ToastLevel::Info,
                 format!("Downloading {} · {pct}", task.label),
             ))
+        } else if self
+            .downloads
+            .get(self.download_idx)
+            .is_some_and(|t| t.is_failed())
+        {
+            Some((
+                ToastLevel::Error,
+                "Failed — press r to retry · ⌫ remove · d clear finished".into(),
+            ))
         } else {
             None
         };
 
         let body_area = if let Some((kind, text)) = &banner {
             let split = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+            self.banner_rect.set(split[0]);
             widgets::draw_banner(frame, split[0], *kind, text);
             split[1]
         } else {
             area
         };
 
-        // Stack details under the list when the terminal is narrow.
         let narrow = body_area.width < 100;
         if narrow {
             let panels = Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)])
@@ -210,7 +301,7 @@ impl App {
         widgets::render_list(
             frame,
             area,
-            " Queue ",
+            " Queue · r retry · o open · ⌫ remove · d clear ",
             rows,
             self.download_idx,
             true,

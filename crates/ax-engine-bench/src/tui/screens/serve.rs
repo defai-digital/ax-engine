@@ -35,9 +35,14 @@ impl App {
                 }
                 KeyCode::Tab => self.serve_focus = ServeFocus::Host,
                 KeyCode::Enter => {
-                    let pairs = installed_variants(&self.families);
-                    if let Some(&(fi, vi)) = pairs.get(self.serve_idx) {
-                        self.serve_installed(fi, vi);
+                    if self.server_ready {
+                        self.navigate_to(Screen::Chat);
+                    } else {
+                        let pairs = installed_variants(&self.families);
+                        if let Some(&(fi, vi)) = pairs.get(self.serve_idx) {
+                            self.auto_chat_after_serve = true;
+                            self.serve_installed(fi, vi);
+                        }
                     }
                 }
                 KeyCode::Char('x') => {
@@ -46,8 +51,14 @@ impl App {
                     }
                 }
                 KeyCode::Char('c') => self.copy_server_url(),
-                KeyCode::Char('t') => self.screen = Screen::Chat,
-                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => self.screen = Screen::Home,
+                KeyCode::Char('t') => self.navigate_to(Screen::Chat),
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
+                    if !self.go_back_screen() {
+                        self.screen = Screen::Home;
+                        self.focus_tabs = false;
+                        self.previous_screen = None;
+                    }
+                }
                 _ => {}
             },
             ServeFocus::Host => self.edit_field(code, true),
@@ -105,7 +116,7 @@ impl App {
         let banner = if self.server_ready {
             Some((
                 ToastLevel::Success,
-                "Running — press t Chat · c copy URL · x stop".to_string(),
+                "Running — click or Enter to open Chat · c copy · x stop".to_string(),
             ))
         } else if self.server_running() {
             Some((
@@ -118,40 +129,52 @@ impl App {
 
         let body = if let Some((kind, text)) = &banner {
             let split = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+            self.banner_rect.set(split[0]);
             widgets::draw_banner(frame, split[0], *kind, text);
             split[1]
         } else {
             area
         };
 
-        // Live server: status first, compact model list, then log.
+        // Live server: status console first; model list is secondary.
         // Idle: model list first, then config + log.
-        let panels = if self.server_ready || self.server_running() {
-            Layout::vertical([
-                Constraint::Length(7),
-                Constraint::Min(3),
-                Constraint::Min(3),
+        if self.server_ready {
+            let panels = Layout::vertical([
+                Constraint::Length(8),
+                Constraint::Min(4),
+                Constraint::Length(4),
             ])
-            .split(body)
-        } else {
-            Layout::vertical([
-                Constraint::Min(3),
-                Constraint::Length(7),
-                Constraint::Min(3),
-            ])
-            .split(body)
-        };
-
-        if self.server_ready || self.server_running() {
+            .split(body);
             self.draw_server_panel(frame, panels[0]);
-            self.draw_serve_model_list(frame, panels[1]);
             widgets::draw_log(
                 frame,
-                panels[2],
+                panels[1],
                 self.server.as_ref().map(|job| job.log.as_slice()),
                 " Log ",
             );
+            self.draw_serve_model_list(frame, panels[2]);
+        } else if self.server_running() {
+            let panels = Layout::vertical([
+                Constraint::Length(7),
+                Constraint::Min(4),
+                Constraint::Length(5),
+            ])
+            .split(body);
+            self.draw_server_panel(frame, panels[0]);
+            widgets::draw_log(
+                frame,
+                panels[1],
+                self.server.as_ref().map(|job| job.log.as_slice()),
+                " Log ",
+            );
+            self.draw_serve_model_list(frame, panels[2]);
         } else {
+            let panels = Layout::vertical([
+                Constraint::Min(3),
+                Constraint::Length(7),
+                Constraint::Min(3),
+            ])
+            .split(body);
             self.draw_serve_model_list(frame, panels[0]);
             self.draw_server_panel(frame, panels[1]);
             widgets::draw_log(
@@ -216,10 +239,14 @@ impl App {
         widgets::render_list(
             frame,
             area,
-            " Models — Enter to serve ",
+            if self.server_ready {
+                " Switch model "
+            } else {
+                " Models — Enter to serve "
+            },
             rows,
             self.serve_idx,
-            list_active,
+            list_active && !self.server_ready,
             &self.content_list_rect,
         );
     }
@@ -236,8 +263,8 @@ impl App {
                     Style::default().fg(theme::OK).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(" t chat ", theme::cta()),
-                Span::styled("  c copy", theme::label()),
+                Span::styled(" Enter chat ", theme::cta()),
+                Span::styled("  c copy · x stop", theme::label()),
             ]),
             (Some(_), Some(job)) if job.done.is_none() => Line::from(vec![
                 Span::styled(format!(" {} ", theme::icon::QUEUED), theme::warn()),

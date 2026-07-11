@@ -353,17 +353,73 @@ fn serve_while_running_surfaces_toast_instead_of_silent_no_op() {
 }
 
 #[test]
+fn quick_start_enables_auto_chain_flags() {
+    let mut app = new_app();
+    app.quick_start_from_home();
+    if app.modal.is_some() {
+        // Recommended model already installed on this machine.
+        assert!(
+            app.auto_chat_after_serve,
+            "installed quick start should auto-open Chat after serve"
+        );
+    } else {
+        assert!(
+            app.auto_serve_after_download && app.auto_chat_after_serve,
+            "guided quick start should arm download→serve→chat"
+        );
+        assert_eq!(app.screen, Screen::Models);
+    }
+}
+
+#[test]
+fn failed_download_can_be_retried() {
+    let mut app = new_app();
+    app.screen = Screen::Downloads;
+    app.downloads
+        .push(test_task(Some(Job::failed("network error".into()))));
+    assert!(app.downloads[0].is_failed());
+    app.on_key(key(KeyCode::Char('r')));
+    // requeue + start_next may immediately spawn a job.
+    assert!(!app.downloads[0].is_failed(), "retry clears failed status");
+    assert!(
+        app.downloads[0].is_queued()
+            || app.downloads[0].is_running()
+            || app.downloads[0].job.is_some(),
+        "retry re-arms the download"
+    );
+}
+
+#[test]
+fn esc_backs_one_screen_level() {
+    let mut app = new_app();
+    app.navigate_to(Screen::Models);
+    app.navigate_to(Screen::Downloads);
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Models);
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Home);
+}
+
+#[test]
 fn chat_hint_screen_never_traps() {
     let mut app = new_app();
     app.screen = Screen::Chat;
     // No ready server: plain characters are ignored, not captured as input.
     app.on_key(key(KeyCode::Char('z')));
     assert!(app.chat.input.is_empty());
-    // Number keys switch screens, Left goes Home.
+    // Number keys switch screens; Esc/Left step back one level.
     app.on_key(key(KeyCode::Char('4')));
     assert_eq!(app.screen, Screen::Serve);
     app.on_key(key(KeyCode::Char('5')));
+    assert_eq!(app.screen, Screen::Chat);
     app.on_key(key(KeyCode::Left));
+    assert_eq!(
+        app.screen,
+        Screen::Serve,
+        "back one level restores prior screen"
+    );
+    // Stack is empty after the pop; further Esc lands on Home.
+    app.on_key(key(KeyCode::Esc));
     assert_eq!(app.screen, Screen::Home);
 }
 

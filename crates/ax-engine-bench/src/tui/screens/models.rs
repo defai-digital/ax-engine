@@ -49,10 +49,12 @@ impl App {
                 }
                 KeyCode::Char('/') => self.filtering = true,
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
-                    if self.filter.is_empty() {
-                        self.screen = Screen::Home;
-                    } else {
+                    if !self.filter.is_empty() {
                         self.filter.clear();
+                    } else if !self.go_back_screen() {
+                        self.screen = Screen::Home;
+                        self.focus_tabs = false;
+                        self.previous_screen = None;
                     }
                 }
                 _ => {}

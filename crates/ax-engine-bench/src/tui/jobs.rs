@@ -274,6 +274,27 @@ impl DownloadTask {
         self.job.as_ref().is_some_and(|job| job.done == Some(0))
     }
 
+    pub fn is_failed(&self) -> bool {
+        !self.cancelled
+            && self
+                .job
+                .as_ref()
+                .and_then(|job| job.done)
+                .is_some_and(|code| code != 0)
+    }
+
+    /// Finished, failed, or cancelled — safe to remove from the queue list.
+    pub fn is_done(&self) -> bool {
+        self.cancelled || self.job.as_ref().is_some_and(|job| job.done.is_some())
+    }
+
+    /// Reset a failed/cancelled task so it can be spawned again.
+    pub fn requeue(&mut self) {
+        self.cancelled = false;
+        self.job = None;
+        self.phase = None;
+    }
+
     /// Fraction complete (0..=1) from watched bytes vs. the static total.
     pub fn progress_ratio(&self) -> Option<f64> {
         let total = self.total_bytes?;

@@ -181,7 +181,11 @@ impl App {
                 key.code,
                 KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace
             ) {
-                self.screen = Screen::Home;
+                if !self.go_back_screen() {
+                    self.screen = Screen::Home;
+                    self.focus_tabs = false;
+                    self.previous_screen = None;
+                }
             }
             return;
         }
@@ -190,8 +194,10 @@ impl App {
             if self.chat.streaming() {
                 self.chat.cancel();
                 self.toast_warn("reply cancelled");
-            } else {
+            } else if !self.go_back_screen() {
                 self.screen = Screen::Home;
+                self.focus_tabs = false;
+                self.previous_screen = None;
             }
             return;
         }

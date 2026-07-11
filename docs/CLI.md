@@ -68,11 +68,13 @@ background queue with a progress bar, speed, ETA, and phase labels (driven by
 `--progress-json`); Serve launches `ax-engine-server` and shows the URL with a
 copyable curl example; Chat streams replies from the running server over
 `/v1/chat/completions` (Enter sends, Ctrl+J / Shift+Enter inserts a newline).
-When a download finishes the TUI jumps to Downloads with the ready item
-selected; when the server binds it toasts a Chat handoff. `Esc` steps back
-(never quits), and quitting with `q` asks for confirmation while downloads or
-the server are running. Installed sizes can be deleted from the wizard with
-`x` (typed confirmation).
+Quick start enables an auto-chain (download → serve → chat). Otherwise, when a
+download finishes the TUI jumps to Downloads with the ready item selected;
+clicking the green banner or pressing Enter serves it. When the server binds,
+guided flows open Chat automatically. Downloads support retry (`r`), reveal in
+Finder (`o`), remove finished (`⌫`), and clear finished (`d`). `Esc` steps back
+one level (never quits); `q` quits (asks first while jobs are running).
+Installed sizes can be deleted from the wizard with `x` (typed confirmation).
 
 The older `ax-engine ui-downloader` and `ax-engine download --interactive`
 prompts remain available for compatibility. TTY-gated non-interactive behavior

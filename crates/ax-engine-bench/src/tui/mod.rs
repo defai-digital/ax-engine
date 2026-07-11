@@ -228,11 +228,22 @@ struct App {
     /// Up from the first content row enters this mode; Down/Enter leaves it.
     pub focus_tabs: bool,
 
+    /// Previous screen for Esc back-one-level (not a full history stack).
+    pub previous_screen: Option<Screen>,
+    /// After a guided download finishes, start the server automatically.
+    pub auto_serve_after_download: bool,
+    /// After the server binds, jump to Chat automatically.
+    pub auto_chat_after_serve: bool,
+
     // Click-target rects recorded during the last draw (immediate-mode hit-testing).
     tab_hits: Cell<Vec<(Rect, usize)>>,
     pub content_list_rect: Cell<Rect>,
     /// Rect of the wizard step header row (for breadcrumb clicks).
     pub step_header_rect: Cell<Rect>,
+    /// Journey banner hit target (Home / Downloads / Serve).
+    pub banner_rect: Cell<Rect>,
+    /// Home first-run hero hit target.
+    pub hero_rect: Cell<Rect>,
 }
 
 impl App {
@@ -270,9 +281,14 @@ impl App {
             server_model: None,
             chat: ChatState::new(),
             focus_tabs: false,
+            previous_screen: None,
+            auto_serve_after_download: false,
+            auto_chat_after_serve: false,
             tab_hits: Cell::new(Vec::new()),
             content_list_rect: Cell::new(Rect::default()),
             step_header_rect: Cell::new(Rect::default()),
+            banner_rect: Cell::new(Rect::default()),
+            hero_rect: Cell::new(Rect::default()),
         }
     }
 
@@ -327,13 +343,21 @@ impl App {
             }
         }
         for (idx, label) in finished {
-            self.toast_success(format!("{label} ready — Enter to serve"));
             self.reload_families();
-            // Guided handoff: jump to Downloads and select the ready item,
-            // unless the user is mid-chat.
-            if self.screen != Screen::Chat {
-                self.screen = Screen::Downloads;
-                self.download_idx = idx;
+            self.download_idx = idx;
+            if self.auto_serve_after_download {
+                self.auto_serve_after_download = false;
+                self.toast_success(format!("{label} ready — starting server…"));
+                if self.screen != Screen::Chat {
+                    self.navigate_to(Screen::Serve);
+                }
+                self.start_server_for_download(idx);
+            } else {
+                self.toast_success(format!("{label} ready — Enter to serve"));
+                // Guided handoff: jump to Downloads unless the user is mid-chat.
+                if self.screen != Screen::Chat {
+                    self.navigate_to(Screen::Downloads);
+                }
             }
         }
         self.start_next_queued_download();
@@ -343,7 +367,13 @@ impl App {
         let was_ready = self.server_ready;
         self.update_server_ready();
         if self.server_ready && !was_ready {
-            self.toast_success("Server ready — press t Chat");
+            if self.auto_chat_after_serve {
+                self.auto_chat_after_serve = false;
+                self.navigate_to(Screen::Chat);
+                self.toast_success("Server ready — type a message");
+            } else {
+                self.toast_success("Server ready — press t Chat");
+            }
         }
         self.chat.tick();
         widgets::expire_toasts(&mut self.toasts);
@@ -351,7 +381,7 @@ impl App {
     }
 
     /// Keep selection indices in range after installs/deletes/queue changes.
-    fn clamp_list_indices(&mut self) {
+    pub(crate) fn clamp_list_indices(&mut self) {
         let n_dl = self.downloads.len();
         if n_dl == 0 {
             self.download_idx = 0;
@@ -457,11 +487,35 @@ impl App {
         }
     }
 
-    /// Switch screens and drop tab-bar focus back into content (unless staying
-    /// on the bar after Left/Right while already focused).
+    /// Switch screens (tab / digit jump), remembering the prior screen for Esc.
     fn goto_screen(&mut self, screen: Screen) {
+        self.navigate_to(screen);
+    }
+
+    /// Navigate to a screen, pushing the current one for Esc back-one-level.
+    pub(crate) fn navigate_to(&mut self, screen: Screen) {
+        if self.screen != screen {
+            self.previous_screen = Some(self.screen);
+        }
         self.screen = screen;
         self.focus_tabs = false;
+    }
+
+    /// Pop the previous screen if any. Returns true when a pop happened.
+    pub(crate) fn go_back_screen(&mut self) -> bool {
+        if let Some(prev) = self.previous_screen.take() {
+            self.screen = prev;
+            self.focus_tabs = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Enable download → serve → chat auto-handoff for guided flows.
+    pub(crate) fn enable_auto_chain(&mut self) {
+        self.auto_serve_after_download = true;
+        self.auto_chat_after_serve = true;
     }
 
     /// Move keyboard focus onto the top tab bar (1 Home · 2 Models · …).
@@ -471,6 +525,70 @@ impl App {
         self.filtering = false;
         if matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port) {
             self.serve_focus = ServeFocus::List;
+        }
+    }
+
+    /// Activate whatever the journey banner is advertising (click / Enter).
+    pub(crate) fn activate_journey_banner(&mut self) {
+        if self.server_ready {
+            self.navigate_to(Screen::Chat);
+            return;
+        }
+        if self.server_running() {
+            self.navigate_to(Screen::Serve);
+            return;
+        }
+        if let Some(idx) = self.downloads.iter().position(|t| t.is_ready()) {
+            self.download_idx = idx;
+            self.navigate_to(Screen::Downloads);
+            self.modal = Some(Modal::ServeReady { download_idx: idx });
+            return;
+        }
+        if self
+            .downloads
+            .iter()
+            .any(|t| t.is_running() || t.is_queued())
+        {
+            self.navigate_to(Screen::Downloads);
+            return;
+        }
+        if installed_variants(&self.families).is_empty() {
+            self.home_idx = 0;
+            self.navigate_to(Screen::Home);
+            // Re-enter Home quick start without recursion through banners.
+            self.quick_start_from_home();
+            return;
+        }
+        self.navigate_to(Screen::Serve);
+    }
+
+    /// Quick start entry used by Home and the journey banner.
+    pub(crate) fn quick_start_from_home(&mut self) {
+        let Some((fi, vi)) = self.quick_start_target() else {
+            self.stage = WizardStage::Families;
+            self.navigate_to(Screen::Models);
+            return;
+        };
+        self.family_idx = fi;
+        self.precision_idx = vi;
+        let installed = self.families[fi].variants[vi].installed;
+        let has_mtp = self.families[fi].variants[vi].mtp_alias.is_some();
+        if installed && !has_mtp {
+            self.auto_chat_after_serve = true;
+            self.modal = Some(Modal::ServeInstalled {
+                family_idx: fi,
+                variant_idx: vi,
+            });
+            return;
+        }
+        // Guided chain: after confirm, download → serve → chat.
+        self.enable_auto_chain();
+        self.navigate_to(Screen::Models);
+        if has_mtp {
+            self.mtp_idx = 0;
+            self.stage = WizardStage::Options;
+        } else {
+            self.begin_confirm(false);
         }
     }
 
@@ -546,8 +664,9 @@ impl App {
             },
             Modal::ServeReady { download_idx } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
+                    self.auto_chat_after_serve = true;
                     self.start_server_for_download(download_idx);
-                    self.screen = Screen::Serve;
+                    self.navigate_to(Screen::Serve);
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
@@ -557,8 +676,9 @@ impl App {
                 variant_idx,
             } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
+                    self.auto_chat_after_serve = true;
                     self.serve_installed(family_idx, variant_idx);
-                    self.screen = Screen::Serve;
+                    self.navigate_to(Screen::Serve);
                     self.stage = WizardStage::Families;
                     self.pending = None;
                 }
@@ -709,6 +829,29 @@ impl App {
         }
         // Clicking content leaves tab-bar focus.
         self.focus_tabs = false;
+        // Journey banner click → activate next step.
+        let banner = self.banner_rect.get();
+        if banner.height > 0
+            && col >= banner.x
+            && col < banner.x + banner.width
+            && row >= banner.y
+            && row < banner.y + banner.height
+        {
+            self.activate_journey_banner();
+            return;
+        }
+        // Home hero click → Quick start.
+        let hero = self.hero_rect.get();
+        if hero.height > 0
+            && col >= hero.x
+            && col < hero.x + hero.width
+            && row >= hero.y
+            && row < hero.y + hero.height
+        {
+            self.home_idx = 0;
+            self.quick_start_from_home();
+            return;
+        }
         // Step header click (breadcrumb navigation) on the Models screen.
         if self.screen == Screen::Models {
             let hdr = self.step_header_rect.get();
@@ -955,6 +1098,8 @@ impl App {
     pub fn draw(&self, frame: &mut Frame) {
         // Cleared each frame; the active content list re-records it.
         self.content_list_rect.set(Rect::default());
+        self.banner_rect.set(Rect::default());
+        self.hero_rect.set(Rect::default());
         let outer = Layout::vertical([
             Constraint::Length(2), // tab bar + separator
             Constraint::Min(0),    // content
@@ -1169,11 +1314,30 @@ impl App {
                     key_hint("Enter"),
                     key_label(" serve"),
                     key_sep(),
+                    key_hint("r"),
+                    key_label(" retry"),
+                    key_sep(),
+                    key_hint("o"),
+                    key_label(" open"),
+                    key_sep(),
                     key_hint("x"),
                     key_label(" cancel"),
                     key_sep(),
                     key_hint("Esc"),
-                    key_label(" home"),
+                    key_label(" back"),
+                ],
+                Screen::Serve if self.server_ready => vec![
+                    key_hint("Enter"),
+                    key_label(" chat"),
+                    key_sep(),
+                    key_hint("c"),
+                    key_label(" copy"),
+                    key_sep(),
+                    key_hint("x"),
+                    key_label(" stop"),
+                    key_sep(),
+                    key_hint("Esc"),
+                    key_label(" back"),
                 ],
                 Screen::Serve => vec![
                     key_hint("Enter"),

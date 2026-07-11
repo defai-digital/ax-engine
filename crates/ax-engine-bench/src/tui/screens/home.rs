@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 use crate::tui::catalog::{self, RamFit, installed_variants};
 use crate::tui::theme;
 use crate::tui::widgets::{self, ToastLevel};
-use crate::tui::{App, Modal, Screen, WizardStage};
+use crate::tui::{App, Screen, WizardStage};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HomeAction {
@@ -98,22 +98,19 @@ impl App {
         if self.server_ready {
             return Some((
                 ToastLevel::Success,
-                "Server ready — press 5 Chat (or Open chat) to try the model".into(),
+                "Server ready — click or Enter here to open Chat".into(),
             ));
         }
         if self.server_running() {
             return Some((
                 ToastLevel::Warning,
-                "Server starting — large models can take a minute…".into(),
+                "Server starting — click to open Serve log…".into(),
             ));
         }
         if let Some(task) = self.downloads.iter().find(|t| t.is_ready()) {
             return Some((
                 ToastLevel::Success,
-                format!(
-                    "{} ready — press 3 Downloads, then Enter to serve",
-                    task.label
-                ),
+                format!("{} ready — click or Enter here to serve", task.label),
             ));
         }
         if let Some(task) = self.downloads.iter().find(|t| t.is_running()) {
@@ -123,13 +120,13 @@ impl App {
                 .unwrap_or_default();
             return Some((
                 ToastLevel::Info,
-                format!("Downloading {}{pct} — press 3 for progress", task.label),
+                format!("Downloading {}{pct} — click to watch progress", task.label),
             ));
         }
         if installed_variants(&self.families).is_empty() {
             return Some((
                 ToastLevel::Info,
-                "Get started — Enter on Quick start to download a model that fits this Mac".into(),
+                "Get started — click or Enter here for Quick start".into(),
             ));
         }
         None
@@ -153,14 +150,16 @@ impl App {
                 self.home_idx = (self.home_idx + 1).min(actions.len().saturating_sub(1));
             }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                // If a journey banner is showing and Quick start is selected,
+                // prefer the banner action when it's the natural next step.
                 match actions.get(self.home_idx).map(|(_, action)| *action) {
-                    Some(HomeAction::QuickStart) => self.quick_start(),
+                    Some(HomeAction::QuickStart) => self.quick_start_from_home(),
                     Some(HomeAction::Browse) => {
                         self.stage = WizardStage::Families;
-                        self.screen = Screen::Models;
+                        self.navigate_to(Screen::Models);
                     }
-                    Some(HomeAction::Serve) => self.screen = Screen::Serve,
-                    Some(HomeAction::Chat) => self.screen = Screen::Chat,
+                    Some(HomeAction::Serve) => self.navigate_to(Screen::Serve),
+                    Some(HomeAction::Chat) => self.navigate_to(Screen::Chat),
                     Some(HomeAction::Help) => self.show_help = true,
                     None => {}
                 }
@@ -168,32 +167,6 @@ impl App {
             // One level back from Home content → tab bar (never quit).
             KeyCode::Esc => self.focus_tab_bar(),
             _ => {}
-        }
-    }
-
-    /// Jump the wizard straight to the recommended model.
-    fn quick_start(&mut self) {
-        let Some((fi, vi)) = self.quick_start_target() else {
-            self.stage = WizardStage::Families;
-            self.screen = Screen::Models;
-            return;
-        };
-        self.family_idx = fi;
-        self.precision_idx = vi;
-        let variant = &self.families[fi].variants[vi];
-        if variant.installed && variant.mtp_alias.is_none() {
-            self.modal = Some(Modal::ServeInstalled {
-                family_idx: fi,
-                variant_idx: vi,
-            });
-            return;
-        }
-        self.screen = Screen::Models;
-        if variant.mtp_alias.is_some() {
-            self.mtp_idx = 0;
-            self.stage = WizardStage::Options;
-        } else {
-            self.begin_confirm(false);
         }
     }
 
@@ -209,6 +182,7 @@ impl App {
             Layout::vertical([Constraint::Length(0), Constraint::Min(0)]).split(area)
         };
         if let Some((kind, text)) = self.journey_next_step() {
+            self.banner_rect.set(top[0]);
             widgets::draw_banner(frame, top[0], kind, &text);
         }
 
@@ -269,6 +243,7 @@ impl App {
                 String::new(),
             ),
         };
+        self.hero_rect.set(area);
         let selected = self.home_idx == 0;
         let block = Block::default()
             .borders(Borders::ALL)
@@ -277,7 +252,10 @@ impl App {
             } else {
                 theme::BORDER_INACTIVE
             }))
-            .title(Span::styled(" Start here ", theme::title()));
+            .title(Span::styled(
+                " Start here · click or Enter ",
+                theme::title(),
+            ));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let lines = vec![
