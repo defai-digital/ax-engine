@@ -99,7 +99,6 @@ MODEL_PROFILES = (
             "glm-4.7-flash-4bit",
             "glm-4-7-flash-4bit",
         ),
-        mtp_target="glm-4.7-flash",
     ),
     ModelProfile(
         label="qwen3.5-9b",
@@ -1299,7 +1298,6 @@ def _download_mtp_helper_env() -> dict[str, str]:
         "AX_ENGINE_DOWNLOAD_HELPER": "download_model.py",
         "AX_ENGINE_PREPARE_MTP_SIDECAR_HELPER": "prepare_mtp_sidecar.py",
         "AX_ENGINE_PREPARE_GEMMA4_ASSISTANT_MTP_HELPER": "prepare_gemma4_assistant_mtp.py",
-        "AX_ENGINE_PREPARE_GLM_MTP_SIDECAR_HELPER": "prepare_glm_mtp_sidecar.py",
         "AX_ENGINE_CHECK_MTP_SIDECAR_HELPER": "check_mtp_sidecar_provenance.py",
     }
     env: dict[str, str] = {}

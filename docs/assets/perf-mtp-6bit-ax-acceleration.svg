@@ -1,21 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="890" viewBox="0 0 1080 890" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="776" viewBox="0 0 1080 776" role="img" aria-labelledby="title desc">
 <title id="title">AX MTP decode (2026-07-11): MTP off vs MTP on</title>
 <desc id="desc">Horizontal grouped bar chart comparing AX direct decode throughput with MTP off against AX MTP decode throughput with MTP on for each supported 6-bit AX MTP package and prompt suite. The winning throughput label in each row is red.</desc>
-<rect width="1080" height="890" fill="#ffffff"/>
+<rect width="1080" height="776" fill="#ffffff"/>
 <text x="72" y="32" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20" font-weight="700" fill="#111827">AX MTP decode (2026-07-11): MTP off vs MTP on</text>
 <text x="72" y="54" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">Each row compares the same prepared 6-bit package and prompt suite: AX direct has MTP off; AX MTP has MTP on.</text>
 <text x="1008" y="54" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#374151">Decode throughput, tok/s</text>
-<line x1="210.0" y1="68" x2="210.0" y2="788.0" stroke="#9ca3af" stroke-width="1.4"/>
-<text x="210.0" y="806.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">0</text>
-<line x1="409.5" y1="68" x2="409.5" y2="788.0" stroke="#d1d5db" stroke-width="1.2"/>
-<text x="409.5" y="806.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">50</text>
-<line x1="609.0" y1="68" x2="609.0" y2="788.0" stroke="#d1d5db" stroke-width="1.2"/>
-<text x="609.0" y="806.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">100</text>
-<line x1="808.5" y1="68" x2="808.5" y2="788.0" stroke="#d1d5db" stroke-width="1.2"/>
-<text x="808.5" y="806.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">150</text>
-<line x1="1008.0" y1="68" x2="1008.0" y2="788.0" stroke="#d1d5db" stroke-width="1.2"/>
-<text x="1008.0" y="806.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">200</text>
-<text x="609.0" y="828.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">Higher is better</text>
+<line x1="210.0" y1="68" x2="210.0" y2="674.0" stroke="#9ca3af" stroke-width="1.4"/>
+<text x="210.0" y="692.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">0</text>
+<line x1="409.5" y1="68" x2="409.5" y2="674.0" stroke="#d1d5db" stroke-width="1.2"/>
+<text x="409.5" y="692.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">50</text>
+<line x1="609.0" y1="68" x2="609.0" y2="674.0" stroke="#d1d5db" stroke-width="1.2"/>
+<text x="609.0" y="692.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">100</text>
+<line x1="808.5" y1="68" x2="808.5" y2="674.0" stroke="#d1d5db" stroke-width="1.2"/>
+<text x="808.5" y="692.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">150</text>
+<line x1="1008.0" y1="68" x2="1008.0" y2="674.0" stroke="#d1d5db" stroke-width="1.2"/>
+<text x="1008.0" y="692.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">200</text>
+<text x="609.0" y="714.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">Higher is better</text>
 <rect x="72" y="70" width="12" height="12" rx="2" fill="#2eaf5f"/>
 <text x="90" y="80" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTP off / AX direct</text>
 <rect x="232" y="70" width="12" height="12" rx="2" fill="#c084fc"/>
@@ -99,22 +99,6 @@
 <rect x="210" y="624.0" width="172.2" height="10" rx="2" fill="#c084fc"/>
 <text x="292.4" y="619.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">19.4</text>
 <text x="387.2" y="632.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">43.1</text>
-<line x1="72" y1="649.0" x2="1008" y2="649.0" stroke="#eef2f7" stroke-width="1"/>
-<text x="72" y="670.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="670.0" font-weight="700">GLM-4.7 Flash</tspan><tspan x="72" y="684.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="661.0" width="350.3" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="674.0" width="350.0" height="10" rx="2" fill="#c084fc"/>
-<text x="565.3" y="669.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">87.8</text>
-<text x="565.0" y="682.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#7e22ce">87.7</text>
-<text x="72" y="702.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="702.0" font-weight="700">GLM-4.7 Flash</tspan><tspan x="72" y="716.0" font-size="10" fill="#4b5563">long_code</tspan></text>
-<rect x="210" y="693.0" width="346.2" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="706.0" width="342.4" height="10" rx="2" fill="#c084fc"/>
-<text x="561.2" y="701.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">86.8</text>
-<text x="557.4" y="714.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#7e22ce">85.8</text>
-<text x="72" y="734.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="734.0" font-weight="700">GLM-4.7 Flash</tspan><tspan x="72" y="748.0" font-size="10" fill="#4b5563">python_modules</tspan></text>
-<rect x="210" y="725.0" width="349.4" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="738.0" width="348.7" height="10" rx="2" fill="#c084fc"/>
-<text x="564.4" y="733.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">87.6</text>
-<text x="563.7" y="746.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#7e22ce">87.4</text>
-<text x="72" y="848.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Runtime: AX Engine v6.8.2 (2026-07-11); MLX 0.32.0 / mlx-lm 0.31.3.</text>
-<text x="72" y="864.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: benchmarks/results/speculative/mtp-6bit/2026-07-11-ax-only-approximate-refresh / summary.json. Pure MTP; no MTP+n-gram stacking.</text>
+<text x="72" y="734.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Runtime: AX Engine v6.8.2 (2026-07-11); MLX 0.32.0 / mlx-lm 0.31.3.</text>
+<text x="72" y="750.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: benchmarks/results/speculative/mtp-6bit/2026-07-11-ax-only-approximate-refresh / summary.json. Pure MTP; no MTP+n-gram stacking.</text>
 </svg>

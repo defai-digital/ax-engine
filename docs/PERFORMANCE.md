@@ -196,8 +196,8 @@ should not be read as a complete inference-serving proof. In particular:
 ## MTP Mode
 
 The current MTP publication contract has two separate views. The AX Engine-only
-6-bit package acceleration view covers Qwen fused sidecars, Gemma assistant
-drafters, and GLM built-in MTP sidecars. The cross-engine peer comparison is
+6-bit package acceleration view covers Qwen fused sidecars and Gemma assistant
+drafters. The cross-engine peer comparison is
 Qwen-only: Qwen3.6 27B and Qwen3.6 35B-A3B, each at 4-bit and 6-bit, with
 promoted rows running MTP only. Same-package direct rows may be kept as
 diagnostic denominators for AX MTP acceleration, but they are not headline peer
@@ -218,8 +218,8 @@ Rules:
   MTP matrix.
 - Historical MTP+n-gram artifacts remain diagnostic only. Do not use them for
   current README/PERFORMANCE claims.
-- Do not include Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only, GGUF, Gemma, or GLM
-  variants in the Qwen3.6 peer MTP benchmark matrix. Gemma and GLM stay in the
+- Do not include Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only, GGUF, or Gemma
+  variants in the Qwen3.6 peer MTP benchmark matrix. Gemma stays in the
   separate AX Engine-only 6-bit MTP package view.
 - Direct rows may be reported only as same-artifact denominators for
   `AX MTP / AX direct` acceleration, not as a cross-model speed leaderboard.

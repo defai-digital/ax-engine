@@ -108,7 +108,6 @@ ax-engine download-mtp qwen3.6-35b-a3b
 ax-engine download-mtp gemma-4-12b
 ax-engine download-mtp gemma-4-26b
 ax-engine download-mtp gemma-4-31b
-ax-engine download-mtp glm-4.7-flash
 ```
 
 By default, generated MTP packages are written as synthetic Hugging Face Hub
@@ -131,16 +130,13 @@ shared Hugging Face cache.
 | `gemma-4-12b` | `mlx-community/gemma-4-12B-it-6bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-6bit` |
 | `gemma-4-26b` | `mlx-community/gemma-4-26b-a4b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-26b-a4b-it-assistant` |
 | `gemma-4-31b` | `mlx-community/gemma-4-31b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-31b-it-assistant` |
-| `glm-4.7-flash` | `mlx-community/GLM-4.7-Flash-6bit` | GLM built-in MTP layer extracted from `zai-org/GLM-4.7-Flash` into `glm_mtp.safetensors` |
 
 For Qwen3.6, `download-mtp` wraps the standard download plus `convert-mtplx`
 provenance flow. For Gemma 4, it downloads the target and assistant and runs
 the Gemma assistant-MTP packager. The 4-bit Gemma 4 12B target is the simple
 Quick Start path and a peer-comparison benchmark lane; the recommended
-practical AX Engine MTP benchmark lane remains the six 6-bit targets. For
-GLM-4.7 Flash, it uses the built-in MTP tensors from the upstream
-`zai-org/GLM-4.7-Flash` checkpoint because the MLX 6-bit package does not
-expose the MTP layer tensors directly. Qwen3-Coder-Next remains a direct-decode
+practical AX Engine MTP benchmark lane remains the six 6-bit targets.
+Qwen3-Coder-Next remains a direct-decode
 target; it is not a `download-mtp` target because its MLX base artifact does
 not ship its own MTP head.
 

@@ -32,9 +32,6 @@ enum MtpDownloadKind {
         assistant_model_id: &'static str,
         max_depth: u32,
     },
-    GlmSidecar {
-        mtp_source: &'static str,
-    },
     /// Fallback for models where no MTP sidecar or assistant packager is available.
     #[allow(dead_code)]
     DirectOnly {
@@ -51,8 +48,8 @@ struct MtpDownloadTarget {
     /// Size of the base `repo_id` download plus the extra MTP package
     /// (assistant repo or the source shards holding `mtp.*` tensors), both
     /// summed from the Hugging Face API on 2026-07-10. `None` when the extra
-    /// source is gated or has no statically knowable size (e.g. GLM's sidecar
-    /// discovery). Estimates for previews only.
+    /// source is gated or has no statically knowable size. Estimates for
+    /// previews only.
     approx_base_bytes: Option<u64>,
     approx_extra_bytes: Option<u64>,
 }
@@ -313,22 +310,6 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             max_depth: 1,
         },
         approx_base_bytes: Some(26_119_973_860),
-        approx_extra_bytes: None,
-    },
-    MtpDownloadTarget {
-        label: "glm-4.7-flash",
-        repo_id: "mlx-community/GLM-4.7-Flash-6bit",
-        aliases: &[
-            "glm-4.7-flash",
-            "glm-4.7-flash-6bit",
-            "glm4.7-flash",
-            "glm47-flash",
-            "glm-4-7-flash",
-        ],
-        kind: MtpDownloadKind::GlmSidecar {
-            mtp_source: "zai-org/GLM-4.7-Flash",
-        },
-        approx_base_bytes: Some(24_357_127_217),
         approx_extra_bytes: None,
     },
 ];
@@ -1701,9 +1682,6 @@ fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
             target.kind,
             download_summary,
         ),
-        MtpDownloadKind::GlmSidecar { mtp_source } => {
-            run_download_glm_mtp_sidecar(target, &args, &base_dir, mtp_source, download_summary)
-        }
         MtpDownloadKind::DirectOnly { reason } => {
             if args.json {
                 print_json(&json!({
@@ -2046,77 +2024,6 @@ fn run_download_gemma_assistant_mtp(
     Ok(0)
 }
 
-fn run_download_glm_mtp_sidecar(
-    target: MtpDownloadTarget,
-    args: &DownloadMtpArgs,
-    base_dir: &str,
-    mtp_source: &str,
-    target_download: Value,
-) -> Result<u8, String> {
-    let helper = find_helper(
-        "AX_ENGINE_PREPARE_GLM_MTP_SIDECAR_HELPER",
-        "ax-engine-prepare-glm-mtp-sidecar.py",
-        "prepare_glm_mtp_sidecar.py",
-    )?;
-    let depth = args.mtp_depth_max.as_deref().unwrap_or("1");
-    let mut prepare_cmd = Command::new(python());
-    prepare_cmd
-        .arg(&helper)
-        .args(["--hf-repo", mtp_source])
-        .args(["--base", base_dir])
-        .args(["--mtp-depth-max", depth])
-        .args(["--group-size", &args.group_size]);
-    if let Some(output) = &args.output {
-        prepare_cmd.args(["--output", output]);
-    }
-    if let Some(quantize) = &args.quantize {
-        prepare_cmd.args(["--quantize", quantize]);
-    }
-    let prepare_output = prepare_cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|err| format!("failed to run prepare_glm_mtp_sidecar helper: {err}"))?;
-    let prepare_stdout = String::from_utf8_lossy(&prepare_output.stdout).into_owned();
-    let prepare_stderr = String::from_utf8_lossy(&prepare_output.stderr).into_owned();
-    if !args.json {
-        print!("{prepare_stdout}");
-        eprint!("{prepare_stderr}");
-    }
-    if !prepare_output.status.success() {
-        if args.json {
-            eprint!("{prepare_stderr}");
-        }
-        return Ok(prepare_output
-            .status
-            .code()
-            .unwrap_or(1)
-            .try_into()
-            .unwrap_or(1));
-    }
-    let output_dir =
-        parse_output_dir(&prepare_stdout, args.output.as_deref()).ok_or_else(|| {
-            "prepare_glm_mtp_sidecar.py succeeded but output dir could not be determined"
-                .to_string()
-        })?;
-
-    if args.json {
-        print_json(&json!({
-            "schema_version": "ax.download_mtp.v1",
-            "command": "download-mtp",
-            "status": "ready",
-            "kind": "glm_sidecar_mtp",
-            "base_model": &args.model,
-            "repo_id": target.repo_id,
-            "mtp_source": mtp_source,
-            "mtp_depth_max": depth.parse::<u32>().unwrap_or(1),
-            "output_dir": output_dir,
-            "download": target_download,
-        }));
-    }
-    Ok(0)
-}
-
 fn assistant_download_usable(code: u8, summary: &Value) -> bool {
     let status = summary.get("status").and_then(Value::as_str);
     if code == 0 && status == Some("ready") {
@@ -2375,7 +2282,6 @@ fn format_download_mtp_targets() -> String {
         let kind = match target.kind {
             MtpDownloadKind::QwenSidecar { .. } => "qwen-sidecar-mtp",
             MtpDownloadKind::GemmaAssistant { .. } => "gemma-assistant-mtp",
-            MtpDownloadKind::GlmSidecar { .. } => "glm-sidecar-mtp",
             MtpDownloadKind::DirectOnly { .. } => "direct-only",
         };
         lines.push(format!(
@@ -2736,13 +2642,6 @@ mod tests {
                     target_model_id: "gemma-4-31b-it",
                     assistant_model_id: "gemma-4-31b-it-assistant",
                     max_depth: 1,
-                },
-            ),
-            (
-                "glm-4.7-flash",
-                "mlx-community/GLM-4.7-Flash-6bit",
-                MtpDownloadKind::GlmSidecar {
-                    mtp_source: "zai-org/GLM-4.7-Flash",
                 },
             ),
         ];

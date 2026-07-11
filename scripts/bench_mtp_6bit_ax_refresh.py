@@ -101,15 +101,6 @@ SUPPORTED_TARGETS = (
         mtp_depth=2,
         assistant_mtp=True,
     ),
-    Target(
-        key="glm-4.7-flash",
-        label="GLM-4.7 Flash",
-        mode="GLM built-in MTP sidecar",
-        model_dir=Path(
-            "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--GLM-4.7-Flash-6bit-GlmMTP/snapshots/v1"
-        ),
-        mtp_depth=1,
-    ),
 )
 TARGETS_BY_KEY = {target.key: target for target in SUPPORTED_TARGETS}
 
@@ -502,7 +493,7 @@ def update_readme(readme: Path, summary: dict[str, Any]) -> None:
 
     old_link_start = text.index("Pure-MTP verification:")
     old_link_end = text.index(
-        "Detailed MTP notes, including the GLM-4.7 Flash smoke validation session",
+        "Detailed MTP notes and package validation sessions",
         old_link_start,
     )
     run_dir = summary["run_dir"]

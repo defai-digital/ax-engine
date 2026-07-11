@@ -19,9 +19,6 @@ This artifact summarizes AX MTP acceleration as `AX MTP decode tok/s / AX direct
 | `gemma-4-31b` | `flappy` | 18.7 tok/s | 46.2 tok/s | 2.47x | 173.1 tok/s | 2013 ms | 99.8% |
 | `gemma-4-31b` | `long_code` | 18.8 tok/s | 45.6 tok/s | 2.42x | 196.5 tok/s | 4165 ms | 99.9% |
 | `gemma-4-31b` | `python_modules_long` | 19.4 tok/s | 43.1 tok/s | 2.22x | 173.1 tok/s | 2140 ms | 96.5% |
-| `glm-4.7-flash` | `flappy` | 87.8 tok/s | 87.7 tok/s | 1.00x | 676.9 tok/s | 410 ms | 0.0% |
-| `glm-4.7-flash` | `long_code` | 86.8 tok/s | 85.8 tok/s | 0.99x | 995.3 tok/s | 685 ms | 0.0% |
-| `glm-4.7-flash` | `python_modules_long` | 87.6 tok/s | 87.4 tok/s | 1.00x | 684.7 tok/s | 498 ms | 0.0% |
 
 This is an AX Engine only artifact. Peer engines are intentionally not run here; each row compares the prepared AX 6-bit `download-mtp` package against the same package with MTP disabled.
 

@@ -7,8 +7,7 @@
       "qwen3.6-35b-a3b",
       "gemma-4-12b",
       "gemma-4-26b",
-      "gemma-4-31b",
-      "glm-4.7-flash"
+      "gemma-4-31b"
     ],
     "suites": [
       "flappy",
@@ -459,90 +458,6 @@
         "ax_mtp_ngram_attempt_steps": 0
       },
       "artifact": "benchmarks/results/speculative/mtp-6bit/2026-07-11-ax-only-approximate-refresh/gemma-4-31b/python_modules_long/ax_mtp.json",
-      "mtplx": "N/A",
-      "lightning_mlx": "N/A"
-    },
-    {
-      "model_id": "glm-4.7-flash",
-      "model": "GLM-4.7 Flash",
-      "suite_id": "flappy",
-      "suite": "flappy",
-      "mode": "GLM built-in MTP sidecar",
-      "depth": 1,
-      "ax_direct_decode_tok_s": 87.8035521289236,
-      "ax_mtp_decode_tok_s": 87.7085496264775,
-      "ax_mtp_speedup_x": 0.9989180107166211,
-      "ax_mtp_prefill_tok_s": 676.8964653336553,
-      "ax_mtp_ttft_ms": 409.98,
-      "ax_mtp_accept_rate_pct": 0.0,
-      "ax_mtp_ngram_telemetry": {
-        "ax_ngram_accepted_tokens": 0,
-        "ax_ngram_draft_tokens": 0,
-        "ax_ngram_rejected_tokens": 0,
-        "ax_mtp_ngram_accepted_tokens": 0,
-        "ax_mtp_ngram_proposed_tokens": 0,
-        "ax_mtp_ngram_submitted_tokens": 0,
-        "ax_mtp_ngram_submitted_accepted_tokens": 0,
-        "ax_mtp_ngram_hit_steps": 0,
-        "ax_mtp_ngram_attempt_steps": 0
-      },
-      "artifact": "benchmarks/results/speculative/mtp-6bit/2026-07-11-ax-only-approximate-refresh/glm-4.7-flash/flappy/ax_mtp.json",
-      "mtplx": "N/A",
-      "lightning_mlx": "N/A"
-    },
-    {
-      "model_id": "glm-4.7-flash",
-      "model": "GLM-4.7 Flash",
-      "suite_id": "long_code",
-      "suite": "long_code",
-      "mode": "GLM built-in MTP sidecar",
-      "depth": 1,
-      "ax_direct_decode_tok_s": 86.77894529931103,
-      "ax_mtp_decode_tok_s": 85.82419869706037,
-      "ax_mtp_speedup_x": 0.9889979464608883,
-      "ax_mtp_prefill_tok_s": 995.3258250779859,
-      "ax_mtp_ttft_ms": 685.1435,
-      "ax_mtp_accept_rate_pct": 0.0,
-      "ax_mtp_ngram_telemetry": {
-        "ax_ngram_accepted_tokens": 0,
-        "ax_ngram_draft_tokens": 0,
-        "ax_ngram_rejected_tokens": 0,
-        "ax_mtp_ngram_accepted_tokens": 0,
-        "ax_mtp_ngram_proposed_tokens": 0,
-        "ax_mtp_ngram_submitted_tokens": 0,
-        "ax_mtp_ngram_submitted_accepted_tokens": 0,
-        "ax_mtp_ngram_hit_steps": 0,
-        "ax_mtp_ngram_attempt_steps": 0
-      },
-      "artifact": "benchmarks/results/speculative/mtp-6bit/2026-07-11-ax-only-approximate-refresh/glm-4.7-flash/long_code/ax_mtp.json",
-      "mtplx": "N/A",
-      "lightning_mlx": "N/A"
-    },
-    {
-      "model_id": "glm-4.7-flash",
-      "model": "GLM-4.7 Flash",
-      "suite_id": "python_modules_long",
-      "suite": "python_modules_long",
-      "mode": "GLM built-in MTP sidecar",
-      "depth": 1,
-      "ax_direct_decode_tok_s": 87.57443169886166,
-      "ax_mtp_decode_tok_s": 87.39642213031226,
-      "ax_mtp_speedup_x": 0.9979673340140931,
-      "ax_mtp_prefill_tok_s": 684.7403308038771,
-      "ax_mtp_ttft_ms": 497.91200000000003,
-      "ax_mtp_accept_rate_pct": 0.0,
-      "ax_mtp_ngram_telemetry": {
-        "ax_ngram_accepted_tokens": 0,
-        "ax_ngram_draft_tokens": 0,
-        "ax_ngram_rejected_tokens": 0,
-        "ax_mtp_ngram_accepted_tokens": 0,
-        "ax_mtp_ngram_proposed_tokens": 0,
-        "ax_mtp_ngram_submitted_tokens": 0,
-        "ax_mtp_ngram_submitted_accepted_tokens": 0,
-        "ax_mtp_ngram_hit_steps": 0,
-        "ax_mtp_ngram_attempt_steps": 0
-      },
-      "artifact": "benchmarks/results/speculative/mtp-6bit/2026-07-11-ax-only-approximate-refresh/glm-4.7-flash/python_modules_long/ax_mtp.json",
       "mtplx": "N/A",
       "lightning_mlx": "N/A"
     }

@@ -197,7 +197,6 @@ Common acquisition paths:
 | Gemma 4 12B quick-start MTP | `ax-engine download-mtp gemma-4-12b-4bit` | Gemma assistant-MTP |
 | Qwen3.6 27B / 35B-A3B MTP | `ax-engine download-mtp qwen3.6-27b-6bit` or `qwen3.6-35b-a3b` | Qwen fused MTP sidecar |
 | Gemma 4 12B / 26B / 31B 6-bit MTP | `ax-engine download-mtp gemma-4-12b`, `gemma-4-26b`, or `gemma-4-31b` | Gemma assistant-MTP |
-| GLM-4.7 Flash MTP | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP sidecar |
 | Raw Hugging Face checkpoints | Convert with `mlx_lm.convert`, then run `ax-engine-bench generate-manifest` | Direct only after sanitization |
 
 Direct-support model families:
@@ -241,7 +240,7 @@ one explicit runtime contract:
   use AX-owned model graphs, tokenizer/KV handling, scheduling, and runtime
   telemetry.
 - **Prepare acceleration-ready packages.** `download-mtp` packages Qwen fused
-  sidecars, Gemma assistant drafters, and GLM built-in MTP sidecars; n-gram
+  sidecars and Gemma assistant drafters; n-gram
   acceleration remains a separate direct-runtime policy.
 - **Keep long sessions efficient.** Prefix reuse restores validated physical
   MLX KV snapshots so chat and agent loops avoid repeatedly pre-filling the
@@ -306,11 +305,11 @@ share a same-artifact denominator.
 
 ### Session Mode: MTP Generation
 
-AX Engine supports three MTP packaging contracts in the repo-owned runtime: Qwen
-fused sidecars, Gemma assistant drafters, and GLM built-in MTP sidecars. The
+AX Engine supports two MTP packaging contracts in the repo-owned runtime: Qwen
+fused sidecars and Gemma assistant drafters. The
 cross-engine peer comparison is Qwen-only — Qwen3.6 27B and Qwen3.6 35B-A3B,
 each at 4-bit and 6-bit, MTP-only rows — because MTPLX and lightning-mlx ship
-comparable Qwen MTP packages but no comparable Gemma or GLM one. Gemma 4
+comparable Qwen MTP packages but no comparable Gemma one. Gemma 4
 assistant-MTP is published separately below as an AX-only depth result, since no
 peer engine ships the same package. Same-package direct baselines may be kept as
 AX diagnostics, but they are not headline MTP matrix rows.
@@ -329,7 +328,6 @@ separately in [Getting a Model](#getting-a-model).
 | `gemma-4-12b` | `mlx-community/gemma-4-12B-it-6bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-6bit` |
 | `gemma-4-26b` | `mlx-community/gemma-4-26b-a4b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-26b-a4b-it-assistant` |
 | `gemma-4-31b` | `mlx-community/gemma-4-31b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-31b-it-assistant` |
-| `glm-4.7-flash` | `mlx-community/GLM-4.7-Flash-6bit` | GLM built-in MTP layer extracted from `zai-org/GLM-4.7-Flash` |
 
 The practical AX Engine benchmark lane is the 6-bit `download-mtp` set. The
 `gemma-4-12b-4bit` target is kept as the Quick Start path, and Qwen 4-bit
@@ -350,7 +348,6 @@ Other supported targets use the same shape:
 
 ```bash
 ax-engine download-mtp qwen3.6-27b-6bit
-ax-engine download-mtp glm-4.7-flash
 ```
 
 The command prints the prepared package path and a matching
@@ -373,7 +370,6 @@ See [Supported Models](docs/SUPPORTED-MODELS.md#mtp-downloads) and the
 | `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |
 | `gemma-4-26b` | `ax-engine download-mtp gemma-4-26b` | Gemma assistant-MTP |
 | `gemma-4-31b` | `ax-engine download-mtp gemma-4-31b` | Gemma assistant-MTP |
-| `glm-4.7-flash` | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP |
 
 Rules for current MTP benchmark artifacts:
 
@@ -383,7 +379,7 @@ Rules for current MTP benchmark artifacts:
   the plan with their support reason.
 - Do not run or promote `mtp-ngram` rows.
 - Keep the Qwen3.6 peer matrix free of Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only,
-  GGUF, and GLM variants; Gemma 4 assistant-MTP is published as a separate
+  GGUF variants; Gemma 4 assistant-MTP is published as a separate
   AX-only subsection, not mixed into the cross-engine matrix.
 - Direct rows are same-artifact denominators for `AX MTP / AX direct` decode
   acceleration, not a cross-model speed leaderboard.
@@ -431,16 +427,15 @@ sampled decode
 (`temperature=0.6`, `top_p=0.95`, `top_k=20`), 1000 generated tokens, 5
 measured repetitions, 2 warmups, and 15 s cooldown. The run uses the local
 MLX 0.32.0 / mlx-lm 0.31.3 stack and the repo-owned AX MTP routes for Qwen
-fused sidecars, Gemma assistant drafters, and GLM built-in MTP. `AX MTP runner
+fused sidecars and Gemma assistant drafters. `AX MTP runner
 TTFT` is server runner time for the prefill/first-token boundary; it is not
 end-to-end client-wall latency.
 
 > [!WARNING]
 > The 2026-07-11 MTP-on rows are explicitly approximate optimistic speed-ceiling
-> measurements and are not exact-distribution evidence. GLM-4.7 Flash reports
-> direct fallback for MTP-on, so its MTP speedup is 1.00x with no draft tokens.
+> measurements and are not exact-distribution evidence.
 
-<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart comparing direct decode and MTP decode for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
+<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart comparing direct decode and MTP decode for Qwen3.6 and Gemma 4">
 
 | Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP runner TTFT | AX accept |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -459,9 +454,6 @@ end-to-end client-wall latency.
 | `gemma-4-31b` | `flappy` | 18.7 tok/s | 46.2 tok/s | 2.47x | 173.1 tok/s | 2013 ms | 99.8% |
 | `gemma-4-31b` | `long_code` | 18.8 tok/s | 45.6 tok/s | 2.42x | 196.5 tok/s | 4165 ms | 99.9% |
 | `gemma-4-31b` | `py_modules` | 19.4 tok/s | 43.1 tok/s | 2.22x | 173.1 tok/s | 2140 ms | 96.5% |
-| `glm-4.7-flash` | `flappy` | 87.8 tok/s | 87.7 tok/s | 1.00x | 676.9 tok/s | 410 ms | 0.0% |
-| `glm-4.7-flash` | `long_code` | 86.8 tok/s | 85.8 tok/s | 0.99x | 995.3 tok/s | 685 ms | 0.0% |
-| `glm-4.7-flash` | `py_modules` | 87.6 tok/s | 87.4 tok/s | 1.00x | 684.7 tok/s | 498 ms | 0.0% |
 
 All rows record zero n-gram accepted/proposed/submitted/hit-step telemetry. That
 telemetry alone does not establish an exact sampled-MTP distribution; in

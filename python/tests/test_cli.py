@@ -671,57 +671,6 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("--fair-base-only", payload["provenance_command"])
         self.assertTrue(payload["provenance"]["fair_base_only"])
 
-    def test_download_mtp_wraps_bench_with_packaged_helpers(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            scripts = root / "scripts"
-            scripts.mkdir()
-            for name in (
-                "download_model.py",
-                "prepare_mtp_sidecar.py",
-                "prepare_gemma4_assistant_mtp.py",
-                "prepare_glm_mtp_sidecar.py",
-                "check_mtp_sidecar_provenance.py",
-            ):
-                (scripts / name).write_text("# helper\n")
-
-            with (
-                mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": str(root)}),
-                mock.patch.object(
-                    _cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"
-                ),
-                mock.patch.object(
-                    os, "execvpe", side_effect=RuntimeError("stop")
-                ) as execvpe,
-            ):
-                with self.assertRaisesRegex(RuntimeError, "stop"):
-                    self.capture_main(
-                        [
-                            "download-mtp",
-                            "glm-4.7-flash",
-                            "--quantize",
-                            "4",
-                            "--mtp-depth-max",
-                            "1",
-                            "--json",
-                        ]
-                    )
-
-        argv = execvpe.call_args.args[1]
-        env = execvpe.call_args.args[2]
-        self.assertEqual(argv[0], "/opt/bin/ax-engine-bench")
-        self.assertEqual(argv[1], "download-mtp")
-        self.assertIn("glm-4.7-flash", argv)
-        self.assertIn("--json", argv)
-        self.assertEqual(
-            env["AX_ENGINE_PREPARE_GLM_MTP_SIDECAR_HELPER"],
-            str(scripts / "prepare_glm_mtp_sidecar.py"),
-        )
-        self.assertEqual(
-            env["AX_ENGINE_DOWNLOAD_HELPER"],
-            str(scripts / "download_model.py"),
-        )
-
     def test_convert_mtplx_uses_model_specific_depth_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -798,7 +747,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = {target["alias"]: target for target in payload["targets"]}
         self.assertEqual(targets["gemma4-12b"]["mtp_target"], "gemma-4-12b-4bit")
         self.assertEqual(targets["qwen3.6-35b"]["mtp_target"], "qwen3.6-35b-a3b")
-        self.assertEqual(targets["glm4.7-flash-4bit"]["mtp_target"], "glm-4.7-flash")
+        self.assertIsNone(targets["glm4.7-flash-4bit"]["mtp_target"])
         self.assertIsNone(targets["gemma4-e2b"]["mtp_target"])
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:

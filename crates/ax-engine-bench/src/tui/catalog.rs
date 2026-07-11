@@ -120,16 +120,13 @@ pub(super) fn family_key(label: &str) -> String {
 
 /// `download-mtp` trigger alias for a model label.
 ///
-/// Mirrors the Python catalog's per-variant `mtp_target` exactly.  The Rust
-/// `MTP_DOWNLOAD_TARGETS` alias data is not consistent enough to derive this
-/// (e.g. GLM-4bit has no bare alias), so the mapping is explicit and small.
+/// Mirrors the Python catalog's per-variant `mtp_target` exactly.
 pub(super) fn mtp_trigger_alias(label: &str) -> Option<&'static str> {
     match label {
         "gemma4-12b" => Some("gemma-4-12b-4bit"),
         "gemma4-12b-6bit" => Some("gemma-4-12b"),
         "gemma4-26b" => Some("gemma-4-26b"),
         "gemma4-31b" => Some("gemma-4-31b"),
-        "glm4.7-flash-4bit" => Some("glm-4.7-flash"),
         "qwen3.6-27b" => Some("qwen3.6-27b-6bit"),
         "qwen3.6-27b-6bit" => Some("qwen3.6-27b-6bit"),
         "qwen3.6-35b" => Some("qwen3.6-35b-a3b"),
