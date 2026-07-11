@@ -55,7 +55,7 @@ prompt tokens. Peer rows and model-specific boundaries are kept visible.
   - [Session Mode: MTP Generation](#session-mode-mtp-generation)
     - [Supported MTP packages](#supported-mtp-packages)
     - [Download and serve an MTP package](#download-and-serve-an-mtp-package)
-    - [AX Engine 6-bit MTP package acceleration (2026-07-09)](#ax-engine-6-bit-mtp-package-acceleration-2026-07-09)
+    - [AX Engine 6-bit MTP package acceleration (2026-07-11)](#ax-engine-6-bit-mtp-package-acceleration-2026-07-11)
     - [Qwen3.6 MTP peer decode comparison (2026-07-09)](#qwen36-mtp-peer-decode-comparison-2026-07-09)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
   - [Session Mode: Direct Generation](#session-mode-direct-generation)
@@ -417,7 +417,7 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### AX Engine 6-bit MTP package acceleration (2026-07-09)
+#### AX Engine 6-bit MTP package acceleration (2026-07-11)
 
 This refresh is an AX Engine-only benchmark of the practical 6-bit
 `download-mtp` lane. "AX Engine-only" describes the measurement scope, not an
@@ -429,47 +429,45 @@ Qwen peer comparison below. The 2026-07-09 refresh uses the `flappy`,
 `long_code`, and `python_modules_long` suites (`py_modules` in the table),
 sampled decode
 (`temperature=0.6`, `top_p=0.95`, `top_k=20`), 1000 generated tokens, 5
-measured repetitions, 1 warmup, and 15 s cooldown. The run uses the local
+measured repetitions, 2 warmups, and 15 s cooldown. The run uses the local
 MLX 0.32.0 / mlx-lm 0.31.3 stack and the repo-owned AX MTP routes for Qwen
 fused sidecars, Gemma assistant drafters, and GLM built-in MTP. `AX MTP runner
 TTFT` is server runner time for the prefill/first-token boundary; it is not
 end-to-end client-wall latency.
 
 > [!WARNING]
-> The Gemma 4 12B sampled-MTP rows in this historical 2026-07-09 table are
-> superseded by the current sampled-MTP correctness contract. They must not be
-> read as exact-distribution evidence. The current direct, safe-fallback, and
-> explicitly approximate optimistic measurements are recorded in the Gemma 4
-> assistant-MTP section below.
+> The 2026-07-11 MTP-on rows are explicitly approximate optimistic speed-ceiling
+> measurements and are not exact-distribution evidence. GLM-4.7 Flash reports
+> direct fallback for MTP-on, so its MTP speedup is 1.00x with no draft tokens.
 
 <img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart comparing direct decode and MTP decode for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
 
 | Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP runner TTFT | AX accept |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `qwen3.6-27b-6bit` | `flappy` | 22.8 tok/s | 65.7 tok/s | 2.89x | 242.2 tok/s | 1330 ms | 100.0% |
-| `qwen3.6-27b-6bit` | `long_code` | 22.8 tok/s | 65.3 tok/s | 2.86x | 252.7 tok/s | 2839 ms | 100.0% |
-| `qwen3.6-27b-6bit` | `py_modules` | 22.9 tok/s | 65.6 tok/s | 2.87x | 250.7 tok/s | 1396 ms | 100.0% |
-| `qwen3.6-35b-a3b` | `flappy` | 96.6 tok/s | 148.0 tok/s | 1.53x | 1,294.4 tok/s | 249 ms | 100.0% |
-| `qwen3.6-35b-a3b` | `long_code` | 99.8 tok/s | 147.3 tok/s | 1.48x | 1,648.8 tok/s | 435 ms | 100.0% |
-| `qwen3.6-35b-a3b` | `py_modules` | 99.5 tok/s | 150.1 tok/s | 1.51x | 1,399.5 tok/s | 248 ms | 100.0% |
-| `gemma-4-12b` | `flappy` | 38.8 tok/s | 95.4 tok/s | 2.46x | 560.9 tok/s | 614 ms | 100.0% |
-| `gemma-4-12b` | `long_code` | 38.1 tok/s | 94.6 tok/s | 2.48x | 571.5 tok/s | 1413 ms | 100.0% |
-| `gemma-4-12b` | `py_modules` | 38.7 tok/s | 74.9 tok/s | 1.94x | 568.6 tok/s | 665 ms | 99.0% |
-| `gemma-4-26b` | `flappy` | 89.3 tok/s | 148.2 tok/s | 1.66x | 1,376.5 tok/s | 253 ms | 100.0% |
-| `gemma-4-26b` | `long_code` | 89.2 tok/s | 144.5 tok/s | 1.62x | 1,605.7 tok/s | 507 ms | 100.0% |
-| `gemma-4-26b` | `py_modules` | 90.6 tok/s | 135.7 tok/s | 1.50x | 1,430.3 tok/s | 264 ms | 99.0% |
-| `gemma-4-31b` | `flappy` | 17.7 tok/s | 45.6 tok/s | 2.57x | 211.6 tok/s | 1625 ms | 99.9% |
-| `gemma-4-31b` | `long_code` | 17.7 tok/s | 44.1 tok/s | 2.48x | 212.3 tok/s | 3802 ms | 100.0% |
-| `gemma-4-31b` | `py_modules` | 18.1 tok/s | 39.6 tok/s | 2.18x | 214.1 tok/s | 1766 ms | 98.7% |
-| `glm-4.7-flash` | `flappy` | 74.8 tok/s | 122.9 tok/s | 1.64x | 1,063.1 tok/s | 260 ms | 98.1% |
-| `glm-4.7-flash` | `long_code` | 74.5 tok/s | 100.9 tok/s | 1.35x | 1,268.6 tok/s | 538 ms | 98.6% |
-| `glm-4.7-flash` | `py_modules` | 76.4 tok/s | 91.2 tok/s | 1.19x | 1,134.4 tok/s | 300 ms | 94.3% |
+| `qwen3.6-27b-6bit` | `flappy` | 24.3 tok/s | 45.8 tok/s | 1.89x | 219.8 tok/s | 1469 ms | 100.0% |
+| `qwen3.6-27b-6bit` | `long_code` | 24.6 tok/s | 66.0 tok/s | 2.69x | 243.8 tok/s | 2943 ms | 100.0% |
+| `qwen3.6-27b-6bit` | `py_modules` | 24.7 tok/s | 66.6 tok/s | 2.70x | 227.7 tok/s | 1534 ms | 100.0% |
+| `qwen3.6-35b-a3b` | `flappy` | 121.4 tok/s | 151.7 tok/s | 1.25x | 714.8 tok/s | 452 ms | 100.0% |
+| `qwen3.6-35b-a3b` | `long_code` | 121.0 tok/s | 121.6 tok/s | 1.00x | 1129.3 tok/s | 635 ms | 100.0% |
+| `qwen3.6-35b-a3b` | `py_modules` | 121.5 tok/s | 152.5 tok/s | 1.26x | 774.2 tok/s | 444 ms | 100.0% |
+| `gemma-4-12b` | `flappy` | 41.3 tok/s | 99.5 tok/s | 2.41x | 462.9 tok/s | 752 ms | 99.2% |
+| `gemma-4-12b` | `long_code` | 41.1 tok/s | 98.3 tok/s | 2.39x | 529.6 tok/s | 1545 ms | 99.8% |
+| `gemma-4-12b` | `py_modules` | 41.4 tok/s | 86.1 tok/s | 2.08x | 462.2 tok/s | 808 ms | 95.2% |
+| `gemma-4-26b` | `flappy` | 105.0 tok/s | 151.2 tok/s | 1.44x | 892.6 tok/s | 390 ms | 99.7% |
+| `gemma-4-26b` | `long_code` | 103.9 tok/s | 145.1 tok/s | 1.40x | 1245.6 tok/s | 647 ms | 100.0% |
+| `gemma-4-26b` | `py_modules` | 105.2 tok/s | 141.5 tok/s | 1.35x | 940.6 tok/s | 402 ms | 96.9% |
+| `gemma-4-31b` | `flappy` | 18.7 tok/s | 46.2 tok/s | 2.47x | 173.1 tok/s | 2013 ms | 99.8% |
+| `gemma-4-31b` | `long_code` | 18.8 tok/s | 45.6 tok/s | 2.42x | 196.5 tok/s | 4165 ms | 99.9% |
+| `gemma-4-31b` | `py_modules` | 19.4 tok/s | 43.1 tok/s | 2.22x | 173.1 tok/s | 2140 ms | 96.5% |
+| `glm-4.7-flash` | `flappy` | 87.8 tok/s | 87.7 tok/s | 1.00x | 676.9 tok/s | 410 ms | 0.0% |
+| `glm-4.7-flash` | `long_code` | 86.8 tok/s | 85.8 tok/s | 0.99x | 995.3 tok/s | 685 ms | 0.0% |
+| `glm-4.7-flash` | `py_modules` | 87.6 tok/s | 87.4 tok/s | 1.00x | 684.7 tok/s | 498 ms | 0.0% |
 
 All rows record zero n-gram accepted/proposed/submitted/hit-step telemetry. That
 telemetry alone does not establish an exact sampled-MTP distribution; in
 particular, the Gemma 4 12B rows above are historical diagnostics rather than
 current sampled-MTP publication evidence. Historical summary:
-[`benchmarks/results/speculative/mtp-6bit/2026-07-09-mlx032-ax-mtp-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-09-mlx032-ax-mtp-refresh/summary.json).
+[`benchmarks/results/speculative/mtp-6bit/2026-07-11-ax-only-approximate-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-11-ax-only-approximate-refresh/summary.json).
 
 #### Qwen3.6 MTP peer decode comparison (2026-07-09)
 

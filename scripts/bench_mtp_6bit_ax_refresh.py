@@ -277,6 +277,13 @@ def accept_rate_pct(artifact: dict[str, Any]) -> float:
         accepted = telemetry_sum(artifact, "ax_mlx_gemma4_assistant_mtp_accepted_tokens")
         drafted = telemetry_sum(artifact, "ax_mlx_gemma4_assistant_mtp_draft_tokens")
     if drafted <= 0:
+        modes = {
+            (row.get("ax_mtp_correctness") or {}).get("effective_mode")
+            for row in artifact.get("results", [])
+            if row.get("prompt_case_id") is not None
+        }
+        if modes == {"direct_fallback"}:
+            return 0.0
         raise ValueError("MTP artifact has no draft-token telemetry")
     return accepted / drafted * 100.0
 
@@ -304,12 +311,12 @@ def validate_approximate_mtp_artifact(path: Path, artifact: dict[str, Any]) -> N
         for row in artifact.get("results", [])
         if row.get("prompt_case_id") is not None
     ]
+    allowed_modes = {"approximate_optimistic", "direct_fallback"}
     if not rows or any(
-        (row.get("ax_mtp_correctness") or {}).get("effective_mode")
-        != "approximate_optimistic"
+        (row.get("ax_mtp_correctness") or {}).get("effective_mode") not in allowed_modes
         for row in rows
     ):
-        raise ValueError(f"{path} is not an effective approximate MTP speed ceiling")
+        raise ValueError(f"{path} is not an effective approximate MTP speed ceiling or direct fallback")
     if any(row.get("publication_candidate") is True for row in rows):
         raise ValueError(f"{path} incorrectly marks an approximate row publishable")
 
