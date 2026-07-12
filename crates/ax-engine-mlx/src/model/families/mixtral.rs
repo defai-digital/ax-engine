@@ -35,6 +35,7 @@ pub(crate) fn layer_forward(
         None, // no per-layer inputs
         shared_mask,
         turboquant_context,
-        false,
+        false, // last_position_only_after_attention
+        false, // skip_post_attention_ffn
     )
 }

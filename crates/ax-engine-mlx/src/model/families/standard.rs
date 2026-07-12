@@ -53,6 +53,9 @@ fn layer_shell_post_attention(
     layer_idx: usize,
     per_layer_input: Option<&MlxArray>,
     last_position_only_after_attention: bool,
+    // Cache-only prefill: KV is already written; residual is discarded. Skip
+    // the last-layer FFN entirely (even the last-only 1-token FFN).
+    skip_post_attention_ffn: bool,
     profile_forward_layer: bool,
     profile_decode_layer: bool,
     profile_prefill_layer: bool,
@@ -64,6 +67,30 @@ fn layer_shell_post_attention(
     let last_only_active = last_position_only_after_attention && seq > 1;
 
     let hidden = add(hidden, attn_proj, None);
+
+    // Cache-only terminal layer: attention already wrote full-seq KV; FFN
+    // residual is discarded before the completing decode_step. Return here.
+    if skip_post_attention_ffn {
+        if let Some(started) = residual_norm_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::PostAttnResidualNorm,
+                started,
+                &[&hidden],
+            );
+        }
+        if let Some(started) = post_attn_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::PostAttn,
+                started,
+                &[&hidden],
+            );
+        }
+        return hidden;
+    }
 
     // 15a. Optional last-position-only slice for the terminal prefill layer.
     let (hidden, per_layer_input_owned) = if last_only_active {
@@ -348,12 +375,15 @@ fn layer_shell_post_attention(
 /// of `[1, seq, hidden]`. This matches the lazy-eval prune that mlx-lm gets
 /// for free on the last layer when the model output is discarded.
 ///
-/// Callers must only set this flag for the **last transformer layer** in a
-/// prefill pass, and only when the downstream consumer needs just the
-/// last-position output (i.e. argmax/sample for the first decode token).
-/// Setting it on a non-terminal layer breaks correctness: the next layer
-/// would receive a 1-position hidden but the cache still expects matching
-/// sequence positions.
+/// `skip_post_attention_ffn`: when `true`, write only the layer's cache side
+/// effects (K/V append, or nothing for KV-shared consumers) and return
+/// without SDPA / o_proj / residual / FFN. Use only for the **last** layer of
+/// a cache-only prefill (`FinalLogitsMode::Skip`) where residual is discarded.
+///
+/// Callers must only set last-only / skip-FFN for the **last transformer
+/// layer** in a prefill pass. Setting either on a non-terminal layer breaks
+/// correctness: the next layer would receive a wrong-shaped residual or the
+/// residual stream would skip an FFN.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layer_forward(
     cfg: &ModelConfig,
@@ -366,6 +396,7 @@ pub(crate) fn layer_forward(
     shared_mask: Option<&Option<MlxArray>>,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
     last_position_only_after_attention: bool,
+    skip_post_attention_ffn: bool,
 ) -> MlxArray {
     let (
         head_dim,
@@ -377,10 +408,98 @@ pub(crate) fn layer_forward(
         v_norm_no_scale,
     ) = layer_params(cfg, layer_idx);
 
+    let seq = hidden.shape()[1] as usize;
+
+    // Cache-only terminal layer: residual/logits are discarded. Only KV (or
+    // linear-state) side effects matter. KV-shared consumers write nothing, so
+    // the entire layer is a no-op. Normal layers project K/V (not Q when split
+    // weights exist) and append — skipping SDPA, o_proj, residual, and FFN.
+    if skip_post_attention_ffn {
+        if kv_source.is_some() {
+            return hidden.clone();
+        }
+        let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+        let ring_layout = cache.sliding_ring_layout(sliding_window, seq);
+        let (k_raw, v_raw) = if let (Some(k_w), v_w) = (w.k_proj.as_ref(), w.v_proj.as_ref()) {
+            // Split K/V: skip the Q matmul entirely (major last-layer saving).
+            let k = qw(&normed, k_w);
+            let v = v_w.map(|vw| qw(&normed, vw)).unwrap_or_else(|| k.clone());
+            (k, v)
+        } else {
+            // Packed QKV: still pay the packed matmul but drop Q after.
+            let (_, k, v, _) = qkv_project(cfg, w, &normed, head_dim);
+            (k, v)
+        };
+        let kv_heads = (k_raw.shape()[2] as usize)
+            .checked_div(head_dim)
+            .expect("k projection output must divide by head_dim");
+        let v = prepare_value_bhsd_from_proj(
+            &v_raw,
+            v_norm_no_scale,
+            kv_heads,
+            head_dim,
+            seq,
+            cfg.rms_norm_eps,
+        );
+        let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+        let (rope_base, rope_freqs_ref) = rope_freqs
+            .map(|f| (None, Some(f)))
+            .unwrap_or((Some(rope_theta), None));
+        let use_direct_k_rope = direct_qk_norm_rope_route_enabled_for_family(
+            cfg.model_family.as_str(),
+            w.k_norm.as_ref(),
+        );
+        let k_rope = if use_direct_k_rope {
+            qk_norm_rope_bhsd_from_proj_with_route(
+                &k_raw,
+                w.k_norm.as_ref(),
+                kv_heads,
+                head_dim,
+                seq,
+                cfg.rms_norm_eps,
+                rope_dims,
+                rope_base,
+                token_offset,
+                rope_freqs_ref,
+                true,
+            )
+        } else {
+            let k = qk_norm_bhsd_from_proj(
+                &k_raw,
+                w.k_norm.as_ref(),
+                kv_heads,
+                head_dim,
+                seq,
+                cfg.rms_norm_eps,
+            );
+            rope(
+                &k,
+                rope_dims as i32,
+                false,
+                rope_base,
+                1.0,
+                token_offset as i32,
+                rope_freqs_ref,
+                None,
+            )
+        };
+        let retained_window = if seq == 1 || ring_layout.is_some() {
+            sliding_window
+        } else if sliding_window.is_some() && fastpath::multi_token_window_views_enabled() {
+            match shared_mask {
+                Some(Some(mask)) => mask.shape().last().map(|&len| len as usize),
+                _ => sliding_window.map(|window| window + seq - 1),
+            }
+        } else {
+            None
+        };
+        let _ = cache.append_with_retained_window(layer_idx, k_rope, v, retained_window);
+        return hidden.clone();
+    }
+
     // 1. Attention norm.
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
 
-    let seq = hidden.shape()[1] as usize;
     let ring_layout = cache.sliding_ring_layout(sliding_window, seq);
     let profile_gemma4_moe_decode =
         cfg.gemma4_moe_router && seq == 1 && gemma4_moe_profile_enabled();
@@ -785,6 +904,7 @@ pub(crate) fn layer_forward(
         layer_idx,
         per_layer_input,
         last_position_only_after_attention,
+        skip_post_attention_ffn,
         profile_forward_layer,
         profile_decode_layer,
         profile_prefill_layer,
@@ -1111,10 +1231,11 @@ pub(crate) fn layer_forward_bidirectional(
         layer_idx,
         per_layer_input,
         false, // last_position_only_after_attention
-        false,
-        false,
-        false,
-        false, // profiling flags (not used in bidirectional)
+        false, // skip_post_attention_ffn
+        false, // profile_forward_layer
+        false, // profile_decode_layer
+        false, // profile_prefill_layer
+        false, // profile_gemma4_moe_decode
         None,  // post_attn_started
     )
 }

@@ -28,6 +28,10 @@ use crate::weights::LayerWeights;
 /// `[1, 1, hidden]` instead of `[1, seq, hidden]`. The linear-attention state
 /// (conv1d + recurrent) is already written to `cache` inside
 /// `linear_attention_forward` before this slice, so the optimization is safe.
+///
+/// `skip_post_attention_ffn`: when `true`, return after the attention residual
+/// (no FFN). Use only for the last layer of a cache-only prefill
+/// (`FinalLogitsMode::Skip`) where the residual is discarded.
 pub(crate) fn layer_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -35,6 +39,7 @@ pub(crate) fn layer_forward(
     cache: &mut MlxKVCache,
     layer_idx: usize,
     last_position_only: bool,
+    skip_post_attention_ffn: bool,
 ) -> MlxArray {
     let seq = hidden.shape()[1] as usize;
     let profile_decode_layer = seq == 1 && decode_profile_enabled();
@@ -47,6 +52,21 @@ pub(crate) fn layer_forward(
 
     let residual_norm_started = profile_forward_layer.then(Instant::now);
     let hidden = add(hidden, &attn_proj, None);
+
+    // Cache-only terminal layer: linear state already in cache; residual discarded.
+    if skip_post_attention_ffn {
+        if let Some(started) = residual_norm_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::PostAttnResidualNorm,
+                started,
+                &[&hidden],
+            );
+        }
+        return hidden;
+    }
+
     // Last-position-only: after the attention-residual add, the linear-attention
     // state has been committed to `cache`. The FFN is position-wise, so slicing
     // to the last position is safe and avoids redundant compute on preceding

@@ -2897,9 +2897,10 @@ fn dense_ffn_gate_up_packing_supported(
     up: &QuantizedWeight,
 ) -> bool {
     // Qwen dense FFNs stay on the split runtime (owns the decode matvec
-    // fast path). Packing both projections for prefill was A/B-tested and
-    // did not beat the split path on Qwen 3.6 27B; skip the load-time GPU
-    // pack tax. GLM MLA MoE lite also keeps split exclusively.
+    // fast path). Prefill packing was re-measured on Qwen 3.6 27B 4-bit
+    // (2w/5m, same host): p=128 prefill regressed ~3.8% vs README high-water
+    // and ~3% vs the split path, so keep load-time packing off. GLM MLA MoE
+    // lite also keeps split exclusively.
     if model_family.starts_with("qwen") || model_family == "glm4_moe_lite" {
         return false;
     }

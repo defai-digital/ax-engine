@@ -163,7 +163,9 @@ pub fn layer_forward_with_turboquant_context(
     // model (qwen3_5 / qwen3_next) has both linear and full-attention layers
     // and the family string alone is not enough to disambiguate per-layer type.
     if cfg.is_linear_attention_layer(layer_idx) {
-        return families::qwen3_linear::layer_forward(cfg, w, hidden, cache, layer_idx, false);
+        return families::qwen3_linear::layer_forward(
+            cfg, w, hidden, cache, layer_idx, false, false,
+        );
     }
 
     match cfg.model_family.as_str() {
@@ -178,7 +180,8 @@ pub fn layer_forward_with_turboquant_context(
                 per_layer_input,
                 shared_mask,
                 turboquant_context,
-                false,
+                false, // last_position_only_after_attention
+                false, // skip_post_attention_ffn
             )
         }
         "llama4" => families::llama4::layer_forward(
@@ -201,7 +204,8 @@ pub fn layer_forward_with_turboquant_context(
             per_layer_input,
             shared_mask,
             turboquant_context,
-            false,
+            false, // last_position_only_after_attention
+            false, // skip_post_attention_ffn
         ),
         "glm4_moe_lite" => {
             families::glm4_moe_lite::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset)
@@ -251,6 +255,11 @@ pub fn layer_forward_with_turboquant_context(
 /// on `[1, 1, hidden]`, matching `mlx-lm`'s lazy-eval prune of the
 /// terminal layer's post-attention work.
 ///
+/// When `skip_post_attention_ffn` is `true`, the layer returns after the
+/// attention residual with **no** FFN (even the last-only 1-token FFN).
+/// Use only for cache-only prefill (`FinalLogitsMode::Skip`) where the
+/// residual is discarded and only KV / linear-state writes matter.
+///
 /// **Caller obligation:** only invoke this for the *last* transformer
 /// layer of a prefill pass. Passing a 1-position hidden into the next
 /// layer's attention would corrupt the KV cache (positions would no
@@ -274,12 +283,20 @@ pub fn layer_forward_with_turboquant_context_last_only(
     per_layer_input: Option<&MlxArray>,
     shared_mask: Option<&Option<MlxArray>>,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+    skip_post_attention_ffn: bool,
 ) -> MlxArray {
     if cfg.is_linear_attention_layer(layer_idx) {
-        // Linear-attention layers now support the last-position-only
-        // optimization: the recurrent state is committed to cache before the
-        // FFN slice, so the FFN / MoE steps can safely run on [1, 1, hidden].
-        return families::qwen3_linear::layer_forward(cfg, w, hidden, cache, layer_idx, true);
+        // Linear-attention layers support last-position-only and skip-FFN:
+        // the recurrent state is committed to cache before the FFN path.
+        return families::qwen3_linear::layer_forward(
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            !skip_post_attention_ffn,
+            skip_post_attention_ffn,
+        );
     }
     match cfg.model_family.as_str() {
         "gemma4" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next" | "diffusion_gemma" => {
@@ -293,7 +310,8 @@ pub fn layer_forward_with_turboquant_context_last_only(
                 per_layer_input,
                 shared_mask,
                 turboquant_context,
-                true,
+                !skip_post_attention_ffn, // last-only FFN when not skipping
+                skip_post_attention_ffn,
             )
         }
         // Other families: fall back to the unoptimized path. Correctness
@@ -541,12 +559,14 @@ pub fn forward_argmax_with_turboquant_context(
     )
 }
 
-/// Cache-only forward: runs all transformer layers (writing KV cache) plus
-/// the final RMSNorm, but **skips the lm_head projection**. Returns the
-/// post-norm hidden (not logits) — use only to force-eval the layer graph.
+/// Cache-only forward: runs all transformer layers (writing KV / linear
+/// state), **skips the last-layer FFN**, and **skips final RMSNorm +
+/// lm_head**. Returns the post-attention residual of the last layer —
+/// use only to force-eval the layer graph (or drop it and eval KV refs).
 ///
-/// Intended for non-final prefill chunks where the lm_head result is
-/// discarded. On Qwen3.6 27B this saves ~543M multiply-adds per chunk.
+/// Intended for non-final prefill chunks / mlx-lm-style cache-only prefix
+/// where residual and logits are discarded. On Qwen3.6 27B this saves the
+/// last-layer FFN plus ~543M multiply-adds of lm_head per chunk.
 pub fn forward_cache_only(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -612,16 +632,18 @@ fn forward_with_turboquant_context_and_logits_mode(
             &refs,
         );
     }
-    // Last-position-only prefill optimization (matches mlx-lm's implicit
-    // lazy-eval prune): for `seq > 1`, the final transformer layer slices
-    // its attention-residual stream to the last position before running
-    // the post-attention FFN / gate / scalar. Saves ~50% of the last
-    // layer's wall time on long prompts (Gemma 4 E2B p=2048: ~8k → target
-    // mlx-lm parity at ~16-18k tok/s prefill). Decode path (seq == 1)
-    // never triggers the inner slice. See
+    // Last-layer prefill optimizations (matches mlx-lm's implicit lazy-eval
+    // prune). For `seq > 1`, the final transformer layer either:
+    // - **Skip FFN** (`FinalLogitsMode::Skip` / cache-only): return after the
+    //   attention residual; residual is discarded and only KV/linear state
+    //   writes matter. Avoids even the last-only 1-token FFN + final_norm.
+    // - **Last-position-only FFN**: slice residual to the last position before
+    //   FFN / gate / scalar. Saves ~50% of the last layer on long prompts.
+    // Decode path (seq == 1) never triggers either. See
     // `layer_forward_with_turboquant_context_last_only` for the contract.
     let last_layer_idx = weights.layers.len().saturating_sub(1);
     let use_last_layer_optimization = seq > 1;
+    let skip_last_layer_ffn = matches!(logits_mode, FinalLogitsMode::Skip);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         let shared_mask = masks
@@ -639,6 +661,7 @@ fn forward_with_turboquant_context_and_logits_mode(
                 pli,
                 Some(shared_mask),
                 turboquant_context,
+                skip_last_layer_ffn,
             )
         } else {
             layer_forward_with_turboquant_context(
@@ -653,6 +676,17 @@ fn forward_with_turboquant_context_and_logits_mode(
                 turboquant_context,
             )
         };
+    }
+
+    // Cache-only: residual after the last layer (FFN already skipped) is only
+    // held so callers that `eval` the return value still force the layer graph.
+    // Skip final_norm + lm_head — both are pure waste when the result is
+    // discarded after KV materialisation.
+    if matches!(logits_mode, FinalLogitsMode::Skip) {
+        if profile_prefill {
+            record_prefill_profile_step(weights.layers.len() as u32, seq as u32);
+        }
+        return hidden;
     }
 
     // Post-loop slice: idempotent when the last layer already collapsed to
@@ -675,25 +709,6 @@ fn forward_with_turboquant_context_and_logits_mode(
         cfg.rms_norm_eps,
         None,
     );
-    // Cache-only forward (non-final prefill chunks): skip the lm_head
-    // projection entirely. The rms_norm forces the full transformer-layer
-    // chain (KV cache writes) while avoiding a hidden×vocab_size matmul
-    // whose result is discarded.
-    if matches!(logits_mode, FinalLogitsMode::Skip) {
-        if let Some(started) = lm_head_started {
-            forward_profile_eval_elapsed(
-                false,
-                profile_prefill,
-                DecodeProfileStage::LmHead,
-                started,
-                &[&normed],
-            );
-        }
-        if profile_prefill {
-            record_prefill_profile_step(weights.layers.len() as u32, seq as u32);
-        }
-        return normed;
-    }
     let logits = qw(&normed, &weights.lm_head);
     let logits = finalize_lm_head_logits(cfg, &logits, logits_mode);
     let logits = reshape(&logits, &[cfg.vocab_size as i32], None);
@@ -746,6 +761,7 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     let mut hidden = hidden;
     let last_layer_idx = weights.layers.len().saturating_sub(1);
     let use_last_layer_optimization = seq > 1;
+    let skip_last_layer_ffn = matches!(logits_mode, FinalLogitsMode::Skip);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         let shared_mask = masks
@@ -763,6 +779,7 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
                 pli,
                 Some(shared_mask),
                 None,
+                skip_last_layer_ffn,
             )
         } else {
             layer_forward_with_turboquant_context(
@@ -777,6 +794,10 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
                 None,
             )
         };
+    }
+
+    if matches!(logits_mode, FinalLogitsMode::Skip) {
+        return hidden;
     }
 
     let last_hidden = if hidden.shape().get(1).copied().unwrap_or(1) > 1 {
@@ -4261,6 +4282,7 @@ mod tests {
             None,
             None,
             /* last_position_only_after_attention */ false,
+            /* skip_post_attention_ffn */ false,
         );
         assert_eq!(out_full.shape(), vec![1, 2, cfg.hidden_size as i32]);
         let hs = cfg.hidden_size as i32;
@@ -4291,6 +4313,7 @@ mod tests {
             None,
             None,
             /* last_position_only_after_attention */ true,
+            /* skip_post_attention_ffn */ false,
         );
         assert_eq!(
             out_opt.shape(),
