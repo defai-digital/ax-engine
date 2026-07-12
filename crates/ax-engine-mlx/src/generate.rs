@@ -591,13 +591,16 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             clear_cache();
             return (tok, post_norm_all, history_tokens);
         } else {
-            // Non-final chunk: skip lm_head projection (hidden×vocab_size);
-            // eval_with_kv_refs forces the transformer-layer graph and
-            // explicitly materialises the KV cache arrays.
-            let hidden = forward_cache_only(cfg, weights, chunk, cache, chunk_offset);
+            // Non-final chunk: skip lm_head projection (hidden×vocab_size).
+            // Defer materialisation until the final chunk's eval (same contract
+            // as the greedy cache-only multi-chunk path): intermediate
+            // barriers force a full layer-stack eval per sub-chunk and hurt
+            // MTP long-prompt TTFT (Qwen linear clamp → multiple chunks).
+            // KV writes stay on the lazy graph and are pulled by the final
+            // `eval_with_kv_refs` / `eval_kv_refs` on the completing step.
+            let _hidden = forward_cache_only(cfg, weights, chunk, cache, chunk_offset);
             cache.seq_len += chunk.len();
             offset = end;
-            eval_with_kv_refs(&hidden, cache);
         }
     }
 }

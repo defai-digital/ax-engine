@@ -1015,6 +1015,8 @@ pub fn forward_all_positions_post_norm_last_lm_head(
     let masks =
         build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
+    // Full-seq residual through every layer: MTP warmup needs post-norm at
+    // every position. Do not use last-layer last-only / skip-FFN here.
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward_with_turboquant_context(
