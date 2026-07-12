@@ -276,6 +276,9 @@ EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
 EMBEDDINGGEMMA_SCALE_CHART_OUTPUT = (
     "perf-embeddinggemma-ingest-scale-ax-vs-mlx-embeddings.svg"
 )
+DIRECT_VALIDATION_CHART_OUTPUT = "perf-direct-validation-2026-07-12.svg"
+DIRECT_VALIDATION_CHART_WIDTH = 1200
+DIRECT_VALIDATION_CHART_HEIGHT = 620
 EMBEDDING_CHART_WIDTH = 1080
 EMBEDDING_CHART_LEFT = 360.0
 EMBEDDING_CHART_RIGHT = 1012.0
@@ -434,6 +437,139 @@ def readme_model_slugs(readme: Path) -> list[str]:
     if not slugs:
         raise ChartError("README performance tables contain no chartable models")
     return slugs
+
+
+def find_direct_validation_artifact(readme: Path) -> Path | None:
+    text = readme.read_text()
+    match = re.search(
+        r"<!--\s*readme-direct-validation-artifacts:\s*(?P<paths>.*?)\s*-->",
+        text,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        return None
+    paths = [
+        (readme.parent / raw_path.strip()).resolve()
+        for raw_path in match.group("paths").split(";")
+        if raw_path.strip()
+    ]
+    if not paths:
+        raise ChartError("README direct validation marker has no artifact paths")
+    return paths[-1]
+
+
+def load_direct_validation_rows(artifact_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in sorted(artifact_dir.glob("*.json")):
+        if path.name == "sweep_results.json":
+            continue
+        payload = json.loads(path.read_text())
+        label = readme_artifacts.ARTIFACT_LABELS.get(path.stem)
+        if label is None:
+            continue
+        for row in payload.get("results", []):
+            if row.get("engine") != "ax_engine_mlx":
+                continue
+            row_copy = dict(row)
+            row_copy["_model_label"] = f"{label[0]} {label[1]}"
+            rows.append(row_copy)
+    if not rows:
+        raise ChartError(f"direct validation artifact has no AX rows: {artifact_dir}")
+    return rows
+
+
+def render_direct_validation_chart(rows: list[dict[str, Any]], source_dir: Path) -> str:
+    model_order = list(dict.fromkeys(row["_model_label"] for row in rows))
+    prompt_order = [128, 512, 2048]
+    metrics = [
+        ("prefill_tok_s", "Prefill", "tok/s", "Higher is better"),
+        ("decode_tok_s", "Decode", "tok/s", "Higher is better"),
+        ("ttft_ms", "Runner TTFT", "ms", "Lower is better"),
+    ]
+    colors = {128: "#60a5fa", 512: "#f59e0b", 2048: "#2eaf5f"}
+    panel_width = 350
+    panel_height = 420
+    panel_top = 105
+    panel_left = 54
+    panel_gap = 35
+    plot_left = 42
+    plot_top = 70
+    plot_right = panel_width - 18
+    plot_bottom = panel_height - 58
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{DIRECT_VALIDATION_CHART_WIDTH}" height="{DIRECT_VALIDATION_CHART_HEIGHT}" viewBox="0 0 {DIRECT_VALIDATION_CHART_WIDTH} {DIRECT_VALIDATION_CHART_HEIGHT}" role="img" aria-labelledby="title desc">',
+        "<title>AX Engine direct validation — 2026-07-12</title>",
+        "<desc>Three-panel grouped bar chart showing prefill, decode, and runner TTFT for the July 12 AX-only direct validation across Gemma 4 E2B, Gemma 4 31B, and Qwen 3.6 27B 4-bit models at 128, 512, and 2048 prompt tokens.</desc>",
+        '<rect width="100%" height="100%" fill="#f8fafc"/>',
+        '<text x="54" y="32" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20" font-weight="700" fill="#111827">AX Engine direct validation — 2026-07-12</text>',
+        '<text x="54" y="54" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">AX-only · one warmup · three measured repetitions · current implementation tracking, not publication high-water evidence</text>',
+    ]
+    lookup = {
+        (row["_model_label"], int(row["prompt_tokens"])): row for row in rows
+    }
+    for metric_index, (metric_key, title, unit, direction) in enumerate(metrics):
+        x0 = panel_left + metric_index * (panel_width + panel_gap)
+        values = [
+            float(lookup[(model, prompt)][metric_key]["median"])
+            for model in model_order
+            for prompt in prompt_order
+        ]
+        axis_max = nice_axis_ceiling(max(values) * 1.08)
+        lines.extend(
+            [
+                f'<rect x="{x0}" y="{panel_top}" width="{panel_width}" height="{panel_height}" rx="8" fill="#ffffff" stroke="#dbe3ef"/>',
+                f'<text x="{x0 + 18}" y="{panel_top + 30}" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">{title} ({unit})</text>',
+                f'<text x="{x0 + panel_width - 18}" y="{panel_top + 30}" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">{direction}</text>',
+            ]
+        )
+        def y_for(value: float) -> float:
+            return panel_top + plot_bottom - (value / axis_max) * (plot_bottom - plot_top)
+
+        for fraction in (0.0, 0.5, 1.0):
+            y = y_for(axis_max * fraction)
+            lines.append(
+                f'<line x1="{x0 + plot_left}" y1="{y:.1f}" x2="{x0 + plot_right}" y2="{y:.1f}" stroke="#e5e7eb" stroke-width="1"/>'
+            )
+            lines.append(
+                f'<text x="{x0 + plot_left - 8}" y="{y + 4:.1f}" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">{short_number(axis_max * fraction)}</text>'
+            )
+        group_width = (plot_right - plot_left) / len(model_order)
+        bar_width = min(22.0, group_width / 5.0)
+        for model_index, model in enumerate(model_order):
+            group_x = x0 + plot_left + group_width * (model_index + 0.5)
+            for prompt_index, prompt in enumerate(prompt_order):
+                value = float(lookup[(model, prompt)][metric_key]["median"])
+                bar_x = group_x + (prompt_index - 1) * (bar_width + 3) - bar_width / 2
+                bar_y = y_for(value)
+                lines.append(
+                    f'<rect x="{bar_x:.1f}" y="{bar_y:.1f}" width="{bar_width:.1f}" height="{panel_top + plot_bottom - bar_y:.1f}" rx="2" fill="{colors[prompt]}" fill-opacity="0.78"/>'
+                )
+                lines.append(
+                    f'<text x="{bar_x + bar_width / 2:.1f}" y="{bar_y - 5:.1f}" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">{short_number(value)}</text>'
+                )
+            short_model = model.replace("Gemma 4 ", "").replace("Qwen 3.6 ", "Qwen ")
+            lines.append(
+                f'<text x="{group_x:.1f}" y="{panel_top + plot_bottom + 22}" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#374151">{escape(short_model)}</text>'
+            )
+        lines.append(
+            f'<text x="{x0 + plot_left}" y="{panel_top + panel_height - 16}" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">128 tok</text>'
+        )
+        lines.append(
+            f'<text x="{x0 + plot_left + 64}" y="{panel_top + panel_height - 16}" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">512 tok</text>'
+        )
+        lines.append(
+            f'<text x="{x0 + plot_left + 128}" y="{panel_top + panel_height - 16}" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">2048 tok</text>'
+        )
+    lines.extend(
+        [
+            '<rect x="54" y="566" width="12" height="12" rx="2" fill="#60a5fa"/><text x="72" y="576" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">128 prompt tokens</text>',
+            '<rect x="200" y="566" width="12" height="12" rx="2" fill="#f59e0b"/><text x="218" y="576" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">512 prompt tokens</text>',
+            '<rect x="346" y="566" width="12" height="12" rx="2" fill="#2eaf5f"/><text x="364" y="576" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">2048 prompt tokens</text>',
+            f'<text x="1160" y="576" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: {escape(source_dir.name)}/</text>',
+            "</svg>",
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def load_rows(
@@ -2720,6 +2856,22 @@ def main() -> int:
             )
             if not write_chart(mtp_peer_output_path, mtp_peer_content, args.check):
                 mismatches.append(mtp_peer_output_path)
+
+    direct_validation_dir = find_direct_validation_artifact(args.readme)
+    if direct_validation_dir is not None:
+        direct_validation_output_path = (
+            args.output_dir / DIRECT_VALIDATION_CHART_OUTPUT
+        )
+        direct_validation_content = render_direct_validation_chart(
+            load_direct_validation_rows(direct_validation_dir),
+            direct_validation_dir,
+        )
+        if not write_chart(
+            direct_validation_output_path,
+            direct_validation_content,
+            args.check,
+        ):
+            mismatches.append(direct_validation_output_path)
 
     embedding_scale_output_path = args.output_dir / EMBEDDING_SCALE_CHART_OUTPUT
     embedding_scale_content = render_embedding_box_chart(

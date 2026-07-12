@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+<title>AX Engine direct validation — 2026-07-12</title>
+<desc>Three-panel grouped bar chart showing prefill, decode, and runner TTFT for the July 12 AX-only direct validation across Gemma 4 E2B, Gemma 4 31B, and Qwen 3.6 27B 4-bit models at 128, 512, and 2048 prompt tokens.</desc>
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="54" y="32" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20" font-weight="700" fill="#111827">AX Engine direct validation — 2026-07-12</text>
+<text x="54" y="54" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">AX-only · one warmup · three measured repetitions · current implementation tracking, not publication high-water evidence</text>
+<rect x="54" y="105" width="350" height="420" rx="8" fill="#ffffff" stroke="#dbe3ef"/>
+<text x="72" y="135" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">Prefill (tok/s)</text>
+<text x="386" y="135" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">Higher is better</text>
+<line x1="96" y1="467.0" x2="386" y2="467.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="88" y="471.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">0</text>
+<line x1="96" y1="321.0" x2="386" y2="321.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="88" y="325.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">5k</text>
+<line x1="96" y1="175.0" x2="386" y2="175.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="88" y="179.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">10k</text>
+<rect x="112.3" y="462.4" width="19.3" height="4.6" rx="2" fill="#60a5fa" fill-opacity="0.78"/>
+<text x="122.0" y="457.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">159.1</text>
+<rect x="134.7" y="461.0" width="19.3" height="6.0" rx="2" fill="#f59e0b" fill-opacity="0.78"/>
+<text x="144.3" y="456.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">204.1</text>
+<rect x="157.0" y="461.0" width="19.3" height="6.0" rx="2" fill="#2eaf5f" fill-opacity="0.78"/>
+<text x="166.7" y="456.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">204.8</text>
+<text x="144.3" y="489" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#374151">31B 4-bit</text>
+<rect x="209.0" y="398.8" width="19.3" height="68.2" rx="2" fill="#60a5fa" fill-opacity="0.78"/>
+<text x="218.7" y="393.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">2.3k</text>
+<rect x="231.3" y="311.7" width="19.3" height="155.3" rx="2" fill="#f59e0b" fill-opacity="0.78"/>
+<text x="241.0" y="306.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">5.3k</text>
+<rect x="253.7" y="243.9" width="19.3" height="223.1" rx="2" fill="#2eaf5f" fill-opacity="0.78"/>
+<text x="263.3" y="238.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">7.6k</text>
+<text x="241.0" y="489" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#374151">E2B 4-bit</text>
+<rect x="305.7" y="461.4" width="19.3" height="5.6" rx="2" fill="#60a5fa" fill-opacity="0.78"/>
+<text x="315.3" y="456.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">191.1</text>
+<rect x="328.0" y="459.9" width="19.3" height="7.1" rx="2" fill="#f59e0b" fill-opacity="0.78"/>
+<text x="337.7" y="454.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">244.6</text>
+<rect x="350.3" y="459.4" width="19.3" height="7.6" rx="2" fill="#2eaf5f" fill-opacity="0.78"/>
+<text x="360.0" y="454.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">261.4</text>
+<text x="337.7" y="489" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#374151">Qwen 27B 4-bit</text>
+<text x="96" y="509" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">128 tok</text>
+<text x="160" y="509" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">512 tok</text>
+<text x="224" y="509" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">2048 tok</text>
+<rect x="439" y="105" width="350" height="420" rx="8" fill="#ffffff" stroke="#dbe3ef"/>
+<text x="457" y="135" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">Decode (tok/s)</text>
+<text x="771" y="135" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">Higher is better</text>
+<line x1="481" y1="467.0" x2="771" y2="467.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="473" y="471.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">0</text>
+<line x1="481" y1="321.0" x2="771" y2="321.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="473" y="325.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">125</text>
+<line x1="481" y1="175.0" x2="771" y2="175.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="473" y="179.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">250</text>
+<rect x="497.3" y="433.1" width="19.3" height="33.9" rx="2" fill="#60a5fa" fill-opacity="0.78"/>
+<text x="507.0" y="428.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">29.0</text>
+<rect x="519.7" y="433.8" width="19.3" height="33.2" rx="2" fill="#f59e0b" fill-opacity="0.78"/>
+<text x="529.3" y="428.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">28.4</text>
+<rect x="542.0" y="435.4" width="19.3" height="31.6" rx="2" fill="#2eaf5f" fill-opacity="0.78"/>
+<text x="551.7" y="430.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">27.0</text>
+<text x="529.3" y="489" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#374151">31B 4-bit</text>
+<rect x="594.0" y="214.2" width="19.3" height="252.8" rx="2" fill="#60a5fa" fill-opacity="0.78"/>
+<text x="603.7" y="209.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">216.4</text>
+<rect x="616.3" y="224.9" width="19.3" height="242.1" rx="2" fill="#f59e0b" fill-opacity="0.78"/>
+<text x="626.0" y="219.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">207.3</text>
+<rect x="638.7" y="225.4" width="19.3" height="241.6" rx="2" fill="#2eaf5f" fill-opacity="0.78"/>
+<text x="648.3" y="220.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">206.9</text>
+<text x="626.0" y="489" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#374151">E2B 4-bit</text>
+<rect x="690.7" y="426.4" width="19.3" height="40.6" rx="2" fill="#60a5fa" fill-opacity="0.78"/>
+<text x="700.3" y="421.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">34.7</text>
+<rect x="713.0" y="426.7" width="19.3" height="40.3" rx="2" fill="#f59e0b" fill-opacity="0.78"/>
+<text x="722.7" y="421.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">34.5</text>
+<rect x="735.3" y="427.1" width="19.3" height="39.9" rx="2" fill="#2eaf5f" fill-opacity="0.78"/>
+<text x="745.0" y="422.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">34.2</text>
+<text x="722.7" y="489" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#374151">Qwen 27B 4-bit</text>
+<text x="481" y="509" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">128 tok</text>
+<text x="545" y="509" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">512 tok</text>
+<text x="609" y="509" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">2048 tok</text>
+<rect x="824" y="105" width="350" height="420" rx="8" fill="#ffffff" stroke="#dbe3ef"/>
+<text x="842" y="135" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">Runner TTFT (ms)</text>
+<text x="1156" y="135" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">Lower is better</text>
+<line x1="866" y1="467.0" x2="1156" y2="467.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="858" y="471.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">0</text>
+<line x1="866" y1="321.0" x2="1156" y2="321.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="858" y="325.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">7.5k</text>
+<line x1="866" y1="175.0" x2="1156" y2="175.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="858" y="179.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">15k</text>
+<rect x="882.3" y="451.3" width="19.3" height="15.7" rx="2" fill="#60a5fa" fill-opacity="0.78"/>
+<text x="892.0" y="446.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">804.5</text>
+<rect x="904.7" y="418.2" width="19.3" height="48.8" rx="2" fill="#f59e0b" fill-opacity="0.78"/>
+<text x="914.3" y="413.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">2.5k</text>
+<rect x="927.0" y="272.3" width="19.3" height="194.7" rx="2" fill="#2eaf5f" fill-opacity="0.78"/>
+<text x="936.7" y="267.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">10.0k</text>
+<text x="914.3" y="489" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#374151">31B 4-bit</text>
+<rect x="979.0" y="465.9" width="19.3" height="1.1" rx="2" fill="#60a5fa" fill-opacity="0.78"/>
+<text x="988.7" y="460.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">54.8</text>
+<rect x="1001.3" y="465.1" width="19.3" height="1.9" rx="2" fill="#f59e0b" fill-opacity="0.78"/>
+<text x="1011.0" y="460.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">96.2</text>
+<rect x="1023.7" y="461.8" width="19.3" height="5.2" rx="2" fill="#2eaf5f" fill-opacity="0.78"/>
+<text x="1033.3" y="456.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">268.1</text>
+<text x="1011.0" y="489" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#374151">E2B 4-bit</text>
+<rect x="1075.7" y="454.0" width="19.3" height="13.0" rx="2" fill="#60a5fa" fill-opacity="0.78"/>
+<text x="1085.3" y="449.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">670.0</text>
+<rect x="1098.0" y="426.3" width="19.3" height="40.7" rx="2" fill="#f59e0b" fill-opacity="0.78"/>
+<text x="1107.7" y="421.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">2.1k</text>
+<rect x="1120.3" y="314.5" width="19.3" height="152.5" rx="2" fill="#2eaf5f" fill-opacity="0.78"/>
+<text x="1130.0" y="309.5" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="8" fill="#374151">7.8k</text>
+<text x="1107.7" y="489" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#374151">Qwen 27B 4-bit</text>
+<text x="866" y="509" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">128 tok</text>
+<text x="930" y="509" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">512 tok</text>
+<text x="994" y="509" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#6b7280">2048 tok</text>
+<rect x="54" y="566" width="12" height="12" rx="2" fill="#60a5fa"/><text x="72" y="576" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">128 prompt tokens</text>
+<rect x="200" y="566" width="12" height="12" rx="2" fill="#f59e0b"/><text x="218" y="576" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">512 prompt tokens</text>
+<rect x="346" y="566" width="12" height="12" rx="2" fill="#2eaf5f"/><text x="364" y="576" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">2048 prompt tokens</text>
+<text x="1160" y="576" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: 2026-07-12-direct-prefill-improve-validate/</text>
+</svg>

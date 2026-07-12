@@ -59,6 +59,7 @@ prompt tokens. Peer rows and model-specific boundaries are kept visible.
     - [Qwen3.6 MTP peer decode comparison (2026-07-09)](#qwen36-mtp-peer-decode-comparison-2026-07-09)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
   - [Session Mode: Direct Generation](#session-mode-direct-generation)
+    - [Latest direct validation (2026-07-12)](#latest-direct-validation-2026-07-12)
     - [Gemma 4 12B](#gemma-4-12b)
     - [DiffusionGemma](#diffusiongemma)
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
@@ -286,11 +287,14 @@ This README keeps the headline charts and tables close to the project entry
 point. Use the linked docs when you need full methodology, raw artifact review,
 or reproduction commands.
 
-**Benchmarking session baseline (11-Jul-2026):** AX Engine benchmark rows use
+**Benchmarking session baseline (12-Jul-2026):** AX Engine benchmark rows use
 AX Engine `v6.8.2`. Direct-mode peer benchmarking is limited to the existing
 local `llama.cpp` and `mlx-lm` versions: `llama.cpp` `b9910` / `ggml` `0.15.3`
 for GGUF Metal reference rows and `mlx-lm` `0.31.3` for MLX reference rows.
 MTP peer benchmarking uses the current local MTPLX release, `MTPLX 2.0.1`.
+The headline tables and charts remain the clean 11-Jul high-water publication
+set; the newest 12-Jul direct validation is recorded separately below because
+it used one warmup and three measured repetitions.
 
 Performance results are grouped by **Session mode**. Read each mode as a
 separate benchmark session with its own route, workload shape, and headline
@@ -591,6 +595,36 @@ retained 12B result artifacts under
 Direct generation disables speculative drafting and measures the base
 autoregressive route. The charts in this section use decode tok/s, prefill
 tok/s, and TTFT; these are not MTP accept-rate or speedup measurements.
+
+#### Latest direct validation (2026-07-12)
+
+The latest AX-only validation pass exercised the direct-prefill changes on
+Gemma 4 E2B, Gemma 4 31B, and Qwen 3.6 27B 4-bit at 128, 512, and 2,048
+prompt tokens. It used one warmup and three measured repetitions. These rows
+are useful for tracking the current implementation, but are not promoted into
+the headline high-water tables or charts because they do not use the README
+publication contract of two warmups, five measured repetitions, and a clean
+tracked build.
+
+<!-- readme-direct-validation-artifacts: benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-v2/; benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-validate/ -->
+
+<img src="docs/assets/perf-direct-validation-2026-07-12.svg" alt="AX Engine direct validation chart for prefill, decode, and runner TTFT across Gemma 4 and Qwen 3.6 4-bit models">
+
+| Model | Prompt tokens | Prefill tok/s | Decode tok/s | Runner TTFT (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Gemma 4 E2B 4-bit | 128 | 2,336.5 | 216.4 | 54.8 |
+|  | 512 | 5,319.5 | 207.3 | 96.3 |
+|  | 2,048 | 7,640.0 | 206.9 | 268.1 |
+| Gemma 4 31B 4-bit | 128 | 159.1 | 29.0 | 804.5 |
+|  | 512 | 204.1 | 28.4 | 2,508.8 |
+|  | 2,048 | 204.8 | 27.0 | 10,000.4 |
+| Qwen 3.6 27B 4-bit | 128 | 191.1 | 34.7 | 670.0 |
+|  | 512 | 244.6 | 34.5 | 2,092.8 |
+|  | 2,048 | 261.4 | 34.2 | 7,835.8 |
+
+The corresponding complete artifacts are the [initial validation
+pass](benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-v2/sweep_summary.md)
+and the [three-model validation pass](benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-validate/sweep_summary.md).
 
 #### Gemma 4 12B
 
