@@ -40,7 +40,14 @@ fn find_mlx_dirs() -> MlxDirs {
         };
     }
 
-    // --- Priority 2: brew --prefix mlx ---
+    // --- Priority 2: active Python venv / site-packages mlx (matches mlx-lm) ---
+    // Prefer the pip wheel when present so native AX and mlx-lm share one MLX
+    // build. Homebrew bottles have lagged the wheel's Metal backend quality.
+    if let Some(dirs) = find_pip_mlx_dirs() {
+        return dirs;
+    }
+
+    // --- Priority 3: brew --prefix mlx ---
     let mlx_prefix = std::process::Command::new("brew")
         .args(["--prefix", "mlx"])
         .output()
@@ -57,12 +64,82 @@ fn find_mlx_dirs() -> MlxDirs {
         };
     }
 
-    // --- Priority 3: general Homebrew fallback ---
+    // --- Priority 4: general Homebrew fallback ---
     let prefix = homebrew_prefix();
     MlxDirs {
         mlx_include_dir: format!("{prefix}/include"),
         mlx_lib_dir: format!("{prefix}/lib"),
     }
+}
+
+/// Locate a pip-installed `mlx` package that ships `lib/libmlx.dylib` + headers.
+fn find_pip_mlx_dirs() -> Option<MlxDirs> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
+        candidates.push(PathBuf::from(venv).join("lib"));
+    }
+    if let Ok(prefix) = std::env::var("CONDA_PREFIX") {
+        candidates.push(PathBuf::from(prefix).join("lib"));
+    }
+    // Prefer the Python that is building us (maturin/pyo3 set PYO3_PYTHON /
+    // PYTHON). Falling back to bare `python3` can miss the active venv.
+    let python = ["PYO3_PYTHON", "PYTHON", "PYTHON_SYS_EXECUTABLE"]
+        .iter()
+        .find_map(|k| std::env::var_os(k))
+        .unwrap_or_else(|| "python3".into());
+    if let Ok(out) = std::process::Command::new(&python)
+        .args([
+            "-c",
+            "import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]))",
+        ])
+        .output()
+        && out.status.success()
+        && let Ok(s) = String::from_utf8(out.stdout)
+    {
+        let p = PathBuf::from(s.trim());
+        if p.is_dir() {
+            candidates.push(p);
+        }
+    }
+
+    for base in candidates {
+        // base may be .../site-packages/mlx or .../lib
+        let mlx_root = if base.join("lib/libmlx.dylib").is_file() {
+            base.clone()
+        } else if base
+            .join("python3.14/site-packages/mlx/lib/libmlx.dylib")
+            .is_file()
+        {
+            base.join("python3.14/site-packages/mlx")
+        } else if base.join("site-packages/mlx/lib/libmlx.dylib").is_file() {
+            base.join("site-packages/mlx")
+        } else {
+            // search one level of python* site-packages
+            let mut found = None;
+            if let Ok(entries) = std::fs::read_dir(&base) {
+                for ent in entries.flatten() {
+                    let sp = ent.path().join("site-packages/mlx");
+                    if sp.join("lib/libmlx.dylib").is_file() {
+                        found = Some(sp);
+                        break;
+                    }
+                }
+            }
+            match found {
+                Some(p) => p,
+                None => continue,
+            }
+        };
+        let lib_dir = mlx_root.join("lib");
+        let include_dir = mlx_root.join("include");
+        if lib_dir.join("libmlx.dylib").is_file() && include_dir.join("mlx").is_dir() {
+            return Some(MlxDirs {
+                mlx_include_dir: include_dir.display().to_string(),
+                mlx_lib_dir: lib_dir.display().to_string(),
+            });
+        }
+    }
+    None
 }
 
 fn main() {
@@ -86,6 +163,13 @@ fn main() {
     // --- Link MLX C++ library ---
     println!("cargo:rustc-link-lib=mlx");
     println!("cargo:rustc-link-search=native={}", dirs.mlx_lib_dir);
+    // Embed an absolute rpath so the extension loads the same libmlx we
+    // compiled against. Without this, `@rpath/libmlx.dylib` often resolves to
+    // a stale Homebrew bottle that can be ~3× slower than the pip/wheel MLX
+    // build used by mlx-lm (observed on 0.32.0: brew 15 MB dylib vs pip 22 MB).
+    // headerpad leaves room for install_name_tool rewrites if needed later.
+    println!("cargo:rustc-link-arg=-Wl,-headerpad_max_install_names");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dirs.mlx_lib_dir);
 
     // --- Rerun triggers ---
     println!("cargo:rerun-if-changed=build.rs");

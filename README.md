@@ -1088,51 +1088,50 @@ sustained-ingest claim.
 
 #### Qwen3-Embedding ingest scale
 
-**The latest completed Qwen3-Embedding sustained-ingest refresh is AX-only for
-the 0.6B model:** the 2026-07-11 run measures all six 0.6B chunk/batch shapes.
-The 4B and 8B rows remain the retained 2026-07-06 records because their
-full-contract rerun was interrupted during the available runtime window.
+**The latest 0.6B refresh is a same-session `mlx-lm` + AX paired run
+(2026-07-12):** AX matches `mlx-lm` within about ±0.5% on every 0.6B
+chunk/batch shape after linking the native extension against the same MLX
+wheel that `mlx-lm` uses (a stale Homebrew `libmlx` bottle had been making AX
+look ~3× slower). The 4B and 8B rows remain the retained 2026-07-06 AX-only
+records.
 
 For larger RAG ingest jobs, use the sustained scale harness instead of
 extrapolating from one isolated batch. The scale harness keeps the same
 contiguous CPU `float32 [B,H]` output layout but embeds a fixed corpus of 512
-chunks per trial, divided into batches. The 2026-07-11 0.6B AX-only refresh uses 2
-warmups, 5 measured trials, and a 15-second cooldown. Each measured pass is a
+chunks per trial, divided into batches. The 2026-07-12 0.6B paired refresh uses
+2 warmups, 5 measured trials, and a 15-second cooldown. Each measured pass is a
 multi-batch ingest run. p95 batch latency is shown because larger batches
 increase per-flush latency even when throughput (tok/s) is steady.
 
-The previous same-session `mlx-lm` comparison remains available in
-`benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/2026-07-02-215823/`
-for parity analysis, but the table below is intentionally AX-only.
-The 0.6B rows below are direct measurements from the 2026-07-11 artifact; they
-are not compared with the retained 4B/8B rows.
+Artifact:
+`benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-mlxfix/2026-07-12-131718/`.
 
-The chart uses the retained same-session `mlx-lm` rows (yellow) plus the
-current AX-only refresh (green); each box summarizes the six chunk/batch shapes
-per model.
+The chart is a same-session paired box-and-whisker of the six 0.6B shapes
+(`mlx-lm` yellow, AX green). Do not read the retained 4B/8B table rows as
+part of that chart.
 
-<img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped box-and-whisker plot comparing retained mlx-lm and current AX Engine ingest throughput for Qwen3-Embedding workloads">
+<img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped box-and-whisker plot comparing same-session mlx-lm and AX Engine ingest throughput for Qwen3-Embedding 0.6B workloads">
 
-| Model | Workload | Batch | Batches/trial | AX tok/s | AX chunks/s | AX p95 batch ms |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 15,882.5 | 62.0 | 131.8 |
-|  |  | 32 | 16 | 16,010.6 | 62.5 | 544.3 |
-|  |  | 64 | 8 | 16,015.7 | 62.6 | 1,058.3 |
-|  | 512 x 512-token chunks | 8 | 64 | 15,387.1 | 30.1 | 292.6 |
-|  |  | 32 | 16 | 15,355.3 | 30.0 | 1,115.6 |
-|  |  | 64 | 8 | 15,274.9 | 29.8 | 2,210.7 |
-| Qwen3-Embedding 4B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 6,776.1 | 26.5 | 314.6 |
-|  |  | 32 | 16 | 6,721.9 | 26.3 | 1,274.8 |
-|  |  | 64 | 8 | 6,710.9 | 26.2 | 2,551.1 |
-|  | 512 x 512-token chunks | 8 | 64 | 6,529.4 | 12.8 | 646.3 |
-|  |  | 32 | 16 | 6,432.4 | 12.6 | 2,690.4 |
-|  |  | 64 | 8 | 6,480.7 | 12.7 | 5,229.3 |
-| Qwen3-Embedding 8B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 3,458.5 | 13.5 | 611.5 |
-|  |  | 32 | 16 | 3,518.7 | 13.7 | 2,403.4 |
-|  |  | 64 | 8 | 3,408.2 | 13.3 | 4,961.4 |
-|  | 512 x 512-token chunks | 8 | 64 | 3,462.3 | 6.8 | 1,239.3 |
-|  |  | 32 | 16 | 3,423.8 | 6.7 | 4,957.2 |
-|  |  | 64 | 8 | 3,437.2 | 6.7 | 9,843.0 |
+| Model | Workload | Batch | Batches/trial | mlx-lm tok/s | AX tok/s | AX vs | AX chunks/s | AX p95 batch ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 48,668.4 | 48,875.8 | +0.4% | 190.9 | 41.8 |
+|  |  | 32 | 16 | 50,051.9 | 50,105.8 | +0.1% | 195.7 | 173.8 |
+|  |  | 64 | 8 | 49,909.7 | 50,131.0 | +0.4% | 195.8 | 353.1 |
+|  | 512 x 512-token chunks | 8 | 64 | 49,061.5 | 49,057.8 | −0.0% | 95.8 | 83.8 |
+|  |  | 32 | 16 | 48,895.0 | 49,156.0 | +0.5% | 96.0 | 349.8 |
+|  |  | 64 | 8 | 48,978.0 | 49,051.0 | +0.1% | 95.8 | 703.9 |
+| Qwen3-Embedding 4B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | — | 6,776.1 | — | 26.5 | 314.6 |
+|  |  | 32 | 16 | — | 6,721.9 | — | 26.3 | 1,274.8 |
+|  |  | 64 | 8 | — | 6,710.9 | — | 26.2 | 2,551.1 |
+|  | 512 x 512-token chunks | 8 | 64 | — | 6,529.4 | — | 12.8 | 646.3 |
+|  |  | 32 | 16 | — | 6,432.4 | — | 12.6 | 2,690.4 |
+|  |  | 64 | 8 | — | 6,480.7 | — | 12.7 | 5,229.3 |
+| Qwen3-Embedding 8B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | — | 3,458.5 | — | 13.5 | 611.5 |
+|  |  | 32 | 16 | — | 3,518.7 | — | 13.7 | 2,403.4 |
+|  |  | 64 | 8 | — | 3,408.2 | — | 13.3 | 4,961.4 |
+|  | 512 x 512-token chunks | 8 | 64 | — | 3,462.3 | — | 6.8 | 1,239.3 |
+|  |  | 32 | 16 | — | 3,423.8 | — | 6.7 | 4,957.2 |
+|  |  | 64 | 8 | — | 3,437.2 | — | 6.7 | 9,843.0 |
 
 #### EmbeddingGemma ingest scale
 

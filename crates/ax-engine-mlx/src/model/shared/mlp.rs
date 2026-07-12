@@ -91,24 +91,25 @@ pub(crate) fn qkv_project_batched(
     qkv_project_inner(cfg, w, x, head_dim, false, ProjectionBatchPolicy::RowExact)
 }
 
-/// Embedding variant of `qkv_project`: forces the packed-QKV single-matmul
-/// path for short batched Qwen embedding inputs (batch > 1, seq <= 16), where
-/// one quantized matmul + 3 zero-copy slices beats 3 separate Q/K/V matmuls.
+/// Embedding variant of `qkv_project`: prefers a packed-QKV single-matmul when
+/// the layer has materialised `qkv_packed` weights. For split Q/K/V Qwen
+/// embedding weights (the common case), still prefers split projections —
+/// packing would require a runtime concat of three quantized matrices.
 pub(crate) fn qkv_project_embed(
     cfg: &ModelConfig,
     w: &LayerWeights,
     x: &MlxArray,
     head_dim: usize,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
-    let batch = x.shape().first().copied().unwrap_or(1);
-    let seq = x.shape().get(1).copied().unwrap_or(1);
-    let auto_short_qwen = cfg.model_family.starts_with("qwen") && batch > 1 && seq > 0 && seq <= 16;
+    // Prefer packed when present for any batch/seq; previously only short
+    // seq<=16 batches forced packed, leaving long ingest shapes on 3-way split.
+    let force_packed = w.qkv_packed.is_some();
     qkv_project_inner(
         cfg,
         w,
         x,
         head_dim,
-        auto_short_qwen,
+        force_packed,
         ProjectionBatchPolicy::Shared,
     )
 }
