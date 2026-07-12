@@ -2928,6 +2928,17 @@ mod tests {
     };
     use mlx_sys::{eval, zeros};
     use std::collections::BTreeMap;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Serialize GPU-numeric oracle tests that materialize Metal results.
+    /// Parallel suites on CI can otherwise race MLX streams and produce
+    /// catastrophic (non-tolerance) mismatches on bit-sensitive RoPE checks.
+    fn with_gpu_numeric_lock<R>(f: impl FnOnce() -> R) -> R {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let lock = LOCK.get_or_init(|| Mutex::new(()));
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        f()
+    }
 
     fn cfg(attn_output_gate: bool) -> ModelConfig {
         ModelConfig {
@@ -5900,60 +5911,65 @@ mod tests {
     /// for equal-length last-token pooling.
     #[test]
     fn embed_last_token_q_rope_at_offset_matches_full_seq_slice() {
-        let batch = 2_usize;
-        let n_heads = 2_usize;
-        let head_dim = 4_usize;
-        let seq = 8_usize;
-        let target = seq - 1;
-        let proj_data: Vec<f32> = (0..(batch * seq * n_heads * head_dim))
-            .map(|i| ((i as f32) - 17.0) * 0.029)
-            .collect();
-        let norm_data: Vec<f32> = (0..head_dim).map(|i| 0.8 + (i as f32) * 0.05).collect();
-        let proj = array_f32(
-            &proj_data,
-            &[batch as i32, seq as i32, (n_heads * head_dim) as i32],
-        );
-        let norm = array_f32(&norm_data, &[head_dim as i32]);
+        with_gpu_numeric_lock(|| {
+            let batch = 2_usize;
+            let n_heads = 2_usize;
+            let head_dim = 4_usize;
+            let seq = 8_usize;
+            let target = seq - 1;
+            let proj_data: Vec<f32> = (0..(batch * seq * n_heads * head_dim))
+                .map(|i| ((i as f32) - 17.0) * 0.029)
+                .collect();
+            let norm_data: Vec<f32> = (0..head_dim).map(|i| 0.8 + (i as f32) * 0.05).collect();
+            let proj = array_f32(
+                &proj_data,
+                &[batch as i32, seq as i32, (n_heads * head_dim) as i32],
+            );
+            let norm = array_f32(&norm_data, &[head_dim as i32]);
+            eval(&[&proj, &norm]);
 
-        let full = qk_norm_rope_bhsd_from_proj(
-            &proj,
-            Some(&norm),
-            n_heads,
-            head_dim,
-            seq,
-            1.0e-6,
-            head_dim,
-            Some(10_000.0),
-            0,
-            None,
-        );
-        let full_target = select_attention_common_target_bhsd(&full, target);
+            let full = qk_norm_rope_bhsd_from_proj(
+                &proj,
+                Some(&norm),
+                n_heads,
+                head_dim,
+                seq,
+                1.0e-6,
+                head_dim,
+                Some(10_000.0),
+                0,
+                None,
+            );
+            let full_target = select_attention_common_target_bhsd(&full, target);
+            eval(&[&full, &full_target]);
 
-        // Emulate Q-only projection: take the target token's raw proj rows and
-        // RoPE them with offset = target.
-        let target_proj = select_embedding_targets(&proj, &[target; 2]);
-        let target_rope = qk_norm_rope_bhsd_from_proj(
-            &target_proj,
-            Some(&norm),
-            n_heads,
-            head_dim,
-            1,
-            1.0e-6,
-            head_dim,
-            Some(10_000.0),
-            target,
-            None,
-        );
+            // Emulate Q-only projection: take the target token's raw proj rows and
+            // RoPE them with offset = target.
+            let target_proj = select_embedding_targets(&proj, &[target; 2]);
+            eval(&[&target_proj]);
+            let target_rope = qk_norm_rope_bhsd_from_proj(
+                &target_proj,
+                Some(&norm),
+                n_heads,
+                head_dim,
+                1,
+                1.0e-6,
+                head_dim,
+                Some(10_000.0),
+                target,
+                None,
+            );
 
-        let full_c = mlx_sys::ops::contiguous(&full_target, None);
-        let target_c = mlx_sys::ops::contiguous(&target_rope, None);
-        eval(&[&full_c, &target_c]);
-        assert_eq!(full_c.shape(), target_c.shape());
-        assert_eq!(
-            full_c.shape(),
-            vec![batch as i32, n_heads as i32, 1, head_dim as i32]
-        );
-        assert_close(target_c.data_f32(), full_c.data_f32(), 1.0e-5);
+            let full_c = mlx_sys::ops::contiguous(&full_target, None);
+            let target_c = mlx_sys::ops::contiguous(&target_rope, None);
+            eval(&[&full_c, &target_c]);
+            assert_eq!(full_c.shape(), target_c.shape());
+            assert_eq!(
+                full_c.shape(),
+                vec![batch as i32, n_heads as i32, 1, head_dim as i32]
+            );
+            assert_close(target_c.data_f32(), full_c.data_f32(), 1.0e-5);
+        });
     }
 
     #[test]

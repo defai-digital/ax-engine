@@ -687,6 +687,7 @@ mod tests {
     use crate::ids::{ModelId, SequenceNo, StepId};
     use crate::runner::{ExecutionStatus, KvWriteSummary};
     use crate::sampling::SamplingParams;
+    use crate::scheduler::RouteMetadata;
 
     fn make_submission(
         request_id: u64,
@@ -891,6 +892,71 @@ mod tests {
                 .block_table
                 .block_ids
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn applies_diffusion_schedule_update_from_runner() {
+        use crate::GenerationKind;
+        use crate::runner::DiffusionScheduleUpdate;
+
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        manager
+            .submit(make_submission(1, 1, "diffusion_gemma"))
+            .unwrap();
+        manager
+            .set_generation_kind(RequestId(1), GenerationKind::BlockDiffusion)
+            .unwrap();
+        manager.admit_waiting().unwrap();
+        manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(1),
+                selected_requests: vec![RequestId(1)],
+                deferred_requests: vec![],
+                memory_blocked_requests: vec![],
+                execution_batch: None,
+            })
+            .unwrap();
+
+        manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(1),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 3,
+                        output_token: None,
+                        output_tokens: Vec::new(),
+                        stop_reason: None,
+                        error: None,
+                        diffusion_schedule: Some(DiffusionScheduleUpdate {
+                            denoise_steps_in_block: 12,
+                            commit_ready: false,
+                            block_committed: true,
+                        }),
+                    }],
+                    logits_handles: vec![],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 3,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: RouteMetadata::empty(),
+                    execution_status: crate::runner::ExecutionStatus::Success,
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.generation_kind, GenerationKind::BlockDiffusion);
+        assert_eq!(snapshot.diffusion_denoise_steps_in_block, 12);
+        assert!(!snapshot.diffusion_commit_ready);
+        assert!(snapshot.diffusion_block_committed);
+        assert_eq!(
+            crate::plan_work_unit_for_snapshot(&snapshot),
+            crate::WorkUnitKind::DenoiseStep
         );
     }
 
