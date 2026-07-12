@@ -262,7 +262,7 @@ Interpretation rule:
 
 - Weight loader: reads `NativeTensorSpec` offsets from safetensors → `MlxArray`
 - Quantized weight binding: Q4_K_M → `mlx_quantized_matmul`
-- Model graph: Qwen3 dense (GQA + SwiGLU), Qwen3.5 MoE (linear attention + MoE FFN + attn_output_gate), Gemma4 (per-layer embeddings, per-layer input gating, sliding-window + full attention, KV sharing, logit softcapping, sorted SwitchGLU expert gather for large MoE prefill batches; assistant-MTP multi-depth draft via `Gemma4AssistantDraftSession` with once-per-attempt frozen shared target K/V + confidence gates; `AX_MLX_GEMMA4_ASSISTANT_COMPILE` reserved for pure-graph compile once KV/RoPE are array inputs)
+- Model graph: Qwen3 dense (GQA + SwiGLU), Qwen3.5 MoE (linear attention + MoE FFN + attn_output_gate), Gemma4 (per-layer embeddings, per-layer input gating, sliding-window + full attention, KV sharing, logit softcapping, sorted SwitchGLU expert gather for large MoE prefill batches; assistant-MTP multi-depth draft via `Gemma4AssistantDraftSession` with once-per-attempt frozen shared target K/V, `rope_dynamic` Q offset, + confidence gates; `AX_MLX_GEMMA4_ASSISTANT_COMPILE` still opt-in pending pure-graph MlxClosure + A/B)
 - Chunked KV cache with slice_update growth and O(1) n-gram branch rollback
 - N-gram acceleration with EMA gating
 - Chunked prefill loop

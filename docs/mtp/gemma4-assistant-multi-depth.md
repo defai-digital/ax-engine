@@ -21,7 +21,9 @@ drafts depth-3. The cap was conservative, not fundamental:
   of its own and re-reads the *target's* frozen KV cache. The multi-depth path
   peeks shared full/sliding K/V (and any sliding ring layout) once via
   `Gemma4AssistantDraftSession::bind_target_cache`, then reuses those arrays for
-  every depth step — no cache surgery and no per-layer re-peek.
+  every depth step — no cache surgery and no per-layer re-peek. Q RoPE uses
+  `rope_dynamic` with a scalar Int32 offset array so position is a graph input
+  (compile-ready shape; `AX_MLX_GEMMA4_ASSISTANT_COMPILE` remains opt-in).
 - `gemma4_assistant_forward_one` already computes a `post_projection`
   "backbone hidden" estimate of the drafted position and **returned it only to
   have the caller discard it** (`let Ok((logits, _projected_hidden)) = …`). That

@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, concatenate,
-    dequantize, divide, multiply, power, reshape, rms_norm, slice, split, stack, sum_axis, take,
-    take_along_axis, transpose,
+    dequantize, divide, multiply, power, reshape, rms_norm, rope_dynamic, slice, split, stack,
+    sum_axis, take, take_along_axis, transpose,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1208,13 +1208,28 @@ fn gemma4_assistant_forward_one_validated(
     session.forward_one(last_token, last_backbone_hidden, constant_position)
 }
 
+/// Scalar Int32 RoPE offset array for assistant draft (compile-graph input).
+///
+/// Mirrors the MTP compiled-draft pattern: position flows as an array node so
+/// multi-depth steps share graph structure and a future `mlx_compile` closure
+/// can take offset as an input without re-tracing.
+fn gemma4_assistant_rope_offset_array(position: usize) -> MlxArray {
+    let offset_val = position as i32;
+    MlxArray::from_raw_data(
+        &offset_val as *const i32 as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Int32,
+    )
+}
+
 fn gemma4_assistant_layer_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,
     hidden: &MlxArray,
     frozen_kv: &Gemma4AssistantFrozenTargetKv,
     layer_idx: usize,
-    constant_position: usize,
+    rope_offset_arr: &MlxArray,
 ) -> Result<MlxArray, Gemma4AssistantForwardError> {
     use Gemma4AssistantForwardError as E;
     let (head_dim, rope_theta, rope_dims, layer_rope_freqs, sliding_window, _, _) =
@@ -1231,20 +1246,28 @@ fn gemma4_assistant_layer_forward(
     let (rope_base, rope_freqs_ref) = rope_freqs
         .map(|f| (None, Some(f)))
         .unwrap_or((Some(rope_theta), None));
-    let q_rope = qk_norm_rope_bhsd_from_proj(
+    // Dynamic RoPE: offset is a graph input (same as MTP compiled draft).
+    // Target K/V are already frozen arrays; only Q is rotated per depth.
+    let seq = hidden.shape()[1] as usize;
+    let q_normed = qk_norm_bhsd_from_proj(
         &q_raw,
         w.q_norm.as_ref(),
         cfg.n_heads,
         head_dim,
-        hidden.shape()[1] as usize,
+        seq,
         cfg.rms_norm_eps,
-        rope_dims,
+    );
+    let q_rope = rope_dynamic(
+        &q_normed,
+        rope_dims as i32,
+        false,
         rope_base,
-        constant_position,
+        1.0,
+        rope_offset_arr,
         rope_freqs_ref,
+        None,
     );
 
-    let seq = hidden.shape()[1] as usize;
     let key_len = cached_k.shape()[2] as usize;
     let mask = match layer_kv.ring {
         // Rotated target ring: frozen peek returned the full unordered ring,
@@ -1288,13 +1311,14 @@ fn gemma4_assistant_layer_forward(
     })
 }
 
-// ── Gemma4 assistant multi-depth draft session (Phases B + D) ──────────────
+// ── Gemma4 assistant multi-depth draft session (Phases B + D + E) ───────────
 //
 // Validates family + projections once, freezes shared target K/V (+ ring) once
-// per draft attempt, then runs the hot forward per depth. Pure mlx_compile
-// still needs frozen KV + dynamic RoPE as array inputs (follow-on); until then
-// the "compile" flag must not wrap the imperative path in a non-compiled
-// MlxClosure.
+// per draft attempt, applies Q RoPE via rope_dynamic (offset as array input),
+// then runs the hot forward per depth. Pure mlx_compile can still be a
+// follow-on once a single MlxClosure is traced over these array inputs; the
+// "compile" flag must not wrap the imperative path in a non-compiled
+// MlxClosure until that lands with A/B evidence.
 
 /// Request-scoped assistant draft context: one validation, one frozen target
 /// KV bind, many depth steps.
@@ -1374,7 +1398,9 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
 
     /// One assistant forward step at `constant_position` (validated + frozen).
     ///
-    /// Requires [`Self::bind_target_cache`] first.
+    /// Requires [`Self::bind_target_cache`] first. RoPE offset is passed as an
+    /// array (via [`gemma4_assistant_rope_offset_array`]) so multi-depth steps
+    /// share a compile-ready graph shape with frozen target K/V.
     pub fn forward_one(
         &self,
         last_token: u32,
@@ -1385,6 +1411,7 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
             .frozen_target_kv
             .as_ref()
             .ok_or(Gemma4AssistantForwardError::UnboundTargetKv)?;
+        let rope_offset = gemma4_assistant_rope_offset_array(constant_position);
 
         let mut token_embedding = embed_tokens(
             &[last_token],
@@ -1405,7 +1432,7 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
                 &hidden,
                 frozen,
                 layer_idx,
-                constant_position,
+                &rope_offset,
             )?;
         }
 
@@ -4472,6 +4499,65 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn gemma4_assistant_rope_offset_array_is_int32_scalar() {
+        let arr = gemma4_assistant_rope_offset_array(42);
+        assert_eq!(arr.shape(), &[1]);
+        assert_eq!(arr.dtype(), MlxDtype::Int32);
+        eval(&[&arr]);
+        assert_eq!(arr.nbytes(), 4);
+        let value = unsafe { *(arr.data_raw() as *const i32) };
+        assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn gemma4_assistant_dynamic_rope_matches_static_scalar_offset() {
+        // Compile-foundation check: rope_dynamic(offset_arr) ≡ rope(offset_i32)
+        // for a single-token BHSD query at a fixed position.
+        let n_heads = 2;
+        let head_dim = 4;
+        let seq = 1;
+        let q_data: Vec<f32> = (0..(n_heads * seq * head_dim))
+            .map(|i| 0.1 * (i as f32 + 1.0))
+            .collect();
+        let q = reshape(
+            &MlxArray::from_f32_slice(&q_data),
+            &[1, n_heads as i32, seq as i32, head_dim as i32],
+            None,
+        );
+        let offset = 7usize;
+        let static_r = mlx_sys::rope(
+            &q,
+            head_dim as i32,
+            false,
+            Some(10_000.0),
+            1.0,
+            offset as i32,
+            None,
+            None,
+        );
+        let dyn_r = rope_dynamic(
+            &q,
+            head_dim as i32,
+            false,
+            Some(10_000.0),
+            1.0,
+            &gemma4_assistant_rope_offset_array(offset),
+            None,
+            None,
+        );
+        eval(&[&static_r, &dyn_r]);
+        let a = static_r.data_f32();
+        let b = dyn_r.data_f32();
+        assert_eq!(a.len(), b.len());
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (x - y).abs() < 1e-5,
+                "static vs dynamic rope mismatch at {i}: {x} vs {y}"
+            );
+        }
     }
 
     #[test]
