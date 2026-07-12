@@ -57,11 +57,34 @@ Rules for public claims:
 | `paired_delta` | same-session fair/scale **without** `--ax-only` | README AX vs mlx-lm / mlx-embeddings deltas |
 | `ax_absolute_trend` | `--ax-only` | Absolute AX trend across commits; never invent a reference delta |
 
-Short-query fair rows **headline latency** (`median_ms_per_item`, lower is
-better). Fixed-length and ingest-scale rows headline tok/s (and scale also
-reports chunks/s + batch p95 ms). Do not publish short-query tok/s as the
-primary public number: short text makes tok/s noisy and misrepresents query
-serving latency.
+### How to read batching on public charts
+
+| Surface | What is timed | Batch size |
+|---|---|---|
+| **README ingest scale** (yellow vs green) | Sustained multi-chunk encode with shared output contract | **B = 8, 32, 64 for both engines** |
+| **Fair diagnostic** | One cooled batch per trial; short-query headlined as ms/item | Includes **B = 1** and larger B |
+| **Single-sentence loop** | One Python/API call per string | Not a fair competitive mode |
+
+**Best practices for publication and product messaging:**
+
+1. **Say “batched encode” when the chart is green vs yellow on ingest scale.**
+   Green is not AX single-call mode; both series use `embed_batch_*`-style
+   matrix forwards.
+2. **Keep competitive charts apples-to-apples.** Do not add an AX-only “batch”
+   series next to a reference that is already batched at the same B.
+3. **Teach batching as an API habit, not an exclusive engine win.** The 2–3×
+   gain from dropping a one-call-per-sentence loop applies to any backend that
+   can take a batch (see the anti-pattern section below).
+4. **Put B = 1 latency under fair diagnostics**, not under ingest-scale
+   headline tok/s. Short-query fair rows **headline latency**
+   (`median_ms_per_item`, lower is better).
+5. **Gate publication claims** with `check_embedding_publish_gate.py` before
+   README or chart updates.
+
+Fixed-length and ingest-scale rows headline tok/s (and scale also reports
+chunks/s + batch p95 ms). Do not publish short-query tok/s as the primary
+public number: short text makes tok/s noisy and misrepresents query serving
+latency.
 
 Before wiring a new artifact into the README or charts, run:
 

@@ -2935,14 +2935,14 @@ def main() -> int:
     embedding_scale_output_path = args.output_dir / EMBEDDING_SCALE_CHART_OUTPUT
     embedding_scale_content = render_embedding_box_chart(
         load_embedding_scale_delta_rows(args.readme.parent),
-        title="Qwen3 embedding ingest scale",
+        title="Qwen3 embedding ingest scale (batched)",
         subtitle=(
-            "Grouped by model | box=IQR | whiskers=min/max | dots=six "
-            "chunk/batch shapes."
+            "Both series are matrix-batched encode (B=8/32/64) | "
+            "box=IQR | whiskers=min/max | dots=six chunk×batch shapes."
         ),
         source_label=(
             "Source: 2026-07-12 same-session paired mlx-lm+AX "
-            "(0.6B/4B/8B, ax.embedding_ingest_scale.v2)"
+            "(0.6B/4B/8B, ax.embedding_ingest_scale.v2); not B=1 single-call"
         ),
         ax_label="AX Engine v6.8.2 (2026-07-12)",
     )

@@ -1076,14 +1076,33 @@ Qwen 3.6 direct-mode decode verdict: AX is faster against `mlx_lm` in every refr
 ### Session Mode: Embeddings
 
 Embedding sessions use a separate pooling route from text generation. Public
-README rows focus on sustained ingest workloads, where callers embed many chunks
-and the fixed per-call cost can be amortized. Treat these rows as embedding
-throughput and latency evidence, not as direct or MTP decode evidence.
-Single-batch, cooled short-query comparisons are useful diagnostics for
-query-serving latency, but they are not published here as headline throughput
-because tok/s can overstate or obscure per-call latency behavior. The current
-Qwen short-query diagnostic still shows an AX native-graph latency gap versus
-`mlx-lm`; treat that as a performance investigation target rather than a
+README rows focus on sustained **batched** ingest workloads, where callers
+embed many chunks and the fixed per-call cost can be amortized. Treat these
+rows as embedding throughput and latency evidence, not as direct or MTP decode
+evidence.
+
+**How to read the public chart and table (best practice):**
+
+- **Yellow (`mlx-lm`) and green (AX) are both already matrix-batched.** Each
+  timed step encodes `B` sequences in one forward and materializes a contiguous
+  CPU `float32 [B,H]` matrix. Published batch sizes are **B = 8, 32, 64**.
+- **Green is not “AX single-sentence mode.”** A true single-sequence call is
+  `B = 1` (or a Python loop of one-id embeds). That path is useful for
+  query-latency diagnostics and lives under
+  `benchmarks/results/embedding/embedding-fair/`; it is **not** the headline
+  ingest claim.
+- **Do not add an “AX batch only” series** on the competitive chart. Batching
+  is an API shape available to both engines; a third bar that only AX gets would
+  misread a usage pattern as an engine-only win.
+- Prefer `session.embed_batch_array` / `embed_batch_flat` (or HTTP
+  `input: [[ids], …]`) over one call per sentence — that advice applies to
+  every backend; details in [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
+
+Cooled short-query fair runs remain useful for query-serving latency, but they
+are not published here as headline throughput because tok/s on short text can
+overstate or obscure per-call latency. The current Qwen short-query diagnostic
+still shows an AX native-graph latency gap versus `mlx-lm` on some `B = 1`
+shapes; treat that as a performance investigation target rather than a
 sustained-ingest claim.
 
 #### Qwen3-Embedding ingest scale
@@ -1100,18 +1119,21 @@ slower and is rejected by `scripts/check_embedding_publish_gate.py` for
 For larger RAG ingest jobs, use the sustained scale harness instead of
 extrapolating from one isolated batch. The scale harness keeps the same
 contiguous CPU `float32 [B,H]` output layout but embeds a fixed corpus of 512
-chunks per trial, divided into batches. The 2026-07-12 paired refresh uses
-2 warmups, 5 measured trials, and a 15-second cooldown. Each measured pass is a
-multi-batch ingest run. p95 batch latency is shown because larger batches
-increase per-flush latency even when throughput (tok/s) is steady.
+chunks per trial, flushed at **batch sizes 8 / 32 / 64 for both engines**. The
+2026-07-12 paired refresh uses 2 warmups, 5 measured trials, and a 15-second
+cooldown. Each measured pass is a multi-batch ingest run. p95 batch latency is
+shown because larger batches increase per-flush latency even when throughput
+(tok/s) is steady.
 
 Artifact:
 `benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/2026-07-12-145710/`.
 
-The chart is a same-session paired box-and-whisker of all 18 shapes, grouped
-0.6B → 4B → 8B (`mlx-lm` yellow, AX green).
+The chart is a same-session paired box-and-whisker of all **18 batched
+shapes** (3 models × 2 chunk lengths × 3 batch sizes), grouped
+0.6B → 4B → 8B (`mlx-lm` yellow, AX green). Each box summarizes the six
+chunk/batch shapes for that model; both series are batched encode.
 
-<img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped box-and-whisker plot comparing same-session mlx-lm and AX Engine ingest throughput for Qwen3-Embedding 0.6B, 4B, and 8B workloads">
+<img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped box-and-whisker plot comparing same-session batched mlx-lm and AX Engine ingest throughput for Qwen3-Embedding 0.6B, 4B, and 8B at batch sizes 8, 32, and 64">
 
 | Model | Workload | Batch | Batches/trial | mlx-lm tok/s | AX tok/s | AX vs | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
