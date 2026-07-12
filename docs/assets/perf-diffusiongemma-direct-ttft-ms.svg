@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430" role="img" aria-labelledby="title desc">
 <title>DiffusionGemma 4-bit - Time to first block</title>
-<desc>DiffusionGemma 4-bit - Time to first block; AX Engine direct first-block measurements at 128/512/2048 prompt tokens.</desc>
+<desc>DiffusionGemma 4-bit - Time to first block; AX Engine v6.8.2 direct first-block measurements at 128/512/2048 prompt tokens.</desc>
 <rect width="800" height="430" fill="#f8fafc"/>
 <text id="title" x="64" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">DiffusionGemma 4-bit - Time to first block</text>
-<text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">median over reps | grouped by prompt tokens | first committed block</text>
-<text id="desc" x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX-only DiffusionGemma direct telemetry; peer runtime blockers are documented in docs</text>
+<text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">median over reps | grouped by prompt tokens | first committed block | AX Engine v6.8.2</text>
+<text id="desc" x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX Engine v6.8.2 direct telemetry; peer runtime blockers are documented in docs</text>
 <text x="64" y="76" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">Runner time to first committed block: prefill wall plus first diffusion block wall.</text>
 <rect x="718" y="13" width="48" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
 <text x="742.0" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">ms</text>
@@ -33,5 +33,5 @@
 <text x="544.0" y="149.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">2.1k</text>
 <text x="544.0" y="346" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2048 tok</text>
 <rect x="64.0" y="399" width="12" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.40" stroke="#176c37" stroke-width="1.4"/>
-<text x="80.0" y="408" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine direct</text>
+<text x="80.0" y="408" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine v6.8.2 direct</text>
 </svg>

@@ -59,6 +59,7 @@ BOTTOM = 316
 AX_COLOR = "#2eaf5f"
 AX_DARK = "#176c37"
 RED = "#dc2626"
+AX_ENGINE_VERSION_LABEL = "AX Engine v6.8.2"
 
 
 @dataclass(frozen=True)
@@ -492,14 +493,14 @@ def render_chart(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" '
         f'viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
         f"<title>{escape(title)}</title>",
-        f"<desc>{escape(title)}; AX Engine direct first-block measurements at 128/512/2048 prompt tokens.</desc>",
+        f"<desc>{escape(title)}; {AX_ENGINE_VERSION_LABEL} direct first-block measurements at 128/512/2048 prompt tokens.</desc>",
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
         f'<text id="title" x="{LEFT}" y="24" font-family="{FONT}" font-size="16" '
         f'font-weight="700" fill="#111827">{escape(title)}</text>',
         f'<text x="{LEFT}" y="46" font-family="{FONT}" font-size="11" fill="#4b5563">'
-        f"median over reps | grouped by prompt tokens | first committed block</text>",
+        f"median over reps | grouped by prompt tokens | first committed block | {AX_ENGINE_VERSION_LABEL}</text>",
         f'<text id="desc" x="{LEFT}" y="62" font-family="{FONT}" font-size="10" fill="#6b7280">'
-        f"AX-only DiffusionGemma direct telemetry; peer runtime blockers are documented in docs</text>",
+        f"{AX_ENGINE_VERSION_LABEL} direct telemetry; peer runtime blockers are documented in docs</text>",
         f'<text x="{LEFT}" y="76" font-family="{FONT}" font-size="9" fill="#9ca3af">'
         f"{escape(note)}</text>",
         f'<rect x="{header_right - unit_w}" y="13" width="{unit_w}" height="22" '
@@ -548,7 +549,7 @@ def render_chart(
 
     legend_y = HEIGHT - 22
     legend_x = LEFT
-    label = "AX Engine direct"
+    label = f"{AX_ENGINE_VERSION_LABEL} direct"
     parts.append(
         f'<rect x="{legend_x:.1f}" y="{legend_y - 9}" width="12" height="10" rx="2" '
         f'fill="{AX_COLOR}" fill-opacity="0.40" stroke="{AX_DARK}" stroke-width="1.4"/>'
@@ -585,9 +586,9 @@ def render_bandwidth_share_chart(rows: list[dict[str, Any]]) -> str:
         f'<text id="title" x="{LEFT}" y="24" font-family="{FONT}" font-size="16" '
         f'font-weight="700" fill="#111827">DiffusionGemma 4-bit - Estimated weight bandwidth</text>',
         f'<text x="{LEFT}" y="46" font-family="{FONT}" font-size="11" fill="#4b5563">'
-        f"median over reps | grouped by prompt tokens | first committed block</text>",
+        f"median over reps | grouped by prompt tokens | first committed block | {AX_ENGINE_VERSION_LABEL}</text>",
         f'<text id="desc" x="{LEFT}" y="62" font-family="{FONT}" font-size="10" fill="#6b7280">'
-        f"Estimated weight traffic, not GPU utilization; peer runtime blockers are documented in docs</text>",
+        f"{AX_ENGINE_VERSION_LABEL} estimated weight traffic, not GPU utilization; peer runtime blockers are documented in docs</text>",
         f'<text x="{LEFT}" y="76" font-family="{FONT}" font-size="9" fill="#9ca3af">'
         f"100% = M5 Max theoretical unified-memory bandwidth</text>",
         f'<rect x="{header_right - 48}" y="13" width="48" height="22" rx="11" '
@@ -643,10 +644,10 @@ def render_bandwidth_share_chart(rows: list[dict[str, Any]]) -> str:
             f'<rect x="{legend_x:.1f}" y="{legend_y - 9}" width="12" height="10" rx="2" '
             f'fill="{AX_COLOR}" fill-opacity="0.76"/>',
             f'<text x="{legend_x + 16:.1f}" y="{legend_y}" font-family="{FONT}" '
-            f'font-size="10" fill="#374151">Estimated weight bandwidth</text>',
-            f'<rect x="{legend_x + 228:.1f}" y="{legend_y - 9}" width="12" height="10" rx="2" '
+            f'font-size="10" fill="#374151">{AX_ENGINE_VERSION_LABEL} estimated weight bandwidth</text>',
+            f'<rect x="{legend_x + 310:.1f}" y="{legend_y - 9}" width="12" height="10" rx="2" '
             f'fill="{headroom_color}" stroke="{headroom_stroke}" stroke-width="1"/>',
-            f'<text x="{legend_x + 244:.1f}" y="{legend_y}" font-family="{FONT}" '
+            f'<text x="{legend_x + 326:.1f}" y="{legend_y}" font-family="{FONT}" '
             f'font-size="10" fill="#374151">Theoretical headroom</text>',
             "</svg>",
         ]
