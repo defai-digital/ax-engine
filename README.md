@@ -1108,14 +1108,10 @@ increase per-flush latency even when throughput (tok/s) is steady.
 Artifact:
 `benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/2026-07-12-145710/`.
 
-The chart is a same-session **batch-size bar chart** for all three models
-(0.6B → 4B → 8B). Within each model, bars are grouped by batch size **B8 / B32
-/ B64** (mean tok/s over the 256- and 512-token chunk shapes at that batch).
-**Yellow** is `mlx-lm`, **green** is AX at B8, **blue** is AX at B32/B64 — both
-engines use the same batch contract, so the blue series highlights larger
-matrix batches rather than an AX-only feature.
+The chart is a same-session paired box-and-whisker of all 18 shapes, grouped
+0.6B → 4B → 8B (`mlx-lm` yellow, AX green).
 
-<img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped batch-size bar chart comparing same-session mlx-lm and AX Engine ingest throughput for Qwen3-Embedding 0.6B, 4B, and 8B at batch sizes 8, 32, and 64">
+<img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped box-and-whisker plot comparing same-session mlx-lm and AX Engine ingest throughput for Qwen3-Embedding 0.6B, 4B, and 8B workloads">
 
 | Model | Workload | Batch | Batches/trial | mlx-lm tok/s | AX tok/s | AX vs | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
