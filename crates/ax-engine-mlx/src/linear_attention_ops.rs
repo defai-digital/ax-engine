@@ -5,7 +5,7 @@ use mlx_sys::{
     conv1d, multiply, reshape, rms_norm, slice, slice_last_dim, zeros,
 };
 #[cfg(test)]
-use mlx_sys::{add, exp, less, log1p, negative, where_cond};
+use mlx_sys::{add, exp, less, log1p, negative, sigmoid, where_cond};
 
 use crate::attention_mask::scalar_i32;
 use crate::fastpath;
@@ -19,6 +19,7 @@ pub struct LinearAttentionQkv {
 }
 
 static GATED_DELTA_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static GATED_DELTA_PREFILL_STREAMING_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GATED_DELTA_DECODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static DECODE_POST_INPUT_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static RMS_NORM_GATE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -30,8 +31,8 @@ pub(crate) const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: usize = 2048;
 /// compute_g from mlx-lm/mlx-swift-lm:
 /// `exp(-exp(A_log.float32) * softplus(a + dt_bias))`.
 ///
-/// This function is retained for testing; the production path folds this
-/// computation into `gated_delta_kernel` to avoid the 7-node lazy graph.
+/// Production prefill/decode fold this into Metal; this MLX-ops form is the
+/// unit/oracle reference for softplus and dtype contracts.
 #[cfg(test)]
 pub(crate) fn compute_gated_delta_g(
     a_log: &MlxArray,
@@ -51,7 +52,22 @@ pub(crate) fn compute_gated_delta_g(
     );
     let decay = multiply(&decay_rate, &softplus, None);
     let g = exp(&negative(&decay, None), None);
-    astype(&g, a.dtype(), None)
+    // Keep g in float32 for the recurrent state update (matches mlx_lm).
+    astype(&g, MlxDtype::Float32, None)
+}
+
+/// `beta = sigmoid(b)` with the bf16/activation rounding contract used by the
+/// fused Metal kernel: compute in float, cast through the activation dtype,
+/// then promote back to float32 for the recurrent update.
+///
+/// Kept for unit/oracle comparisons; production prefill fuses beta inside the
+/// streaming Metal kernel.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn compute_gated_delta_beta(b_raw: &MlxArray) -> MlxArray {
+    let beta = sigmoid(b_raw, None);
+    let beta_act = astype(&beta, b_raw.dtype(), None);
+    astype(&beta_act, MlxDtype::Float32, None)
 }
 
 /// Apply Qwen3.5's depthwise conv over `[cached_tail, qkv]`.
@@ -339,19 +355,37 @@ pub fn gated_delta_kernel(
             state_shape,
         );
     }
+    // Multi-token prefill hybrid:
+    // - default: legacy fused kernel with CacheCapacity 512/1024/2048.
+    // - opt-in streaming (seq>512): no CacheCapacity TG array.
+    if seq > GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32
+        && fastpath::qwen_gated_delta_prefill_streaming_enabled()
+    {
+        return gated_delta_prefill_streaming_kernel(
+            q,
+            k,
+            v,
+            a_log,
+            a_raw,
+            dt_bias,
+            b_raw,
+            state,
+            batch,
+            seq,
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            state_shape,
+        );
+    }
     let seq_i32 = scalar_i32(seq);
     assert!(
         seq <= GATED_DELTA_THREADGROUP_CACHE_CAPACITY as i32,
         "gated_delta_kernel t_len ({seq}) exceeds threadgroup cache capacity ({GATED_DELTA_THREADGROUP_CACHE_CAPACITY})"
     );
-    // Three-tier specialization. The 2048 specialization was measured to lose
-    // ~15% per-token throughput in the gated-delta recurrent loop on Qwen 3.6
-    // 27B (Hv=48) vs the 512 specialization, because doubling `CacheCapacity`
-    // doubles the per-threadgroup `g_t_cache`/`beta_t_cache` allocation and
-    // halves SM occupancy. The 1024 tier recovers most of that occupancy while
-    // still amortizing dispatch over a 1024-token chunk; `runner.rs` caps the
-    // linear-attention prefill chunk to 1024 so the long tier is reserved for
-    // exceptional callers that explicitly opt in to a larger chunk.
+    // Three-tier CacheCapacity. The 2048 tier loses ~15% per-token vs 512 on
+    // Qwen 3.6 27B (Hv=48); production clamps linear prefill chunks to 1024.
     let cache_capacity = if seq <= GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32 {
         GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32
     } else if seq <= GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32 {
@@ -439,6 +473,106 @@ pub fn gated_delta_kernel(
     (
         outputs.next().expect("gated delta y output"),
         outputs.next().expect("gated delta state output"),
+    )
+}
+
+/// Multi-token GatedDelta prefill without a CacheCapacity-sized TG cache.
+/// Fuses g/beta each timestep (same math as the decode kernel) so long
+/// prompts keep high SM occupancy and skip the separate MLX precompute graph.
+#[allow(clippy::too_many_arguments)]
+fn gated_delta_prefill_streaming_kernel(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
+    state: &MlxArray,
+    batch: i32,
+    seq: i32,
+    num_key_heads: i32,
+    key_head_dim: i32,
+    num_value_heads: i32,
+    value_head_dim: i32,
+    state_shape: Vec<i32>,
+) -> (MlxArray, MlxArray) {
+    assert!(
+        key_head_dim % 32 == 0,
+        "gated_delta_kernel requires key_head_dim divisible by 32 (got {key_head_dim})"
+    );
+    assert!(
+        num_key_heads > 0 && num_value_heads % num_key_heads == 0,
+        "gated_delta_kernel requires num_value_heads to be a multiple of num_key_heads \
+         (got {num_value_heads} value heads, {num_key_heads} key heads)"
+    );
+
+    let seq_i32 = scalar_i32(seq);
+
+    let kernel = GATED_DELTA_PREFILL_STREAMING_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "qwen35_gated_delta_prefill_streaming_v2",
+            &[
+                "q", "k", "v", "a_log", "a_raw", "dt_bias", "b_raw", "state_in", "seq_len",
+            ],
+            &["y", "state_out"],
+            GATED_DELTA_PREFILL_STREAMING_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+
+    let outputs = kernel.apply_with_template(
+        &[q, k, v, a_log, a_raw, dt_bias, b_raw, state, &seq_i32],
+        &[
+            KernelOutputSpec {
+                shape: vec![batch, seq, num_value_heads, value_head_dim],
+                dtype: q.dtype(),
+            },
+            KernelOutputSpec {
+                shape: state_shape,
+                dtype: state.dtype(),
+            },
+        ],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "InT",
+                dtype: q.dtype(),
+            },
+            KernelTemplateArg::Dtype {
+                name: "StT",
+                dtype: state.dtype(),
+            },
+            KernelTemplateArg::Int {
+                name: "Dk",
+                value: key_head_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "Dv",
+                value: value_head_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "Hk",
+                value: num_key_heads,
+            },
+            KernelTemplateArg::Int {
+                name: "Hv",
+                value: num_value_heads,
+            },
+        ],
+        (32, value_head_dim, batch * num_value_heads),
+        (32, 4, 1),
+        None,
+    );
+
+    let mut outputs = outputs.into_iter();
+    (
+        outputs
+            .next()
+            .expect("gated delta streaming prefill y output"),
+        outputs
+            .next()
+            .expect("gated delta streaming prefill state output"),
     )
 }
 
@@ -843,6 +977,93 @@ const DECODE_POST_INPUT_KERNEL_SOURCE: &str = r#"
     }
 "#;
 
+// Prefill streaming: fuse g/beta each timestep (like decode) without a
+// CacheCapacity-sized threadgroup array. One leader thread computes the
+// shared (hv, t) gates into two scalars; the rest of the TG waits on a
+// barrier. Occupancy stays high for long prompts and there is no separate
+// MLX precompute graph for g/beta.
+const GATED_DELTA_PREFILL_STREAMING_KERNEL_SOURCE: &str = r#"
+    const int t_len = seq_len[0];
+    auto n = thread_position_in_grid.z;
+    auto b_idx = n / Hv;
+    auto hv_idx = n % Hv;
+    auto hk_idx = hv_idx / (Hv / Hk);
+    constexpr int n_per_t = Dk / 32;
+
+    // q, k: [B, T, Hk, Dk] InT
+    auto q_ = q + b_idx * t_len * Hk * Dk + hk_idx * Dk;
+    auto k_ = k + b_idx * t_len * Hk * Dk + hk_idx * Dk;
+
+    // v, y: [B, T, Hv, Dv] InT
+    auto v_ = v + b_idx * t_len * Hv * Dv + hv_idx * Dv;
+    y += b_idx * t_len * Hv * Dv + hv_idx * Dv;
+
+    auto dk_idx = thread_position_in_threadgroup.x;
+    auto dv_idx = thread_position_in_grid.y;
+
+    // a_log: [Hv] StT (float32); dt_bias: [Hv] StT (float32)
+    const float exp_a_log = exp(static_cast<float>(a_log[hv_idx]));
+    const float dt_bias_v = static_cast<float>(dt_bias[hv_idx]);
+    auto a_base = a_raw + b_idx * t_len * Hv;
+    auto b_base = b_raw + b_idx * t_len * Hv;
+
+    // state_in, state_out: [B, Hv, Dv, Dk] StT
+    auto i_state = state_in + (n * Dv + dv_idx) * Dk;
+    auto o_state = state_out + (n * Dv + dv_idx) * Dk;
+
+    const int s_base = n_per_t * dk_idx;
+
+    float state[n_per_t];
+    for (int i = 0; i < n_per_t; ++i) {
+      state[i] = static_cast<float>(i_state[s_base + i]);
+    }
+
+    threadgroup float g_t;
+    threadgroup float beta_t;
+
+    for (int t = 0; t < t_len; ++t) {
+      if (thread_index_in_threadgroup == 0) {
+        float a_plus_dt = static_cast<float>(a_base[t * Hv + hv_idx]) + dt_bias_v;
+        float sp = a_plus_dt > 20.0f ? a_plus_dt : log1p(exp(a_plus_dt));
+        g_t = exp(-exp_a_log * sp);
+        float b_val = static_cast<float>(b_base[t * Hv + hv_idx]);
+        // Preserve bf16/activation rounding of sigmoid(b) (mlx_lm + legacy kernel).
+        beta_t = static_cast<float>(static_cast<InT>(1.0f / (1.0f + exp(-b_val))));
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+
+      const float v_t = static_cast<float>(v_[dv_idx]);
+
+      float kv_mem = 0.0f;
+      for (int i = 0; i < n_per_t; ++i) {
+        state[i] = state[i] * g_t;
+        kv_mem += state[i] * static_cast<float>(k_[s_base + i]);
+      }
+      kv_mem = simd_sum(kv_mem);
+
+      const float delta = (v_t - kv_mem) * beta_t;
+
+      float out = 0.0f;
+      for (int i = 0; i < n_per_t; ++i) {
+        state[i] = state[i] + static_cast<float>(k_[s_base + i]) * delta;
+        out += state[i] * static_cast<float>(q_[s_base + i]);
+      }
+      out = simd_sum(out);
+      if (thread_index_in_simdgroup == 0) {
+        y[dv_idx] = static_cast<InT>(out);
+      }
+
+      q_ += Hk * Dk;
+      k_ += Hk * Dk;
+      v_ += Hv * Dv;
+      y += Hv * Dv;
+    }
+
+    for (int i = 0; i < n_per_t; ++i) {
+      o_state[s_base + i] = static_cast<StT>(state[i]);
+    }
+"#;
+
 const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     const int t_len = seq_len[0];
     auto n = thread_position_in_grid.z;
@@ -872,14 +1093,11 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     // so they would otherwise recompute identical transcendental values in
     // every iteration of the hot loop — 127/128 redundant calls eliminated.
     //
-    // CacheCapacity is specialized from Rust into three tiers:
-    //   512  — decode/short prompts (smallest threadgroup allocation),
-    //   1024 — default long-prefill tier (matches the runner's prefill-chunk
-    //          cap for linear-attention models; recovers SM occupancy vs the
-    //          2048 tier on M5 Max),
-    //   2048 — opt-in for callers that override `--prefill-chunk` to 2048+.
-    // Each tier doubles the per-threadgroup `g_t_cache`/`beta_t_cache`
-    // footprint, so smaller is faster when the prompt fits.
+    // CacheCapacity is specialized from Rust into three tiers (legacy path):
+    //   512  — short prompts
+    //   1024 — medium prompts
+    //   2048 — long prompts
+    // Prefer the streaming prefill kernel (no TG cache) in production.
     threadgroup float g_t_cache[CacheCapacity];
     threadgroup float beta_t_cache[CacheCapacity];
 
@@ -1117,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_gated_delta_g_preserves_activation_shape_and_dtype() {
+    fn compute_gated_delta_g_preserves_shape_and_float32_dtype() {
         let cfg = cfg();
         let a_log = zeros(&[cfg.num_value_heads as i32], MlxDtype::Float32, None);
         let a = zeros(
@@ -1130,7 +1348,9 @@ mod tests {
         let g = compute_gated_delta_g(&a_log, &a, &dt_bias);
 
         assert_eq!(g.shape(), vec![1, 5, 2]);
-        assert_eq!(g.dtype(), MlxDtype::Bfloat16);
+        // Streaming prefill keeps g in float32 for the recurrent state update
+        // (matches mlx_lm's compute_g → float32 contract).
+        assert_eq!(g.dtype(), MlxDtype::Float32);
     }
 
     #[test]
@@ -1200,19 +1420,56 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "exceeds threadgroup cache capacity")]
-    fn gated_delta_kernel_rejects_seq_above_threadgroup_cache_capacity() {
-        let seq = (GATED_DELTA_THREADGROUP_CACHE_CAPACITY + 1) as i32;
-        let q = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
-        let k = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
-        let v = zeros(&[1, seq, 1, 4], MlxDtype::Float32, None);
-        let a_log = zeros(&[1], MlxDtype::Float32, None);
-        let a_raw = zeros(&[1, seq, 1], MlxDtype::Float32, None);
-        let dt_bias = zeros(&[1], MlxDtype::Float32, None);
-        let b_raw = zeros(&[1, seq, 1], MlxDtype::Float32, None);
-        let state = zeros(&[1, 1, 4, 32], MlxDtype::Float32, None);
-
-        let _ = gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+    fn gated_delta_prefill_short_seq_matches_cpu_on_default_path() {
+        // Hybrid default: seq <= 512 uses the legacy short TG-cache kernel.
+        const SEQ: usize = 8;
+        const KEY_HEAD_DIM: usize = 32;
+        const VALUE_HEAD_DIM: usize = 4;
+        let q_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.03)
+            .collect();
+        let k_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 5) as f32 - 2.0) * 0.02)
+            .collect();
+        let v_data: Vec<f32> = (0..SEQ * VALUE_HEAD_DIM)
+            .map(|idx| ((idx % 3) as f32 - 1.0) * 0.04)
+            .collect();
+        let a_log_data = vec![-0.2];
+        let a_raw_data: Vec<f32> = (0..SEQ).map(|i| (i as f32) * 0.01 - 0.05).collect();
+        let dt_bias_data = vec![0.05];
+        let b_raw_data: Vec<f32> = (0..SEQ).map(|i| (i as f32) * 0.02 - 0.1).collect();
+        let state_data: Vec<f32> = (0..VALUE_HEAD_DIM * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 11) as f32 - 5.0) * 0.005)
+            .collect();
+        let (expected_y, expected_state) = gated_delta_cpu_reference(
+            &q_data,
+            &k_data,
+            &v_data,
+            &a_log_data,
+            &a_raw_data,
+            &dt_bias_data,
+            &b_raw_data,
+            &state_data,
+            SEQ,
+            KEY_HEAD_DIM,
+            VALUE_HEAD_DIM,
+        );
+        let q = f32_array(&q_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let k = f32_array(&k_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let v = f32_array(&v_data, &[1, SEQ as i32, 1, VALUE_HEAD_DIM as i32]);
+        let a_log = f32_array(&a_log_data, &[1]);
+        let a_raw = f32_array(&a_raw_data, &[1, SEQ as i32, 1]);
+        let dt_bias = f32_array(&dt_bias_data, &[1]);
+        let b_raw = f32_array(&b_raw_data, &[1, SEQ as i32, 1]);
+        let state = f32_array(
+            &state_data,
+            &[1, 1, VALUE_HEAD_DIM as i32, KEY_HEAD_DIM as i32],
+        );
+        let (y, new_state) =
+            gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+        mlx_sys::eval(&[&y, &new_state]);
+        assert_close("y", y.data_f32(), &expected_y, 1e-5);
+        assert_close("state", new_state.data_f32(), &expected_state, 1e-5);
     }
 
     #[test]

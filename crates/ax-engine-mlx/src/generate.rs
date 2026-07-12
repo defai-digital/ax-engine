@@ -234,12 +234,17 @@ pub fn chunked_prefill_with_sampling_buffers(
         while offset < cache_only_prefix_len {
             let end = (offset + chunk_size).min(cache_only_prefix_len);
             let chunk = &prompt_tokens[offset..end];
-            // Cache-only: skip lm_head projection (hidden×vocab_size);
-            // the eval_kv_refs below forces the layer graph.
+            // Cache-only: skip lm_head projection (hidden×vocab_size).
             let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len);
             cache.seq_len += chunk.len();
-            eval_kv_refs(cache);
-            clear_cache();
+            // Materialise KV only after the *last* cache-only chunk. Intermediate
+            // barriers force a full layer-stack eval for every sub-chunk (Qwen
+            // linear-attention clamps to 1024, so p=2048 paid two full barriers).
+            // Lazy slice_update chains stay short for ≤2–3 chunks and the final
+            // barrier still matches mlx_lm's post-prefix eval before decode.
+            if end == cache_only_prefix_len {
+                eval_kv_refs(cache);
+            }
             offset = end;
         }
 
@@ -486,12 +491,12 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
         while offset < cache_only_prefix_len {
             let end = (offset + chunk_size).min(cache_only_prefix_len);
             let chunk = &prompt_tokens[offset..end];
-            // Cache-only: skip lm_head projection (hidden×vocab_size);
-            // the eval_kv_refs below forces the layer graph.
+            // Cache-only: skip lm_head projection (hidden×vocab_size).
             let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len);
             cache.seq_len += chunk.len();
-            eval_kv_refs(cache);
-            clear_cache();
+            if end == cache_only_prefix_len {
+                eval_kv_refs(cache);
+            }
             offset = end;
         }
         // Use a single-token decode step for the last position: extract

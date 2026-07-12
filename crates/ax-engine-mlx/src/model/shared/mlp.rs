@@ -9,7 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use crate::fastpath;
-use crate::per_layer_compile::apply_layer_dense_ffn_decode;
+use crate::per_layer_compile::{apply_layer_dense_ffn_decode, apply_layer_dense_ffn_prefill};
 use crate::weights::{LayerWeights, QuantizedWeight};
 
 use super::super::config::{GlmRouterConfig, ModelConfig};
@@ -1434,17 +1434,11 @@ fn ffn_swiglu_with_policy(
     };
     let x = &smoothed;
 
-    // Try compiled dense FFN decode closure (gated by AX_MLX_DENSE_FFN_COMPILE).
-    // Only for SwiGLU with packed gate_up: GEGLU's `gelu_approx` tree aborts
-    // under MLX compilation, and the split gate/up path needs two separate
-    // quantized matmuls that don't fit the single-projection closure design.
-    // The packed gate_up → split → SiLU → down chain is compiled into a
-    // single graph, collapsing ~6 dispatches per layer into one. Every MLX
-    // array the graph depends on is threaded through as an explicit input.
-    if seq == 1
-        && leading_elements == 1
-        && !cfg.uses_geglu
-        && fastpath::dense_ffn_compile_enabled()
+    // Compiled dense FFN (SwiGLU + packed gate_up only). GEGLU's gelu_approx
+    // tree aborts under MLX compilation. Decode uses shapeless=true (seq=1);
+    // prefill uses a fixed-shape per-geometry cache (see
+    // `apply_layer_dense_ffn_prefill`).
+    if !cfg.uses_geglu
         && let Some(packed) = &w.gate_up_packed
     {
         let packed_dim = packed
@@ -1458,31 +1452,42 @@ fn ffn_swiglu_with_policy(
         let (inputs, schema) = flatten_dense_ffn_inputs(x, Some(packed), down_qw, post_norm);
         let input_refs: Vec<&MlxArray> = inputs.iter().collect();
         let eps = cfg.rms_norm_eps;
-        let compiled_result = apply_layer_dense_ffn_decode(
-            cfg.compile_cache_identity,
-            layer_idx,
-            &input_refs,
-            move |inputs: &MlxVectorArray| {
-                let x = inputs.get(0);
-                let (gate_up_qw, down_qw, post_norm) = schema.rebuild(inputs);
-                let gate_up = gate_up_qw
-                    .as_ref()
-                    .expect("dense FFN compile: gate_up weight required");
-                let gate_up_out = qw_with_policy(&x, gate_up, projection_policy);
-                let gate = slice_last_dim(&gate_up_out, 0, half_dim, None);
-                let up = slice_last_dim(&gate_up_out, half_dim, half_dim * 2, None);
-                let ffn_hidden = silu_mul(&gate, &up, None);
-                let down = down_qw
-                    .as_ref()
-                    .expect("dense FFN compile: down weight required");
-                let out = qw_with_policy(&ffn_hidden, down, projection_policy);
-                if let Some(norm_w) = post_norm {
-                    vec![rms_norm(&out, Some(&norm_w), eps, None)]
-                } else {
-                    vec![out]
-                }
-            },
-        );
+        let body = move |inputs: &MlxVectorArray| {
+            let x = inputs.get(0);
+            let (gate_up_qw, down_qw, post_norm) = schema.rebuild(inputs);
+            let gate_up = gate_up_qw
+                .as_ref()
+                .expect("dense FFN compile: gate_up weight required");
+            let gate_up_out = qw_with_policy(&x, gate_up, projection_policy);
+            let gate = slice_last_dim(&gate_up_out, 0, half_dim, None);
+            let up = slice_last_dim(&gate_up_out, half_dim, half_dim * 2, None);
+            let ffn_hidden = silu_mul(&gate, &up, None);
+            let down = down_qw
+                .as_ref()
+                .expect("dense FFN compile: down weight required");
+            let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+            if let Some(norm_w) = post_norm {
+                vec![rms_norm(&out, Some(&norm_w), eps, None)]
+            } else {
+                vec![out]
+            }
+        };
+        let compiled_result = if seq == 1
+            && leading_elements == 1
+            && fastpath::dense_ffn_compile_enabled()
+        {
+            apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
+        } else if seq > 1 && leading_elements > 1 && fastpath::dense_ffn_compile_prefill_enabled() {
+            apply_layer_dense_ffn_prefill(
+                cfg.compile_cache_identity,
+                layer_idx,
+                leading_elements,
+                &input_refs,
+                body,
+            )
+        } else {
+            None
+        };
         if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
             return result;
         }
@@ -1492,7 +1497,16 @@ fn ffn_swiglu_with_policy(
     let packed_gate_up: Option<MlxArray>;
     let mut gate_up_profile_recorded = false;
     let qwen_dense_ffn = !cfg.uses_geglu && cfg.model_family.starts_with("qwen");
-    let prefer_split_gate_up = qwen_dense_ffn && w.gate_proj.is_some() && w.up_proj.is_some();
+    // Decode keeps the split route so the opt-in Qwen dense FFN matvec Metal
+    // kernel and any split-only decode compile path can engage. Prefill (and
+    // multi-token verify) prefer packed gate/up when the loader materialised
+    // it: one quantized matmul + packed SwiGLU Metal is the better prefill
+    // geometry and is a major direct-mode TTFT lever on Qwen 3.6 27B.
+    let prefer_split_gate_up = qwen_dense_ffn
+        && seq == 1
+        && leading_elements == 1
+        && w.gate_proj.is_some()
+        && w.up_proj.is_some();
     let (gate_out, up_out) = if !prefer_split_gate_up && let Some(packed) = &w.gate_up_packed {
         let out = qw_with_policy(x, packed, projection_policy);
         let packed_dim = out

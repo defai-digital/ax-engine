@@ -4156,19 +4156,17 @@ impl MlxRunner {
         // ignore the MLA-specific resolution.
         //
         // Linear-attention tiers (Qwen3.5 9B, Qwen3-Next family — Qwen 3.6
-        // and Qwen Coder Next) have a kernel-side chunk cap because the
-        // GatedDelta recurrent update precomputes per-token gate values in
-        // threadgroup-local storage. The kernel ships three specializations
-        // (512 / 1024 / 2048 token cache capacity); the 2048 tier was measured
-        // to lose ~15% per-token throughput vs 1024 on Qwen 3.6 27B (Hv=48)
-        // because doubling the threadgroup-cache allocation halves SM
-        // occupancy on M5 Max. Clamp both cold and warm prefill chunks to the
-        // 1024 tier so a 2048-token mlx-lm-equivalent prompt processes as two
-        // 1024-token sub-chunks; correctness is preserved because the gated
-        // -delta recurrent state carries across chunks via the KV cache.
+        // and Qwen Coder Next) clamp prefill chunks to the medium GatedDelta
+        // specialization (1024). The 2048 TG-cache tier was measured to lose
+        // ~15% per-token throughput vs 1024 on Qwen 3.6 27B (Hv=48). Opt-in
+        // streaming prefill can raise the cap (no TG CacheCapacity array).
         let linear_attention_chunk_cap =
             if (0..cfg.layer_count).any(|i| cfg.is_linear_attention_layer(i)) {
-                Some(crate::linear_attention_ops::GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY)
+                if crate::fastpath::qwen_gated_delta_prefill_streaming_enabled() {
+                    Some(crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY)
+                } else {
+                    Some(crate::linear_attention_ops::GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY)
+                }
             } else {
                 None
             };

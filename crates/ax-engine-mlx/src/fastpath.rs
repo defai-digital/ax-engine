@@ -531,6 +531,23 @@ env_flag_default_on!(
     "AX_MLX_QWEN_GATED_DELTA_DECODE_METAL"
 );
 
+env_flag!(
+    /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING` — route long multi-token
+    /// GatedDelta prefill (seq > 512) through a streaming Metal kernel that
+    /// fuses g/beta each step without a CacheCapacity-sized TG array.
+    ///
+    /// **Default: OFF** (opt-in via
+    /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING=1`).
+    ///
+    /// The legacy tiered TG-cache kernel remains the production default: it
+    /// matches the README high-water cells on p=128/512, and the medium 1024
+    /// specialization (with the runner's linear-attention chunk clamp) is
+    /// still the best measured long-prompt path on Qwen 3.6 27B. Streaming is
+    /// retained for A/B on very long prompts where TG occupancy dominates.
+    qwen_gated_delta_prefill_streaming_enabled,
+    "AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — load-time packing for Qwen
     /// linear-attention projections.
@@ -657,6 +674,26 @@ pub fn dense_ffn_compile_enabled() -> bool {
     }
     value
 }
+
+env_flag!(
+    /// `AX_MLX_DENSE_FFN_COMPILE_PREFILL` — compile dense SwiGLU FFN for
+    /// multi-token prefill with a **per-shape** cache.
+    ///
+    /// **Default: OFF** (opt-in via `AX_MLX_DENSE_FFN_COMPILE_PREFILL=1`).
+    ///
+    /// Unlike decode (`shapeless=true`, seq always 1), prefill compiles with
+    /// `shapeless=false` and keys the cache by leading element count so each
+    /// prompt length gets a correct fixed-shape graph. Required because MLX
+    /// shapeless compile of quantized matmul is not shape-polymorphic
+    /// (see mlp unit test). Requires packed gate/up and SwiGLU (not GEGLU).
+    ///
+    /// Kept opt-in: a 2026-07-12 AX-only validation saw short-prompt prefill
+    /// regressions under default-on (compile cost / stream-registry pressure
+    /// not fully amortized at 1 warmup + 3 measure). Re-evaluate with a full
+    /// 2w/5m publication contract before promoting.
+    dense_ffn_compile_prefill_enabled,
+    "AX_MLX_DENSE_FFN_COMPILE_PREFILL"
+);
 
 env_flag!(
     /// `AX_MLX_MOE_ROUTER_FUSED_METAL` — enable fused MoE router Metal

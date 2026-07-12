@@ -96,6 +96,11 @@ type DenseFfnCache = Mutex<HashMap<(u64, usize, ThreadId), (Option<MlxClosure>, 
 
 static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<DenseFfnCache> = OnceLock::new();
 
+/// Prefill dense FFN cache keyed by `(model, layer, thread, leading_elems)`.
+/// Uses `shapeless=false` so each prompt geometry gets a fixed-shape graph.
+type DenseFfnPrefillCache = Mutex<HashMap<(u64, usize, ThreadId, i64), (Option<MlxClosure>, u64)>>;
+static LAYER_DENSE_FFN_PREFILL_CACHE: OnceLock<DenseFfnPrefillCache> = OnceLock::new();
+
 /// Number of successful compilations before the cache entry is evicted and
 /// recompiled. Prevents stale MLX stream-registry references from
 /// accumulating in long-running processes.
@@ -343,6 +348,110 @@ pub fn clear_layer_dense_ffn_decode_cache() {
     {
         guard.clear();
     }
+    if let Some(cache) = LAYER_DENSE_FFN_PREFILL_CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+}
+
+/// Apply a compiled dense FFN prefill closure for a fixed prompt geometry.
+///
+/// Unlike decode, prefill uses `shapeless=false` and keys the cache by
+/// `leading_elements` (product of all dims except the last). MLX's shapeless
+/// compile is not correct across different sequence lengths for quantized
+/// matmul graphs, so each prompt length gets its own compiled graph.
+pub fn apply_layer_dense_ffn_prefill(
+    model_identity: u64,
+    layer_index: usize,
+    leading_elements: i64,
+    inputs: &[&MlxArray],
+    ffn_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
+) -> Option<Vec<MlxArray>> {
+    if !crate::fastpath::dense_ffn_compile_prefill_enabled() {
+        return None;
+    }
+    if leading_elements <= 1 {
+        return None;
+    }
+    let cache = LAYER_DENSE_FFN_PREFILL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let tid = std::thread::current().id();
+    let key = (model_identity, layer_index, tid, leading_elements);
+    let threshold = *COMPILE_CACHE_REFRESH_THRESHOLD;
+
+    let mut guard = cache.lock().ok()?;
+    let apply_result: Option<(Option<Vec<MlxArray>>, bool)> =
+        if let Some((entry, generation)) = guard.get_mut(&key) {
+            let closure_ref: Option<&MlxClosure> = match &*entry {
+                Some(c) => Some(c),
+                None => None,
+            };
+            let c = closure_ref?;
+            let result = try_apply_with_abort_safety(c, inputs);
+            let evict = if result.is_some() {
+                let new_generation = generation.wrapping_add(1);
+                *generation = new_generation;
+                new_generation.is_multiple_of(threshold)
+            } else {
+                true
+            };
+            Some((result, evict))
+        } else {
+            None
+        };
+    if let Some((result, evict)) = apply_result {
+        if result.is_none() {
+            tracing::warn!(
+                target = "ax_engine_mlx",
+                path = "dense_ffn_prefill",
+                layer = layer_index,
+                leading_elements,
+                "compiled_closure_apply_failed; removing entry for recompilation"
+            );
+        }
+        if evict {
+            guard.remove(&key);
+        }
+        return result;
+    }
+    drop(guard);
+
+    let mut guard = cache.lock().ok()?;
+    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry(key) {
+        let closure = MlxClosure::new_dyn(ffn_fn);
+        // Fixed-shape compile: each leading_elements key owns its graph.
+        if let Ok(compiled) = closure.compile(false) {
+            let result = try_apply_with_abort_safety(&compiled, inputs);
+            if result.is_none() {
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "dense_ffn_prefill",
+                    layer = layer_index,
+                    leading_elements,
+                    "compiled_closure_fallback"
+                );
+            }
+            if result.is_some() {
+                let generation: u64 = 1;
+                if !generation.is_multiple_of(threshold) {
+                    slot.insert((Some(compiled), generation));
+                }
+            } else {
+                slot.insert((None, 0));
+            }
+            return result;
+        }
+        tracing::warn!(
+            target = "ax_engine_mlx",
+            path = "dense_ffn_prefill",
+            layer = layer_index,
+            leading_elements,
+            "compiled_closure_compile_failed"
+        );
+        slot.insert((None, 0));
+    }
+
+    None
 }
 
 /// Clear the per-layer MoE decode closure cache.
