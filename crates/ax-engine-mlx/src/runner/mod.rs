@@ -7766,9 +7766,9 @@ impl MlxRunner {
         .0;
         let confidence_mode = gemma4_assistant_mtp_confidence_mode_from_env();
 
-        // Open once-validated draft session (amortizes family/projection checks
-        // across multi-depth steps).
-        let Ok(session) = crate::model::Gemma4AssistantDraftSession::open(
+        // Open once-validated draft session and freeze shared target K/V once
+        // for the multi-depth loop (family/projection checks + peek amortize).
+        let Ok(mut session) = crate::model::Gemma4AssistantDraftSession::open(
             &runtime.cfg,
             &runtime.weights,
             &self.cfg,
@@ -7777,6 +7777,9 @@ impl MlxRunner {
         ) else {
             return (vec![], vec![], vec![]);
         };
+        if session.bind_target_cache(&state.cache).is_err() {
+            return (vec![], vec![], vec![]);
+        }
 
         // Ungated (gate disabled, gate <= 0): a single sampled draft carrying a
         // log-prob + distribution so rejection-sampling acceptance can engage.
@@ -7785,7 +7788,7 @@ impl MlxRunner {
         if first_gate <= 0.0 {
             let bf16_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
             let Ok((logits, _projected_hidden)) =
-                session.forward_one(&state.cache, last_token, &bf16_hidden, base_position)
+                session.forward_one(last_token, &bf16_hidden, base_position)
             else {
                 return (vec![], vec![], vec![]);
             };
@@ -7816,7 +7819,7 @@ impl MlxRunner {
         let mut cur_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
         for d in 0..max_depth {
             let Ok((logits, projected_hidden)) =
-                session.forward_one(&state.cache, cur_token, &cur_hidden, base_position + d)
+                session.forward_one(cur_token, &cur_hidden, base_position + d)
             else {
                 break;
             };

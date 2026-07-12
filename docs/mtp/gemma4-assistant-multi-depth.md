@@ -18,8 +18,10 @@ speculative speedup was structurally limited to ~2x — while the Qwen MTP head
 drafts depth-3. The cap was conservative, not fundamental:
 
 - The assistant is **stateless per decode step**: it has no key/value projection
-  of its own and re-reads the *target's* frozen KV cache each forward
-  (`peek_layer_kv`). So it can be applied recurrently without any cache surgery.
+  of its own and re-reads the *target's* frozen KV cache. The multi-depth path
+  peeks shared full/sliding K/V (and any sliding ring layout) once via
+  `Gemma4AssistantDraftSession::bind_target_cache`, then reuses those arrays for
+  every depth step — no cache surgery and no per-layer re-peek.
 - `gemma4_assistant_forward_one` already computes a `post_projection`
   "backbone hidden" estimate of the drafted position and **returned it only to
   have the caller discard it** (`let Ok((logits, _projected_hidden)) = …`). That

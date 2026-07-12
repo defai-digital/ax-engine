@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
 
-use crate::kv_cache::MlxKVCache;
+use crate::kv_cache::{MlxKVCache, SlidingRingLayout};
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 
 /// Typed error for Gemma4 assistant MTP forward-path failures.
@@ -25,12 +25,77 @@ pub enum Gemma4AssistantForwardError {
     MissingSharedKvLayer,
     #[error("Gemma4 assistant target shared KV layer has no cache")]
     MissingSharedKvCache,
+    #[error("Gemma4 assistant draft session has no frozen target KV; call bind_target_cache first")]
+    UnboundTargetKv,
     #[error("Gemma4 assistant layer missing q_proj")]
     MissingQProj,
     #[error("Gemma4 assistant layer missing o_proj")]
     MissingOProj,
     #[error("compiled assistant forward failed")]
     CompiledForwardFailed,
+}
+
+/// One shared target-layer K/V view frozen for a multi-depth assistant draft.
+///
+/// Assistant layers re-read the target's committed cache and never write it;
+/// freezing once per draft attempt avoids re-peeking the same arrays on every
+/// layer × depth step.
+#[derive(Clone, Debug)]
+struct FrozenSharedKvLayer {
+    k: MlxArray,
+    v: MlxArray,
+    ring: Option<SlidingRingLayout>,
+}
+
+/// Frozen sliding + full shared-layer bindings for one draft attempt.
+#[derive(Clone, Debug, Default)]
+struct Gemma4AssistantFrozenTargetKv {
+    sliding: Option<FrozenSharedKvLayer>,
+    full: Option<FrozenSharedKvLayer>,
+}
+
+impl Gemma4AssistantFrozenTargetKv {
+    fn freeze_from_cache(
+        cache: &MlxKVCache,
+        shared: Gemma4AssistantSharedKvLayers,
+    ) -> Result<Self, Gemma4AssistantForwardError> {
+        use Gemma4AssistantForwardError as E;
+        let peek = |layer: usize| -> Result<FrozenSharedKvLayer, E> {
+            let (k, v) = cache.peek_layer_kv(layer).ok_or(E::MissingSharedKvCache)?;
+            Ok(FrozenSharedKvLayer {
+                k,
+                v,
+                ring: cache.layer_sliding_ring(layer),
+            })
+        };
+        let sliding_idx = shared.sliding_attention_layer;
+        let full_idx = shared.full_attention_layer;
+        if sliding_idx.is_none() && full_idx.is_none() {
+            return Err(E::MissingSharedKvLayer);
+        }
+        let sliding = sliding_idx.map(peek).transpose()?;
+        let full = if full_idx == sliding_idx {
+            sliding.clone()
+        } else {
+            full_idx.map(peek).transpose()?
+        };
+        Ok(Self { sliding, full })
+    }
+
+    fn for_layer(&self, sliding_window: Option<usize>) -> Option<&FrozenSharedKvLayer> {
+        if sliding_window.is_some() {
+            self.sliding.as_ref()
+        } else {
+            self.full.as_ref()
+        }
+    }
+
+    /// Whether the sliding binding carries a ring layout (SWA rotating path).
+    fn sliding_uses_ring(&self) -> bool {
+        self.sliding
+            .as_ref()
+            .is_some_and(|layer| layer.ring.is_some())
+    }
 }
 
 pub(crate) mod profile;
@@ -1130,51 +1195,35 @@ fn gemma4_assistant_forward_one_validated(
     last_backbone_hidden: &MlxArray,
     constant_position: usize,
 ) -> Result<(MlxArray, MlxArray), Gemma4AssistantForwardError> {
-    // Shared implementation with the multi-depth session.
-    let session = Gemma4AssistantDraftSession {
+    // Shared implementation with the multi-depth session: validate once, freeze
+    // target KV once, then run a single depth step.
+    let mut session = Gemma4AssistantDraftSession::open(
         assistant_cfg,
         assistant_weights,
         target_cfg,
         target_weights,
         target_shared_layers,
-        pre_projection: assistant_weights
-            .assistant_pre_projection
-            .as_ref()
-            .ok_or(Gemma4AssistantForwardError::MissingPreProjection)?,
-        post_projection: assistant_weights
-            .assistant_post_projection
-            .as_ref()
-            .ok_or(Gemma4AssistantForwardError::MissingPostProjection)?,
-    };
-    session.forward_one(
-        target_cache,
-        last_token,
-        last_backbone_hidden,
-        constant_position,
-    )
+    )?;
+    session.bind_target_cache(target_cache)?;
+    session.forward_one(last_token, last_backbone_hidden, constant_position)
 }
 
 fn gemma4_assistant_layer_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,
     hidden: &MlxArray,
-    target_cache: &MlxKVCache,
-    target_shared_layers: Gemma4AssistantSharedKvLayers,
+    frozen_kv: &Gemma4AssistantFrozenTargetKv,
     layer_idx: usize,
     constant_position: usize,
 ) -> Result<MlxArray, Gemma4AssistantForwardError> {
     use Gemma4AssistantForwardError as E;
     let (head_dim, rope_theta, rope_dims, layer_rope_freqs, sliding_window, _, _) =
         layer_params(cfg, layer_idx);
-    let shared_layer = if sliding_window.is_some() {
-        target_shared_layers.sliding_attention_layer
-    } else {
-        target_shared_layers.full_attention_layer
-    }
-    .ok_or(E::MissingSharedKvLayer)?;
-    let (cached_k, cached_v) = target_cache
-        .peek_layer_kv(shared_layer)
-        .ok_or(E::MissingSharedKvCache)?;
+    let layer_kv = frozen_kv
+        .for_layer(sliding_window)
+        .ok_or(E::MissingSharedKvLayer)?;
+    let cached_k = &layer_kv.k;
+    let cached_v = &layer_kv.v;
 
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
     let q_raw = qw(&normed, w.q_proj.as_ref().ok_or(E::MissingQProj)?);
@@ -1197,12 +1246,12 @@ fn gemma4_assistant_layer_forward(
 
     let seq = hidden.shape()[1] as usize;
     let key_len = cached_k.shape()[2] as usize;
-    let mask = match target_cache.layer_sliding_ring(shared_layer) {
-        // Rotated target ring: `peek_layer_kv` returned the full unordered
-        // ring, so ordered-position masks are meaningless. The drafter's
-        // query logically sits at the end of the committed context; the
-        // slot-validity mask keeps exactly the last `window` live tokens
-        // and excludes rolled-back draft slots and dead slack slots.
+    let mask = match layer_kv.ring {
+        // Rotated target ring: frozen peek returned the full unordered ring,
+        // so ordered-position masks are meaningless. The drafter's query
+        // logically sits at the end of the committed context; the slot-validity
+        // mask keeps exactly the last `window` live tokens and excludes
+        // rolled-back draft slots and dead slack slots.
         Some(ring) => Some(crate::attention_mask::create_ring_sliding_mask(
             seq,
             ring.window,
@@ -1212,7 +1261,7 @@ fn gemma4_assistant_layer_forward(
         None => attention_mask_array(seq, key_len, sliding_window),
     };
     let attn_sdpa =
-        full_precision_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, seq, &mask);
+        full_precision_attention(&q_rope, cached_k, cached_v, cfg.query_scale, seq, &mask);
     let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
     let attn_proj =
         attention_output_projection(&attn_flat, None, w.o_proj.as_ref().ok_or(E::MissingOProj)?);
@@ -1239,14 +1288,16 @@ fn gemma4_assistant_layer_forward(
     })
 }
 
-// ── Gemma4 assistant multi-depth draft session (Phase B) ───────────────────
+// ── Gemma4 assistant multi-depth draft session (Phases B + D) ──────────────
 //
-// Validates family + projections once, then runs the hot forward per depth.
-// Pure mlx_compile still needs target KV + dynamic RoPE as array inputs
-// (Phase C pure-graph); until then the "compile" flag must not wrap the
-// imperative path in a non-compiled MlxClosure.
+// Validates family + projections once, freezes shared target K/V (+ ring) once
+// per draft attempt, then runs the hot forward per depth. Pure mlx_compile
+// still needs frozen KV + dynamic RoPE as array inputs (follow-on); until then
+// the "compile" flag must not wrap the imperative path in a non-compiled
+// MlxClosure.
 
-/// Request-scoped assistant draft context: one validation, many depth steps.
+/// Request-scoped assistant draft context: one validation, one frozen target
+/// KV bind, many depth steps.
 pub struct Gemma4AssistantDraftSession<'a> {
     assistant_cfg: &'a ModelConfig,
     assistant_weights: &'a ModelWeights,
@@ -1255,6 +1306,8 @@ pub struct Gemma4AssistantDraftSession<'a> {
     target_shared_layers: Gemma4AssistantSharedKvLayers,
     pre_projection: &'a QuantizedWeight,
     post_projection: &'a QuantizedWeight,
+    /// Frozen shared full/sliding K/V after [`Self::bind_target_cache`].
+    frozen_target_kv: Option<Gemma4AssistantFrozenTargetKv>,
 }
 
 impl<'a> Gemma4AssistantDraftSession<'a> {
@@ -1286,17 +1339,53 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
             target_shared_layers,
             pre_projection,
             post_projection,
+            frozen_target_kv: None,
         })
     }
 
-    /// One assistant forward step at `constant_position` (validated session).
+    /// Peek shared full/sliding target K/V (+ ring layout) once for this draft
+    /// attempt. Target cache is read-only for the assistant, so multi-depth
+    /// steps reuse the same arrays without re-peeking.
+    pub fn bind_target_cache(
+        &mut self,
+        target_cache: &MlxKVCache,
+    ) -> Result<(), Gemma4AssistantForwardError> {
+        self.frozen_target_kv = Some(Gemma4AssistantFrozenTargetKv::freeze_from_cache(
+            target_cache,
+            self.target_shared_layers,
+        )?);
+        Ok(())
+    }
+
+    /// Whether the frozen sliding binding uses a rotating ring layout.
+    ///
+    /// Useful for SWA pilot / multi-depth telemetry: ring-aware drafts must
+    /// keep the slot-validity mask derived from the frozen write_start.
+    pub fn frozen_sliding_uses_ring(&self) -> bool {
+        self.frozen_target_kv
+            .as_ref()
+            .is_some_and(Gemma4AssistantFrozenTargetKv::sliding_uses_ring)
+    }
+
+    /// Whether target KV has been frozen via [`Self::bind_target_cache`].
+    pub fn has_frozen_target_kv(&self) -> bool {
+        self.frozen_target_kv.is_some()
+    }
+
+    /// One assistant forward step at `constant_position` (validated + frozen).
+    ///
+    /// Requires [`Self::bind_target_cache`] first.
     pub fn forward_one(
         &self,
-        target_cache: &MlxKVCache,
         last_token: u32,
         last_backbone_hidden: &MlxArray,
         constant_position: usize,
     ) -> Result<(MlxArray, MlxArray), Gemma4AssistantForwardError> {
+        let frozen = self
+            .frozen_target_kv
+            .as_ref()
+            .ok_or(Gemma4AssistantForwardError::UnboundTargetKv)?;
+
         let mut token_embedding = embed_tokens(
             &[last_token],
             &self.target_weights.token_embedding,
@@ -1314,8 +1403,7 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
                 self.assistant_cfg,
                 layer_weights,
                 &hidden,
-                target_cache,
-                self.target_shared_layers,
+                frozen,
                 layer_idx,
                 constant_position,
             )?;
@@ -4384,6 +4472,84 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn gemma4_assistant_draft_session_freezes_shared_target_kv_once() {
+        let assistant_cfg = ModelConfig {
+            model_family: "gemma4_assistant".into(),
+            ..cfg(false)
+        };
+        let target_cfg = ModelConfig {
+            model_family: "gemma4".into(),
+            ..cfg(false)
+        };
+        let weights = ModelWeights {
+            token_embedding: dense_weight(&[32, 16]),
+            final_norm: zeros(&[16], MlxDtype::Float32, None),
+            lm_head: dense_weight(&[32, 16]),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: Some(dense_weight(&[16, 32])),
+            assistant_post_projection: Some(dense_weight(&[16, 16])),
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
+        };
+        let shared = Gemma4AssistantSharedKvLayers {
+            sliding_attention_layer: Some(0),
+            full_attention_layer: Some(0),
+        };
+        let mut session = Gemma4AssistantDraftSession::open(
+            &assistant_cfg,
+            &weights,
+            &target_cfg,
+            &weights,
+            shared,
+        )
+        .expect("open");
+        assert!(!session.has_frozen_target_kv());
+        assert!(!session.frozen_sliding_uses_ring());
+
+        // Unbound forward must fail closed.
+        let hidden = zeros(&[1, 1, 16], MlxDtype::Bfloat16, None);
+        assert!(matches!(
+            session.forward_one(1, &hidden, 0),
+            Err(Gemma4AssistantForwardError::UnboundTargetKv)
+        ));
+
+        // Empty cache → bind fails with missing shared KV.
+        let empty = MlxKVCache::new(1);
+        assert!(matches!(
+            session.bind_target_cache(&empty),
+            Err(Gemma4AssistantForwardError::MissingSharedKvCache)
+        ));
+        assert!(!session.has_frozen_target_kv());
+
+        // Populate layer 0 and bind once; multi-depth reuses the freeze.
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 1, 4, 4], MlxDtype::Float32, None);
+        let v = zeros(&[1, 1, 4, 4], MlxDtype::Float32, None);
+        cache.append(0, k, v);
+        session.bind_target_cache(&cache).expect("bind");
+        assert!(session.has_frozen_target_kv());
+        // No rotating ring on a plain append — SWA ring telemetry stays false.
+        assert!(!session.frozen_sliding_uses_ring());
+
+        // Re-bind after further cache growth replaces the freeze (draft attempt
+        // boundary is always a fresh bind in the runner).
+        let k2 = zeros(&[1, 1, 1, 4], MlxDtype::Float32, None);
+        let v2 = zeros(&[1, 1, 1, 4], MlxDtype::Float32, None);
+        cache.append(0, k2, v2);
+        session.bind_target_cache(&cache).expect("re-bind");
+        assert!(session.has_frozen_target_kv());
     }
 
     #[test]
