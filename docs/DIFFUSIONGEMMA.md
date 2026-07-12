@@ -150,25 +150,22 @@ entire denoise step (forward + softmax + entropy + argmax + sampling +
 acceptance) into one `MlxClosure`, collapsing ~280 per-step MLX C-API calls
 into a single dispatched graph. Self-conditioning feedback is generated only
 when the checkpoint actually carries `diffusion_self_conditioning` weights;
-otherwise AX skips the cached embedding table and feedback path. Because the
-full-pipeline path is a single pure compiled graph, it bypasses the per-layer
-embedding cache and KV concat buffer; those apply only to the non-compiled
-imperative fallback.
+otherwise AX skips the cached embedding table and feedback path. Mutable
+secondary opts (embedding cache, KV concat buffer) stay outside `mlx_compile`
+(purity): they are **on by default for the imperative / forward-only fallback**
+and are ignored when the full pipeline succeeds.
 
 | Optimization | Default | Status | Toggle |
 | --- | --- | --- | --- |
 | Full pipeline (fused denoise step) | ON | Active in the default path; self-conditioning is skipped when checkpoint weights are absent | opt-out `AX_DIFFUSION_NO_FULL_PIPELINE=1` |
-| Commit skip on converge | ON | Active; skips the causal commit when the block converges with >= 99% acceptance | opt-out `AX_DIFFUSION_NO_SKIP_COMMIT=1` |
+| Commit skip on converge | ON | Active; skips the causal commit when the block converges with >= 99% acceptance **and** the block terminates the request | opt-out `AX_DIFFUSION_NO_SKIP_COMMIT=1` |
 | Compiled forward (forward-only) | ON when full pipeline is off | Fallback only; superseded by the full pipeline | opt-out `AX_DIFFUSION_NO_COMPILED_FORWARD=1` |
-| Embedding cache | OFF | Opt-in; output-neutral but reachable only on the imperative fallback | opt-in `AX_DIFFUSION_EMBEDDING_CACHE=1` |
-| KV concat buffer | OFF | Opt-in; known-divergent | opt-in `AX_DIFFUSION_KV_CONCAT_BUFFER=1` |
+| Embedding cache | ON on fallback | Fingerprint reuse of per-layer embeds; not used inside full-pipeline compile | opt-out `AX_DIFFUSION_NO_EMBEDDING_CACHE=1` |
+| KV concat buffer | ON on fallback | `slice_update` + `contiguous`/`eval`; bit-matched to re-concatenate; not used inside full-pipeline compile | opt-out `AX_DIFFUSION_NO_KV_CONCAT_BUFFER=1` |
 
-> **KV concat buffer is gated off by default.** Its `slice_update` reuse path is
-> not bit-equivalent to the canonical `concatenate` path: on a 512-token block
-> it diverges in ~237/256 committed tokens, which perturbs convergence
-> (15 vs 17 denoise steps) and can introduce decode artifacts. It yields no
-> throughput gain in any bit-exact configuration, so the default path and the
-> imperative fallback use the canonical concatenate path.
+Further gains beyond this table are mostly **kernel-level** (MoE / attention /
+lm_head inside each bidirectional step) and **serving-level** multi-step
+denoise scheduling — see the internal Phase B/C plan, not public claims.
 
 ## Benchmark Contract
 

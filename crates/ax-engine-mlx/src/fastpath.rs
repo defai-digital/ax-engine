@@ -929,24 +929,36 @@ env_flag!(
 );
 
 env_flag!(
-    /// `AX_DIFFUSION_EMBEDDING_CACHE` — cache per-layer embedding inputs
-    /// across denoise steps when token IDs are unchanged. Uses a
-    /// GPU-side sum fingerprint to detect changes (2 dispatches + 1
-    /// eval) and skips 46 embedding dispatches on cache hit. Default
-    /// OFF; opt-in for benchmarking.
+    /// `AX_DIFFUSION_NO_EMBEDDING_CACHE` — opt-out of per-layer embedding
+    /// input caching on the imperative denoise fallback. Default: cache is
+    /// **ON** for non-full-pipeline paths (fingerprint skip of ~46 embed
+    /// dispatches when tokens are unchanged). Full-pipeline compile does
+    /// not use this cache (`mlx_compile` purity).
+    diffusion_no_embedding_cache,
+    "AX_DIFFUSION_NO_EMBEDDING_CACHE"
+);
+
+env_flag!(
+    /// `AX_DIFFUSION_NO_KV_CONCAT_BUFFER` — opt-out of pre-allocated KV
+    /// concatenation buffers on the imperative denoise fallback. Default:
+    /// buffer path is **ON** for non-full-pipeline paths (`slice_update` +
+    /// `contiguous`/`eval`, bit-matched to re-concatenate). Full-pipeline
+    /// compile does not use these buffers (`mlx_compile` purity).
+    diffusion_no_kv_concat_buffer,
+    "AX_DIFFUSION_NO_KV_CONCAT_BUFFER"
+);
+
+// Legacy opt-in names kept so older bench scripts still force-enable (no-ops
+// when the new defaults already enable the path). Prefer the `NO_*` kill
+// switches for new work.
+env_flag!(
+    /// Legacy: `AX_DIFFUSION_EMBEDDING_CACHE=1` force-enable (redundant with default ON).
     diffusion_embedding_cache_enabled,
     "AX_DIFFUSION_EMBEDDING_CACHE"
 );
 
 env_flag!(
-    /// `AX_DIFFUSION_KV_CONCAT_BUFFER` — pre-allocate KV concatenation
-    /// buffers on the first denoise step and update the canvas slice via
-    /// `slice_update` on subsequent steps, avoiding re-`concatenate`-ing the
-    /// prompt prefix. **Known issue:** this `slice_update` path is not
-    /// bit-equivalent to the canonical `concatenate` path (≈237/256 token
-    /// divergence on a 512-token block, perturbing convergence) and shows no
-    /// throughput gain in a bit-exact configuration. Default OFF; opt-in only
-    /// for benchmarking a future bit-exact reimplementation.
+    /// Legacy: `AX_DIFFUSION_KV_CONCAT_BUFFER=1` force-enable (redundant with default ON).
     diffusion_kv_concat_buffer_enabled,
     "AX_DIFFUSION_KV_CONCAT_BUFFER"
 );

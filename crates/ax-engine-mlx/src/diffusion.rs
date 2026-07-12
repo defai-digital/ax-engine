@@ -24,42 +24,42 @@
 //! ## Performance optimizations
 //!
 //! The default decode path is the **full-pipeline compiled closure** (see
-//! below). It supersedes the forward-only compiled closure and *bypasses* the
-//! per-layer embedding cache and KV concatenation buffer (it passes `None` for
-//! both), so those two only apply to the non-compiled imperative fallback.
+//! below). Mutable secondary opts (embedding cache, KV concat buffer) stay
+//! **outside** `mlx_compile` graphs: compile traces a pure graph and must not
+//! depend on step-varying control flow or external buffer mutation (same
+//! constraint as the MTP compiled head). Those opts therefore apply on the
+//! imperative / forward-only fallback, where they are **auto-enabled** when
+//! the full pipeline is disabled.
 //!
 //! - **Conditional causal commit skip** (default ON, opt-out:
 //!   `AX_DIFFUSION_NO_SKIP_COMMIT=1`): when the denoise loop converges with at
-//!   least 99% acceptance, the causal commit pass is skipped — the canvas
-//!   tokens are emitted directly, saving ~40 ms. Active in the default path.
+//!   least 99% acceptance, the causal commit pass is skipped when the block
+//!   terminates the request — saving ~40 ms of causal commit weight traffic.
 //!
 //! - **Compiled forward closure** (default ON when the full pipeline is off,
 //!   opt-out: `AX_DIFFUSION_NO_COMPILED_FORWARD=1`): wraps the bidirectional
 //!   forward in an `MlxClosure`, collapsing ~250 per-step C-API calls into one
 //!   dispatched graph. Self-conditioning flows in as an explicit input.
 //!
-//! - **Per-layer embedding cache** (default OFF, opt-in:
-//!   `AX_DIFFUSION_EMBEDDING_CACHE=1`): caches `compute_per_layer_inputs_arr`
-//!   across denoise steps, reusing it when a token fingerprint is unchanged.
-//!   Output-neutral but only reachable on the imperative fallback, so it is
-//!   off by default.
+//! - **Per-layer embedding cache** (auto-ON when full pipeline is off; force
+//!   via `AX_DIFFUSION_EMBEDDING_CACHE=1`): caches
+//!   `compute_per_layer_inputs_arr` across denoise steps when a token
+//!   fingerprint is unchanged. Output-neutral; not used inside full-pipeline
+//!   compile (purity).
 //!
-//! - **KV concatenation buffer** (default OFF, opt-in:
+//! - **KV concatenation buffer** (auto-ON when full pipeline is off; force via
 //!   `AX_DIFFUSION_KV_CONCAT_BUFFER=1`): pre-allocates per-layer KV buffers and
-//!   updates the canvas slice via `slice_update` instead of re-`concatenate`-ing
-//!   the prompt prefix each step. **Known issue:** the `slice_update` path is
-//!   *not* bit-equivalent to the canonical `concatenate` path — on a 512-token
-//!   block it diverges in ~237/256 committed tokens, which perturbs convergence
-//!   (15 vs 17 denoise steps) and can introduce artifacts. It yields no
-//!   throughput benefit in any bit-exact configuration, so it is gated off by
-//!   default pending a bit-exact reimplementation.
+//!   updates the canvas slice via `slice_update` + `contiguous`/`eval` so the
+//!   buffer path matches re-`concatenate` bit-for-bit across steps. Not used
+//!   inside full-pipeline compile (purity).
 //!
 //! ## Full-pipeline compiled forward
 //!
 //! The full-pipeline closure compiles the entire denoise step (forward, softmax,
 //! entropy, sampling, and acceptance) into a single MLX graph, collapsing ~280
 //! per-step dispatches into one. **Default ON**; opt-out via
-//! `AX_DIFFUSION_NO_FULL_PIPELINE=1` (falls back to the compiled/imperative path).
+//! `AX_DIFFUSION_NO_FULL_PIPELINE=1` (falls back to the compiled/imperative path
+//! with embed cache + KV buffer auto-enabled).
 //!
 //! The closure accepts four inputs:
 //!   - `[0]` token_ids: `[canvas_size]` u32
@@ -788,40 +788,15 @@ pub(crate) fn generate_diffusion_block(
         None
     };
 
-    // KV concatenation buffers: opt-in (default OFF). The `slice_update` reuse
-    // path is not bit-equivalent to the canonical `concatenate` path — it
-    // diverges in ~237/256 committed tokens on a 512-token block and perturbs
-    // convergence — and it yields no throughput benefit in a bit-exact
-    // configuration, so the default (and the imperative fallback) use the
-    // canonical concatenate path. Opt-in via `AX_DIFFUSION_KV_CONCAT_BUFFER=1`
-    // for benchmarking a future bit-exact reimplementation. Note: the default
-    // full-pipeline path bypasses this entirely (passes `kv_buffers: None`).
-    let use_kv_buffers = fastpath::diffusion_kv_concat_buffer_enabled();
-    let mut kv_buffers: Option<Vec<KVConcatBuffer>> = if use_kv_buffers {
-        Some(Vec::new())
-    } else {
-        None
-    };
-
-    // Per-layer embedding cache: opt-in (default OFF). Output-neutral, but only
-    // reachable on the imperative fallback (the default full-pipeline path
-    // passes `embed_cache: None`), so it is off by default. Opt-in via
-    // `AX_DIFFUSION_EMBEDDING_CACHE=1`.
-    let use_embed_cache = fastpath::diffusion_embedding_cache_enabled();
-    let mut embed_cache: Option<EmbeddingCache> = if use_embed_cache {
-        Some(EmbeddingCache::new())
-    } else {
-        None
-    };
-
     // Full-pipeline compiled closure: fuses forward + softmax + entropy +
     // sampling + acceptance into one compiled graph (~280 dispatches → 1).
     // Default ON; opt-out via `AX_DIFFUSION_NO_FULL_PIPELINE=1`.
-    // Falls back to the forward-only closure when disabled.
+    // Falls back to the forward-only closure when disabled or compile fails.
     //
     // Inputs:  [tokens_gpu, self_cond_embed, temperature, random_tokens]
     // Outputs: [new_tokens, argmax_1d, accept_mask_1d, entropy, prob]
-    let full_pipeline: Option<MlxClosure> = if !fastpath::diffusion_no_full_pipeline() {
+    let full_pipeline_requested = !fastpath::diffusion_no_full_pipeline();
+    let full_pipeline: Option<MlxClosure> = if full_pipeline_requested {
         let cfg_addr = cfg as *const ModelConfig as usize;
         let weights_addr = weights as *const ModelWeights as usize;
         let cache_addr = cache as *const MlxKVCache as usize;
@@ -836,6 +811,10 @@ pub(crate) fn generate_diffusion_block(
         // objects are stack-local to `generate_diffusion_block` and outlive the closure's
         // execution — the closure is invoked synchronously within this function and
         // never stored or leaked beyond this scope.
+        //
+        // Embed cache / KV buffers are intentionally *not* threaded into the
+        // compiled graph: mlx_compile requires a pure traced function, and
+        // step-varying cache hit/miss control flow would freeze incorrectly.
         let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
             let token_ids = inputs.get(0);
             let self_cond_signal = inputs.get(1);
@@ -915,6 +894,22 @@ pub(crate) fn generate_diffusion_block(
         closure.compile(false).ok()
     } else {
         None
+    };
+
+    // Mutable embed/KV caches for the imperative denoise path (and any
+    // compiled-path try_apply fallback). Always available: full-pipeline /
+    // compiled-forward ignore them when they succeed; mlx_compile purity
+    // forbids wiring them into traced graphs. Opt-out via
+    // `AX_DIFFUSION_NO_EMBEDDING_CACHE=1` / `AX_DIFFUSION_NO_KV_CONCAT_BUFFER=1`.
+    let mut kv_buffers: Option<Vec<KVConcatBuffer>> = if fastpath::diffusion_no_kv_concat_buffer() {
+        None
+    } else {
+        Some(Vec::new())
+    };
+    let mut embed_cache: Option<EmbeddingCache> = if fastpath::diffusion_no_embedding_cache() {
+        None
+    } else {
+        Some(EmbeddingCache::new())
     };
 
     // Compiled forward: enabled by default. Wraps the bidirectional forward
@@ -1044,7 +1039,9 @@ pub(crate) fn generate_diffusion_block(
         block_wall_us,
         commit_skipped,
         full_pipeline_used: full_pipeline.is_some(),
-        kv_buffer_used: kv_buffers.is_some(),
+        // Buffers only participate on the imperative / compiled-forward
+        // fallback path; full-pipeline compile never reads them.
+        kv_buffer_used: full_pipeline.is_none() && kv_buffers.is_some(),
     }
 }
 

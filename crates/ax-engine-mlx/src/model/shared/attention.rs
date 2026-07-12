@@ -1,6 +1,6 @@
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, broadcast_to,
-    concatenate, eval, matmul, multiply,
+    concatenate, contiguous, eval, matmul, multiply,
     qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
     scaled_dot_product_attention_with_mask, slice, slice_update, softmax_precise, transpose,
 };
@@ -521,17 +521,23 @@ pub(crate) fn bidirectional_attention(
     let canvas_size = canvas_q.shape()[2] as usize;
 
     // Build full KV: either via slice_update (buffer path) or concatenate.
+    //
+    // Buffer path materializes (`contiguous` + `eval`) after every write so:
+    // 1. the stored buffer is dense and bit-aligned with a fresh concatenate,
+    // 2. lazy slice_update chains do not deepen across denoise steps (which
+    //    previously produced non-bit-equivalent results vs re-concatenate).
     let (full_k, full_v) = if let Some(ref mut buf) = kv_buffer {
         if buf.full_k.is_none() {
-            // First step: build buffer via concatenate.
-            let fk = concatenate(&[cached_k, canvas_k], 2, None);
-            let fv = concatenate(&[cached_v, canvas_v], 2, None);
+            // First step: build buffer via concatenate, then densify.
+            let fk = contiguous(&concatenate(&[cached_k, canvas_k], 2, None), None);
+            let fv = contiguous(&concatenate(&[cached_v, canvas_v], 2, None), None);
+            eval(&[&fk, &fv]);
             buf.cached_seq = cached_k.shape()[2] as usize;
             buf.full_k = Some(fk.clone());
             buf.full_v = Some(fv.clone());
             (fk, fv)
         } else {
-            // Subsequent steps: update only the canvas slice.
+            // Subsequent steps: update only the canvas slice, then densify.
             let total = buf.cached_seq + canvas_size;
             let start = [0, 0, buf.cached_seq as i32, 0];
             let stop = [
@@ -541,22 +547,29 @@ pub(crate) fn bidirectional_attention(
                 canvas_k.shape()[3],
             ];
             let strides = [1, 1, 1, 1];
-            let fk = slice_update(
-                buf.full_k.as_ref().unwrap(),
-                canvas_k,
-                &start,
-                &stop,
-                &strides,
+            let fk = contiguous(
+                &slice_update(
+                    buf.full_k.as_ref().unwrap(),
+                    canvas_k,
+                    &start,
+                    &stop,
+                    &strides,
+                    None,
+                ),
                 None,
             );
-            let fv = slice_update(
-                buf.full_v.as_ref().unwrap(),
-                canvas_v,
-                &start,
-                &stop,
-                &strides,
+            let fv = contiguous(
+                &slice_update(
+                    buf.full_v.as_ref().unwrap(),
+                    canvas_v,
+                    &start,
+                    &stop,
+                    &strides,
+                    None,
+                ),
                 None,
             );
+            eval(&[&fk, &fv]);
             buf.full_k = Some(fk.clone());
             buf.full_v = Some(fv.clone());
             (fk, fv)
@@ -1242,5 +1255,90 @@ mod tests {
                 1, 1, 1, 1, 1, 1,
             ]
         );
+    }
+
+    /// Multi-step canvas KV updates via `KVConcatBuffer` must match re-concatenate.
+    #[test]
+    fn kv_concat_buffer_matches_reconcatenate_across_steps() {
+        use super::{KVConcatBuffer, bidirectional_attention};
+        use mlx_sys::{MlxDtype, reshape};
+
+        let (batch, kv_heads, n_heads, head_dim) = (1usize, 1usize, 2usize, 4usize);
+        let cached_seq = 8usize;
+        let canvas = 4usize;
+        let fill = |n: usize, seed: f32| -> Vec<f32> {
+            (0..n)
+                .map(|i| ((i as f32 + 1.0) * 0.17 + seed).sin())
+                .collect()
+        };
+        let shape_kv = |seq: usize| -> [i32; 4] {
+            [batch as i32, kv_heads as i32, seq as i32, head_dim as i32]
+        };
+        let shape_q = |seq: usize| -> [i32; 4] {
+            [batch as i32, n_heads as i32, seq as i32, head_dim as i32]
+        };
+
+        let cached_k = reshape(
+            &MlxArray::from_f32_slice(&fill(kv_heads * cached_seq * head_dim, 0.2)),
+            &shape_kv(cached_seq),
+            None,
+        );
+        let cached_v = reshape(
+            &MlxArray::from_f32_slice(&fill(kv_heads * cached_seq * head_dim, 0.4)),
+            &shape_kv(cached_seq),
+            None,
+        );
+        let q = reshape(
+            &MlxArray::from_f32_slice(&fill(n_heads * canvas * head_dim, 0.1)),
+            &shape_q(canvas),
+            None,
+        );
+
+        let mut buf = KVConcatBuffer::new();
+        let read_f32 = |arr: &MlxArray| -> Vec<f32> {
+            let arr = mlx_sys::astype(arr, MlxDtype::Float32, None);
+            eval(&[&arr]);
+            let len = arr.nbytes() / std::mem::size_of::<f32>();
+            let ptr = arr.data_raw() as *const f32;
+            unsafe { std::slice::from_raw_parts(ptr, len).to_vec() }
+        };
+
+        for step in 0..3 {
+            let seed = 1.0 + step as f32 * 0.3;
+            let canvas_k = reshape(
+                &MlxArray::from_f32_slice(&fill(kv_heads * canvas * head_dim, seed)),
+                &shape_kv(canvas),
+                None,
+            );
+            let canvas_v = reshape(
+                &MlxArray::from_f32_slice(&fill(kv_heads * canvas * head_dim, seed + 0.5)),
+                &shape_kv(canvas),
+                None,
+            );
+
+            let out_buf = bidirectional_attention(
+                &q,
+                &cached_k,
+                &cached_v,
+                &canvas_k,
+                &canvas_v,
+                1.0,
+                None,
+                Some(&mut buf),
+            );
+            let out_ref = bidirectional_attention(
+                &q, &cached_k, &cached_v, &canvas_k, &canvas_v, 1.0, None, None,
+            );
+
+            let a = read_f32(&out_buf);
+            let b = read_f32(&out_ref);
+            assert_eq!(a.len(), b.len(), "step {step}: length mismatch");
+            for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+                assert!(
+                    (x - y).abs() <= 1e-5,
+                    "step {step} idx {i}: buffer={x} concat={y}"
+                );
+            }
+        }
     }
 }
