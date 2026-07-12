@@ -1130,52 +1130,28 @@ fn gemma4_assistant_forward_one_validated(
     last_backbone_hidden: &MlxArray,
     constant_position: usize,
 ) -> Result<(MlxArray, MlxArray), Gemma4AssistantForwardError> {
-    use Gemma4AssistantForwardError as E;
-    let pre_projection = assistant_weights
-        .assistant_pre_projection
-        .as_ref()
-        .ok_or(E::MissingPreProjection)?;
-    let post_projection = assistant_weights
-        .assistant_post_projection
-        .as_ref()
-        .ok_or(E::MissingPostProjection)?;
-
-    let mut token_embedding = embed_tokens(
-        &[last_token],
-        &target_weights.token_embedding,
-        target_cfg.hidden_size,
-    );
-    token_embedding = astype(&token_embedding, MlxDtype::Bfloat16, None);
-    if let Some(scale) = target_cfg.hidden_states_scale {
-        token_embedding = scale_hidden(&token_embedding, scale);
-    }
-    let assistant_input = concatenate(&[&token_embedding, last_backbone_hidden], -1, None);
-    let mut hidden = qw(&assistant_input, pre_projection);
-
-    for (layer_idx, layer_weights) in assistant_weights.layers.iter().enumerate() {
-        hidden = gemma4_assistant_layer_forward(
-            assistant_cfg,
-            layer_weights,
-            &hidden,
-            target_cache,
-            target_shared_layers,
-            layer_idx,
-            constant_position,
-        )?;
-    }
-
-    let normed = rms_norm(
-        &hidden,
-        Some(&assistant_weights.final_norm),
-        assistant_cfg.rms_norm_eps,
-        None,
-    );
-    let logits = qw(&normed, &assistant_weights.lm_head);
-    let logits =
-        apply_final_logit_softcap(assistant_cfg, &astype(&logits, MlxDtype::Float32, None));
-    let logits = reshape(&logits, &[assistant_cfg.vocab_size as i32], None);
-    let projected_hidden = qw(&normed, post_projection);
-    Ok((logits, projected_hidden))
+    // Shared implementation with the multi-depth session.
+    let session = Gemma4AssistantDraftSession {
+        assistant_cfg,
+        assistant_weights,
+        target_cfg,
+        target_weights,
+        target_shared_layers,
+        pre_projection: assistant_weights
+            .assistant_pre_projection
+            .as_ref()
+            .ok_or(Gemma4AssistantForwardError::MissingPreProjection)?,
+        post_projection: assistant_weights
+            .assistant_post_projection
+            .as_ref()
+            .ok_or(Gemma4AssistantForwardError::MissingPostProjection)?,
+    };
+    session.forward_one(
+        target_cache,
+        last_token,
+        last_backbone_hidden,
+        constant_position,
+    )
 }
 
 fn gemma4_assistant_layer_forward(
@@ -1263,22 +1239,111 @@ fn gemma4_assistant_layer_forward(
     })
 }
 
-// ── Gemma4 assistant MTP compiled path (Phase B pure-graph deferred) ───────
+// ── Gemma4 assistant multi-depth draft session (Phase B) ───────────────────
 //
-// Earlier scaffolding wrapped `gemma4_assistant_forward_one` in an `MlxClosure`
-// that re-uploaded scalars, `data_u32()`-synced them, and re-ran the imperative
-// graph — without ever calling `mlx_compile`. That path could only regress
-// when `AX_MLX_GEMMA4_ASSISTANT_COMPILE=1`.
-//
-// Phase A routes the flag through the real forward (no wasteful wrapper).
-// Phase B will add a pure compiled graph: target KV + dynamic RoPE as array
-// inputs, then `compile(shapeless=true)` with request-scoped cache.
+// Validates family + projections once, then runs the hot forward per depth.
+// Pure mlx_compile still needs target KV + dynamic RoPE as array inputs
+// (Phase C pure-graph); until then the "compile" flag must not wrap the
+// imperative path in a non-compiled MlxClosure.
+
+/// Request-scoped assistant draft context: one validation, many depth steps.
+pub struct Gemma4AssistantDraftSession<'a> {
+    assistant_cfg: &'a ModelConfig,
+    assistant_weights: &'a ModelWeights,
+    target_cfg: &'a ModelConfig,
+    target_weights: &'a ModelWeights,
+    target_shared_layers: Gemma4AssistantSharedKvLayers,
+    pre_projection: &'a QuantizedWeight,
+    post_projection: &'a QuantizedWeight,
+}
+
+impl<'a> Gemma4AssistantDraftSession<'a> {
+    /// Validate model families and projection weights once for a draft loop.
+    pub fn open(
+        assistant_cfg: &'a ModelConfig,
+        assistant_weights: &'a ModelWeights,
+        target_cfg: &'a ModelConfig,
+        target_weights: &'a ModelWeights,
+        target_shared_layers: Gemma4AssistantSharedKvLayers,
+    ) -> Result<Self, Gemma4AssistantForwardError> {
+        use Gemma4AssistantForwardError as E;
+        if assistant_cfg.model_family != "gemma4_assistant" || target_cfg.model_family != "gemma4" {
+            return Err(E::ModelFamilyMismatch);
+        }
+        let pre_projection = assistant_weights
+            .assistant_pre_projection
+            .as_ref()
+            .ok_or(E::MissingPreProjection)?;
+        let post_projection = assistant_weights
+            .assistant_post_projection
+            .as_ref()
+            .ok_or(E::MissingPostProjection)?;
+        Ok(Self {
+            assistant_cfg,
+            assistant_weights,
+            target_cfg,
+            target_weights,
+            target_shared_layers,
+            pre_projection,
+            post_projection,
+        })
+    }
+
+    /// One assistant forward step at `constant_position` (validated session).
+    pub fn forward_one(
+        &self,
+        target_cache: &MlxKVCache,
+        last_token: u32,
+        last_backbone_hidden: &MlxArray,
+        constant_position: usize,
+    ) -> Result<(MlxArray, MlxArray), Gemma4AssistantForwardError> {
+        let mut token_embedding = embed_tokens(
+            &[last_token],
+            &self.target_weights.token_embedding,
+            self.target_cfg.hidden_size,
+        );
+        token_embedding = astype(&token_embedding, MlxDtype::Bfloat16, None);
+        if let Some(scale) = self.target_cfg.hidden_states_scale {
+            token_embedding = scale_hidden(&token_embedding, scale);
+        }
+        let assistant_input = concatenate(&[&token_embedding, last_backbone_hidden], -1, None);
+        let mut hidden = qw(&assistant_input, self.pre_projection);
+
+        for (layer_idx, layer_weights) in self.assistant_weights.layers.iter().enumerate() {
+            hidden = gemma4_assistant_layer_forward(
+                self.assistant_cfg,
+                layer_weights,
+                &hidden,
+                target_cache,
+                self.target_shared_layers,
+                layer_idx,
+                constant_position,
+            )?;
+        }
+
+        let normed = rms_norm(
+            &hidden,
+            Some(&self.assistant_weights.final_norm),
+            self.assistant_cfg.rms_norm_eps,
+            None,
+        );
+        let logits = qw(&normed, &self.assistant_weights.lm_head);
+        let logits = apply_final_logit_softcap(
+            self.assistant_cfg,
+            &astype(&logits, MlxDtype::Float32, None),
+        );
+        let logits = reshape(&logits, &[self.assistant_cfg.vocab_size as i32], None);
+        let projected_hidden = qw(&normed, self.post_projection);
+        Ok((logits, projected_hidden))
+    }
+}
 
 /// Apply the Gemma4 assistant MTP forward via the "compile" entry point.
 ///
-/// Returns `None` when the compile flag is disabled (caller uses imperative).
-/// When enabled, currently returns the same result as
-/// [`gemma4_assistant_forward_one`] until the pure-graph Phase B lands.
+/// Returns `None` when the compile flag is disabled (caller uses imperative /
+/// draft session). When enabled, runs the same real forward as
+/// [`gemma4_assistant_forward_one`] (no non-compiled MlxClosure wrapper).
+/// Pure-graph `mlx_compile` remains a follow-on once KV/RoPE are array inputs.
 #[allow(clippy::too_many_arguments)]
 pub fn gemma4_assistant_forward_one_compiled(
     assistant_cfg: &ModelConfig,
@@ -1294,8 +1359,6 @@ pub fn gemma4_assistant_forward_one_compiled(
     if !crate::fastpath::gemma4_assistant_compile_enabled() {
         return None;
     }
-    // Do not rebuild a non-compiled MlxClosure per depth: that only added
-    // dyn-closure + scalar GPU↔host round-trips. Real mlx_compile is Phase B.
     Some(gemma4_assistant_forward_one(
         assistant_cfg,
         assistant_weights,
@@ -4203,7 +4266,6 @@ mod tests {
             !crate::fastpath::gemma4_assistant_compile_enabled(),
             "test assumes compile flag default OFF"
         );
-        // Family mismatch would Err if enabled; with flag off we never enter.
         let assistant_cfg = ModelConfig {
             model_family: "gemma4_assistant".into(),
             ..cfg(false)
@@ -4250,6 +4312,77 @@ mod tests {
                 0,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn gemma4_assistant_draft_session_open_validates_once() {
+        let assistant_cfg = ModelConfig {
+            model_family: "gemma4_assistant".into(),
+            ..cfg(false)
+        };
+        let target_cfg = ModelConfig {
+            model_family: "gemma4".into(),
+            ..cfg(false)
+        };
+        let mut weights = ModelWeights {
+            token_embedding: dense_weight(&[32, 16]),
+            final_norm: zeros(&[16], MlxDtype::Float32, None),
+            lm_head: dense_weight(&[32, 16]),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
+        };
+        let shared = Gemma4AssistantSharedKvLayers {
+            sliding_attention_layer: Some(0),
+            full_attention_layer: Some(0),
+        };
+
+        // Missing projections → open fails.
+        assert!(matches!(
+            Gemma4AssistantDraftSession::open(
+                &assistant_cfg,
+                &weights,
+                &target_cfg,
+                &weights,
+                shared,
+            ),
+            Err(Gemma4AssistantForwardError::MissingPreProjection)
+        ));
+
+        // Wrong family → mismatch.
+        let wrong = ModelConfig {
+            model_family: "qwen3".into(),
+            ..cfg(false)
+        };
+        assert!(matches!(
+            Gemma4AssistantDraftSession::open(&wrong, &weights, &target_cfg, &weights, shared),
+            Err(Gemma4AssistantForwardError::ModelFamilyMismatch)
+        ));
+
+        // With projections present, open succeeds (forward may still fail without layers/KV).
+        weights.assistant_pre_projection = Some(dense_weight(&[16, 32]));
+        weights.assistant_post_projection = Some(dense_weight(&[16, 16]));
+        assert!(
+            Gemma4AssistantDraftSession::open(
+                &assistant_cfg,
+                &weights,
+                &target_cfg,
+                &weights,
+                shared,
+            )
+            .is_ok()
         );
     }
 

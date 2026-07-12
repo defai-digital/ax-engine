@@ -7766,38 +7766,27 @@ impl MlxRunner {
         .0;
         let confidence_mode = gemma4_assistant_mtp_confidence_mode_from_env();
 
+        // Open once-validated draft session (amortizes family/projection checks
+        // across multi-depth steps).
+        let Ok(session) = crate::model::Gemma4AssistantDraftSession::open(
+            &runtime.cfg,
+            &runtime.weights,
+            &self.cfg,
+            &self.weights,
+            runtime.target_shared_layers,
+        ) else {
+            return (vec![], vec![], vec![]);
+        };
+
         // Ungated (gate disabled, gate <= 0): a single sampled draft carrying a
         // log-prob + distribution so rejection-sampling acceptance can engage.
         // Recurrent multi-depth drafting is the gated greedy path below; the
         // sampled path stays depth-1 (per-depth sampled log-probs are out of scope).
         if first_gate <= 0.0 {
             let bf16_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
-            // Try compiled closure path first; fall back to imperative.
-            let forward_result = crate::model::gemma4_assistant_forward_one_compiled(
-                &runtime.cfg,
-                &runtime.weights,
-                &self.cfg,
-                &self.weights,
-                &state.cache,
-                runtime.target_shared_layers,
-                last_token,
-                &bf16_hidden,
-                base_position,
-            )
-            .unwrap_or_else(|| {
-                crate::model::gemma4_assistant_forward_one(
-                    &runtime.cfg,
-                    &runtime.weights,
-                    &self.cfg,
-                    &self.weights,
-                    &state.cache,
-                    runtime.target_shared_layers,
-                    last_token,
-                    &bf16_hidden,
-                    base_position,
-                )
-            });
-            let Ok((logits, _projected_hidden)) = forward_result else {
+            let Ok((logits, _projected_hidden)) =
+                session.forward_one(&state.cache, last_token, &bf16_hidden, base_position)
+            else {
                 return (vec![], vec![], vec![]);
             };
             eval(&[&logits]);
@@ -7822,50 +7811,13 @@ impl MlxRunner {
         let deep_gate =
             resolve_gemma4_assistant_mtp_deep_gate(speculation_profile, Some(sampling.temperature))
                 .0;
-        let prefer_compile = crate::fastpath::gemma4_assistant_compile_enabled();
         let mut drafts: Vec<u32> = Vec::with_capacity(max_depth);
         let mut cur_token = last_token;
         let mut cur_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
         for d in 0..max_depth {
-            let forward_result = if prefer_compile {
-                crate::model::gemma4_assistant_forward_one_compiled(
-                    &runtime.cfg,
-                    &runtime.weights,
-                    &self.cfg,
-                    &self.weights,
-                    &state.cache,
-                    runtime.target_shared_layers,
-                    cur_token,
-                    &cur_hidden,
-                    base_position + d,
-                )
-                .unwrap_or_else(|| {
-                    crate::model::gemma4_assistant_forward_one(
-                        &runtime.cfg,
-                        &runtime.weights,
-                        &self.cfg,
-                        &self.weights,
-                        &state.cache,
-                        runtime.target_shared_layers,
-                        cur_token,
-                        &cur_hidden,
-                        base_position + d,
-                    )
-                })
-            } else {
-                crate::model::gemma4_assistant_forward_one(
-                    &runtime.cfg,
-                    &runtime.weights,
-                    &self.cfg,
-                    &self.weights,
-                    &state.cache,
-                    runtime.target_shared_layers,
-                    cur_token,
-                    &cur_hidden,
-                    base_position + d,
-                )
-            };
-            let Ok((logits, projected_hidden)) = forward_result else {
+            let Ok((logits, projected_hidden)) =
+                session.forward_one(&state.cache, cur_token, &cur_hidden, base_position + d)
+            else {
                 break;
             };
             let (token, confidence) =
