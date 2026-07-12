@@ -1461,9 +1461,39 @@ fn layer_forward_dense_embed(
             .filter(|&first| first + 1 == seq && positions.iter().all(|&p| p == first))
     });
 
+    // Last-layer last-token pooling with split Q/K/V (Qwen3-Embedding): project
+    // Q only at the shared target position and RoPE it at that offset. K/V still
+    // span the full sequence so causal SDPA at the target token is exact. Saves
+    // the full-seq Q matmul + Q rope on the terminal layer (ingest equal-length
+    // chunks always hit this path).
+    let q_projected_at_target = common_last_target_position.is_some()
+        && !cfg.attn_output_gate
+        && w.q_proj.is_some()
+        && w.k_proj.is_some();
+
     // 2-7. QKV projections, reshape, QK-norm, transpose, RoPE.
     let qkv_proj_started = profile.then(Instant::now);
-    let (q_raw, k_raw, v_raw, _attn_gate) = qkv_project_embed(cfg, w, &normed, head_dim);
+    let (q_raw, k_raw, v_raw, q_seq, q_rope_offset) =
+        if let (true, Some(target_pos), Some(positions), Some(q_w), Some(k_w)) = (
+            q_projected_at_target,
+            common_last_target_position,
+            target_positions_for_ffn,
+            w.q_proj.as_ref(),
+            w.k_proj.as_ref(),
+        ) {
+            let q_in = select_embedding_targets(&normed, positions);
+            let q = qw(&q_in, q_w);
+            let k = qw(&normed, k_w);
+            let v = w
+                .v_proj
+                .as_ref()
+                .map(|v_w| qw(&normed, v_w))
+                .unwrap_or_else(|| k.clone());
+            (q, k, v, 1_usize, target_pos)
+        } else {
+            let (q, k, v, _gate) = qkv_project_embed(cfg, w, &normed, head_dim);
+            (q, k, v, seq, 0_usize)
+        };
     if let Some(started) = qkv_proj_started {
         embed_profile_eval_elapsed(
             profile,
@@ -1505,17 +1535,19 @@ fn layer_forward_dense_embed(
         .map(|f| (None, Some(f)))
         .unwrap_or((Some(rope_theta), None));
     let qk_norm_rope_started = profile.then(Instant::now);
-    let q_rope = if flat_attention_shape {
+    // Q may already be 1-token (last-layer target path); use the non-flat rope
+    // helpers for q_seq == 1. K always spans the full sequence.
+    let q_rope = if q_seq > 1 && flat_attention_shape {
         qk_norm_rope_bhsd_from_proj_flat(
             &q_raw,
             w.q_norm.as_ref(),
             cfg.n_heads,
             head_dim,
-            seq,
+            q_seq,
             cfg.rms_norm_eps,
             rope_dims,
             rope_base,
-            0,
+            q_rope_offset,
             rope_freqs_ref,
         )
     } else {
@@ -1524,11 +1556,11 @@ fn layer_forward_dense_embed(
             w.q_norm.as_ref(),
             cfg.n_heads,
             head_dim,
-            seq,
+            q_seq,
             cfg.rms_norm_eps,
             rope_dims,
             rope_base,
-            0,
+            q_rope_offset,
             rope_freqs_ref,
         )
     };
@@ -1569,7 +1601,11 @@ fn layer_forward_dense_embed(
     }
 
     let q_rope_for_attention;
-    let (q_rope_ref, attn_seq) = if let Some(target_position) = common_last_target_position {
+    let (q_rope_ref, attn_seq) = if q_projected_at_target {
+        // Q was projected and RoPE'd only at the target; already [B, H, 1, D].
+        (&q_rope, 1_usize)
+    } else if let Some(target_position) = common_last_target_position {
+        // Packed-QKV / gated fallback: full-seq Q then slice.
         q_rope_for_attention = select_attention_common_target_bhsd(&q_rope, target_position);
         (&q_rope_for_attention, 1_usize)
     } else {
@@ -1695,6 +1731,11 @@ pub fn forward_for_embedding(
 /// Body of `forward_for_embedding` starting from pre-embedded hidden states.
 /// Split out so the same logic can be wrapped in an `mlx_compile` closure that
 /// fuses the per-layer dispatches into a single compiled graph.
+///
+/// When `target_position` is `Some` (Last/Cls pooling), the final transformer
+/// layer uses the same last-token Q + FFN prune as the batched path: Q is
+/// projected only at the target, SDPA runs with a 1-token query, and FFN runs
+/// on the pooled residual only.
 fn forward_for_embedding_body(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1702,9 +1743,28 @@ fn forward_for_embedding_body(
     target_position: Option<usize>,
 ) -> MlxArray {
     let mut pending_ffn: Option<MlxArray> = None;
+    let final_layer_idx = weights.layers.len().saturating_sub(1);
+    let target_pos_buf = target_position.map(|p| [p]);
+    let mut pooled_for_final_ffn = false;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) =
-            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref(), None);
+        let target_positions_for_ffn = if li == final_layer_idx {
+            if let Some(ref buf) = target_pos_buf {
+                pooled_for_final_ffn = true;
+                Some(buf.as_slice())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let (h, ffn_out) = layer_forward_dense_embed(
+            cfg,
+            layer_w,
+            &hidden,
+            li,
+            pending_ffn.as_ref(),
+            target_positions_for_ffn,
+        );
         hidden = h;
         pending_ffn = Some(ffn_out);
     }
@@ -1712,19 +1772,24 @@ fn forward_for_embedding_body(
     if let Some(ffn_out) = &pending_ffn {
         hidden = add(&hidden, ffn_out, None);
     }
-    let to_norm = match target_position {
-        Some(pos) => {
-            let pos_i32 = pos as i32;
-            let hs = cfg.hidden_size as i32;
-            slice(
-                &hidden,
-                &[0, pos_i32, 0],
-                &[1, pos_i32 + 1, hs],
-                &[1, 1, 1],
-                None,
-            )
+    let to_norm = if pooled_for_final_ffn {
+        // Last layer already collapsed to the target token ([1, 1, H]).
+        hidden
+    } else {
+        match target_position {
+            Some(pos) => {
+                let pos_i32 = pos as i32;
+                let hs = cfg.hidden_size as i32;
+                slice(
+                    &hidden,
+                    &[0, pos_i32, 0],
+                    &[1, pos_i32 + 1, hs],
+                    &[1, 1, 1],
+                    None,
+                )
+            }
+            None => hidden,
         }
-        None => hidden,
     };
     rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None)
 }
@@ -5838,6 +5903,93 @@ mod tests {
             reference_contig.data_f32(),
             1.0e-6,
         );
+    }
+
+    /// Last-layer embedding Q-only path: RoPE of a 1-token Q at offset = last
+    /// position must match slicing the last position out of a full-seq Q rope.
+    /// This is the numerical contract behind projecting Q only at the target
+    /// for equal-length last-token pooling.
+    #[test]
+    fn embed_last_token_q_rope_at_offset_matches_full_seq_slice() {
+        let batch = 2_usize;
+        let n_heads = 2_usize;
+        let head_dim = 4_usize;
+        let seq = 8_usize;
+        let target = seq - 1;
+        let proj_data: Vec<f32> = (0..(batch * seq * n_heads * head_dim))
+            .map(|i| ((i as f32) - 17.0) * 0.029)
+            .collect();
+        let norm_data: Vec<f32> = (0..head_dim).map(|i| 0.8 + (i as f32) * 0.05).collect();
+        let proj = array_f32(
+            &proj_data,
+            &[batch as i32, seq as i32, (n_heads * head_dim) as i32],
+        );
+        let norm = array_f32(&norm_data, &[head_dim as i32]);
+
+        let full = qk_norm_rope_bhsd_from_proj(
+            &proj,
+            Some(&norm),
+            n_heads,
+            head_dim,
+            seq,
+            1.0e-6,
+            head_dim,
+            Some(10_000.0),
+            0,
+            None,
+        );
+        let full_target = select_attention_common_target_bhsd(&full, target);
+
+        // Emulate Q-only projection: take the target token's raw proj rows and
+        // RoPE them with offset = target.
+        let target_proj = select_embedding_targets(&proj, &[target; 2]);
+        let target_rope = qk_norm_rope_bhsd_from_proj(
+            &target_proj,
+            Some(&norm),
+            n_heads,
+            head_dim,
+            1,
+            1.0e-6,
+            head_dim,
+            Some(10_000.0),
+            target,
+            None,
+        );
+
+        let full_c = mlx_sys::ops::contiguous(&full_target, None);
+        let target_c = mlx_sys::ops::contiguous(&target_rope, None);
+        eval(&[&full_c, &target_c]);
+        assert_eq!(full_c.shape(), target_c.shape());
+        assert_eq!(
+            full_c.shape(),
+            vec![batch as i32, n_heads as i32, 1, head_dim as i32]
+        );
+        assert_close(target_c.data_f32(), full_c.data_f32(), 1.0e-5);
+    }
+
+    #[test]
+    fn select_embedding_targets_common_pos_matches_slice() {
+        let batch = 3_usize;
+        let seq = 5_usize;
+        let hidden = 4_usize;
+        let data: Vec<f32> = (0..(batch * seq * hidden))
+            .map(|i| i as f32 * 0.1)
+            .collect();
+        let arr = array_f32(&data, &[batch as i32, seq as i32, hidden as i32]);
+        let pos = 3_usize;
+        let selected = select_embedding_targets(&arr, &[pos; 3]);
+        let sliced = slice(
+            &arr,
+            &[0, pos as i32, 0],
+            &[batch as i32, pos as i32 + 1, hidden as i32],
+            &[1, 1, 1],
+            None,
+        );
+        let a = mlx_sys::ops::contiguous(&selected, None);
+        let b = mlx_sys::ops::contiguous(&sliced, None);
+        eval(&[&a, &b]);
+        assert_eq!(a.shape(), vec![batch as i32, 1, hidden as i32]);
+        assert_eq!(a.data_f32(), b.data_f32());
     }
 
     #[test]
