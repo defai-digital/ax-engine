@@ -914,16 +914,17 @@ env_flag!(
 // per process and cached via OnceLock.
 
 env_flag!(
-    /// `AX_MLX_GEMMA4_ASSISTANT_COMPILE` — wrap the Gemma4 assistant MTP
-    /// forward in an `MlxClosure` compiled via `mlx_compile`.
+    /// `AX_MLX_GEMMA4_ASSISTANT_COMPILE` — reserved for pure-graph assistant
+    /// MTP compile (Phase B).
     ///
     /// **Default: OFF** (opt-in via `AX_MLX_GEMMA4_ASSISTANT_COMPILE=1`).
-    /// The assistant attends the target's frozen KV cache for each draft
-    /// depth; the compiled graph fuses the ~100+ per-step MLX dispatches
-    /// (embed, pre-projection, N assistant layers with target SDPA, final
-    /// norm, lm_head, post-projection) into a single compiled graph.
-    /// Falls back to the imperative `gemma4_assistant_forward_one` path
-    /// when disabled or compilation fails.
+    ///
+    /// History: a Phase-4 scaffold wrapped the imperative assistant forward
+    /// in an uncompiled `MlxClosure` that re-synced scalars every depth and
+    /// could only add overhead. That wrapper is removed; when this flag is
+    /// set the runner still runs the real forward path until a pure
+    /// `mlx_compile` design (target KV + dynamic RoPE as array inputs) lands
+    /// with same-artifact A/B evidence for default-on promotion.
     gemma4_assistant_compile_enabled,
     "AX_MLX_GEMMA4_ASSISTANT_COMPILE"
 );

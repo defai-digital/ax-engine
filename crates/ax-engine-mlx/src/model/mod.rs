@@ -1058,6 +1058,36 @@ pub fn forward_all_positions_with_final_hidden(
     (logits, last_post_norm)
 }
 
+/// Whether a greedy assistant draft position should be kept under confidence gates.
+///
+/// Depth 0 uses `first_gate`; deeper positions use `deep_gate` (tighter by default).
+/// Pure helper — used by the multi-depth draft loop and unit-tested without weights.
+#[inline]
+pub fn gemma4_assistant_draft_position_accepted(
+    depth: usize,
+    confidence: f32,
+    first_gate: f32,
+    deep_gate: f32,
+) -> bool {
+    let gate = if depth == 0 { first_gate } else { deep_gate };
+    confidence >= gate
+}
+
+/// How many leading confidences pass the position gates (stops at first miss).
+pub fn gemma4_assistant_accepted_draft_depth(
+    confidences: &[f32],
+    first_gate: f32,
+    deep_gate: f32,
+) -> usize {
+    confidences
+        .iter()
+        .enumerate()
+        .take_while(|(d, c)| {
+            gemma4_assistant_draft_position_accepted(*d, **c, first_gate, deep_gate)
+        })
+        .count()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn gemma4_assistant_forward_one(
     assistant_cfg: &ModelConfig,
@@ -1074,6 +1104,33 @@ pub fn gemma4_assistant_forward_one(
     if assistant_cfg.model_family != "gemma4_assistant" || target_cfg.model_family != "gemma4" {
         return Err(E::ModelFamilyMismatch);
     }
+    gemma4_assistant_forward_one_validated(
+        assistant_cfg,
+        assistant_weights,
+        target_cfg,
+        target_weights,
+        target_cache,
+        target_shared_layers,
+        last_token,
+        last_backbone_hidden,
+        constant_position,
+    )
+}
+
+/// Hot multi-depth path after family/projection validation has succeeded once.
+#[allow(clippy::too_many_arguments)]
+fn gemma4_assistant_forward_one_validated(
+    assistant_cfg: &ModelConfig,
+    assistant_weights: &ModelWeights,
+    target_cfg: &ModelConfig,
+    target_weights: &ModelWeights,
+    target_cache: &MlxKVCache,
+    target_shared_layers: Gemma4AssistantSharedKvLayers,
+    last_token: u32,
+    last_backbone_hidden: &MlxArray,
+    constant_position: usize,
+) -> Result<(MlxArray, MlxArray), Gemma4AssistantForwardError> {
+    use Gemma4AssistantForwardError as E;
     let pre_projection = assistant_weights
         .assistant_pre_projection
         .as_ref()
@@ -1206,131 +1263,22 @@ fn gemma4_assistant_layer_forward(
     })
 }
 
-// ── Gemma4 assistant MTP compiled closure infrastructure ─────────────────────
+// ── Gemma4 assistant MTP compiled path (Phase B pure-graph deferred) ───────
 //
-// Phase 4 of the Gemma model family improvement initiative: scaffolding for a
-// compiled closure that wraps `gemma4_assistant_forward_one`'s layer loop in a
-// single `MlxClosure` dispatched graph. The full `.compile()` integration is
-// deferred to Phase 5 because the assistant reads from the target's frozen KV
-// cache (which changes between decode steps) and uses a dynamic RoPE position
-// (advancing per draft depth) — both require careful input-design to satisfy
-// `mlx_compile`'s pure-function contract.
+// Earlier scaffolding wrapped `gemma4_assistant_forward_one` in an `MlxClosure`
+// that re-uploaded scalars, `data_u32()`-synced them, and re-ran the imperative
+// graph — without ever calling `mlx_compile`. That path could only regress
+// when `AX_MLX_GEMMA4_ASSISTANT_COMPILE=1`.
 //
-// The closure body below captures cfg/weights/cache addresses (the same raw
-// pointer pattern used by `build_compiled_mtp_draft` in `mtp.rs` and the
-// diffusion compiled forward in `diffusion.rs`). The closure is consumed
-// synchronously within the same request scope, so the referenced objects
-// outlive the closure's execution.
+// Phase A routes the flag through the real forward (no wasteful wrapper).
+// Phase B will add a pure compiled graph: target KV + dynamic RoPE as array
+// inputs, then `compile(shapeless=true)` with request-scoped cache.
 
-use std::sync::Mutex;
-
-/// Compiled closure cache key: `(assistant_hidden_size, assistant_num_layers)`.
-type AssistantClosureKey = (usize, usize);
-
-/// Process-wide cache for the compiled Gemma4 assistant MTP closure.
-/// Keyed by `(assistant_hidden_size, assistant_num_layers)` to handle
-/// different assistant depths. `None` value indicates compilation was
-/// attempted but failed (prevents retry storms).
+/// Apply the Gemma4 assistant MTP forward via the "compile" entry point.
 ///
-/// Phase 4: stores the key for duplicate-compile detection. Phase 5 will
-/// store the actual compiled closure once the pure-input design is complete.
-static GEMMA4_ASSISTANT_CLOSURE_KEY: Mutex<Option<AssistantClosureKey>> = Mutex::new(None);
-
-/// Build an `MlxClosure` wrapping the Gemma4 assistant MTP forward.
-///
-/// The closure captures `assistant_cfg`, `assistant_weights`, `target_cfg`,
-/// `target_weights`, and `target_cache` by raw address (`usize`) because
-/// `MlxClosure::new_dyn()` requires `'static` captures. `target_shared_layers`
-/// is `Copy` and captured directly.
-///
-/// # Safety contract
-///
-/// The returned closure is consumed synchronously (via `.apply()`) within
-/// the same function scope that borrows `assistant_cfg`, `assistant_weights`,
-/// `target_cfg`, `target_weights`, and `target_cache`. Those references
-/// outlive the closure's execution — the closure is never stored or leaked
-/// beyond the calling scope.
-///
-/// # TODO (Phase 5)
-///
-/// Convert to a pure compiled closure:
-/// 1. Pass target KV arrays at shared layers as explicit `MlxArray` inputs.
-/// 2. Pass RoPE position as an `MlxArray` input and route through
-///    `mlx_fast_rope_dynamic` so the compiled graph is position-agnostic.
-/// 3. Pass ring state (window, capacity, write_start) as array inputs for
-///    sliding-window mask construction.
-/// 4. Call `.compile(true)` (shapeless=true) on the closure.
-fn build_gemma4_assistant_closure(
-    assistant_cfg: &ModelConfig,
-    assistant_weights: &ModelWeights,
-    target_cfg: &ModelConfig,
-    target_weights: &ModelWeights,
-    target_cache: &MlxKVCache,
-    target_shared_layers: Gemma4AssistantSharedKvLayers,
-) -> MlxClosure {
-    let assistant_cfg_addr = assistant_cfg as *const ModelConfig as usize;
-    let assistant_weights_addr = assistant_weights as *const ModelWeights as usize;
-    let target_cfg_addr = target_cfg as *const ModelConfig as usize;
-    let target_weights_addr = target_weights as *const ModelWeights as usize;
-    let target_cache_addr = target_cache as *const MlxKVCache as usize;
-
-    MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
-        // SAFETY: The closure is consumed synchronously within the same request
-        // scope that owns the referenced objects. The addresses remain valid for
-        // the closure's execution lifetime.
-        let assistant_cfg_ref = unsafe { &*(assistant_cfg_addr as *const ModelConfig) };
-        let assistant_weights_ref = unsafe { &*(assistant_weights_addr as *const ModelWeights) };
-        let target_cfg_ref = unsafe { &*(target_cfg_addr as *const ModelConfig) };
-        let target_weights_ref = unsafe { &*(target_weights_addr as *const ModelWeights) };
-        let target_cache_ref = unsafe { &*(target_cache_addr as *const MlxKVCache) };
-
-        // Extract scalar inputs from the MlxVectorArray.
-        let last_token_arr = inputs.get(0); // u32 scalar [1]
-        let last_backbone_hidden = inputs.get(1); // bf16 [1, 1, backbone_hidden]
-        let position_arr = inputs.get(2); // u32 scalar [1]
-
-        // Read scalar values from arrays for the imperative forward.
-        let last_token = last_token_arr.data_u32()[0];
-        let constant_position = position_arr.data_u32()[0] as usize;
-        debug_assert!(constant_position <= u32::MAX as usize, "position overflow");
-
-        // Delegate to the imperative forward path. This produces the same
-        // result as calling `gemma4_assistant_forward_one` directly, but
-        // routes through the MlxClosure interface so Phase 5 can add
-        // `.compile()` without changing the dispatch site.
-        match gemma4_assistant_forward_one(
-            assistant_cfg_ref,
-            assistant_weights_ref,
-            target_cfg_ref,
-            target_weights_ref,
-            target_cache_ref,
-            target_shared_layers,
-            last_token,
-            &last_backbone_hidden,
-            constant_position,
-        ) {
-            Ok((logits, projected_hidden)) => vec![logits, projected_hidden],
-            Err(_) => vec![],
-        }
-    })
-}
-
-/// Record that a closure was compiled for the given key, enabling
-/// duplicate-compile detection in Phase 5.
-fn record_assistant_closure_key(key: AssistantClosureKey) {
-    if let Ok(mut cache) = GEMMA4_ASSISTANT_CLOSURE_KEY.lock() {
-        *cache = Some(key);
-    }
-}
-
-/// Apply the Gemma4 assistant MTP forward through the compiled closure path.
-///
-/// Returns `None` when the compiled path is disabled or fails, signaling
-/// the caller to fall back to the imperative `gemma4_assistant_forward_one`.
-///
-/// Phase 4: builds a fresh closure per call (address captures are
-/// request-scoped). Phase 5 will cache the compiled closure and reuse it
-/// across decode steps within the same request.
+/// Returns `None` when the compile flag is disabled (caller uses imperative).
+/// When enabled, currently returns the same result as
+/// [`gemma4_assistant_forward_one`] until the pure-graph Phase B lands.
 #[allow(clippy::too_many_arguments)]
 pub fn gemma4_assistant_forward_one_compiled(
     assistant_cfg: &ModelConfig,
@@ -1346,44 +1294,19 @@ pub fn gemma4_assistant_forward_one_compiled(
     if !crate::fastpath::gemma4_assistant_compile_enabled() {
         return None;
     }
-
-    let key = (assistant_cfg.hidden_size, assistant_weights.layers.len());
-    record_assistant_closure_key(key);
-
-    // Build a fresh closure with address captures for this request scope.
-    let closure = build_gemma4_assistant_closure(
+    // Do not rebuild a non-compiled MlxClosure per depth: that only added
+    // dyn-closure + scalar GPU↔host round-trips. Real mlx_compile is Phase B.
+    Some(gemma4_assistant_forward_one(
         assistant_cfg,
         assistant_weights,
         target_cfg,
         target_weights,
         target_cache,
         target_shared_layers,
-    );
-
-    // TODO (Phase 5): Call closure.compile(true) here for shapeless
-    // compilation, then cache the compiled closure by `key`.
-
-    // Build closure inputs: [token_id, backbone_hidden, position].
-    let token_arr = MlxArray::from_raw_data(
-        &last_token as *const u32 as *const u8,
-        4,
-        &[1_i32],
-        MlxDtype::Uint32,
-    );
-    debug_assert!(constant_position <= u32::MAX as usize, "position overflow");
-    let position_u32 = constant_position as u32;
-    let position_arr = MlxArray::from_raw_data(
-        &position_u32 as *const u32 as *const u8,
-        4,
-        &[1_i32],
-        MlxDtype::Uint32,
-    );
-
-    let results = closure.apply(&[&token_arr, last_backbone_hidden, &position_arr]);
-    if results.len() < 2 {
-        return Some(Err(Gemma4AssistantForwardError::CompiledForwardFailed));
-    }
-    Some(Ok((results[0].clone(), results[1].clone())))
+        last_token,
+        last_backbone_hidden,
+        constant_position,
+    ))
 }
 
 /// Cache-free single transformer layer for dense embedding models.
@@ -4246,6 +4169,88 @@ mod tests {
         assert!(freqs[63].is_finite());
         assert!(freqs[64].is_infinite());
         assert_eq!(cfg.layer_configs[1].sliding_window, None);
+    }
+
+    #[test]
+    fn gemma4_assistant_draft_position_gates_stop_on_first_miss() {
+        // first_gate=0.9, deep_gate=0.99 — depth 0 at 0.95 ok, depth 1 at 0.98 miss.
+        assert!(gemma4_assistant_draft_position_accepted(0, 0.95, 0.9, 0.99));
+        assert!(!gemma4_assistant_draft_position_accepted(
+            1, 0.98, 0.9, 0.99
+        ));
+        assert!(gemma4_assistant_draft_position_accepted(
+            1, 0.995, 0.9, 0.99
+        ));
+
+        let confidences = [0.95_f32, 0.995, 0.5];
+        assert_eq!(
+            gemma4_assistant_accepted_draft_depth(&confidences, 0.9, 0.99),
+            2,
+            "should keep first two positions then stop at 0.5"
+        );
+        assert_eq!(
+            gemma4_assistant_accepted_draft_depth(&[0.5_f32, 0.99], 0.9, 0.99),
+            0,
+            "first-position miss yields empty draft"
+        );
+        assert_eq!(gemma4_assistant_accepted_draft_depth(&[], 0.9, 0.99), 0);
+    }
+
+    #[test]
+    fn gemma4_assistant_forward_one_compiled_disabled_returns_none() {
+        // Default flag is OFF (opt-in). Disabled path must not claim a result.
+        assert!(
+            !crate::fastpath::gemma4_assistant_compile_enabled(),
+            "test assumes compile flag default OFF"
+        );
+        // Family mismatch would Err if enabled; with flag off we never enter.
+        let assistant_cfg = ModelConfig {
+            model_family: "gemma4_assistant".into(),
+            ..cfg(false)
+        };
+        let target_cfg = ModelConfig {
+            model_family: "gemma4".into(),
+            ..cfg(false)
+        };
+        let weights = ModelWeights {
+            token_embedding: dense_weight(&[32, 16]),
+            final_norm: zeros(&[16], MlxDtype::Float32, None),
+            lm_head: dense_weight(&[32, 16]),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
+        };
+        let cache = MlxKVCache::new(0);
+        let hidden = zeros(&[1, 1, 16], MlxDtype::Bfloat16, None);
+        let shared = Gemma4AssistantSharedKvLayers {
+            sliding_attention_layer: Some(0),
+            full_attention_layer: Some(0),
+        };
+        assert!(
+            gemma4_assistant_forward_one_compiled(
+                &assistant_cfg,
+                &weights,
+                &target_cfg,
+                &weights,
+                &cache,
+                shared,
+                1,
+                &hidden,
+                0,
+            )
+            .is_none()
+        );
     }
 
     #[test]

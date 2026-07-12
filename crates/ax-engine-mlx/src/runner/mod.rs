@@ -7817,38 +7817,42 @@ impl MlxRunner {
         // Gated greedy recurrent drafting (the default). Each position d feeds the
         // assistant's `post_projection` "backbone hidden" estimate of position d
         // back in as the next step's hidden — the same signal the production verify
-        // forward provides at depth 0 — and advances the RoPE position by one. The
-        // assistant attends the target's frozen KV (it has no k/v of its own); the
-        // drafted token's signal flows through the residual, which the depth-2
-        // sweep confirmed is enough to hold ~97-100% accept on the 2nd token.
-        //
-        // A position is proposed only when its T=1.0 argmax confidence clears the
-        // gate — 0.85 on the first token, tight 0.999 on deeper positions (a wrong
-        // deep draft costs a full target recompute, so the deep gate stays tight).
-        // A miss stops drafting. Suppression is correctness-preserving: a short or
-        // empty draft just verifies fewer speculative positions, never changing the
-        // committed token. Greedy drafts carry no log-prob, so acceptance falls to
-        // argmax-match (the Gemma default acceptance mode).
+        // forward provides at depth 0 — and advances the RoPE position by one.
+        // Confidence gates stop drafting early (correctness-preserving).
         let deep_gate =
             resolve_gemma4_assistant_mtp_deep_gate(speculation_profile, Some(sampling.temperature))
                 .0;
+        let prefer_compile = crate::fastpath::gemma4_assistant_compile_enabled();
         let mut drafts: Vec<u32> = Vec::with_capacity(max_depth);
         let mut cur_token = last_token;
         let mut cur_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
         for d in 0..max_depth {
-            // Try compiled closure path first; fall back to imperative.
-            let forward_result = crate::model::gemma4_assistant_forward_one_compiled(
-                &runtime.cfg,
-                &runtime.weights,
-                &self.cfg,
-                &self.weights,
-                &state.cache,
-                runtime.target_shared_layers,
-                cur_token,
-                &cur_hidden,
-                base_position + d,
-            )
-            .unwrap_or_else(|| {
+            let forward_result = if prefer_compile {
+                crate::model::gemma4_assistant_forward_one_compiled(
+                    &runtime.cfg,
+                    &runtime.weights,
+                    &self.cfg,
+                    &self.weights,
+                    &state.cache,
+                    runtime.target_shared_layers,
+                    cur_token,
+                    &cur_hidden,
+                    base_position + d,
+                )
+                .unwrap_or_else(|| {
+                    crate::model::gemma4_assistant_forward_one(
+                        &runtime.cfg,
+                        &runtime.weights,
+                        &self.cfg,
+                        &self.weights,
+                        &state.cache,
+                        runtime.target_shared_layers,
+                        cur_token,
+                        &cur_hidden,
+                        base_position + d,
+                    )
+                })
+            } else {
                 crate::model::gemma4_assistant_forward_one(
                     &runtime.cfg,
                     &runtime.weights,
@@ -7860,14 +7864,15 @@ impl MlxRunner {
                     &cur_hidden,
                     base_position + d,
                 )
-            });
+            };
             let Ok((logits, projected_hidden)) = forward_result else {
                 break;
             };
             let (token, confidence) =
                 argmax_with_softmax_confidence_for_logits(&logits, confidence_mode);
-            let gate = if d == 0 { first_gate } else { deep_gate };
-            if confidence < gate {
+            if !crate::model::gemma4_assistant_draft_position_accepted(
+                d, confidence, first_gate, deep_gate,
+            ) {
                 break;
             }
             drafts.push(token);
