@@ -2149,9 +2149,29 @@ def validate_ax_prefill_decode_split(
 
 
 def expected_ax_prefill_work_contract(row: dict[str, Any]) -> str:
+    """Mirror ``generate.rs::mlx_lm_style_cache_only_prefix_len`` for claim gates.
+
+    Greedy (or missing sampler) with ``prompt_tokens > 1`` uses the
+    mlx-lm-style cache-only prefix. Sampling without repetition penalty uses
+    cache-only only when ``prompt_tokens >= 512``.
+    """
     sampler = row.get("sampler_settings")
     prompt_tokens = int(row.get("prompt_tokens", -1))
-    if sampler in (None, "greedy") and prompt_tokens > 512:
+    if prompt_tokens <= 1:
+        return HISTORICAL_PREFILL_WORK_CONTRACT
+    if sampler in (None, "greedy"):
+        return MLX_LM_STYLE_PREFILL_WORK_CONTRACT
+    if isinstance(sampler, dict):
+        temperature = float(sampler.get("temperature") or 0.0)
+        repetition_penalty = float(sampler.get("repetition_penalty") or 1.0)
+        if abs(repetition_penalty - 1.0) > 1e-6:
+            return HISTORICAL_PREFILL_WORK_CONTRACT
+        if temperature <= 0.0 or prompt_tokens >= 512:
+            return MLX_LM_STYLE_PREFILL_WORK_CONTRACT
+        return HISTORICAL_PREFILL_WORK_CONTRACT
+    # String sampler labels other than greedy (e.g. "sampled") keep historical
+    # unless the prompt is long enough that generate.rs would cache-only.
+    if prompt_tokens >= 512:
         return MLX_LM_STYLE_PREFILL_WORK_CONTRACT
     return HISTORICAL_PREFILL_WORK_CONTRACT
 
@@ -2161,11 +2181,25 @@ def validate_ax_prefill_work_contract(
 ) -> None:
     expected = expected_ax_prefill_work_contract(row)
     actual = row.get("prefill_work_contract")
-    if actual != expected:
-        raise ArtifactCheckError(
-            f"{artifact_path} {row.get('engine')} prompt={row.get('prompt_tokens')} "
-            f"has prefill_work_contract={actual!r}; expected {expected!r}"
-        )
+    if actual == expected:
+        return
+    # Legacy short-prompt greedy rows were mislabeled as historical even though
+    # the runtime already used cache-only. Accept the old label so published
+    # artifacts remain valid while new runs emit the correct contract.
+    sampler = row.get("sampler_settings")
+    prompt_tokens = int(row.get("prompt_tokens", -1))
+    legacy_short_greedy_mislabeled = (
+        expected == MLX_LM_STYLE_PREFILL_WORK_CONTRACT
+        and actual == HISTORICAL_PREFILL_WORK_CONTRACT
+        and sampler in (None, "greedy")
+        and 1 < prompt_tokens <= 512
+    )
+    if legacy_short_greedy_mislabeled:
+        return
+    raise ArtifactCheckError(
+        f"{artifact_path} {row.get('engine')} prompt={row.get('prompt_tokens')} "
+        f"has prefill_work_contract={actual!r}; expected {expected!r}"
+    )
 
 
 def validate_direct_hotpath_no_hidden_fallbacks(

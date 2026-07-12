@@ -675,25 +675,33 @@ pub fn dense_ffn_compile_enabled() -> bool {
     value
 }
 
-env_flag!(
-    /// `AX_MLX_DENSE_FFN_COMPILE_PREFILL` — compile dense SwiGLU FFN for
+env_flag_default_on!(
+    /// `AX_MLX_DENSE_FFN_COMPILE_PREFILL` — compile dense packed FFN for
     /// multi-token prefill with a **per-shape** cache.
     ///
-    /// **Default: OFF** (opt-in via `AX_MLX_DENSE_FFN_COMPILE_PREFILL=1`).
+    /// **Default: ON** (kill-switch via `AX_MLX_DENSE_FFN_COMPILE_PREFILL=0`).
     ///
     /// Unlike decode (`shapeless=true`, seq always 1), prefill compiles with
     /// `shapeless=false` and keys the cache by leading element count so each
     /// prompt length gets a correct fixed-shape graph. Required because MLX
     /// shapeless compile of quantized matmul is not shape-polymorphic
-    /// (see mlp unit test). Requires packed gate/up and SwiGLU (not GEGLU).
+    /// (see mlp unit test). Requires packed gate/up. SwiGLU uses `silu_mul`;
+    /// GEGLU (Gemma) uses the Metal-backed `geglu` helper inside the closure.
     ///
-    /// Kept opt-in: a 2026-07-12 AX-only validation saw short-prompt prefill
-    /// regressions under default-on (compile cost / stream-registry pressure
-    /// not fully amortized at 1 warmup + 3 measure). Re-evaluate with a full
-    /// 2w/5m publication contract before promoting.
+    /// Short prompts skip compile when `leading_elements` is below
+    /// [`DENSE_FFN_PREFILL_COMPILE_MIN_LEADING`] so compile cost is not paid
+    /// on 128-token microbenches (2026-07-12 short-prompt regression under
+    /// unconditional default-on). Long prompts (512+) amortize compile and
+    /// are the Gemma/Qwen prefill gap vs mlx_lm.
     dense_ffn_compile_prefill_enabled,
     "AX_MLX_DENSE_FFN_COMPILE_PREFILL"
 );
+
+/// Minimum leading element count (product of non-last dims) before dense FFN
+/// prefill compile engages. `batch * seq` for standard `[B,S,H]` layouts;
+/// 512 covers the README 512/2048 prompt rows while leaving 128 on the
+/// uncompiled path.
+pub const DENSE_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 512;
 
 env_flag!(
     /// `AX_MLX_MOE_ROUTER_FUSED_METAL` — enable fused MoE router Metal
@@ -796,11 +804,16 @@ env_flag_default_on!(
     /// which fuses the last-dim split, GELU-approx, and multiply into one
     /// dispatch instead of slice + slice + gelu_approx_mul. Saves 2 MLX
     /// graph nodes per MoE layer per decode step (~48 nodes on Gemma4 27B
-    /// with 24 MoE layers). **Decode-only (seq==1):** prefill uses the
-    /// split path where separate ops are faster on large tensors.
+    /// with 24 MoE layers). Engages for decode and for **moderate prefill**
+    /// (`seq <= MOE_PACKED_GEGLU_PREFILL_MAX_SEQ`); very long prefill keeps
+    /// the split path where separate ops are bandwidth-friendlier.
     moe_geglu_packed_metal_enabled,
     "AX_MLX_MOE_GEGLU_PACKED_METAL"
 );
+
+/// Prefill seq ceiling for MoE packed GeGLU Metal. Above this, fall back to
+/// split activation (large gather tensors become bandwidth-bound).
+pub const MOE_PACKED_GEGLU_PREFILL_MAX_SEQ: usize = 512;
 
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
 /// cold and warm-extend prefill paths produce the same SDPA Q/K shape
@@ -1350,6 +1363,23 @@ mod tests {
             "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_ENABLED",
             "1"
         ));
+    }
+
+    #[test]
+    fn dense_ffn_compile_prefill_uses_default_on_with_min_leading() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_PREFILL_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_PREFILL_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_PREFILL_ENABLED",
+            "1"
+        ));
+        assert_eq!(super::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING, 512);
+        assert_eq!(super::MOE_PACKED_GEGLU_PREFILL_MAX_SEQ, 512);
     }
 
     #[test]

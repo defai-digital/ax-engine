@@ -908,19 +908,38 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIn("Stability", output)
         self.assertIn("tail -15.0%", output)
 
-    def test_ax_prefill_work_contract_labels_long_greedy_cache_only_boundary(
+    def test_ax_prefill_work_contract_labels_greedy_cache_only_aligned_with_runtime(
         self,
     ) -> None:
+        # Matches generate.rs::mlx_lm_style_cache_only_prefix_len.
         self.assertEqual(
             bench.ax_prefill_work_contract(2048, sampler=None),
             "mlx_lm_style_cache_only_prefix_plus_final_prompt_token",
         )
         self.assertEqual(
             bench.ax_prefill_work_contract(512, sampler=None),
+            "mlx_lm_style_cache_only_prefix_plus_final_prompt_token",
+        )
+        self.assertEqual(
+            bench.ax_prefill_work_contract(128, sampler=None),
+            "mlx_lm_style_cache_only_prefix_plus_final_prompt_token",
+        )
+        self.assertEqual(
+            bench.ax_prefill_work_contract(1, sampler=None),
             "historical_full_logits_prefill_or_sampler_required",
         )
         self.assertEqual(
             bench.ax_prefill_work_contract(2048, sampler={"temperature": 0.7}),
+            "mlx_lm_style_cache_only_prefix_plus_final_prompt_token",
+        )
+        self.assertEqual(
+            bench.ax_prefill_work_contract(128, sampler={"temperature": 0.7}),
+            "historical_full_logits_prefill_or_sampler_required",
+        )
+        self.assertEqual(
+            bench.ax_prefill_work_contract(
+                2048, sampler={"temperature": 0.7, "repetition_penalty": 1.1}
+            ),
             "historical_full_logits_prefill_or_sampler_required",
         )
 

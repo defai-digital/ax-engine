@@ -4107,7 +4107,26 @@ def summarize_runs(runs: list[dict[str, Any]], key: str) -> dict[str, float | No
 def ax_prefill_work_contract(
     prompt_tokens: int, *, sampler: dict[str, Any] | None
 ) -> str:
-    if sampler is None and prompt_tokens > 512:
+    """Label the AX prefill work shape for README / claim gates.
+
+    Must stay aligned with ``mlx_lm_style_cache_only_prefix_len`` in
+    ``crates/ax-engine-mlx/src/generate.rs``:
+
+    * Greedy (no sampler / temp<=0, no repetition penalty): cache-only for
+      the first ``n-1`` tokens when ``n > 1``.
+    * Sampling without repetition penalty: cache-only only when
+      ``n >= 512`` (short sampled prompts stay on the full-logits path).
+    * Repetition penalty or single-token prompts: full-logits / historical.
+    """
+    if prompt_tokens <= 1:
+        return "historical_full_logits_prefill_or_sampler_required"
+    if sampler is None:
+        return "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+    temperature = float(sampler.get("temperature") or 0.0)
+    repetition_penalty = float(sampler.get("repetition_penalty") or 1.0)
+    if abs(repetition_penalty - 1.0) > 1e-6:
+        return "historical_full_logits_prefill_or_sampler_required"
+    if temperature <= 0.0 or prompt_tokens >= 512:
         return "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
     return "historical_full_logits_prefill_or_sampler_required"
 

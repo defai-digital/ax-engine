@@ -1435,13 +1435,13 @@ fn ffn_swiglu_with_policy(
     };
     let x = &smoothed;
 
-    // Compiled dense FFN (SwiGLU + packed gate_up only). GEGLU's gelu_approx
-    // tree aborts under MLX compilation. Decode uses shapeless=true (seq=1);
-    // prefill uses a fixed-shape per-geometry cache (see
-    // `apply_layer_dense_ffn_prefill`).
-    if !cfg.uses_geglu
-        && let Some(packed) = &w.gate_up_packed
-    {
+    // Compiled dense FFN with packed gate_up.
+    // - SwiGLU (Qwen): decode shapeless + prefill fixed-shape.
+    // - GEGLU (Gemma): decode still uncompiled (`gelu_approx` aborts under
+    //   MLX shapeless compile). Prefill uses fixed-shape compile with the
+    //   Metal-backed `geglu()` helper inside the body; short prompts skip
+    //   via `DENSE_FFN_PREFILL_COMPILE_MIN_LEADING`.
+    if let Some(packed) = &w.gate_up_packed {
         let packed_dim = packed
             .weight
             .shape()
@@ -1453,6 +1453,7 @@ fn ffn_swiglu_with_policy(
         let (inputs, schema) = flatten_dense_ffn_inputs(x, Some(packed), down_qw, post_norm);
         let input_refs: Vec<&MlxArray> = inputs.iter().collect();
         let eps = cfg.rms_norm_eps;
+        let uses_geglu = cfg.uses_geglu;
         let body = move |inputs: &MlxVectorArray| {
             let x = inputs.get(0);
             let (gate_up_qw, down_qw, post_norm) = schema.rebuild(inputs);
@@ -1460,9 +1461,19 @@ fn ffn_swiglu_with_policy(
                 .as_ref()
                 .expect("dense FFN compile: gate_up weight required");
             let gate_up_out = qw_with_policy(&x, gate_up, projection_policy);
-            let gate = slice_last_dim(&gate_up_out, 0, half_dim, None);
-            let up = slice_last_dim(&gate_up_out, half_dim, half_dim * 2, None);
-            let ffn_hidden = silu_mul(&gate, &up, None);
+            let ffn_hidden = if uses_geglu {
+                packed_geglu_metal(&gate_up_out, half_dim).unwrap_or_else(|| {
+                    let gate = slice_last_dim(&gate_up_out, 0, half_dim, None);
+                    let up = slice_last_dim(&gate_up_out, half_dim, half_dim * 2, None);
+                    geglu(&gate, &up)
+                })
+            } else {
+                packed_swiglu_metal(&gate_up_out, half_dim).unwrap_or_else(|| {
+                    let gate = slice_last_dim(&gate_up_out, 0, half_dim, None);
+                    let up = slice_last_dim(&gate_up_out, half_dim, half_dim * 2, None);
+                    silu_mul(&gate, &up, None)
+                })
+            };
             let down = down_qw
                 .as_ref()
                 .expect("dense FFN compile: down weight required");
@@ -1473,12 +1484,16 @@ fn ffn_swiglu_with_policy(
                 vec![out]
             }
         };
-        let compiled_result = if seq == 1
+        let compiled_result = if !uses_geglu
+            && seq == 1
             && leading_elements == 1
             && fastpath::dense_ffn_compile_enabled()
         {
             apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
-        } else if seq > 1 && leading_elements > 1 && fastpath::dense_ffn_compile_prefill_enabled() {
+        } else if seq > 1
+            && leading_elements >= fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
+            && fastpath::dense_ffn_compile_prefill_enabled()
+        {
             apply_layer_dense_ffn_prefill(
                 cfg.compile_cache_identity,
                 layer_idx,
@@ -3333,7 +3348,10 @@ fn moe_experts_forward_impl(
         // D2 fused-expert-block path: when the flag is on and the gather is
         // unsorted, fuses activation + squeeze + unsort in a single dispatch.
         // Falls back to split slice + dense_ffn_activation otherwise.
-        let fused = if cfg.uses_geglu && seq == 1 && fastpath::moe_geglu_packed_metal_enabled() {
+        let moe_packed_geglu_ok = cfg.uses_geglu
+            && fastpath::moe_geglu_packed_metal_enabled()
+            && (seq == 1 || seq <= fastpath::MOE_PACKED_GEGLU_PREFILL_MAX_SEQ);
+        let fused = if moe_packed_geglu_ok {
             packed_geglu_metal_impl(&out, half)
         } else if !cfg.uses_geglu && seq == 1 && fastpath::moe_swiglu_packed_metal_enabled() {
             packed_swiglu_metal_impl(&out, half)

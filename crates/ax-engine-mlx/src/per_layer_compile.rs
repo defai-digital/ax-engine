@@ -371,7 +371,9 @@ pub fn apply_layer_dense_ffn_prefill(
     if !crate::fastpath::dense_ffn_compile_prefill_enabled() {
         return None;
     }
-    if leading_elements <= 1 {
+    // Skip short prompts: compile amortization needs long sequences (README
+    // 512/2048 rows). Matches DENSE_FFN_PREFILL_COMPILE_MIN_LEADING.
+    if leading_elements < crate::fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING {
         return None;
     }
     let cache = LAYER_DENSE_FFN_PREFILL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
