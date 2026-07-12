@@ -54,6 +54,10 @@ pub fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, valu
 
 /// Telemetry key for [`crate::GenerationKind::telemetry_code`].
 pub const ROUTE_DECISION_AX_MLX_GENERATION_KIND: &str = "ax_mlx_generation_kind";
+/// Telemetry key for the planned [`crate::WorkUnitKind::telemetry_code`] of the step.
+pub const ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT: &str = "ax_mlx_generation_work_unit";
+/// Telemetry key for [`crate::LayerForwardRoute::telemetry_code`].
+pub const ROUTE_DECISION_AX_MLX_LAYER_FORWARD_ROUTE: &str = "ax_mlx_layer_forward_route";
 pub const ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS: &str = "ax_mlx_kv_request_snapshots";
 pub const ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS: &str = "ax_mlx_kv_logical_tokens";
 pub const ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS: &str = "ax_mlx_kv_capacity_tokens";

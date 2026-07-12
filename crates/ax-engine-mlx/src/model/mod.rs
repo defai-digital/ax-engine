@@ -159,7 +159,7 @@ pub fn layer_forward_with_turboquant_context(
     shared_mask: Option<&Option<MlxArray>>,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
-    // Linear-attention layers dispatch before the family match because the same
+    // Linear-attention layers dispatch before the family route because the same
     // model (qwen3_5 / qwen3_next) has both linear and full-attention layers
     // and the family string alone is not enough to disambiguate per-layer type.
     if cfg.is_linear_attention_layer(layer_idx) {
@@ -168,33 +168,10 @@ pub fn layer_forward_with_turboquant_context(
         );
     }
 
-    match cfg.model_family.as_str() {
-        "gemma4" | "gemma3" | "qwen3" | "llama3" | "diffusion_gemma" => {
-            families::standard::layer_forward(
-                cfg,
-                w,
-                hidden,
-                cache,
-                layer_idx,
-                token_offset,
-                per_layer_input,
-                shared_mask,
-                turboquant_context,
-                false, // last_position_only_after_attention
-                false, // skip_post_attention_ffn
-            )
-        }
-        "llama4" => families::llama4::layer_forward(
-            cfg,
-            w,
-            hidden,
-            cache,
-            layer_idx,
-            token_offset,
-            shared_mask,
-            turboquant_context,
-        ),
-        "qwen3_5" | "qwen3_next" => families::standard::layer_forward(
+    // ADR-038: prefer static architecture registry over open family match arms.
+    use ax_engine_core::{LayerForwardRoute, resolve_layer_forward_route};
+    match resolve_layer_forward_route(&cfg.model_family) {
+        Some(LayerForwardRoute::Standard) => families::standard::layer_forward(
             cfg,
             w,
             hidden,
@@ -207,10 +184,20 @@ pub fn layer_forward_with_turboquant_context(
             false, // last_position_only_after_attention
             false, // skip_post_attention_ffn
         ),
-        "glm4_moe_lite" => {
+        Some(LayerForwardRoute::Llama4) => families::llama4::layer_forward(
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            token_offset,
+            shared_mask,
+            turboquant_context,
+        ),
+        Some(LayerForwardRoute::GlmMoeLite) => {
             families::glm4_moe_lite::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset)
         }
-        "deepseek_v3" | "deepseek_v32" => families::deepseek_v3::layer_forward(
+        Some(LayerForwardRoute::DeepseekV3) => families::deepseek_v3::layer_forward(
             cfg,
             w,
             hidden,
@@ -219,17 +206,7 @@ pub fn layer_forward_with_turboquant_context(
             token_offset,
             turboquant_context,
         ),
-        "mistral3" => families::mistral3::layer_forward(
-            cfg,
-            w,
-            hidden,
-            cache,
-            layer_idx,
-            token_offset,
-            shared_mask,
-            turboquant_context,
-        ),
-        "mixtral" => families::mixtral::layer_forward(
+        Some(LayerForwardRoute::Mistral3) => families::mistral3::layer_forward(
             cfg,
             w,
             hidden,
@@ -239,10 +216,23 @@ pub fn layer_forward_with_turboquant_context(
             shared_mask,
             turboquant_context,
         ),
-        "gpt_oss" => {
+        Some(LayerForwardRoute::Mixtral) => families::mixtral::layer_forward(
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            token_offset,
+            shared_mask,
+            turboquant_context,
+        ),
+        Some(LayerForwardRoute::GptOss) => {
             families::gpt_oss::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset)
         }
-        f => panic!("unknown model_family in layer_forward: {f}"),
+        None => panic!(
+            "unknown model_family in layer_forward (not in architecture registry): {}",
+            cfg.model_family
+        ),
     }
 }
 
@@ -298,26 +288,24 @@ pub fn layer_forward_with_turboquant_context_last_only(
             skip_post_attention_ffn,
         );
     }
-    match cfg.model_family.as_str() {
-        "gemma4" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next" | "diffusion_gemma" => {
-            families::standard::layer_forward(
-                cfg,
-                w,
-                hidden,
-                cache,
-                layer_idx,
-                token_offset,
-                per_layer_input,
-                shared_mask,
-                turboquant_context,
-                !skip_post_attention_ffn, // last-only FFN when not skipping
-                skip_post_attention_ffn,
-            )
-        }
-        // Other families: fall back to the unoptimized path. Correctness
-        // is preserved by the post-loop slice in
-        // `forward_with_turboquant_context`; perf gain is deferred until
-        // the family is extended.
+    // ADR-038: standard-route families get the last-only FFN optimization;
+    // specialized routes fall back to the unoptimized path (correctness via
+    // post-loop slice in `forward_with_turboquant_context`).
+    use ax_engine_core::{LayerForwardRoute, resolve_layer_forward_route};
+    match resolve_layer_forward_route(&cfg.model_family) {
+        Some(LayerForwardRoute::Standard) => families::standard::layer_forward(
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            token_offset,
+            per_layer_input,
+            shared_mask,
+            turboquant_context,
+            !skip_post_attention_ffn, // last-only FFN when not skipping
+            skip_post_attention_ffn,
+        ),
         _ => layer_forward_with_turboquant_context(
             cfg,
             w,

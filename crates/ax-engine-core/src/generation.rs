@@ -89,6 +89,40 @@ pub struct GenerationProgress {
     pub block_committed: bool,
 }
 
+impl GenerationProgress {
+    /// Build progress from scheduler-facing request counters.
+    ///
+    /// Diffusion-specific fields (`commit_ready`, `block_committed`, denoise
+    /// steps) stay at defaults unless the runner overlays them.
+    pub fn from_request_counters(
+        processed_prompt_tokens: u32,
+        prompt_len: u32,
+        generated_visible_tokens: u32,
+    ) -> Self {
+        Self {
+            processed_prompt_tokens,
+            prompt_len,
+            generated_visible_tokens,
+            denoise_steps_in_block: 0,
+            commit_ready: false,
+            block_committed: false,
+        }
+    }
+}
+
+impl WorkUnitKind {
+    /// Stable telemetry code for route decisions.
+    pub const fn telemetry_code(self) -> u32 {
+        match self {
+            Self::PrefillChunk => 0,
+            Self::TokenDecode => 1,
+            Self::DenoiseStep => 2,
+            Self::BlockCommit => 3,
+            Self::EmbedForward => 4,
+        }
+    }
+}
+
 /// Static metadata for a generation paradigm (no runtime state).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GenerationStrategyDescriptor {
@@ -397,5 +431,20 @@ mod tests {
         assert_ne!(m.model_family.as_str(), "diffusion_gemma");
         let strat = GenerationStrategyDescriptor::for_kind(kind);
         assert_eq!(strat.first_visible, FirstVisibleEventKind::FirstBlock);
+    }
+
+    #[test]
+    fn progress_from_request_counters_drives_ar_planner() {
+        let strat = GenerationStrategyDescriptor::for_kind(GenerationKind::Autoregressive);
+        let prefill = GenerationProgress::from_request_counters(10, 100, 0);
+        assert_eq!(
+            strat.plan_next_work_unit(prefill),
+            WorkUnitKind::PrefillChunk
+        );
+        let decode = GenerationProgress::from_request_counters(100, 100, 3);
+        assert_eq!(strat.plan_next_work_unit(decode), WorkUnitKind::TokenDecode);
+        assert_eq!(WorkUnitKind::PrefillChunk.telemetry_code(), 0);
+        assert_eq!(WorkUnitKind::TokenDecode.telemetry_code(), 1);
+        assert_eq!(WorkUnitKind::DenoiseStep.telemetry_code(), 2);
     }
 }

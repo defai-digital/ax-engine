@@ -24,8 +24,8 @@ pub use architecture::{
     ArchitectureSpec, AttentionKind, CacheKind, FfnKind, LayerSpec, StructuralCapabilities,
 };
 pub use architecture_registry::{
-    ARCHITECTURE_REGISTRY, ArchitectureRegistration, default_generation_for_family,
-    lookup_architecture,
+    ARCHITECTURE_REGISTRY, ArchitectureRegistration, LayerForwardRoute,
+    default_generation_for_family, lookup_architecture, resolve_layer_forward_route,
 };
 pub use engine::{EngineCore, EngineCoreError, EngineEvent, EngineStepOutcome, StepMetrics};
 pub use execution_plan::{
@@ -85,8 +85,8 @@ pub use sampling::{
 };
 pub use scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, PositionRange,
-    ROUTE_DECISION_AX_MLX_GENERATION_KIND, ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB,
-    ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
+    ROUTE_DECISION_AX_MLX_GENERATION_KIND, ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
+    ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,
@@ -138,7 +138,8 @@ pub use scheduler::{
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
-    ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, ROUTE_DECISION_AX_MLX_MODEL_KEYS,
-    ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM, ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS,
-    RouteMetadata, SchedulePlan, Scheduler, SchedulerInput, upsert_route_decision,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, ROUTE_DECISION_AX_MLX_LAYER_FORWARD_ROUTE,
+    ROUTE_DECISION_AX_MLX_MODEL_KEYS, ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM,
+    ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS, RouteMetadata, SchedulePlan, Scheduler,
+    SchedulerInput, upsert_route_decision,
 };

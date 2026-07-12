@@ -17,8 +17,10 @@ use mlx_sys::{
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
-    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvCompressionConfig, KvWriteSummary,
+    EmbeddingPooling, ExecutionRunner, ExecutionStatus, GenerationProgress,
+    GenerationStrategyDescriptor, KvCompressionConfig, KvWriteSummary, MultimodalPrefillAdapter,
     NativeModelArtifacts, NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
+    ROUTE_DECISION_AX_MLX_GENERATION_KIND, ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
     ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH,
@@ -70,8 +72,9 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
-    ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, RequestExecutionUpdate, RequestId,
-    RequestMultimodalInputs, RunnerInput, RunnerOutput, StopReason, upsert_route_decision,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, ROUTE_DECISION_AX_MLX_LAYER_FORWARD_ROUTE,
+    RequestExecutionUpdate, RequestId, RequestMultimodalInputs, RunnerInput, RunnerOutput,
+    StopReason, upsert_route_decision,
 };
 
 use crate::batched_decode_certification::load_batched_decode_certification;
@@ -4676,6 +4679,38 @@ impl ExecutionRunner for MlxRunner {
         let mut kv_cache = KvCacheTelemetry::default();
         let mut prefix_cache = MlxPrefixCacheTelemetry::default();
 
+        // ADR-038: emit generation kind + layer-forward route on every step so
+        // benchmarks and serving telemetry do not infer paradigm from family
+        // strings alone.
+        upsert_route_decision(
+            &mut route_metadata.crossover_decisions,
+            ROUTE_DECISION_AX_MLX_GENERATION_KIND,
+            self.cfg.generation_kind.telemetry_code(),
+        );
+        if let Some(route) = ax_engine_core::resolve_layer_forward_route(&self.cfg.model_family) {
+            upsert_route_decision(
+                &mut route_metadata.crossover_decisions,
+                ROUTE_DECISION_AX_MLX_LAYER_FORWARD_ROUTE,
+                route.telemetry_code(),
+            );
+        }
+        // Plan work unit from strategy metadata + first scheduled item progress.
+        if let Some(first) = input.execution_batch.items.first() {
+            let ctx = input.request_context(first.request_id);
+            let progress = GenerationProgress::from_request_counters(
+                ctx.map(|c| c.processed_prompt_tokens).unwrap_or(0),
+                ctx.map(|c| c.prompt_len).unwrap_or(0),
+                ctx.map(|c| c.generated_len).unwrap_or(0),
+            );
+            let strategy = GenerationStrategyDescriptor::for_kind(self.cfg.generation_kind);
+            let work_unit = strategy.plan_next_work_unit(progress);
+            upsert_route_decision(
+                &mut route_metadata.crossover_decisions,
+                ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
+                work_unit.telemetry_code(),
+            );
+        }
+
         // ── Batched dense-decode interception (AX_MLX_BATCHED_DECODE, default
         // off). Eligible greedy decode items run through one shared batched
         // forward; every other item — and the whole thing when the flag is off
@@ -5824,6 +5859,21 @@ impl MlxRunner {
             .and_then(|inputs| inputs.gemma4_unified.as_ref())
             .filter(|inputs| !inputs.is_empty());
         let has_gemma4_unified_multimodal_prefill = is_prefill && gemma4_unified_inputs.is_some();
+        // ADR-038 Phase 4: multimodal is a prefill adapter into the same
+        // generation strategy — never a parallel generation engine.
+        if let Some(inputs) = multimodal_inputs {
+            let adapter =
+                MultimodalPrefillAdapter::from_request_inputs(inputs, self.cfg.generation_kind);
+            debug_assert!(
+                !adapter.is_separate_generation_engine(),
+                "multimodal must not invent a separate generation engine"
+            );
+            debug_assert_eq!(
+                adapter.feeds_generation, self.cfg.generation_kind,
+                "multimodal adapter must feed the model generation kind"
+            );
+            let _ = adapter.requires_prefill_projection;
+        }
         let mut gemma4_unified_multimodal_telemetry = Gemma4UnifiedMultimodalTelemetry::default();
         if has_gemma4_unified_multimodal_prefill && let Some(inputs) = gemma4_unified_inputs {
             gemma4_unified_multimodal_telemetry.record_prefill(inputs, self.has_mtp());
