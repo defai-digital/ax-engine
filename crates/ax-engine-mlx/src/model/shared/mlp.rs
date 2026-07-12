@@ -2689,6 +2689,32 @@ pub(crate) fn moe_experts_forward_gemma4(
     )
 }
 
+/// Combine Gemma4 dual-path MoE sub-blocks (dense `h1` + expert `h2`).
+///
+/// When the expert post-norm is absent and a final FFN post-norm is present,
+/// fuses `add(h1, h2)` + RMSNorm into one `add_rms_norm_pair` (saves a
+/// dispatch on the decode dual-path post stage).
+pub(crate) fn combine_gemma4_dual_path_outputs(
+    h1: &MlxArray,
+    h2: &MlxArray,
+    expert_post_norm2: Option<&MlxArray>,
+    ffn_post_norm: Option<&MlxArray>,
+    eps: f32,
+) -> MlxArray {
+    let h2 = super::rms_norm_opt(h2, expert_post_norm2, eps);
+    match (expert_post_norm2.is_none(), ffn_post_norm) {
+        (true, Some(post)) => {
+            // Fuse residual add of dense+expert with the shared post-norm.
+            let (_residual, normed) = mlx_sys::add_rms_norm_pair(h1, &h2, post, eps, None);
+            normed
+        }
+        _ => {
+            let combined = add(h1, &h2, None);
+            super::rms_norm_opt(&combined, ffn_post_norm, eps)
+        }
+    }
+}
+
 /// Standalone MoE expert forward using individually captured weight tensors.
 ///
 /// Used by the per-layer MoE compiled closure (`apply_layer_moe_decode`) where
@@ -3100,18 +3126,10 @@ impl CompiledGemma4DualPathSchema {
             None,
             self.router_expert_scale.map(|i| inputs.get(i)),
         );
-        let h2 = crate::model::shared::rms_norm_opt(
-            &h2,
-            self.expert_post_norm2.map(|i| inputs.get(i)).as_ref(),
-            eps,
-        );
-        // Combine
-        let combined = add(&h1, &h2, None);
-        crate::model::shared::rms_norm_opt(
-            &combined,
-            self.ffn_post_norm.map(|i| inputs.get(i)).as_ref(),
-            eps,
-        )
+        // Combine dense + expert (fused post-norm when possible).
+        let expert_post = self.expert_post_norm2.map(|i| inputs.get(i));
+        let ffn_post = self.ffn_post_norm.map(|i| inputs.get(i));
+        combine_gemma4_dual_path_outputs(&h1, &h2, expert_post.as_ref(), ffn_post.as_ref(), eps)
     }
 }
 
@@ -3951,6 +3969,42 @@ mod tests {
 
         assert_eq!(metal.shape(), vec![1, 2, 4]);
         assert_close(metal.data_f32(), direct.data_f32(), 1.0e-5);
+    }
+
+    #[test]
+    fn combine_gemma4_dual_path_fused_post_norm_matches_unfused() {
+        // h1 + h2 then post-RMSNorm must match add_rms_norm_pair path.
+        let h1 = array_f32(&[1.0, 2.0, 3.0, 4.0], &[1, 1, 4]);
+        let h2 = array_f32(&[0.5, -0.5, 1.5, -1.5], &[1, 1, 4]);
+        let post = array_f32(&[1.0, 1.0, 1.0, 1.0], &[4]);
+        let eps = 1.0e-6_f32;
+
+        let unfused = {
+            let combined = add(&h1, &h2, None);
+            rms_norm(&combined, Some(&post), eps, None)
+        };
+        let fused = combine_gemma4_dual_path_outputs(&h1, &h2, None, Some(&post), eps);
+        eval(&[&unfused, &fused]);
+        assert_eq!(fused.shape(), unfused.shape());
+        assert_close(fused.data_f32(), unfused.data_f32(), 1.0e-5);
+    }
+
+    #[test]
+    fn combine_gemma4_dual_path_with_expert_post_norm_stays_unfused_order() {
+        let h1 = array_f32(&[1.0, 0.0, -1.0, 2.0], &[1, 1, 4]);
+        let h2 = array_f32(&[0.25, 0.25, 0.25, 0.25], &[1, 1, 4]);
+        let post2 = array_f32(&[1.0, 1.0, 1.0, 1.0], &[4]);
+        let post = array_f32(&[0.5, 0.5, 0.5, 0.5], &[4]);
+        let eps = 1.0e-6_f32;
+
+        let expected = {
+            let h2n = rms_norm(&h2, Some(&post2), eps, None);
+            let combined = add(&h1, &h2n, None);
+            rms_norm(&combined, Some(&post), eps, None)
+        };
+        let got = combine_gemma4_dual_path_outputs(&h1, &h2, Some(&post2), Some(&post), eps);
+        eval(&[&expected, &got]);
+        assert_close(got.data_f32(), expected.data_f32(), 1.0e-5);
     }
 
     #[test]

@@ -145,6 +145,50 @@ impl StructuralCapabilities {
             && !self.has_mla
             && !self.has_moe
     }
+
+    /// Structural blockers for a **Gemma-style** continuous decode pilot
+    /// (interleaved SWA is allowed; MoE / MLA / linear / diffusion are not).
+    ///
+    /// This is not the dense full-attention Qwen pilot. A future SWA-aware
+    /// multi-request path would still need numerical certification and
+    /// windowed KV views (see `AX_MLX_MULTI_TOKEN_WINDOW_VIEWS`).
+    pub fn gemma_swa_decode_structural_rejections(self) -> Vec<&'static str> {
+        let mut reasons = Vec::new();
+        if self.is_diffusion {
+            reasons.push("diffusion");
+        }
+        if self.is_encoder_embed {
+            reasons.push("encoder_embed");
+        }
+        if self.has_moe {
+            reasons.push("moe");
+        }
+        if self.has_linear_attention {
+            reasons.push("linear_attention");
+        }
+        if self.has_mla {
+            reasons.push("mla");
+        }
+        // Layer gating (per-layer embeds) is Gemma-E2B/E4B-specific complexity.
+        if self.has_layer_gating {
+            reasons.push("layer_gating");
+        }
+        if !self.has_full_attention && !self.has_sliding_window {
+            reasons.push("no_attention");
+        }
+        // Pure dense full-attn without SWA can use the dense pilot instead.
+        if self.has_full_attention && !self.has_sliding_window {
+            reasons.push("not_interleaved_swa");
+        }
+        reasons
+    }
+
+    /// True when caps look like interleaved SWA Gemma text (not MoE/gating).
+    pub fn is_structurally_gemma_swa_text_candidate(self) -> bool {
+        self.gemma_swa_decode_structural_rejections().is_empty()
+            && self.has_sliding_window
+            && self.has_full_attention
+    }
 }
 
 /// Full structural view of a model architecture for scheduling and routing.
@@ -377,6 +421,43 @@ mod tests {
             diffusion: NativeDiffusionConfig::default(),
             tensors: Vec::new(),
         }
+    }
+
+    #[test]
+    fn gemma_swa_text_candidate_allows_interleaved_swa_not_moe() {
+        let mut m = base_manifest("gemma4", 4);
+        m.layer_types = vec![
+            "sliding_attention".into(),
+            "full_attention".into(),
+            "sliding_attention".into(),
+            "full_attention".into(),
+        ];
+        m.sliding_window_size = Some(512);
+        let caps = ArchitectureSpec::from_manifest(&m).capabilities;
+        assert!(caps.has_sliding_window);
+        assert!(caps.has_full_attention);
+        assert!(
+            caps.is_structurally_gemma_swa_text_candidate(),
+            "interleaved SWA dense Gemma text should be a SWA pilot candidate: {:?}",
+            caps.gemma_swa_decode_structural_rejections()
+        );
+        // Dense Qwen pilot still rejects SWA.
+        assert!(
+            caps.dense_batched_decode_structural_rejections()
+                .contains(&"sliding_window")
+        );
+
+        // MoE blocks the Gemma SWA pilot.
+        m.moe.expert_count = Some(8);
+        m.moe.experts_per_token = Some(2);
+        m.moe.expert_intermediate_size = Some(64);
+        let caps_moe = ArchitectureSpec::from_manifest(&m).capabilities;
+        assert!(
+            caps_moe
+                .gemma_swa_decode_structural_rejections()
+                .contains(&"moe")
+        );
+        assert!(!caps_moe.is_structurally_gemma_swa_text_candidate());
     }
 
     #[test]

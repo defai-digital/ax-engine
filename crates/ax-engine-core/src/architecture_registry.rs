@@ -111,7 +111,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
-        cert_gate_note: "interleaved SWA / MoE; sliding_window and moe reject dense batch",
+        cert_gate_note: "interleaved SWA / optional MoE; dense pilot rejects SWA+MoE; SWA text may use gemma_swa structural helper + multi_token_window_views",
     },
     ArchitectureRegistration {
         family_label: "gemma4_assistant",

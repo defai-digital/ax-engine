@@ -201,9 +201,13 @@ fn layer_shell_post_attention(
                     );
                 }
                 let post_started = profile_gemma4_moe_decode.then(Instant::now);
-                let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref(), cfg.rms_norm_eps);
-                let combined = add(&h1, &h2, None);
-                let out = rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
+                let out = crate::model::shared::combine_gemma4_dual_path_outputs(
+                    &h1,
+                    &h2,
+                    w.ffn_post_norm2.as_ref(),
+                    w.ffn_post_norm.as_ref(),
+                    cfg.rms_norm_eps,
+                );
                 if let Some(started) = post_started {
                     profile_eval_elapsed(
                         profile_gemma4_moe_decode,
