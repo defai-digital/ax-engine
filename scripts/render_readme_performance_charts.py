@@ -2523,10 +2523,12 @@ def render_embedding_box_chart(
     title: str,
     subtitle: str,
     source_label: str,
+    ax_label: str | None = None,
 ) -> str:
     box_groups = embedding_box_groups(rows)
     if not box_groups:
         raise ChartError(f"{title} has no rows")
+    ax_chart_label = ax_label or AX_ENGINE_CHART_LABEL
     all_maxima = [
         engine_row.stats.maximum
         for group in box_groups
@@ -2665,7 +2667,7 @@ def render_embedding_box_chart(
             EMBEDDING_BOX_REFERENCE_COLOR,
             EMBEDDING_BOX_REFERENCE_DOT_COLOR,
         ),
-        (AX_ENGINE_CHART_LABEL, EMBEDDING_BOX_AX_COLOR, EMBEDDING_BOX_AX_DOT_COLOR),
+        (ax_chart_label, EMBEDDING_BOX_AX_COLOR, EMBEDDING_BOX_AX_DOT_COLOR),
     ]
     legend_x = FAMILY_LEFT
     for label, color, stroke in legend_items:
@@ -2888,8 +2890,10 @@ def main() -> int:
             "chunk/batch shapes."
         ),
         source_label=(
-            "Sources: retained Qwen reference + 2026-07-11 AX-only 0.6B refresh"
+            "Sources: 2026-07-12 same-session 0.6B mlx-lm+AX pair; "
+            "4B/8B retained 2026-07-06 AX vs 2026-07-03 mlx-lm"
         ),
+        ax_label="AX Engine v6.8.2 (2026-07-12)",
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)

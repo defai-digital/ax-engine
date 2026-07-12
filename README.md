@@ -1137,8 +1137,9 @@ part of that chart.
 
 **AX leads the retained `mlx-embeddings` reference by 1.3-8.6% on every
 EmbeddingGemma shape below** — but note this is a fresh AX-only refresh compared
-against retained reference medians, not a same-session paired run like the Qwen
-rows above, so read it as a directional lead rather than a locked delta.
+against retained reference medians, not a same-session paired run like the
+Qwen3 0.6B ingest table above, so read it as a directional lead rather than a
+locked delta.
 
 EmbeddingGemma uses `mlx-embeddings` as the sustained reference because its
 full sentence-transformers route includes mean pooling, the Dense projection
