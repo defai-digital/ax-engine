@@ -132,9 +132,13 @@ impl BatchedDecodeCapabilities {
         // Structural gates via ADR-038 StructuralCapabilities (not family names).
         // Order matches the historical runner contract so route telemetry stays stable:
         // mtp → structural(diffusion first) → kv_compression → cert → remaining structure.
+        // Attention *kind* is independent of whether Q/K/V/O projections are
+        // complete — incomplete projections are a separate rejection
+        // (`missing_attention_projection`). Gating has_full_attention on
+        // projection completeness incorrectly added a spurious `no_attention`
+        // structural rejection for incomplete dense models.
         let structural = ax_engine_core::StructuralCapabilities {
-            has_full_attention: self.has_complete_attention_projections
-                && !self.has_sliding_window
+            has_full_attention: !self.has_sliding_window
                 && !self.has_linear_attention
                 && !self.has_mla,
             has_sliding_window: self.has_sliding_window,
@@ -149,7 +153,7 @@ impl BatchedDecodeCapabilities {
         let structural_reasons = structural.dense_batched_decode_structural_rejections();
         // Emit diffusion first (legacy position), then defer other structural
         // reasons until after kv_compression and certification for telemetry stability.
-        if structural_reasons.iter().any(|r| *r == "diffusion") {
+        if structural_reasons.contains(&"diffusion") {
             reasons.push("diffusion");
         }
         if self.kv_compression_on {
@@ -434,6 +438,78 @@ mod tests {
                 "certification_missing",
                 "sliding_window"
             ]
+        );
+    }
+
+    #[test]
+    fn incomplete_projections_do_not_emit_spurious_no_attention() {
+        use crate::weights::LayerWeights;
+        use mlx_sys::{MlxDtype, zeros};
+
+        // One dense layer with missing Q/K/V/O projections.
+        // Attention *kind* is still full; incompleteness is a separate gate.
+        let incomplete = LayerWeights {
+            attn_norm: zeros(&[16], MlxDtype::Float32, None),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: None,
+            glm_mla_attn: None,
+            ffn_norm: zeros(&[16], MlxDtype::Float32, None),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: None,
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: None,
+            router_correction_bias: None,
+            router_scale: None,
+            router_combined_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_up_proj: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
+            gate_up_exps_packed: None,
+            gate_exps: None,
+            up_exps: None,
+            down_exps: None,
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
+            rotation_smoothing_inverse: None,
+        };
+
+        let reasons = BatchedDecodeCapabilities::from_loaded_model(
+            false,
+            false,
+            false,
+            &[],
+            &[incomplete],
+            BatchedDecodeCertificationStatus::Certified,
+        )
+        .rejection_reasons(false);
+
+        assert!(
+            reasons.contains(&"missing_attention_projection"),
+            "expected missing_attention_projection, got {reasons:?}"
+        );
+        assert!(
+            !reasons.contains(&"no_attention"),
+            "incomplete dense projections must not be labeled no_attention: {reasons:?}"
         );
     }
 }

@@ -163,22 +163,23 @@ mod tests {
 
     #[test]
     fn vision_adapter_does_not_change_generation_kind() {
-        let mut inputs = RequestMultimodalInputs::default();
-        inputs.gemma4_unified = Some(Gemma4UnifiedRuntimeInputs {
-            images: vec![Gemma4UnifiedImageRuntimeInput {
-                span: Gemma4UnifiedTokenSpan {
-                    modality: Gemma4UnifiedModality::Image,
-                    placeholder_index: 0,
-                    replacement_start: 0,
-                    soft_token_count: 4,
-                    replacement_token_count: 4,
-                },
-                pixel_values: vec![0.0; 16],
-                pixel_position_ids: vec![[0, 0]; 4],
-            }],
-            audios: Vec::new(),
-            videos: Vec::new(),
-        });
+        let inputs = RequestMultimodalInputs {
+            gemma4_unified: Some(Gemma4UnifiedRuntimeInputs {
+                images: vec![Gemma4UnifiedImageRuntimeInput {
+                    span: Gemma4UnifiedTokenSpan {
+                        modality: Gemma4UnifiedModality::Image,
+                        placeholder_index: 0,
+                        replacement_start: 0,
+                        soft_token_count: 4,
+                        replacement_token_count: 4,
+                    },
+                    pixel_values: vec![0.0; 16],
+                    pixel_position_ids: vec![[0, 0]; 4],
+                }],
+                audios: Vec::new(),
+                videos: Vec::new(),
+            }),
+        };
 
         let backbone = GenerationKind::Autoregressive;
         let adapter = MultimodalPrefillAdapter::from_request_inputs(&inputs, backbone);

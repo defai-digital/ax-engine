@@ -238,14 +238,15 @@ impl EngineCore {
         let request_id = submission.request_id;
         self.kv_manager
             .register_request(request_id, submission.input_tokens.clone())?;
-        if let Err(error) = self.request_manager.submit(submission) {
+        // Bind generation kind atomically with insert (ADR-038) so a failed
+        // post-submit set cannot leave a request with the wrong strategy.
+        if let Err(error) = self
+            .request_manager
+            .submit_with_generation_kind(submission, self.generation_kind)
+        {
             let _ = self.kv_manager.free(request_id);
             return Err(error.into());
         }
-        // Propagate model generation kind into the request for strategy-aware scheduling.
-        self.request_manager
-            .set_generation_kind(request_id, self.generation_kind)
-            .map_err(EngineCoreError::from)?;
         Ok(request_id)
     }
 

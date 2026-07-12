@@ -85,7 +85,7 @@ fn find_pip_mlx_dirs() -> Option<MlxDirs> {
     // PYTHON). Falling back to bare `python3` can miss the active venv.
     let python = ["PYO3_PYTHON", "PYTHON", "PYTHON_SYS_EXECUTABLE"]
         .iter()
-        .find_map(|k| std::env::var_os(k))
+        .find_map(std::env::var_os)
         .unwrap_or_else(|| "python3".into());
     if let Ok(out) = std::process::Command::new(&python)
         .args([

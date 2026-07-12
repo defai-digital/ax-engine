@@ -55,6 +55,15 @@ impl RequestManager {
         &mut self,
         submission: RequestSubmission,
     ) -> Result<RequestId, RequestManagerError> {
+        self.submit_with_generation_kind(submission, crate::GenerationKind::Autoregressive)
+    }
+
+    /// Submit a request and bind its generation strategy in one step (ADR-038).
+    pub fn submit_with_generation_kind(
+        &mut self,
+        submission: RequestSubmission,
+        generation_kind: crate::GenerationKind,
+    ) -> Result<RequestId, RequestManagerError> {
         let request_id = submission.request_id;
 
         if self.records.contains_key(&request_id)
@@ -63,7 +72,8 @@ impl RequestManager {
             return Err(RequestManagerError::DuplicateRequest(request_id));
         }
 
-        let record = RequestRecord::new(submission, BlockTable::empty(self.cache_group_id));
+        let mut record = RequestRecord::new(submission, BlockTable::empty(self.cache_group_id));
+        record.set_generation_kind(generation_kind);
         self.records.insert(request_id, record);
         self.snapshot_order_dirty = true;
         Ok(request_id)
@@ -896,16 +906,36 @@ mod tests {
     }
 
     #[test]
+    fn submit_with_generation_kind_binds_atomically() {
+        use crate::GenerationKind;
+
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        manager
+            .submit_with_generation_kind(
+                make_submission(1, 1, "diffusion_gemma"),
+                GenerationKind::BlockDiffusion,
+            )
+            .unwrap();
+
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.generation_kind, GenerationKind::BlockDiffusion);
+        assert_eq!(
+            crate::plan_work_unit_for_snapshot(&snapshot),
+            crate::WorkUnitKind::PrefillChunk
+        );
+    }
+
+    #[test]
     fn applies_diffusion_schedule_update_from_runner() {
         use crate::GenerationKind;
         use crate::runner::DiffusionScheduleUpdate;
 
         let mut manager = RequestManager::new(CacheGroupId(7));
         manager
-            .submit(make_submission(1, 1, "diffusion_gemma"))
-            .unwrap();
-        manager
-            .set_generation_kind(RequestId(1), GenerationKind::BlockDiffusion)
+            .submit_with_generation_kind(
+                make_submission(1, 1, "diffusion_gemma"),
+                GenerationKind::BlockDiffusion,
+            )
             .unwrap();
         manager.admit_waiting().unwrap();
         manager
