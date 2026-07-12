@@ -1051,6 +1051,14 @@ pub fn diffusion_max_steps() -> Option<usize> {
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_MAX_STEPS"))
 }
 
+/// Diffusion: max denoise steps to run per engine decode call when multi-step
+/// scheduling is enabled. `None` / unset means monoblock (run until
+/// convergence or `max_denoise_steps` inside one call).
+pub fn diffusion_steps_per_engine_step() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_STEPS_PER_ENGINE_STEP"))
+}
+
 /// Diffusion: steps between convergence checks. Defaults to 1 (check every
 /// step). Larger values reduce per-step scalar evals (negligible — see A/B) but
 /// detect convergence on a coarser grid, overshooting the true convergence step

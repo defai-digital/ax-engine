@@ -3351,6 +3351,9 @@ struct RequestState {
     diffusion_block_queue: VecDeque<u32>,
     /// Schedule feedback for the engine after the latest monoblock generate.
     pending_diffusion_schedule: Option<DiffusionScheduleUpdate>,
+    /// In-progress multi-step denoise workspace (Phase B). Present only when
+    /// `AX_DIFFUSION_STEPS_PER_ENGINE_STEP` is set and a block is mid-denoise.
+    diffusion_workspace: Option<crate::diffusion::DiffusionBlockWorkspace>,
     /// Request-local DiffusionGemma embedding table reused across generated
     /// blocks for self-conditioning.
     diffusion_embed_table: Option<MlxArray>,
@@ -3489,6 +3492,7 @@ impl RequestState {
             bonus_queue: VecDeque::new(),
             diffusion_block_queue: VecDeque::new(),
             pending_diffusion_schedule: None,
+            diffusion_workspace: None,
             diffusion_embed_table: None,
             next_model_last_token: None,
             pending_direct: None,
@@ -7159,41 +7163,125 @@ impl MlxRunner {
             return vec![tok];
         }
 
-        // Diffusion path: when the diffusion queue is exhausted, generate a
-        // new block via bidirectional denoising + causal commit. This replaces
-        // the standard AR decode step for DiffusionGemma models.
+        // Diffusion path: when the diffusion queue is exhausted, denoise a
+        // new block (monoblock by default, or budgeted multi-step when
+        // AX_DIFFUSION_STEPS_PER_ENGINE_STEP is set).
         if let Some(diff_cfg) = self.cfg.diffusion.as_ref() {
             let token_offset = state.cache.seq_len;
             let remaining_output_budget = options
                 .request_context
                 .map(|ctx| ctx.max_output_tokens.saturating_sub(ctx.generated_len));
-            let result = crate::diffusion::generate_diffusion_block(
+            let commit_policy = crate::diffusion::DiffusionCommitPolicy {
+                truncation_terminal_ids: &self.terminal_token_ids,
+                request_terminal_ids: options.terminal_token_ids,
+                remaining_output_budget,
+            };
+            // Unset budget → monoblock (historical default).
+            let step_budget =
+                crate::fastpath::diffusion_steps_per_engine_step().unwrap_or(usize::MAX);
+
+            if step_budget == usize::MAX && state.diffusion_workspace.is_none() {
+                let result = crate::diffusion::generate_diffusion_block(
+                    &self.cfg,
+                    diff_cfg,
+                    &self.weights,
+                    &mut state.cache,
+                    &mut state.rng,
+                    token_offset,
+                    &mut state.diffusion_embed_table,
+                    commit_policy,
+                );
+                state.decode_telemetry.record_diffusion_block(&result);
+                state.pending_diffusion_schedule = Some(DiffusionScheduleUpdate {
+                    denoise_steps_in_block: result.denoise_steps,
+                    commit_ready: false,
+                    block_committed: true,
+                });
+                let mut queue: VecDeque<u32> = result.tokens.into();
+                if let Some(eos_pos) = queue
+                    .iter()
+                    .position(|&tok| self.terminal_token_ids.contains(&tok))
+                {
+                    queue.truncate(eos_pos + 1);
+                }
+                let tok = queue.pop_front().unwrap_or(0);
+                state.diffusion_block_queue = queue;
+                return vec![tok];
+            }
+
+            // Budgeted multi-step denoise (Phase B).
+            if state.diffusion_workspace.is_none() {
+                state.diffusion_workspace = Some(crate::diffusion::open_diffusion_block(
+                    &self.cfg,
+                    diff_cfg,
+                    &self.weights,
+                    &mut state.rng,
+                    token_offset,
+                    &mut state.diffusion_embed_table,
+                ));
+            }
+            let progress = match state.diffusion_workspace.as_mut() {
+                Some(ws) => crate::diffusion::advance_diffusion_workspace(
+                    ws,
+                    &self.cfg,
+                    &self.weights,
+                    &state.cache,
+                    &mut state.rng,
+                    &state.diffusion_embed_table,
+                    step_budget,
+                ),
+                None => {
+                    // Defensive: fall back to monoblock if open failed unexpectedly.
+                    let result = crate::diffusion::generate_diffusion_block(
+                        &self.cfg,
+                        diff_cfg,
+                        &self.weights,
+                        &mut state.cache,
+                        &mut state.rng,
+                        token_offset,
+                        &mut state.diffusion_embed_table,
+                        commit_policy,
+                    );
+                    state.decode_telemetry.record_diffusion_block(&result);
+                    state.pending_diffusion_schedule = Some(DiffusionScheduleUpdate {
+                        denoise_steps_in_block: result.denoise_steps,
+                        commit_ready: false,
+                        block_committed: true,
+                    });
+                    let mut queue: VecDeque<u32> = result.tokens.into();
+                    if let Some(eos_pos) = queue
+                        .iter()
+                        .position(|&tok| self.terminal_token_ids.contains(&tok))
+                    {
+                        queue.truncate(eos_pos + 1);
+                    }
+                    let tok = queue.pop_front().unwrap_or(0);
+                    state.diffusion_block_queue = queue;
+                    return vec![tok];
+                }
+            };
+            if !progress.commit_ready {
+                // Mid-denoise: no visible token yet; schedule DenoiseStep again.
+                state.pending_diffusion_schedule = Some(progress.schedule_update());
+                return Vec::new();
+            }
+            let Some(ws) = state.diffusion_workspace.take() else {
+                return Vec::new();
+            };
+            let result = crate::diffusion::commit_diffusion_workspace(
+                ws,
                 &self.cfg,
-                diff_cfg,
                 &self.weights,
                 &mut state.cache,
-                &mut state.rng,
-                token_offset,
-                &mut state.diffusion_embed_table,
-                crate::diffusion::DiffusionCommitPolicy {
-                    truncation_terminal_ids: &self.terminal_token_ids,
-                    request_terminal_ids: options.terminal_token_ids,
-                    remaining_output_budget,
-                },
+                commit_policy,
             );
             state.decode_telemetry.record_diffusion_block(&result);
-            // Monoblock path: denoise+commit already finished. Report schedule
-            // progress so the next plan unit is DenoiseStep for the next block
-            // (block_committed=true, commit_ready=false).
             state.pending_diffusion_schedule = Some(DiffusionScheduleUpdate {
                 denoise_steps_in_block: result.denoise_steps,
                 commit_ready: false,
                 block_committed: true,
             });
             let mut queue: VecDeque<u32> = result.tokens.into();
-            // EOS early termination (dInfer evidence: 15–40% gain). If the
-            // committed block contains an EOS token, truncate the queue at
-            // that position so we never generate a follow-on block.
             if let Some(eos_pos) = queue
                 .iter()
                 .position(|&tok| self.terminal_token_ids.contains(&tok))

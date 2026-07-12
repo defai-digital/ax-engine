@@ -162,10 +162,14 @@ and are ignored when the full pipeline succeeds.
 | Compiled forward (forward-only) | ON when full pipeline is off | Fallback only; superseded by the full pipeline | opt-out `AX_DIFFUSION_NO_COMPILED_FORWARD=1` |
 | Embedding cache | ON on fallback | Fingerprint reuse of per-layer embeds; not used inside full-pipeline compile | opt-out `AX_DIFFUSION_NO_EMBEDDING_CACHE=1` |
 | KV concat buffer | ON on fallback | `slice_update` + `contiguous`/`eval`; bit-matched to re-concatenate; not used inside full-pipeline compile | opt-out `AX_DIFFUSION_NO_KV_CONCAT_BUFFER=1` |
+| Resumable denoise workspace | monoblock | Default still denoise+commit in one call; optional per-engine-step budget | `AX_DIFFUSION_STEPS_PER_ENGINE_STEP=N` |
+| Random renoise host buffer reuse | ON | Pre-sized `Vec` on workspace; avoids per-step host alloc | (always) |
+| Stage profile | OFF | Forward / sample / commit timers | opt-in `AX_DIFFUSION_PROFILE=1` |
 
 Further gains beyond this table are mostly **kernel-level** (MoE / attention /
-lm_head inside each bidirectional step) and **serving-level** multi-step
-denoise scheduling — see the internal Phase B/C plan, not public claims.
+lm_head inside each bidirectional step). Optional multi-step denoise
+(`AX_DIFFUSION_STEPS_PER_ENGINE_STEP`) reports schedule progress mid-block
+without emitting tokens until commit.
 
 ## Benchmark Contract
 
