@@ -25,6 +25,72 @@ def metric(value: float) -> dict[str, float]:
     return {"median": value, "mean": value, "min": value, "max": value}
 
 
+def write_mtp_diagnostic_claim_fixture(root: Path) -> tuple[Path, Path]:
+    run_dir = (
+        root
+        / "benchmarks/results/speculative/mtp-6bit"
+        / "2026-07-11-approximate"
+    )
+    run_dir.mkdir(parents=True)
+    summary_path = run_dir / "summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "schema": checker.MTP_6BIT_APPROXIMATE_SCHEMA_VERSION,
+                "publication_candidate": False,
+                "claim_type": "approximate_optimistic_diagnostic",
+                "run_dir": str(run_dir.relative_to(root)),
+                "methodology": {
+                    "sampling": {
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "top_k": 0,
+                    }
+                },
+                "rows": [
+                    {
+                        "model_id": "qwen3.6-35b-a3b",
+                        "suite_id": "long_code",
+                        "ax_direct_decode_tok_s": 120.9549,
+                        "ax_mtp_decode_tok_s": 121.558,
+                        "ax_mtp_speedup_x": 1.004986,
+                        "ax_mtp_draft_quality_pct": 21.1,
+                        "ax_mtp_draft_quality_kind": (
+                            "target_argmax_match_ewma"
+                        ),
+                        "ax_mtp_step_coverage_pct": 1.61,
+                        "ax_mtp_fallback_prompt_count": 3,
+                        "prompt_count": 4,
+                        "publication_candidate": False,
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    readme_path = root / "README.md"
+    summary_link = summary_path.relative_to(root)
+    readme_path.write_text(
+        """#### AX Engine 6-bit approximate MTP diagnostic (2026-07-11)
+
+This is an approximate optimistic diagnostic using greedy decode
+(`temperature=0.0`, `top_p=1.0`, `top_k=0`).
+
+> This artifact is not publication eligible.
+
+<img src="docs/assets/perf-mtp-6bit-ax-approximate-diagnostic.svg" alt="MTP diagnostic">
+
+| Target | Suite | AX direct decode | Approx. MTP decode | Diagnostic ratio | Draft quality | MTP step coverage | Fallback prompts |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `qwen3.6-35b-a3b` | `long_code` | 121.0 tok/s | 121.6 tok/s | 1.00x | 21.1% match | 1.6% | 3/4 |
+
+[`summary.json`]({summary_link})
+""".format(summary_link=summary_link)
+    )
+    return readme_path, summary_path
+
+
 def ngram_telemetry(
     *,
     attempts: int,
@@ -3030,6 +3096,59 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
         )
 
         checker.validate_evidence_set_manifest(manifest)
+
+    def test_readme_accepts_nonpublishable_mtp_diagnostic_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme_path, _summary_path = write_mtp_diagnostic_claim_fixture(Path(tmp))
+
+            checked = checker.validate_readme_mtp_6bit_claims(
+                readme_path=readme_path
+            )
+
+        self.assertEqual(len(checked), 1)
+        self.assertIn("nonpublishable", checked[0])
+
+    def test_readme_rejects_publishable_approximate_mtp_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme_path, summary_path = write_mtp_diagnostic_claim_fixture(Path(tmp))
+            summary = json.loads(summary_path.read_text())
+            summary["publication_candidate"] = True
+            summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "publication_candidate",
+            ):
+                checker.validate_readme_mtp_6bit_claims(readme_path=readme_path)
+
+    def test_readme_rejects_sampled_decode_for_greedy_mtp_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme_path, _summary_path = write_mtp_diagnostic_claim_fixture(Path(tmp))
+            readme_path.write_text(
+                readme_path.read_text().replace("greedy decode", "sampled decode")
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "sampled decode",
+            ):
+                checker.validate_readme_mtp_6bit_claims(readme_path=readme_path)
+
+    def test_readme_rejects_acceleration_title_for_mtp_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme_path, _summary_path = write_mtp_diagnostic_claim_fixture(Path(tmp))
+            readme_path.write_text(
+                readme_path.read_text().replace(
+                    "approximate MTP diagnostic",
+                    "MTP package acceleration",
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "approximate MTP diagnostic",
+            ):
+                checker.validate_readme_mtp_6bit_claims(readme_path=readme_path)
 
     def test_superseded_evidence_manifest_cannot_be_publishable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

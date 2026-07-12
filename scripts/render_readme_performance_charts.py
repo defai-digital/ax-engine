@@ -224,7 +224,10 @@ MTP_CHART_OUTPUTS = {
     ("quality", "accept_rate"): "perf-mtp-quality-accept-rate.svg",
 }
 
-MTP_6BIT_CHART_OUTPUT = "perf-mtp-6bit-ax-acceleration.svg"
+MTP_6BIT_APPROXIMATE_CHART_OUTPUT = "perf-mtp-6bit-ax-approximate-diagnostic.svg"
+MTP_6BIT_EXACT_CHART_OUTPUT = "perf-mtp-6bit-ax-acceleration.svg"
+MTP_6BIT_APPROXIMATE_SCHEMA = "ax.mtp_6bit_approximate_diagnostic_summary.v2"
+MTP_6BIT_EXACT_SCHEMA = "ax.mtp_6bit_ax_acceleration_summary.v3"
 MTP_PEER_CHART_OUTPUTS = {
     "decode": "perf-mtp-peer-comparison-apples-to-apples.svg",
     "prefill": "perf-mtp-peer-comparison-prefill-apples-to-apples.svg",
@@ -1054,8 +1057,25 @@ def find_mtp_6bit_summary(readme: Path) -> Path | None:
     return summary_path
 
 
-def load_mtp_6bit_rows(summary_path: Path) -> list[dict[str, Any]]:
+def load_mtp_6bit_summary(summary_path: Path) -> dict[str, Any]:
     summary = json.loads(summary_path.read_text())
+    schema = summary.get("schema")
+    if schema not in {MTP_6BIT_APPROXIMATE_SCHEMA, MTP_6BIT_EXACT_SCHEMA}:
+        raise ChartError(f"unsupported MTP 6-bit summary schema {schema!r}: {summary_path}")
+    approximate = schema == MTP_6BIT_APPROXIMATE_SCHEMA
+    expected_publication_candidate = not approximate
+    if summary.get("publication_candidate") is not expected_publication_candidate:
+        raise ChartError(
+            "MTP 6-bit summary publication_candidate does not match its schema: "
+            f"{summary_path}"
+        )
+    expected_claim_type = (
+        "approximate_optimistic_diagnostic" if approximate else "exact_mtp_acceleration"
+    )
+    if summary.get("claim_type") != expected_claim_type:
+        raise ChartError(
+            f"MTP 6-bit summary has invalid claim_type for {schema}: {summary_path}"
+        )
     rows = summary.get("rows")
     if not isinstance(rows, list) or not rows:
         raise ChartError(f"MTP 6-bit summary has no rows: {summary_path}")
@@ -1071,7 +1091,28 @@ def load_mtp_6bit_rows(summary_path: Path) -> list[dict[str, Any]]:
         ):
             if key not in row:
                 raise ChartError(f"MTP 6-bit summary row missing {key}: {summary_path}")
-    return rows
+        if row.get("publication_candidate") is not expected_publication_candidate:
+            raise ChartError(
+                "MTP 6-bit summary row publication_candidate does not match its schema: "
+                f"{summary_path}"
+            )
+        if approximate:
+            for key in (
+                "ax_mtp_draft_quality_pct",
+                "ax_mtp_draft_quality_kind",
+                "ax_mtp_step_coverage_pct",
+                "ax_mtp_fallback_prompt_count",
+                "prompt_count",
+            ):
+                if key not in row:
+                    raise ChartError(
+                        f"MTP approximate diagnostic row missing {key}: {summary_path}"
+                    )
+    return summary
+
+
+def load_mtp_6bit_rows(summary_path: Path) -> list[dict[str, Any]]:
+    return load_mtp_6bit_summary(summary_path)["rows"]
 
 
 def mtp_6bit_suite_label(suite_id: str) -> str:
@@ -1097,11 +1138,18 @@ def mtp_6bit_x_scale(value: float, axis_max: float) -> float:
 
 
 def render_mtp_6bit_ax_acceleration_chart(
-    rows: list[dict[str, Any]], summary_path: Path
+    rows: list[dict[str, Any]],
+    summary_path: Path,
+    *,
+    approximate_diagnostic: bool = False,
 ) -> str:
     run_date_match = re.match(r"(\d{4}-\d{2}-\d{2})", summary_path.parent.name)
     run_date = run_date_match.group(1) if run_date_match else summary_path.parent.name
-    chart_title = f"AX MTP decode ({run_date}): MTP off vs MTP on"
+    chart_title = (
+        f"AX approximate MTP diagnostic ({run_date})"
+        if approximate_diagnostic
+        else f"AX MTP decode ({run_date}): MTP off vs MTP on"
+    )
     axis_max = mtp_6bit_axis_max(rows)
     tick_step = axis_max / 4.0
     model_order = tuple(dict.fromkeys(str(row["model"]) for row in rows))
@@ -1119,11 +1167,15 @@ def render_mtp_6bit_ax_acceleration_chart(
             '<desc id="desc">Horizontal grouped bar chart comparing AX direct '
             "decode throughput with MTP off against AX MTP decode throughput "
             "with MTP on for each supported 6-bit AX MTP package and prompt suite. "
-            "The winning throughput label in each row is red.</desc>"
+            + (
+                "The MTP rows are non-publishable optimistic diagnostics, not exact-distribution evidence.</desc>"
+                if approximate_diagnostic
+                else "The winning throughput label in each row is red.</desc>"
+            )
         ),
         f'<rect width="{MTP_6BIT_WIDTH}" height="{height}" fill="#ffffff"/>',
         f'<text x="{MTP_6BIT_LABEL_X}" y="32" font-family="{FONT}" font-size="20" font-weight="700" fill="#111827">{escape(chart_title)}</text>',
-        f'<text x="{MTP_6BIT_LABEL_X}" y="54" font-family="{FONT}" font-size="12" fill="#4b5563">Each row compares the same prepared 6-bit package and prompt suite: AX direct has MTP off; AX MTP has MTP on.</text>',
+        f'<text x="{MTP_6BIT_LABEL_X}" y="54" font-family="{FONT}" font-size="12" fill="#4b5563">{escape("Non-publishable greedy optimistic diagnostic; MTP can fall back per prompt." if approximate_diagnostic else "Each row compares the same prepared 6-bit package and prompt suite: AX direct has MTP off; AX MTP has MTP on.")}</text>',
         f'<text x="{MTP_6BIT_RIGHT:.0f}" y="54" text-anchor="end" font-family="{FONT}" font-size="11" font-weight="700" fill="#374151">Decode throughput, tok/s</text>',
     ]
 
@@ -1140,11 +1192,11 @@ def render_mtp_6bit_ax_acceleration_chart(
         )
     lines.extend(
         [
-            f'<text x="{(MTP_6BIT_LEFT + MTP_6BIT_RIGHT) / 2:.1f}" y="{axis_bottom + 40.0:.1f}" text-anchor="middle" font-family="{FONT}" font-size="11" font-weight="700" fill="{RED}">Higher is better</text>',
+            f'<text x="{(MTP_6BIT_LEFT + MTP_6BIT_RIGHT) / 2:.1f}" y="{axis_bottom + 40.0:.1f}" text-anchor="middle" font-family="{FONT}" font-size="11" font-weight="700" fill="{RED}">{"Throughput diagnostic only" if approximate_diagnostic else "Higher is better"}</text>',
             f'<rect x="{MTP_6BIT_LABEL_X}" y="70" width="12" height="12" rx="2" fill="{MTP_6BIT_DIRECT_COLOR}"/>',
             f'<text x="90" y="80" font-family="{FONT}" font-size="12" fill="#374151">MTP off / AX direct</text>',
             f'<rect x="232" y="70" width="12" height="12" rx="2" fill="{MTP_6BIT_MTP_COLOR}"/>',
-            f'<text x="250" y="80" font-family="{FONT}" font-size="12" fill="#374151">MTP on / AX MTP</text>',
+            f'<text x="250" y="80" font-family="{FONT}" font-size="12" fill="#374151">{"Approx. MTP diagnostic" if approximate_diagnostic else "MTP on / AX MTP"}</text>',
         ]
     )
 
@@ -1169,8 +1221,16 @@ def render_mtp_6bit_ax_acceleration_chart(
         direct_end = MTP_6BIT_LEFT + direct_width
         mtp_end = MTP_6BIT_LEFT + mtp_width
         row_best = max(direct, mtp)
-        direct_text = RED if math.isclose(direct, row_best) else MTP_6BIT_DIRECT_TEXT
-        mtp_text = RED if math.isclose(mtp, row_best) else MTP_6BIT_MTP_TEXT
+        direct_text = (
+            MTP_6BIT_DIRECT_TEXT
+            if approximate_diagnostic
+            else RED if math.isclose(direct, row_best) else MTP_6BIT_DIRECT_TEXT
+        )
+        mtp_text = (
+            MTP_6BIT_MTP_TEXT
+            if approximate_diagnostic
+            else RED if math.isclose(mtp, row_best) else MTP_6BIT_MTP_TEXT
+        )
 
         lines.extend(
             [
@@ -1191,9 +1251,10 @@ def render_mtp_6bit_ax_acceleration_chart(
         label_y += MTP_6BIT_ROW_GAP
 
     version_label = f"Runtime: AX Engine v6.8.2 ({run_date}); MLX 0.32.0 / mlx-lm 0.31.3."
-    source_label = (
-        f"Source: {summary_path.parent.as_posix()} / summary.json. "
-        "Pure MTP; no MTP+n-gram stacking."
+    source_label = f"Source: {summary_path.parent.as_posix()} / summary.json. " + (
+        "No MTP+n-gram stacking; approximate and not publication eligible."
+        if approximate_diagnostic
+        else "Pure MTP; no MTP+n-gram stacking."
     )
     lines.append(
         f'<text x="{MTP_6BIT_LABEL_X}" y="{axis_bottom + 60.0:.1f}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(version_label)}</text>'
@@ -2632,9 +2693,19 @@ def main() -> int:
 
     mtp_6bit_summary_path = find_mtp_6bit_summary(args.readme)
     if mtp_6bit_summary_path is not None:
-        mtp_6bit_output_path = args.output_dir / MTP_6BIT_CHART_OUTPUT
+        mtp_6bit_summary = load_mtp_6bit_summary(mtp_6bit_summary_path)
+        mtp_6bit_approximate = (
+            mtp_6bit_summary["schema"] == MTP_6BIT_APPROXIMATE_SCHEMA
+        )
+        mtp_6bit_output_path = args.output_dir / (
+            MTP_6BIT_APPROXIMATE_CHART_OUTPUT
+            if mtp_6bit_approximate
+            else MTP_6BIT_EXACT_CHART_OUTPUT
+        )
         mtp_6bit_content = render_mtp_6bit_ax_acceleration_chart(
-            load_mtp_6bit_rows(mtp_6bit_summary_path), mtp_6bit_summary_path
+            mtp_6bit_summary["rows"],
+            mtp_6bit_summary_path,
+            approximate_diagnostic=mtp_6bit_approximate,
         )
         if not write_chart(mtp_6bit_output_path, mtp_6bit_content, args.check):
             mismatches.append(mtp_6bit_output_path)

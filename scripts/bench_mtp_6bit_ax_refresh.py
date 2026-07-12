@@ -279,6 +279,70 @@ def accept_rate_pct(artifact: dict[str, Any]) -> float:
     return accepted / drafted * 100.0
 
 
+def prompt_case_rows(artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in artifact.get("results", [])
+        if isinstance(row, dict) and row.get("prompt_case_id") is not None
+    ]
+
+
+def draft_quality(artifact: dict[str, Any], *, assistant_mtp: bool) -> tuple[float, str]:
+    if assistant_mtp:
+        return accept_rate_pct(artifact), "verified_accept_rate"
+
+    values = []
+    for row in prompt_case_rows(artifact):
+        telemetry = row.get("ngram_acceleration_telemetry") or {}
+        samples = int(telemetry.get("ax_mtp_mtp_only_accept_rate_ewma_samples", 0) or 0)
+        if samples <= 0:
+            continue
+        raw_match = telemetry.get("ax_mtp_mtp_only_accept_rate_ewma_x1000")
+        if not isinstance(raw_match, (int, float)):
+            raise ValueError("Qwen MTP target-match EWMA telemetry is missing")
+        match_pct = float(raw_match) / 10.0
+        if not 0.0 <= match_pct <= 100.0:
+            raise ValueError("Qwen MTP target-match EWMA telemetry is out of range")
+        values.append(match_pct)
+    if not values:
+        raise ValueError("Qwen MTP artifact has no target-match EWMA telemetry")
+    return float(statistics.median(values)), "target_argmax_match_ewma"
+
+
+def mtp_coverage(artifact: dict[str, Any]) -> dict[str, float | int]:
+    rows = prompt_case_rows(artifact)
+    if not rows:
+        raise ValueError("MTP artifact has no prompt-case rows")
+    mtp_decode_steps = telemetry_sum(artifact, "ax_mtp_decode_steps")
+    mtp_emitted_tokens = telemetry_sum(artifact, "ax_mtp_emitted_tokens")
+    direct_fallback_steps = telemetry_sum(artifact, "ax_mtp_direct_fallback_steps")
+    if min(mtp_decode_steps, mtp_emitted_tokens, direct_fallback_steps) < 0:
+        raise ValueError("MTP artifact has negative route telemetry")
+    decode_route_steps = mtp_decode_steps + direct_fallback_steps
+    if decode_route_steps <= 0:
+        raise ValueError("MTP artifact has no MTP or direct-fallback step telemetry")
+    fallback_prompt_count = sum(
+        1
+        for row in rows
+        if int(
+            (row.get("ngram_acceleration_telemetry") or {}).get(
+                "ax_mtp_direct_fallback_steps", 0
+            )
+            or 0
+        )
+        > 0
+    )
+    return {
+        "mtp_decode_steps": mtp_decode_steps,
+        "mtp_emitted_tokens": mtp_emitted_tokens,
+        "direct_fallback_steps": direct_fallback_steps,
+        "decode_route_steps": decode_route_steps,
+        "step_coverage_pct": mtp_decode_steps / decode_route_steps * 100.0,
+        "fallback_prompt_count": fallback_prompt_count,
+        "prompt_count": len(rows),
+    }
+
+
 def aggregate_ngram_telemetry(artifact: dict[str, Any]) -> dict[str, int]:
     return {key: telemetry_sum(artifact, key) for key in NGRAM_ZERO_KEYS}
 
@@ -374,6 +438,10 @@ def build_summary(
                 )
             direct_decode = metric_median(direct, "decode_tok_s")
             mtp_decode = metric_median(mtp, "decode_tok_s")
+            quality_pct, quality_kind = draft_quality(
+                mtp, assistant_mtp=target.assistant_mtp
+            )
+            coverage = mtp_coverage(mtp)
             row = {
                 "model_id": target.key,
                 "model": target.label,
@@ -387,6 +455,25 @@ def build_summary(
                 "ax_mtp_prefill_tok_s": metric_median(mtp, "prefill_tok_s"),
                 "ax_mtp_ttft_ms": metric_median(mtp, "ttft_ms"),
                 "ax_mtp_accept_rate_pct": accept_rate_pct(mtp),
+                "ax_mtp_accept_rate_kind": (
+                    "verified_accept_rate"
+                    if target.assistant_mtp
+                    else (
+                        "optimistic_policy_accept_rate"
+                        if args.approximate_speed_ceiling
+                        else "verified_accept_rate"
+                    )
+                ),
+                "ax_mtp_draft_quality_pct": quality_pct,
+                "ax_mtp_draft_quality_kind": quality_kind,
+                "ax_mtp_step_coverage_pct": coverage["step_coverage_pct"],
+                "ax_mtp_decode_steps": coverage["mtp_decode_steps"],
+                "ax_mtp_emitted_tokens": coverage["mtp_emitted_tokens"],
+                "ax_mtp_direct_fallback_steps": coverage["direct_fallback_steps"],
+                "ax_mtp_decode_route_steps": coverage["decode_route_steps"],
+                "ax_mtp_fallback_prompt_count": coverage["fallback_prompt_count"],
+                "prompt_count": coverage["prompt_count"],
+                "publication_candidate": not args.approximate_speed_ceiling,
                 "ax_mtp_ngram_telemetry": aggregate_ngram_telemetry(mtp),
                 "artifact": str(mtp_path.relative_to(REPO_ROOT)),
                 "mtplx": "N/A",
@@ -395,9 +482,15 @@ def build_summary(
             rows.append(row)
     return {
         "schema": (
-            "ax.mtp_6bit_approximate_speed_ceiling_summary.v1"
+            "ax.mtp_6bit_approximate_diagnostic_summary.v2"
             if args.approximate_speed_ceiling
             else "ax.mtp_6bit_ax_acceleration_summary.v3"
+        ),
+        "publication_candidate": not args.approximate_speed_ceiling,
+        "claim_type": (
+            "approximate_optimistic_diagnostic"
+            if args.approximate_speed_ceiling
+            else "exact_mtp_acceleration"
         ),
         "run_dir": str(output_dir.relative_to(REPO_ROOT)),
         "methodology": {
@@ -445,7 +538,39 @@ def fmt_pct(value: float) -> str:
     return f"{value:.1f}%"
 
 
-def table_lines(rows: list[dict[str, Any]]) -> list[str]:
+def draft_quality_label(row: dict[str, Any]) -> str:
+    suffix = (
+        "match"
+        if row["ax_mtp_draft_quality_kind"] == "target_argmax_match_ewma"
+        else "verified"
+    )
+    return f"{float(row['ax_mtp_draft_quality_pct']):.1f}% {suffix}"
+
+
+def table_lines(
+    rows: list[dict[str, Any]], *, approximate_diagnostic: bool
+) -> list[str]:
+    if approximate_diagnostic:
+        lines = [
+            "| Target | Suite | AX direct decode | Approx. MTP decode | Diagnostic ratio | Draft quality | MTP step coverage | Fallback prompts |",
+            "|---|---|---:|---:|---:|---:|---:|---:|",
+        ]
+        for row in rows:
+            lines.append(
+                "| `{model_id}` | `{suite_id}` | {direct} | {mtp} | {speedup:.2f}x | {quality} | {coverage:.1f}% | {fallback}/{prompts} |".format(
+                    model_id=row["model_id"],
+                    suite_id=row["suite_id"],
+                    direct=fmt_tok(float(row["ax_direct_decode_tok_s"])),
+                    mtp=fmt_tok(float(row["ax_mtp_decode_tok_s"])),
+                    speedup=float(row["ax_mtp_speedup_x"]),
+                    quality=draft_quality_label(row),
+                    coverage=float(row["ax_mtp_step_coverage_pct"]),
+                    fallback=int(row["ax_mtp_fallback_prompt_count"]),
+                    prompts=int(row["prompt_count"]),
+                )
+            )
+        return lines
+
     lines = [
         "| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
@@ -469,12 +594,28 @@ def table_lines(rows: list[dict[str, Any]]) -> list[str]:
 def write_summary_files(output_dir: Path, summary: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    approximate_diagnostic = summary["claim_type"] == "approximate_optimistic_diagnostic"
+    title = (
+        "# 6-bit MTP AX approximate diagnostic"
+        if approximate_diagnostic
+        else "# 6-bit MTP AX acceleration summary"
+    )
+    description = (
+        "This non-publishable artifact records an explicit optimistic speed diagnostic. "
+        "It does not establish exact-distribution MTP acceleration."
+        if approximate_diagnostic
+        else "This artifact summarizes exact AX MTP acceleration."
+    )
     lines = [
-        "# 6-bit MTP AX acceleration summary",
+        title,
         "",
-        "This artifact summarizes AX MTP acceleration as `AX MTP decode tok/s / AX direct decode tok/s` for the same prepared `download-mtp` package and prompt suite. It is not a cross-model speed ranking.",
+        description,
         "",
-        *table_lines(summary["rows"]),
+        "The diagnostic ratio is `AX MTP decode tok/s / AX direct decode tok/s` for the same prepared `download-mtp` package and prompt suite. It is not a cross-model speed ranking.",
+        "",
+        *table_lines(
+            summary["rows"], approximate_diagnostic=approximate_diagnostic
+        ),
         "",
         "This is an AX Engine only artifact. Peer engines are intentionally not run here; each row compares the prepared AX 6-bit `download-mtp` package against the same package with MTP disabled.",
         "",
@@ -486,7 +627,9 @@ def write_summary_files(output_dir: Path, summary: dict[str, Any]) -> None:
 
 def update_readme(readme: Path, summary: dict[str, Any]) -> None:
     text = readme.read_text()
-    table = "\n".join(table_lines(summary["rows"]))
+    table = "\n".join(
+        table_lines(summary["rows"], approximate_diagnostic=False)
+    )
     table_start = text.index("| Target | Suite | AX direct decode | AX MTP decode |")
     table_end = text.index("\n\nMethodology:", table_start)
     text = text[:table_start] + table + text[table_end:]

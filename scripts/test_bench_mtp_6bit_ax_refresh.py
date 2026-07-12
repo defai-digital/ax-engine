@@ -8,6 +8,26 @@ from scripts import bench_mtp_6bit_ax_refresh as bench
 
 
 class BenchMtpRefreshTests(unittest.TestCase):
+    @staticmethod
+    def mtp_row(
+        *,
+        case_id: str,
+        match_x1000: int,
+        mtp_steps: int,
+        fallback_steps: int,
+        emitted_tokens: int,
+    ) -> dict[str, object]:
+        return {
+            "prompt_case_id": case_id,
+            "ngram_acceleration_telemetry": {
+                "ax_mtp_mtp_only_accept_rate_ewma_samples": mtp_steps,
+                "ax_mtp_mtp_only_accept_rate_ewma_x1000": match_x1000,
+                "ax_mtp_decode_steps": mtp_steps,
+                "ax_mtp_direct_fallback_steps": fallback_steps,
+                "ax_mtp_emitted_tokens": emitted_tokens,
+            },
+        }
+
     def test_bench_command_records_two_warmups_and_greedy_sampler(self) -> None:
         target = bench.Target(
             key="test",
@@ -133,6 +153,104 @@ class BenchMtpRefreshTests(unittest.TestCase):
         bench.validate_exact_token_equivalence(
             Path("direct.json"), direct, Path("mtp.json"), mtp
         )
+
+    def test_qwen_draft_quality_uses_prompt_median_target_match_ewma(self) -> None:
+        artifact = {
+            "results": [
+                self.mtp_row(
+                    case_id="low",
+                    match_x1000=200,
+                    mtp_steps=8,
+                    fallback_steps=982,
+                    emitted_tokens=17,
+                ),
+                self.mtp_row(
+                    case_id="high",
+                    match_x1000=1000,
+                    mtp_steps=499,
+                    fallback_steps=0,
+                    emitted_tokens=999,
+                ),
+            ]
+        }
+
+        quality, kind = bench.draft_quality(artifact, assistant_mtp=False)
+
+        self.assertEqual(quality, 60.0)
+        self.assertEqual(kind, "target_argmax_match_ewma")
+
+    def test_qwen_draft_quality_fails_closed_without_match_ewma(self) -> None:
+        artifact = {
+            "results": [
+                {
+                    "prompt_case_id": "missing",
+                    "ngram_acceleration_telemetry": {
+                        "ax_mtp_mtp_only_accept_rate_ewma_samples": 8,
+                    },
+                }
+            ]
+        }
+
+        with self.assertRaisesRegex(
+            ValueError, "target-match EWMA telemetry is missing"
+        ):
+            bench.draft_quality(artifact, assistant_mtp=False)
+
+    def test_mtp_coverage_exposes_direct_fallback(self) -> None:
+        artifact = {
+            "results": [
+                self.mtp_row(
+                    case_id="fallback",
+                    match_x1000=200,
+                    mtp_steps=8,
+                    fallback_steps=982,
+                    emitted_tokens=17,
+                ),
+                self.mtp_row(
+                    case_id="effective",
+                    match_x1000=1000,
+                    mtp_steps=499,
+                    fallback_steps=0,
+                    emitted_tokens=999,
+                ),
+            ]
+        }
+
+        coverage = bench.mtp_coverage(artifact)
+
+        self.assertEqual(coverage["fallback_prompt_count"], 1)
+        self.assertEqual(coverage["prompt_count"], 2)
+        self.assertEqual(coverage["decode_route_steps"], 1489)
+        self.assertAlmostEqual(
+            float(coverage["step_coverage_pct"]), 507 / 1489 * 100.0
+        )
+
+    def test_mtp_coverage_requires_prompt_case_rows(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no prompt-case rows"):
+            bench.mtp_coverage({"results": []})
+
+    def test_approximate_table_labels_policy_and_fallback_metrics(self) -> None:
+        row = {
+            "model_id": "qwen3.6-35b-a3b",
+            "suite_id": "long_code",
+            "ax_direct_decode_tok_s": 121.0,
+            "ax_mtp_decode_tok_s": 121.6,
+            "ax_mtp_speedup_x": 1.005,
+            "ax_mtp_draft_quality_pct": 21.1,
+            "ax_mtp_draft_quality_kind": "target_argmax_match_ewma",
+            "ax_mtp_step_coverage_pct": 15.1,
+            "ax_mtp_fallback_prompt_count": 3,
+            "prompt_count": 4,
+        }
+
+        table = "\n".join(
+            bench.table_lines([row], approximate_diagnostic=True)
+        )
+
+        self.assertIn("Approx. MTP decode", table)
+        self.assertIn("21.1% match", table)
+        self.assertIn("15.1%", table)
+        self.assertIn("3/4", table)
 
 
 if __name__ == "__main__":

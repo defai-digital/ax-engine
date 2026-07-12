@@ -54,6 +54,10 @@ MLX_INFERENCE_STACK_SCHEMA_VERSION = "ax.mlx_inference_stack.v2"
 AX_ONLY_REFRESH_SCHEMA_VERSION = "ax.ax_only_refresh.v1"
 AX_ONLY_REFRESH_REGRESSION_SCHEMA_VERSION = "ax.ax_only_refresh_regression.v1"
 AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
+MTP_6BIT_APPROXIMATE_SCHEMA_VERSION = (
+    "ax.mtp_6bit_approximate_diagnostic_summary.v2"
+)
+MTP_6BIT_EXACT_SCHEMA_VERSION = "ax.mtp_6bit_ax_acceleration_summary.v3"
 README_MAX_PUBLICATION_LOAD_AVERAGE = 2.0
 README_MAX_PUBLICATION_TOP_PROCESS_CPU_PERCENT = 50.0
 PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
@@ -1294,6 +1298,250 @@ def validate_readme_boundary_claims(
             f"{summary.classification}"
         )
     return checked
+
+
+def extract_readme_section(
+    readme_text: str, *, heading_prefix: str
+) -> tuple[str, str] | None:
+    lines = readme_text.splitlines()
+    start = next(
+        (index for index, line in enumerate(lines) if line.startswith(heading_prefix)),
+        None,
+    )
+    if start is None:
+        return None
+    end = next(
+        (
+            index
+            for index, line in enumerate(lines[start + 1 :], start + 1)
+            if line.startswith("#### ")
+        ),
+        len(lines),
+    )
+    return lines[start], "\n".join(lines[start:end])
+
+
+def validate_mtp_6bit_summary_contract(
+    *, summary_path: Path, expected_run_dir: str
+) -> tuple[dict[str, Any], bool]:
+    if not summary_path.exists():
+        raise ArtifactCheckError(
+            f"README MTP 6-bit summary does not exist: {summary_path}"
+        )
+    try:
+        summary = json.loads(summary_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ArtifactCheckError(
+            f"README MTP 6-bit summary is unreadable: {summary_path}: {error}"
+        ) from error
+    schema = summary.get("schema")
+    if schema not in {
+        MTP_6BIT_APPROXIMATE_SCHEMA_VERSION,
+        MTP_6BIT_EXACT_SCHEMA_VERSION,
+    }:
+        raise ArtifactCheckError(
+            f"README MTP 6-bit summary has unsupported schema {schema!r}: "
+            f"{summary_path}"
+        )
+    approximate = schema == MTP_6BIT_APPROXIMATE_SCHEMA_VERSION
+    publication_candidate = not approximate
+    if summary.get("publication_candidate") is not publication_candidate:
+        raise ArtifactCheckError(
+            "README MTP 6-bit summary publication_candidate does not match "
+            f"schema {schema}: {summary_path}"
+        )
+    claim_type = (
+        "approximate_optimistic_diagnostic"
+        if approximate
+        else "exact_mtp_acceleration"
+    )
+    if summary.get("claim_type") != claim_type:
+        raise ArtifactCheckError(
+            f"README MTP 6-bit summary claim_type must be {claim_type!r}: "
+            f"{summary_path}"
+        )
+    if summary.get("run_dir") != expected_run_dir:
+        raise ArtifactCheckError(
+            f"README MTP 6-bit summary run_dir does not match its link: {summary_path}"
+        )
+    rows = summary.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise ArtifactCheckError(f"README MTP 6-bit summary has no rows: {summary_path}")
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ArtifactCheckError(
+                f"README MTP 6-bit summary row is not an object: {summary_path}"
+            )
+        if row.get("publication_candidate") is not publication_candidate:
+            raise ArtifactCheckError(
+                "README MTP 6-bit summary row publication_candidate does not "
+                f"match schema {schema}: {summary_path}"
+            )
+    return summary, approximate
+
+
+def mtp_6bit_diagnostic_table_cells(row: dict[str, Any]) -> list[str]:
+    required = {
+        "model_id",
+        "suite_id",
+        "ax_direct_decode_tok_s",
+        "ax_mtp_decode_tok_s",
+        "ax_mtp_speedup_x",
+        "ax_mtp_draft_quality_pct",
+        "ax_mtp_draft_quality_kind",
+        "ax_mtp_step_coverage_pct",
+        "ax_mtp_fallback_prompt_count",
+        "prompt_count",
+    }
+    missing = sorted(required - row.keys())
+    if missing:
+        raise ArtifactCheckError(
+            "README MTP approximate diagnostic row is missing fields: "
+            + ", ".join(missing)
+        )
+    quality_kind = row["ax_mtp_draft_quality_kind"]
+    if quality_kind == "target_argmax_match_ewma":
+        quality_suffix = "match"
+    elif quality_kind == "verified_accept_rate":
+        quality_suffix = "verified"
+    else:
+        raise ArtifactCheckError(
+            "README MTP approximate diagnostic row has unsupported draft quality "
+            f"kind {quality_kind!r}"
+        )
+    try:
+        return [
+            f"`{row['model_id']}`",
+            f"`{row['suite_id']}`",
+            f"{float(row['ax_direct_decode_tok_s']):.1f} tok/s",
+            f"{float(row['ax_mtp_decode_tok_s']):.1f} tok/s",
+            f"{float(row['ax_mtp_speedup_x']):.2f}x",
+            f"{float(row['ax_mtp_draft_quality_pct']):.1f}% {quality_suffix}",
+            f"{float(row['ax_mtp_step_coverage_pct']):.1f}%",
+            (
+                f"{int(row['ax_mtp_fallback_prompt_count'])}/"
+                f"{int(row['prompt_count'])}"
+            ),
+        ]
+    except (TypeError, ValueError) as error:
+        raise ArtifactCheckError(
+            "README MTP approximate diagnostic row has invalid numeric fields"
+        ) from error
+
+
+def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
+    readme_text = readme_path.read_text()
+    section = extract_readme_section(
+        readme_text,
+        heading_prefix="#### AX Engine 6-bit",
+    )
+    if section is None:
+        return []
+    heading, section_text = section
+    summary_match = re.search(
+        r"\]\((benchmarks/results/(?:speculative/)?mtp-6bit/[^)]+/summary\.json)\)",
+        section_text,
+    )
+    if summary_match is None:
+        raise ArtifactCheckError(
+            "README MTP 6-bit section does not link a summary.json artifact"
+        )
+    summary_link = Path(summary_match.group(1))
+    summary_path = readme_path.parent / summary_link
+    summary, approximate = validate_mtp_6bit_summary_contract(
+        summary_path=summary_path,
+        expected_run_dir=summary_link.parent.as_posix(),
+    )
+    artifact_date_match = re.match(r"\d{4}-\d{2}-\d{2}", summary_path.parent.name)
+    heading_date_match = re.search(r"\((\d{4}-\d{2}-\d{2})\)$", heading)
+    if artifact_date_match is None or heading_date_match is None:
+        raise ArtifactCheckError(
+            "README MTP 6-bit heading and artifact directory must carry a date"
+        )
+    if artifact_date_match.group(0) != heading_date_match.group(1):
+        raise ArtifactCheckError(
+            "README MTP 6-bit heading date does not match its summary artifact"
+        )
+    if not approximate:
+        return [
+            f"mtp-6bit:{summary['schema']}:{len(summary['rows'])}:publishable"
+        ]
+
+    normalized = normalized_markdown_text(section_text).lower()
+    if "approximate mtp diagnostic" not in heading.lower():
+        raise ArtifactCheckError(
+            "README nonpublishable MTP section heading must say "
+            "'approximate MTP diagnostic'"
+        )
+    if "acceleration" in heading.lower():
+        raise ArtifactCheckError(
+            "README nonpublishable MTP section must not be titled as acceleration"
+        )
+    for snippet in (
+        "approximate optimistic",
+        "not publication eligible",
+        "`temperature=0.0`",
+        "`top_p=1.0`",
+        "`top_k=0`",
+        "docs/assets/perf-mtp-6bit-ax-approximate-diagnostic.svg",
+    ):
+        if snippet not in normalized:
+            raise ArtifactCheckError(
+                f"README MTP approximate diagnostic is missing {snippet!r}"
+            )
+    if "sampled decode" in normalized:
+        raise ArtifactCheckError(
+            "README MTP approximate diagnostic still claims sampled decode"
+        )
+    methodology = summary.get("methodology")
+    if not isinstance(methodology, dict):
+        raise ArtifactCheckError(
+            "README MTP approximate diagnostic summary lacks methodology"
+        )
+    sampling = methodology.get("sampling")
+    if sampling != {"temperature": 0.0, "top_p": 1.0, "top_k": 0}:
+        raise ArtifactCheckError(
+            "README MTP approximate diagnostic summary must use the recorded "
+            "greedy sampler"
+        )
+
+    table_lines = extract_table_lines(
+        section_text,
+        "#### AX Engine 6-bit",
+    )
+    expected_headers = [
+        "Target",
+        "Suite",
+        "AX direct decode",
+        "Approx. MTP decode",
+        "Diagnostic ratio",
+        "Draft quality",
+        "MTP step coverage",
+        "Fallback prompts",
+    ]
+    headers = split_markdown_row(table_lines[0])
+    if headers != expected_headers:
+        raise ArtifactCheckError(
+            "README MTP approximate diagnostic table headers are stale; expected "
+            + " | ".join(expected_headers)
+        )
+    displayed_rows = table_lines[2:]
+    artifact_rows = summary["rows"]
+    if len(displayed_rows) != len(artifact_rows):
+        raise ArtifactCheckError(
+            "README MTP approximate diagnostic row count does not match summary"
+        )
+    for line, row in zip(displayed_rows, artifact_rows):
+        cells = split_markdown_row(line)
+        expected_cells = mtp_6bit_diagnostic_table_cells(row)
+        if cells != expected_cells:
+            raise ArtifactCheckError(
+                "README MTP approximate diagnostic table row is stale; expected "
+                + " | ".join(expected_cells)
+            )
+    return [
+        f"mtp-6bit:{summary['schema']}:{len(artifact_rows)}:nonpublishable"
+    ]
 
 
 def validate_concurrent_prefill_overlap_classification(
@@ -2848,6 +3096,7 @@ def check_readme_performance_summary(
             long_context_artifact_paths=long_context_artifact_paths,
             concurrent_prefill_artifact_paths=concurrent_prefill_artifact_paths,
         ),
+        *validate_readme_mtp_6bit_claims(readme_path=resolved_readme),
     ]
     checked: list[str] = []
 

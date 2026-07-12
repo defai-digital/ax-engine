@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -100,6 +101,45 @@ class ReadmePerformanceChartTests(unittest.TestCase):
                 "/benchmarks/results/speculative/mtp-6bit"
             )
         )
+
+    def test_mtp_approximate_summary_must_be_non_publishable(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            summary_path = Path(root_name) / "summary.json"
+            summary_path.write_text(
+                json.dumps(
+                    {
+                        "schema": charts.MTP_6BIT_APPROXIMATE_SCHEMA,
+                        "publication_candidate": True,
+                        "claim_type": "approximate_optimistic_diagnostic",
+                        "rows": [],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                charts.ChartError, "publication_candidate"
+            ):
+                charts.load_mtp_6bit_summary(summary_path)
+
+    def test_mtp_approximate_chart_is_labeled_as_diagnostic(self) -> None:
+        rows = [
+            {
+                "model": "Qwen3.6 35B-A3B",
+                "suite_id": "long_code",
+                "ax_direct_decode_tok_s": 121.0,
+                "ax_mtp_decode_tok_s": 121.6,
+            }
+        ]
+
+        chart = charts.render_mtp_6bit_ax_acceleration_chart(
+            rows,
+            Path("2026-07-11-run/summary.json"),
+            approximate_diagnostic=True,
+        )
+
+        self.assertIn("AX approximate MTP diagnostic", chart)
+        self.assertIn("not publication eligible", chart)
+        self.assertNotIn("Higher is better", chart)
 
     def test_embedding_scale_charts_use_embedding_results_tree(self) -> None:
         self.assertIn(
