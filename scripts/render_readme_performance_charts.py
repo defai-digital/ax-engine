@@ -8,6 +8,7 @@ import importlib.util
 import json
 import math
 import re
+import statistics
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -142,6 +143,8 @@ class EmbeddingDeltaRow:
     reference_tok_s: float
     ax_tok_s: float
     delta_pct: float
+    batch_size: int | None = None
+    chunk_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -311,6 +314,10 @@ EMBEDDING_BOX_REFERENCE_COLOR = "#f2b705"
 EMBEDDING_BOX_REFERENCE_DOT_COLOR = "#9a6a00"
 EMBEDDING_BOX_AX_COLOR = "#2eaf5f"
 EMBEDDING_BOX_AX_DOT_COLOR = "#176c37"
+# Distinct blue for the high-batch AX series on the batch-bar chart.
+EMBEDDING_BATCH_AX_HIGH_COLOR = "#2563eb"
+EMBEDDING_BATCH_AX_HIGH_DOT_COLOR = "#1d4ed8"
+EMBEDDING_BATCH_SIZES = (8, 32, 64)
 
 # ---------------------------------------------------------------------------
 # N-gram chart constants (shared by all three ngram charts)
@@ -2436,6 +2443,8 @@ def load_embedding_overlay_scale_delta_rows(
                     reference_tok_s=ref_tps,
                     ax_tok_s=ax_tps,
                     delta_pct=delta,
+                    batch_size=int(row["batch_size"]),
+                    chunk_tokens=int(row["chunk_tokens"]),
                 )
             )
     return rows
@@ -2480,6 +2489,8 @@ def load_embedding_paired_scale_delta_rows(
                     reference_tok_s=ref_tps,
                     ax_tok_s=ax_tps,
                     delta_pct=delta,
+                    batch_size=int(row["batch_size"]),
+                    chunk_tokens=int(row["chunk_tokens"]),
                 )
             )
     return rows
@@ -2490,6 +2501,54 @@ def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
     return load_embedding_paired_scale_delta_rows(
         repo_root, EMBEDDING_SCALE_PAIRED_ARTIFACT
     )
+
+
+def aggregate_embedding_batch_bars(
+    rows: list[EmbeddingDeltaRow],
+) -> list[tuple[str, int, float, float, str]]:
+    """Average tok/s across chunk lengths for each (model, batch_size).
+
+    Returns (model_label, batch_size, reference_tok_s, ax_tok_s, reference_label).
+    """
+    buckets: dict[tuple[str, int], list[EmbeddingDeltaRow]] = {}
+    order: list[tuple[str, int]] = []
+    for row in rows:
+        if row.batch_size is None:
+            # Fall back to parsing "batch N" from detail for overlay loaders.
+            batch = None
+            for part in row.detail.split(","):
+                part = part.strip()
+                if part.startswith("batch "):
+                    try:
+                        batch = int(part.split()[-1])
+                    except ValueError:
+                        batch = None
+            if batch is None:
+                continue
+        else:
+            batch = row.batch_size
+        key = (row.label, batch)
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(row)
+
+    preferred = {label: index for index, label in enumerate(EMBEDDING_MODEL_CHART_ORDER)}
+    order = sorted(
+        order,
+        key=lambda item: (
+            preferred.get(item[0], len(preferred)),
+            item[0],
+            item[1],
+        ),
+    )
+    out: list[tuple[str, int, float, float, str]] = []
+    for key in order:
+        group = buckets[key]
+        ref = statistics.mean(r.reference_tok_s for r in group)
+        ax = statistics.mean(r.ax_tok_s for r in group)
+        out.append((key[0], key[1], ref, ax, group[0].reference_label))
+    return out
 
 
 def format_embedding_delta_pct(delta_pct: float) -> str:
@@ -2742,6 +2801,177 @@ def render_embedding_box_chart(
     return "".join(lines) + "\n"
 
 
+def render_embedding_batch_bar_chart(
+    rows: list[EmbeddingDeltaRow],
+    *,
+    title: str,
+    subtitle: str,
+    source_label: str,
+    ax_label: str | None = None,
+) -> str:
+    """Grouped bars: per model × batch size, mlx-lm (yellow) vs AX (green/blue).
+
+    AX batch=8 is green; larger batches (32/64) use blue so the chart makes the
+    batched matrix encode path explicit next to the reference. Both engines use
+    the same batch sizes — this is not AX-only batching.
+    """
+    bars = aggregate_embedding_batch_bars(rows)
+    if not bars:
+        raise ChartError(f"{title} has no batch-aggregated rows")
+    ax_chart_label = ax_label or AX_ENGINE_CHART_LABEL
+    models: list[str] = []
+    for model, _batch, _ref, _ax, _ref_label in bars:
+        if model not in models:
+            models.append(model)
+    preferred = {label: index for index, label in enumerate(EMBEDDING_MODEL_CHART_ORDER)}
+    models = sorted(models, key=lambda label: (preferred.get(label, len(preferred)), label))
+    batch_sizes = sorted({batch for _m, batch, _r, _a, _rl in bars})
+    max_value = max(max(ref, ax) for _m, _b, ref, ax, _rl in bars)
+    axis_max = max(1.0, math.ceil(max_value * 1.10 / 10000.0) * 10000.0)
+    plot_width = FAMILY_RIGHT - FAMILY_LEFT
+    plot_height = FAMILY_BOTTOM - FAMILY_TOP
+    group_step = plot_width / max(len(models), 1)
+    bar_w = 9.0
+    pair_gap = 3.0
+    cluster_gap = 10.0
+    cluster_width = 2 * bar_w + pair_gap
+    clusters_width = (
+        len(batch_sizes) * cluster_width + max(len(batch_sizes) - 1, 0) * cluster_gap
+    )
+    reference_label = bars[0][4]
+
+    def fy(value: float) -> float:
+        clamped = max(0.0, min(value, axis_max))
+        return FAMILY_BOTTOM - (clamped / axis_max) * plot_height
+
+    lookup = {(m, b): (ref, ax) for m, b, ref, ax, _rl in bars}
+    unit_w = 59
+    header_right = FAMILY_CHART_WIDTH - 34
+
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg"'
+        f' width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}"'
+        f' viewBox="0 0 {FAMILY_CHART_WIDTH} {FAMILY_CHART_HEIGHT}"'
+        f' role="img" aria-labelledby="title desc">',
+        f"<title>{escape(title)}</title>",
+        f"<desc>{escape(subtitle)} Grouped bars show mean tok/s across chunk "
+        f"lengths for each batch size. Yellow is {escape(reference_label)}; "
+        f"green is AX at batch 8; blue is AX at larger batches (32/64). "
+        f"Both engines use the same batch contract.</desc>",
+        f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#f8fafc"/>',
+        f'<text x="{FAMILY_LEFT}" y="24" font-family="{FONT}"'
+        f' font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
+        f'<text x="{FAMILY_LEFT}" y="46" font-family="{FONT}"'
+        f' font-size="11" fill="#4b5563">{escape(subtitle)}</text>',
+        f'<text x="{FAMILY_LEFT}" y="62" font-family="{FONT}"'
+        f' font-size="10" fill="#6b7280">{escape(source_label)}</text>',
+        f'<rect x="{header_right - unit_w}" y="13" width="{unit_w}" height="22"'
+        f' rx="11" fill="#eef2ff" stroke="#c7d2fe"/>',
+        f'<text x="{header_right - unit_w / 2:.1f}" y="28" text-anchor="middle"'
+        f' font-family="{FONT}" font-size="10" font-weight="700"'
+        f' fill="#3730a3">tok/s</text>',
+        f'<text x="{header_right}" y="52" text-anchor="end" font-family="{FONT}"'
+        f' font-size="10" font-weight="700" fill="{RED}">'
+        f"Higher is better</text>",
+        f'<rect x="{FAMILY_LEFT}" y="{FAMILY_TOP}" width="{plot_width}"'
+        f' height="{plot_height}" rx="6" fill="#ffffff" stroke="#dbe3ef"/>',
+    ]
+
+    for i in range(5):
+        tick = axis_max * i / 4.0
+        gy = fy(tick)
+        lines.append(
+            f'<line x1="{FAMILY_LEFT}" y1="{gy:.1f}"'
+            f' x2="{FAMILY_RIGHT}" y2="{gy:.1f}"'
+            f' stroke="#e5e7eb" stroke-width="1"/>'
+        )
+        lines.append(
+            f'<text x="{FAMILY_LEFT - 8}" y="{gy + 3:.1f}" text-anchor="end"'
+            f' font-family="{FONT}" font-size="11" fill="#6b7280">'
+            f"{short_number(tick)}</text>"
+        )
+
+    for model_idx, model in enumerate(models):
+        group_center = FAMILY_LEFT + (model_idx + 0.5) * group_step
+        cluster_start = group_center - clusters_width / 2.0
+        for batch_idx, batch in enumerate(batch_sizes):
+            pair = lookup.get((model, batch))
+            if pair is None:
+                continue
+            ref_tps, ax_tps = pair
+            cx = cluster_start + batch_idx * (cluster_width + cluster_gap)
+            ref_x = cx
+            ax_x = cx + bar_w + pair_gap
+            ax_color = (
+                EMBEDDING_BOX_AX_COLOR
+                if batch <= 8
+                else EMBEDDING_BATCH_AX_HIGH_COLOR
+            )
+            ax_stroke = (
+                EMBEDDING_BOX_AX_DOT_COLOR
+                if batch <= 8
+                else EMBEDDING_BATCH_AX_HIGH_DOT_COLOR
+            )
+            for value, x, fill, stroke in (
+                (ref_tps, ref_x, EMBEDDING_BOX_REFERENCE_COLOR, EMBEDDING_BOX_REFERENCE_DOT_COLOR),
+                (ax_tps, ax_x, ax_color, ax_stroke),
+            ):
+                y = fy(value)
+                h = max(FAMILY_BOTTOM - y, 1.0)
+                lines.append(
+                    f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w:.1f}"'
+                    f' height="{h:.1f}" rx="2" fill="{fill}" fill-opacity="0.82"'
+                    f' stroke="{stroke}" stroke-width="1.2"/>'
+                )
+            # Batch-size label under the pair
+            pair_mid = cx + cluster_width / 2.0
+            lines.append(
+                f'<text x="{pair_mid:.1f}" y="{FAMILY_BOTTOM + 14}"'
+                f' text-anchor="middle" font-family="{FONT}" font-size="9"'
+                f' fill="#6b7280">B{batch}</text>'
+            )
+
+        label_line_1, label_line_2 = embedding_box_label_lines(model)
+        lines.append(
+            f'<text x="{group_center:g}" y="{FAMILY_BOTTOM + 32}"'
+            f' text-anchor="middle" font-family="{FONT}" font-size="11"'
+            f' font-weight="700" fill="#111827">{escape(label_line_1)}</text>'
+        )
+        if label_line_2:
+            lines.append(
+                f'<text x="{group_center:g}" y="{FAMILY_BOTTOM + 46}"'
+                f' text-anchor="middle" font-family="{FONT}" font-size="10"'
+                f' fill="#6b7280">{escape(label_line_2)}</text>'
+            )
+
+    legend_y = FAMILY_BOTTOM + 68
+    legend_items = [
+        (reference_label, EMBEDDING_BOX_REFERENCE_COLOR, EMBEDDING_BOX_REFERENCE_DOT_COLOR),
+        ("AX batch 8", EMBEDDING_BOX_AX_COLOR, EMBEDDING_BOX_AX_DOT_COLOR),
+        ("AX batch 32/64", EMBEDDING_BATCH_AX_HIGH_COLOR, EMBEDDING_BATCH_AX_HIGH_DOT_COLOR),
+    ]
+    legend_x = FAMILY_LEFT
+    for label, color, stroke in legend_items:
+        lines.append(
+            f'<rect x="{legend_x}" y="{legend_y}" width="10" height="10" rx="2"'
+            f' fill="{color}" fill-opacity="0.82" stroke="{stroke}" stroke-width="1.2"/>'
+        )
+        lines.append(
+            f'<text x="{legend_x + 14}" y="{legend_y + 9}" font-family="{FONT}"'
+            f' font-size="10" fill="#374151">{escape(label)}</text>'
+        )
+        legend_x += 120 if label == reference_label else 118
+
+    lines.append(
+        f'<text x="{FAMILY_LEFT}" y="{FAMILY_BOTTOM + 92}" font-family="{FONT}"'
+        f' font-size="10" fill="#6b7280">'
+        f"Bars = mean tok/s over 256- and 512-token chunk shapes at each batch size; "
+        f"both engines use the same batch contract</text>"
+    )
+    lines.append("</svg>")
+    return "".join(lines) + "\n"
+
+
 def render_embedding_delta_chart(
     rows: list[EmbeddingDeltaRow],
     *,
@@ -2933,16 +3163,16 @@ def main() -> int:
             mismatches.append(direct_validation_output_path)
 
     embedding_scale_output_path = args.output_dir / EMBEDDING_SCALE_CHART_OUTPUT
-    embedding_scale_content = render_embedding_box_chart(
+    embedding_scale_content = render_embedding_batch_bar_chart(
         load_embedding_scale_delta_rows(args.readme.parent),
-        title="Qwen3 embedding ingest scale",
+        title="Qwen3 embedding batch ingest",
         subtitle=(
-            "Grouped by model | box=IQR | whiskers=min/max | dots=six "
-            "chunk/batch shapes."
+            "Per model × batch size (B8/B32/B64) | yellow=mlx-lm | "
+            "green=AX B8 | blue=AX B32/B64."
         ),
         source_label=(
-            "Sources: 2026-07-12 same-session 0.6B mlx-lm+AX pair; "
-            "4B/8B retained 2026-07-06 AX vs 2026-07-03 mlx-lm"
+            "Source: 2026-07-12 same-session paired mlx-lm+AX "
+            "(0.6B/4B/8B, ax.embedding_ingest_scale.v2)"
         ),
         ax_label="AX Engine v6.8.2 (2026-07-12)",
     )
