@@ -129,7 +129,27 @@ impl BatchedDecodeCapabilities {
         if self.has_mtp {
             reasons.push("mtp");
         }
-        if self.is_diffusion {
+        // Structural gates via ADR-038 StructuralCapabilities (not family names).
+        // Order matches the historical runner contract so route telemetry stays stable:
+        // mtp → structural(diffusion first) → kv_compression → cert → remaining structure.
+        let structural = ax_engine_core::StructuralCapabilities {
+            has_full_attention: self.has_complete_attention_projections
+                && !self.has_sliding_window
+                && !self.has_linear_attention
+                && !self.has_mla,
+            has_sliding_window: self.has_sliding_window,
+            has_linear_attention: self.has_linear_attention,
+            has_mla: self.has_mla,
+            has_moe: self.has_moe,
+            has_layer_gating: self.has_layer_gating,
+            is_diffusion: self.is_diffusion,
+            is_encoder_embed: false,
+            is_multimodal_capable: false,
+        };
+        let structural_reasons = structural.dense_batched_decode_structural_rejections();
+        // Emit diffusion first (legacy position), then defer other structural
+        // reasons until after kv_compression and certification for telemetry stability.
+        if structural_reasons.iter().any(|r| *r == "diffusion") {
             reasons.push("diffusion");
         }
         if self.kv_compression_on {
@@ -138,20 +158,11 @@ impl BatchedDecodeCapabilities {
         if !self.certification_status.is_certified() && !allow_uncertified {
             reasons.push(self.certification_status.route_reason());
         }
-        if self.has_sliding_window {
-            reasons.push("sliding_window");
-        }
-        if self.has_moe {
-            reasons.push("moe");
-        }
-        if self.has_linear_attention {
-            reasons.push("linear_attention");
-        }
-        if self.has_mla {
-            reasons.push("mla");
-        }
-        if self.has_layer_gating {
-            reasons.push("layer_gating");
+        for reason in structural_reasons {
+            if reason == "diffusion" {
+                continue;
+            }
+            reasons.push(reason);
         }
         if !self.has_complete_attention_projections {
             reasons.push("missing_attention_projection");

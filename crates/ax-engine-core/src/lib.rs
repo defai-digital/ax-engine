@@ -1,26 +1,41 @@
 #![allow(clippy::collapsible_if)]
 
+pub mod architecture;
+pub mod architecture_registry;
 pub mod convert;
 pub mod engine;
 pub mod execution_plan;
 pub mod gemma4_unified;
+pub mod generation;
 pub mod gguf;
 pub mod ids;
 pub mod kv;
 pub mod mempressure;
 pub mod metal;
 pub mod model;
+pub mod multimodal_adapter;
 pub mod request;
 pub mod request_manager;
 pub mod runner;
 pub mod sampling;
 pub mod scheduler;
 
+pub use architecture::{
+    ArchitectureSpec, AttentionKind, CacheKind, FfnKind, LayerSpec, StructuralCapabilities,
+};
+pub use architecture_registry::{
+    ARCHITECTURE_REGISTRY, ArchitectureRegistration, default_generation_for_family,
+    lookup_architecture,
+};
 pub use engine::{EngineCore, EngineCoreError, EngineEvent, EngineStepOutcome, StepMetrics};
 pub use execution_plan::{
     DeterministicExecutionPlanResolver, ExecutionPlanBinding, ExecutionPlanResolver,
 };
 pub use gemma4_unified::Gemma4UnifiedRuntimeInputError;
+pub use generation::{
+    FirstVisibleEventKind, GenerationKind, GenerationProgress, GenerationStrategyDescriptor,
+    WorkUnitKind,
+};
 pub use ids::{BlockId, CacheGroupId, ModelId, RequestId, SequenceNo, StepId};
 pub use kv::{
     AllocationPlan, AllocationStatus, AppendMode, BlockTable, BlockTableView, FreeResult,
@@ -50,6 +65,7 @@ pub use model::{
     NativeTensorFormat, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
     WeightSanitize,
 };
+pub use multimodal_adapter::{MultimodalPrefillAdapter, PrefillModality};
 pub use request::{
     RequestMultimodalInputs, RequestRecord, RequestSnapshot, RequestState, RequestSubmission,
     RequestWorkloadHints, StateTransitionError,
@@ -69,7 +85,8 @@ pub use sampling::{
 };
 pub use scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, PositionRange,
-    ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
+    ROUTE_DECISION_AX_MLX_GENERATION_KIND, ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB,
+    ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,

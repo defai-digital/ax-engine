@@ -52,6 +52,8 @@ pub fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, valu
     }
 }
 
+/// Telemetry key for [`crate::GenerationKind::telemetry_code`].
+pub const ROUTE_DECISION_AX_MLX_GENERATION_KIND: &str = "ax_mlx_generation_kind";
 pub const ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS: &str = "ax_mlx_kv_request_snapshots";
 pub const ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS: &str = "ax_mlx_kv_logical_tokens";
 pub const ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS: &str = "ax_mlx_kv_capacity_tokens";

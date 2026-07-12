@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ax_engine_core::NativeModelManifest;
+use ax_engine_core::{GenerationKind, NativeModelManifest};
 use mlx_sys::MlxArray;
 
 static NEXT_COMPILE_CACHE_IDENTITY: AtomicU64 = AtomicU64::new(1);
@@ -456,6 +456,9 @@ pub struct ModelConfig {
     /// When true, the MoE forward path uses `mxfp4_gate_up_exps` / `mxfp4_down_exps` instead
     /// of the standard `gate_exps`/`up_exps`/`down_exps` QuantizedWeight path.
     pub gpt_oss_uses_mxfp4_experts: bool,
+    /// Generation paradigm derived from the manifest (ADR-038). Prefer this over
+    /// family-string checks when gating diffusion / embed / AR behavior.
+    pub generation_kind: GenerationKind,
 }
 
 impl ModelConfig {
@@ -568,7 +571,14 @@ impl ModelConfig {
             think_end_token_id: think_token_ids_from_manifest(m).1,
             diffusion: DiffusionConfig::from_manifest(m),
             gpt_oss_uses_mxfp4_experts: m.model_family == "gpt_oss" && m.moe.is_enabled(),
+            generation_kind: GenerationKind::from_manifest(m),
         }
+    }
+
+    /// True when this model uses block-diffusion generation (ADR-038).
+    #[inline]
+    pub fn is_block_diffusion(&self) -> bool {
+        matches!(self.generation_kind, GenerationKind::BlockDiffusion) || self.diffusion.is_some()
     }
 
     pub fn is_linear_attention_layer(&self, layer_idx: usize) -> bool {

@@ -4259,7 +4259,8 @@ impl MlxRunner {
         let batched_decode_certification = load_batched_decode_certification(artifacts);
         let batched_decode_capabilities = BatchedDecodeCapabilities::from_loaded_model(
             has_mtp,
-            cfg.diffusion.is_some(),
+            // Prefer GenerationKind (ADR-038); diffusion config remains a fallback.
+            cfg.is_block_diffusion(),
             kv_compression.mode != ax_engine_core::KvCompressionMode::Disabled,
             &kv_layer_windows,
             &weights.layers,
@@ -11283,7 +11284,14 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
     {
         validate_gemma4_interleaved_attention(manifest)?;
     }
-    if manifest.model_family == "diffusion_gemma" {
+    // Prefer generation kind (ADR-038) over family-string-only gating; keep the
+    // family label as a belt-and-suspenders for older manifests without a
+    // filled diffusion config block.
+    if matches!(
+        manifest.generation_kind(),
+        ax_engine_core::GenerationKind::BlockDiffusion
+    ) || manifest.model_family == "diffusion_gemma"
+    {
         validate_diffusion_gemma_manifest(manifest)?;
     }
     Ok(())
