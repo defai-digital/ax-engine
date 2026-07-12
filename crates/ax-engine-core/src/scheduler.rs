@@ -1,3 +1,6 @@
+use crate::generation::{
+    GenerationKind, GenerationProgress, GenerationStrategyDescriptor, WorkUnitKind,
+};
 use crate::ids::{RequestId, StepId};
 use crate::request::{RequestSnapshot, RequestState};
 
@@ -267,6 +270,13 @@ impl RouteMetadata {
 pub struct ExecutionItem {
     pub request_id: RequestId,
     pub mode: ExecutionMode,
+    /// Strategy-planned work unit for this item (ADR-038).
+    ///
+    /// Prefill remains [`WorkUnitKind::PrefillChunk`]. Decode maps to
+    /// [`WorkUnitKind::TokenDecode`] for AR, [`WorkUnitKind::DenoiseStep`] for
+    /// block diffusion (denoise dominates a diffusion "decode" step today), or
+    /// [`WorkUnitKind::EmbedForward`] for encoder-embed models.
+    pub planned_work_unit: WorkUnitKind,
     pub input_token_slice: Vec<u32>,
     pub reused_prefix_token_slice: Vec<u32>,
     pub position_range: PositionRange,
@@ -274,6 +284,24 @@ pub struct ExecutionItem {
     pub block_table_ref: RequestId,
     pub prefix_tokens_reused: u32,
     pub prefix_blocks_reused: u32,
+}
+
+/// Plan the work unit for a request snapshot via generation strategy metadata.
+pub fn plan_work_unit_for_snapshot(snapshot: &RequestSnapshot) -> WorkUnitKind {
+    let progress = GenerationProgress::from_request_counters(
+        snapshot.processed_prompt_tokens,
+        snapshot.prompt_len,
+        snapshot.generated_len,
+    );
+    GenerationStrategyDescriptor::for_kind(snapshot.generation_kind).plan_next_work_unit(progress)
+}
+
+/// Map legacy execution mode to an AR work unit (tests / fallbacks).
+pub fn work_unit_for_execution_mode(mode: ExecutionMode) -> WorkUnitKind {
+    match mode {
+        ExecutionMode::Prefill => WorkUnitKind::PrefillChunk,
+        ExecutionMode::Decode => WorkUnitKind::TokenDecode,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -520,6 +548,24 @@ impl Scheduler {
             let mut route_metadata =
                 route_metadata_for_batch(route_seed_anchor.as_ref(), batch_mixes_prefill_decode);
             token_budget.append_route_decisions(&mut route_metadata);
+            // ADR-038: surface planned work units on the batch route metadata.
+            if let Some(first) = items.first() {
+                upsert_route_decision(
+                    &mut route_metadata.crossover_decisions,
+                    ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
+                    first.planned_work_unit.telemetry_code(),
+                );
+            }
+            if items
+                .iter()
+                .any(|item| matches!(item.planned_work_unit, WorkUnitKind::DenoiseStep))
+            {
+                upsert_route_decision(
+                    &mut route_metadata.crossover_decisions,
+                    ROUTE_DECISION_AX_MLX_GENERATION_KIND,
+                    GenerationKind::BlockDiffusion.telemetry_code(),
+                );
+            }
             Some(ExecutionBatch {
                 step_id: input.step_id,
                 model_id: batch_model_id.0.clone(),
@@ -564,6 +610,7 @@ impl Scheduler {
             return Some(ExecutionItem {
                 request_id: snapshot.request_id,
                 mode: ExecutionMode::Prefill,
+                planned_work_unit: plan_work_unit_for_snapshot(snapshot),
                 input_token_slice: snapshot.prompt_tokens[start..end].to_vec(),
                 reused_prefix_token_slice: Vec::new(),
                 position_range: PositionRange {
@@ -591,6 +638,7 @@ impl Scheduler {
         Some(ExecutionItem {
             request_id: snapshot.request_id,
             mode: ExecutionMode::Decode,
+            planned_work_unit: plan_work_unit_for_snapshot(snapshot),
             input_token_slice: vec![decode_token],
             reused_prefix_token_slice: Vec::new(),
             position_range: PositionRange {
@@ -731,7 +779,66 @@ mod tests {
             route_metadata_hint: RouteMetadata::empty(),
             terminal_stop_reason: None,
             last_error: None,
+            generation_kind: GenerationKind::Autoregressive,
         }
+    }
+
+    #[test]
+    fn plans_diffusion_decode_as_denoise_work_unit() {
+        let scheduler = Scheduler::new();
+        let mut snapshot = make_snapshot(1, 1, "diffusion_gemma", &[1, 2, 3, 4], 4, &[], 256);
+        snapshot.generation_kind = GenerationKind::BlockDiffusion;
+        let plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(1),
+            request_snapshots: vec![snapshot],
+            memory_pressure: None,
+            global_token_budget: 32,
+        });
+        let batch = plan.execution_batch.expect("batch");
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(batch.items[0].mode, ExecutionMode::Decode);
+        assert_eq!(batch.items[0].planned_work_unit, WorkUnitKind::DenoiseStep);
+        assert!(
+            batch
+                .route_metadata
+                .crossover_decisions
+                .iter()
+                .any(|(k, v)| k == ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT
+                    && *v == WorkUnitKind::DenoiseStep.telemetry_code())
+        );
+        assert!(
+            batch
+                .route_metadata
+                .crossover_decisions
+                .iter()
+                .any(|(k, v)| k == ROUTE_DECISION_AX_MLX_GENERATION_KIND
+                    && *v == GenerationKind::BlockDiffusion.telemetry_code())
+        );
+    }
+
+    #[test]
+    fn plans_ar_prefill_and_decode_work_units() {
+        let scheduler = Scheduler::new();
+        let prefill = make_snapshot(1, 1, "qwen3", &[1, 2, 3, 4], 0, &[], 16);
+        let decode = make_snapshot(2, 2, "qwen3", &[1, 2, 3, 4], 4, &[5], 16);
+        assert_eq!(
+            plan_work_unit_for_snapshot(&prefill),
+            WorkUnitKind::PrefillChunk
+        );
+        assert_eq!(
+            plan_work_unit_for_snapshot(&decode),
+            WorkUnitKind::TokenDecode
+        );
+        let plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(2),
+            request_snapshots: vec![prefill, decode],
+            memory_pressure: None,
+            global_token_budget: 32,
+        });
+        let batch = plan.execution_batch.expect("batch");
+        // Decode-first ordering: decode item first.
+        assert_eq!(batch.items[0].planned_work_unit, WorkUnitKind::TokenDecode);
+        assert_eq!(batch.items[1].planned_work_unit, WorkUnitKind::PrefillChunk);
     }
 
     #[test]

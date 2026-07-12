@@ -106,6 +106,7 @@ mod tests {
             route_metadata_hint: RouteMetadata::empty(),
             terminal_stop_reason: None,
             last_error: None,
+            generation_kind: crate::GenerationKind::Autoregressive,
         }
     }
 

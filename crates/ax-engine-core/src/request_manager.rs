@@ -125,6 +125,20 @@ impl RequestManager {
         Ok(())
     }
 
+    /// Bind the generation paradigm for strategy-aware scheduling (ADR-038).
+    pub fn set_generation_kind(
+        &mut self,
+        request_id: RequestId,
+        generation_kind: crate::GenerationKind,
+    ) -> Result<(), RequestManagerError> {
+        let record = self
+            .records
+            .get_mut(&request_id)
+            .ok_or(RequestManagerError::UnknownRequest(request_id))?;
+        record.set_generation_kind(generation_kind);
+        Ok(())
+    }
+
     pub fn set_execution_plan_binding(
         &mut self,
         request_id: RequestId,

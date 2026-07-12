@@ -516,6 +516,7 @@ fn forward_route_metadata(execution_batch: &ExecutionBatch) -> RouteMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WorkUnitKind;
     use crate::ids::RequestId;
     use crate::kv::BlockTableView;
     use crate::scheduler::{
@@ -544,6 +545,7 @@ mod tests {
                     ExecutionItem {
                         request_id: RequestId(1),
                         mode: ExecutionMode::Prefill,
+                        planned_work_unit: WorkUnitKind::PrefillChunk,
                         input_token_slice: vec![1, 2, 3],
                         reused_prefix_token_slice: Vec::new(),
                         position_range: PositionRange {
@@ -558,6 +560,7 @@ mod tests {
                     ExecutionItem {
                         request_id: RequestId(2),
                         mode: ExecutionMode::Decode,
+                        planned_work_unit: WorkUnitKind::TokenDecode,
                         input_token_slice: vec![10],
                         reused_prefix_token_slice: Vec::new(),
                         position_range: PositionRange {
@@ -653,6 +656,7 @@ mod tests {
                     ExecutionItem {
                         request_id: RequestId(1),
                         mode: ExecutionMode::Prefill,
+                        planned_work_unit: WorkUnitKind::PrefillChunk,
                         input_token_slice: vec![1],
                         reused_prefix_token_slice: Vec::new(),
                         position_range: PositionRange {
@@ -667,6 +671,7 @@ mod tests {
                     ExecutionItem {
                         request_id: RequestId(2),
                         mode: ExecutionMode::Prefill,
+                        planned_work_unit: WorkUnitKind::PrefillChunk,
                         input_token_slice: vec![2],
                         reused_prefix_token_slice: Vec::new(),
                         position_range: PositionRange {
@@ -722,6 +727,7 @@ mod tests {
                 items: vec![ExecutionItem {
                     request_id: RequestId(1),
                     mode: ExecutionMode::Prefill,
+                    planned_work_unit: WorkUnitKind::PrefillChunk,
                     input_token_slice: vec![1, 2],
                     reused_prefix_token_slice: Vec::new(),
                     position_range: PositionRange {

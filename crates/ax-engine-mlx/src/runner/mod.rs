@@ -17,11 +17,11 @@ use mlx_sys::{
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
-    EmbeddingPooling, ExecutionRunner, ExecutionStatus, GenerationProgress,
-    GenerationStrategyDescriptor, KvCompressionConfig, KvWriteSummary, MultimodalPrefillAdapter,
-    NativeModelArtifacts, NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
-    ROUTE_DECISION_AX_MLX_GENERATION_KIND, ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
-    ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
+    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvCompressionConfig, KvWriteSummary,
+    MultimodalPrefillAdapter, NativeModelArtifacts, NativeModelBindingSummary, NativeModelManifest,
+    NativeTensorRole, ROUTE_DECISION_AX_MLX_GENERATION_KIND,
+    ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT, ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB,
+    ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,
@@ -4694,16 +4694,9 @@ impl ExecutionRunner for MlxRunner {
                 route.telemetry_code(),
             );
         }
-        // Plan work unit from strategy metadata + first scheduled item progress.
+        // Prefer scheduler-planned work unit (ADR-038); fall back to local plan.
         if let Some(first) = input.execution_batch.items.first() {
-            let ctx = input.request_context(first.request_id);
-            let progress = GenerationProgress::from_request_counters(
-                ctx.map(|c| c.processed_prompt_tokens).unwrap_or(0),
-                ctx.map(|c| c.prompt_len).unwrap_or(0),
-                ctx.map(|c| c.generated_len).unwrap_or(0),
-            );
-            let strategy = GenerationStrategyDescriptor::for_kind(self.cfg.generation_kind);
-            let work_unit = strategy.plan_next_work_unit(progress);
+            let work_unit = first.planned_work_unit;
             upsert_route_decision(
                 &mut route_metadata.crossover_decisions,
                 ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
@@ -13315,6 +13308,7 @@ mod tests {
         let item = ax_engine_core::ExecutionItem {
             request_id: RequestId(21),
             mode: ExecutionMode::Prefill,
+            planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
             input_token_slice: vec![5, 6],
             reused_prefix_token_slice: vec![1, 2, 3, 4],
             position_range: PositionRange {
@@ -13349,6 +13343,7 @@ mod tests {
         let mut item = ax_engine_core::ExecutionItem {
             request_id: RequestId(22),
             mode: ExecutionMode::Prefill,
+            planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
             input_token_slice: vec![5, 6],
             reused_prefix_token_slice: vec![1, 2, 3, 4],
             position_range: PositionRange {
@@ -13602,6 +13597,7 @@ mod tests {
         let item = ax_engine_core::ExecutionItem {
             request_id: RequestId(10),
             mode: ExecutionMode::Prefill,
+            planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
             input_token_slice: vec![0; 2048],
             reused_prefix_token_slice: Vec::new(),
             position_range: PositionRange {

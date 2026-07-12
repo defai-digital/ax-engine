@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use crate::execution_plan::ExecutionPlanBinding;
 use crate::gemma4_unified::Gemma4UnifiedRuntimeInputs;
+use crate::generation::GenerationKind;
 use crate::ids::{ModelId, RequestId, SequenceNo};
 use crate::kv::BlockTable;
 use crate::sampling::{SamplingParams, StopReason};
@@ -234,6 +235,8 @@ pub struct RequestRecord {
     pub terminal_stop_reason: Option<StopReason>,
     pub last_error: Option<String>,
     pub metrics_snapshot: Option<String>,
+    /// Generation paradigm for strategy-aware scheduling (ADR-038).
+    pub generation_kind: GenerationKind,
 }
 
 impl RequestRecord {
@@ -258,7 +261,13 @@ impl RequestRecord {
             terminal_stop_reason: None,
             last_error: None,
             metrics_snapshot: None,
+            generation_kind: GenerationKind::Autoregressive,
         }
+    }
+
+    /// Bind the generation strategy for this request (from the loaded model).
+    pub fn set_generation_kind(&mut self, generation_kind: GenerationKind) {
+        self.generation_kind = generation_kind;
     }
 
     pub fn snapshot(&self) -> RequestSnapshot {
@@ -280,6 +289,7 @@ impl RequestRecord {
             route_metadata_hint: self.route_metadata_hint.clone(),
             terminal_stop_reason: self.terminal_stop_reason,
             last_error: self.last_error.clone(),
+            generation_kind: self.generation_kind,
         }
     }
 
@@ -430,6 +440,8 @@ pub struct RequestSnapshot {
     pub route_metadata_hint: RouteMetadata,
     pub terminal_stop_reason: Option<StopReason>,
     pub last_error: Option<String>,
+    /// Generation paradigm used to plan work units (ADR-038).
+    pub generation_kind: GenerationKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]

@@ -141,5 +141,6 @@ pub use scheduler::{
     ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, ROUTE_DECISION_AX_MLX_LAYER_FORWARD_ROUTE,
     ROUTE_DECISION_AX_MLX_MODEL_KEYS, ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM,
     ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS, RouteMetadata, SchedulePlan, Scheduler,
-    SchedulerInput, upsert_route_decision,
+    SchedulerInput, plan_work_unit_for_snapshot, upsert_route_decision,
+    work_unit_for_execution_mode,
 };

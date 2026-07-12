@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::execution_plan::{DeterministicExecutionPlanResolver, ExecutionPlanResolver};
+use crate::generation::GenerationKind;
 use crate::ids::{CacheGroupId, RequestId, StepId};
 use crate::kv::{
     AllocationStatus, FreeResult, KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
@@ -84,6 +85,8 @@ pub struct EngineCore {
     runner: Box<dyn ExecutionRunner>,
     sampler: Box<dyn TokenSampler>,
     prefix_reuse_enabled: bool,
+    /// Default generation paradigm applied to new submissions (ADR-038).
+    generation_kind: GenerationKind,
     next_step_id: u64,
     // Per-step scratch buffers — cleared and reused each step to avoid heap churn.
     scratch_seen_request_ids: HashSet<RequestId>,
@@ -157,6 +160,7 @@ impl EngineCore {
             runner: Box::new(runner),
             sampler: Box::new(sampler),
             prefix_reuse_enabled: true,
+            generation_kind: GenerationKind::Autoregressive,
             next_step_id: 0,
             scratch_seen_request_ids: HashSet::with_capacity(32),
             scratch_update_index: HashMap::with_capacity(32),
@@ -177,6 +181,15 @@ impl EngineCore {
     /// Enables or disables logical KV prefix reuse for subsequent steps.
     pub fn set_prefix_reuse_enabled(&mut self, enabled: bool) {
         self.prefix_reuse_enabled = enabled;
+    }
+
+    /// Set the generation paradigm applied to newly submitted requests (ADR-038).
+    pub fn set_generation_kind(&mut self, generation_kind: GenerationKind) {
+        self.generation_kind = generation_kind;
+    }
+
+    pub fn generation_kind(&self) -> GenerationKind {
+        self.generation_kind
     }
 
     pub fn last_metal_dispatch(&self) -> Option<crate::metal::MetalDispatchTrace> {
@@ -229,6 +242,10 @@ impl EngineCore {
             let _ = self.kv_manager.free(request_id);
             return Err(error.into());
         }
+        // Propagate model generation kind into the request for strategy-aware scheduling.
+        self.request_manager
+            .set_generation_kind(request_id, self.generation_kind)
+            .map_err(EngineCoreError::from)?;
         Ok(request_id)
     }
 
