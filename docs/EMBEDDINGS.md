@@ -166,13 +166,15 @@ The current single-batch diagnostic snapshot for Qwen is
 The current single-batch diagnostic snapshot for EmbeddingGemma is
 `benchmarks/results/embedding/embedding-fair/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-143425/`.
 The current README Qwen ingest-scale snapshot is
-`benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/2026-07-02-215823/`;
-it includes 0.6B plus the 4B/8B DWQ embedders. The current EmbeddingGemma
-ingest-scale snapshot is
-`benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`.
-The Qwen paired artifacts use 2 warmups, 5 measured trials, 15-second cooldowns
-before measured engine passes, alternating paired order, and median tok/s. The
-fair artifacts keep the complete short-query plus 16/64/256-token matrix in
+`benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/2026-07-12-145710/`
+(schema `ax.embedding_ingest_scale.v2`, same-session paired 0.6B / 4B / 8B).
+The current EmbeddingGemma ingest-scale snapshot is
+`benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`
+with a later AX-only refresh for directional AX absolute numbers. The Qwen
+paired artifacts use 2 warmups, 5 measured trials, 15-second cooldowns
+before measured engine passes, alternating paired order, and median tok/s,
+plus host / `runtime_identity` libmlx fingerprints. The fair artifacts keep
+the complete short-query (ms/item primary) plus 16/64/256-token matrix in
 `summary.md`. The Qwen reference comparison uses `mlx-lm` as the baseline
 backend. EmbeddingGemma uses `mlx-embeddings` with mean pooling because
 `mlx-lm` does not provide the comparable EmbeddingGemma route used by this
@@ -196,22 +198,25 @@ pattern, and do not mix cooled and hot-loop artifacts in one comparison.
 
 The current README scale snapshot is:
 
-`benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/2026-07-02-215823/`
+`benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/2026-07-12-145710/`
 
 It runs Qwen3-Embedding 0.6B 8-bit plus Qwen3-Embedding 4B/8B 4-bit DWQ against
-`mlx-lm`, using last-token pooling and l2-normalized contiguous CPU
-`float32 [B,H]` output for both backends. Each trial embeds 512 deterministic
-chunks, with chunk lengths 256 and 512 and batch sizes 8, 32, and 64. The
-harness reports median tok/s, chunks/s, output MB/s, and per-batch
-p50/p95/max latency.
+`mlx-lm` in one same-session paired process, using last-token pooling and
+l2-normalized contiguous CPU `float32 [B,H]` output for both backends. Each
+trial embeds 512 deterministic chunks, with chunk lengths 256 and 512 and
+batch sizes 8, 32, and 64. The harness reports median tok/s, chunks/s, output
+MB/s, and per-batch p50/p95/max latency, and records `runtime_identity`
+libmlx fingerprints so Homebrew-vs-pip linkage mismatches cannot silently
+invalidate the delta.
 
 Read the scale table differently from the single-batch diagnostic artifacts.
 The diagnostic artifacts answer "how fast is this isolated batch shape when both
 engines return a caller-consumable matrix?" The scale table answers "does that
 rate hold when a RAG worker keeps feeding many batches, and what flush latency
 does the chosen batch size create?" For the current Qwen snapshot, AX ranges
-from 1.1% behind to 2.4% ahead across the 18 shapes, so read those rows as
-sustained ingest parity rather than a stable per-shape ranking.
+from 1.4% behind to 3.8% ahead across the 18 shapes, so read those rows as
+sustained ingest parity (slightly favoring AX) rather than a stable per-shape
+ranking.
 
 Reproduce the scale snapshot with:
 

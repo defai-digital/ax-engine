@@ -263,7 +263,12 @@ MTP_6BIT_ROW_GAP = 32.0
 MTP_6BIT_GROUP_GAP = 18.0
 MTP_6BIT_GROUP_SIZE = 3
 
-# Retained mlx-lm reference for 4B/8B historical pairing (AX-only overlay).
+# Same-session mlx-lm + AX pair for all Qwen3 embedding sizes (v2 provenance).
+EMBEDDING_SCALE_PAIRED_ARTIFACT = Path(
+    "benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/"
+    "2026-07-12-145710/embedding_ingest_scale.json"
+)
+# Historical overlay paths retained for optional diagnostic reloads / tests.
 EMBEDDING_SCALE_REFERENCE_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/"
     "2026-07-02-215823/embedding_ingest_scale.json"
@@ -273,13 +278,9 @@ EMBEDDING_SCALE_AX_ARTIFACT = Path(
     "2026-07-06-qwen-causal-final-attn-target-refresh/"
     "2026-07-06-230340/embedding_ingest_scale.json"
 )
-# Fresh 0.6B same-session mlx-lm + AX pair after MLX wheel linkage fix.
-EMBEDDING_SCALE_PAIRED_06_ARTIFACT = Path(
-    "benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-mlxfix/"
-    "2026-07-12-131718/embedding_ingest_scale.json"
-)
-# Kept for callers that still pass an overlay path; unused by the default loader.
-EMBEDDING_SCALE_AX_OVERLAY_ARTIFACT = EMBEDDING_SCALE_PAIRED_06_ARTIFACT
+# Back-compat aliases used by older call sites and tests.
+EMBEDDING_SCALE_PAIRED_06_ARTIFACT = EMBEDDING_SCALE_PAIRED_ARTIFACT
+EMBEDDING_SCALE_AX_OVERLAY_ARTIFACT = EMBEDDING_SCALE_PAIRED_ARTIFACT
 EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
     "2026-07-02-embeddinggemma-paired-cooldown15-refresh/"
@@ -2485,18 +2486,10 @@ def load_embedding_paired_scale_delta_rows(
 
 
 def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
-    # 4B/8B: retained historical AX-only vs old mlx-lm reference (directional).
-    retained_rows = load_embedding_overlay_scale_delta_rows(
-        repo_root, EMBEDDING_SCALE_REFERENCE_ARTIFACT, EMBEDDING_SCALE_AX_ARTIFACT
+    # Publication chart: same-session paired mlx-lm + AX for 0.6B / 4B / 8B.
+    return load_embedding_paired_scale_delta_rows(
+        repo_root, EMBEDDING_SCALE_PAIRED_ARTIFACT
     )
-    # 0.6B: same-session paired artifact (honest mlx-lm vs AX medians).
-    fresh_06_rows = load_embedding_paired_scale_delta_rows(
-        repo_root, EMBEDDING_SCALE_PAIRED_06_ARTIFACT
-    )
-    fresh_06_labels = {row.label for row in fresh_06_rows if "0.6B" in row.label}
-    return [
-        row for row in retained_rows if row.label not in fresh_06_labels
-    ] + [row for row in fresh_06_rows if row.label in fresh_06_labels]
 
 
 def format_embedding_delta_pct(delta_pct: float) -> str:
