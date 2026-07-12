@@ -499,8 +499,8 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             }
             offset = end;
         }
-        // Use a single-token decode step for the last position: extract
-        // the final hidden by running a full forward with hidden output.
+        // Completing step: full forward for the last prompt token so MTP gets
+        // post-norm hidden. Sample when temperature>0; argmax when greedy.
         let last_tok = prompt_tokens[cache_only_prefix_len];
         let last_offset = cache.seq_len;
         let (logits_all, final_hidden) =
@@ -518,11 +518,46 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             let lv = astype(&lv, MlxDtype::Float32, None);
             reshape(&lv, &[cfg.vocab_size as i32], None)
         };
-        let token_arr = argmax(&logits_row, None);
-        eval_kv_refs(cache);
-        eval(&[&token_arr, &final_hidden]);
+        let tok = if sampling.temperature > 0.0 {
+            eval_with_kv_refs(&logits_row, cache);
+            if let Some(tok) = sample_categorical_with_topk_gpu(
+                &logits_row,
+                sampling,
+                sampling_request.repetition_tokens,
+                rng,
+            )
+            .or_else(|| {
+                sample_categorical_with_topp_gpu(
+                    &logits_row,
+                    sampling,
+                    sampling_request.repetition_tokens,
+                    rng,
+                )
+            }) {
+                tok
+            } else {
+                eval(&[&logits_row, &final_hidden]);
+                let logits_data = logits_row.data_f32();
+                sample_categorical_into(
+                    logits_data,
+                    sampling,
+                    sampling_request.repetition_tokens,
+                    rng,
+                    sampling_probs_buf,
+                    sampling_logits_buf,
+                    sampling_candidates_buf,
+                )
+            }
+        } else {
+            let token_arr = argmax(&logits_row, None);
+            eval_kv_refs(cache);
+            eval(&[&token_arr, &final_hidden]);
+            token_arr.data_u32()[0]
+        };
+        if sampling.temperature > 0.0 {
+            eval(&[&final_hidden]);
+        }
         clear_cache();
-        let tok = token_arr.data_u32()[0];
         return (tok, final_hidden, vec![tok]);
     }
 
@@ -606,7 +641,13 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
 }
 
 fn mlx_lm_style_cache_only_prefix_len(total_tokens: usize, sampling: MlxSamplingParams) -> usize {
-    if total_tokens > 1 && sampling.temperature <= 0.0 && !sampling.uses_repetition_penalty() {
+    // Process n−1 tokens with FinalLogitsMode::Skip whenever the completing
+    // step only needs the last prompt token's logits (greedy or sampling).
+    // Repetition penalty needs the full residual stream for the completing
+    // step and is excluded. Used by both direct and MTP history prefill —
+    // MTP publication rows sample at temperature>0, so this is the main
+    // default-on TTFT lever for MTP cold prefill.
+    if total_tokens > 1 && !sampling.uses_repetition_penalty() {
         total_tokens - 1
     } else {
         0
@@ -986,15 +1027,28 @@ mod tests {
     }
 
     #[test]
-    fn mlx_lm_style_prefill_split_is_greedy_only_for_now() {
+    fn mlx_lm_style_prefill_allows_sampling_without_repetition_penalty() {
+        // Sampled MTP / direct: n−1 cache-only, last token sampled.
         assert_eq!(
             mlx_lm_style_cache_only_prefix_len(2048, MlxSamplingParams::new(0.7, 1.0, 0)),
-            0
+            2047
         );
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(2, MlxSamplingParams::new(0.6, 0.95, 20)),
+            1
+        );
+        // Repetition penalty still needs the full residual path.
         assert_eq!(
             mlx_lm_style_cache_only_prefix_len(
                 2048,
                 MlxSamplingParams::greedy().with_repetition_penalty(1.1, None)
+            ),
+            0
+        );
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(
+                128,
+                MlxSamplingParams::new(0.7, 1.0, 0).with_repetition_penalty(1.05, None)
             ),
             0
         );
