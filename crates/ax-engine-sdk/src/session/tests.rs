@@ -118,6 +118,7 @@ impl ExecutionRunner for TraceReportingRunner {
                 output_tokens: Vec::new(),
                 stop_reason: None,
                 error: None,
+                diffusion_schedule: None,
             })
             .collect::<Vec<_>>();
         let mut route_metadata = input.execution_batch.route_metadata.clone();
@@ -162,6 +163,7 @@ impl ExecutionRunner for TerminalRouteReportingRunner {
                 output_tokens: Vec::new(),
                 stop_reason: Some(ax_engine_core::StopReason::MaxOutputTokens),
                 error: None,
+                diffusion_schedule: None,
             })
             .collect::<Vec<_>>();
         let mut route_metadata = input.execution_batch.route_metadata.clone();

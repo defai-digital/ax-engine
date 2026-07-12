@@ -107,6 +107,9 @@ mod tests {
             terminal_stop_reason: None,
             last_error: None,
             generation_kind: crate::GenerationKind::Autoregressive,
+            diffusion_denoise_steps_in_block: 0,
+            diffusion_commit_ready: false,
+            diffusion_block_committed: false,
         }
     }
 

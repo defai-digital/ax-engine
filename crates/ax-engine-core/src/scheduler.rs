@@ -288,11 +288,14 @@ pub struct ExecutionItem {
 
 /// Plan the work unit for a request snapshot via generation strategy metadata.
 pub fn plan_work_unit_for_snapshot(snapshot: &RequestSnapshot) -> WorkUnitKind {
-    let progress = GenerationProgress::from_request_counters(
-        snapshot.processed_prompt_tokens,
-        snapshot.prompt_len,
-        snapshot.generated_len,
-    );
+    let progress = GenerationProgress {
+        processed_prompt_tokens: snapshot.processed_prompt_tokens,
+        prompt_len: snapshot.prompt_len,
+        generated_visible_tokens: snapshot.generated_len,
+        denoise_steps_in_block: snapshot.diffusion_denoise_steps_in_block,
+        commit_ready: snapshot.diffusion_commit_ready,
+        block_committed: snapshot.diffusion_block_committed,
+    };
     GenerationStrategyDescriptor::for_kind(snapshot.generation_kind).plan_next_work_unit(progress)
 }
 
@@ -780,7 +783,32 @@ mod tests {
             terminal_stop_reason: None,
             last_error: None,
             generation_kind: GenerationKind::Autoregressive,
+            diffusion_denoise_steps_in_block: 0,
+            diffusion_commit_ready: false,
+            diffusion_block_committed: false,
         }
+    }
+
+    #[test]
+    fn plans_diffusion_commit_when_runner_marks_ready() {
+        let mut snapshot = make_snapshot(1, 1, "diffusion_gemma", &[1, 2, 3, 4], 4, &[], 256);
+        snapshot.generation_kind = GenerationKind::BlockDiffusion;
+        snapshot.diffusion_denoise_steps_in_block = 12;
+        snapshot.diffusion_commit_ready = true;
+        snapshot.diffusion_block_committed = false;
+        assert_eq!(
+            plan_work_unit_for_snapshot(&snapshot),
+            WorkUnitKind::BlockCommit
+        );
+
+        // After commit, next unit is denoise for the following block.
+        snapshot.diffusion_commit_ready = false;
+        snapshot.diffusion_block_committed = true;
+        snapshot.diffusion_denoise_steps_in_block = 0;
+        assert_eq!(
+            plan_work_unit_for_snapshot(&snapshot),
+            WorkUnitKind::DenoiseStep
+        );
     }
 
     #[test]

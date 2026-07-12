@@ -1542,6 +1542,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect::<Vec<_>>();
             let logits_outputs = input
@@ -1586,6 +1587,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect::<Vec<_>>();
             let decode_request_id = input
@@ -1663,6 +1665,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: Some(crate::sampling::StopReason::Error),
                     error: Some("simulated batch failure".into()),
+                    diffusion_schedule: None,
                 })
                 .collect();
 
@@ -1697,6 +1700,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect();
 
@@ -1731,6 +1735,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect();
 
@@ -1770,6 +1775,7 @@ mod tests {
                         .then_some(self.stop_reason)
                         .flatten(),
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect();
 

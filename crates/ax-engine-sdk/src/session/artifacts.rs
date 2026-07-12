@@ -123,6 +123,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect();
 

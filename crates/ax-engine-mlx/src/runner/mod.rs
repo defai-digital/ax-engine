@@ -17,11 +17,11 @@ use mlx_sys::{
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
-    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvCompressionConfig, KvWriteSummary,
-    MultimodalPrefillAdapter, NativeModelArtifacts, NativeModelBindingSummary, NativeModelManifest,
-    NativeTensorRole, ROUTE_DECISION_AX_MLX_GENERATION_KIND,
-    ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT, ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB,
-    ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
+    DiffusionScheduleUpdate, EmbeddingPooling, ExecutionRunner, ExecutionStatus,
+    KvCompressionConfig, KvWriteSummary, MultimodalPrefillAdapter, NativeModelArtifacts,
+    NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
+    ROUTE_DECISION_AX_MLX_GENERATION_KIND, ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
+    ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,
@@ -3349,6 +3349,8 @@ struct RequestState {
     /// DiffusionGemma generates `canvas_size` tokens per block; the runner
     /// drains them one at a time through the standard decode path.
     diffusion_block_queue: VecDeque<u32>,
+    /// Schedule feedback for the engine after the latest monoblock generate.
+    pending_diffusion_schedule: Option<DiffusionScheduleUpdate>,
     /// Request-local DiffusionGemma embedding table reused across generated
     /// blocks for self-conditioning.
     diffusion_embed_table: Option<MlxArray>,
@@ -3486,6 +3488,7 @@ impl RequestState {
             rotating_sliding_latch: None,
             bonus_queue: VecDeque::new(),
             diffusion_block_queue: VecDeque::new(),
+            pending_diffusion_schedule: None,
             diffusion_embed_table: None,
             next_model_last_token: None,
             pending_direct: None,
@@ -4505,6 +4508,7 @@ impl MlxRunner {
                 output_tokens,
                 stop_reason,
                 error: None,
+                diffusion_schedule: None,
             });
         }
         updates
@@ -4558,6 +4562,7 @@ impl MlxRunner {
                 output_tokens: sampled.collect(),
                 stop_reason,
                 error: None,
+                diffusion_schedule: None,
             });
         }
         updates
@@ -5821,6 +5826,7 @@ impl MlxRunner {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: Some("empty token slice".into()),
+                    diffusion_schedule: None,
                 },
                 ngram_acceleration: NgramAccelerationTelemetry::default(),
                 mtp_telemetry: MtpTelemetry::default(),
@@ -6342,6 +6348,20 @@ impl MlxRunner {
         kv_usage
             .kv_compression
             .apply_decode_usage(turboquant_decode_usage);
+        // Capture schedule feedback before state is re-parked in the map.
+        let diffusion_schedule = state.pending_diffusion_schedule.take().or_else(|| {
+            // Drain-only steps still signal monoblock generation is active.
+            if self.cfg.is_block_diffusion() && !state.diffusion_block_queue.is_empty() {
+                Some(DiffusionScheduleUpdate {
+                    denoise_steps_in_block: 0,
+                    commit_ready: false,
+                    block_committed: true,
+                })
+            } else {
+                None
+            }
+        });
+
         if stop_reason.is_none() {
             let mut states = self.states.lock();
             states.insert(item.request_id, state);
@@ -6364,6 +6384,7 @@ impl MlxRunner {
                 output_tokens,
                 stop_reason,
                 error: None,
+                diffusion_schedule,
             },
             ngram_acceleration,
             mtp_telemetry,
@@ -7171,6 +7192,14 @@ impl MlxRunner {
                 },
             );
             state.decode_telemetry.record_diffusion_block(&result);
+            // Monoblock path: denoise+commit already finished. Report schedule
+            // progress so the next plan unit is DenoiseStep for the next block
+            // (block_committed=true, commit_ready=false).
+            state.pending_diffusion_schedule = Some(DiffusionScheduleUpdate {
+                denoise_steps_in_block: result.denoise_steps,
+                commit_ready: false,
+                block_committed: true,
+            });
             let mut queue: VecDeque<u32> = result.tokens.into();
             // EOS early termination (dInfer evidence: 15–40% gain). If the
             // committed block contains an EOS token, truncate the queue at
@@ -10536,6 +10565,7 @@ fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemR
             output_tokens: Vec::new(),
             stop_reason: None,
             error: Some(error.into()),
+            diffusion_schedule: None,
         },
         ngram_acceleration: NgramAccelerationTelemetry::default(),
         mtp_telemetry: MtpTelemetry::default(),

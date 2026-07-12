@@ -86,6 +86,14 @@ pub enum ExecutionStatus {
     Failed,
 }
 
+/// Optional diffusion schedule feedback from the runner (ADR-038).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DiffusionScheduleUpdate {
+    pub denoise_steps_in_block: u32,
+    pub commit_ready: bool,
+    pub block_committed: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestExecutionUpdate {
     pub request_id: RequestId,
@@ -94,6 +102,8 @@ pub struct RequestExecutionUpdate {
     pub output_tokens: Vec<u32>,
     pub stop_reason: Option<StopReason>,
     pub error: Option<String>,
+    /// When set, the engine updates request diffusion progress for the next plan.
+    pub diffusion_schedule: Option<DiffusionScheduleUpdate>,
 }
 
 impl RequestExecutionUpdate {
@@ -476,6 +486,7 @@ pub(crate) fn successful_runner_output_from_input(input: &RunnerInput) -> Runner
             output_tokens: Vec::new(),
             stop_reason: None,
             error: None,
+            diffusion_schedule: None,
         });
     }
 

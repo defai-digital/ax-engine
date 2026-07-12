@@ -139,6 +139,26 @@ impl RequestManager {
         Ok(())
     }
 
+    /// Update diffusion schedule progress for multi-step strategy planning.
+    pub fn set_diffusion_schedule_progress(
+        &mut self,
+        request_id: RequestId,
+        denoise_steps_in_block: u32,
+        commit_ready: bool,
+        block_committed: bool,
+    ) -> Result<(), RequestManagerError> {
+        let record = self
+            .records
+            .get_mut(&request_id)
+            .ok_or(RequestManagerError::UnknownRequest(request_id))?;
+        record.set_diffusion_schedule_progress(
+            denoise_steps_in_block,
+            commit_ready,
+            block_committed,
+        );
+        Ok(())
+    }
+
     pub fn set_execution_plan_binding(
         &mut self,
         request_id: RequestId,
@@ -496,6 +516,14 @@ impl RequestManager {
                     stop_reason,
                     Some(StopReason::EosToken | StopReason::MaxOutputTokens)
                 );
+
+            if let Some(diff) = update.diffusion_schedule {
+                record.set_diffusion_schedule_progress(
+                    diff.denoise_steps_in_block,
+                    diff.commit_ready,
+                    diff.block_committed,
+                );
+            }
 
             if record.cancel_requested {
                 record.resolve_running_step(true).map_err(|source| {
@@ -893,6 +921,7 @@ mod tests {
                         output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![],
                     logits_outputs: vec![],
@@ -938,6 +967,7 @@ mod tests {
                         output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![RequestId(1)],
                     logits_outputs: vec![],
@@ -989,6 +1019,7 @@ mod tests {
                         output_tokens: vec![100, 101],
                         stop_reason: None,
                         error: None,
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![],
                     logits_outputs: vec![],
@@ -1054,6 +1085,7 @@ mod tests {
                         output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![RequestId(1)],
                     logits_outputs: vec![],
@@ -1207,6 +1239,7 @@ mod tests {
                         output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![RequestId(1)],
                     logits_outputs: vec![],
@@ -1333,6 +1366,7 @@ mod tests {
                         output_tokens: Vec::new(),
                         stop_reason: None,
                         error: Some("simulated runner failure".into()),
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![],
                     logits_outputs: vec![],
