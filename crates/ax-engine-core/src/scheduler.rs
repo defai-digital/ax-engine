@@ -441,6 +441,8 @@ impl Scheduler {
         let mut selected_requests = Vec::new();
         let mut deferred_requests = Vec::new();
         let mut items = Vec::new();
+        // Generation kind of the first selected item (for batch telemetry).
+        let mut selected_generation_kind: Option<GenerationKind> = None;
         let mut candidates = Vec::new();
         let mut route_seed_anchor: Option<BatchRouteSeed> = None;
         // First-seen seed per execution mode. Checking candidates only against
@@ -537,6 +539,9 @@ impl Scheduler {
                     .record_skipped(item.mode, requested_tokens - item.scheduled_token_count);
             }
 
+            if selected_generation_kind.is_none() {
+                selected_generation_kind = Some(snapshot.generation_kind);
+            }
             selected_requests.push(snapshot.request_id);
             items.push(item);
         }
@@ -551,7 +556,7 @@ impl Scheduler {
             let mut route_metadata =
                 route_metadata_for_batch(route_seed_anchor.as_ref(), batch_mixes_prefill_decode);
             token_budget.append_route_decisions(&mut route_metadata);
-            // ADR-038: surface planned work units on the batch route metadata.
+            // ADR-038: surface planned work units and generation kind on the batch.
             if let Some(first) = items.first() {
                 upsert_route_decision(
                     &mut route_metadata.crossover_decisions,
@@ -559,14 +564,13 @@ impl Scheduler {
                     first.planned_work_unit.telemetry_code(),
                 );
             }
-            if items
-                .iter()
-                .any(|item| matches!(item.planned_work_unit, WorkUnitKind::DenoiseStep))
-            {
+            // Always emit the request's generation kind (not work-unit inference)
+            // so PrefillChunk / BlockCommit for diffusion still label correctly.
+            if let Some(kind) = selected_generation_kind {
                 upsert_route_decision(
                     &mut route_metadata.crossover_decisions,
                     ROUTE_DECISION_AX_MLX_GENERATION_KIND,
-                    GenerationKind::BlockDiffusion.telemetry_code(),
+                    kind.telemetry_code(),
                 );
             }
             Some(ExecutionBatch {
@@ -841,6 +845,30 @@ mod tests {
                 .iter()
                 .any(|(k, v)| k == ROUTE_DECISION_AX_MLX_GENERATION_KIND
                     && *v == GenerationKind::BlockDiffusion.telemetry_code())
+        );
+    }
+
+    #[test]
+    fn diffusion_prefill_still_emits_block_diffusion_generation_kind() {
+        let scheduler = Scheduler::new();
+        let mut snapshot = make_snapshot(1, 1, "diffusion_gemma", &[1, 2, 3, 4], 0, &[], 256);
+        snapshot.generation_kind = GenerationKind::BlockDiffusion;
+        let plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(3),
+            request_snapshots: vec![snapshot],
+            memory_pressure: None,
+            global_token_budget: 32,
+        });
+        let batch = plan.execution_batch.expect("batch");
+        assert_eq!(batch.items[0].planned_work_unit, WorkUnitKind::PrefillChunk);
+        assert!(
+            batch
+                .route_metadata
+                .crossover_decisions
+                .iter()
+                .any(|(k, v)| k == ROUTE_DECISION_AX_MLX_GENERATION_KIND
+                    && *v == GenerationKind::BlockDiffusion.telemetry_code()),
+            "diffusion prefill must still label generation_kind (not only DenoiseStep)"
         );
     }
 

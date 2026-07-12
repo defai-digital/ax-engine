@@ -5909,6 +5909,9 @@ mod tests {
     /// position must match slicing the last position out of a full-seq Q rope.
     /// This is the numerical contract behind projecting Q only at the target
     /// for equal-length last-token pooling.
+    ///
+    /// Forces the reference (non-direct-C++) rope route so the oracle is not
+    /// mixed with the opt-in/opt-out direct path under parallel CI Metal load.
     #[test]
     fn embed_last_token_q_rope_at_offset_matches_full_seq_slice() {
         with_gpu_numeric_lock(|| {
@@ -5928,7 +5931,8 @@ mod tests {
             let norm = array_f32(&norm_data, &[head_dim as i32]);
             eval(&[&proj, &norm]);
 
-            let full = qk_norm_rope_bhsd_from_proj(
+            // Reference path only (direct_route_enabled = false).
+            let full = qk_norm_rope_bhsd_from_proj_with_route(
                 &proj,
                 Some(&norm),
                 n_heads,
@@ -5939,15 +5943,19 @@ mod tests {
                 Some(10_000.0),
                 0,
                 None,
+                false,
             );
             let full_target = select_attention_common_target_bhsd(&full, target);
             eval(&[&full, &full_target]);
+            let full_c = mlx_sys::ops::contiguous(&full_target, None);
+            eval(&[&full_c]);
+            let full_vals: Vec<f32> = full_c.data_f32().to_vec();
 
             // Emulate Q-only projection: take the target token's raw proj rows and
             // RoPE them with offset = target.
             let target_proj = select_embedding_targets(&proj, &[target; 2]);
             eval(&[&target_proj]);
-            let target_rope = qk_norm_rope_bhsd_from_proj(
+            let target_rope = qk_norm_rope_bhsd_from_proj_with_route(
                 &target_proj,
                 Some(&norm),
                 n_heads,
@@ -5958,17 +5966,18 @@ mod tests {
                 Some(10_000.0),
                 target,
                 None,
+                false,
             );
-
-            let full_c = mlx_sys::ops::contiguous(&full_target, None);
             let target_c = mlx_sys::ops::contiguous(&target_rope, None);
-            eval(&[&full_c, &target_c]);
+            eval(&[&target_c]);
+            let target_vals: Vec<f32> = target_c.data_f32().to_vec();
+
             assert_eq!(full_c.shape(), target_c.shape());
             assert_eq!(
                 full_c.shape(),
                 vec![batch as i32, n_heads as i32, 1, head_dim as i32]
             );
-            assert_close(target_c.data_f32(), full_c.data_f32(), 1.0e-5);
+            assert_close(&target_vals, &full_vals, 1.0e-5);
         });
     }
 

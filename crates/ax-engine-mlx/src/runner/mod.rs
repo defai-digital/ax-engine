@@ -6348,19 +6348,9 @@ impl MlxRunner {
         kv_usage
             .kv_compression
             .apply_decode_usage(turboquant_decode_usage);
-        // Capture schedule feedback before state is re-parked in the map.
-        let diffusion_schedule = state.pending_diffusion_schedule.take().or_else(|| {
-            // Drain-only steps still signal monoblock generation is active.
-            if self.cfg.is_block_diffusion() && !state.diffusion_block_queue.is_empty() {
-                Some(DiffusionScheduleUpdate {
-                    denoise_steps_in_block: 0,
-                    commit_ready: false,
-                    block_committed: true,
-                })
-            } else {
-                None
-            }
-        });
+        // Capture schedule feedback only after a monoblock generate.
+        // Drain-only steps must not overwrite denoise_steps with 0.
+        let diffusion_schedule = state.pending_diffusion_schedule.take();
 
         if stop_reason.is_none() {
             let mut states = self.states.lock();
