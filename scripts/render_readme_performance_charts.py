@@ -2941,8 +2941,8 @@ def main() -> int:
             "chunk/batch shapes."
         ),
         source_label=(
-            "Sources: 2026-07-12 same-session 0.6B mlx-lm+AX pair; "
-            "4B/8B retained 2026-07-06 AX vs 2026-07-03 mlx-lm"
+            "Source: 2026-07-12 same-session paired mlx-lm+AX "
+            "(0.6B/4B/8B, ax.embedding_ingest_scale.v2)"
         ),
         ax_label="AX Engine v6.8.2 (2026-07-12)",
     )
