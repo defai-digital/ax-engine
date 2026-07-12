@@ -2462,6 +2462,15 @@ def format_embedding_delta_pct(delta_pct: float) -> str:
     return f"{delta_pct:+.1f}%"
 
 
+# Left-to-right group order for Qwen3 embedding ingest charts (small → large).
+EMBEDDING_MODEL_CHART_ORDER = (
+    "Qwen3 0.6B 8-bit",
+    "Qwen3 4B 4-bit DWQ",
+    "Qwen3 8B 4-bit DWQ",
+    "EmbeddingGemma 300M 8-bit",
+)
+
+
 def embedding_box_groups(rows: list[EmbeddingDeltaRow]) -> list[EmbeddingModelBoxGroup]:
     grouped: dict[str, list[EmbeddingDeltaRow]] = {}
     order: list[str] = []
@@ -2470,6 +2479,12 @@ def embedding_box_groups(rows: list[EmbeddingDeltaRow]) -> list[EmbeddingModelBo
             grouped[row.label] = []
             order.append(row.label)
         grouped[row.label].append(row)
+
+    preferred = {label: index for index, label in enumerate(EMBEDDING_MODEL_CHART_ORDER)}
+    order = sorted(
+        order,
+        key=lambda label: (preferred.get(label, len(preferred)), label),
+    )
 
     box_groups: list[EmbeddingModelBoxGroup] = []
     for label in order:
