@@ -111,6 +111,22 @@ impl RequestExecutionUpdate {
     pub fn has_output_tokens(&self) -> bool {
         self.output_token.is_some() || !self.output_tokens.is_empty()
     }
+
+    /// Mid-block diffusion denoise progress: schedule feedback only, no visible
+    /// token yet. Decode contract allows this without logits/output tokens.
+    #[inline]
+    pub fn is_diffusion_schedule_progress_only(&self) -> bool {
+        matches!(
+            self.diffusion_schedule,
+            Some(DiffusionScheduleUpdate {
+                commit_ready: false,
+                block_committed: false,
+                ..
+            })
+        ) && !self.has_output_tokens()
+            && self.error.is_none()
+            && self.stop_reason.is_none()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

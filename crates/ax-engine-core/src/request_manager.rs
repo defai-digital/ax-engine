@@ -926,6 +926,107 @@ mod tests {
     }
 
     #[test]
+    fn applies_diffusion_schedule_only_progress_with_zero_tokens_executed() {
+        use crate::GenerationKind;
+        use crate::runner::DiffusionScheduleUpdate;
+
+        // Mid-denoise path: no sampled tokens, tokens_executed=0, schedule only.
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        manager
+            .submit_with_generation_kind(
+                make_submission(1, 1, "diffusion_gemma"),
+                GenerationKind::BlockDiffusion,
+            )
+            .unwrap();
+        manager.admit_waiting().unwrap();
+        manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(1),
+                selected_requests: vec![RequestId(1)],
+                deferred_requests: vec![],
+                memory_blocked_requests: vec![],
+                execution_batch: None,
+            })
+            .unwrap();
+
+        // Complete prefill first so subsequent update is pure decode progress.
+        let prompt_len = manager.snapshot(RequestId(1)).unwrap().prompt_len;
+        manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(1),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: prompt_len,
+                        output_token: None,
+                        output_tokens: Vec::new(),
+                        stop_reason: None,
+                        error: None,
+                        diffusion_schedule: None,
+                    }],
+                    logits_handles: vec![],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: prompt_len,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: RouteMetadata::empty(),
+                    execution_status: crate::runner::ExecutionStatus::Success,
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+        manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(2),
+                selected_requests: vec![RequestId(1)],
+                deferred_requests: vec![],
+                memory_blocked_requests: vec![],
+                execution_batch: None,
+            })
+            .unwrap();
+
+        manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(2),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 0,
+                        output_token: None,
+                        output_tokens: Vec::new(),
+                        stop_reason: None,
+                        error: None,
+                        diffusion_schedule: Some(DiffusionScheduleUpdate {
+                            denoise_steps_in_block: 2,
+                            commit_ready: false,
+                            block_committed: false,
+                        }),
+                    }],
+                    logits_handles: vec![],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 0,
+                        blocks_touched: 0,
+                    },
+                    route_metadata: RouteMetadata::empty(),
+                    execution_status: crate::runner::ExecutionStatus::Success,
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.diffusion_denoise_steps_in_block, 2);
+        assert!(!snapshot.diffusion_commit_ready);
+        assert!(!snapshot.diffusion_block_committed);
+        assert!(snapshot.generated_tokens.is_empty());
+        assert_eq!(snapshot.state, crate::request::RequestState::Runnable);
+    }
+
+    #[test]
     fn applies_diffusion_schedule_update_from_runner() {
         use crate::GenerationKind;
         use crate::runner::DiffusionScheduleUpdate;

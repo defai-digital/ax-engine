@@ -2018,30 +2018,156 @@ mod tests {
         assert!(!update_ready.block_committed);
     }
 
-    /// Simulate multi-call denoise bookkeeping without a loaded model.
-    #[test]
-    fn multi_call_step_budget_accumulates_until_commit_ready() {
-        let max_steps = 10_u32;
-        let per_call = 3_usize;
-        let mut done = 0_u32;
-        let mut calls = 0_u32;
-        while done < max_steps {
-            let budget = clamp_denoise_step_budget(per_call, max_steps as usize, done);
-            assert!(budget > 0 || done >= max_steps);
-            done = done.saturating_add(budget as u32);
-            calls = calls.saturating_add(1);
-            let commit_ready = done >= max_steps;
-            let update = schedule_update_from_progress(done, commit_ready, false);
-            assert_eq!(update.denoise_steps_in_block, done);
-            if commit_ready {
-                assert!(update.commit_ready);
-                break;
-            }
-            assert!(!update.commit_ready);
+    fn tiny_diffusion_cfg(canvas: usize, max_steps: usize) -> (ModelConfig, DiffusionConfig) {
+        let model = ModelConfig {
+            compile_cache_identity: 42,
+            model_family: "diffusion_gemma".to_string(),
+            layer_count: 0,
+            hidden_size: 8,
+            intermediate_size: 16,
+            n_heads: 2,
+            n_kv_heads: 1,
+            head_dim: 4,
+            vocab_size: 16,
+            rope_theta: 10_000.0,
+            rope_dims: 4,
+            attn_output_gate: false,
+            query_scale: 1.0,
+            final_logit_softcapping: None,
+            moe_expert_count: 0,
+            moe_experts_per_token: 0,
+            moe_expert_intermediate_size: 0,
+            layer_configs: Vec::new(),
+            global_sliding_window: None,
+            gemma4_moe_router: false,
+            uses_geglu: false,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
+            hidden_size_per_layer_input: 0,
+            linear_attention: None,
+            mla_attention: None,
+            glm_router: None,
+            rms_norm_eps: 1e-6,
+            rope_freqs: None,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: 8192.0,
+            attn_temperature_scale: 0.1,
+            intermediate_size_mlp: 0,
+            moe_layer_freq: 1,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 0,
+            moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 1.0,
+            moe_n_group: 1,
+            moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
+            diffusion: None,
+            gpt_oss_uses_mxfp4_experts: false,
+            generation_kind: ax_engine_core::GenerationKind::BlockDiffusion,
+        };
+        let mut diff = default_diff_cfg();
+        diff.canvas_size = canvas;
+        diff.max_denoise_steps = max_steps;
+        diff.self_conditioning = false;
+        diff.convergence_check_interval = 1;
+        // Force max steps so multi-budget path reaches commit_ready without
+        // relying on model quality for convergence.
+        diff.entropy_threshold = -1.0;
+        diff.acceptance_rate_threshold = -1.0;
+        diff.entropy_plateau_delta = -1.0;
+        (model, diff)
+    }
+
+    fn tiny_diffusion_weights(hidden: usize, vocab: usize) -> ModelWeights {
+        use crate::weights::QuantizedWeight;
+        use mlx_sys::zeros;
+        ModelWeights {
+            token_embedding: QuantizedWeight::new(
+                zeros(&[vocab as i32, hidden as i32], MlxDtype::Float32, None),
+                None,
+                None,
+            ),
+            final_norm: zeros(&[hidden as i32], MlxDtype::Float32, None),
+            lm_head: QuantizedWeight::new(
+                zeros(&[vocab as i32, hidden as i32], MlxDtype::Float32, None),
+                None,
+                None,
+            ),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
         }
-        assert_eq!(done, max_steps);
-        // 3+3+3+1 = 4 calls
-        assert_eq!(calls, 4);
+    }
+
+    /// Drive the real open/advance/commit surface across partial step budgets.
+    #[test]
+    fn open_advance_commit_across_partial_step_budgets() {
+        let (cfg, diff_cfg) = tiny_diffusion_cfg(4, 3);
+        let weights = tiny_diffusion_weights(cfg.hidden_size, cfg.vocab_size);
+        let mut cache = MlxKVCache::new(0);
+        let mut rng = Xorshift64::new(11);
+        let mut embed_table: Option<MlxArray> = None;
+
+        let mut ws = open_diffusion_block(
+            &cfg,
+            &diff_cfg,
+            &weights,
+            &mut rng,
+            /*token_offset*/ 0,
+            &mut embed_table,
+        );
+        assert_eq!(ws.steps_executed, 0);
+
+        let p1 =
+            advance_diffusion_workspace(&mut ws, &cfg, &weights, &cache, &mut rng, &embed_table, 1);
+        assert_eq!(p1.steps_this_call, 1);
+        assert_eq!(p1.steps_total, 1);
+        assert!(!p1.commit_ready);
+        let sched1 = p1.schedule_update();
+        assert_eq!(sched1.denoise_steps_in_block, 1);
+        assert!(!sched1.commit_ready);
+        assert!(!sched1.block_committed);
+
+        let p2 =
+            advance_diffusion_workspace(&mut ws, &cfg, &weights, &cache, &mut rng, &embed_table, 1);
+        assert_eq!(p2.steps_this_call, 1);
+        assert_eq!(p2.steps_total, 2);
+        assert!(!p2.commit_ready);
+
+        let p3 =
+            advance_diffusion_workspace(&mut ws, &cfg, &weights, &cache, &mut rng, &embed_table, 1);
+        assert_eq!(p3.steps_this_call, 1);
+        assert_eq!(p3.steps_total, 3);
+        assert!(
+            p3.commit_ready,
+            "max_denoise_steps=3 must make commit_ready after three advances"
+        );
+
+        let result = commit_diffusion_workspace(
+            ws,
+            &cfg,
+            &weights,
+            &mut cache,
+            DiffusionCommitPolicy {
+                truncation_terminal_ids: &[],
+                request_terminal_ids: &[],
+                remaining_output_budget: Some(4),
+            },
+        );
+        assert_eq!(result.denoise_steps, 3);
+        assert_eq!(result.tokens.len(), 4);
     }
 
     // ── Phase C: random scratch reuse + stage profile ────────────────

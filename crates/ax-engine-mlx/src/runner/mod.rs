@@ -6368,12 +6368,27 @@ impl MlxRunner {
 
         let mut sampled_tokens = sampled_tokens.into_iter();
         let output_token = sampled_tokens.next();
-        let output_tokens = sampled_tokens.collect();
+        let output_tokens: Vec<u32> = sampled_tokens.collect();
+        // Mid-denoise schedule-only progress executes zero visible tokens.
+        let tokens_executed = if output_token.is_none()
+            && output_tokens.is_empty()
+            && matches!(
+                diffusion_schedule,
+                Some(DiffusionScheduleUpdate {
+                    commit_ready: false,
+                    block_committed: false,
+                    ..
+                })
+            ) {
+            0
+        } else {
+            item.scheduled_token_count
+        };
 
         MlxItemRun {
             update: RequestExecutionUpdate {
                 request_id: item.request_id,
-                tokens_executed: item.scheduled_token_count,
+                tokens_executed,
                 output_token,
                 output_tokens,
                 stop_reason,
