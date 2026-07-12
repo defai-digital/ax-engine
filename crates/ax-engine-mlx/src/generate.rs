@@ -641,13 +641,19 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
 }
 
 fn mlx_lm_style_cache_only_prefix_len(total_tokens: usize, sampling: MlxSamplingParams) -> usize {
-    // Process n−1 tokens with FinalLogitsMode::Skip whenever the completing
-    // step only needs the last prompt token's logits (greedy or sampling).
-    // Repetition penalty needs the full residual stream for the completing
-    // step and is excluded. Used by both direct and MTP history prefill —
-    // MTP publication rows sample at temperature>0, so this is the main
-    // default-on TTFT lever for MTP cold prefill.
-    if total_tokens > 1 && !sampling.uses_repetition_penalty() {
+    // Process n−1 tokens with FinalLogitsMode::Skip when the completing step
+    // only needs the last prompt token's logits. Repetition penalty is
+    // excluded (needs the full residual stream for the completing step).
+    //
+    // Greedy: always n−1 (direct-mode high-water path).
+    // Sampling (MTP publication rows use temp>0): only when the prompt is long
+    // enough that last-layer skip amortizes the extra completing-step barrier
+    // (short sampled prompts measured slightly slower under dual-barrier).
+    const SAMPLING_CACHE_ONLY_MIN_TOKENS: usize = 512;
+    if total_tokens <= 1 || sampling.uses_repetition_penalty() {
+        return 0;
+    }
+    if sampling.temperature <= 0.0 || total_tokens >= SAMPLING_CACHE_ONLY_MIN_TOKENS {
         total_tokens - 1
     } else {
         0
@@ -1027,28 +1033,30 @@ mod tests {
     }
 
     #[test]
-    fn mlx_lm_style_prefill_allows_sampling_without_repetition_penalty() {
-        // Sampled MTP / direct: n−1 cache-only, last token sampled.
+    fn mlx_lm_style_prefill_allows_long_sampling_without_repetition_penalty() {
+        // Long sampled MTP / direct: n−1 cache-only, last token sampled.
         assert_eq!(
             mlx_lm_style_cache_only_prefix_len(2048, MlxSamplingParams::new(0.7, 1.0, 0)),
             2047
         );
         assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(512, MlxSamplingParams::new(0.6, 0.95, 20)),
+            511
+        );
+        // Short sampled prompts stay on the single-pass path (barrier amortisation).
+        assert_eq!(
             mlx_lm_style_cache_only_prefix_len(2, MlxSamplingParams::new(0.6, 0.95, 20)),
-            1
+            0
+        );
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(511, MlxSamplingParams::new(0.6, 0.95, 20)),
+            0
         );
         // Repetition penalty still needs the full residual path.
         assert_eq!(
             mlx_lm_style_cache_only_prefix_len(
                 2048,
                 MlxSamplingParams::greedy().with_repetition_penalty(1.1, None)
-            ),
-            0
-        );
-        assert_eq!(
-            mlx_lm_style_cache_only_prefix_len(
-                128,
-                MlxSamplingParams::new(0.7, 1.0, 0).with_repetition_penalty(1.05, None)
             ),
             0
         );
