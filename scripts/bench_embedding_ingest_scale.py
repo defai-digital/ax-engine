@@ -28,6 +28,7 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_CONTRACT = "contiguous_cpu_f32_batch_hidden"
+SCHEMA_VERSION = "ax.embedding_ingest_scale.v2"
 
 
 def load_fair_bench():
@@ -355,19 +356,7 @@ def render_summary(artifact: dict[str, Any]) -> str:
 
 def git_commit() -> str | None:
     """Best-effort current commit so an artifact records the binary it measured."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    commit = result.stdout.strip()
-    return commit or None
+    return fair.git_commit()
 
 
 def embed_env_flags() -> dict[str, str]:
@@ -377,13 +366,7 @@ def embed_env_flags() -> dict[str, str]:
     ax_only artifact with `AX_MLX_EMBED_FFN_COMPILE=1` is not the shipped
     default path, and a delta computed from it would not describe defaults.
     """
-    tracked = ("AX_MLX_DENSE_FFN_COMPILE",)
-    keys = sorted(
-        key
-        for key in os.environ
-        if key.startswith("AX_MLX_EMBED") or key in tracked
-    )
-    return {key: os.environ[key] for key in keys}
+    return fair.embed_env_flags()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -428,10 +411,20 @@ def main() -> int:
 
     run_dir = args.output_dir / datetime.now().strftime("%Y-%m-%d-%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
+    build = fair.collect_build_metadata()
     artifact = {
-        "schema_version": "ax.embedding_ingest_scale.v1",
+        "schema_version": SCHEMA_VERSION,
         "timestamp": datetime.now().isoformat(),
-        "git_commit": git_commit(),
+        "git_commit": build["commit"] if build["commit"] != "unknown" else git_commit(),
+        "build": build,
+        "host": fair.collect_host_metadata(),
+        "runtime_identity": fair.collect_runtime_identity(
+            ax_only=args.ax_only, reference=args.reference
+        ),
+        "claim_gate": dict(fair.CLAIM_GATE),
+        "publication_claim": (
+            "ax_absolute_trend" if args.ax_only else "paired_delta"
+        ),
         "embed_env_flags": embed_env_flags(),
         "output_contract": OUTPUT_CONTRACT,
         "trial_order": "interleaved_alternating",

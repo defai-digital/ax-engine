@@ -87,15 +87,64 @@ class FairEmbeddingBenchmarkTests(unittest.TestCase):
                 "mlx_lm": {
                     "median_tokens_per_sec": 100.0,
                     "median_items_per_sec": 10.0,
+                    "median_ms_per_item": 10.0,
+                    "median_ms_per_batch": 10.0,
                 },
                 "ax_engine_py": {
                     "median_tokens_per_sec": 125.0,
                     "median_items_per_sec": 9.0,
+                    "median_ms_per_item": 8.0,
+                    "median_ms_per_batch": 8.0,
                 },
             }
         )
         self.assertAlmostEqual(comparison["ax_vs_reference_tokens_pct"], 25.0)
         self.assertAlmostEqual(comparison["ax_vs_reference_items_pct"], -10.0)
+        self.assertAlmostEqual(comparison["ax_vs_reference_ms_per_item_pct"], -20.0)
+        self.assertAlmostEqual(comparison["ax_vs_reference_ms_per_batch_pct"], -20.0)
+
+    def test_classify_mlx_path_distinguishes_homebrew_and_pip(self) -> None:
+        self.assertEqual(
+            bench.classify_mlx_path("/opt/homebrew/opt/mlx/lib/libmlx.dylib"),
+            "homebrew",
+        )
+        self.assertEqual(
+            bench.classify_mlx_path(
+                "/Users/x/.venv/lib/python3.14/site-packages/mlx/lib/libmlx.dylib"
+            ),
+            "pip_or_venv",
+        )
+
+    def test_primary_metric_for_workload(self) -> None:
+        self.assertEqual(
+            bench.primary_metric_for_workload("short_query_b8"),
+            "median_ms_per_item",
+        )
+        self.assertEqual(
+            bench.primary_metric_for_workload("fixed_256_b32"),
+            "median_tokens_per_sec",
+        )
+
+    def test_trial_stats_includes_ms_per_item(self) -> None:
+        stats = bench.trial_stats(
+            [
+                {
+                    "ms_per_batch": 20.0,
+                    "ms_per_item": 10.0,
+                    "tokens_per_sec": 100.0,
+                    "items_per_sec": 50.0,
+                },
+                {
+                    "ms_per_batch": 24.0,
+                    "ms_per_item": 12.0,
+                    "tokens_per_sec": 90.0,
+                    "items_per_sec": 45.0,
+                },
+            ],
+            "ax",
+        )
+        self.assertEqual(stats["median_ms_per_item"], 11.0)
+        self.assertIn("median_ms_per_batch", stats)
 
     def test_interleaved_trials_alternate_engine_order(self) -> None:
         calls = []
@@ -148,6 +197,7 @@ class FairEmbeddingBenchmarkTests(unittest.TestCase):
         summary = bench.render_summary(
             {
                 "output_contract": bench.OUTPUT_CONTRACT,
+                "reference": "mlx_lm",
                 "models": [
                     {
                         "model_label": "qwen-test",
@@ -168,7 +218,49 @@ class FairEmbeddingBenchmarkTests(unittest.TestCase):
             }
         )
         self.assertIn(bench.OUTPUT_CONTRACT, summary)
-        self.assertIn("| qwen-test | fixed_16_b8 | 8 | 16 | 100.0 | 125.0 | +25.0% |", summary)
+        self.assertIn(
+            "| qwen-test | fixed_16_b8 | 8 | 16 | tok/s | 100.0 | 125.0 | +25.0% |",
+            summary,
+        )
+
+    def test_render_summary_short_query_headlines_latency(self) -> None:
+        summary = bench.render_summary(
+            {
+                "output_contract": bench.OUTPUT_CONTRACT,
+                "reference": "mlx_lm",
+                "models": [
+                    {
+                        "model_label": "qwen-test",
+                        "rows": [
+                            {
+                                "workload": "short_query_b1",
+                                "batch_size": 1,
+                                "max_tokens": 15,
+                                "results": {
+                                    "mlx_lm": {
+                                        "median_tokens_per_sec": 100.0,
+                                        "median_ms_per_item": 12.5,
+                                    },
+                                    "ax_engine_py": {
+                                        "median_tokens_per_sec": 110.0,
+                                        "median_ms_per_item": 10.0,
+                                    },
+                                },
+                                "comparison": {
+                                    "ax_vs_reference_ms_per_item_pct": -20.0,
+                                    "ax_vs_reference_tokens_pct": 10.0,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        self.assertIn("ms/item", summary)
+        self.assertIn(
+            "| qwen-test | short_query_b1 | 1 | 15 | ms/item | 12.50 | 10.00 | -20.0% |",
+            summary,
+        )
 
     def test_render_summary_supports_ax_only(self) -> None:
         summary = bench.render_summary(
@@ -198,7 +290,10 @@ class FairEmbeddingBenchmarkTests(unittest.TestCase):
         )
         self.assertIn("# AX-Only Embedding Benchmark", summary)
         self.assertIn("pooling: `mean`", summary)
-        self.assertIn("| embed-test | fixed_64_b8 | 8 | 64 | 1,234.0 | 19.3 |", summary)
+        self.assertIn(
+            "| embed-test | fixed_64_b8 | 8 | 64 | tok/s | 1,234.0 | 1,234.0 | 19.3 |",
+            summary,
+        )
 
 
 if __name__ == "__main__":

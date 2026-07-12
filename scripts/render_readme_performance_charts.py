@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import re
@@ -13,6 +14,19 @@ from pathlib import Path
 from typing import Any
 
 import check_readme_performance_artifacts as readme_artifacts
+
+
+def _load_embedding_publish_gate():
+    """Load the embedding publish gate without requiring package install."""
+    path = Path(__file__).resolve().parent / "check_embedding_publish_gate.py"
+    spec = importlib.util.spec_from_file_location(
+        "check_embedding_publish_gate_runtime", path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 LABEL_TO_SLUG = {
     label: slug for slug, label in readme_artifacts.ARTIFACT_LABELS.items()
@@ -2340,6 +2354,24 @@ def embedding_model_label(label: str) -> str:
     }.get(label, label)
 
 
+def _assert_embedding_publish_gate(
+    artifact_path: Path, *, claim: str, allow_legacy: bool = True
+) -> None:
+    """Reject chart inputs that fail the embedding publication gate.
+
+    Historical v1 retained rows pass only with allow_legacy=True (default for
+    chart rendering of frozen artifacts). Fresh v2 paired artifacts are fully
+    validated including runtime_identity / libmlx fingerprints.
+    """
+    gate = _load_embedding_publish_gate()
+    try:
+        gate.validate_artifact(
+            artifact_path, claim=claim, allow_legacy=allow_legacy
+        )
+    except gate.PublishGateError as exc:
+        raise ChartError(str(exc)) from exc
+
+
 def load_embedding_overlay_scale_delta_rows(
     repo_root: Path, reference_relative_path: Path, ax_relative_path: Path
 ) -> list[EmbeddingDeltaRow]:
@@ -2349,6 +2381,14 @@ def load_embedding_overlay_scale_delta_rows(
         raise ChartError(f"missing embedding scale reference artifact: {reference_path}")
     if not ax_path.exists():
         raise ChartError(f"missing embedding scale AX artifact: {ax_path}")
+    # Overlay charts pair a historical reference snapshot with a later AX-only
+    # refresh. Gate each side under its allowed claim; legacy v1 is retained.
+    _assert_embedding_publish_gate(
+        reference_path, claim="paired_delta", allow_legacy=True
+    )
+    _assert_embedding_publish_gate(
+        ax_path, claim="ax_absolute_trend", allow_legacy=True
+    )
     reference_artifact = json.loads(reference_path.read_text())
     ax_artifact = json.loads(ax_path.read_text())
     if reference_artifact.get("ax_only"):
@@ -2406,6 +2446,9 @@ def load_embedding_paired_scale_delta_rows(
     artifact_path = repo_root / artifact_relative_path
     if not artifact_path.exists():
         raise ChartError(f"missing embedding scale paired artifact: {artifact_path}")
+    _assert_embedding_publish_gate(
+        artifact_path, claim="paired_delta", allow_legacy=True
+    )
     artifact = json.loads(artifact_path.read_text())
     if artifact.get("ax_only"):
         raise ChartError(f"{artifact_path} is AX-only; expected paired artifact")

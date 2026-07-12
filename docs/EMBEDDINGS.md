@@ -43,6 +43,47 @@ table intentionally keeps separate: whether throughput holds across many
 flushes, and how p95 batch latency rises as batch size grows. Do not use it as
 a replacement for the fair table; use it as the scale profile beside it.
 
+## Publication discipline and provenance
+
+Harness artifacts now record **host**, **build** (commit + dirty flag),
+**runtime_identity** (AX cdylib path/sha plus `otool` libmlx/libmlxc install
+names, resolved paths, sha256, and source class), and **embed_env_flags**.
+Schema versions: `ax.embedding_fair.v2` and `ax.embedding_ingest_scale.v2`.
+
+Rules for public claims:
+
+| Claim | Required run mode | Use for |
+|---|---|---|
+| `paired_delta` | same-session fair/scale **without** `--ax-only` | README AX vs mlx-lm / mlx-embeddings deltas |
+| `ax_absolute_trend` | `--ax-only` | Absolute AX trend across commits; never invent a reference delta |
+
+Short-query fair rows **headline latency** (`median_ms_per_item`, lower is
+better). Fixed-length and ingest-scale rows headline tok/s (and scale also
+reports chunks/s + batch p95 ms). Do not publish short-query tok/s as the
+primary public number: short text makes tok/s noisy and misrepresents query
+serving latency.
+
+Before wiring a new artifact into the README or charts, run:
+
+```bash
+# Paired reference delta (default)
+.venv/bin/python scripts/check_embedding_publish_gate.py \
+  path/to/embedding_fair.json path/to/embedding_ingest_scale.json
+
+# AX-only absolute trend
+.venv/bin/python scripts/check_embedding_publish_gate.py --claim ax_absolute_trend \
+  path/to/embedding_ingest_scale.json
+
+# Retained historical v1 rows only
+.venv/bin/python scripts/check_embedding_publish_gate.py --allow-legacy \
+  path/to/legacy_embedding_ingest_scale.json
+```
+
+The gate rejects `paired_delta` when AX is linked to Homebrew `libmlx` while
+the reference uses a pip/venv wheel — that mismatch was the root of a false
+~3× AX-vs-mlx-lm gap. Prefer the venv/pip MLX wheel and the repo rpath wiring
+in `mlx-sys` / `ax-engine-py`.
+
 The README tables only count throughput where the caller can actually
 *consume* the embedding (Python `list[float]`, NumPy ndarray, raw f32
 bytes — not a GPU-only `MlxArray`). Both backends pay the GPU→CPU
