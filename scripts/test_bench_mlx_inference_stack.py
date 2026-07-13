@@ -3822,6 +3822,141 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertFalse(summary["publication_candidate"])
 
+    def test_ax_mlx_lm_peer_wins_requires_all_three_metrics(self) -> None:
+        prompt_hash = "a" * 64
+        summary = bench.summarize_ax_mlx_lm_peer_wins(
+            [
+                {
+                    "engine": "mlx_lm",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "prompt_token_ids_sha256": prompt_hash,
+                    "prefill_tok_s": {"median": 400.0},
+                    "decode_tok_s": {"median": 20.0},
+                    "ttft_ms": {"median": 320.0},
+                },
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "prompt_token_ids_sha256": prompt_hash,
+                    "prefill_tok_s": {"median": 410.0},
+                    "decode_tok_s": {"median": 21.0},
+                    "ttft_ms": {"median": 310.0},
+                },
+                {
+                    "engine": "ax_engine_mlx_ngram_accel",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                },
+            ]
+        )
+
+        self.assertEqual(
+            summary["schema_version"], "ax.ax_mlx_lm_peer_wins.v1"
+        )
+        self.assertEqual(summary["row_count"], 1)
+        self.assertEqual(summary["pair_count"], 1)
+        self.assertEqual(summary["strict_win_count"], 1)
+        self.assertEqual(summary["failure_count"], 0)
+        self.assertTrue(summary["publication_candidate"])
+        self.assertEqual(summary["rows"][0]["classification"], "strict_win")
+        self.assertEqual(bench.ax_mlx_lm_peer_win_failure_reasons(summary), [])
+
+    def test_ax_mlx_lm_peer_wins_rejects_ties_and_losses(self) -> None:
+        prompt_hash = "b" * 64
+        summary = bench.summarize_ax_mlx_lm_peer_wins(
+            [
+                {
+                    "engine": "mlx_lm",
+                    "prompt_tokens": 512,
+                    "generation_tokens": 128,
+                    "prompt_token_ids_sha256": prompt_hash,
+                    "prefill_tok_s": {"median": 500.0},
+                    "decode_tok_s": {"median": 25.0},
+                    "ttft_ms": {"median": 200.0},
+                },
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 512,
+                    "generation_tokens": 128,
+                    "prompt_token_ids_sha256": prompt_hash,
+                    "prefill_tok_s": {"median": 500.0},
+                    "decode_tok_s": {"median": 24.0},
+                    "ttft_ms": {"median": 200.0},
+                },
+            ]
+        )
+
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(summary["strict_win_count"], 0)
+        self.assertEqual(summary["failure_count"], 1)
+        self.assertEqual(
+            summary["failure_reason_counts"],
+            {
+                "prefill_not_faster": 1,
+                "decode_not_faster": 1,
+                "ttft_not_lower": 1,
+            },
+        )
+        self.assertEqual(
+            bench.ax_mlx_lm_peer_win_failure_reasons(summary),
+            [
+                "decode_not_faster=1",
+                "prefill_not_faster=1",
+                "ttft_not_lower=1",
+            ],
+        )
+
+    def test_ax_mlx_lm_peer_wins_rejects_missing_duplicate_and_hash_mismatch(self) -> None:
+        peer = {
+            "engine": "mlx_lm",
+            "prompt_tokens": 128,
+            "generation_tokens": 128,
+            "prompt_token_ids_sha256": "c" * 64,
+            "prefill_tok_s": {"median": 400.0},
+            "decode_tok_s": {"median": 20.0},
+            "ttft_ms": {"median": 320.0},
+        }
+        ax = {
+            "engine": "ax_engine_mlx",
+            "prompt_tokens": 128,
+            "generation_tokens": 128,
+            "prompt_token_ids_sha256": "d" * 64,
+            "prefill_tok_s": {"median": 410.0},
+            "decode_tok_s": {"median": 21.0},
+            "ttft_ms": {"median": 310.0},
+        }
+        missing_peer_ax = dict(ax, prompt_tokens=512)
+
+        summary = bench.summarize_ax_mlx_lm_peer_wins(
+            [peer, dict(peer), ax, missing_peer_ax]
+        )
+
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(summary["duplicate_mlx_lm_count"], 1)
+        self.assertEqual(summary["missing_mlx_lm_count"], 1)
+        self.assertEqual(summary["failure_reason_counts"]["duplicate_mlx_lm"], 1)
+        self.assertEqual(summary["failure_reason_counts"]["prompt_hash_mismatch"], 1)
+        self.assertEqual(summary["failure_reason_counts"]["missing_mlx_lm"], 1)
+
+    def test_ax_mlx_lm_peer_win_non_candidate_exits_nonzero(self) -> None:
+        stderr = io.StringIO()
+        summary = {
+            "publication_candidate": False,
+            "failure_reason_counts": {"prefill_not_faster": 1},
+        }
+
+        with (
+            patch.object(sys, "stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            bench.fail_if_ax_mlx_lm_peer_wins_not_publication_candidate(summary)
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("AX multi-metric peer-win check failed", stderr.getvalue())
+        self.assertIn("prefill_not_faster=1", stderr.getvalue())
+
     def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:
         self.assertEqual(
             bench.summarize_prefix_reuse_evidence([])["physical_snapshot_coverage"],
@@ -5041,6 +5176,57 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     prompt_lengths=[4],
                     generation_tokens=2,
                 )
+
+    def test_reused_reference_model_identity_accepts_same_snapshot_in_new_cache(self) -> None:
+        revision = "a" * 40
+        reference_doc = {
+            "model_repo_id": "mlx-community/test-model",
+            "model_dir": (
+                "/old/cache/models--mlx-community--test-model/snapshots/"
+                + revision
+            ),
+        }
+
+        bench.validate_reused_reference_model_identity(
+            reference_doc,
+            model_repo_id="mlx-community/test-model",
+            model_dir=Path(
+                "/new/cache/models--mlx-community--test-model/snapshots"
+            )
+            / revision,
+        )
+
+    def test_reused_reference_model_identity_rejects_snapshot_mismatch(self) -> None:
+        reference_doc = {
+            "model_repo_id": "mlx-community/test-model",
+            "model_dir": (
+                "/cache/models--mlx-community--test-model/snapshots/"
+                + "a" * 40
+            ),
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "model snapshot mismatch"):
+            bench.validate_reused_reference_model_identity(
+                reference_doc,
+                model_repo_id="mlx-community/test-model",
+                model_dir=Path(
+                    "/cache/models--mlx-community--test-model/snapshots"
+                )
+                / ("b" * 40),
+            )
+
+    def test_reused_reference_model_identity_rejects_repo_mismatch(self) -> None:
+        reference_doc = {
+            "model_repo_id": "mlx-community/reference-model",
+            "model_dir": "/models/reference-model",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "model_repo_id mismatch"):
+            bench.validate_reused_reference_model_identity(
+                reference_doc,
+                model_repo_id="mlx-community/current-model",
+                model_dir=Path("/models/current-model"),
+            )
 
     def test_validate_reused_reference_prompt_hashes_rejects_mismatches(self) -> None:
         rows = [

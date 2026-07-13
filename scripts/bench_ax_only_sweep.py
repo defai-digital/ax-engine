@@ -338,6 +338,7 @@ def run_row(
     model_args: list[str],
     reuse_ref_root: Path | None,
     ax_direct_only: bool = False,
+    require_ax_multi_metric_peer_wins: bool = False,
     max_load_average: float | None = None,
     max_top_process_cpu_percent: float | None = None,
     load_average_wait_timeout: float | None = None,
@@ -373,11 +374,17 @@ def run_row(
             return {"status": "skipped_no_reference", "note": f"missing {ref_json}"}
         cmd.extend(
             [
-                "--ax-compare-policies",
+                (
+                    "--ax-direct"
+                    if require_ax_multi_metric_peer_wins
+                    else "--ax-compare-policies"
+                ),
                 "--reuse-reference-results-from",
                 str(ref_json),
             ]
         )
+    if require_ax_multi_metric_peer_wins:
+        cmd.append("--require-ax-multi-metric-peer-wins")
     if max_load_average is not None:
         cmd.extend(["--max-load-average", str(max_load_average)])
     if max_top_process_cpu_percent is not None:
@@ -476,6 +483,9 @@ def build_sweep_doc(
             else None
         ),
         "ax_direct_only": bool(args.ax_direct_only),
+        "require_ax_multi_metric_peer_wins": bool(
+            args.require_ax_multi_metric_peer_wins
+        ),
         "prompt_tokens": args.prompt_tokens,
         "generation_tokens": args.generation_tokens,
         "repetitions": args.repetitions,
@@ -628,6 +638,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--require-ax-multi-metric-peer-wins",
+        action="store_true",
+        help=(
+            "Require each row's direct AX result to strictly beat its reused "
+            "mlx_lm reference in prefill, decode, and TTFT."
+        ),
+    )
+    parser.add_argument(
         "--cache-dir",
         type=Path,
         default=Path.home() / ".cache" / "huggingface" / "hub",
@@ -679,6 +697,10 @@ def main() -> None:
 
     if not args.ax_direct_only and args.reuse_reference_root is None:
         parser.error("--reuse-reference-root is required unless --ax-direct-only")
+    if args.ax_direct_only and args.require_ax_multi_metric_peer_wins:
+        parser.error(
+            "--require-ax-multi-metric-peer-wins requires --reuse-reference-root"
+        )
     if args.no_load_gate:
         args.max_load_average = None
         args.max_top_process_cpu_percent = None
@@ -776,6 +798,9 @@ def main() -> None:
                 model_args=model_args,
                 reuse_ref_root=args.reuse_reference_root,
                 ax_direct_only=args.ax_direct_only,
+                require_ax_multi_metric_peer_wins=(
+                    args.require_ax_multi_metric_peer_wins
+                ),
                 max_load_average=args.max_load_average,
                 max_top_process_cpu_percent=args.max_top_process_cpu_percent,
                 load_average_wait_timeout=args.load_average_wait_timeout,

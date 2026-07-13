@@ -68,6 +68,7 @@ MLX_INFERENCE_STACK_SCHEMA_VERSION = "ax.mlx_inference_stack.v2"
 MLX_INFERENCE_STACK_INCOMPLETE_SCHEMA_VERSION = "ax.mlx_inference_stack.incomplete.v1"
 AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
 AX_ONLY_REFRESH_SCHEMA_VERSION = "ax.ax_only_refresh.v1"
+AX_MLX_LM_PEER_WINS_SCHEMA_VERSION = "ax.ax_mlx_lm_peer_wins.v1"
 AXENGINE_PORT = 0
 MLX_LM_RANDOM_SEED = 0
 GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS = [512, 2048, 8192, 32768]
@@ -4994,6 +4995,183 @@ def attach_mlx_lm_baselines(results: list[dict[str, Any]]) -> None:
         }
 
 
+def summarize_ax_mlx_lm_peer_wins(results: list[dict[str, Any]]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "schema_version": AX_MLX_LM_PEER_WINS_SCHEMA_VERSION,
+        "scope": "ax_engine_mlx_vs_mlx_lm_matching_prompt_generation",
+        "required_wins": {
+            "prefill_tok_s": "ax_strictly_greater",
+            "decode_tok_s": "ax_strictly_greater",
+            "ttft_ms": "ax_strictly_lower",
+        },
+        "row_count": 0,
+        "pair_count": 0,
+        "strict_win_count": 0,
+        "failure_count": 0,
+        "missing_ax_count": 0,
+        "missing_mlx_lm_count": 0,
+        "duplicate_ax_count": 0,
+        "duplicate_mlx_lm_count": 0,
+        "failure_reason_counts": {},
+        "rows": [],
+        "publication_candidate": True,
+    }
+    ax_rows: dict[tuple[int, int], dict[str, Any]] = {}
+    peer_rows: dict[tuple[int, int], dict[str, Any]] = {}
+
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        engine = row.get("engine")
+        if engine not in {AX_ENGINE_DIRECT_KEY, "mlx_lm"}:
+            continue
+        try:
+            key = (int(row["prompt_tokens"]), int(row["generation_tokens"]))
+        except (KeyError, TypeError, ValueError):
+            reason = (
+                "invalid_ax_shape" if engine == AX_ENGINE_DIRECT_KEY else "invalid_mlx_lm_shape"
+            )
+            counts = summary["failure_reason_counts"]
+            counts[reason] = int(counts.get(reason, 0)) + 1
+            summary["failure_count"] += 1
+            summary["publication_candidate"] = False
+            continue
+        target = ax_rows if engine == AX_ENGINE_DIRECT_KEY else peer_rows
+        if key in target:
+            count_key = (
+                "duplicate_ax_count"
+                if engine == AX_ENGINE_DIRECT_KEY
+                else "duplicate_mlx_lm_count"
+            )
+            reason = "duplicate_ax" if engine == AX_ENGINE_DIRECT_KEY else "duplicate_mlx_lm"
+            summary[count_key] += 1
+            counts = summary["failure_reason_counts"]
+            counts[reason] = int(counts.get(reason, 0)) + 1
+            summary["publication_candidate"] = False
+            continue
+        target[key] = row
+
+    keys = sorted(set(ax_rows) | set(peer_rows))
+    summary["row_count"] = len(keys)
+    for prompt_tokens, generation_tokens in keys:
+        key = (prompt_tokens, generation_tokens)
+        ax_row = ax_rows.get(key)
+        peer_row = peer_rows.get(key)
+        failures: list[str] = []
+        row_summary: dict[str, Any] = {
+            "prompt_tokens": prompt_tokens,
+            "generation_tokens": generation_tokens,
+        }
+        if ax_row is None:
+            failures.append("missing_ax")
+            summary["missing_ax_count"] += 1
+        if peer_row is None:
+            failures.append("missing_mlx_lm")
+            summary["missing_mlx_lm_count"] += 1
+
+        if ax_row is not None and peer_row is not None:
+            summary["pair_count"] += 1
+            ax_hash = ax_row.get("prompt_token_ids_sha256")
+            peer_hash = peer_row.get("prompt_token_ids_sha256")
+            row_summary["prompt_token_ids_sha256"] = ax_hash
+            if not isinstance(ax_hash, str) or not ax_hash:
+                failures.append("missing_ax_prompt_hash")
+            if not isinstance(peer_hash, str) or not peer_hash:
+                failures.append("missing_mlx_lm_prompt_hash")
+            if ax_hash and peer_hash and ax_hash != peer_hash:
+                failures.append("prompt_hash_mismatch")
+
+            ax_prefill = metric_value(ax_row, "prefill_tok_s")
+            peer_prefill = metric_value(peer_row, "prefill_tok_s")
+            ax_decode = metric_value(ax_row, "decode_tok_s")
+            peer_decode = metric_value(peer_row, "decode_tok_s")
+            ax_ttft = metric_value(ax_row, "ttft_ms")
+            peer_ttft = metric_value(peer_row, "ttft_ms")
+            row_summary.update(
+                {
+                    "ax_prefill_tok_s": ax_prefill,
+                    "mlx_lm_prefill_tok_s": peer_prefill,
+                    "prefill_ratio_to_mlx_lm": (
+                        ax_prefill / peer_prefill if peer_prefill > 0.0 else None
+                    ),
+                    "ax_decode_tok_s": ax_decode,
+                    "mlx_lm_decode_tok_s": peer_decode,
+                    "decode_ratio_to_mlx_lm": (
+                        ax_decode / peer_decode if peer_decode > 0.0 else None
+                    ),
+                    "ax_ttft_ms": ax_ttft,
+                    "mlx_lm_ttft_ms": peer_ttft,
+                    "ttft_ratio_to_mlx_lm": (
+                        ax_ttft / peer_ttft if peer_ttft > 0.0 else None
+                    ),
+                }
+            )
+            metric_values = {
+                "ax_prefill": ax_prefill,
+                "mlx_lm_prefill": peer_prefill,
+                "ax_decode": ax_decode,
+                "mlx_lm_decode": peer_decode,
+                "ax_ttft": ax_ttft,
+                "mlx_lm_ttft": peer_ttft,
+            }
+            for metric_name, value in metric_values.items():
+                if value <= 0.0:
+                    failures.append(f"missing_{metric_name}_metric")
+            if ax_prefill > 0.0 and peer_prefill > 0.0 and ax_prefill <= peer_prefill:
+                failures.append("prefill_not_faster")
+            if ax_decode > 0.0 and peer_decode > 0.0 and ax_decode <= peer_decode:
+                failures.append("decode_not_faster")
+            if ax_ttft > 0.0 and peer_ttft > 0.0 and ax_ttft >= peer_ttft:
+                failures.append("ttft_not_lower")
+
+        if failures:
+            summary["failure_count"] += 1
+            summary["publication_candidate"] = False
+            for reason in failures:
+                counts = summary["failure_reason_counts"]
+                counts[reason] = int(counts.get(reason, 0)) + 1
+            row_summary["classification"] = "not_strict_win"
+            row_summary["failure_reasons"] = failures
+        else:
+            summary["strict_win_count"] += 1
+            row_summary["classification"] = "strict_win"
+            row_summary["failure_reasons"] = []
+        summary["rows"].append(row_summary)
+
+    if summary["row_count"] == 0:
+        summary["publication_candidate"] = False
+        summary["failure_reason_counts"]["no_comparison_rows"] = 1
+    return summary
+
+
+def ax_mlx_lm_peer_win_failure_reasons(summary: dict[str, Any]) -> list[str]:
+    if summary.get("publication_candidate") is True:
+        return []
+    counts = summary.get("failure_reason_counts", {})
+    if not isinstance(counts, dict):
+        return ["publication_candidate=false"]
+    reasons = [
+        f"{reason}={int(count)}"
+        for reason, count in sorted(counts.items())
+        if int(count) > 0
+    ]
+    return reasons or ["publication_candidate=false"]
+
+
+def fail_if_ax_mlx_lm_peer_wins_not_publication_candidate(
+    summary: dict[str, Any],
+) -> None:
+    reasons = ax_mlx_lm_peer_win_failure_reasons(summary)
+    if not reasons:
+        return
+    print(
+        "ERROR: AX multi-metric peer-win check failed; artifact is not a "
+        f"publication candidate: {', '.join(reasons)}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def load_reused_reference_rows(
     path: Path,
     *,
@@ -5037,6 +5215,50 @@ def load_reused_reference_rows(
             f"{path} is missing mlx_lm reference rows for prompt/generation pairs: {missing}"
         )
     return rows, doc
+
+
+def model_snapshot_identity(model_dir: str | Path) -> tuple[str, ...]:
+    path = Path(model_dir).expanduser()
+    parts = path.parts
+    for index, part in enumerate(parts):
+        if not part.startswith("models--"):
+            continue
+        if index + 2 >= len(parts) or parts[index + 1] != "snapshots":
+            continue
+        revision = parts[index + 2]
+        if revision:
+            return ("huggingface_snapshot", part, revision)
+    return ("path", str(path.resolve(strict=False)))
+
+
+def validate_reused_reference_model_identity(
+    reference_doc: dict[str, Any],
+    *,
+    model_repo_id: str | None,
+    model_dir: Path,
+) -> None:
+    reference_repo_id = reference_doc.get("model_repo_id")
+    if (
+        isinstance(reference_repo_id, str)
+        and reference_repo_id
+        and isinstance(model_repo_id, str)
+        and model_repo_id
+        and reference_repo_id != model_repo_id
+    ):
+        raise RuntimeError(
+            "reused reference model_repo_id mismatch: "
+            f"reference={reference_repo_id} current={model_repo_id}"
+        )
+    reference_model_dir = reference_doc.get("model_dir")
+    if not isinstance(reference_model_dir, str) or not reference_model_dir:
+        raise RuntimeError("reused reference artifact lacks model_dir identity")
+    reference_identity = model_snapshot_identity(reference_model_dir)
+    current_identity = model_snapshot_identity(model_dir)
+    if reference_identity != current_identity:
+        raise RuntimeError(
+            "reused reference model snapshot mismatch: "
+            f"reference={reference_identity} current={current_identity}"
+        )
 
 
 def ax_row_key(cell: dict[str, Any]) -> tuple[str, int, int]:
@@ -5513,6 +5735,15 @@ def main() -> None:
             "published reference rows and prompt contract."
         ),
     )
+    parser.add_argument(
+        "--require-ax-multi-metric-peer-wins",
+        action="store_true",
+        help=(
+            "Fail after writing the artifact unless direct AX strictly beats "
+            "mlx_lm at every matching prompt/generation shape in prefill tok/s, "
+            "decode tok/s, and TTFT. Prompt hashes must also match."
+        ),
+    )
     parser.add_argument("--axengine-port", type=int, default=AXENGINE_PORT)
     parser.add_argument(
         "--ax-direct",
@@ -5920,6 +6151,10 @@ def main() -> None:
         )
     if args.skip_mlx_lm and args.reuse_reference_results_from:
         parser.error("--skip-mlx-lm conflicts with --reuse-reference-results-from")
+    if args.require_ax_multi_metric_peer_wins and args.skip_ax_engine:
+        parser.error("--require-ax-multi-metric-peer-wins requires AX rows")
+    if args.require_ax_multi_metric_peer_wins and args.skip_mlx_lm:
+        parser.error("--require-ax-multi-metric-peer-wins requires mlx_lm rows")
     if args.prompt_source == "real":
         if args.real_prompt_suite is None:
             parser.error("--prompt-source=real requires --real-prompt-suite")
@@ -6111,6 +6346,11 @@ def main() -> None:
             args.reuse_reference_results_from,
             prompt_lengths=prompt_lengths,
             generation_tokens=args.generation_tokens,
+        )
+        validate_reused_reference_model_identity(
+            reused_reference_doc,
+            model_repo_id=args.model_repo_id,
+            model_dir=args.model_dir,
         )
         validate_reused_reference_prompt_hashes(reused_rows, prompts)
         results.extend(reused_rows)
@@ -6587,6 +6827,12 @@ def main() -> None:
         "ax_decode_profile": bool(args.ax_decode_profile),
         "results": results,
     }
+    peer_win_summary = summarize_ax_mlx_lm_peer_wins(results)
+    if peer_win_summary["row_count"] > 0 or args.require_ax_multi_metric_peer_wins:
+        peer_win_summary["required_by_cli"] = bool(
+            args.require_ax_multi_metric_peer_wins
+        )
+        doc["ax_mlx_lm_peer_wins"] = peer_win_summary
     doc["bandwidth_accounting"] = build_bandwidth_accounting(
         args.model_dir,
         results,
@@ -6653,6 +6899,10 @@ def main() -> None:
     if args.reuse_reference_results_from:
         fail_if_ax_only_refresh_not_publication_candidate(
             doc["ax_only_refresh"]["ax_reference_regression_summary"]
+        )
+    if args.require_ax_multi_metric_peer_wins:
+        fail_if_ax_mlx_lm_peer_wins_not_publication_candidate(
+            doc["ax_mlx_lm_peer_wins"]
         )
     if args.prefill_scaling_output:
         from build_mlx_prefill_scaling_artifact import (

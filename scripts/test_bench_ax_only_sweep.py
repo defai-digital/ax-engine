@@ -279,6 +279,40 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertNotIn("--reuse-reference-results-from", cmd)
             self.assertNotIn("--ax-compare-policies", cmd)
 
+    def test_run_row_peer_win_gate_uses_direct_reference_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference"
+            reference.mkdir()
+            (reference / "a.json").write_text("{}\n")
+            output_dir = root / "out"
+            output_dir.mkdir()
+            (output_dir / "a.json").write_text(json.dumps({"ok": True}) + "\n")
+            proc = Mock()
+            proc.wait.return_value = 0
+
+            with patch.object(sweep.subprocess, "Popen", return_value=proc) as popen:
+                result = sweep.run_row(
+                    {"slug": "a"},
+                    output_dir=output_dir,
+                    bench_script=root / "bench.py",
+                    prompt_tokens="128",
+                    generation_tokens=128,
+                    repetitions=5,
+                    warmup_repetitions=2,
+                    cooldown=15.0,
+                    model_args=["--model-dir", str(root / "model")],
+                    reuse_ref_root=reference,
+                    require_ax_multi_metric_peer_wins=True,
+                )
+
+            cmd = popen.call_args.args[0]
+            self.assertEqual(result["status"], "ok")
+            self.assertIn("--ax-direct", cmd)
+            self.assertIn("--reuse-reference-results-from", cmd)
+            self.assertIn("--require-ax-multi-metric-peer-wins", cmd)
+            self.assertNotIn("--ax-compare-policies", cmd)
+
     def test_collect_performance_condition_metadata_parses_pmset(self) -> None:
         def fake_check_output(
             cmd: list[str],
