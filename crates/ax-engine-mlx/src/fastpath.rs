@@ -311,6 +311,20 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_PER_LAYER_INPUT_GATE_COMPILE` — compile the exact
+    /// Gemma4 per-layer-input `gelu_approx(gate) * input` decode activation.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_GEMMA4_PER_LAYER_INPUT_GATE_COMPILE=0`).
+    ///
+    /// Uses a fixed-shape closure because E2B/E4B decode is always
+    /// `[1, 1, D]`; this avoids the shapeless GEGLU stream failure observed on
+    /// older MLX releases while matching mlx-lm's compiled GELU activation.
+    gemma4_per_layer_input_gate_compile_enabled,
+    "AX_MLX_GEMMA4_PER_LAYER_INPUT_GATE_COMPILE"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_ROTATING_SLIDING_DECODE` — use a rotating backing store for
     /// sliding-window KV layers on rollback-free direct greedy decode.
     ///
@@ -1459,16 +1473,16 @@ mod tests {
     }
 
     #[test]
-    fn gemma4_per_layer_gelu_mul_metal_uses_default_on_kill_switch_contract() {
+    fn gemma4_per_layer_input_gate_compile_uses_default_on_kill_switch_contract() {
         assert!(parse_bool_env_default_on(
-            "AX_FASTPATH_TEST_GEMMA4_PER_LAYER_GELU_MUL_METAL_UNSET"
+            "AX_FASTPATH_TEST_GEMMA4_PER_LAYER_INPUT_GATE_COMPILE_UNSET"
         ));
         assert!(!probe_default_on(
-            "AX_FASTPATH_TEST_GEMMA4_PER_LAYER_GELU_MUL_METAL_DISABLED",
+            "AX_FASTPATH_TEST_GEMMA4_PER_LAYER_INPUT_GATE_COMPILE_DISABLED",
             "0"
         ));
         assert!(probe_default_on(
-            "AX_FASTPATH_TEST_GEMMA4_PER_LAYER_GELU_MUL_METAL_ENABLED",
+            "AX_FASTPATH_TEST_GEMMA4_PER_LAYER_INPUT_GATE_COMPILE_ENABLED",
             "1"
         ));
     }

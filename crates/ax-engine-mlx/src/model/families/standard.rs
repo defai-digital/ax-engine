@@ -337,7 +337,12 @@ fn layer_shell_post_attention(
         per_layer_input,
     ) {
         let residual = add(&hidden, &ffn_out, None);
-        let projected = per_layer_input_gate_project(&qw(&residual, gate_w), pli, proj_w);
+        let projected = per_layer_input_gate_project(
+            cfg.compile_cache_identity,
+            &qw(&residual, gate_w),
+            pli,
+            proj_w,
+        );
         let normed = rms_norm(&projected, Some(post_norm), cfg.rms_norm_eps, None);
         if let Some(scalar) = &w.layer_scalar {
             add_then_multiply_scalar(&residual, &normed, scalar)

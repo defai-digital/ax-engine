@@ -315,10 +315,21 @@ fn gelu_approx_mul_metal(gate: &MlxArray, x: &MlxArray, enabled: bool) -> Option
 }
 
 pub(crate) fn per_layer_input_gate_project(
+    model_identity: u64,
     gate: &MlxArray,
     per_layer_input: &MlxArray,
     proj_w: &QuantizedWeight,
 ) -> MlxArray {
+    if fastpath::gemma4_per_layer_input_gate_compile_enabled()
+        && gate.shape().get(1).copied() == Some(1)
+        && let Some(hidden) = crate::per_layer_compile::apply_per_layer_input_gate_decode(
+            model_identity,
+            gate,
+            per_layer_input,
+        )
+    {
+        return qw(&hidden, proj_w);
+    }
     if let Some(scales) = proj_w.scales.as_ref() {
         return gelu_approx_mul_quantized_matmul(
             gate,

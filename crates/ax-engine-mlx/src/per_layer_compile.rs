@@ -101,6 +101,12 @@ static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<DenseFfnCache> = OnceLock::new();
 type DenseFfnPrefillCache = Mutex<HashMap<(u64, usize, ThreadId, i64), (Option<MlxClosure>, u64)>>;
 static LAYER_DENSE_FFN_PREFILL_CACHE: OnceLock<DenseFfnPrefillCache> = OnceLock::new();
 
+/// Fixed-shape Gemma4 per-layer-input gate cache keyed by `(model, thread)`.
+/// The gate activation has no layer-specific weights, so all layers in one
+/// model can share the same exact `[1, 1, D]` decode closure.
+type PerLayerInputGateCache = Mutex<HashMap<(u64, ThreadId), Option<MlxClosure>>>;
+static PER_LAYER_INPUT_GATE_DECODE_CACHE: OnceLock<PerLayerInputGateCache> = OnceLock::new();
+
 /// Number of successful compilations before the cache entry is evicted and
 /// recompiled. Prevents stale MLX stream-registry references from
 /// accumulating in long-running processes.
@@ -355,6 +361,74 @@ pub fn clear_layer_dense_ffn_decode_cache() {
     }
 }
 
+/// Clear the fixed-shape Gemma4 per-layer-input gate closure cache.
+pub fn clear_per_layer_input_gate_decode_cache() {
+    if let Some(cache) = PER_LAYER_INPUT_GATE_DECODE_CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+}
+
+/// Apply an exact fixed-shape Gemma4 per-layer-input gate closure.
+///
+/// The closure compiles `gelu_approx(gate) * per_layer_input` with
+/// `shapeless=false`. Gemma4 decode always uses `[1, 1, D]`, avoiding the
+/// shapeless GEGLU stream failure observed on older MLX releases. Returns
+/// `None` when compile or apply fails so the caller retains the direct shim.
+pub fn apply_per_layer_input_gate_decode(
+    model_identity: u64,
+    gate: &MlxArray,
+    per_layer_input: &MlxArray,
+) -> Option<MlxArray> {
+    let cache = PER_LAYER_INPUT_GATE_DECODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (model_identity, std::thread::current().id());
+    let mut guard = cache.lock().ok()?;
+    if let Some(entry) = guard.get(&key) {
+        let closure = entry.as_ref()?;
+        let result = try_apply_with_abort_safety(closure, &[gate, per_layer_input])
+            .and_then(|outputs| outputs.into_iter().next());
+        if result.is_none() {
+            tracing::warn!(
+                target = "ax_engine_mlx",
+                path = "gemma4_per_layer_input_gate_decode",
+                "compiled_closure_apply_failed; removing entry for recompilation"
+            );
+            guard.remove(&key);
+        }
+        return result;
+    }
+
+    let closure = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
+        let gate = inputs.get(0);
+        let per_layer_input = inputs.get(1);
+        vec![mlx_sys::gelu_approx_mul(&gate, &per_layer_input, None)]
+    });
+    let compiled = match closure.compile(false) {
+        Ok(compiled) => compiled,
+        Err(_) => {
+            tracing::warn!(
+                target = "ax_engine_mlx",
+                path = "gemma4_per_layer_input_gate_decode",
+                "compiled_closure_fallback"
+            );
+            guard.insert(key, None);
+            return None;
+        }
+    };
+    let result = try_apply_with_abort_safety(&compiled, &[gate, per_layer_input])
+        .and_then(|outputs| outputs.into_iter().next());
+    if result.is_none() {
+        tracing::warn!(
+            target = "ax_engine_mlx",
+            path = "gemma4_per_layer_input_gate_decode",
+            "compiled_closure_fallback"
+        );
+    }
+    guard.insert(key, result.is_some().then_some(compiled));
+    result
+}
+
 /// Apply a compiled dense FFN prefill closure for a fixed prompt geometry.
 ///
 /// Unlike decode, prefill uses `shapeless=false` and keys the cache by
@@ -559,6 +633,7 @@ pub fn clear_layer_gemma4_dual_path_cache() {
 pub fn clear_all_layer_decode_caches() {
     clear_layer_moe_decode_cache();
     clear_layer_dense_ffn_decode_cache();
+    clear_per_layer_input_gate_decode_cache();
     clear_layer_gemma4_dual_path_cache();
 }
 
@@ -577,6 +652,11 @@ mod tests {
     }
 
     #[test]
+    fn test_clear_per_layer_input_gate_cache_does_not_panic() {
+        clear_per_layer_input_gate_decode_cache();
+    }
+
+    #[test]
     fn test_clear_gemma4_dual_path_cache_does_not_panic() {
         clear_layer_gemma4_dual_path_cache();
     }
@@ -584,6 +664,38 @@ mod tests {
     #[test]
     fn test_clear_all_layer_decode_caches_does_not_panic() {
         clear_all_layer_decode_caches();
+    }
+
+    #[test]
+    fn fixed_per_layer_input_gate_matches_direct_activation() {
+        use mlx_sys::{MlxDtype, eval};
+
+        const MODEL: u64 = 700_004;
+        let gate_data: [f32; 4] = [-1.5, -0.25, 0.5, 2.0];
+        let input_data: [f32; 4] = [0.25, 2.0, -1.0, 0.5];
+        let gate = MlxArray::from_raw_data(
+            gate_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&gate_data),
+            &[1, 1, 4],
+            MlxDtype::Float32,
+        );
+        let input = MlxArray::from_raw_data(
+            input_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&input_data),
+            &[1, 1, 4],
+            MlxDtype::Float32,
+        );
+        let expected = mlx_sys::gelu_approx_mul(&gate, &input, None);
+        let actual = apply_per_layer_input_gate_decode(MODEL, &gate, &input)
+            .expect("fixed-shape gate compile should succeed");
+        eval(&[&expected, &actual]);
+        for (expected, actual) in expected.data_f32().iter().zip(actual.data_f32()) {
+            assert!((expected - actual).abs() <= 1e-6);
+        }
+        let cached = apply_per_layer_input_gate_decode(MODEL, &gate, &input)
+            .expect("cached fixed-shape gate apply should succeed");
+        eval(&[&cached]);
+        assert_eq!(actual.data_f32(), cached.data_f32());
     }
 
     #[test]
