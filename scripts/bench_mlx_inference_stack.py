@@ -2414,6 +2414,53 @@ def parse_mlx_lm_benchmark_output(output: str) -> dict[str, Any]:
     return parsed
 
 
+def select_mlx_lm_measurement_trials(
+    cell: dict[str, Any],
+    *,
+    repetitions: int,
+    warmup_repetitions: int,
+) -> None:
+    upstream_builtin_warmups = 1
+    discarded_trial_count = max(warmup_repetitions - upstream_builtin_warmups, 0)
+    trials = cell.get("trials")
+    expected_trial_count = repetitions + discarded_trial_count
+    if not isinstance(trials, list) or len(trials) != expected_trial_count:
+        actual_trial_count = len(trials) if isinstance(trials, list) else 0
+        raise RuntimeError(
+            "mlx_lm.benchmark returned an unexpected trial count: "
+            f"expected {expected_trial_count}, got {actual_trial_count}"
+        )
+    discarded_trials = trials[:discarded_trial_count]
+    measurement_trials = trials[discarded_trial_count:]
+    if len(measurement_trials) != repetitions:
+        raise RuntimeError("mlx_lm.benchmark measurement trial selection failed")
+
+    reported_averages = cell.pop("reported_averages", None)
+    if reported_averages is not None:
+        cell["upstream_reported_averages_all_trials"] = reported_averages
+    cell["trials"] = measurement_trials
+    cell["discarded_warmup_trials"] = discarded_trials
+    cell["warmup_repetitions_requested"] = warmup_repetitions
+    cell["warmup_repetitions_upstream_builtin"] = upstream_builtin_warmups
+    cell["warmup_repetitions_discarded_trials"] = discarded_trial_count
+    cell["warmup_repetitions_effective"] = (
+        upstream_builtin_warmups + discarded_trial_count
+    )
+    for output_key, trial_key in (
+        ("prefill_tok_s", "prefill_tok_s"),
+        ("decode_tok_s", "decode_tok_s"),
+        ("peak_memory_gb", "peak_memory_gb"),
+        ("total_time_s", "total_time_s"),
+    ):
+        values = [float(trial[trial_key]) for trial in measurement_trials]
+        cell[output_key] = summarize_values(values)
+    cell["reported_averages"] = {
+        "prefill_tok_s": cell["prefill_tok_s"]["mean"],
+        "decode_tok_s": cell["decode_tok_s"]["mean"],
+        "peak_memory_gb": cell["peak_memory_gb"]["mean"],
+    }
+
+
 def run_mlx_lm_benchmark(
     model: str,
     prompt_tokens: int,
@@ -2422,6 +2469,7 @@ def run_mlx_lm_benchmark(
     cooldown: float,
     prefill_step_size: int,
     prompt_doc: dict[str, Any],
+    warmup_repetitions: int = 2,
 ) -> dict[str, Any]:
     validate_prompt_doc(
         prompt_doc,
@@ -2441,7 +2489,7 @@ def run_mlx_lm_benchmark(
         "--generation-tokens",
         str(generation_tokens),
         "--num-trials",
-        str(repetitions),
+        str(repetitions + max(warmup_repetitions - 1, 0)),
         "--delay",
         str(int(cooldown)),
         "--prefill-step-size",
@@ -2455,6 +2503,11 @@ def run_mlx_lm_benchmark(
             f"mlx_lm.benchmark failed with exit={result.returncode}:\n{combined}"
         )
     cell = parse_mlx_lm_benchmark_output(combined)
+    select_mlx_lm_measurement_trials(
+        cell,
+        repetitions=repetitions,
+        warmup_repetitions=warmup_repetitions,
+    )
     cell.update(
         {
             "engine": "mlx_lm",
@@ -5185,6 +5238,41 @@ def reused_reference_publication_metadata(
     }
 
 
+def validate_reused_reference_publication_shape(
+    reference_doc: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> None:
+    def number(value: Any) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        return float(value)
+
+    failures: list[str] = []
+    build = reference_doc.get("build")
+    if not isinstance(build, dict) or build.get("git_tracked_dirty") is not False:
+        failures.append("reference build is not tracked-clean")
+    if number(reference_doc.get("repetitions")) < PUBLICATION_MIN_MEASUREMENT_REPETITIONS:
+        failures.append("reference repetitions are below publication minimum")
+    if number(reference_doc.get("warmup_repetitions")) < PUBLICATION_MIN_WARMUP_REPETITIONS:
+        failures.append("reference warmups are below publication minimum")
+    if number(reference_doc.get("cooldown")) < DEFAULT_COOLDOWN:
+        failures.append("reference cooldown is below publication minimum")
+    for row in rows:
+        prompt_tokens = row.get("prompt_tokens")
+        trials = row.get("trials")
+        if not isinstance(trials, list) or len(trials) < PUBLICATION_MIN_MEASUREMENT_REPETITIONS:
+            failures.append(f"prompt={prompt_tokens} has insufficient trials")
+        if number(row.get("warmup_repetitions_effective")) < (
+            PUBLICATION_MIN_WARMUP_REPETITIONS
+        ):
+            failures.append(f"prompt={prompt_tokens} has insufficient effective warmups")
+    if failures:
+        raise RuntimeError(
+            "reused reference artifact is not publication-ready: "
+            + "; ".join(failures)
+        )
+
+
 def load_reused_reference_rows(
     path: Path,
     *,
@@ -6265,7 +6353,7 @@ def main() -> None:
     print(f"  prompt_tokens: {prompt_lengths}", file=sys.stderr)
     print(f"  generation_tokens: {args.generation_tokens}", file=sys.stderr)
     print(
-        f"  repetitions: {args.repetitions} + {args.warmup_repetitions} warmup for AX",
+        f"  repetitions: {args.repetitions} + {args.warmup_repetitions} warmup",
         file=sys.stderr,
     )
     print(
@@ -6360,6 +6448,11 @@ def main() -> None:
             prompt_lengths=prompt_lengths,
             generation_tokens=args.generation_tokens,
         )
+        if args.require_ax_multi_metric_peer_wins:
+            validate_reused_reference_publication_shape(
+                reused_reference_doc,
+                reused_rows,
+            )
         validate_reused_reference_model_identity(
             reused_reference_doc,
             model_repo_id=args.model_repo_id,
@@ -6387,6 +6480,7 @@ def main() -> None:
                         args.cooldown,
                         args.prefill_step_size,
                         prompt_doc,
+                        warmup_repetitions=args.warmup_repetitions,
                     )
                 )
 
@@ -6752,6 +6846,15 @@ def main() -> None:
         "reference_contract": {
             "primary_reference": "mlx_lm.benchmark",
             "primary_reference_required": True,
+            "mlx_lm_warmup_contract": {
+                "requested_warmup_repetitions": args.warmup_repetitions,
+                "upstream_builtin_warmup_repetitions": 1,
+                "additional_discarded_trial_count": max(
+                    args.warmup_repetitions - 1,
+                    0,
+                ),
+                "measurement_repetitions": args.repetitions,
+            },
             "external_gguf_reference": "llama.cpp Metal llama-bench",
             "external_gguf_reference_present": llama_cpp_metal_present,
             "external_gguf_reference_required": False,

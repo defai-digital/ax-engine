@@ -71,7 +71,16 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                 "engine": engine,
                 "prompt_tokens": prompt_length,
                 "generation_tokens": generation_tokens,
+                "prompt_token_ids_sha256": f"{prompt_length:064x}",
+                "prefill_tok_s": {"median": 100.0},
+                "decode_tok_s": {"median": 20.0},
+                "ttft_ms": {"median": 50.0},
                 "trials": [{} for _ in range(5)],
+                **(
+                    {"warmup_repetitions_effective": 2}
+                    if engine == "mlx_lm"
+                    else {}
+                ),
             }
             for engine in ("mlx_lm", "ax_engine_mlx")
             for prompt_length in prompt_tokens
@@ -92,6 +101,13 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                 "rows": peer_win_rows,
             }
         }
+
+    def reference_result_doc(self) -> dict[str, object]:
+        doc = self.peer_win_result_doc()
+        doc["results"] = [
+            row for row in doc["results"] if row["engine"] == "mlx_lm"
+        ]
+        return doc
 
     def test_filter_manifest_rows_returns_all_rows_without_filter(self) -> None:
         rows = [{"slug": "a"}, {"slug": "b"}]
@@ -156,11 +172,19 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             None,
             require_ax_multi_metric_peer_wins=True,
         )
+        reference_selected, reference_scope = sweep.select_sweep_rows(
+            rows,
+            None,
+            require_ax_multi_metric_peer_wins=False,
+            mlx_lm_reference_only=True,
+        )
 
         self.assertEqual([row["slug"] for row in selected], ["readme", "unsupported"])
         self.assertEqual(scope, "readme_direct_table")
         self.assertEqual([row["slug"] for row in peer_selected], ["readme"])
         self.assertEqual(peer_scope, "readme_mlx_lm_comparable")
+        self.assertEqual([row["slug"] for row in reference_selected], ["readme"])
+        self.assertEqual(reference_scope, "readme_mlx_lm_reference")
 
     def test_select_sweep_rows_explicit_filter_can_include_inventory_row(self) -> None:
         rows = [
@@ -414,6 +438,71 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             1,
         )
 
+    def test_reference_matrix_requires_every_model_and_cell(self) -> None:
+        rows = [
+            {
+                "slug": slug,
+                "status": "ok",
+                "output_path": f"/tmp/{slug}.json",
+                "result_doc": self.reference_result_doc(),
+            }
+            for slug in ("a", "b")
+        ]
+
+        summary = sweep.summarize_reference_matrix(
+            rows,
+            expected_slugs=["a", "b"],
+            prompt_tokens=[128, 512, 2048],
+            generation_tokens=128,
+        )
+
+        self.assertEqual(
+            summary["schema_version"], sweep.REFERENCE_MATRIX_SCHEMA_VERSION
+        )
+        self.assertEqual(summary["publication_model_count"], 2)
+        self.assertEqual(summary["publication_cell_count"], 6)
+        self.assertTrue(summary["publication_candidate"])
+
+    def test_reference_matrix_rejects_ax_rows_and_dirty_build(self) -> None:
+        result_doc = json.loads(json.dumps(self.peer_win_result_doc()))
+        result_doc["build"]["git_tracked_dirty"] = True
+        for row in result_doc["results"]:
+            if row["engine"] == "mlx_lm":
+                del row["warmup_repetitions_effective"]
+
+        summary = sweep.summarize_reference_matrix(
+            [{"slug": "a", "status": "ok", "result_doc": result_doc}],
+            expected_slugs=["a"],
+            prompt_tokens=[128, 512, 2048],
+            generation_tokens=128,
+        )
+
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(summary["failure_reason_counts"]["dirty_tracked_build"], 1)
+        self.assertEqual(summary["failure_reason_counts"]["unexpected_ax_engine_rows"], 1)
+        self.assertEqual(
+            summary["failure_reason_counts"][
+                "mlx_lm_insufficient_effective_warmups"
+            ],
+            1,
+        )
+
+    def test_reference_matrix_failure_exits_nonzero(self) -> None:
+        stderr = io.StringIO()
+        summary = {
+            "publication_candidate": False,
+            "failure_reason_counts": {"missing_sweep_row": 1},
+        }
+
+        with (
+            patch.object(sys, "stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            sweep.fail_if_reference_matrix_not_publication_candidate(summary)
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("mlx_lm reference matrix", stderr.getvalue())
+
     def test_peer_win_matrix_failure_exits_nonzero(self) -> None:
         stderr = io.StringIO()
         summary = {
@@ -565,6 +654,39 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertIn("--ax-direct", cmd)
             self.assertNotIn("--reuse-reference-results-from", cmd)
             self.assertNotIn("--ax-compare-policies", cmd)
+
+    def test_run_row_mlx_lm_reference_only_skips_ax_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            (output_dir / "a.json").write_text(
+                json.dumps(self.reference_result_doc()) + "\n"
+            )
+            proc = Mock()
+            proc.wait.return_value = 0
+
+            with patch.object(sweep.subprocess, "Popen", return_value=proc) as popen:
+                result = sweep.run_row(
+                    {"slug": "a"},
+                    output_dir=output_dir,
+                    bench_script=root / "bench.py",
+                    prompt_tokens="128",
+                    generation_tokens=128,
+                    repetitions=5,
+                    warmup_repetitions=2,
+                    cooldown=15.0,
+                    model_args=["--model-dir", str(root / "model")],
+                    reuse_ref_root=None,
+                    mlx_lm_reference_only=True,
+                )
+
+            cmd = popen.call_args.args[0]
+            self.assertEqual(result["status"], "ok")
+            self.assertIn("--skip-ax-engine", cmd)
+            self.assertNotIn("--skip-mlx-lm", cmd)
+            self.assertNotIn("--reuse-reference-results-from", cmd)
+            self.assertNotIn("--ax-direct", cmd)
 
     def test_run_row_peer_win_gate_uses_direct_reference_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -974,6 +1096,72 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertTrue(sweep_results["readme_peer_win_publication_candidate"])
             self.assertTrue(
                 sweep_results["peer_win_matrix"]["publication_candidate"]
+            )
+
+    def test_main_writes_complete_readme_reference_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "slug": "a",
+                                "readme_model": "Gemma",
+                                "readme_quant": "4-bit",
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            out_dir = root / "out"
+            argv = [
+                "bench_ax_only_sweep.py",
+                "--manifest",
+                str(manifest),
+                "--output-root",
+                str(out_dir),
+                "--mlx-lm-reference-only",
+            ]
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    sweep,
+                    "resolve_model_args",
+                    return_value=(["--model-dir", str(root / "model")], None),
+                ),
+                patch.object(
+                    sweep,
+                    "run_row",
+                    return_value={
+                        "status": "ok",
+                        "output_path": str(out_dir / "a.json"),
+                        "result_doc": self.reference_result_doc(),
+                    },
+                ) as run_row,
+                patch.object(
+                    sweep,
+                    "collect_performance_condition_metadata",
+                    return_value={"load_average": {"one_minute": 1.0}},
+                ),
+            ):
+                sweep.main()
+
+            self.assertTrue(
+                run_row.call_args.kwargs["mlx_lm_reference_only"]
+            )
+            sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
+            self.assertEqual(sweep_results["scope"], "readme_mlx_lm_reference")
+            self.assertTrue(sweep_results["mlx_lm_reference_only"])
+            self.assertTrue(sweep_results["publication_candidate"])
+            self.assertTrue(
+                sweep_results["readme_reference_publication_candidate"]
+            )
+            self.assertTrue(
+                sweep_results["reference_matrix"]["publication_candidate"]
             )
 
     def test_main_writes_summary_then_fails_on_failed_row(self) -> None:

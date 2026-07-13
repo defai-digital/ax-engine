@@ -571,6 +571,25 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(parsed["peak_memory_gb"]["max"], 5.0)
         self.assertEqual(parsed["reported_averages"]["decode_tok_s"], 25.0)
 
+    def test_mlx_lm_trial_selection_rejects_missing_warmup_trial(self) -> None:
+        cell = {
+            "trials": [
+                {
+                    "prefill_tok_s": 10.0,
+                    "decode_tok_s": 20.0,
+                    "peak_memory_gb": 3.0,
+                    "total_time_s": 4.0,
+                }
+            ]
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected trial count"):
+            bench.select_mlx_lm_measurement_trials(
+                cell,
+                repetitions=1,
+                warmup_repetitions=2,
+            )
+
     def test_mlx_lm_row_attaches_derived_ttft(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prompt = bench.write_prompt_tokens(
@@ -590,13 +609,17 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "peak_memory=3.000, total_time=4.000",
                         "Trial 2:  prompt_tps=20.000, generation_tps=30.000, "
                         "peak_memory=5.000, total_time=6.000",
-                        "Averages: prompt_tps=15.000, generation_tps=25.000, "
-                        "peak_memory=4.000",
+                        "Trial 3:  prompt_tps=40.000, generation_tps=50.000, "
+                        "peak_memory=7.000, total_time=8.000",
+                        "Averages: prompt_tps=23.333, generation_tps=33.333, "
+                        "peak_memory=5.000",
                     ]
                 ),
                 stderr="",
             )
-            with patch.object(bench.subprocess, "run", return_value=completed):
+            with patch.object(
+                bench.subprocess, "run", return_value=completed
+            ) as run:
                 row = bench.run_mlx_lm_benchmark(
                     "model",
                     4,
@@ -608,7 +631,13 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 )
 
         self.assertEqual(row["ttft_source"], "derived_from_mlx_lm_prefill_tok_s")
-        self.assertEqual(row["ttft_ms"]["median"], 300.0)
+        self.assertEqual(row["ttft_ms"]["median"], 150.0)
+        self.assertEqual(row["warmup_repetitions_effective"], 2)
+        self.assertEqual(row["warmup_repetitions_discarded_trials"], 1)
+        self.assertEqual(len(row["discarded_warmup_trials"]), 1)
+        self.assertEqual(len(row["trials"]), 2)
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--num-trials") + 1], "3")
 
     def test_wait_for_server_returns_when_process_exits(self) -> None:
         class ExitedProcess:
@@ -3982,6 +4011,25 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             },
         )
         self.assertNotIn("results", metadata)
+
+    def test_reused_reference_publication_shape_requires_effective_warmups(self) -> None:
+        reference_doc = {
+            "build": {"git_tracked_dirty": False},
+            "repetitions": 5,
+            "warmup_repetitions": 2,
+            "cooldown": 15.0,
+        }
+        row = {
+            "prompt_tokens": 128,
+            "trials": [{} for _ in range(5)],
+            "warmup_repetitions_effective": 2,
+        }
+
+        bench.validate_reused_reference_publication_shape(reference_doc, [row])
+
+        del row["warmup_repetitions_effective"]
+        with self.assertRaisesRegex(RuntimeError, "insufficient effective warmups"):
+            bench.validate_reused_reference_publication_shape(reference_doc, [row])
 
     def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:
         self.assertEqual(
