@@ -128,10 +128,16 @@ fn add_then_multiply_scalar_metal(
     b: &MlxArray,
     scalar: &MlxArray,
 ) -> Option<MlxArray> {
-    if !fastpath::layer_scalar_fused_add_enabled() {
+    if !fastpath::layer_scalar_fused_add_enabled()
+        || !layer_scalar_fused_add_shape_supported(&a.shape())
+    {
         return None;
     }
     add_then_multiply_scalar_metal_impl(a, b, scalar)
+}
+
+fn layer_scalar_fused_add_shape_supported(shape: &[i32]) -> bool {
+    shape.get(1).copied().unwrap_or(1) == 1
 }
 
 fn add_then_multiply_scalar_metal_impl(
@@ -282,6 +288,14 @@ mod tests {
             shape,
             MlxDtype::Float32,
         )
+    }
+
+    #[test]
+    fn layer_scalar_fused_add_is_decode_only() {
+        assert!(layer_scalar_fused_add_shape_supported(&[1, 1, 4]));
+        assert!(layer_scalar_fused_add_shape_supported(&[1, 1, 35, 4]));
+        assert!(!layer_scalar_fused_add_shape_supported(&[1, 2, 4]));
+        assert!(!layer_scalar_fused_add_shape_supported(&[1, 2048, 4]));
     }
 
     #[test]
