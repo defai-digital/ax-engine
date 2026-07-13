@@ -2896,12 +2896,14 @@ fn dense_ffn_gate_up_packing_supported(
     gate: &QuantizedWeight,
     up: &QuantizedWeight,
 ) -> bool {
-    // Qwen dense FFNs stay on the split runtime (owns the decode matvec
-    // fast path). Prefill packing was re-measured on Qwen 3.6 27B 4-bit
-    // (2w/5m, same host): p=128 prefill regressed ~3.8% vs README high-water
-    // and ~3% vs the split path, so keep load-time packing off. GLM MLA MoE
-    // lite also keeps split exclusively.
-    if model_family.starts_with("qwen") || model_family == "glm4_moe_lite" {
+    // Qwen dense FFNs keep 4/5-bit projections split: the split runtime owns
+    // the decode matvec fast path, and 4-bit prefill packing regressed in a
+    // paired 2w/5m check. Six-bit Qwen keeps both layouts so multi-token
+    // prefill can use one packed gate/up projection while decode stays split.
+    // GLM MLA MoE lite keeps split projections exclusively.
+    if model_family == "glm4_moe_lite"
+        || (model_family.starts_with("qwen") && (gate.bits != 6 || up.bits != 6))
+    {
         return false;
     }
     gate.bits != 5 && up.bits != 5
@@ -4305,7 +4307,7 @@ mod tests {
     }
 
     #[test]
-    fn dense_ffn_gate_up_packing_support_keeps_split_runtime_families_unpacked() {
+    fn dense_ffn_gate_up_packing_support_is_family_and_bit_specific() {
         let q4_gate = glm_quantized_weight(64, 4, true);
         let q4_up = glm_quantized_weight(64, 4, true);
         let q5_gate = glm_quantized_weight(64, 5, true);
@@ -4321,6 +4323,16 @@ mod tests {
             "qwen3_next",
             &q4_gate,
             &q4_up,
+        ));
+        let q6_gate = glm_quantized_weight(64, 6, true);
+        let q6_up = glm_quantized_weight(64, 6, true);
+        assert!(dense_ffn_gate_up_packing_supported(
+            "qwen3_next",
+            &q6_gate,
+            &q6_up,
+        ));
+        assert!(dense_ffn_gate_up_packing_supported(
+            "qwen3_5", &q6_gate, &q6_up,
         ));
         assert!(!dense_ffn_gate_up_packing_supported(
             "glm4_moe_lite",

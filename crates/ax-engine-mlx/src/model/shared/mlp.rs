@@ -1492,6 +1492,7 @@ fn ffn_swiglu_with_policy(
             apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
         } else if seq > 1
             && leading_elements >= fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
+            && dense_ffn_prefill_compile_supported(&cfg.model_family)
             && fastpath::dense_ffn_compile_prefill_enabled()
         {
             apply_layer_dense_ffn_prefill(
@@ -1847,6 +1848,10 @@ fn ffn_swiglu_with_policy(
         &[&out],
     );
     out
+}
+
+fn dense_ffn_prefill_compile_supported(model_family: &str) -> bool {
+    !model_family.starts_with("qwen")
 }
 
 pub(crate) fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
@@ -3723,6 +3728,13 @@ mod tests {
     use mlx_sys::{
         MlxQuantizationMode, concatenate, eval, quantize, quantized_matmul, slice_last_dim,
     };
+
+    #[test]
+    fn dense_ffn_prefill_compile_keeps_qwen_imperative() {
+        assert!(!dense_ffn_prefill_compile_supported("qwen3_5"));
+        assert!(!dense_ffn_prefill_compile_supported("qwen3_next"));
+        assert!(dense_ffn_prefill_compile_supported("gemma4"));
+    }
 
     fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
         MlxArray::from_raw_data(

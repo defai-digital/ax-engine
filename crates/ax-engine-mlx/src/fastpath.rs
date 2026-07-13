@@ -691,8 +691,9 @@ env_flag_default_on!(
     /// Short prompts skip compile when `leading_elements` is below
     /// [`DENSE_FFN_PREFILL_COMPILE_MIN_LEADING`] so compile cost is not paid
     /// on 128-token microbenches (2026-07-12 short-prompt regression under
-    /// unconditional default-on). Long prompts (512+) amortize compile and
-    /// are the Gemma/Qwen prefill gap vs mlx_lm.
+    /// unconditional default-on). Long Gemma prompts (512+) amortize compile.
+    /// Qwen packed prefill stays imperative because a paired 2w/5m check found
+    /// the fixed-shape compile slower at the 512-token boundary.
     dense_ffn_compile_prefill_enabled,
     "AX_MLX_DENSE_FFN_COMPILE_PREFILL"
 );
