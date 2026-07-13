@@ -716,7 +716,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertEqual(
             row["prefill_work_contract"],
-            "historical_full_logits_prefill_or_sampler_required",
+            "mlx_lm_style_cache_only_prefix_plus_final_prompt_token",
         )
         self.assertEqual(row["runtime_identity"]["selected_backend"], "mlx")
         self.assertEqual(row["runtime_identity"]["route_identity"], "repo_owned_mlx")
@@ -3626,6 +3626,38 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertTrue(summary["publication_candidate"])
         self.assertEqual(bench.ax_only_refresh_failure_reasons(summary), [])
+
+    def test_ax_only_refresh_accepts_peer_only_reference_without_ax_regression(self) -> None:
+        summary = bench.summarize_ax_only_refresh_regression(
+            results=[
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "decode_tok_s": {"median": 20.0},
+                }
+            ],
+            reference_doc={
+                "results": [
+                    {
+                        "engine": "mlx_lm",
+                        "prompt_tokens": 128,
+                        "generation_tokens": 128,
+                        "decode_tok_s": {"median": 19.0},
+                    }
+                ]
+            },
+        )
+
+        self.assertTrue(summary["publication_candidate"])
+        self.assertFalse(summary["comparison_applicable"])
+        self.assertEqual(summary["reference_ax_row_count"], 0)
+        self.assertEqual(summary["reference_mlx_lm_row_count"], 1)
+        self.assertEqual(summary["missing_reference_count"], 0)
+        self.assertEqual(
+            summary["classification_counts"],
+            {"not_applicable_peer_only_reference": 1},
+        )
 
     def test_ax_only_refresh_non_publication_candidate_exits_nonzero(self) -> None:
         summary = {

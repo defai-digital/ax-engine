@@ -5038,6 +5038,9 @@ def summarize_ax_only_refresh_regression(
         "scope": "matching_ax_rows_from_reused_reference_artifact",
         "metric": "decode_tok_s",
         "decode_min_ratio_to_reference": AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE,
+        "comparison_applicable": True,
+        "reference_ax_row_count": 0,
+        "reference_mlx_lm_row_count": 0,
         "row_count": 0,
         "matched_count": 0,
         "missing_reference_count": 0,
@@ -5055,6 +5058,9 @@ def summarize_ax_only_refresh_regression(
     if isinstance(reference_doc, dict):
         for row in reference_doc.get("results", []):
             if not isinstance(row, dict):
+                continue
+            if row.get("engine") == "mlx_lm":
+                summary["reference_mlx_lm_row_count"] += 1
                 continue
             if not str(row.get("engine", "")).startswith("ax_engine"):
                 continue
@@ -5076,6 +5082,14 @@ def summarize_ax_only_refresh_regression(
                 summary["publication_candidate"] = False
                 continue
             reference_rows[key] = row
+    summary["reference_ax_row_count"] = len(reference_rows)
+    peer_only_reference = (
+        summary["reference_mlx_lm_row_count"] > 0
+        and summary["reference_ax_row_count"] == 0
+        and summary["duplicate_reference_count"] == 0
+    )
+    if peer_only_reference:
+        summary["comparison_applicable"] = False
 
     current_rows: set[tuple[str, int, int]] = set()
     for row in results:
@@ -5098,6 +5112,19 @@ def summarize_ax_only_refresh_regression(
             summary["publication_candidate"] = False
             continue
         current_rows.add(key)
+        if peer_only_reference:
+            classification = "not_applicable_peer_only_reference"
+            counts = summary["classification_counts"]
+            counts[classification] = int(counts.get(classification, 0)) + 1
+            summary["rows"].append(
+                {
+                    "engine": key[0],
+                    "prompt_tokens": key[1],
+                    "generation_tokens": key[2],
+                    "classification": classification,
+                }
+            )
+            continue
         reference_row = reference_rows.get(key)
         if reference_row is None:
             summary["missing_reference_count"] += 1
