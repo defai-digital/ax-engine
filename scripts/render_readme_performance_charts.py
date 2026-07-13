@@ -242,6 +242,25 @@ MTP_6BIT_APPROXIMATE_CHART_OUTPUT = "perf-mtp-6bit-ax-approximate-diagnostic.svg
 MTP_6BIT_EXACT_CHART_OUTPUT = "perf-mtp-6bit-ax-acceleration.svg"
 MTP_6BIT_APPROXIMATE_SCHEMA = "ax.mtp_6bit_approximate_diagnostic_summary.v2"
 MTP_6BIT_EXACT_SCHEMA = "ax.mtp_6bit_ax_acceleration_summary.v3"
+MTP_6BIT_EXACT_TARGET_IDS = (
+    "qwen3.6-27b-6bit",
+    "qwen3.6-35b-a3b",
+    "gemma-4-12b",
+    "gemma-4-26b",
+    "gemma-4-31b",
+)
+MTP_6BIT_EXACT_SUITES = ("flappy", "long_code", "python_modules_long")
+MTP_6BIT_NGRAM_ZERO_KEYS = (
+    "ax_ngram_accepted_tokens",
+    "ax_ngram_draft_tokens",
+    "ax_ngram_rejected_tokens",
+    "ax_mtp_ngram_accepted_tokens",
+    "ax_mtp_ngram_proposed_tokens",
+    "ax_mtp_ngram_submitted_tokens",
+    "ax_mtp_ngram_submitted_accepted_tokens",
+    "ax_mtp_ngram_hit_steps",
+    "ax_mtp_ngram_attempt_steps",
+)
 MTP_PEER_CHART_OUTPUTS = {
     "decode": "perf-mtp-peer-comparison-apples-to-apples.svg",
     "prefill": "perf-mtp-peer-comparison-prefill-apples-to-apples.svg",
@@ -1234,6 +1253,7 @@ def load_mtp_6bit_summary(summary_path: Path) -> dict[str, Any]:
     rows = summary.get("rows")
     if not isinstance(rows, list) or not rows:
         raise ChartError(f"MTP 6-bit summary has no rows: {summary_path}")
+    exact_row_keys: set[tuple[str, str]] = set()
     for row in rows:
         if not isinstance(row, dict):
             raise ChartError(f"MTP 6-bit summary row is not an object: {summary_path}")
@@ -1263,6 +1283,74 @@ def load_mtp_6bit_summary(summary_path: Path) -> dict[str, Any]:
                     raise ChartError(
                         f"MTP approximate diagnostic row missing {key}: {summary_path}"
                     )
+        else:
+            for key in (
+                "model_id",
+                "ax_mtp_step_coverage_pct",
+                "ax_mtp_fallback_prompt_count",
+                "ax_mtp_direct_fallback_steps",
+                "publication_reasons",
+                "ax_mtp_ngram_telemetry",
+            ):
+                if key not in row:
+                    raise ChartError(
+                        f"MTP exact acceleration row missing {key}: {summary_path}"
+                    )
+            row_key = (str(row["model_id"]), str(row["suite_id"]))
+            if row_key in exact_row_keys:
+                raise ChartError(f"MTP exact acceleration has duplicate row {row_key!r}")
+            exact_row_keys.add(row_key)
+            try:
+                direct = float(row["ax_direct_decode_tok_s"])
+                mtp = float(row["ax_mtp_decode_tok_s"])
+                speedup = float(row["ax_mtp_speedup_x"])
+                coverage = float(row["ax_mtp_step_coverage_pct"])
+            except (TypeError, ValueError) as error:
+                raise ChartError(
+                    f"MTP exact acceleration row has invalid metrics: {row_key!r}"
+                ) from error
+            if direct <= 0.0 or mtp <= 0.0 or speedup <= 1.0:
+                raise ChartError(
+                    f"MTP exact acceleration row does not win decode: {row_key!r}"
+                )
+            if abs(speedup - mtp / direct) > 0.001:
+                raise ChartError(
+                    f"MTP exact acceleration row speedup is inconsistent: {row_key!r}"
+                )
+            if coverage != 100.0:
+                raise ChartError(
+                    f"MTP exact acceleration row lacks full coverage: {row_key!r}"
+                )
+            if row["ax_mtp_fallback_prompt_count"] != 0:
+                raise ChartError(
+                    f"MTP exact acceleration row has fallback prompts: {row_key!r}"
+                )
+            if row["ax_mtp_direct_fallback_steps"] != 0:
+                raise ChartError(
+                    f"MTP exact acceleration row has fallback steps: {row_key!r}"
+                )
+            if row["publication_reasons"] != []:
+                raise ChartError(
+                    f"MTP exact acceleration row has publication reasons: {row_key!r}"
+                )
+            ngram = row["ax_mtp_ngram_telemetry"]
+            if not isinstance(ngram, dict) or any(
+                ngram.get(key) != 0 for key in MTP_6BIT_NGRAM_ZERO_KEYS
+            ):
+                raise ChartError(
+                    f"MTP exact acceleration row has nonzero n-gram telemetry: {row_key!r}"
+                )
+    if not approximate:
+        expected_row_keys = {
+            (model_id, suite_id)
+            for model_id in MTP_6BIT_EXACT_TARGET_IDS
+            for suite_id in MTP_6BIT_EXACT_SUITES
+        }
+        if exact_row_keys != expected_row_keys:
+            raise ChartError(
+                "MTP exact acceleration summary is not the complete supported matrix: "
+                f"{summary_path}"
+            )
     return summary
 
 

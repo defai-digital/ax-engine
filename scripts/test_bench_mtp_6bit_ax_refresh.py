@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -8,6 +10,53 @@ from scripts import bench_mtp_6bit_ax_refresh as bench
 
 
 class BenchMtpRefreshTests(unittest.TestCase):
+    @staticmethod
+    def exact_summary() -> dict[str, object]:
+        rows: list[dict[str, object]] = []
+        for target in bench.SUPPORTED_TARGETS:
+            for suite in bench.DEFAULT_SUITES:
+                rows.append(
+                    {
+                        "model_id": target.key,
+                        "model": target.label,
+                        "suite_id": suite,
+                        "ax_direct_decode_tok_s": 50.0,
+                        "ax_mtp_decode_tok_s": 100.0,
+                        "ax_mtp_speedup_x": 2.0,
+                        "ax_mtp_prefill_tok_s": 500.0,
+                        "ax_mtp_ttft_ms": 250.0,
+                        "ax_mtp_accept_rate_pct": 99.0,
+                        "ax_mtp_step_coverage_pct": 100.0,
+                        "ax_mtp_fallback_prompt_count": 0,
+                        "ax_mtp_direct_fallback_steps": 0,
+                        "publication_candidate": True,
+                        "publication_reasons": [],
+                        "ax_mtp_ngram_telemetry": {
+                            key: 0 for key in bench.NGRAM_ZERO_KEYS
+                        },
+                    }
+                )
+        return {
+            "schema": "ax.mtp_6bit_ax_acceleration_summary.v3",
+            "publication_candidate": True,
+            "claim_type": "exact_mtp_acceleration",
+            "run_dir": (
+                "benchmarks/results/speculative/mtp-6bit/"
+                "2026-07-13-exact"
+            ),
+            "methodology": {
+                "generated_tokens": 1000,
+                "repetitions": 5,
+                "warmup_repetitions": 2,
+                "sampling": {
+                    "temperature": 0.6,
+                    "top_p": 0.95,
+                    "top_k": 20,
+                },
+            },
+            "rows": rows,
+        }
+
     @staticmethod
     def mtp_row(
         *,
@@ -277,6 +326,67 @@ class BenchMtpRefreshTests(unittest.TestCase):
         self.assertIn("21.1% match", table)
         self.assertIn("15.1%", table)
         self.assertIn("3/4", table)
+
+    def test_exact_table_labels_acceleration_and_context_metrics(self) -> None:
+        row = self.exact_summary()["rows"][0]
+
+        table = "\n".join(
+            bench.table_lines([row], approximate_diagnostic=False)
+        )
+
+        self.assertIn("AX MTP decode", table)
+        self.assertIn("AX speedup", table)
+        self.assertIn("AX MTP prefill", table)
+        self.assertIn("AX MTP TTFT", table)
+        self.assertIn("2.00x", table)
+
+    def test_update_readme_replaces_legacy_diagnostic_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "README.md"
+            readme.write_text(
+                "before\n\n"
+                "#### AX Engine 6-bit approximate MTP diagnostic (2026-07-11)\n\n"
+                "legacy diagnostic\n\n"
+                "#### Qwen3.6 MTP peer decode comparison (2026-07-09)\n\n"
+                "peer section\n"
+            )
+
+            bench.update_readme(readme, self.exact_summary())
+
+            updated = readme.read_text()
+        self.assertIn(
+            "#### AX Engine 6-bit exact sampled-MTP acceleration (2026-07-13)",
+            updated,
+        )
+        self.assertIn("All 15 target/suite rows accelerate decode", updated)
+        self.assertIn("perf-mtp-6bit-ax-acceleration.svg", updated)
+        self.assertIn("#### Qwen3.6 MTP peer decode comparison", updated)
+        self.assertNotIn("legacy diagnostic", updated)
+        self.assertNotIn("approximate-diagnostic.svg", updated)
+
+    def test_update_readme_fails_closed_for_ineligible_exact_summary(self) -> None:
+        mutations = {
+            "summary publication": lambda summary: summary.update(
+                publication_candidate=False
+            ),
+            "row speedup": lambda summary: summary["rows"][0].update(
+                ax_mtp_decode_tok_s=50.0,
+                ax_mtp_speedup_x=1.0,
+            ),
+            "fallback": lambda summary: summary["rows"][0].update(
+                ax_mtp_fallback_prompt_count=1
+            ),
+            "ngram": lambda summary: summary["rows"][0][
+                "ax_mtp_ngram_telemetry"
+            ].update(ax_mtp_ngram_hit_steps=1),
+            "partial matrix": lambda summary: summary["rows"].pop(),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                summary = copy.deepcopy(self.exact_summary())
+                mutate(summary)
+                with self.assertRaises(ValueError):
+                    bench.render_readme_section(summary)
 
 
 if __name__ == "__main__":

@@ -58,6 +58,25 @@ MTP_6BIT_APPROXIMATE_SCHEMA_VERSION = (
     "ax.mtp_6bit_approximate_diagnostic_summary.v2"
 )
 MTP_6BIT_EXACT_SCHEMA_VERSION = "ax.mtp_6bit_ax_acceleration_summary.v3"
+MTP_6BIT_EXACT_TARGET_IDS = (
+    "qwen3.6-27b-6bit",
+    "qwen3.6-35b-a3b",
+    "gemma-4-12b",
+    "gemma-4-26b",
+    "gemma-4-31b",
+)
+MTP_6BIT_EXACT_SUITES = ("flappy", "long_code", "python_modules_long")
+MTP_6BIT_NGRAM_ZERO_KEYS = (
+    "ax_ngram_accepted_tokens",
+    "ax_ngram_draft_tokens",
+    "ax_ngram_rejected_tokens",
+    "ax_mtp_ngram_accepted_tokens",
+    "ax_mtp_ngram_proposed_tokens",
+    "ax_mtp_ngram_submitted_tokens",
+    "ax_mtp_ngram_submitted_accepted_tokens",
+    "ax_mtp_ngram_hit_steps",
+    "ax_mtp_ngram_attempt_steps",
+)
 README_MAX_PUBLICATION_LOAD_AVERAGE = 2.0
 README_MAX_PUBLICATION_TOP_PROCESS_CPU_PERCENT = 50.0
 PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
@@ -1377,6 +1396,85 @@ def validate_mtp_6bit_summary_contract(
                 "README MTP 6-bit summary row publication_candidate does not "
                 f"match schema {schema}: {summary_path}"
             )
+    if not approximate:
+        methodology = summary.get("methodology")
+        if not isinstance(methodology, dict):
+            raise ArtifactCheckError(
+                f"README exact MTP summary lacks methodology: {summary_path}"
+            )
+        expected_methodology = {
+            "targets": list(MTP_6BIT_EXACT_TARGET_IDS),
+            "suites": list(MTP_6BIT_EXACT_SUITES),
+            "generated_tokens": 1000,
+            "repetitions": 5,
+            "warmup_repetitions": 2,
+            "sampling": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+        }
+        for key, expected in expected_methodology.items():
+            if methodology.get(key) != expected:
+                raise ArtifactCheckError(
+                    f"README exact MTP methodology {key} must be {expected!r}: "
+                    f"{summary_path}"
+                )
+
+        expected_rows = {
+            (model_id, suite_id)
+            for model_id in MTP_6BIT_EXACT_TARGET_IDS
+            for suite_id in MTP_6BIT_EXACT_SUITES
+        }
+        actual_rows: set[tuple[str, str]] = set()
+        for row in rows:
+            row_key = (str(row.get("model_id")), str(row.get("suite_id")))
+            if row_key in actual_rows:
+                raise ArtifactCheckError(
+                    f"README exact MTP summary has duplicate row {row_key!r}"
+                )
+            actual_rows.add(row_key)
+            if row.get("publication_reasons") != []:
+                raise ArtifactCheckError(
+                    f"README exact MTP row has publication reasons: {row_key!r}"
+                )
+            try:
+                direct = float(row["ax_direct_decode_tok_s"])
+                mtp = float(row["ax_mtp_decode_tok_s"])
+                speedup = float(row["ax_mtp_speedup_x"])
+                coverage = float(row["ax_mtp_step_coverage_pct"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ArtifactCheckError(
+                    f"README exact MTP row has invalid metrics: {row_key!r}"
+                ) from error
+            if direct <= 0.0 or mtp <= 0.0 or speedup <= 1.0:
+                raise ArtifactCheckError(
+                    f"README exact MTP row does not accelerate decode: {row_key!r}"
+                )
+            if abs(speedup - mtp / direct) > 0.001:
+                raise ArtifactCheckError(
+                    f"README exact MTP row speedup is inconsistent: {row_key!r}"
+                )
+            if coverage != 100.0:
+                raise ArtifactCheckError(
+                    f"README exact MTP row lacks 100% step coverage: {row_key!r}"
+                )
+            if row.get("ax_mtp_fallback_prompt_count") != 0:
+                raise ArtifactCheckError(
+                    f"README exact MTP row has fallback prompts: {row_key!r}"
+                )
+            if row.get("ax_mtp_direct_fallback_steps") != 0:
+                raise ArtifactCheckError(
+                    f"README exact MTP row has direct fallback steps: {row_key!r}"
+                )
+            ngram = row.get("ax_mtp_ngram_telemetry")
+            if not isinstance(ngram, dict) or any(
+                ngram.get(key) != 0 for key in MTP_6BIT_NGRAM_ZERO_KEYS
+            ):
+                raise ArtifactCheckError(
+                    f"README exact MTP row has nonzero n-gram telemetry: {row_key!r}"
+                )
+        if actual_rows != expected_rows:
+            raise ArtifactCheckError(
+                "README exact MTP summary does not contain the complete supported "
+                f"matrix: {summary_path}"
+            )
     return summary, approximate
 
 
@@ -1429,6 +1527,39 @@ def mtp_6bit_diagnostic_table_cells(row: dict[str, Any]) -> list[str]:
         ) from error
 
 
+def mtp_6bit_exact_table_cells(row: dict[str, Any]) -> list[str]:
+    required = {
+        "model_id",
+        "suite_id",
+        "ax_direct_decode_tok_s",
+        "ax_mtp_decode_tok_s",
+        "ax_mtp_speedup_x",
+        "ax_mtp_prefill_tok_s",
+        "ax_mtp_ttft_ms",
+        "ax_mtp_accept_rate_pct",
+    }
+    missing = sorted(required - row.keys())
+    if missing:
+        raise ArtifactCheckError(
+            "README exact MTP row is missing fields: " + ", ".join(missing)
+        )
+    try:
+        return [
+            f"`{row['model_id']}`",
+            f"`{row['suite_id']}`",
+            f"{float(row['ax_direct_decode_tok_s']):.1f} tok/s",
+            f"{float(row['ax_mtp_decode_tok_s']):.1f} tok/s",
+            f"{float(row['ax_mtp_speedup_x']):.2f}x",
+            f"{float(row['ax_mtp_prefill_tok_s']):.1f} tok/s",
+            f"{float(row['ax_mtp_ttft_ms']):.0f} ms",
+            f"{float(row['ax_mtp_accept_rate_pct']):.1f}%",
+        ]
+    except (TypeError, ValueError) as error:
+        raise ArtifactCheckError(
+            "README exact MTP row has invalid numeric fields"
+        ) from error
+
+
 def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
     readme_text = readme_path.read_text()
     section = extract_readme_section(
@@ -1463,8 +1594,63 @@ def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
             "README MTP 6-bit heading date does not match its summary artifact"
         )
     if not approximate:
+        normalized = normalized_markdown_text(section_text).lower()
+        if "exact sampled-mtp acceleration" not in heading.lower():
+            raise ArtifactCheckError(
+                "README publishable MTP section heading must say "
+                "'exact sampled-MTP acceleration'"
+            )
+        for snippet in (
+            "distribution-exact sampled mtp",
+            f"all {len(summary['rows'])} target/suite rows accelerate decode",
+            "100% mtp step coverage",
+            "zero direct-fallback prompts or steps",
+            "docs/assets/perf-mtp-6bit-ax-acceleration.svg",
+            "`temperature=0.6`",
+            "`top_p=0.95`",
+            "`top_k=20`",
+            "2 warmups",
+            "5 measured repetitions",
+            "prefill and ttft are reported as context, not mtp acceleration claims",
+        ):
+            if snippet not in normalized:
+                raise ArtifactCheckError(
+                    f"README exact MTP acceleration section is missing {snippet!r}"
+                )
+
+        table_lines = extract_table_lines(section_text, "#### AX Engine 6-bit")
+        expected_headers = [
+            "Target",
+            "Suite",
+            "AX direct decode",
+            "AX MTP decode",
+            "AX speedup",
+            "AX MTP prefill",
+            "AX MTP TTFT",
+            "AX accept",
+        ]
+        headers = split_markdown_row(table_lines[0])
+        if headers != expected_headers:
+            raise ArtifactCheckError(
+                "README exact MTP table headers are stale; expected "
+                + " | ".join(expected_headers)
+            )
+        displayed_rows = table_lines[2:]
+        artifact_rows = summary["rows"]
+        if len(displayed_rows) != len(artifact_rows):
+            raise ArtifactCheckError(
+                "README exact MTP table row count does not match summary"
+            )
+        for line, row in zip(displayed_rows, artifact_rows):
+            cells = split_markdown_row(line)
+            expected_cells = mtp_6bit_exact_table_cells(row)
+            if cells != expected_cells:
+                raise ArtifactCheckError(
+                    "README exact MTP table row is stale; expected "
+                    + " | ".join(expected_cells)
+                )
         return [
-            f"mtp-6bit:{summary['schema']}:{len(summary['rows'])}:publishable"
+            f"mtp-6bit:{summary['schema']}:{len(artifact_rows)}:publishable"
         ]
 
     normalized = normalized_markdown_text(section_text).lower()

@@ -417,51 +417,48 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### AX Engine 6-bit approximate MTP diagnostic (2026-07-11)
+#### AX Engine 6-bit exact sampled-MTP acceleration (2026-07-13)
 
-This AX Engine-only refresh is an approximate optimistic diagnostic of the
-repo-owned 6-bit `download-mtp` packages. It compares each package with MTP
-disabled against the optimistic MTP policy; it is not an exact-distribution
-MTP result, a cross-engine leaderboard, or a production acceleration claim.
-The 2026-07-11 run uses the `flappy`, `long_code`, and
-`python_modules_long` suites, greedy decode (`temperature=0.0`, `top_p=1.0`,
-`top_k=0`), 1000 generated tokens, 5 measured repetitions, 2 warmups, and a
-15 s cooldown. The local stack was MLX 0.32.0 / mlx-lm 0.31.3.
+This AX Engine-only matrix compares each prepared 6-bit `download-mtp`
+package with MTP disabled and enabled. The enabled route uses
+distribution-exact sampled MTP with deterministic-delta proposals and
+residual rejection correction; it is not an optimistic speed ceiling or a
+cross-engine leaderboard.
 
-> [!WARNING]
-> These optimistic rows are not publication eligible. The current exact MTP
-> verifier fails closed until direct token equivalence passes, so the table is
-> diagnostic evidence only.
+All 15 target/suite rows accelerate decode by 1.41x-2.66x.
+Every row has 100% MTP step coverage, zero direct-fallback prompts or
+steps, and zero n-gram accepted, proposed, submitted, or hit-step
+telemetry.
 
-<img src="docs/assets/perf-mtp-6bit-ax-approximate-diagnostic.svg" alt="AX Engine 6-bit approximate MTP diagnostic comparing direct and optimistic MTP decode throughput">
+<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">
 
-| Target | Suite | AX direct decode | Approx. MTP decode | Diagnostic ratio | Draft quality | MTP step coverage | Fallback prompts |
+| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |
 |---|---|---:|---:|---:|---:|---:|---:|
-| `qwen3.6-27b-6bit` | `flappy` | 24.3 tok/s | 45.8 tok/s | 1.89x | 61.4% match | 21.1% | 2/4 |
-| `qwen3.6-27b-6bit` | `long_code` | 24.6 tok/s | 66.0 tok/s | 2.69x | 98.8% match | 43.9% | 1/4 |
-| `qwen3.6-27b-6bit` | `python_modules_long` | 24.7 tok/s | 66.6 tok/s | 2.70x | 95.4% match | 100.0% | 0/3 |
-| `qwen3.6-35b-a3b` | `flappy` | 121.4 tok/s | 151.7 tok/s | 1.25x | 99.9% match | 100.0% | 0/4 |
-| `qwen3.6-35b-a3b` | `long_code` | 121.0 tok/s | 121.6 tok/s | 1.00x | 21.1% match | 15.1% | 3/4 |
-| `qwen3.6-35b-a3b` | `python_modules_long` | 121.5 tok/s | 152.5 tok/s | 1.26x | 88.9% match | 100.0% | 0/3 |
-| `gemma-4-12b` | `flappy` | 41.3 tok/s | 99.5 tok/s | 2.41x | 99.2% verified | 82.6% | 1/4 |
-| `gemma-4-12b` | `long_code` | 41.1 tok/s | 98.3 tok/s | 2.39x | 99.8% verified | 100.0% | 0/4 |
-| `gemma-4-12b` | `python_modules_long` | 41.4 tok/s | 86.1 tok/s | 2.08x | 95.2% verified | 100.0% | 0/3 |
-| `gemma-4-26b` | `flappy` | 105.0 tok/s | 151.2 tok/s | 1.44x | 99.7% verified | 100.0% | 0/4 |
-| `gemma-4-26b` | `long_code` | 103.9 tok/s | 145.1 tok/s | 1.40x | 100.0% verified | 100.0% | 0/4 |
-| `gemma-4-26b` | `python_modules_long` | 105.2 tok/s | 141.5 tok/s | 1.35x | 96.9% verified | 100.0% | 0/3 |
-| `gemma-4-31b` | `flappy` | 18.7 tok/s | 46.2 tok/s | 2.47x | 99.8% verified | 100.0% | 0/4 |
-| `gemma-4-31b` | `long_code` | 18.8 tok/s | 45.6 tok/s | 2.42x | 99.9% verified | 100.0% | 0/4 |
-| `gemma-4-31b` | `python_modules_long` | 19.4 tok/s | 43.1 tok/s | 2.22x | 96.5% verified | 100.0% | 0/3 |
+| `qwen3.6-27b-6bit` | `flappy` | 22.6 tok/s | 60.2 tok/s | 2.66x | 196.5 tok/s | 1638 ms | 99.4% |
+| `qwen3.6-27b-6bit` | `long_code` | 22.9 tok/s | 51.4 tok/s | 2.24x | 231.2 tok/s | 3103 ms | 98.4% |
+| `qwen3.6-27b-6bit` | `python_modules_long` | 23.0 tok/s | 42.6 tok/s | 1.85x | 210.3 tok/s | 1659 ms | 96.0% |
+| `qwen3.6-35b-a3b` | `flappy` | 94.0 tok/s | 134.9 tok/s | 1.43x | 535.3 tok/s | 601 ms | 99.9% |
+| `qwen3.6-35b-a3b` | `long_code` | 97.5 tok/s | 137.0 tok/s | 1.41x | 926.6 tok/s | 774 ms | 98.5% |
+| `qwen3.6-35b-a3b` | `python_modules_long` | 96.8 tok/s | 139.6 tok/s | 1.44x | 576.8 tok/s | 590 ms | 98.2% |
+| `gemma-4-12b` | `flappy` | 37.9 tok/s | 95.6 tok/s | 2.52x | 460.9 tok/s | 747 ms | 100.0% |
+| `gemma-4-12b` | `long_code` | 37.5 tok/s | 93.7 tok/s | 2.50x | 522.5 tok/s | 1566 ms | 99.9% |
+| `gemma-4-12b` | `python_modules_long` | 37.9 tok/s | 74.9 tok/s | 1.98x | 470.6 tok/s | 793 ms | 98.5% |
+| `gemma-4-26b` | `flappy` | 88.1 tok/s | 144.3 tok/s | 1.64x | 872.8 tok/s | 418 ms | 99.9% |
+| `gemma-4-26b` | `long_code` | 88.1 tok/s | 141.9 tok/s | 1.61x | 1269.1 tok/s | 645 ms | 100.0% |
+| `gemma-4-26b` | `python_modules_long` | 89.3 tok/s | 130.4 tok/s | 1.46x | 967.3 tok/s | 389 ms | 98.6% |
+| `gemma-4-31b` | `flappy` | 17.7 tok/s | 44.4 tok/s | 2.51x | 171.3 tok/s | 2039 ms | 99.9% |
+| `gemma-4-31b` | `long_code` | 17.8 tok/s | 44.0 tok/s | 2.48x | 193.1 tok/s | 4238 ms | 99.8% |
+| `gemma-4-31b` | `python_modules_long` | 17.9 tok/s | 38.5 tok/s | 2.15x | 171.2 tok/s | 2171 ms | 98.0% |
 
-For Qwen, draft quality is the prompt-level median target-argmax-match EWMA;
-for Gemma assistant drafters it is the verified accept rate. MTP step coverage
-is `MTP decode steps / (MTP decode steps + direct fallback steps)`, not a token
-share. Qwen3.6 35B `long_code` is the clearest non-acceleration case: its 21.1%
-draft quality caused 3 of 4 prompts to enter the low-accept direct fallback,
-leaving only 15.1% MTP step coverage and a 1.00x aggregate diagnostic ratio.
-All rows record zero n-gram accepted/proposed/submitted/hit-step telemetry.
-Artifact:
-[`benchmarks/results/speculative/mtp-6bit/2026-07-11-ax-only-approximate-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-11-ax-only-approximate-refresh/summary.json).
+Methodology: sampled decode (`temperature=0.6`, `top_p=0.95`,
+`top_k=20`), 1,000 generated tokens, 2 warmups, 5 measured repetitions,
+and recorded cooldown. Prefill and TTFT are reported as context, not MTP
+acceleration claims, because speculative decoding starts after prompt
+prefill. Direct and MTP rows use the same package and prompt suite.
+
+Exactness is checked with per-mode seed reproducibility. Summary artifacts:
+[`summary.md`](benchmarks/results/speculative/mtp-6bit/2026-07-13-exact-mtp-sampled-flappy-clean/summary.md) and
+[`summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-13-exact-mtp-sampled-flappy-clean/summary.json).
 
 #### Qwen3.6 MTP peer decode comparison (2026-07-09)
 
@@ -537,32 +534,16 @@ Gemma 4 speculates with an **assistant-drafter** package, not a Qwen-style fused
 sidecar, so no peer engine ships the same Gemma MTP package — MTPLX and
 lightning-mlx have no comparable Gemma assistant-MTP route. The result below is
 therefore an AX-only comparison (same-artifact direct decode versus depth-2
-assistant drafting), not a cross-engine leaderboard. The
-assistant is stateless per decode step and re-reads the target's frozen KV cache
-each forward. Greedy MTP can use that route directly. For sampled decode, the
-current production-safe policy is direct fallback until exact speculative
-sampling is implemented; optimistic verification is an explicit approximate
-speed-ceiling experiment, not a correctness-preserving sampled route.
+assistant drafting), not a cross-engine leaderboard. The assistant is stateless
+per decode step and re-reads the target's frozen KV cache each forward.
 
-**Current Gemma 4 12B 6-bit AX-only result (2026-07-10).** The `flappy` suite
-used 1000 generated tokens, `temperature=0.6`, `top_p=0.95`, `top_k=20`, two
-warmups, five measured repetitions, 15 s cooldown, depth-2 assistant drafting,
-and n-gram stacking disabled on an Apple M5 Max. The direct and MTP rows use the
-same prompt hashes and model snapshot.
-
-| Mode | Decode | Prefill | Runner TTFT | Speedup vs direct | Assistant accept | Contract |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Direct | 37.9 tok/s | 466.1 tok/s | 763 ms | 1.00x | n/a | Exact sampled baseline |
-| MTP requested (safe) | 38.0 tok/s | — | 761 ms | 1.00x | n/a | Exact direct fallback; no speculative acceleration |
-| MTP requested (`AX_MLX_MTP_OPTIMISTIC=1`) | 94.9 tok/s | 442.6 tok/s | 787 ms | 2.50x | 99.96% | Approximate speed ceiling; not an exact sampled result |
-
-The optimistic run had zero direct-fallback steps and accepted 13,040 of 13,045
-assistant draft tokens. It is intentionally excluded from publication-quality
-sampled-MTP claims: all five `flappy_score_gates` runs emitted token IDs that
-differed from direct sampling. The safe route is the production result today;
-the optimistic row identifies the performance available after exact speculative
-sampling is completed. Full contract and per-case medians:
-[`2026-07-10 Gemma 4 12B AX-only summary`](benchmarks/results/speculative/mtp-6bit/2026-07-10-gemma4-12b-ax-only-optimistic/summary.md).
+Sampled MTP now uses the distribution-exact deterministic-delta proposal and
+residual-rejection route by default. In the current 2-warmup/5-measure matrix,
+Gemma 4 12B, 26B, and 31B accelerate all nine model/suite decode rows by
+1.46x-2.52x with 100% MTP step coverage, zero direct fallback, and zero n-gram
+stacking. See the exact 6-bit table above for prefill and TTFT context and the
+[current exact summary](benchmarks/results/speculative/mtp-6bit/2026-07-13-exact-mtp-sampled-flappy-clean/summary.json)
+for the complete per-suite contract.
 
 Retained 12B benchmark (M5 Max, clean `6ff19f66` release build,
 `temperature=0.6`, `top_p=0.95`, `top_k=20`, chat-templated `flappy` /

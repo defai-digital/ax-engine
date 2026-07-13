@@ -91,6 +91,90 @@ This is an approximate optimistic diagnostic using greedy decode
     return readme_path, summary_path
 
 
+def write_mtp_exact_claim_fixture(root: Path) -> tuple[Path, Path]:
+    run_dir = (
+        root
+        / "benchmarks/results/speculative/mtp-6bit"
+        / "2026-07-13-exact"
+    )
+    run_dir.mkdir(parents=True)
+    rows = []
+    for model_id in checker.MTP_6BIT_EXACT_TARGET_IDS:
+        for suite_id in checker.MTP_6BIT_EXACT_SUITES:
+            rows.append(
+                {
+                    "model_id": model_id,
+                    "suite_id": suite_id,
+                    "ax_direct_decode_tok_s": 50.0,
+                    "ax_mtp_decode_tok_s": 100.0,
+                    "ax_mtp_speedup_x": 2.0,
+                    "ax_mtp_prefill_tok_s": 500.0,
+                    "ax_mtp_ttft_ms": 250.0,
+                    "ax_mtp_accept_rate_pct": 99.0,
+                    "ax_mtp_step_coverage_pct": 100.0,
+                    "ax_mtp_fallback_prompt_count": 0,
+                    "ax_mtp_direct_fallback_steps": 0,
+                    "publication_candidate": True,
+                    "publication_reasons": [],
+                    "ax_mtp_ngram_telemetry": {
+                        key: 0 for key in checker.MTP_6BIT_NGRAM_ZERO_KEYS
+                    },
+                }
+            )
+    summary_path = run_dir / "summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "schema": checker.MTP_6BIT_EXACT_SCHEMA_VERSION,
+                "publication_candidate": True,
+                "claim_type": "exact_mtp_acceleration",
+                "run_dir": str(run_dir.relative_to(root)),
+                "methodology": {
+                    "targets": list(checker.MTP_6BIT_EXACT_TARGET_IDS),
+                    "suites": list(checker.MTP_6BIT_EXACT_SUITES),
+                    "generated_tokens": 1000,
+                    "repetitions": 5,
+                    "warmup_repetitions": 2,
+                    "sampling": {
+                        "temperature": 0.6,
+                        "top_p": 0.95,
+                        "top_k": 20,
+                    },
+                },
+                "rows": rows,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    table_lines = [
+        "| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        table_lines.append(
+            "| `{model_id}` | `{suite_id}` | 50.0 tok/s | 100.0 tok/s | 2.00x | 500.0 tok/s | 250 ms | 99.0% |".format(
+                model_id=row["model_id"],
+                suite_id=row["suite_id"],
+            )
+        )
+    readme_path = root / "README.md"
+    summary_link = summary_path.relative_to(root)
+    readme_path.write_text(
+        "#### AX Engine 6-bit exact sampled-MTP acceleration (2026-07-13)\n\n"
+        "This uses distribution-exact sampled MTP. All 15 target/suite rows "
+        "accelerate decode. Every row has 100% MTP step coverage and zero "
+        "direct-fallback prompts or steps.\n\n"
+        '<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="MTP acceleration">\n\n'
+        + "\n".join(table_lines)
+        + "\n\nMethodology: `temperature=0.6`, `top_p=0.95`, `top_k=20`, "
+        "2 warmups, and 5 measured repetitions. Prefill and TTFT are reported "
+        "as context, not MTP acceleration claims.\n\n"
+        f"[`summary.json`]({summary_link})\n"
+    )
+    return readme_path, summary_path
+
+
 def ngram_telemetry(
     *,
     attempts: int,
@@ -3107,6 +3191,59 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 1)
         self.assertIn("nonpublishable", checked[0])
+
+    def test_readme_accepts_complete_exact_mtp_acceleration_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme_path, _summary_path = write_mtp_exact_claim_fixture(Path(tmp))
+
+            checked = checker.validate_readme_mtp_6bit_claims(
+                readme_path=readme_path
+            )
+
+        self.assertEqual(len(checked), 1)
+        self.assertIn("publishable", checked[0])
+        self.assertIn(":15:", checked[0])
+
+    def test_readme_rejects_ineligible_exact_mtp_rows(self) -> None:
+        mutations = {
+            "decode loss": lambda row: row.update(
+                ax_mtp_decode_tok_s=50.0,
+                ax_mtp_speedup_x=1.0,
+            ),
+            "fallback": lambda row: row.update(
+                ax_mtp_fallback_prompt_count=1
+            ),
+            "partial coverage": lambda row: row.update(
+                ax_mtp_step_coverage_pct=99.0
+            ),
+            "ngram": lambda row: row["ax_mtp_ngram_telemetry"].update(
+                ax_mtp_ngram_hit_steps=1
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                readme_path, summary_path = write_mtp_exact_claim_fixture(Path(tmp))
+                summary = json.loads(summary_path.read_text())
+                mutate(summary["rows"][0])
+                summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+
+                with self.assertRaises(checker.ArtifactCheckError):
+                    checker.validate_readme_mtp_6bit_claims(
+                        readme_path=readme_path
+                    )
+
+    def test_readme_rejects_partial_exact_mtp_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme_path, summary_path = write_mtp_exact_claim_fixture(Path(tmp))
+            summary = json.loads(summary_path.read_text())
+            summary["rows"].pop()
+            summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "complete supported matrix",
+            ):
+                checker.validate_readme_mtp_6bit_claims(readme_path=readme_path)
 
     def test_readme_rejects_publishable_approximate_mtp_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

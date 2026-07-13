@@ -33,6 +33,36 @@ MTP_MODULE_SPEC.loader.exec_module(mtp_refresh)
 
 
 class ReadmePerformanceChartTests(unittest.TestCase):
+    @staticmethod
+    def exact_mtp_chart_summary() -> dict[str, object]:
+        rows = []
+        for target in mtp_refresh.SUPPORTED_TARGETS:
+            for suite in mtp_refresh.DEFAULT_SUITES:
+                rows.append(
+                    {
+                        "model_id": target.key,
+                        "model": target.label,
+                        "suite_id": suite,
+                        "ax_direct_decode_tok_s": 50.0,
+                        "ax_mtp_decode_tok_s": 100.0,
+                        "ax_mtp_speedup_x": 2.0,
+                        "ax_mtp_step_coverage_pct": 100.0,
+                        "ax_mtp_fallback_prompt_count": 0,
+                        "ax_mtp_direct_fallback_steps": 0,
+                        "publication_candidate": True,
+                        "publication_reasons": [],
+                        "ax_mtp_ngram_telemetry": {
+                            key: 0 for key in mtp_refresh.NGRAM_ZERO_KEYS
+                        },
+                    }
+                )
+        return {
+            "schema": charts.MTP_6BIT_EXACT_SCHEMA,
+            "publication_candidate": True,
+            "claim_type": "exact_mtp_acceleration",
+            "rows": rows,
+        }
+
     def test_chart_merge_keeps_ax_high_water_row(self) -> None:
         rows = {
             ("gemma-4-e2b-it-4bit", "ax_engine_mlx", 128, 128): {
@@ -140,6 +170,34 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertIn("AX approximate MTP diagnostic", chart)
         self.assertIn("not publication eligible", chart)
         self.assertNotIn("Higher is better", chart)
+
+    def test_mtp_exact_chart_requires_complete_all_winning_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            summary_path = Path(root_name) / "summary.json"
+            summary = self.exact_mtp_chart_summary()
+            summary_path.write_text(json.dumps(summary))
+
+            loaded = charts.load_mtp_6bit_summary(summary_path)
+
+            self.assertEqual(len(loaded["rows"]), 15)
+
+            summary["rows"][0].update(
+                ax_mtp_decode_tok_s=50.0,
+                ax_mtp_speedup_x=1.0,
+            )
+            summary_path.write_text(json.dumps(summary))
+            with self.assertRaisesRegex(charts.ChartError, "does not win decode"):
+                charts.load_mtp_6bit_summary(summary_path)
+
+    def test_mtp_exact_chart_rejects_partial_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            summary_path = Path(root_name) / "summary.json"
+            summary = self.exact_mtp_chart_summary()
+            summary["rows"].pop()
+            summary_path.write_text(json.dumps(summary))
+
+            with self.assertRaisesRegex(charts.ChartError, "complete supported matrix"):
+                charts.load_mtp_6bit_summary(summary_path)
 
     def test_embedding_scale_charts_use_embedding_results_tree(self) -> None:
         self.assertIn(

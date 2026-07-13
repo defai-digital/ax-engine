@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import subprocess
 import sys
@@ -625,12 +626,13 @@ def write_summary_files(output_dir: Path, summary: dict[str, Any]) -> None:
         if approximate_diagnostic
         else "This artifact summarizes exact AX MTP acceleration."
     )
+    ratio_label = "diagnostic ratio" if approximate_diagnostic else "acceleration ratio"
     lines = [
         title,
         "",
         description,
         "",
-        "The diagnostic ratio is `AX MTP decode tok/s / AX direct decode tok/s` for the same prepared `download-mtp` package and prompt suite. It is not a cross-model speed ranking.",
+        f"The {ratio_label} is `AX MTP decode tok/s / AX direct decode tok/s` for the same prepared `download-mtp` package and prompt suite. It is not a cross-model speed ranking.",
         "",
         *table_lines(
             summary["rows"], approximate_diagnostic=approximate_diagnostic
@@ -644,30 +646,140 @@ def write_summary_files(output_dir: Path, summary: dict[str, Any]) -> None:
     (output_dir / "summary.md").write_text("\n".join(lines))
 
 
-def update_readme(readme: Path, summary: dict[str, Any]) -> None:
-    text = readme.read_text()
-    table = "\n".join(
-        table_lines(summary["rows"], approximate_diagnostic=False)
-    )
-    table_start = text.index("| Target | Suite | AX direct decode | AX MTP decode |")
-    table_end = text.index("\n\nMethodology:", table_start)
-    text = text[:table_start] + table + text[table_end:]
+def validate_readme_publication_summary(summary: dict[str, Any]) -> None:
+    if summary.get("schema") != "ax.mtp_6bit_ax_acceleration_summary.v3":
+        raise ValueError("README update requires the exact MTP acceleration schema")
+    if summary.get("publication_candidate") is not True:
+        raise ValueError("README update requires a publication-candidate MTP summary")
+    if summary.get("claim_type") != "exact_mtp_acceleration":
+        raise ValueError("README update requires an exact MTP acceleration claim")
 
-    old_link_start = text.index("Pure-MTP verification:")
-    old_link_end = text.index(
-        "Detailed MTP notes and package validation sessions",
-        old_link_start,
-    )
+    methodology = summary.get("methodology")
+    if not isinstance(methodology, dict):
+        raise ValueError("README update requires recorded MTP methodology")
+    expected_methodology = {
+        "generated_tokens": GENERATED_TOKENS,
+        "repetitions": REPETITIONS,
+        "warmup_repetitions": WARMUP_REPETITIONS,
+        "sampling": MTP_SAMPLING,
+    }
+    for key, expected in expected_methodology.items():
+        if methodology.get(key) != expected:
+            raise ValueError(
+                f"README update requires methodology {key}={expected!r}"
+            )
+
+    rows = summary.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("README update requires non-empty exact MTP rows")
+    expected_rows = {
+        (target.key, suite)
+        for target in SUPPORTED_TARGETS
+        for suite in DEFAULT_SUITES
+    }
+    actual_rows: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("README update requires object-valued MTP rows")
+        row_key = (str(row.get("model_id")), str(row.get("suite_id")))
+        if row_key in actual_rows:
+            raise ValueError(f"README update found duplicate MTP row {row_key!r}")
+        actual_rows.add(row_key)
+        if row.get("publication_candidate") is not True:
+            raise ValueError(f"README update found non-publishable MTP row {row_key!r}")
+        if row.get("publication_reasons") != []:
+            raise ValueError(f"README update found MTP publication reasons for {row_key!r}")
+        try:
+            direct = float(row["ax_direct_decode_tok_s"])
+            mtp = float(row["ax_mtp_decode_tok_s"])
+            speedup = float(row["ax_mtp_speedup_x"])
+            prefill = float(row["ax_mtp_prefill_tok_s"])
+            ttft = float(row["ax_mtp_ttft_ms"])
+            accept = float(row["ax_mtp_accept_rate_pct"])
+            coverage = float(row["ax_mtp_step_coverage_pct"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"README update found incomplete numeric MTP row {row_key!r}"
+            ) from error
+        if not all(value > 0.0 for value in (direct, mtp, prefill, ttft, accept)):
+            raise ValueError(f"README update found non-positive MTP metric for {row_key!r}")
+        if speedup <= 1.0 or abs(speedup - mtp / direct) > 0.001:
+            raise ValueError(f"README update requires a verified decode win for {row_key!r}")
+        if coverage != 100.0:
+            raise ValueError(f"README update requires 100% MTP step coverage for {row_key!r}")
+        if int(row.get("ax_mtp_fallback_prompt_count", -1)) != 0:
+            raise ValueError(f"README update requires zero fallback prompts for {row_key!r}")
+        if int(row.get("ax_mtp_direct_fallback_steps", -1)) != 0:
+            raise ValueError(f"README update requires zero direct fallback steps for {row_key!r}")
+        ngram = row.get("ax_mtp_ngram_telemetry")
+        if not isinstance(ngram, dict) or any(ngram.get(key) != 0 for key in NGRAM_ZERO_KEYS):
+            raise ValueError(f"README update requires zero n-gram telemetry for {row_key!r}")
+
+    if actual_rows != expected_rows:
+        missing = sorted(expected_rows - actual_rows)
+        extra = sorted(actual_rows - expected_rows)
+        raise ValueError(
+            f"README update requires the complete supported MTP matrix; missing={missing}, extra={extra}"
+        )
+
+    run_dir = summary.get("run_dir")
+    if not isinstance(run_dir, str) or re.search(r"(?:^|/)(\d{4}-\d{2}-\d{2})", run_dir) is None:
+        raise ValueError("README update requires a dated MTP run_dir")
+
+
+def render_readme_section(summary: dict[str, Any]) -> str:
+    validate_readme_publication_summary(summary)
+    rows = summary["rows"]
     run_dir = summary["run_dir"]
-    new_block = (
-        "Pure-MTP verification: all listed AX MTP artifacts record zero n-gram accepted,\n"
-        "proposed, submitted, and hit-step telemetry. Summary artifacts:\n"
-        f"[`summary.md`]({run_dir}/summary.md)\n"
-        "and\n"
-        f"[`summary.json`]({run_dir}/summary.json).\n"
+    date_match = re.search(r"(?:^|/)(\d{4}-\d{2}-\d{2})", run_dir)
+    assert date_match is not None
+    run_date = date_match.group(1)
+    min_speedup = min(float(row["ax_mtp_speedup_x"]) for row in rows)
+    max_speedup = max(float(row["ax_mtp_speedup_x"]) for row in rows)
+    lines = [
+        f"#### AX Engine 6-bit exact sampled-MTP acceleration ({run_date})",
+        "",
+        "This AX Engine-only matrix compares each prepared 6-bit `download-mtp`",
+        "package with MTP disabled and enabled. The enabled route uses",
+        "distribution-exact sampled MTP with deterministic-delta proposals and",
+        "residual rejection correction; it is not an optimistic speed ceiling or a",
+        "cross-engine leaderboard.",
+        "",
+        f"All {len(rows)} target/suite rows accelerate decode by {min_speedup:.2f}x-{max_speedup:.2f}x.",
+        "Every row has 100% MTP step coverage, zero direct-fallback prompts or",
+        "steps, and zero n-gram accepted, proposed, submitted, or hit-step",
+        "telemetry.",
+        "",
+        '<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">',
+        "",
+        *table_lines(rows, approximate_diagnostic=False),
+        "",
+        "Methodology: sampled decode (`temperature=0.6`, `top_p=0.95`,",
+        "`top_k=20`), 1,000 generated tokens, 2 warmups, 5 measured repetitions,",
+        "and recorded cooldown. Prefill and TTFT are reported as context, not MTP",
+        "acceleration claims, because speculative decoding starts after prompt",
+        "prefill. Direct and MTP rows use the same package and prompt suite.",
+        "",
+        "Exactness is checked with per-mode seed reproducibility. Summary artifacts:",
+        f"[`summary.md`]({run_dir}/summary.md) and",
+        f"[`summary.json`]({run_dir}/summary.json).",
+    ]
+    return "\n".join(lines)
+
+
+def update_readme(readme: Path, summary: dict[str, Any]) -> None:
+    section = render_readme_section(summary)
+    text = readme.read_text()
+    section_start = text.find("#### AX Engine 6-bit")
+    if section_start < 0:
+        raise ValueError("README has no AX Engine 6-bit MTP section")
+    section_end = text.find(
+        "#### Qwen3.6 MTP peer decode comparison",
+        section_start,
     )
-    text = text[:old_link_start] + new_block + text[old_link_end:]
-    readme.write_text(text)
+    if section_end < 0:
+        raise ValueError("README has no Qwen3.6 MTP peer section boundary")
+    readme.write_text(text[:section_start] + section + "\n\n" + text[section_end:])
 
 
 def parse_csv(value: str) -> tuple[str, ...]:
