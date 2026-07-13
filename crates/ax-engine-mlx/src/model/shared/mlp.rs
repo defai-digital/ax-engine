@@ -124,11 +124,15 @@ fn qkv_project_inner(
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
     let slices = qkv_slices(cfg, head_dim);
     let batch = x.shape().first().copied().unwrap_or(1);
-    let prefer_split = !force_packed
-        && projection_policy == ProjectionBatchPolicy::Shared
-        && batch > 1
-        && w.q_proj.is_some()
-        && w.k_proj.is_some();
+    let seq = x.shape().get(1).copied().unwrap_or(1);
+    let prefer_split = prefer_split_qkv_projection(
+        &cfg.model_family,
+        force_packed,
+        projection_policy,
+        batch,
+        seq,
+        w.q_proj.is_some() && w.k_proj.is_some(),
+    );
     if !prefer_split && let Some(packed) = &w.qkv_packed {
         let out = qw_with_policy(x, packed, projection_policy);
         let (q, gate) = if let Some((gate_start, gate_end)) = slices.gate {
@@ -199,6 +203,29 @@ fn qkv_project_inner(
             .unwrap_or_else(|| k.clone());
         (q, k, v, gate)
     }
+}
+
+// Greedy cold prefill keeps the final prompt token for the first-token graph,
+// so README prompt buckets 128 and 512 enter the backbone as 127 and 511.
+const GEMMA4_SPLIT_PREFILL_MIN_SEQ: i32 = 127;
+const GEMMA4_SPLIT_QKV_PREFILL_MAX_SEQ: i32 = 511;
+
+fn prefer_split_qkv_projection(
+    model_family: &str,
+    force_packed: bool,
+    projection_policy: ProjectionBatchPolicy,
+    batch: i32,
+    seq: i32,
+    has_split_qk: bool,
+) -> bool {
+    !force_packed
+        && projection_policy == ProjectionBatchPolicy::Shared
+        && has_split_qk
+        && (batch > 1
+            || (model_family == "gemma4"
+                && batch == 1
+                && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
+                && seq <= GEMMA4_SPLIT_QKV_PREFILL_MAX_SEQ))
 }
 
 pub(crate) fn attention_output_projection(
@@ -1446,13 +1473,23 @@ fn ffn_swiglu_with_policy(
     };
     let x = &smoothed;
 
+    let has_split_gate_up = w.gate_proj.is_some() && w.up_proj.is_some();
+    let qwen_dense_ffn = !cfg.uses_geglu && cfg.model_family.starts_with("qwen");
+    let prefer_split_gate_up = prefer_split_dense_ffn_gate_up(
+        &cfg.model_family,
+        qwen_dense_ffn,
+        seq,
+        leading_elements,
+        has_split_gate_up,
+    );
+
     // Compiled dense FFN with packed gate_up.
     // - SwiGLU (Qwen): decode shapeless + prefill fixed-shape.
     // - GEGLU (Gemma): decode still uncompiled (`gelu_approx` aborts under
     //   MLX shapeless compile). Prefill uses fixed-shape compile with the
     //   Metal-backed `geglu()` helper inside the body; short prompts skip
     //   via `DENSE_FFN_PREFILL_COMPILE_MIN_LEADING`.
-    if let Some(packed) = &w.gate_up_packed {
+    if !prefer_split_gate_up && let Some(packed) = &w.gate_up_packed {
         let packed_dim = packed
             .weight
             .shape()
@@ -1524,17 +1561,10 @@ fn ffn_swiglu_with_policy(
     let gate_up_started = Instant::now();
     let packed_gate_up: Option<MlxArray>;
     let mut gate_up_profile_recorded = false;
-    let qwen_dense_ffn = !cfg.uses_geglu && cfg.model_family.starts_with("qwen");
-    // Decode keeps the split route so the opt-in Qwen dense FFN matvec Metal
-    // kernel and any split-only decode compile path can engage. Prefill (and
-    // multi-token verify) prefer packed gate/up when the loader materialised
-    // it: one quantized matmul + packed SwiGLU Metal is the better prefill
-    // geometry and is a major direct-mode TTFT lever on Qwen 3.6 27B.
-    let prefer_split_gate_up = qwen_dense_ffn
-        && seq == 1
-        && leading_elements == 1
-        && w.gate_proj.is_some()
-        && w.up_proj.is_some();
+    // Qwen decode keeps the split route so its opt-in dense FFN matvec Metal
+    // kernel can engage. Gemma4 publication-shape prefill also keeps split gate/up: paired
+    // 128/512/2048 checks found its two MLX qmatmuls faster than the packed
+    // fixed-shape graph, while decode retains the packed route.
     let (gate_out, up_out) = if !prefer_split_gate_up && let Some(packed) = &w.gate_up_packed {
         let out = qw_with_policy(x, packed, projection_policy);
         let packed_dim = out
@@ -1859,6 +1889,20 @@ fn ffn_swiglu_with_policy(
         &[&out],
     );
     out
+}
+
+fn prefer_split_dense_ffn_gate_up(
+    model_family: &str,
+    qwen_dense_ffn: bool,
+    seq: i32,
+    leading_elements: i64,
+    has_split_gate_up: bool,
+) -> bool {
+    has_split_gate_up
+        && ((qwen_dense_ffn && seq == 1 && leading_elements == 1)
+            || (model_family == "gemma4"
+                && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
+                && leading_elements >= i64::from(GEMMA4_SPLIT_PREFILL_MIN_SEQ)))
 }
 
 fn dense_ffn_prefill_compile_supported(model_family: &str) -> bool {
@@ -3745,6 +3789,127 @@ mod tests {
         assert!(!dense_ffn_prefill_compile_supported("qwen3_5"));
         assert!(!dense_ffn_prefill_compile_supported("qwen3_next"));
         assert!(dense_ffn_prefill_compile_supported("gemma4"));
+    }
+
+    #[test]
+    fn dense_ffn_split_gate_up_policy_is_shape_and_family_scoped() {
+        assert!(prefer_split_dense_ffn_gate_up(
+            "gemma4", false, 127, 127, true
+        ));
+        assert!(!prefer_split_dense_ffn_gate_up("gemma4", false, 1, 1, true));
+        assert!(!prefer_split_dense_ffn_gate_up("gemma4", false, 4, 4, true));
+        assert!(!prefer_split_dense_ffn_gate_up(
+            "gemma4", false, 126, 126, true
+        ));
+        assert!(prefer_split_dense_ffn_gate_up(
+            "qwen3_next",
+            true,
+            1,
+            1,
+            true
+        ));
+        assert!(!prefer_split_dense_ffn_gate_up(
+            "qwen3_next",
+            true,
+            128,
+            128,
+            true
+        ));
+        assert!(!prefer_split_dense_ffn_gate_up(
+            "gemma4", false, 128, 128, false
+        ));
+    }
+
+    #[test]
+    fn gemma4_split_qkv_policy_is_shape_and_family_scoped() {
+        assert!(prefer_split_qkv_projection(
+            "gemma4",
+            false,
+            ProjectionBatchPolicy::Shared,
+            1,
+            127,
+            true,
+        ));
+        assert!(prefer_split_qkv_projection(
+            "gemma4",
+            false,
+            ProjectionBatchPolicy::Shared,
+            1,
+            511,
+            true,
+        ));
+        assert!(!prefer_split_qkv_projection(
+            "gemma4",
+            false,
+            ProjectionBatchPolicy::Shared,
+            1,
+            1,
+            true,
+        ));
+        assert!(!prefer_split_qkv_projection(
+            "gemma4",
+            false,
+            ProjectionBatchPolicy::Shared,
+            1,
+            4,
+            true,
+        ));
+        assert!(!prefer_split_qkv_projection(
+            "gemma4",
+            false,
+            ProjectionBatchPolicy::Shared,
+            1,
+            512,
+            true,
+        ));
+        assert!(!prefer_split_qkv_projection(
+            "gemma4",
+            false,
+            ProjectionBatchPolicy::Shared,
+            1,
+            2_048,
+            true,
+        ));
+        assert!(!prefer_split_qkv_projection(
+            "qwen3_next",
+            false,
+            ProjectionBatchPolicy::Shared,
+            1,
+            128,
+            true,
+        ));
+        assert!(prefer_split_qkv_projection(
+            "qwen3_next",
+            false,
+            ProjectionBatchPolicy::Shared,
+            2,
+            128,
+            true,
+        ));
+        assert!(!prefer_split_qkv_projection(
+            "gemma4",
+            true,
+            ProjectionBatchPolicy::Shared,
+            1,
+            128,
+            true,
+        ));
+        assert!(!prefer_split_qkv_projection(
+            "gemma4",
+            false,
+            ProjectionBatchPolicy::RowExact,
+            1,
+            128,
+            true,
+        ));
+        assert!(!prefer_split_qkv_projection(
+            "gemma4",
+            false,
+            ProjectionBatchPolicy::Shared,
+            1,
+            128,
+            false,
+        ));
     }
 
     fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {

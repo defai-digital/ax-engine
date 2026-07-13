@@ -9239,9 +9239,8 @@ impl MlxRunner {
             );
             state.pending_direct = Some(bootstrap_token);
             // The first generated token was produced at the prefill boundary.
-            // `chunked_prefill` already mirrors mlx_lm's immediate post-first
-            // clear_cache; count that token so the direct decode loop does not
-            // clear again after token 2.
+            // Count it so the periodic cleanup cadence remains aligned with
+            // mlx_lm even when E-series models defer the immediate cleanup.
             state.direct_pipeline_emitted_tokens = 1;
             state
                 .decode_telemetry

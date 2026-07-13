@@ -259,7 +259,11 @@ pub fn chunked_prefill_with_sampling_buffers(
             sampling_logits_buf,
             sampling_candidates_buf,
         );
-        clear_cache();
+        // E2B/E4B defer cleanup past the first-token boundary; request
+        // completion and the decode cadence still bound cache growth.
+        if clear_cache_after_split_prefill(cfg.hidden_size_per_layer_input) {
+            clear_cache();
+        }
         return tok;
     }
 
@@ -658,6 +662,10 @@ fn mlx_lm_style_cache_only_prefix_len(total_tokens: usize, sampling: MlxSampling
     } else {
         0
     }
+}
+
+fn clear_cache_after_split_prefill(hidden_size_per_layer_input: usize) -> bool {
+    hidden_size_per_layer_input == 0
 }
 
 fn eval_kv_refs(cache: &MlxKVCache) {
@@ -1060,5 +1068,11 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn e_series_prefill_defers_cache_cleanup() {
+        assert!(!clear_cache_after_split_prefill(256));
+        assert!(clear_cache_after_split_prefill(0));
     }
 }
