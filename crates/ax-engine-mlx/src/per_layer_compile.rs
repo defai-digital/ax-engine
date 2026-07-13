@@ -372,7 +372,7 @@ pub fn apply_layer_dense_ffn_prefill(
         return None;
     }
     // Skip short prompts: compile amortization needs long sequences (README
-    // 512/2048 rows). Matches DENSE_FFN_PREFILL_COMPILE_MIN_LEADING.
+    // mid/long prompts). Matches DENSE_FFN_PREFILL_COMPILE_MIN_LEADING.
     if leading_elements < crate::fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING {
         return None;
     }

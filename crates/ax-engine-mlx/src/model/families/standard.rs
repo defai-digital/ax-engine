@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, MlxVectorArray, add, rms_norm, rope, slice};
+use mlx_sys::{MlxArray, MlxVectorArray, add, add_rms_norm_pair, rms_norm, rope, slice};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -201,9 +201,22 @@ fn layer_shell_post_attention(
                     );
                 }
                 let post_started = profile_gemma4_moe_decode.then(Instant::now);
-                let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref(), cfg.rms_norm_eps);
-                let combined = add(&h1, &h2, None);
-                let out = rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
+                // Fuse dense+expert residual with shared post-norm when expert
+                // post-norm is absent (Gemma 4 26B common case): one
+                // add_rms_norm_pair instead of add + rms_norm (prefill+decode).
+                let out = match (w.ffn_post_norm2.as_ref(), w.ffn_post_norm.as_ref()) {
+                    (None, Some(shared_post)) => {
+                        // Second return is rms_norm(h1+h2); residual unused.
+                        let (_combined, normed) =
+                            add_rms_norm_pair(&h1, &h2, shared_post, cfg.rms_norm_eps, None);
+                        normed
+                    }
+                    (expert_post, shared_post) => {
+                        let h2 = rms_norm_opt(&h2, expert_post, cfg.rms_norm_eps);
+                        let combined = add(&h1, &h2, None);
+                        rms_norm_opt(&combined, shared_post, cfg.rms_norm_eps)
+                    }
+                };
                 if let Some(started) = post_started {
                     profile_eval_elapsed(
                         profile_gemma4_moe_decode,

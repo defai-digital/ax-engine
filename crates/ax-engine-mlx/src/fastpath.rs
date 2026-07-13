@@ -699,9 +699,9 @@ env_flag_default_on!(
 
 /// Minimum leading element count (product of non-last dims) before dense FFN
 /// prefill compile engages. `batch * seq` for standard `[B,S,H]` layouts;
-/// 512 covers the README 512/2048 prompt rows while leaving 128 on the
-/// uncompiled path.
-pub const DENSE_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 512;
+/// 256 covers mid-length prompts; README 128-token rows stay uncompiled
+/// so short-prompt microbenches avoid compile tax.
+pub const DENSE_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 256;
 
 env_flag!(
     /// `AX_MLX_MOE_ROUTER_FUSED_METAL` — enable fused MoE router Metal
@@ -1378,7 +1378,7 @@ mod tests {
             "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_PREFILL_ENABLED",
             "1"
         ));
-        assert_eq!(super::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING, 512);
+        assert_eq!(super::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING, 256);
         assert_eq!(super::MOE_PACKED_GEGLU_PREFILL_MAX_SEQ, 512);
     }
 
