@@ -1133,6 +1133,29 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_delta_speculation_preserves_target_distribution() {
+        let target = TokenDistribution::new(vec![(0, 0.6), (1, 0.3), (2, 0.1)]).unwrap();
+        let draft = TokenDistribution::new(vec![(0, 1.0)]).unwrap();
+        let mut rng = Xorshift64::new(43);
+        let mut counts = [0_usize; 3];
+        let trials = 50_000_usize;
+
+        for _ in 0..trials {
+            let token = if rng.next_f32() < target.probability(0) {
+                0
+            } else {
+                sample_residual_token_distribution(&target, &draft, &mut rng).unwrap()
+            };
+            counts[token as usize] += 1;
+        }
+
+        for (count, expected) in counts.into_iter().zip([0.6_f32, 0.3, 0.1]) {
+            let observed = count as f32 / trials as f32;
+            assert!((observed - expected).abs() < 0.01);
+        }
+    }
+
+    #[test]
     fn xorshift_produces_distinct_values() {
         let mut rng = Xorshift64::new(1);
         let vals: Vec<u64> = (0..10).map(|_| rng.next_u64()).collect();

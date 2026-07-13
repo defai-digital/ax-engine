@@ -114,6 +114,7 @@ use crate::ngram_accel::{
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64, sample_categorical_into,
     sample_categorical_with_logprob_and_distribution, sample_residual_token_distribution,
+    token_distribution,
 };
 use crate::speculation_profile::speculation_profile_from_env;
 use crate::turboquant::{
@@ -381,6 +382,7 @@ enum MtpCorrectnessMode {
     #[default]
     Unknown,
     GreedyExact,
+    SampledExact,
     ApproximateOptimistic,
     DirectFallback,
 }
@@ -390,7 +392,7 @@ impl MtpCorrectnessMode {
         match self {
             Self::Unknown => 0,
             Self::GreedyExact => 1,
-            // Route code 2 is reserved for SampledExact once Phase 0C lands.
+            Self::SampledExact => 2,
             Self::ApproximateOptimistic => 3,
             Self::DirectFallback => 4,
         }
@@ -425,12 +427,13 @@ enum MtpRequestRoute {
 const fn mtp_request_route(
     has_mtp: bool,
     mtp_requested: bool,
+    exact_supported: bool,
     approximate_profile: bool,
     mtp_bypassed: bool,
     uses_repetition_penalty: bool,
 ) -> MtpRequestRoute {
     if has_mtp && mtp_requested {
-        if approximate_profile && !mtp_bypassed && !uses_repetition_penalty {
+        if (exact_supported || approximate_profile) && !mtp_bypassed && !uses_repetition_penalty {
             MtpRequestRoute::StrictMtp
         } else {
             MtpRequestRoute::DirectFallback
@@ -438,6 +441,19 @@ const fn mtp_request_route(
     } else {
         MtpRequestRoute::Other
     }
+}
+
+fn mtp_exact_sampling_supported(
+    sampling: MlxSamplingParams,
+    target_softmax_topk: Option<u32>,
+) -> bool {
+    if sampling.uses_repetition_penalty()
+        || crate::mtp::mtp_draft_mode_from_env() != crate::mtp::MtpDraftMode::Greedy
+    {
+        return false;
+    }
+    sampling.temperature <= 0.0
+        || (target_softmax_topk.is_none() && (sampling.top_k > 0 || sampling.top_p >= 1.0))
 }
 
 const fn should_bootstrap_direct_pipeline(
@@ -3292,6 +3308,7 @@ impl KvCacheTelemetry {
 struct MtpTargetProbWorkspace {
     flat_indices: Vec<i32>,
     target_probs: Vec<f32>,
+    target_candidates: Vec<(u32, f32)>,
 }
 
 /// Per-request mutable state persisted across prefill → decode steps.
@@ -7722,11 +7739,10 @@ impl MlxRunner {
     /// Returns verified output tokens (1 or more) in the same format as n-gram
     /// `ngram_accel_decode_step` / `run_single_decode`.
     ///
-    /// When draft log-probs are available (temperature sampling), acceptance uses
-    /// rejection sampling: accept draft[i] with probability
-    /// min(1, p_target(draft[i]) / p_draft(draft[i])).
-    /// When log-probs are absent (greedy draft or temperature==0), falls back to
-    /// greedy argmax comparison.
+    /// Sampled targets use rejection sampling: accept draft[i] with probability
+    /// min(1, p_target(draft[i]) / p_draft(draft[i])). Deterministic greedy
+    /// proposals are delta distributions with p_draft=1 and use exact residual
+    /// correction on rejection. Greedy targets use argmax verification.
     fn run_mtp_decode(
         &self,
         state: &mut RequestState,
@@ -7769,7 +7785,11 @@ impl MlxRunner {
                     1.0
                 }
             });
-        let model_acceptance_mode = mtp_model_acceptance_mode_from_env();
+        let model_acceptance_mode = if sampling.temperature > 0.0 {
+            MtpModelAcceptanceMode::RejectionSampling
+        } else {
+            mtp_model_acceptance_mode_from_env()
+        };
 
         // Skip-state consumption (Lightning-MLX always-advance pattern):
         // When the previous step's verify forward captured logits at the last
@@ -7894,15 +7914,29 @@ impl MlxRunner {
             && (self.mtp_optimistic || auto_optimistic)
             && !pending.is_empty()
             && all_drafts_optimistic_eligible;
-        let proposal_law = match crate::mtp::mtp_draft_mode_from_env() {
-            crate::mtp::MtpDraftMode::Greedy => MtpProposalLaw::DeterministicDelta,
-            crate::mtp::MtpDraftMode::Stochastic => MtpProposalLaw::Stochastic,
+        let proposal_law = if state.mtp_pending_draft_distributions.is_empty()
+            && crate::mtp::mtp_draft_mode_from_env() == crate::mtp::MtpDraftMode::Greedy
+        {
+            MtpProposalLaw::DeterministicDelta
+        } else {
+            MtpProposalLaw::Stochastic
+        };
+        let deterministic_delta_log_probs = (proposal_law == MtpProposalLaw::DeterministicDelta)
+            .then(|| vec![0.0_f32; pending.len()]);
+        let acceptance_log_probs = deterministic_delta_log_probs
+            .as_deref()
+            .unwrap_or(&state.mtp_pending_draft_log_probs);
+        let target_filter = MtpDraftFilter {
+            top_p: sampling.top_p,
+            top_k: sampling.top_k,
         };
         let approximate_profile =
             optimistic_allowed && (self.mtp_optimistic || auto_optimistic_enabled);
         state.mtp_telemetry.record_correctness_mode(
             if approximate_profile {
                 MtpCorrectnessMode::ApproximateOptimistic
+            } else if sampling.temperature > 0.0 {
+                MtpCorrectnessMode::SampledExact
             } else {
                 MtpCorrectnessMode::GreedyExact
             },
@@ -7936,8 +7970,8 @@ impl MlxRunner {
         let verify_len = verify_input.len();
         mtp_timings.verify_tokens = saturating_u32(verify_len);
 
-        // Returns (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok, predicted).
-        // correction_argmax_tok is only evaluated when greedy fallback needs it.
+        // Returns logits, draft hidden, acceptance outcome, correction token,
+        // whether exact residual correction succeeded, and target argmax tokens.
         // predicted is the target model's argmax tokens for EWMA tracking.
         let (
             logits_all,
@@ -7945,6 +7979,7 @@ impl MlxRunner {
             accept_count,
             all_accepted,
             correction_argmax_tok,
+            exact_residual_correction_applied,
             predicted,
         ) = if has_linear_attention {
             if optimistic {
@@ -8014,6 +8049,7 @@ impl MlxRunner {
                     ac,
                     true,
                     correction_argmax_tok,
+                    false,
                     predicted,
                 )
             } else {
@@ -8048,11 +8084,11 @@ impl MlxRunner {
                 let lazy_target_probs = compute_mtp_target_probs(
                     &logits_all,
                     &pending,
-                    &state.mtp_pending_draft_log_probs,
+                    acceptance_log_probs,
                     vocab,
                     sampling,
                     self.mtp_target_softmax_topk,
-                    MtpDraftFilter::IDENTITY,
+                    target_filter,
                     target_prob_workspace,
                 );
                 mtp_timings.target_softmax_wall_us = mtp_timings
@@ -8087,7 +8123,7 @@ impl MlxRunner {
 
                 let accept = mtp_accept_count(
                     &pending,
-                    &state.mtp_pending_draft_log_probs,
+                    acceptance_log_probs,
                     &state.mtp_pending_draft_distributions,
                     &state.mtp_pending_draft_sources,
                     target_probs_cpu,
@@ -8101,6 +8137,20 @@ impl MlxRunner {
                 );
                 let ac = accept.accept_count;
                 let all_accepted = accept.all_accepted;
+                let exact_rejection_correction = (!all_accepted
+                    && proposal_law == MtpProposalLaw::DeterministicDelta)
+                    .then(|| {
+                        sample_exact_mtp_delta_rejection_correction(
+                            &logits_all,
+                            ac,
+                            vocab,
+                            sampling,
+                            pending[ac],
+                            &mut state.rng,
+                        )
+                    })
+                    .flatten();
+                let exact_residual_correction_applied = exact_rejection_correction.is_some();
                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
                 let rollback_started = Instant::now();
@@ -8125,7 +8175,10 @@ impl MlxRunner {
                     draft_hidden,
                     ac,
                     all_accepted,
-                    accept.rejection_correction.unwrap_or(correction_argmax_tok),
+                    exact_rejection_correction
+                        .or(accept.rejection_correction)
+                        .unwrap_or(correction_argmax_tok),
+                    exact_residual_correction_applied,
                     predicted,
                 )
             }
@@ -8194,6 +8247,7 @@ impl MlxRunner {
                     ac,
                     true,
                     correction_argmax_tok,
+                    false,
                     predicted,
                 )
             } else {
@@ -8219,11 +8273,11 @@ impl MlxRunner {
                 let lazy_target_probs = compute_mtp_target_probs(
                     &logits_all,
                     &pending,
-                    &state.mtp_pending_draft_log_probs,
+                    acceptance_log_probs,
                     vocab,
                     sampling,
                     self.mtp_target_softmax_topk,
-                    MtpDraftFilter::IDENTITY,
+                    target_filter,
                     target_prob_workspace,
                 );
                 mtp_timings.target_softmax_wall_us = mtp_timings
@@ -8258,7 +8312,7 @@ impl MlxRunner {
 
                 let accept = mtp_accept_count(
                     &pending,
-                    &state.mtp_pending_draft_log_probs,
+                    acceptance_log_probs,
                     &state.mtp_pending_draft_distributions,
                     &state.mtp_pending_draft_sources,
                     target_probs_cpu,
@@ -8272,6 +8326,20 @@ impl MlxRunner {
                 );
                 let ac = accept.accept_count;
                 let all_accepted = accept.all_accepted;
+                let exact_rejection_correction = (!all_accepted
+                    && proposal_law == MtpProposalLaw::DeterministicDelta)
+                    .then(|| {
+                        sample_exact_mtp_delta_rejection_correction(
+                            &logits_all,
+                            ac,
+                            vocab,
+                            sampling,
+                            pending[ac],
+                            &mut state.rng,
+                        )
+                    })
+                    .flatten();
+                let exact_residual_correction_applied = exact_rejection_correction.is_some();
                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
                 let rollback_started = Instant::now();
@@ -8296,7 +8364,10 @@ impl MlxRunner {
                     draft_hidden,
                     ac,
                     all_accepted,
-                    accept.rejection_correction.unwrap_or(correction_argmax_tok),
+                    exact_rejection_correction
+                        .or(accept.rejection_correction)
+                        .unwrap_or(correction_argmax_tok),
+                    exact_residual_correction_applied,
                     predicted,
                 )
             }
@@ -8328,17 +8399,33 @@ impl MlxRunner {
             pending[..accept_count].to_vec()
         };
         let tail_sample_started = Instant::now();
-        let tail_tok = sample_logit_row(
-            &logits_all,
-            correction_argmax_tok,
-            accept_count,
-            vocab,
-            sampling,
-            &mut state.rng,
-            &mut state.sampling_probs_buf,
-            &mut state.sampling_logits_buf,
-            &mut state.sampling_candidates_buf,
-        );
+        let exact_residual_required = !optimistic
+            && !all_accepted
+            && sampling.temperature > 0.0
+            && proposal_law == MtpProposalLaw::DeterministicDelta;
+        if exact_residual_required && !exact_residual_correction_applied {
+            state.mtp_telemetry.record_direct_fallback();
+        }
+        let uses_exact_residual = exact_residual_required && exact_residual_correction_applied;
+        let tail_tok = if uses_exact_residual {
+            state.mtp_telemetry.residual_correction_tokens = state
+                .mtp_telemetry
+                .residual_correction_tokens
+                .saturating_add(1);
+            correction_argmax_tok
+        } else {
+            sample_logit_row(
+                &logits_all,
+                correction_argmax_tok,
+                accept_count,
+                vocab,
+                sampling,
+                &mut state.rng,
+                &mut state.sampling_probs_buf,
+                &mut state.sampling_logits_buf,
+                &mut state.sampling_candidates_buf,
+            )
+        };
         mtp_timings.tail_sample_wall_us = elapsed_us(tail_sample_started);
         result.push(tail_tok);
         mtp_timings.emitted_tokens = saturating_u32(result.len());
@@ -9113,10 +9200,12 @@ impl MlxRunner {
             self.sync_turboquant_shadow_storage_if_needed(state, true, layer_eligible);
         let approximate_profile = mtp_optimistic_allowed(self.weights.glm_mtp.is_some())
             && (self.mtp_optimistic || mtp_auto_optimistic_enabled_from_env());
+        let exact_supported = is_greedy;
         let mtp_uses_direct_pipeline = matches!(
             mtp_request_route(
                 self.has_mtp(),
                 !self.disable_ngram_acceleration,
+                exact_supported,
                 approximate_profile,
                 false,
                 false,
@@ -9179,23 +9268,33 @@ impl MlxRunner {
         // ngram_acceleration_disabled_for_request, which run_non_ngram_decode
         // intercepts before we'd ever reach MTP).  Repetition-penalty sampling
         // is incompatible with speculative decode and is excluded.
-        // MTP requests fall back to the direct single-token sampler until the
-        // exact verifier passes the token-equivalence oracle. The only current
-        // opt-in acceleration route is the explicitly approximate optimistic
-        // speed-ceiling profile.
+        // Exact MTP supports deterministic-delta drafts with greedy or filtered
+        // target sampling. Unsupported proposal/filter combinations fail closed
+        // to direct; optimistic verification remains an explicit approximation.
         // The per-request bypass (state.mtp_bypassed) short-circuits MTP when
         // the acceptance EWMA has shown MTP is not paying for itself.
         let approximate_profile = mtp_optimistic_allowed(self.weights.glm_mtp.is_some())
             && (self.mtp_optimistic || mtp_auto_optimistic_enabled_from_env());
+        let exact_supported = state.mtp_pending_draft_distributions.is_empty()
+            && mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
         match mtp_request_route(
             self.has_mtp(),
             !self.disable_ngram_acceleration,
+            exact_supported,
             approximate_profile,
             state.mtp_bypassed,
             sampling.uses_repetition_penalty(),
         ) {
             MtpRequestRoute::DirectFallback => {
                 state.mtp_telemetry.record_direct_fallback();
+                state.mtp_pending_draft.clear();
+                state.mtp_pending_draft_log_probs.clear();
+                state.mtp_pending_draft_distributions.clear();
+                state.mtp_pending_draft_sources.clear();
+                state.mtp_decode_count = 0;
+                if let Some(cache) = state.mtp_cache.as_mut() {
+                    cache.reset();
+                }
                 if is_greedy && !sampling.uses_repetition_penalty() {
                     return vec![self.run_direct_pipeline_decode(
                         state,
@@ -9894,15 +9993,16 @@ fn mtp_ngram_pseudo_log_probs(
 /// Lazy target probability container for MTP rejection sampling.
 ///
 /// `Full` uses the existing full-vocab softmax path (default).
-/// `TopK` computes softmax over only the top-k logits per position, then does a
-/// CPU-side lookup to extract the probability for each draft token.  This avoids
-/// materializing a `[verify_len, 151936]` softmax tensor, saving ~100× softmax compute.
+/// `TopK` gathers full-vocabulary softmax probabilities for only the top-k tokens
+/// per position, then does a CPU-side lookup for each draft token. This avoids
+/// transferring a `[verify_len, vocab]` softmax tensor to the CPU.
 enum LazyTargetProbs {
     Full(MlxArray),
     TopK {
         indices: MlxArray,
         probs: MlxArray,
         k: u32,
+        top_p: f32,
     },
 }
 
@@ -9928,7 +10028,12 @@ impl LazyTargetProbs {
                 workspace.target_probs.extend_from_slice(arr.data_f32());
                 Some(workspace.target_probs.as_slice())
             }
-            LazyTargetProbs::TopK { indices, probs, k } => {
+            LazyTargetProbs::TopK {
+                indices,
+                probs,
+                k,
+                top_p,
+            } => {
                 let k_val = *k as usize;
                 let indices_data = indices.data_u32();
                 let probs_data = probs.data_f32();
@@ -9936,18 +10041,47 @@ impl LazyTargetProbs {
                 for (i, &needle) in pending.iter().enumerate() {
                     let row_start = i * k_val;
                     let row_end = row_start + k_val;
-                    let mut found = false;
+                    workspace.target_candidates.clear();
                     for j in row_start..row_end {
-                        if indices_data.get(j) == Some(&needle) {
-                            let p = probs_data.get(j).copied().unwrap_or(0.0_f32);
-                            workspace.target_probs.push(p.max(0.0_f32));
-                            found = true;
-                            break;
+                        if let (Some(&token), Some(&prob)) =
+                            (indices_data.get(j), probs_data.get(j))
+                            && prob > 0.0
+                            && prob.is_finite()
+                        {
+                            workspace.target_candidates.push((token, prob));
                         }
                     }
-                    if !found {
-                        workspace.target_probs.push(0.0_f32);
+                    workspace.target_candidates.sort_by(
+                        |(left_token, left_prob), (right_token, right_prob)| {
+                            right_prob
+                                .partial_cmp(left_prob)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| left_token.cmp(right_token))
+                        },
+                    );
+                    if top_p.is_finite() && *top_p > 0.0 && *top_p < 1.0 {
+                        let mut cumulative = 0.0_f32;
+                        let mut keep = 0_usize;
+                        for (_, prob) in &workspace.target_candidates {
+                            cumulative += *prob;
+                            keep += 1;
+                            if cumulative >= *top_p {
+                                break;
+                            }
+                        }
+                        workspace.target_candidates.truncate(keep.max(1));
                     }
+                    let filtered_sum: f32 = workspace
+                        .target_candidates
+                        .iter()
+                        .map(|(_, prob)| *prob)
+                        .sum();
+                    let probability = workspace
+                        .target_candidates
+                        .iter()
+                        .find(|(token, _)| *token == needle)
+                        .map_or(0.0_f32, |(_, prob)| *prob / filtered_sum.max(1e-37_f32));
+                    workspace.target_probs.push(probability.max(0.0_f32));
                 }
                 Some(workspace.target_probs.as_slice())
             }
@@ -9965,6 +10099,7 @@ struct MtpDraftFilter {
 }
 
 impl MtpDraftFilter {
+    #[cfg(test)]
     const IDENTITY: Self = Self {
         top_p: 1.0,
         top_k: 0,
@@ -10004,7 +10139,6 @@ fn compute_mtp_target_probs(
             return None;
         }
 
-        let scaled_topk = multiply(logits_all, &inv_temp, None);
         let mut all_top_indices = Vec::with_capacity(pending.len());
         let mut all_top_probs = Vec::with_capacity(pending.len());
         // logits_all shape: [1 + pending.len(), vocab].
@@ -10012,11 +10146,11 @@ fn compute_mtp_target_probs(
         // logits_all[i] = prediction after position i = target for pending[i].
         // Row 0 is the target for pending[0]; rows 0..n are the draft targets.
         for row in 0..pending.len() as i32 {
-            let row_logits = slice(&scaled_topk, &[row, 0], &[row + 1, vocab], &[1, 1], None);
+            let row_logits = slice(&scaled, &[row, 0], &[row + 1, vocab], &[1, 1], None);
             let part = argpartition_axis(&row_logits, -k_i32, -1, None);
             let top_idx = slice(&part, &[0, vocab - k_i32], &[1, vocab], &[1, 1], None);
-            let top_vals = take_along_axis(&row_logits, &top_idx, -1, None);
-            let top_p = softmax(&top_vals, -1, None);
+            let full_probs = softmax(&row_logits, -1, None);
+            let top_p = take_along_axis(&full_probs, &top_idx, -1, None);
             all_top_indices.push(top_idx);
             all_top_probs.push(top_p);
         }
@@ -10029,6 +10163,7 @@ fn compute_mtp_target_probs(
             indices: astype(&stacked_indices, MlxDtype::Uint32, None),
             probs: stacked_probs,
             k,
+            top_p: target_sampling.top_p,
         })
     } else if draft_filter.top_k > 0 || draft_filter.top_p < 1.0 {
         // Draft-path filter applied to target probs for rejection-sampling parity.
@@ -10048,8 +10183,8 @@ fn compute_mtp_target_probs(
             let (row_idx, row_probs) = if dk_i32 < vocab {
                 let part = argpartition_axis(&row_logits, -dk_i32, -1, None);
                 let top_idx = slice(&part, &[0, vocab - dk_i32], &[1, vocab], &[1, 1], None);
-                let top_vals = take_along_axis(&row_logits, &top_idx, -1, None);
-                let top_p = softmax(&top_vals, -1, None);
+                let full_probs = softmax(&row_logits, -1, None);
+                let top_p = take_along_axis(&full_probs, &top_idx, -1, None);
                 (top_idx, top_p)
             } else {
                 let top_p = softmax(&row_logits, -1, None);
@@ -10072,7 +10207,8 @@ fn compute_mtp_target_probs(
         Some(LazyTargetProbs::TopK {
             indices: astype(&stacked_indices, MlxDtype::Uint32, None),
             probs: stacked_probs,
-            k: dk.max(1),
+            k: dk_i32 as u32,
+            top_p: draft_filter.top_p,
         })
     } else {
         let probs = softmax(&scaled, -1, None);
@@ -10096,6 +10232,31 @@ fn compute_mtp_target_probs(
             None,
         )))
     }
+}
+
+fn sample_exact_mtp_delta_rejection_correction(
+    logits_all: &MlxArray,
+    position: usize,
+    vocab: i32,
+    sampling: MlxSamplingParams,
+    draft_token: u32,
+    rng: &mut Xorshift64,
+) -> Option<u32> {
+    if sampling.temperature <= 0.0 {
+        return None;
+    }
+    let position = position as i32;
+    let row = slice(
+        logits_all,
+        &[position, 0],
+        &[position + 1, vocab],
+        &[1, 1],
+        None,
+    );
+    eval(&[&row]);
+    let target = token_distribution(row.data_f32(), sampling)?;
+    let draft = TokenDistribution::new(vec![(draft_token, 1.0)])?;
+    sample_residual_token_distribution(&target, &draft, rng)
 }
 
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.
@@ -12134,27 +12295,76 @@ mod tests {
     }
 
     #[test]
-    fn mtp_request_route_only_accelerates_explicit_approximate_profile() {
+    fn mtp_request_route_accelerates_exact_or_explicit_approximate_profiles() {
         assert_eq!(
-            mtp_request_route(true, true, true, false, false),
+            mtp_request_route(true, true, true, false, false, false),
             MtpRequestRoute::StrictMtp
         );
         assert_eq!(
-            mtp_request_route(true, true, false, false, false),
+            mtp_request_route(true, true, false, true, false, false),
+            MtpRequestRoute::StrictMtp
+        );
+        assert_eq!(
+            mtp_request_route(true, true, false, false, false, false),
             MtpRequestRoute::DirectFallback
         );
         assert_eq!(
-            mtp_request_route(true, false, false, false, false),
+            mtp_request_route(true, false, true, false, false, false),
             MtpRequestRoute::Other
         );
         assert_eq!(
-            mtp_request_route(true, true, true, true, false),
+            mtp_request_route(true, true, true, true, true, false),
             MtpRequestRoute::DirectFallback
         );
         assert_eq!(
-            mtp_request_route(true, true, true, false, true),
+            mtp_request_route(true, true, true, true, false, true),
             MtpRequestRoute::DirectFallback
         );
+    }
+
+    #[test]
+    fn mtp_exact_sampling_support_rejects_unsupported_target_filters() {
+        assert!(mtp_exact_sampling_supported(
+            MlxSamplingParams::greedy(),
+            None
+        ));
+        assert!(mtp_exact_sampling_supported(
+            MlxSamplingParams::new(0.6, 0.95, 20),
+            None
+        ));
+        assert!(!mtp_exact_sampling_supported(
+            MlxSamplingParams::new(0.6, 0.95, 0),
+            None
+        ));
+        assert!(!mtp_exact_sampling_supported(
+            MlxSamplingParams::new(0.6, 0.95, 20),
+            Some(128)
+        ));
+    }
+
+    #[test]
+    fn mtp_exact_delta_rejection_correction_removes_draft_mass() {
+        let logits = [0.6_f32.ln(), 0.3_f32.ln(), 0.1_f32.ln()];
+        let logits_all = MlxArray::from_raw_data(
+            logits.as_ptr() as *const u8,
+            std::mem::size_of_val(&logits),
+            &[1, 3],
+            MlxDtype::Float32,
+        );
+        let sampling = MlxSamplingParams::new(1.0, 1.0, 3);
+        for seed in 0..32 {
+            let mut rng = Xorshift64::new(seed);
+            let correction = sample_exact_mtp_delta_rejection_correction(
+                &logits_all,
+                0,
+                3,
+                sampling,
+                0,
+                &mut rng,
+            )
+            .unwrap();
+            assert_ne!(correction, 0);
+        }
     }
 
     #[test]
@@ -17382,6 +17592,45 @@ mod tests {
             topk_probs[0], 0.0,
             "token 99 is outside top-3, should return 0"
         );
+    }
+
+    #[test]
+    fn filtered_target_probs_match_gpu_topk_full_probability_sampler() {
+        let row = [0.4_f32.ln(), 0.3_f32.ln(), 0.2_f32.ln(), 0.1_f32.ln()];
+        let mut logits_data = Vec::new();
+        logits_data.extend_from_slice(&row);
+        logits_data.extend_from_slice(&row);
+        logits_data.extend_from_slice(&row);
+        let logits_all = MlxArray::from_raw_data(
+            logits_data.as_ptr() as *const u8,
+            std::mem::size_of_val(logits_data.as_slice()),
+            &[3, 4],
+            MlxDtype::Float32,
+        );
+        let pending = [0_u32, 1_u32];
+        let pending_log_probs = [0.0_f32, 0.0_f32];
+        let sampling = MlxSamplingParams::new(1.0, 0.55, 2);
+        let mut workspace = MtpTargetProbWorkspace::default();
+        let result = compute_mtp_target_probs(
+            &logits_all,
+            &pending,
+            &pending_log_probs,
+            4,
+            sampling,
+            None,
+            MtpDraftFilter {
+                top_p: sampling.top_p,
+                top_k: sampling.top_k,
+            },
+            &mut workspace,
+        )
+        .unwrap();
+        if let LazyTargetProbs::TopK { indices, probs, .. } = &result {
+            eval(&[indices, probs]);
+        }
+        let probabilities = result.extract_cpu_into(&pending, &mut workspace).unwrap();
+        assert!((probabilities[0] - 4.0 / 7.0).abs() < 1e-6);
+        assert!((probabilities[1] - 3.0 / 7.0).abs() < 1e-6);
     }
 
     #[test]

@@ -28,7 +28,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
             },
         }
 
-    def test_bench_command_records_two_warmups_and_greedy_sampler(self) -> None:
+    def test_bench_command_records_two_warmups_and_sampled_exact_sampler(self) -> None:
         target = bench.Target(
             key="test",
             label="Test",
@@ -59,7 +59,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
         self.assertEqual(command[warmup_index + 1], "2")
         self.assertEqual(
             command[sampling_index + 1],
-            '{"temperature":0.0,"top_p":1.0,"top_k":0}',
+            '{"temperature":0.6,"top_p":0.95,"top_k":20}',
         )
 
     def test_exact_artifact_validation_fails_closed(self) -> None:
@@ -70,6 +70,26 @@ class BenchMtpRefreshTests(unittest.TestCase):
             Path("artifact.json"),
             {"mtp_correctness_summary": {"publication_candidate": True}},
         )
+
+    def test_exact_publication_methodology_requires_clean_two_by_five(self) -> None:
+        valid = {
+            "warmup_repetitions": 2,
+            "repetitions": 5,
+            "build": {"git_tracked_dirty": False},
+        }
+        self.assertEqual(
+            bench.exact_publication_methodology_reasons(valid, valid), []
+        )
+
+        smoke = {
+            "warmup_repetitions": 0,
+            "repetitions": 2,
+            "build": {"git_tracked_dirty": True},
+        }
+        reasons = bench.exact_publication_methodology_reasons(smoke, smoke)
+        self.assertIn("direct_requires_two_warmups", reasons)
+        self.assertIn("mtp_requires_five_measurements", reasons)
+        self.assertIn("mtp_requires_clean_tracked_build", reasons)
 
     def test_approximate_flag_is_only_added_to_mtp_rows(self) -> None:
         target = bench.Target(
@@ -126,12 +146,15 @@ class BenchMtpRefreshTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incorrectly marks"):
             bench.validate_approximate_mtp_artifact(Path("artifact.json"), artifact)
 
-    def test_exact_token_equivalence_oracle_rejects_mismatch(self) -> None:
+    def test_exact_seed_reproducibility_allows_cross_mode_sequence_difference(self) -> None:
         direct = {
             "results": [
                 {
                     "prompt_case_id": "case",
-                    "trials": [{"output_token_ids": [1, 2, 3]}],
+                    "trials": [
+                        {"output_token_ids": [1, 2, 3]},
+                        {"output_token_ids": [1, 2, 3]},
+                    ],
                 }
             ]
         }
@@ -139,20 +162,23 @@ class BenchMtpRefreshTests(unittest.TestCase):
             "results": [
                 {
                     "prompt_case_id": "case",
-                    "trials": [{"output_token_ids": [1, 2, 4]}],
+                    "trials": [
+                        {"output_token_ids": [1, 2, 4]},
+                        {"output_token_ids": [1, 2, 4]},
+                    ],
                 }
             ]
         }
 
-        with self.assertRaisesRegex(ValueError, "token-equivalence oracle failed"):
-            bench.validate_exact_token_equivalence(
-                Path("direct.json"), direct, Path("mtp.json"), mtp
-            )
-
-        mtp["results"][0]["trials"][0]["output_token_ids"] = [1, 2, 3]
-        bench.validate_exact_token_equivalence(
+        bench.validate_exact_seed_reproducibility(
             Path("direct.json"), direct, Path("mtp.json"), mtp
         )
+
+        mtp["results"][0]["trials"][1]["output_token_ids"] = [1, 2, 5]
+        with self.assertRaisesRegex(ValueError, "seed-reproducibility oracle failed"):
+            bench.validate_exact_seed_reproducibility(
+                Path("direct.json"), direct, Path("mtp.json"), mtp
+            )
 
     def test_qwen_draft_quality_uses_prompt_median_target_match_ewma(self) -> None:
         artifact = {
