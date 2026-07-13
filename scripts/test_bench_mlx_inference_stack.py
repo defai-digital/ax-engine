@@ -3957,6 +3957,32 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIn("AX multi-metric peer-win check failed", stderr.getvalue())
         self.assertIn("prefill_not_faster=1", stderr.getvalue())
 
+    def test_reused_reference_publication_metadata_is_bounded(self) -> None:
+        reference_doc = {
+            "schema_version": bench.MLX_INFERENCE_STACK_SCHEMA_VERSION,
+            "benchmark_window": {"elapsed_seconds": 10.0},
+            "build": {"commit": "a" * 40, "git_tracked_dirty": False},
+            "repetitions": 5,
+            "warmup_repetitions": 2,
+            "cooldown": 15.0,
+            "results": [{"large": "payload"}],
+        }
+
+        metadata = bench.reused_reference_publication_metadata(reference_doc)
+
+        self.assertEqual(
+            metadata,
+            {
+                "schema_version": bench.MLX_INFERENCE_STACK_SCHEMA_VERSION,
+                "benchmark_window": {"elapsed_seconds": 10.0},
+                "build": {"commit": "a" * 40, "git_tracked_dirty": False},
+                "repetitions": 5,
+                "warmup_repetitions": 2,
+                "cooldown": 15.0,
+            },
+        )
+        self.assertNotIn("results", metadata)
+
     def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:
         self.assertEqual(
             bench.summarize_prefix_reuse_evidence([])["physical_snapshot_coverage"],

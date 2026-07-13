@@ -38,6 +38,7 @@
     },
     {
       "slug": "gemma-4-e2b-it-8bit",
+      "readme_direct_table": false,
       "readme_model": "Gemma 4 E2B",
       "readme_quant": "8-bit",
       "mlx_local_dir": ".internal/models/gemma-4-e2b-it-8bit",
@@ -66,6 +67,7 @@
     },
     {
       "slug": "gemma-4-e4b-it-6bit",
+      "mlx_lm_peer_required": false,
       "readme_model": "Gemma 4 E4B",
       "readme_quant": "6-bit",
       "mlx_local_dir": ".internal/models/gemma-4-e4b-it-6bit",
@@ -167,6 +169,7 @@
     },
     {
       "slug": "qwen3_6-27b-8bit",
+      "readme_direct_table": false,
       "readme_model": "Qwen 3.6 27B",
       "readme_quant": "8-bit",
       "mlx_local_dir": ".internal/models/Qwen3.6-27B-8bit",

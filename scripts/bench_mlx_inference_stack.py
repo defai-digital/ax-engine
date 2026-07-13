@@ -5172,6 +5172,19 @@ def fail_if_ax_mlx_lm_peer_wins_not_publication_candidate(
     sys.exit(2)
 
 
+def reused_reference_publication_metadata(
+    reference_doc: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": reference_doc.get("schema_version"),
+        "benchmark_window": reference_doc.get("benchmark_window"),
+        "build": reference_doc.get("build"),
+        "repetitions": reference_doc.get("repetitions"),
+        "warmup_repetitions": reference_doc.get("warmup_repetitions"),
+        "cooldown": reference_doc.get("cooldown"),
+    }
+
+
 def load_reused_reference_rows(
     path: Path,
     *,
@@ -6872,6 +6885,9 @@ def main() -> None:
             doc["reference_contract"]["reused_reference_artifact_build"] = (
                 reused_reference_doc.get("build", {})
             )
+            doc["reference_contract"][
+                "reused_reference_artifact_publication_metadata"
+            ] = reused_reference_publication_metadata(reused_reference_doc)
 
     print_summary(doc)
     print(json.dumps(doc, indent=2))

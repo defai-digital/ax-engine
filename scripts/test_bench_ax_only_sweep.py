@@ -27,6 +27,72 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         (path / "model-manifest.json").write_text("{}\n")
         (path / "weights.safetensors").write_bytes(b"")
 
+    def peer_win_result_doc(
+        self,
+        *,
+        prompt_tokens: tuple[int, ...] = (128, 512, 2048),
+        generation_tokens: int = 128,
+        publication_candidate: bool = True,
+    ) -> dict[str, object]:
+        peer_win_rows = [
+            {
+                "prompt_tokens": prompt_length,
+                "generation_tokens": generation_tokens,
+                "classification": "strict_win",
+                "failure_reasons": [],
+            }
+            for prompt_length in prompt_tokens
+        ]
+        conditions = {
+            "load_average": {"one_minute": 1.0},
+            "power_source": "AC Power",
+            "thermal_warning_recorded": False,
+            "performance_warning_recorded": False,
+            "cpu_power_status_recorded": False,
+            "top_processes_cpu": [{"cpu_percent": 25.0}],
+        }
+        publication_metadata = {
+            "schema_version": sweep.MLX_INFERENCE_STACK_SCHEMA_VERSION,
+            "benchmark_window": {
+                "performance_conditions_start": conditions,
+                "performance_conditions_end": conditions,
+            },
+            "build": {
+                "commit": "a" * 40,
+                "build_profile": "release",
+                "git_tracked_dirty": False,
+            },
+            "repetitions": 5,
+            "warmup_repetitions": 2,
+            "cooldown": 15.0,
+        }
+        results = [
+            {
+                "engine": engine,
+                "prompt_tokens": prompt_length,
+                "generation_tokens": generation_tokens,
+                "trials": [{} for _ in range(5)],
+            }
+            for engine in ("mlx_lm", "ax_engine_mlx")
+            for prompt_length in prompt_tokens
+        ]
+        return {
+            **publication_metadata,
+            "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+            "run_stability_summary": {"publication_candidate": True},
+            "reference_contract": {
+                "reused_reference_artifact_publication_metadata": publication_metadata
+            },
+            "results": results,
+            "ax_mlx_lm_peer_wins": {
+                "schema_version": sweep.PEER_WIN_SCHEMA_VERSION,
+                "publication_candidate": publication_candidate,
+                "pair_count": len(peer_win_rows),
+                "strict_win_count": len(peer_win_rows),
+                "rows": peer_win_rows,
+            }
+        }
+
     def test_filter_manifest_rows_returns_all_rows_without_filter(self) -> None:
         rows = [{"slug": "a"}, {"slug": "b"}]
 
@@ -46,6 +112,70 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         )
         self.assertEqual(row["mlx_local_dir"], ".internal/models/gemma-4-e4b-it-6bit")
         self.assertIn("AX manifest is present", row["prompt_source_note"])
+
+    def test_default_manifest_defines_twelve_readme_and_eleven_peer_rows(self) -> None:
+        manifest = json.loads(sweep.DEFAULT_MANIFEST.read_text())
+        rows = sweep.filter_manifest_rows(manifest["rows"], None)
+        readme_rows = sweep.readme_manifest_rows(rows)
+        peer_rows = sweep.mlx_lm_peer_comparable_rows(readme_rows)
+
+        self.assertEqual(len(rows), 14)
+        self.assertEqual(len(readme_rows), 12)
+        self.assertEqual(len(peer_rows), 11)
+        self.assertEqual(
+            {
+                row["slug"]
+                for row in rows
+                if row.get("readme_direct_table") is False
+            },
+            {"gemma-4-e2b-it-8bit", "qwen3_6-27b-8bit"},
+        )
+        self.assertEqual(
+            {
+                row["slug"]
+                for row in readme_rows
+                if row.get("mlx_lm_peer_required") is False
+            },
+            {"gemma-4-e4b-it-6bit"},
+        )
+
+    def test_select_sweep_rows_defaults_to_readme_scope(self) -> None:
+        rows = [
+            {"slug": "readme"},
+            {"slug": "inventory", "readme_direct_table": False},
+            {"slug": "unsupported", "mlx_lm_peer_required": False},
+        ]
+
+        selected, scope = sweep.select_sweep_rows(
+            rows,
+            None,
+            require_ax_multi_metric_peer_wins=False,
+        )
+        peer_selected, peer_scope = sweep.select_sweep_rows(
+            rows,
+            None,
+            require_ax_multi_metric_peer_wins=True,
+        )
+
+        self.assertEqual([row["slug"] for row in selected], ["readme", "unsupported"])
+        self.assertEqual(scope, "readme_direct_table")
+        self.assertEqual([row["slug"] for row in peer_selected], ["readme"])
+        self.assertEqual(peer_scope, "readme_mlx_lm_comparable")
+
+    def test_select_sweep_rows_explicit_filter_can_include_inventory_row(self) -> None:
+        rows = [
+            {"slug": "readme"},
+            {"slug": "inventory", "readme_direct_table": False},
+        ]
+
+        selected, scope = sweep.select_sweep_rows(
+            rows,
+            ["inventory"],
+            require_ax_multi_metric_peer_wins=False,
+        )
+
+        self.assertEqual([row["slug"] for row in selected], ["inventory"])
+        self.assertEqual(scope, "filtered")
 
     def test_filter_manifest_rows_keeps_manifest_order(self) -> None:
         rows = [{"slug": "a"}, {"slug": "b"}, {"slug": "c"}]
@@ -147,6 +277,163 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 2)
         self.assertIn("bench_failed=1", stderr.getvalue())
         self.assertIn("model_dir_missing=1", stderr.getvalue())
+
+    def test_peer_win_matrix_requires_every_model_and_cell(self) -> None:
+        rows = [
+            {
+                "slug": "a",
+                "status": "ok",
+                "output_path": "/tmp/a.json",
+                "result_doc": self.peer_win_result_doc(),
+            },
+            {
+                "slug": "b",
+                "status": "ok",
+                "output_path": "/tmp/b.json",
+                "result_doc": self.peer_win_result_doc(),
+            },
+        ]
+
+        summary = sweep.summarize_peer_win_matrix(
+            rows,
+            expected_slugs=["a", "b"],
+            prompt_tokens=[128, 512, 2048],
+            generation_tokens=128,
+        )
+
+        self.assertEqual(
+            summary["schema_version"], sweep.PEER_WIN_MATRIX_SCHEMA_VERSION
+        )
+        self.assertEqual(summary["expected_model_count"], 2)
+        self.assertEqual(summary["strict_win_model_count"], 2)
+        self.assertEqual(summary["expected_cell_count"], 6)
+        self.assertEqual(summary["strict_win_cell_count"], 6)
+        self.assertTrue(summary["publication_candidate"])
+        self.assertEqual(sweep.peer_win_matrix_failure_reasons(summary), [])
+
+    def test_peer_win_matrix_fails_closed_on_missing_model_and_shape(self) -> None:
+        rows = [
+            {
+                "slug": "a",
+                "status": "ok",
+                "result_doc": self.peer_win_result_doc(
+                    prompt_tokens=(128, 512),
+                ),
+            }
+        ]
+
+        summary = sweep.summarize_peer_win_matrix(
+            rows,
+            expected_slugs=["a", "b"],
+            prompt_tokens=[128, 512, 2048],
+            generation_tokens=128,
+        )
+
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(summary["strict_win_model_count"], 0)
+        self.assertEqual(
+            summary["failure_reason_counts"],
+            {
+                "ax_trial_shape_mismatch": 1,
+                "incomplete_strict_win_cells": 1,
+                "missing_sweep_row": 1,
+                "mlx_lm_trial_shape_mismatch": 1,
+                "peer_win_shape_mismatch": 1,
+            },
+        )
+
+    def test_peer_win_matrix_rejects_non_candidate_and_duplicate_slug(self) -> None:
+        row = {
+            "slug": "a",
+            "status": "ok",
+            "result_doc": self.peer_win_result_doc(publication_candidate=False),
+        }
+
+        summary = sweep.summarize_peer_win_matrix(
+            [row, dict(row)],
+            expected_slugs=["a"],
+            prompt_tokens=[128, 512, 2048],
+            generation_tokens=128,
+        )
+
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(summary["failure_reason_counts"]["duplicate_sweep_slug"], 1)
+        self.assertEqual(
+            summary["failure_reason_counts"][
+                "peer_win_not_publication_candidate"
+            ],
+            1,
+        )
+
+    def test_peer_win_matrix_rejects_dirty_or_relaxed_publication_run(self) -> None:
+        result_doc = json.loads(json.dumps(self.peer_win_result_doc()))
+        result_doc["build"]["git_tracked_dirty"] = True
+        row = {"slug": "a", "status": "ok", "result_doc": result_doc}
+
+        summary = sweep.summarize_peer_win_matrix(
+            [row],
+            expected_slugs=["a"],
+            prompt_tokens=[128, 512, 2048],
+            generation_tokens=128,
+            max_load_average=3.0,
+            max_top_process_cpu_percent=None,
+        )
+
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(
+            summary["failure_reason_counts"]["current_dirty_tracked_build"],
+            1,
+        )
+        self.assertEqual(
+            summary["failure_reason_counts"]["missing_or_relaxed_load_gate"],
+            1,
+        )
+        self.assertEqual(
+            summary["failure_reason_counts"][
+                "missing_or_relaxed_top_process_cpu_gate"
+            ],
+            1,
+        )
+
+    def test_peer_win_matrix_requires_reference_publication_metadata(self) -> None:
+        result_doc = self.peer_win_result_doc()
+        del result_doc["reference_contract"]
+
+        summary = sweep.summarize_peer_win_matrix(
+            [{"slug": "a", "status": "ok", "result_doc": result_doc}],
+            expected_slugs=["a"],
+            prompt_tokens=[128, 512, 2048],
+            generation_tokens=128,
+        )
+
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(
+            summary["failure_reason_counts"][
+                "reference_missing_publication_metadata"
+            ],
+            1,
+        )
+
+    def test_peer_win_matrix_failure_exits_nonzero(self) -> None:
+        stderr = io.StringIO()
+        summary = {
+            "publication_candidate": False,
+            "failure_reason_counts": {"missing_sweep_row": 1},
+        }
+
+        with (
+            patch.object(sys, "stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            sweep.fail_if_peer_win_matrix_not_publication_candidate(summary)
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("README peer-win matrix", stderr.getvalue())
+        self.assertIn("missing_sweep_row=1", stderr.getvalue())
+
+    def test_parse_prompt_token_csv_rejects_duplicates(self) -> None:
+        with self.assertRaisesRegex(sweep.AxOnlySweepError, "must be unique"):
+            sweep.parse_prompt_token_csv("128,128")
 
     def test_sweep_row_note_includes_failure_diagnostics(self) -> None:
         note = sweep.sweep_row_note(
@@ -603,6 +890,90 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertEqual(
                 sweep_results["model_snapshot_reference_root"],
                 str(snapshot_reference),
+            )
+
+    def test_main_writes_complete_readme_peer_win_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "slug": "a",
+                                "readme_model": "Gemma",
+                                "readme_quant": "4-bit",
+                            },
+                            {
+                                "slug": "unsupported",
+                                "readme_model": "Gemma",
+                                "readme_quant": "6-bit",
+                                "mlx_lm_peer_required": False,
+                                "prompt_source_note": "strict load unavailable",
+                            },
+                            {
+                                "slug": "inventory",
+                                "readme_model": "Gemma",
+                                "readme_quant": "8-bit",
+                                "readme_direct_table": False,
+                            },
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            reference = root / "reference"
+            reference.mkdir()
+            out_dir = root / "out"
+            argv = [
+                "bench_ax_only_sweep.py",
+                "--manifest",
+                str(manifest),
+                "--output-root",
+                str(out_dir),
+                "--reuse-reference-root",
+                str(reference),
+                "--require-ax-multi-metric-peer-wins",
+            ]
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    sweep,
+                    "resolve_model_args",
+                    return_value=(["--model-dir", str(root / "model")], None),
+                ),
+                patch.object(
+                    sweep,
+                    "run_row",
+                    return_value={
+                        "status": "ok",
+                        "output_path": str(out_dir / "a.json"),
+                        "result_doc": self.peer_win_result_doc(),
+                    },
+                ) as run_row,
+                patch.object(
+                    sweep,
+                    "collect_performance_condition_metadata",
+                    return_value={"load_average": {"one_minute": 1.0}},
+                ),
+            ):
+                sweep.main()
+
+            self.assertEqual(run_row.call_count, 1)
+            sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
+            self.assertEqual(sweep_results["scope"], "readme_mlx_lm_comparable")
+            self.assertEqual(sweep_results["readme_row_count"], 2)
+            self.assertEqual(sweep_results["planned_slugs"], ["a"])
+            self.assertEqual(
+                sweep_results["mlx_lm_peer_unavailable_readme_rows"][0]["slug"],
+                "unsupported",
+            )
+            self.assertTrue(sweep_results["publication_candidate"])
+            self.assertTrue(sweep_results["readme_peer_win_publication_candidate"])
+            self.assertTrue(
+                sweep_results["peer_win_matrix"]["publication_candidate"]
             )
 
     def test_main_writes_summary_then_fails_on_failed_row(self) -> None:
