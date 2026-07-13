@@ -358,6 +358,59 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     poll_interval_seconds=1.0,
                 )
 
+    def test_benchmark_boundary_collects_without_load_gate(self) -> None:
+        metadata = {"load_average": {"one_minute": 3.0}}
+        with (
+            patch.object(
+                bench,
+                "collect_performance_condition_metadata",
+                return_value=metadata,
+            ) as collect,
+            patch.object(bench, "wait_for_performance_load") as wait,
+        ):
+            result = bench.collect_benchmark_boundary_performance_conditions(
+                max_one_minute=None,
+                max_top_process_cpu_percent_value=None,
+                timeout_seconds=600.0,
+                poll_interval_seconds=10.0,
+                context="benchmark completion",
+            )
+
+        self.assertEqual(result, metadata)
+        collect.assert_called_once_with()
+        wait.assert_not_called()
+
+    def test_benchmark_boundary_enforces_load_gate(self) -> None:
+        metadata = {"load_average": {"one_minute": 1.0}}
+        with (
+            patch.object(
+                bench,
+                "collect_performance_condition_metadata",
+            ) as collect,
+            patch.object(
+                bench,
+                "wait_for_performance_load",
+                return_value=metadata,
+            ) as wait,
+        ):
+            result = bench.collect_benchmark_boundary_performance_conditions(
+                max_one_minute=2.0,
+                max_top_process_cpu_percent_value=50.0,
+                timeout_seconds=3600.0,
+                poll_interval_seconds=10.0,
+                context="benchmark completion",
+            )
+
+        self.assertEqual(result, metadata)
+        collect.assert_not_called()
+        wait.assert_called_once_with(
+            max_one_minute=2.0,
+            max_top_process_cpu_percent_value=50.0,
+            timeout_seconds=3600.0,
+            poll_interval_seconds=10.0,
+            context="benchmark completion",
+        )
+
     def test_collect_host_metadata_uses_supplied_performance_conditions(self) -> None:
         supplied = {"load_average": {"one_minute": 1.0}}
 

@@ -900,6 +900,25 @@ def wait_for_performance_load(
         time.sleep(sleep_seconds)
 
 
+def collect_benchmark_boundary_performance_conditions(
+    *,
+    max_one_minute: float | None,
+    max_top_process_cpu_percent_value: float | None,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+    context: str,
+) -> dict[str, Any]:
+    if max_one_minute is None and max_top_process_cpu_percent_value is None:
+        return collect_performance_condition_metadata()
+    return wait_for_performance_load(
+        max_one_minute=max_one_minute,
+        max_top_process_cpu_percent_value=max_top_process_cpu_percent_value,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        context=context,
+    )
+
+
 def collect_host_metadata(
     performance_conditions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -6010,15 +6029,13 @@ def main() -> None:
         ),
         file=sys.stderr,
     )
-    if args.max_load_average is None and args.max_top_process_cpu_percent is None:
-        performance_conditions_start = collect_performance_condition_metadata()
-    else:
-        performance_conditions_start = wait_for_performance_load(
-            max_one_minute=args.max_load_average,
-            max_top_process_cpu_percent_value=args.max_top_process_cpu_percent,
-            timeout_seconds=args.load_average_wait_timeout,
-            poll_interval_seconds=args.load_average_poll_interval,
-        )
+    performance_conditions_start = collect_benchmark_boundary_performance_conditions(
+        max_one_minute=args.max_load_average,
+        max_top_process_cpu_percent_value=args.max_top_process_cpu_percent,
+        timeout_seconds=args.load_average_wait_timeout,
+        poll_interval_seconds=args.load_average_poll_interval,
+        context="benchmark start",
+    )
     benchmark_started = time.time()
     benchmark_started_at = time.strftime(
         "%Y-%m-%dT%H:%M:%S%z",
@@ -6448,12 +6465,18 @@ def main() -> None:
         cell.get("engine") == "llama_cpp_metal" for cell in results
     )
 
+    performance_conditions_end = collect_benchmark_boundary_performance_conditions(
+        max_one_minute=args.max_load_average,
+        max_top_process_cpu_percent_value=args.max_top_process_cpu_percent,
+        timeout_seconds=args.load_average_wait_timeout,
+        poll_interval_seconds=args.load_average_poll_interval,
+        context="benchmark completion",
+    )
     benchmark_finished = time.time()
     benchmark_finished_at = time.strftime(
         "%Y-%m-%dT%H:%M:%S%z",
         time.localtime(benchmark_finished),
     )
-    performance_conditions_end = collect_performance_condition_metadata()
 
     doc = {
         "schema_version": MLX_INFERENCE_STACK_SCHEMA_VERSION,
