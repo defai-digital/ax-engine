@@ -1,0 +1,76 @@
+{
+  "schema_version": "ax.ax_only_sweep.v1",
+  "manifest_path": "/Users/akiralam/code/ax-engine/benchmarks/manifests/llama_cpp_metal/inventory.json",
+  "reuse_reference_root": null,
+  "model_snapshot_reference_root": null,
+  "ax_direct_only": true,
+  "prompt_tokens": "128,512,2048",
+  "generation_tokens": 128,
+  "repetitions": 5,
+  "warmup_repetitions": 2,
+  "cooldown": 15.0,
+  "max_load_average": 2.0,
+  "max_top_process_cpu_percent": 50.0,
+  "load_average_wait_timeout": null,
+  "load_average_poll_interval": null,
+  "started_at": "2026-07-11T04:52:23-0400",
+  "elapsed_seconds": 98.5,
+  "benchmark_window": {
+    "started_at": "2026-07-11T04:52:23-0400",
+    "finished_at": "2026-07-11T04:54:01-0400",
+    "elapsed_seconds": 98.5,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.418,
+        "five_minutes": 1.45,
+        "fifteen_minutes": 1.451
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false
+    },
+    "performance_conditions_end": {
+      "load_average": {
+        "one_minute": 1.329,
+        "five_minutes": 1.426,
+        "fifteen_minutes": 1.439
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false
+    }
+  },
+  "planned_row_count": 1,
+  "completed_row_count": 1,
+  "publication_candidate": false,
+  "failed_row_count": 1,
+  "status_counts": {
+    "bench_failed": 1
+  },
+  "rows": [
+    {
+      "slug": "gemma-4-e2b-it-6bit",
+      "readme_model": "Gemma 4 E2B",
+      "readme_quant": "6-bit",
+      "status": "bench_failed",
+      "started_at": "2026-07-11T04:52:23-0400",
+      "exit_code": 1,
+      "log_path": "benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-clean-r2/logs/gemma-4-e2b-it-6bit.log",
+      "output_path": "benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-clean-r2/gemma-4-e2b-it-6bit.json"
+    }
+  ]
+}

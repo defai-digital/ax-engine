@@ -1,0 +1,64 @@
+{
+  "schema_version": "ax.embedding_ingest_scale.v1",
+  "timestamp": "2026-07-11T06:08:19.084807",
+  "git_commit": "1b14e60328d61a2877f5258049608aa5e4ec2569",
+  "embed_env_flags": {},
+  "output_contract": "contiguous_cpu_f32_batch_hidden",
+  "trial_order": "interleaved_alternating",
+  "warmup": 0,
+  "trials": 1,
+  "cooldown_s": 0.0,
+  "batch_sizes": [
+    64
+  ],
+  "chunk_tokens": [
+    256
+  ],
+  "total_chunks": 64,
+  "reference": "mlx_lm",
+  "pooling": "last",
+  "ax_only": true,
+  "models": [
+    {
+      "model_label": "qwen3-embedding-4b-4bit-dwq",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3-Embedding-4B-4bit-DWQ/snapshots/b5d88f1fe49b50d2ac01b4692ca2d387f14f9c72",
+      "rows": [
+        {
+          "workload": "scale_64x256_b64",
+          "total_chunks": 64,
+          "chunk_tokens": 256,
+          "batch_size": 64,
+          "batches_per_trial": 1,
+          "total_tokens": 16384,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_wall_ms": 8717.38337498391,
+              "median_tokens_per_sec": 1879.463056198356,
+              "median_chunks_per_sec": 7.341652563274828,
+              "median_output_mb_per_sec": 0.07169582581323075,
+              "median_batch_p50_ms": 8717.374999949243,
+              "median_batch_p95_ms": 8717.374999949243,
+              "median_batch_max_ms": 8717.374999949243,
+              "trials": [
+                {
+                  "wall_ms": 8717.38337498391,
+                  "tokens_per_sec": 1879.463056198356,
+                  "chunks_per_sec": 7.341652563274828,
+                  "output_mb_per_sec": 0.07169582581323075,
+                  "batch_p50_ms": 8717.374999949243,
+                  "batch_p95_ms": 8717.374999949243,
+                  "batch_max_ms": 8717.374999949243,
+                  "batches": 1,
+                  "hidden_size": 2560,
+                  "output_bytes": 655360
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        }
+      ]
+    }
+  ]
+}

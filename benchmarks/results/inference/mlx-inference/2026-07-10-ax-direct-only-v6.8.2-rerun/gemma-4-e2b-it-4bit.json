@@ -1,0 +1,83 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "mlx-community/gemma-4-e2b-it-4bit",
+  "model_repo_id": "mlx-community/gemma-4-e2b-it-4bit",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/2c3e507453b4f218d05fe3cc97bea5c5a654257e",
+  "output_path": "benchmarks/results/inference/mlx-inference/2026-07-10-ax-direct-only-v6.8.2-rerun/gemma-4-e2b-it-4bit.json",
+  "benchmark_window": {
+    "started_at": "2026-07-10T23:03:45-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.747,
+        "five_minutes": 1.732,
+        "fifteen_minutes": 1.791
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 90729,
+          "state": "Ss",
+          "cpu_percent": 15.0,
+          "command": "Python"
+        },
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 9.3,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 88611,
+          "state": "S+",
+          "cpu_percent": 8.6,
+          "command": "codex"
+        },
+        {
+          "pid": 58717,
+          "state": "S",
+          "cpu_percent": 7.1,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 7.0,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 89106,
+          "state": "S+",
+          "cpu_percent": 4.0,
+          "command": "ax-engine"
+        },
+        {
+          "pid": 88058,
+          "state": "S",
+          "cpu_percent": 3.7,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 88077,
+          "state": "S",
+          "cpu_percent": 2.0,
+          "command": "Code Helper"
+        }
+      ]
+    }
+  }
+}

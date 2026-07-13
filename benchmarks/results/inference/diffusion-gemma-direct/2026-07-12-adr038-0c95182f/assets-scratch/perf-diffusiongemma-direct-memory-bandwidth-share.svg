@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430" role="img" aria-labelledby="title desc">
+<title>DiffusionGemma 4-bit - Estimated weight bandwidth</title>
+<desc>DiffusionGemma 4-bit - Estimated weight bandwidth; 100% stacked bars show estimated weight traffic versus theoretical headroom at 128/512/2048 prompt tokens. This is not a measured GPU utilization counter.</desc>
+<rect width="800" height="430" fill="#f8fafc"/>
+<text id="title" x="64" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">DiffusionGemma 4-bit - Estimated weight bandwidth</text>
+<text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">median over reps | grouped by prompt tokens | first committed block | AX Engine v6.8.2</text>
+<text id="desc" x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX Engine v6.8.2 estimated weight traffic, not GPU utilization; peer runtime blockers are documented in docs</text>
+<text x="64" y="76" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">100% = M5 Max theoretical unified-memory bandwidth</text>
+<rect x="718" y="13" width="48" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
+<text x="742" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">%</text>
+<text x="766" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#374151">Used vs headroom</text>
+<rect x="64" y="86" width="576" height="230" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
+<line x1="142.0" y1="86" x2="142.0" y2="316" stroke="#e5e7eb" stroke-width="1"/>
+<text x="142.0" y="334" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0%</text>
+<line x1="266.5" y1="86" x2="266.5" y2="316" stroke="#e5e7eb" stroke-width="1"/>
+<text x="266.5" y="334" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">25%</text>
+<line x1="391.0" y1="86" x2="391.0" y2="316" stroke="#e5e7eb" stroke-width="1"/>
+<text x="391.0" y="334" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">50%</text>
+<line x1="515.5" y1="86" x2="515.5" y2="316" stroke="#e5e7eb" stroke-width="1"/>
+<text x="515.5" y="334" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">75%</text>
+<line x1="640.0" y1="86" x2="640.0" y2="316" stroke="#e5e7eb" stroke-width="1"/>
+<text x="640.0" y="334" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">100%</text>
+<text x="72" y="134.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">128 tok</text>
+<rect x="142.0" y="118.0" width="498.0" height="24.0" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
+<rect x="142.0" y="118.0" width="54.7" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
+<line x1="196.7" y1="118.0" x2="196.7" y2="142.0" stroke="#176c37" stroke-width="1.4"/>
+<text x="188.7" y="134.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">11.0%</text>
+<text x="72" y="192.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">512 tok</text>
+<rect x="142.0" y="176.0" width="498.0" height="24.0" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
+<rect x="142.0" y="176.0" width="53.3" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
+<line x1="195.3" y1="176.0" x2="195.3" y2="200.0" stroke="#176c37" stroke-width="1.4"/>
+<text x="187.3" y="192.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">10.7%</text>
+<text x="72" y="250.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2048 tok</text>
+<rect x="142.0" y="234.0" width="498.0" height="24.0" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
+<rect x="142.0" y="234.0" width="52.6" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
+<line x1="194.6" y1="234.0" x2="194.6" y2="258.0" stroke="#176c37" stroke-width="1.4"/>
+<text x="186.6" y="250.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">10.6%</text>
+<rect x="64.0" y="399" width="12" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.76"/>
+<text x="80.0" y="408" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine v6.8.2 estimated weight bandwidth</text>
+<rect x="374.0" y="399" width="12" height="10" rx="2" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1"/>
+<text x="390.0" y="408" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Theoretical headroom</text>
+</svg>
