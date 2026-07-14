@@ -160,7 +160,7 @@ fn main() {
     let t0 = Instant::now();
 
     while committed < target_tokens {
-        let base_position = cache.seq_len;
+        let base_position = cache.seq_len();
 
         // Ungated recurrent assistant draft to depth 2, capturing top-k.
         let hidden_bf16 = astype(&hidden, MlxDtype::Bfloat16, None);
@@ -206,7 +206,7 @@ fn main() {
         };
 
         // Commit the target-greedy next token (1 target forward).
-        let token_offset = cache.seq_len;
+        let token_offset = cache.seq_len();
         let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
             &target_cfg,
             &target_weights,
@@ -214,7 +214,7 @@ fn main() {
             &mut cache,
             token_offset,
         );
-        cache.seq_len += 1;
+        cache.advance(1);
         let predicted_arr = argmax(&logits_all, None);
         eval(&[&predicted_arr, &post_norm_all]);
         let t_next = predicted_arr.data_u32()[0];

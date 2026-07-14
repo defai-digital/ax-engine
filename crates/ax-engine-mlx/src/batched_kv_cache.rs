@@ -615,7 +615,7 @@ mod tests {
                 batched.seed_row_layer(layer, row, &k, &v);
                 refs[row].append(layer, k, v);
             }
-            refs[row].seq_len = len;
+            refs[row].set_seq_len(len);
         }
 
         // Decode: 4 lockstep steps. Each step builds a [batch, heads, 1, dim]
@@ -666,7 +666,7 @@ mod tests {
             }
             batched.advance_all(1);
             for row in 0..batch {
-                refs[row].seq_len = prefill[row] + step + 1;
+                refs[row].set_seq_len(prefill[row] + step + 1);
             }
         }
 
@@ -719,7 +719,7 @@ mod tests {
                 batched.seed_row_layer(layer, row, &k, &v);
                 refs[row].append(layer, k, v);
             }
-            refs[row].seq_len = len;
+            refs[row].set_seq_len(len);
         }
 
         // Two lockstep decode steps.
@@ -766,7 +766,7 @@ mod tests {
             }
             batched.advance_all(1);
             for row in 0..batch {
-                refs[row].seq_len = prefill[row] + step + 1;
+                refs[row].set_seq_len(prefill[row] + step + 1);
             }
         }
 
@@ -774,7 +774,7 @@ mod tests {
         for row in 0..batch {
             let expected_len = prefill[row] + steps;
             let wb = batched.writeback_row(row);
-            assert_eq!(wb.seq_len, expected_len, "row {row} writeback seq_len");
+            assert_eq!(wb.seq_len(), expected_len, "row {row} writeback seq_len");
             for layer in 0..layers {
                 let (wk, wv) = wb.peek_layer_kv(layer).expect("writeback has data");
                 let (rk, rv) = refs[row].peek_layer_kv(layer).expect("ref has data");

@@ -154,7 +154,7 @@ fn run_arm(
 
     let t0 = Instant::now();
     while committed.len() < target_tokens {
-        let position = cache.seq_len;
+        let position = cache.seq_len();
         let draft = assistant_draft_safe(
             assistant_cfg,
             assistant_weights,
@@ -171,7 +171,7 @@ fn run_arm(
         );
 
         // Verify [primary] ++ draft on a throwaway clone (1 target forward).
-        let token_offset = cache.seq_len;
+        let token_offset = cache.seq_len();
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + draft.len());
         verify_input.push(primary);
         verify_input.extend_from_slice(&draft);
@@ -184,7 +184,7 @@ fn run_arm(
             &mut vclone,
             token_offset,
         );
-        vclone.seq_len += verify_input.len();
+        vclone.advance(verify_input.len());
         let predicted_arr = argmax(&logits_all, None);
         eval(&[&predicted_arr, &post_norm_all]);
         target_forwards += 1;
@@ -221,7 +221,7 @@ fn run_arm(
                 &mut cache,
                 token_offset,
             );
-            cache.seq_len += committed_step.len();
+            cache.advance(committed_step.len());
             target_forwards += 1;
         }
 

@@ -237,7 +237,7 @@ fn lazy_random_sample(logits: &MlxArray, temperature: f32, vocab: i32) -> MlxArr
 /// * `weights`        — main model weights (for the shared token embedding).
 /// * `cache`          — shared 1-layer KV cache for this head (grows by 1 per call).
 ///
-/// RoPE offset is `cache.seq_len + cache.rope_offset` (or an explicit
+/// RoPE offset is `cache.seq_len() + cache.rope_offset` (or an explicit
 /// `rope_offset_override` when provided).  This matches the mlx-lm
 /// `cache.offset` convention while supporting capped warmup where physical
 /// KV entries start at buffer position 0 but represent tokens at higher
@@ -262,7 +262,7 @@ impl MtpKvStep<'_> {
     /// for `Cache`; `Threaded` callers always pass `rope_offset_override`.
     fn rope_base_offset(&self) -> usize {
         match self {
-            MtpKvStep::Cache(cache) => cache.seq_len + cache.rope_offset,
+            MtpKvStep::Cache(cache) => cache.seq_len() + cache.rope_offset,
             MtpKvStep::Threaded { .. } => {
                 unreachable!("threaded MTP step requires an explicit rope_offset_override")
             }
@@ -275,7 +275,7 @@ impl MtpKvStep<'_> {
         match self {
             MtpKvStep::Cache(cache) => {
                 let cached = cache.append(0, k_rope, v);
-                cache.seq_len += 1;
+                cache.advance(1);
                 cached
             }
             MtpKvStep::Threaded { k, v: running_v } => {
@@ -831,7 +831,7 @@ fn run_compiled_mtp_draft(
     // the layer is empty (first step) fall back to the imperative path so the
     // pure closure never has to special-case a zero-length context.
     let (init_k, init_v) = cache.logical_layer_kv(0)?;
-    let seq_len_before = cache.seq_len;
+    let seq_len_before = cache.seq_len();
     let base_offset = seq_len_before + cache.rope_offset;
     let compiled = build_compiled_mtp_draft(head, weights, cfg, max_depth, sample_temperature)?;
 
@@ -1034,8 +1034,8 @@ pub fn mtp_draft_tokens_gated(
     // appended to `cache` (one per head forward). The confidence gate can drop
     // the low-confidence tail of the draft; those tail forwards already wrote
     // their entries, so dropping them without trimming leaves stale rows that
-    // inflate `cache.seq_len` above the returned `added`. That breaks the
-    // invariant the decode loop relies on (MTP `cache.seq_len` == the running
+    // inflate `cache.seq_len()` above the returned `added`. That breaks the
+    // invariant the decode loop relies on (MTP `cache.seq_len()` == the running
     // `mtp_decode_count`): a fully-accepted gated draft (post-verify
     // `rejected_count == 0`, so the rollback trims nothing) would leave those
     // rows for the next step's MTP head to attend over at an inflated RoPE
@@ -1047,7 +1047,7 @@ pub fn mtp_draft_tokens_gated(
     let gated = apply_draft_confidence_gate(result, min_confidence);
     let dropped = appended.saturating_sub(gated.3);
     if dropped > 0 {
-        let target = cache.seq_len.saturating_sub(dropped);
+        let target = cache.seq_len().saturating_sub(dropped);
         let _ = cache.trim_to(target);
     }
     gated
@@ -1456,7 +1456,7 @@ fn mtp_draft_tokens_stochastic(
 /// * `weights`        — main model weights (for the shared token embedding).
 /// * `cache`          — 1-layer GLM MLA KV cache for this head.
 /// * `cfg`            — main model config (provides rms_norm_eps, rope_theta, mla_attention, etc.).
-/// * `rope_offset_override` — explicit RoPE offset (capped warmup); `None` to use `cache.seq_len`.
+/// * `rope_offset_override` — explicit RoPE offset (capped warmup); `None` to use `cache.seq_len()`.
 pub fn glm_mtp_head_forward(
     head: &GlmMtpWeights,
     main_hidden: &MlxArray,
@@ -1466,7 +1466,7 @@ pub fn glm_mtp_head_forward(
     cfg: &ModelConfig,
     rope_offset_override: Option<usize>,
 ) -> MlxArray {
-    let token_offset = rope_offset_override.unwrap_or(cache.seq_len + cache.rope_offset);
+    let token_offset = rope_offset_override.unwrap_or(cache.seq_len() + cache.rope_offset);
 
     // 1. embed prev_token → [1, 1, hidden_size] in bf16.
     let embed = embed_tokens_arr(prev_token_arr, &weights.token_embedding, cfg.hidden_size);
@@ -1486,7 +1486,7 @@ pub fn glm_mtp_head_forward(
     } else {
         attn_proj
     };
-    cache.seq_len += 1;
+    cache.advance(1);
     let hidden = add(&h, &attn_proj, None);
 
     let normed2 = rms_norm(&hidden, Some(&head.layer.ffn_norm), cfg.rms_norm_eps, None);
@@ -1717,7 +1717,7 @@ pub fn glm_mtp_draft_tokens_gated(
     let gated = apply_draft_confidence_gate(result, min_confidence);
     let dropped = appended.saturating_sub(gated.3);
     if dropped > 0 {
-        let target = cache.seq_len.saturating_sub(dropped);
+        let target = cache.seq_len().saturating_sub(dropped);
         let _ = cache.trim_to(target);
     }
     gated

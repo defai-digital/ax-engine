@@ -156,16 +156,6 @@ struct KvHeadSliceShape {
     capacity: usize,
 }
 
-impl KvHeadSliceShape {
-    fn from_layer(lkv: &LayerKV) -> Self {
-        Self {
-            n_kv_heads: lkv.n_kv_heads,
-            head_dim: lkv.head_dim,
-            capacity: lkv.capacity,
-        }
-    }
-}
-
 #[cfg(test)]
 fn kv_heads_for_token(lkv: &LayerKV, token_index: usize) -> Vec<FullPrecisionKvTokenVectors> {
     (0..lkv.n_kv_heads as usize)
@@ -968,8 +958,11 @@ pub struct MlxKVCache {
     glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
     linear_layers: Vec<LinearLayerState>,
     turboquant_shadow_layers: Vec<Option<TurboQuantShadowLayerStorage>>,
-    /// Current logical sequence length (token count cached).
-    pub seq_len: usize,
+    /// Current logical sequence length (token count cached). Private so
+    /// every mutation goes through [`Self::advance`] / [`Self::set_seq_len`]
+    /// — the historical footgun was call sites bumping this field out of
+    /// sync with what was actually appended.
+    seq_len: usize,
     /// RoPE offset added to `seq_len` for positional encoding.  Used when
     /// the KV cache has fewer physical entries than the logical sequence
     /// position (e.g. after capped MTP warmup where only the last N tokens
@@ -1111,6 +1104,28 @@ impl MlxKVCache {
             use_rotating_sliding_decode: false,
             rotating_slack: 0,
         }
+    }
+
+    /// Current logical sequence length (token count cached).
+    pub fn seq_len(&self) -> usize {
+        self.seq_len
+    }
+
+    /// Advance the logical boundary after a forward pass appended `n`
+    /// tokens to every KV-backed layer. Call once per forward (appends
+    /// write at `seq_len` per layer, so the boundary must not move until
+    /// all layers have appended).
+    pub fn advance(&mut self, n: usize) {
+        self.seq_len += n;
+    }
+
+    /// Set the logical boundary to an absolute position. Prefer
+    /// [`Self::advance`] after forwards; this is for seeding a cache at a
+    /// known position (prefill restore, warmup, tests). For rollback use
+    /// [`Self::trim_to`], which also validates ring residency and truncates
+    /// TurboQuant shadow storage.
+    pub fn set_seq_len(&mut self, n: usize) {
+        self.seq_len = n;
     }
 
     pub fn set_rotating_sliding_decode(&mut self, enabled: bool) {
@@ -2374,19 +2389,34 @@ impl MlxKVCache {
             let lkv = self.layers[layer_idx]
                 .as_ref()
                 .expect("TurboQuant sync layout requires layer KV storage");
-            let k = if lkv.dtype == MlxDtype::Float32 {
-                lkv.k.clone()
+            // Materialize only the new cold range [compressed_tokens,
+            // cold_tokens): the backing buffer is capacity-sized, so the
+            // previous whole-buffer f32 conversion cost one full-context
+            // astype allocation + kernel per sync instead of scaling with
+            // the tokens actually being compressed.
+            let delta_start = [0i32, 0, compressed_tokens as i32, 0];
+            let delta_stop = [1i32, lkv.n_kv_heads, cold_tokens as i32, lkv.head_dim];
+            let ones = [1i32, 1, 1, 1];
+            let k = contiguous(&slice(&lkv.k, &delta_start, &delta_stop, &ones, None), None);
+            let v = contiguous(&slice(&lkv.v, &delta_start, &delta_stop, &ones, None), None);
+            let (k, v) = if lkv.dtype == MlxDtype::Float32 {
+                (k, v)
             } else {
-                astype(&lkv.k, MlxDtype::Float32, None)
-            };
-            let v = if lkv.dtype == MlxDtype::Float32 {
-                lkv.v.clone()
-            } else {
-                astype(&lkv.v, MlxDtype::Float32, None)
+                (
+                    astype(&k, MlxDtype::Float32, None),
+                    astype(&v, MlxDtype::Float32, None),
+                )
             };
             sync_sources.push(TurboQuantShadowSyncSource {
                 layer_idx,
-                shape: KvHeadSliceShape::from_layer(lkv),
+                // The source arrays hold just the delta, so token indices
+                // into them are relative to `compressed_tokens` and the
+                // slice stride ("capacity") is the delta length.
+                shape: KvHeadSliceShape {
+                    n_kv_heads: lkv.n_kv_heads,
+                    head_dim: lkv.head_dim,
+                    capacity: cold_tokens - compressed_tokens,
+                },
                 compressed_tokens,
                 k,
                 v,
@@ -2408,9 +2438,11 @@ impl MlxKVCache {
                 .as_mut()
                 .expect("storage was just initialized");
             let preencoded_k8_keys = if storage.layout.config.preset == TurboQuantPreset::K8V4 {
+                // The source array holds only the delta, so encoding
+                // starts at its token 0.
                 turboquant_fused_key_encode_metal_k8(
                     &source.k,
-                    source.compressed_tokens,
+                    0,
                     cold_tokens.saturating_sub(source.compressed_tokens),
                 )
                 .ok()
@@ -2420,15 +2452,15 @@ impl MlxKVCache {
             let k_values = source.k.data_f32();
             let v_values = source.v.data_f32();
             for token_index in source.compressed_tokens..cold_tokens {
+                let relative_token_index = token_index.saturating_sub(source.compressed_tokens);
                 let heads = kv_heads_for_token_from_f32_slices(
                     k_values,
                     v_values,
                     source.shape,
-                    token_index,
+                    relative_token_index,
                 )
                 .expect("TurboQuant shadow sync reads KV slices within layer capacity");
                 if let Some(encoded_keys) = preencoded_k8_keys.as_ref() {
-                    let relative_token_index = token_index.saturating_sub(source.compressed_tokens);
                     let key_bytes_per_token = storage
                         .layout
                         .key_payload_bytes_per_head

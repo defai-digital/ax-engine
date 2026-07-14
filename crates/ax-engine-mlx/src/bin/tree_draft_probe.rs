@@ -251,7 +251,7 @@ fn commit_forward(
 ) -> (u32, MlxArray) {
     let (logits_all, post_norm_all) =
         forward_all_positions_with_post_norm(cfg, weights, committed_step, cache, token_offset);
-    cache.seq_len += committed_step.len();
+    cache.advance(committed_step.len());
     let last = committed_step.len() - 1;
     let bonus_arr = argmax(&logits_all, None);
     let hidden = slice_hidden_row(&post_norm_all, last, cfg.hidden_size);
@@ -297,7 +297,7 @@ fn run_arm(
 
         // 2. Verify every candidate (throwaway clones); keep the longest
         //    greedily-accepted prefix.
-        let token_offset = cache.seq_len;
+        let token_offset = cache.seq_len();
         let mut best_accepted = 0usize;
         let mut best_tokens: &[u32] = &[];
         for cand in &candidates {
@@ -439,7 +439,7 @@ fn run_fixed_gate(
             )
         };
 
-        let token_offset = cache.seq_len;
+        let token_offset = cache.seq_len();
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + draft.len());
         verify_input.push(primary);
         verify_input.extend_from_slice(&draft);
@@ -452,7 +452,7 @@ fn run_fixed_gate(
             &mut vclone,
             token_offset,
         );
-        vclone.seq_len += verify_input.len();
+        vclone.advance(verify_input.len());
         let predicted_arr = argmax(&logits_all, None);
         eval(&[&predicted_arr, &post_norm_all]);
         target_forwards += 1;
@@ -483,7 +483,7 @@ fn run_fixed_gate(
                 &mut cache,
                 token_offset,
             );
-            cache.seq_len += committed_step.len();
+            cache.advance(committed_step.len());
             target_forwards += 1;
         }
 
@@ -572,7 +572,7 @@ fn run_linear_adaptive(
             gate,
         );
 
-        let token_offset = cache.seq_len;
+        let token_offset = cache.seq_len();
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + draft.len());
         verify_input.push(primary);
         verify_input.extend_from_slice(&draft);
@@ -585,7 +585,7 @@ fn run_linear_adaptive(
             &mut vclone,
             token_offset,
         );
-        vclone.seq_len += verify_input.len();
+        vclone.advance(verify_input.len());
         let predicted_arr = argmax(&logits_all, None);
         eval(&[&predicted_arr, &post_norm_all]);
         target_forwards += 1;
@@ -614,7 +614,7 @@ fn run_linear_adaptive(
                 &mut cache,
                 token_offset,
             );
-            cache.seq_len += committed_step.len();
+            cache.advance(committed_step.len());
             target_forwards += 1;
             win_forwards += 1;
         }

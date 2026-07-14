@@ -809,7 +809,7 @@ pub(crate) fn turboquant_decode_attention_experimental(
         q_data
     };
 
-    let total_tokens = cache.seq_len.saturating_add(seq);
+    let total_tokens = cache.seq_len().saturating_add(seq);
     if let Ok(decoded) = cache
         .debug_turboquant_shadow_decode_attention_metal_flat_query_timed_for_layer_with_total_tokens(
             layer_idx,

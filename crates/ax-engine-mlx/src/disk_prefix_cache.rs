@@ -456,11 +456,24 @@ impl DiskPrefixCache {
         key_bytes: &[u8],
         entry: &DiskPrefixCacheEntry,
     ) -> Result<DiskPrefixCacheInsertOutcome, DiskPrefixCacheError> {
+        self.insert_parts(key_bytes, &entry.payload, entry.prefill_output_token)
+    }
+
+    /// Borrowing variant of [`Self::insert`]: the payload can come from any
+    /// shared buffer (the runner's background writer passes the same
+    /// `Arc<[u8]>` the in-memory snapshot holds) without materializing a
+    /// `DiskPrefixCacheEntry`-owned copy first.
+    pub fn insert_parts(
+        &self,
+        key_bytes: &[u8],
+        payload: &[u8],
+        prefill_output_token: Option<u32>,
+    ) -> Result<DiskPrefixCacheInsertOutcome, DiskPrefixCacheError> {
         // A single entry larger than the whole byte budget can never be
         // durable: post-insert eviction would remove every older entry
         // and then the entry itself, while telemetry reported a
         // successful insert. Skip the write up front instead.
-        let file_len = (FIXED_HEADER_LEN + key_bytes.len() + entry.payload.len()) as u64;
+        let file_len = (FIXED_HEADER_LEN + key_bytes.len() + payload.len()) as u64;
         if file_len > self.policy.max_bytes {
             tracing::warn!(
                 target: "ax_engine_mlx::prefix_cache",
@@ -478,11 +491,10 @@ impl DiskPrefixCache {
             std::process::id()
         ));
 
-        let payload = entry.payload.as_slice();
         let payload_hash = payload_sha256(payload);
         let payload_len = payload.len() as u64;
         let key_len = u32::try_from(key_bytes.len()).expect("key too long");
-        let prefill_slot = entry.prefill_output_token.unwrap_or(PREFILL_TOKEN_NONE);
+        let prefill_slot = prefill_output_token.unwrap_or(PREFILL_TOKEN_NONE);
 
         let mut buf = Vec::with_capacity(FIXED_HEADER_LEN + key_bytes.len() + payload.len());
         buf.extend_from_slice(FILE_MAGIC);

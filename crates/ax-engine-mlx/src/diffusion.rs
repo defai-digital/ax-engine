@@ -712,7 +712,7 @@ fn commit_block(
     let _logits = crate::model::forward(cfg, weights, &tokens, cache, token_offset);
     // model::forward appends K/V to the cache but does not advance seq_len;
     // update it so subsequent blocks append at the correct offset.
-    cache.seq_len = token_offset + tokens.len();
+    cache.set_seq_len(token_offset + tokens.len());
     tokens
 }
 
@@ -720,7 +720,7 @@ fn commit_block(
 /// causal commit pass.
 ///
 /// `commit_block` is the only path that appends the canvas K/V to the cache
-/// and advances `cache.seq_len`, so the commit may only be skipped when the
+/// and advances `cache.seq_len()`, so the commit may only be skipped when the
 /// block terminates the request — a skipped commit on a non-final block would
 /// generate the next block with no memory of this one, at the same absolute
 /// positions.
@@ -1004,7 +1004,7 @@ pub(crate) fn generate_diffusion_block(
     // Enabled by default; opt-out via `AX_DIFFUSION_NO_SKIP_COMMIT=1`.
     //
     // The commit pass is still load-bearing for the KV cache: it is the only
-    // path that appends this block's K/V and advances `cache.seq_len`. The
+    // path that appends this block's K/V and advances `cache.seq_len()`. The
     // skip is therefore restricted to blocks that terminate the request
     // (EOS in the served tokens, or the remaining output budget is exhausted);
     // otherwise the next block would be generated with no memory of this one,

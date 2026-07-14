@@ -307,11 +307,11 @@ fn main() -> ExitCode {
     println!("running cold prefill (base + suffix, {seq_len} tokens) ...");
     let cold_cache = run_cold(&cfg, &weights, &extended_tokens, args.chunk_size);
     clear_cache();
-    println!("  cold seq_len = {}", cold_cache.seq_len);
-    if cold_cache.seq_len != seq_len {
+    println!("  cold seq_len = {}", cold_cache.seq_len());
+    if cold_cache.seq_len() != seq_len {
         eprintln!(
             "error: cold cache seq_len {} != expected {}",
-            cold_cache.seq_len, seq_len
+            cold_cache.seq_len(), seq_len
         );
         return ExitCode::from(1);
     }
@@ -325,11 +325,11 @@ fn main() -> ExitCode {
         args.chunk_size,
     );
     clear_cache();
-    println!("  warm seq_len = {}", warm_cache.seq_len);
-    if warm_cache.seq_len != seq_len {
+    println!("  warm seq_len = {}", warm_cache.seq_len());
+    if warm_cache.seq_len() != seq_len {
         eprintln!(
             "error: warm cache seq_len {} != expected {}",
-            warm_cache.seq_len, seq_len
+            warm_cache.seq_len(), seq_len
         );
         return ExitCode::from(1);
     }

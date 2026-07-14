@@ -20,8 +20,11 @@ pub(crate) struct MlxPrefixSnapshot {
 }
 
 impl MlxPrefixSnapshot {
-    pub(crate) fn from_serialized_cache(
-        payload: Vec<u8>,
+    /// Build a snapshot around an already-shared payload buffer. The disk
+    /// mirror path clones the same `Arc` into its background write job, so
+    /// one serialization feeds both tiers without a byte copy.
+    pub(crate) fn from_shared_payload(
+        payload: Arc<[u8]>,
         tokens: Vec<u32>,
         token_count: usize,
         greedy_prefill_output_token: Option<u32>,
@@ -32,7 +35,7 @@ impl MlxPrefixSnapshot {
         let bytes = (payload.len() as u64)
             .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64));
         Self {
-            kv_cache_payload: Arc::from(payload.into_boxed_slice()),
+            kv_cache_payload: payload,
             tokens,
             token_count,
             bytes,
@@ -256,6 +259,123 @@ impl Default for MlxPrefixCachePolicy {
     }
 }
 
+/// One queued L2 store: the canonical key plus the same shared payload the
+/// L1 snapshot holds.
+pub(crate) struct DiskPrefixWriteJob {
+    pub(crate) key_bytes: Vec<u8>,
+    pub(crate) payload: Arc<[u8]>,
+    pub(crate) prefill_output_token: Option<u32>,
+}
+
+/// How many stores may wait for the background disk writer before new
+/// stores are dropped. Payloads can be hundreds of MiB, so the queue
+/// bounds memory, not throughput; a dropped store is safe (disk is
+/// strictly additive) and logged.
+const DISK_WRITE_QUEUE_DEPTH: usize = 2;
+
+/// Background writer for L2 disk prefix-cache inserts.
+///
+/// `DiskPrefixCache::insert` runs a full file write + `sync_all`
+/// (`F_FULLFSYNC` on macOS) + directory eviction walk under the
+/// cross-process lock — previously all inline on the prefill store path.
+/// This worker moves that off the request path: `enqueue` is a bounded
+/// `try_send` that never blocks, and a full queue drops the newest store
+/// with a warning instead of stalling prefill.
+///
+/// Worker-side eviction counts accumulate in an atomic that the next
+/// telemetry-recording request drains, so aggregate metrics stay accurate
+/// even though attribution shifts to a later request.
+pub(crate) struct DiskPrefixCacheWriter {
+    sender: Option<std::sync::mpsc::SyncSender<DiskPrefixWriteJob>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    pending_evictions: Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl DiskPrefixCacheWriter {
+    pub(crate) fn spawn(disk: Arc<crate::disk_prefix_cache::DiskPrefixCache>) -> Option<Self> {
+        let (sender, receiver) =
+            std::sync::mpsc::sync_channel::<DiskPrefixWriteJob>(DISK_WRITE_QUEUE_DEPTH);
+        let pending_evictions = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let worker_evictions = Arc::clone(&pending_evictions);
+        let handle = std::thread::Builder::new()
+            .name("ax-mlx-disk-prefix-writer".into())
+            .spawn(move || {
+                while let Ok(job) = receiver.recv() {
+                    match disk.insert_parts(
+                        &job.key_bytes,
+                        &job.payload,
+                        job.prefill_output_token,
+                    ) {
+                        Ok(outcome) => {
+                            worker_evictions
+                                .fetch_add(outcome.evictions, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "ax_engine_mlx::prefix_cache",
+                                error = %e,
+                                "background disk prefix-cache insert failed; entry skipped",
+                            );
+                        }
+                    }
+                }
+            });
+        match handle {
+            Ok(handle) => Some(Self {
+                sender: Some(sender),
+                handle: Some(handle),
+                pending_evictions,
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::prefix_cache",
+                    error = %e,
+                    "failed to spawn disk prefix-cache writer; disk stores will run inline",
+                );
+                None
+            }
+        }
+    }
+
+    /// Queue a store without blocking. Returns `false` (with a warning)
+    /// when the queue is full or the worker has exited; the caller treats
+    /// that as a skipped store.
+    pub(crate) fn enqueue(&self, job: DiskPrefixWriteJob) -> bool {
+        let Some(sender) = self.sender.as_ref() else {
+            return false;
+        };
+        match sender.try_send(job) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::prefix_cache",
+                    error = %e,
+                    "disk prefix-cache write queue rejected a store; entry skipped",
+                );
+                false
+            }
+        }
+    }
+
+    /// Evictions performed by the worker since the last drain.
+    pub(crate) fn drain_evictions(&self) -> u32 {
+        self.pending_evictions
+            .swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Drop for DiskPrefixCacheWriter {
+    fn drop(&mut self) {
+        // Close the channel so the worker drains queued jobs and exits,
+        // then join so in-flight writes complete before the cache
+        // directory owner goes away.
+        drop(self.sender.take());
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Cloneable owner for MLX prefix-cache state.
 ///
 /// `MlxRunner` keeps request KV state private, but callers that create a fresh
@@ -265,6 +385,7 @@ impl Default for MlxPrefixCachePolicy {
 pub struct MlxPrefixCacheStore {
     pub(crate) prefix_cache: Arc<Mutex<MlxPrefixCache>>,
     pub(crate) disk_prefix_cache: Option<Arc<crate::disk_prefix_cache::DiskPrefixCache>>,
+    pub(crate) disk_prefix_writer: Option<Arc<DiskPrefixCacheWriter>>,
 }
 
 impl fmt::Debug for MlxPrefixCacheStore {
@@ -281,11 +402,17 @@ impl fmt::Debug for MlxPrefixCacheStore {
 impl MlxPrefixCacheStore {
     /// Build a prefix-cache store from the documented environment policy.
     pub fn from_env() -> Self {
+        let disk_prefix_cache = open_disk_prefix_cache_from_env().map(Arc::new);
+        let disk_prefix_writer = disk_prefix_cache
+            .as_ref()
+            .and_then(|disk| DiskPrefixCacheWriter::spawn(Arc::clone(disk)))
+            .map(Arc::new);
         Self {
             prefix_cache: Arc::new(Mutex::new(MlxPrefixCache::new(
                 MlxPrefixCachePolicy::from_env(),
             ))),
-            disk_prefix_cache: open_disk_prefix_cache_from_env().map(Arc::new),
+            disk_prefix_cache,
+            disk_prefix_writer,
         }
     }
 
@@ -294,8 +421,13 @@ impl MlxPrefixCacheStore {
     ) -> (
         Arc<Mutex<MlxPrefixCache>>,
         Option<Arc<crate::disk_prefix_cache::DiskPrefixCache>>,
+        Option<Arc<DiskPrefixCacheWriter>>,
     ) {
-        (self.prefix_cache, self.disk_prefix_cache)
+        (
+            self.prefix_cache,
+            self.disk_prefix_cache,
+            self.disk_prefix_writer,
+        )
     }
 
     #[cfg(test)]
@@ -303,6 +435,7 @@ impl MlxPrefixCacheStore {
         Self {
             prefix_cache: Arc::new(Mutex::new(MlxPrefixCache::new(policy))),
             disk_prefix_cache: None,
+            disk_prefix_writer: None,
         }
     }
 }
@@ -497,5 +630,53 @@ impl MlxPrefixCacheTelemetry {
         self.disk_inserts = self.disk_inserts.saturating_add(1);
         self.disk_insert_bytes = self.disk_insert_bytes.saturating_add(bytes);
         self.disk_evictions = self.disk_evictions.saturating_add(evictions);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disk_writer_persists_queued_stores_before_shutdown() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "ax-engine-disk-writer-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let disk =
+            Arc::new(crate::disk_prefix_cache::DiskPrefixCache::open(&dir).expect("open disk"));
+        let key_bytes = crate::disk_prefix_cache::canonical_key_bytes(
+            "writer-model",
+            "writer-policy",
+            "writer-layout",
+            16,
+            4,
+            0xfeed,
+            &[5, 6, 7, 8],
+        );
+        let payload: Arc<[u8]> = b"writer-payload".to_vec().into();
+
+        let writer = DiskPrefixCacheWriter::spawn(Arc::clone(&disk)).expect("spawn writer");
+        assert!(writer.enqueue(DiskPrefixWriteJob {
+            key_bytes: key_bytes.clone(),
+            payload: Arc::clone(&payload),
+            prefill_output_token: Some(321),
+        }));
+        // Drop joins the worker after it drains the queue, so the entry
+        // must be durable and readable afterwards.
+        drop(writer);
+
+        let entry = disk
+            .get(&key_bytes)
+            .expect("get")
+            .expect("queued store must be durable after writer shutdown");
+        assert_eq!(entry.payload, payload.as_ref());
+        assert_eq!(entry.prefill_output_token, Some(321));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

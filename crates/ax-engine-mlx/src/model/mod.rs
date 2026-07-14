@@ -3025,7 +3025,7 @@ mod tests {
         );
         let compression = turboquant_decode_config();
         cache.append(0, k, v);
-        cache.seq_len = 6;
+        cache.set_seq_len(6);
         cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
         cache
     }
@@ -3052,7 +3052,7 @@ mod tests {
             MlxDtype::Float32,
         );
         cache.append(0, initial_k, initial_v);
-        cache.seq_len = 6;
+        cache.set_seq_len(6);
         cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
 
         let current_elements = 2 * 128;
@@ -3079,7 +3079,7 @@ mod tests {
             layer_eligible: &[true],
         };
         let mut cache = MlxKVCache::new(1);
-        cache.seq_len = 6;
+        cache.set_seq_len(6);
 
         assert_eq!(
             context
@@ -3143,7 +3143,7 @@ mod tests {
         // The fused decode path requires context >= min_context_tokens
         // (default 4096); set seq_len above the threshold to exercise the
         // Ready path.
-        cache.seq_len = 4096;
+        cache.set_seq_len(4096);
         let context = TurboQuantModelDecodeContext {
             config: turboquant_decode_config(),
             layer_eligible: &[true],
@@ -4590,7 +4590,7 @@ mod tests {
         assert_eq!(cached.kv_latent.shape(), vec![1, 1, 2, 4]);
         assert_eq!(cached.k_pe.shape(), vec![1, 1, 2, 2]);
 
-        cache.seq_len = 2;
+        cache.set_seq_len(2);
         let hidden = zeros(&[1, 1, cfg.hidden_size as i32], MlxDtype::Float32, None);
         let cached = glm_mla_project_and_cache_inputs(&cfg, &weights, &hidden, &mut cache, 0, 2);
         eval(&[
@@ -4689,7 +4689,7 @@ mod tests {
         assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
         assert_eq!(cache.collect_eval_refs().len(), 2);
 
-        cache.seq_len = 2;
+        cache.set_seq_len(2);
         let hidden = zeros(&[1, 1, cfg.hidden_size as i32], MlxDtype::Float32, None);
         let out = glm_mla_attention_forward(&cfg, &weights, &hidden, &mut cache, 0, 2);
         eval(&[&out]);

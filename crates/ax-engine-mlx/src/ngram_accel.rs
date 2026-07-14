@@ -1109,7 +1109,7 @@ pub fn ngram_accel_decode_step_with_sampling_buffers(
         );
     }
 
-    let token_offset = cache.seq_len;
+    let token_offset = cache.seq_len();
     let verification = verify_draft(
         cfg,
         weights,
@@ -1157,7 +1157,7 @@ fn ngram_accel_decode_step_linear_safe(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Vec<u32> {
-    let token_offset = cache.seq_len;
+    let token_offset = cache.seq_len();
     let mut verify_cache = cache.clone();
     let verification = verify_draft(
         cfg,
@@ -1274,7 +1274,7 @@ fn verify_draft(
 
     // One causal forward pass -> [verify_len, vocab_size] f32 logits.
     let logits_all = forward_all_positions(cfg, weights, &verify_input, cache, token_offset);
-    cache.seq_len += verify_len;
+    cache.advance(verify_len);
 
     // Build argmax and, when speculative threshold is active, the draft-token
     // probability vector — both lazily, evaluated in a single blocking call.
@@ -1387,7 +1387,7 @@ pub(crate) fn recompute_committed_prefix(
     commit_input.extend_from_slice(accepted_draft);
 
     forward_all_positions_update_cache(cfg, weights, &commit_input, cache, token_offset);
-    cache.seq_len += commit_input.len();
+    cache.advance(commit_input.len());
     let kv_refs = cache.collect_eval_refs();
     eval(&kv_refs);
 }
@@ -1496,7 +1496,7 @@ pub fn single_decode_with_turboquant_context(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Vec<u32> {
-    let token_offset = cache.seq_len;
+    let token_offset = cache.seq_len();
     let logits = forward_with_turboquant_context(
         cfg,
         weights,
@@ -1505,7 +1505,7 @@ pub fn single_decode_with_turboquant_context(
         token_offset,
         turboquant_context,
     );
-    cache.seq_len += 1;
+    cache.advance(1);
 
     let tok = if sampling.temperature > 0.0
         && !sampling.uses_repetition_penalty()

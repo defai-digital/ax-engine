@@ -3714,6 +3714,9 @@ pub struct MlxRunner {
     /// switch is not engaged. `None` when off; the L2 paths short-
     /// circuit cheaply.
     disk_prefix_cache: Option<Arc<crate::disk_prefix_cache::DiskPrefixCache>>,
+    /// Background writer for L2 disk stores. `None` when the disk cache is
+    /// off or the worker failed to spawn (stores then run inline).
+    disk_prefix_writer: Option<Arc<DiskPrefixCacheWriter>>,
     /// Gemma-family sliding-window rotating backing store for rollback-free
     /// direct greedy decode.
     rotating_sliding_decode: bool,
@@ -4265,7 +4268,7 @@ impl MlxRunner {
         // Qwen3.5 linear-attention uses `ngram_accel_decode_step_linear_safe` which
         // clones the cache for verification and recomputes the committed prefix on
         // partial accept, so n-gram acceleration is safe to enable for these models.
-        let (prefix_cache, disk_prefix_cache) = prefix_cache_store
+        let (prefix_cache, disk_prefix_cache, disk_prefix_writer) = prefix_cache_store
             .unwrap_or_else(MlxPrefixCacheStore::from_env)
             .into_parts();
 
@@ -4322,6 +4325,7 @@ impl MlxRunner {
             kv_compression_layer_eligible,
             prefix_cache,
             disk_prefix_cache,
+            disk_prefix_writer,
             rotating_sliding_decode,
             direct_clear_cache_cadence,
             weight_layout_telemetry,
@@ -4464,7 +4468,7 @@ impl MlxRunner {
                     // The runner's cache is warmed: its last token is `feed`'s KV
                     // (appended by generation-state init). Seed all but that last
                     // token so the first step re-appends it without doubling.
-                    let seed_len = state.cache.seq_len.saturating_sub(1);
+                    let seed_len = state.cache.seq_len().saturating_sub(1);
                     seed_batched_session_and_reclaim_private_cache(
                         session,
                         id,
@@ -5993,7 +5997,7 @@ impl MlxRunner {
                     } else {
                         state
                             .cache
-                            .seq_len
+                            .seq_len()
                             .saturating_sub(item.reused_prefix_token_slice.len())
                     };
                     let prefill_tokens = if probe_over_claim < prefill_tokens_base.len() {
@@ -6019,7 +6023,7 @@ impl MlxRunner {
                     // path) or start from an empty KV cache (cold → caller's
                     // larger chunk for prefill throughput). For MLA models the
                     // two values differ; for non-MLA models they're identical.
-                    let prefill_chunk_for_request = if state.cache.seq_len == 0 {
+                    let prefill_chunk_for_request = if state.cache.seq_len() == 0 {
                         self.cold_prefill_chunk
                     } else {
                         self.prefill_chunk
@@ -6040,7 +6044,7 @@ impl MlxRunner {
                         && self.prefix_cache.lock().enabled()
                         && let Some(head) = Self::linear_boundary_capture_head_len(
                             block_size_tokens as usize,
-                            state.cache.seq_len,
+                            state.cache.seq_len(),
                             prefill_tokens.len(),
                         ) {
                         let head_tokens = &prefill_tokens[..head];
@@ -6058,7 +6062,7 @@ impl MlxRunner {
                             &mut state.sampling_candidates_buf,
                         );
                         state.prefill_boundary_snapshot =
-                            Some((state.cache.seq_len, state.cache.clone()));
+                            Some((state.cache.seq_len(), state.cache.clone()));
                         &prefill_tokens[head..]
                     } else {
                         prefill_tokens
@@ -6538,7 +6542,7 @@ impl MlxRunner {
         } else {
             &item.input_token_slice[..]
         };
-        let probed_tokens: Vec<u32> = if state.cache.seq_len == 0
+        let probed_tokens: Vec<u32> = if state.cache.seq_len() == 0
             && !probe_upper_bound.is_empty()
             && matches!(item.mode, ExecutionMode::Prefill)
         {
@@ -6552,7 +6556,7 @@ impl MlxRunner {
         } else {
             &item.reused_prefix_token_slice
         };
-        if reused_tokens.is_empty() || state.cache.seq_len != 0 {
+        if reused_tokens.is_empty() || state.cache.seq_len() != 0 {
             return telemetry;
         }
         let capture_prefill_output =
@@ -6790,6 +6794,44 @@ impl MlxRunner {
     /// open, matching `store_prompt_prefix_snapshots`' largest-snapshot disk
     /// policy (restore is architecture-agnostic: the serialized payload
     /// carries the linear conv/recurrent state).
+    /// Store a snapshot payload in the L2 disk tier. Queued to the
+    /// background writer when one is running — `insert` pays a full file
+    /// write + `F_FULLFSYNC` + eviction walk under the cross-process lock,
+    /// which does not belong inline on the prefill path — and run inline
+    /// only as the no-writer fallback. A queue-full drop or write failure
+    /// is a skipped store (disk is strictly additive); worker-side
+    /// evictions drain into the next recording request's telemetry.
+    fn store_disk_snapshot(
+        &self,
+        disk: &crate::disk_prefix_cache::DiskPrefixCache,
+        key_bytes: Vec<u8>,
+        payload: Arc<[u8]>,
+        prefill_output_token: Option<u32>,
+        telemetry: &mut MlxPrefixCacheTelemetry,
+    ) {
+        let payload_bytes = payload.len() as u64;
+        if let Some(writer) = self.disk_prefix_writer.as_ref() {
+            if writer.enqueue(DiskPrefixWriteJob {
+                key_bytes,
+                payload,
+                prefill_output_token,
+            }) {
+                telemetry.record_disk_insert(payload_bytes, writer.drain_evictions());
+            }
+            return;
+        }
+        match disk.insert_parts(&key_bytes, &payload, prefill_output_token) {
+            Ok(outcome) => telemetry.record_disk_insert(payload_bytes, outcome.evictions),
+            Err(e) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::prefix_cache",
+                    error = %e,
+                    "disk prefix-cache insert failed; L1 store still active",
+                );
+            }
+        }
+    }
+
     fn store_linear_boundary_snapshot(
         &self,
         model_id: &str,
@@ -6832,13 +6874,13 @@ impl MlxRunner {
                 }
             }
         }
-        let payload = snapshot_cache.serialize_to_bytes();
-        let disk_payload = disk_key_bytes.as_ref().map(|_| payload.clone());
+        let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
+        let disk_payload = disk_key_bytes.as_ref().map(|_| Arc::clone(&payload));
         let outcome = {
             let mut cache = self.prefix_cache.lock();
             let outcome = cache.insert(
                 key,
-                MlxPrefixSnapshot::from_serialized_cache(
+                MlxPrefixSnapshot::from_shared_payload(
                     payload,
                     tokens.to_vec(),
                     prefix_len,
@@ -6861,22 +6903,7 @@ impl MlxRunner {
                 disk_key_bytes,
                 disk_payload,
             ) {
-                let entry = crate::disk_prefix_cache::DiskPrefixCacheEntry {
-                    payload,
-                    prefill_output_token: None,
-                };
-                let payload_bytes = entry.payload.len() as u64;
-                match disk.insert(&key_bytes, &entry) {
-                    Ok(outcome) => telemetry.record_disk_insert(payload_bytes, outcome.evictions),
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "ax_engine_mlx::prefix_cache",
-                            error = %e,
-                            "disk prefix-cache insert failed for linear boundary snapshot; \
-                             L1 store still active",
-                        );
-                    }
-                }
+                self.store_disk_snapshot(disk, key_bytes, payload, None, &mut telemetry);
             }
         }
         telemetry
@@ -6904,7 +6931,7 @@ impl MlxRunner {
         }
 
         let block_size = block_size_tokens as usize;
-        let available_tokens = state.prompt_prefix_tokens.len().min(state.cache.seq_len);
+        let available_tokens = state.prompt_prefix_tokens.len().min(state.cache.seq_len());
         let full_block_tokens = available_tokens - (available_tokens % block_size);
         if full_block_tokens == 0 {
             return telemetry;
@@ -6951,7 +6978,7 @@ impl MlxRunner {
             if let Some((boundary_len, boundary_cache)) = linear_boundary_snapshot
                 && linear_attention
                 && *boundary_len == full_block_tokens
-                && boundary_cache.seq_len == *boundary_len
+                && boundary_cache.seq_len() == *boundary_len
                 && *boundary_len <= state.prompt_prefix_tokens.len()
             {
                 telemetry.merge_from(self.store_linear_boundary_snapshot(
@@ -7028,9 +7055,9 @@ impl MlxRunner {
             // prefill. The largest snapshot is also the most useful for
             // future hits because shorter prefixes always derive from
             // it.
-            let payload = snapshot_cache.serialize_to_bytes();
+            let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
             let disk_payload = if is_largest && self.disk_prefix_cache.is_some() {
-                Some(payload.clone())
+                Some(Arc::clone(&payload))
             } else {
                 None
             };
@@ -7043,7 +7070,7 @@ impl MlxRunner {
                 let mut cache = self.prefix_cache.lock();
                 let outcome = cache.insert(
                     key,
-                    MlxPrefixSnapshot::from_serialized_cache(
+                    MlxPrefixSnapshot::from_shared_payload(
                         payload,
                         tokens.to_vec(),
                         prefix_len,
@@ -7073,23 +7100,13 @@ impl MlxRunner {
                         disk_key.token_hash,
                         tokens,
                     );
-                    let entry = crate::disk_prefix_cache::DiskPrefixCacheEntry {
+                    self.store_disk_snapshot(
+                        disk,
+                        key_bytes,
                         payload,
-                        prefill_output_token: snapshot_prefill_output_token,
-                    };
-                    let payload_bytes = entry.payload.len() as u64;
-                    match disk.insert(&key_bytes, &entry) {
-                        Ok(outcome) => {
-                            telemetry.record_disk_insert(payload_bytes, outcome.evictions)
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                target: "ax_engine_mlx::prefix_cache",
-                                error = %e,
-                                "disk prefix-cache insert failed; L1 store still active",
-                            );
-                        }
-                    }
+                        snapshot_prefill_output_token,
+                        &mut telemetry,
+                    );
                 }
             }
             telemetry.evictions = telemetry.evictions.saturating_add(outcome.evictions);
@@ -7130,7 +7147,7 @@ impl MlxRunner {
         // new block via bidirectional denoising + causal commit. This replaces
         // the standard AR decode step for DiffusionGemma models.
         if let Some(diff_cfg) = self.cfg.diffusion.as_ref() {
-            let token_offset = state.cache.seq_len;
+            let token_offset = state.cache.seq_len();
             let remaining_output_budget = options
                 .request_context
                 .map(|ctx| ctx.max_output_tokens.saturating_sub(ctx.generated_len));
@@ -7610,7 +7627,7 @@ impl MlxRunner {
             return (vec![], vec![], vec![]);
         }
 
-        let base_position = state.cache.seq_len;
+        let base_position = state.cache.seq_len();
         // Speculation-profile resolution (ADR-022): explicit env > profile preset
         // > built-in default. `auto` is temperature-driven and never lowers the
         // shipped Gemma default at low temperature.
@@ -7759,7 +7776,7 @@ impl MlxRunner {
         use mlx_sys::{argmax, eval};
 
         let mut pending = state.mtp_pending_draft.clone();
-        let token_offset = state.cache.seq_len;
+        let token_offset = state.cache.seq_len();
         let has_linear_attention = self.cfg.linear_attention.is_some();
         let vocab = self.cfg.vocab_size as i32;
         let mut mtp_timings = MtpStepTimings::default();
@@ -8017,7 +8034,7 @@ impl MlxRunner {
                     )
                 };
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                state.cache.seq_len += verify_len;
+                state.cache.advance(verify_len);
                 let predicted_arr = needs_predicted.then(|| argmax(&logits_all, None));
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let kv_refs = state.cache.collect_eval_refs();
@@ -8074,7 +8091,7 @@ impl MlxRunner {
                     token_offset,
                 );
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                verify_cache.seq_len += verify_len;
+                verify_cache.advance(verify_len);
                 // Target probabilities for rejection-sampling acceptance.
                 // Full-vocab softmax by default; top-k approximation when
                 // AX_MLX_MTP_TARGET_SOFTMAX_MODE is set (e.g. topk_128).
@@ -8213,7 +8230,7 @@ impl MlxRunner {
                     )
                 };
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                state.cache.seq_len += verify_len;
+                state.cache.advance(verify_len);
                 let predicted_arr = needs_predicted.then(|| argmax(&logits_all, None));
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let kv_refs = state.cache.collect_eval_refs();
@@ -8265,7 +8282,7 @@ impl MlxRunner {
                     token_offset,
                 );
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                state.cache.seq_len += verify_len;
+                state.cache.advance(verify_len);
                 // Target probabilities for rejection-sampling acceptance.
                 let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
                 let target_prob_workspace =
@@ -8884,7 +8901,7 @@ impl MlxRunner {
                 }
             } else {
                 if self.weights.mtp.is_some() {
-                    // MTP head forward path (RoPE managed internally via cache.seq_len).
+                    // MTP head forward path (RoPE managed internally via cache.seq_len()).
                     let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
                     let mtp_draft_started = Instant::now();
                     let (draft, log_probs, distributions, added, _top2_margins) = if let Some(
@@ -9114,7 +9131,7 @@ impl MlxRunner {
                 mlx_sys::eval(&kv_refs);
                 clear_cache();
                 state.mtp_decode_count = warmup_len;
-                // After warmup, cache.seq_len == warmup_len (physical entries).
+                // After warmup, cache.seq_len() == warmup_len (physical entries).
                 // Set rope_offset so subsequent decode steps compute RoPE at
                 // the correct absolute position: seq_len + rope_offset gives
                 // the true logical position (e.g. warmup_len + start_offset = total).
@@ -9400,7 +9417,7 @@ impl MlxRunner {
         ) {
             state.ngram_disabled_steps = disabled_steps;
             // Any pending_direct from a previous cooldown cycle is now stale:
-            // the n-gram steps that just ran advanced cache.seq_len
+            // the n-gram steps that just ran advanced cache.seq_len()
             // independently, so the lookahead array points at the wrong
             // position. Force a Bootstrap on the first new cooldown step.
             state.pending_direct = None;
@@ -10615,7 +10632,7 @@ fn full_prefill_recompute_tokens_for_warmup_fallback(
     if item.mode != ExecutionMode::Prefill
         || item.reused_prefix_token_slice.is_empty()
         || prefix_cache.warmup_tokens == 0
-        || state.cache.seq_len != 0
+        || state.cache.seq_len() != 0
     {
         return None;
     }
@@ -10901,7 +10918,7 @@ fn maybe_reenable_linear_ngram_from_fallback_output(
     state.ngram_disabled_steps = 0;
     // Discard any stale direct-pipeline lookahead that was built while
     // ngram was disabled. Re-entering the ngram path invalidates it: the
-    // ngram draft will advance cache.seq_len independently, so
+    // ngram draft will advance cache.seq_len() independently, so
     // pending_direct would point at the wrong sequence position.
     state.pending_direct = None;
     state.direct_pipeline_emitted_tokens = 0;
@@ -12054,12 +12071,12 @@ mod tests {
     fn batched_session_join_reclaims_private_cache() {
         let mut session = BatchedDecodeSession::new(0, 2);
         let mut cache = MlxKVCache::new(0);
-        cache.seq_len = 4;
+        cache.set_seq_len(4);
 
         seed_batched_session_and_reclaim_private_cache(&mut session, 7, &mut cache, 11, Some(3));
 
         assert_eq!(session.active_ids(), &[7]);
-        assert_eq!(cache.seq_len, 0);
+        assert_eq!(cache.seq_len(), 0);
         assert_eq!(cache.usage_snapshot(), MlxKVCacheUsage::default());
     }
 

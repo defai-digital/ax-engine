@@ -245,11 +245,11 @@ fn model_reference(
     let mut stream = vec![tok0];
     let mut tok = tok0;
     for _ in 0..gen_len {
-        let offset = cache.seq_len;
+        let offset = cache.seq_len();
         let logits = forward(cfg, w, &[tok], &mut cache, offset);
         let idx = argmax(&logits, None);
         eval(&[&idx]);
-        cache.seq_len += 1;
+        cache.advance(1);
         tok = idx.data_u32()[0];
         stream.push(tok);
     }

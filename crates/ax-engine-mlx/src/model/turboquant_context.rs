@@ -124,7 +124,7 @@ impl<'a> TurboQuantModelDecodeContext<'a> {
             == 0
         {
             TurboQuantModelDecodeCandidateStatus::MissingRuntimeStorage
-        } else if cache.seq_len.saturating_add(seq) < turboquant_fused_decode_min_context_tokens() {
+        } else if cache.seq_len().saturating_add(seq) < turboquant_fused_decode_min_context_tokens() {
             TurboQuantModelDecodeCandidateStatus::ShortContext
         } else {
             TurboQuantModelDecodeCandidateStatus::Ready
@@ -137,7 +137,7 @@ impl<'a> TurboQuantModelDecodeContext<'a> {
         } else {
             0
         };
-        let total_tokens = cache.seq_len.saturating_add(seq);
+        let total_tokens = cache.seq_len().saturating_add(seq);
         TurboQuantModelDecodeCandidate {
             status,
             cold_tokens,

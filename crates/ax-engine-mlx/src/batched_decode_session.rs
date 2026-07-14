@@ -213,7 +213,7 @@ impl BatchedDecodeSession {
     /// The runner's per-request `MlxKVCache` is **warmed**: its last token is
     /// `first_token`'s KV, already appended by generation-state init. Re-feeding
     /// `first_token` would double it, so the runner passes `seed_len =
-    /// cache.seq_len - 1` — seed everything but that last token, then the first
+    /// cache.seq_len() - 1` — seed everything but that last token, then the first
     /// `step` re-appends it, reproducing the state exactly. Callers whose
     /// `first_token` is NOT yet in the cache (a fresh prefill, e.g. the probes)
     /// pass `None` and seed the whole cache.

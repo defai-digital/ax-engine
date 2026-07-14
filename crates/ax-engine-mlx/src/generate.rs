@@ -235,8 +235,8 @@ pub fn chunked_prefill_with_sampling_buffers(
             let end = (offset + chunk_size).min(cache_only_prefix_len);
             let chunk = &prompt_tokens[offset..end];
             // Cache-only: skip lm_head projection (hidden×vocab_size).
-            let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len);
-            cache.seq_len += chunk.len();
+            let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
+            cache.advance(chunk.len());
             // Materialise KV only after the *last* cache-only chunk. Intermediate
             // barriers force a full layer-stack eval for every sub-chunk (Qwen
             // linear-attention clamps to 1024, so p=2048 paid two full barriers).
@@ -275,15 +275,15 @@ pub fn chunked_prefill_with_sampling_buffers(
         let needs_full_logits =
             is_final_chunk && (sampling.temperature > 0.0 || sampling.uses_repetition_penalty());
         let logits = if needs_full_logits {
-            forward(cfg, weights, chunk, cache, cache.seq_len)
+            forward(cfg, weights, chunk, cache, cache.seq_len())
         } else if is_final_chunk {
             // Final chunk, greedy: need argmax but not full f32 logits.
-            forward_argmax_with_turboquant_context(cfg, weights, chunk, cache, cache.seq_len, None)
+            forward_argmax_with_turboquant_context(cfg, weights, chunk, cache, cache.seq_len(), None)
         } else {
             // Non-final chunk: skip lm_head projection entirely.
-            forward_cache_only(cfg, weights, chunk, cache, cache.seq_len)
+            forward_cache_only(cfg, weights, chunk, cache, cache.seq_len())
         };
-        cache.seq_len += chunk.len();
+        cache.advance(chunk.len());
         offset = end;
 
         if offset == total {
@@ -368,7 +368,7 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
         0,
         FinalLogitsMode::Full,
     );
-    cache.seq_len += prompt_tokens.len();
+    cache.advance(prompt_tokens.len());
 
     let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
         if let Some(tok) = sample_categorical_with_topk_gpu(
@@ -496,8 +496,8 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             let end = (offset + chunk_size).min(cache_only_prefix_len);
             let chunk = &prompt_tokens[offset..end];
             // Cache-only: skip lm_head projection (hidden×vocab_size).
-            let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len);
-            cache.seq_len += chunk.len();
+            let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
+            cache.advance(chunk.len());
             if end == cache_only_prefix_len {
                 eval_kv_refs(cache);
             }
@@ -506,10 +506,10 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
         // Completing step: full forward for the last prompt token so MTP gets
         // post-norm hidden. Sample when temperature>0; argmax when greedy.
         let last_tok = prompt_tokens[cache_only_prefix_len];
-        let last_offset = cache.seq_len;
+        let last_offset = cache.seq_len();
         let (logits_all, final_hidden) =
             forward_all_positions_with_final_hidden(cfg, weights, &[last_tok], cache, last_offset);
-        cache.seq_len += 1;
+        cache.advance(1);
         let logits_row = {
             use mlx_sys::{astype, reshape, slice};
             let lv = slice(
@@ -570,7 +570,7 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
         let end = (offset + chunk_size).min(total);
         let chunk = &prompt_tokens[offset..end];
         let is_final_chunk = end == total;
-        let chunk_offset = cache.seq_len;
+        let chunk_offset = cache.seq_len();
 
         if is_final_chunk {
             // Use last-position-only lm_head to avoid seq×vocab matmul on
@@ -582,7 +582,7 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
                 cache,
                 chunk_offset,
             );
-            cache.seq_len += chunk.len();
+            cache.advance(chunk.len());
 
             let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
                 eval_with_kv_refs(&last_logits, cache);
@@ -638,7 +638,7 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             // KV writes stay on the lazy graph and are pulled by the final
             // `eval_with_kv_refs` / `eval_kv_refs` on the completing step.
             let _hidden = forward_cache_only(cfg, weights, chunk, cache, chunk_offset);
-            cache.seq_len += chunk.len();
+            cache.advance(chunk.len());
             offset = end;
         }
     }
@@ -710,7 +710,7 @@ pub fn start_direct_pipeline_with_turboquant_context(
     cache: &mut MlxKVCache,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
-    let token_offset = cache.seq_len;
+    let token_offset = cache.seq_len();
     let logits = forward_argmax_with_turboquant_context(
         cfg,
         weights,
@@ -719,7 +719,7 @@ pub fn start_direct_pipeline_with_turboquant_context(
         token_offset,
         turboquant_context,
     );
-    cache.seq_len += 1;
+    cache.advance(1);
     // KV cache is in token_arr's computation graph; no extra refs needed.
     let token_arr = argmax(&logits, None);
     async_eval(&[&token_arr]);
@@ -772,7 +772,7 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
     // Build next step's graph using the lazy pending token.
     // forward_lazy_single accepts an unevaluated MlxArray, so this runs entirely
     // on the CPU without waiting for `pending` to be materialised.
-    let token_offset = cache.seq_len;
+    let token_offset = cache.seq_len();
     let stage_profile = direct_pipeline_stage_profile_enabled();
     if stage_profile {
         reset_forward_stage_timings();
@@ -792,7 +792,7 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
     } else {
         ForwardStageTimings::default()
     };
-    cache.seq_len += 1;
+    cache.advance(1);
     let argmax_started = Instant::now();
     let next_token_arr = argmax(&logits, None);
     let argmax_wall_us = elapsed_us(argmax_started);
@@ -941,7 +941,7 @@ pub fn decode_step_with_sampling_buffers_and_turboquant_context(
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> u32 {
     let sampling = sampling_request.params;
-    let token_offset = cache.seq_len;
+    let token_offset = cache.seq_len();
     let deterministic_argmax = sampling.temperature <= 0.0 && !sampling.uses_repetition_penalty();
     let logits = if deterministic_argmax {
         forward_argmax_with_turboquant_context(
@@ -962,7 +962,7 @@ pub fn decode_step_with_sampling_buffers_and_turboquant_context(
             turboquant_context,
         )
     };
-    cache.seq_len += 1;
+    cache.advance(1);
 
     if sampling.temperature > 0.0
         && !sampling.uses_repetition_penalty()
