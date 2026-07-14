@@ -60,6 +60,44 @@ the scheduler schedules only `remaining_budget` tokens and marks the rest as
 the next step's prefill work. The request stays `Runnable` and continues
 prefill in subsequent steps.
 
+### Fair multi-prefill progress (optional, default OFF)
+
+Without fair mode, residual budget is greedy FIFO: the oldest prefill can
+consume a large slice and starve peers until the next step. Fair multi-prefill
+improves **progress fairness** under sequential MLX eval; it does **not**
+create GPU-level continuous batching or imply concurrent-prefill
+`partial_overlap`.
+
+When `SchedulerInput.multi_prefill_fair` is true **and** there is no KV memory
+pressure:
+
+1. Each **text** prefill item is capped to
+   `max_prefill_tokens_per_request_per_step` (or `block_size_tokens` when that
+   field is 0).
+2. At most `min(max_inflight_prefill_requests, headroom_cap)` prefills are
+   admitted, where  
+   `headroom_cap = available_kv_blocks / ceil(fair_chunk / block_size_tokens)`.
+3. Multimodal prefills stay **atomic** (full remainder or defer) — they are
+   not fair-split.
+4. Fair mode is forced off under `memory_pressure`; the existing one-token /
+   defer pressure policy remains the sole prefill throttle.
+
+Fair multi-prefill **raises** concurrent live KV (more in-flight prefills hold
+blocks). Headroom admission and pressure disable are required safety valves.
+Engine plumbing: `EngineCore::set_multi_prefill_fair` → every `plan()` call
+site refreshes `block_size_tokens` / `available_kv_blocks` / `total_kv_blocks`
+from `KvManager`.
+
+Telemetry (on `RouteMetadata.crossover_decisions` when fair is active):
+
+| Key | Meaning |
+|---|---|
+| `ax_scheduler_fair_multi_prefill_enabled` | 1 when fair engaged this step |
+| `ax_scheduler_fair_multi_prefill_chunk_tokens` | Per-request text cap used |
+| `ax_scheduler_fair_multi_prefill_admission_cap` | Effective max prefills (0 = unlimited telemetry encoding of `u32::MAX` path not used when headroom finite) |
+| `ax_scheduler_fair_multi_prefill_admitted` | Prefills selected |
+| `ax_scheduler_fair_multi_prefill_deferred_by_admission` | Prefills deferred solely by admission cap |
+
 ### Memory pressure throttle
 
 When `memory_pressure` is `Some("kv_low_free_blocks:<free>/<total>")`, prefill

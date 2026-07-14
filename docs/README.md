@@ -120,6 +120,8 @@ diagnostic history, or out of scope for a claim.
 - [Scheduler](SCHEDULER.md): batching, routing, and execution planning
 - [KV Cache](KV-CACHE.md): logical KV ledger, MLX snapshots, disk-durable
   prefix cache, and memory-pressure invariants
+- [KV weak-surfaces design](designs/kv-weak-surfaces-2026-07-14.md): MLA
+  claim alignment, fair multi-prefill progress, FA physical block-pool plan
 - [Roadmap](ROADMAP.md): serving runtime direction and evidence gates for
   future claims
 

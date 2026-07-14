@@ -7,6 +7,47 @@ pub struct SchedulerInput {
     pub request_snapshots: Vec<RequestSnapshot>,
     pub memory_pressure: Option<String>,
     pub global_token_budget: u32,
+    /// When true and KV pressure is absent, cap each *text* prefill item and
+    /// admit at most `max_inflight_prefill_requests` prefills so multiple
+    /// prompts make progress. Multimodal prefills stay atomic (full-or-defer).
+    /// Fair mode **raises** concurrent live KV footprint; headroom admission
+    /// uses `available_kv_blocks` / `block_size_tokens`. Default: false.
+    pub multi_prefill_fair: bool,
+    /// Per-request prefill token cap when fair mode is active. `0` means
+    /// "use `block_size_tokens` as the fair chunk floor".
+    pub max_prefill_tokens_per_request_per_step: u32,
+    /// Max concurrent prefill requests admitted under fair mode. `0` means
+    /// unlimited (still subject to residual budget and headroom).
+    pub max_inflight_prefill_requests: u32,
+    /// Tokens per logical KV block (from `KvManagerConfig`).
+    pub block_size_tokens: u32,
+    /// Free physical/logical blocks available for new allocation this step.
+    pub available_kv_blocks: u32,
+    /// Total blocks in the pool (telemetry / ratio only).
+    pub total_kv_blocks: u32,
+}
+
+impl SchedulerInput {
+    /// Legacy-compatible constructor: fair multi-prefill off, unlimited KV headroom.
+    pub fn new(
+        step_id: StepId,
+        request_snapshots: Vec<RequestSnapshot>,
+        memory_pressure: Option<String>,
+        global_token_budget: u32,
+    ) -> Self {
+        Self {
+            step_id,
+            request_snapshots,
+            memory_pressure,
+            global_token_budget,
+            multi_prefill_fair: false,
+            max_prefill_tokens_per_request_per_step: 0,
+            max_inflight_prefill_requests: 0,
+            block_size_tokens: 16,
+            available_kv_blocks: u32::MAX,
+            total_kv_blocks: u32::MAX,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,12 +210,29 @@ pub const ROUTE_DECISION_AX_SCHEDULER_SKIPPED_DECODE_TOKENS: &str =
     "ax_scheduler_skipped_decode_tokens";
 pub const ROUTE_DECISION_AX_SCHEDULER_MIXED_PREFILL_DECODE_BATCHES: &str =
     "ax_scheduler_mixed_prefill_decode_batches";
+pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED: &str =
+    "ax_scheduler_fair_multi_prefill_enabled";
+pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_CHUNK_TOKENS: &str =
+    "ax_scheduler_fair_multi_prefill_chunk_tokens";
+pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMISSION_CAP: &str =
+    "ax_scheduler_fair_multi_prefill_admission_cap";
+pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMITTED: &str =
+    "ax_scheduler_fair_multi_prefill_admitted";
+pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_DEFERRED_BY_ADMISSION: &str =
+    "ax_scheduler_fair_multi_prefill_deferred_by_admission";
 pub const ROUTE_DECISION_AX_SCHEDULER_TOKEN_BUDGET_KEYS: [&str; 5] = [
     ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS,
     ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS,
     ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS,
     ROUTE_DECISION_AX_SCHEDULER_SKIPPED_DECODE_TOKENS,
     ROUTE_DECISION_AX_SCHEDULER_MIXED_PREFILL_DECODE_BATCHES,
+];
+pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_KEYS: [&str; 5] = [
+    ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED,
+    ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_CHUNK_TOKENS,
+    ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMISSION_CAP,
+    ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMITTED,
+    ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_DEFERRED_BY_ADMISSION,
 ];
 pub const ROUTE_DECISION_AX_MLX_KV_KEYS: [&str; 15] = [
     ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS,
@@ -416,6 +474,39 @@ impl Scheduler {
         let mut token_budget = TokenBudgetTelemetry::default();
         let mut pressure_prefill_budget =
             prefill_budget_for_memory_pressure(input.memory_pressure.as_deref());
+        // Fair multi-prefill is decode-progress-preserving and only engages
+        // when there is no KV memory pressure. Under pressure the existing
+        // one-token / defer policy remains the sole prefill throttle.
+        let fair_active = input.multi_prefill_fair && pressure_prefill_budget.is_none();
+        let fair_chunk = if fair_active {
+            fair_prefill_chunk_tokens(
+                input.max_prefill_tokens_per_request_per_step,
+                input.block_size_tokens,
+            )
+        } else {
+            0
+        };
+        let mut admitted_prefill_requests: u32 = 0;
+        let prefill_request_cap = if fair_active {
+            fair_prefill_admission_cap(
+                input.max_inflight_prefill_requests,
+                fair_chunk,
+                input.block_size_tokens,
+                input.available_kv_blocks,
+            )
+        } else {
+            u32::MAX
+        };
+        let mut fair_telemetry = FairMultiPrefillTelemetry::default();
+        if fair_active {
+            fair_telemetry.enabled = 1;
+            fair_telemetry.fair_chunk_tokens = fair_chunk;
+            fair_telemetry.admission_cap = if prefill_request_cap == u32::MAX {
+                0
+            } else {
+                prefill_request_cap
+            };
+        }
 
         for snapshot in runnable {
             if snapshot.model_id != batch_model_id {
@@ -446,6 +537,15 @@ impl Scheduler {
                 continue;
             }
 
+            if mode == ExecutionMode::Prefill && admitted_prefill_requests >= prefill_request_cap {
+                token_budget.record_skipped(mode, requested_tokens);
+                deferred_requests.push(snapshot.request_id);
+                fair_telemetry.deferred_by_admission = fair_telemetry
+                    .deferred_by_admission
+                    .saturating_add(1);
+                continue;
+            }
+
             let candidate_budget = match (mode, pressure_prefill_budget) {
                 (ExecutionMode::Prefill, Some(0)) => {
                     token_budget.record_skipped(mode, requested_tokens);
@@ -454,6 +554,11 @@ impl Scheduler {
                 }
                 (ExecutionMode::Prefill, Some(prefill_budget)) => {
                     remaining_budget.min(prefill_budget)
+                }
+                (ExecutionMode::Prefill, None) if fair_active && !snapshot.has_multimodal_inputs => {
+                    // Text-only fair cap. Multimodal remains full-or-defer via
+                    // build_execution_item atomicity (no partial multimodal).
+                    remaining_budget.min(fair_chunk)
                 }
                 _ => remaining_budget,
             };
@@ -494,6 +599,11 @@ impl Scheduler {
                 pressure_prefill_budget =
                     Some(prefill_budget.saturating_sub(item.scheduled_token_count));
             }
+            if item.mode == ExecutionMode::Prefill {
+                admitted_prefill_requests = admitted_prefill_requests.saturating_add(1);
+                fair_telemetry.admitted_prefills =
+                    fair_telemetry.admitted_prefills.saturating_add(1);
+            }
             token_budget.record_scheduled(item.mode, item.scheduled_token_count);
             if requested_tokens > item.scheduled_token_count {
                 token_budget
@@ -514,6 +624,7 @@ impl Scheduler {
             let mut route_metadata =
                 route_metadata_for_batch(route_seed_anchor.as_ref(), batch_mixes_prefill_decode);
             token_budget.append_route_decisions(&mut route_metadata);
+            fair_telemetry.append_route_decisions(&mut route_metadata);
             Some(ExecutionBatch {
                 step_id: input.step_id,
                 model_id: batch_model_id.0.clone(),
@@ -640,6 +751,73 @@ fn prefill_budget_for_memory_pressure(memory_pressure: Option<&str>) -> Option<u
             Some(MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP)
         }
         Some(_) => Some(MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP),
+    }
+}
+
+/// Fair prefill chunk: explicit per-request cap, else block_size_tokens, floor 1.
+fn fair_prefill_chunk_tokens(max_tokens_per_request: u32, block_size_tokens: u32) -> u32 {
+    let floor = block_size_tokens.max(1);
+    if max_tokens_per_request == 0 {
+        floor
+    } else {
+        max_tokens_per_request.max(1)
+    }
+}
+
+/// Admit min(configured max, free-block headroom). `0` configured max → unlimited
+/// by count (still headroom-limited). Headroom uses ceil(fair_chunk / block_size).
+fn fair_prefill_admission_cap(
+    max_inflight_prefill_requests: u32,
+    fair_chunk: u32,
+    block_size_tokens: u32,
+    available_kv_blocks: u32,
+) -> u32 {
+    let block_size = block_size_tokens.max(1);
+    let blocks_per = fair_chunk.div_ceil(block_size).max(1);
+    let headroom_cap = available_kv_blocks / blocks_per;
+    if max_inflight_prefill_requests == 0 {
+        headroom_cap
+    } else {
+        max_inflight_prefill_requests.min(headroom_cap)
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct FairMultiPrefillTelemetry {
+    enabled: u32,
+    fair_chunk_tokens: u32,
+    admission_cap: u32,
+    admitted_prefills: u32,
+    deferred_by_admission: u32,
+}
+
+impl FairMultiPrefillTelemetry {
+    fn append_route_decisions(&self, route_metadata: &mut RouteMetadata) {
+        if self.enabled == 0 {
+            return;
+        }
+        route_metadata.crossover_decisions.extend([
+            (
+                ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED.into(),
+                self.enabled,
+            ),
+            (
+                ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_CHUNK_TOKENS.into(),
+                self.fair_chunk_tokens,
+            ),
+            (
+                ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMISSION_CAP.into(),
+                self.admission_cap,
+            ),
+            (
+                ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMITTED.into(),
+                self.admitted_prefills,
+            ),
+            (
+                ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_DEFERRED_BY_ADMISSION.into(),
+                self.deferred_by_admission,
+            ),
+        ]);
     }
 }
 
@@ -835,16 +1013,16 @@ mod tests {
     #[test]
     fn batches_oldest_model_family_first_with_chunked_prefill() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(4),
-            request_snapshots: vec![
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(4),
+            vec![
                 make_snapshot(1, 1, "qwen3", &[10, 11, 12], 0, &[], 16),
                 make_snapshot(2, 2, "qwen3", &[20, 21, 22], 0, &[], 16),
                 make_snapshot(3, 3, "llama", &[30, 31], 0, &[], 16),
             ],
-            memory_pressure: None,
-            global_token_budget: 5,
-        });
+            None,
+            5,
+        ));
 
         assert_eq!(
             schedule_plan.selected_requests,
@@ -884,18 +1062,18 @@ mod tests {
     #[test]
     fn defers_multimodal_prefill_instead_of_splitting() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(4),
-            request_snapshots: vec![make_multimodal_snapshot(
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(4),
+            vec![make_multimodal_snapshot(
                 1,
                 1,
                 "gemma4",
                 &[10, 11, 12, 13],
                 0,
             )],
-            memory_pressure: None,
-            global_token_budget: 3,
-        });
+            None,
+            3,
+        ));
 
         assert!(schedule_plan.selected_requests.is_empty());
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
@@ -905,18 +1083,18 @@ mod tests {
     #[test]
     fn schedules_multimodal_prefill_atomically_when_budget_fits() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(4),
-            request_snapshots: vec![make_multimodal_snapshot(
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(4),
+            vec![make_multimodal_snapshot(
                 1,
                 1,
                 "gemma4",
                 &[10, 11, 12, 13],
                 0,
             )],
-            memory_pressure: None,
-            global_token_budget: 4,
-        });
+            None,
+            4,
+        ));
 
         assert_eq!(schedule_plan.selected_requests, vec![RequestId(1)]);
         let execution_batch = schedule_plan.execution_batch.unwrap();
@@ -931,15 +1109,15 @@ mod tests {
     #[test]
     fn multimodal_prefill_defers_while_text_prefill_still_chunks() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(4),
-            request_snapshots: vec![
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(4),
+            vec![
                 make_multimodal_snapshot(1, 1, "gemma4", &[10, 11, 12, 13], 0),
                 make_snapshot(2, 2, "gemma4", &[20, 21, 22, 23], 0, &[], 16),
             ],
-            memory_pressure: None,
-            global_token_budget: 3,
-        });
+            None,
+            3,
+        ));
 
         // The older multimodal prefill cannot complete in this step's budget,
         // so it defers whole; the younger text prefill still chunks.
@@ -954,15 +1132,15 @@ mod tests {
     #[test]
     fn defers_multimodal_prefill_when_decode_consumes_budget() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(4),
-            request_snapshots: vec![
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(4),
+            vec![
                 make_multimodal_snapshot(1, 1, "gemma4", &[10, 11, 12, 13], 0),
                 make_snapshot(2, 2, "gemma4", &[20, 21, 22, 23], 4, &[99], 16),
             ],
-            memory_pressure: None,
-            global_token_budget: 4,
-        });
+            None,
+            4,
+        ));
 
         // Decode is scheduled first and leaves only 3 budget tokens — not
         // enough for the 4-token multimodal prompt, which must not split.
@@ -976,18 +1154,18 @@ mod tests {
     #[test]
     fn schedules_multimodal_prefill_remainder_after_prefix_reuse() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(4),
-            request_snapshots: vec![make_multimodal_snapshot(
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(4),
+            vec![make_multimodal_snapshot(
                 1,
                 1,
                 "gemma4",
                 &[10, 11, 12, 13, 14, 15],
                 4,
             )],
-            memory_pressure: None,
-            global_token_budget: 2,
-        });
+            None,
+            2,
+        ));
 
         // Prefix reuse advanced processed_prompt_tokens; the remainder fits
         // the budget, so the prefill completes the prompt in one item.
@@ -1001,12 +1179,12 @@ mod tests {
     #[test]
     fn builds_decode_item_from_last_known_token() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(8),
-            request_snapshots: vec![make_snapshot(9, 1, "qwen3", &[1, 2, 3], 3, &[7], 16)],
-            memory_pressure: None,
-            global_token_budget: 1,
-        });
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(8),
+            vec![make_snapshot(9, 1, "qwen3", &[1, 2, 3], 3, &[7], 16)],
+            None,
+            1,
+        ));
 
         let execution_batch = schedule_plan.execution_batch.unwrap();
         assert_eq!(execution_batch.items.len(), 1);
@@ -1024,12 +1202,12 @@ mod tests {
     #[test]
     fn builds_decode_item_from_last_prompt_token_without_generated_history() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(9),
-            request_snapshots: vec![make_snapshot(10, 1, "qwen3", &[1, 2, 3], 3, &[], 16)],
-            memory_pressure: None,
-            global_token_budget: 1,
-        });
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(9),
+            vec![make_snapshot(10, 1, "qwen3", &[1, 2, 3], 3, &[], 16)],
+            None,
+            1,
+        ));
 
         let execution_batch = schedule_plan.execution_batch.unwrap();
         assert_eq!(execution_batch.items.len(), 1);
@@ -1047,12 +1225,12 @@ mod tests {
     #[test]
     fn max_output_runnable_request_remains_visible_as_deferred() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(10),
-            request_snapshots: vec![make_snapshot(12, 1, "qwen3", &[1, 2, 3], 3, &[7, 8], 2)],
-            memory_pressure: None,
-            global_token_budget: 1,
-        });
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(10),
+            vec![make_snapshot(12, 1, "qwen3", &[1, 2, 3], 3, &[7, 8], 2)],
+            None,
+            1,
+        ));
 
         assert!(schedule_plan.selected_requests.is_empty());
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(12)]);
@@ -1083,12 +1261,12 @@ mod tests {
             crossover_decisions: Vec::new(),
         };
 
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(11),
-            request_snapshots: vec![prefill, decode],
-            memory_pressure: None,
-            global_token_budget: 3,
-        });
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(11),
+            vec![prefill, decode],
+            None,
+            3,
+        ));
 
         assert_eq!(
             schedule_plan.selected_requests,
@@ -1136,15 +1314,15 @@ mod tests {
     #[test]
     fn defers_prefill_when_decode_exhausts_token_budget() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(14),
-            request_snapshots: vec![
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(14),
+            vec![
                 make_snapshot(1, 1, "qwen3", &[10, 11, 12, 13], 0, &[], 16),
                 make_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 4, &[99], 16),
             ],
-            memory_pressure: None,
-            global_token_budget: 1,
-        });
+            None,
+            1,
+        ));
 
         assert_eq!(schedule_plan.selected_requests, vec![RequestId(2)]);
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
@@ -1168,15 +1346,15 @@ mod tests {
     #[test]
     fn memory_pressure_caps_prefill_tokens_without_starving_decode() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(15),
-            request_snapshots: vec![
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(15),
+            vec![
                 make_snapshot(1, 1, "qwen3", &[10, 11, 12, 13], 0, &[], 16),
                 make_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 4, &[99], 16),
             ],
-            memory_pressure: Some("kv_low_free_blocks:1/8".into()),
-            global_token_budget: 8,
-        });
+            Some("kv_low_free_blocks:1/8".into()),
+            8,
+        ));
 
         assert_eq!(
             schedule_plan.selected_requests,
@@ -1211,15 +1389,15 @@ mod tests {
     #[test]
     fn exhausted_memory_pressure_defers_prefill_without_starving_decode() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(16),
-            request_snapshots: vec![
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(16),
+            vec![
                 make_snapshot(1, 1, "qwen3", &[10, 11, 12, 13], 0, &[], 16),
                 make_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 4, &[99], 16),
             ],
-            memory_pressure: Some("kv_exhausted".into()),
-            global_token_budget: 8,
-        });
+            Some("kv_exhausted".into()),
+            8,
+        ));
 
         assert_eq!(schedule_plan.selected_requests, vec![RequestId(2)]);
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
@@ -1250,15 +1428,15 @@ mod tests {
     #[test]
     fn exhausted_reclaimable_cache_pressure_caps_prefill_without_starving_decode() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(17),
-            request_snapshots: vec![
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(17),
+            vec![
                 make_snapshot(1, 1, "qwen3", &[10, 11, 12, 13], 0, &[], 16),
                 make_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 4, &[99], 16),
             ],
-            memory_pressure: Some("kv_exhausted_reclaimable_cache".into()),
-            global_token_budget: 8,
-        });
+            Some("kv_exhausted_reclaimable_cache".into()),
+            8,
+        ));
 
         assert_eq!(
             schedule_plan.selected_requests,
@@ -1296,12 +1474,12 @@ mod tests {
             crossover_decisions: Vec::new(),
         };
 
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(12),
-            request_snapshots: vec![first, second],
-            memory_pressure: None,
-            global_token_budget: 8,
-        });
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(12),
+            vec![first, second],
+            None,
+            8,
+        ));
 
         assert_eq!(schedule_plan.selected_requests, vec![RequestId(1)]);
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(2)]);
@@ -1346,12 +1524,12 @@ mod tests {
         second_prefill.route_metadata_hint =
             mixed_compatible_kv("phase1.qwen3.special_prefill", "qwen3_prefill_alt");
 
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(14),
-            request_snapshots: vec![decode, first_prefill, second_prefill],
-            memory_pressure: None,
-            global_token_budget: 8,
-        });
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(14),
+            vec![decode, first_prefill, second_prefill],
+            None,
+            8,
+        ));
 
         // Both prefills are mixed-compatible with the decode anchor, but they
         // carry different execution plans, so only the first may join.
@@ -1368,12 +1546,12 @@ mod tests {
         let mut snapshot = make_snapshot(1, 1, "qwen3", &[10, 11, 12], 0, &[], 16);
         snapshot.execution_plan_ref = Some("phase1.qwen3.dense_prefill".into());
 
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(13),
-            request_snapshots: vec![snapshot],
-            memory_pressure: None,
-            global_token_budget: 8,
-        });
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(13),
+            vec![snapshot],
+            None,
+            8,
+        ));
 
         let execution_batch = schedule_plan
             .execution_batch
@@ -1390,15 +1568,15 @@ mod tests {
     #[test]
     fn defers_all_requests_when_global_token_budget_is_zero() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(20),
-            request_snapshots: vec![
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(20),
+            vec![
                 make_snapshot(1, 1, "qwen3", &[10, 11, 12], 0, &[], 16),
                 make_snapshot(2, 2, "qwen3", &[20, 21], 0, &[], 16),
             ],
-            memory_pressure: None,
-            global_token_budget: 0,
-        });
+            None,
+            0,
+        ));
 
         assert!(schedule_plan.selected_requests.is_empty());
         assert_eq!(
@@ -1411,12 +1589,12 @@ mod tests {
     #[test]
     fn defers_requests_with_no_remaining_work_so_they_stay_visible() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(21),
-            request_snapshots: vec![make_snapshot(1, 1, "qwen3", &[10, 11, 12], 3, &[7, 8], 2)],
-            memory_pressure: None,
-            global_token_budget: 8,
-        });
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(21),
+            vec![make_snapshot(1, 1, "qwen3", &[10, 11, 12], 3, &[7, 8], 2)],
+            None,
+            8,
+        ));
 
         assert!(schedule_plan.selected_requests.is_empty());
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
@@ -1426,16 +1604,16 @@ mod tests {
     #[test]
     fn defers_different_model_requests_to_next_step() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(22),
-            request_snapshots: vec![
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(22),
+            vec![
                 make_snapshot(1, 1, "qwen3", &[10, 11], 0, &[], 16),
                 make_snapshot(2, 2, "gemma", &[20, 21], 0, &[], 16),
                 make_snapshot(3, 3, "qwen3", &[30, 31], 0, &[], 16),
             ],
-            memory_pressure: None,
-            global_token_budget: 16,
-        });
+            None,
+            16,
+        ));
 
         assert_eq!(
             schedule_plan.selected_requests,
@@ -1451,15 +1629,169 @@ mod tests {
     #[test]
     fn returns_empty_plan_when_no_runnable_requests() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput {
-            step_id: StepId(23),
-            request_snapshots: vec![],
-            memory_pressure: None,
-            global_token_budget: 16,
-        });
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(23),
+            vec![],
+            None,
+            16,
+        ));
 
         assert!(schedule_plan.selected_requests.is_empty());
         assert!(schedule_plan.deferred_requests.is_empty());
         assert!(schedule_plan.execution_batch.is_none());
+    }
+
+    #[test]
+    fn fair_multi_prefill_splits_budget_across_text_prefills() {
+        let scheduler = Scheduler::new();
+        let mut input = SchedulerInput::new(
+            StepId(30),
+            vec![
+                make_snapshot(1, 1, "qwen3", &[10; 64], 0, &[], 16),
+                make_snapshot(2, 2, "qwen3", &[20; 64], 0, &[], 16),
+                make_snapshot(3, 3, "qwen3", &[30; 64], 0, &[], 16),
+            ],
+            None,
+            48,
+        );
+        input.multi_prefill_fair = true;
+        input.max_prefill_tokens_per_request_per_step = 16;
+        input.max_inflight_prefill_requests = 3;
+        input.block_size_tokens = 16;
+        input.available_kv_blocks = 1024;
+        input.total_kv_blocks = 1024;
+
+        let schedule_plan = scheduler.plan(&input);
+        assert_eq!(
+            schedule_plan.selected_requests,
+            vec![RequestId(1), RequestId(2), RequestId(3)]
+        );
+        let batch = schedule_plan.execution_batch.expect("batch");
+        assert_eq!(batch.items.len(), 3);
+        for item in &batch.items {
+            assert_eq!(item.mode, ExecutionMode::Prefill);
+            assert_eq!(item.scheduled_token_count, 16);
+        }
+        assert_eq!(batch.total_scheduled_tokens, 48);
+        let decisions: std::collections::BTreeMap<_, _> =
+            batch.route_metadata.crossover_decisions.into_iter().collect();
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMITTED),
+            Some(&3)
+        );
+    }
+
+    #[test]
+    fn fair_multi_prefill_headroom_limits_admission() {
+        let scheduler = Scheduler::new();
+        // fair_chunk=16, block_size=16 → 1 block per prefill; available=1 → admit 1.
+        let mut input = SchedulerInput::new(
+            StepId(31),
+            vec![
+                make_snapshot(1, 1, "qwen3", &[10; 32], 0, &[], 16),
+                make_snapshot(2, 2, "qwen3", &[20; 32], 0, &[], 16),
+            ],
+            None,
+            64,
+        );
+        input.multi_prefill_fair = true;
+        input.max_prefill_tokens_per_request_per_step = 16;
+        input.max_inflight_prefill_requests = 4;
+        input.block_size_tokens = 16;
+        input.available_kv_blocks = 1;
+        input.total_kv_blocks = 64;
+
+        let schedule_plan = scheduler.plan(&input);
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(1)]);
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(2)]);
+        let batch = schedule_plan.execution_batch.expect("batch");
+        let decisions: std::collections::BTreeMap<_, _> =
+            batch.route_metadata.crossover_decisions.into_iter().collect();
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMISSION_CAP),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions
+                .get(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_DEFERRED_BY_ADMISSION),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn fair_multi_prefill_disabled_under_memory_pressure() {
+        let scheduler = Scheduler::new();
+        let mut input = SchedulerInput::new(
+            StepId(32),
+            vec![
+                make_snapshot(1, 1, "qwen3", &[10; 32], 0, &[], 16),
+                make_snapshot(2, 2, "qwen3", &[20; 32], 0, &[], 16),
+            ],
+            Some("kv_low_free_blocks:4/64".into()),
+            64,
+        );
+        input.multi_prefill_fair = true;
+        input.max_prefill_tokens_per_request_per_step = 16;
+        input.max_inflight_prefill_requests = 4;
+        input.block_size_tokens = 16;
+        input.available_kv_blocks = 4;
+        input.total_kv_blocks = 64;
+
+        let schedule_plan = scheduler.plan(&input);
+        // Pressure path: one token total for prefill, greedy oldest-only.
+        let batch = schedule_plan.execution_batch.expect("batch");
+        assert_eq!(batch.total_scheduled_tokens, 1);
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(batch.items[0].request_id, RequestId(1));
+        let decisions: std::collections::BTreeMap<_, _> =
+            batch.route_metadata.crossover_decisions.into_iter().collect();
+        assert!(
+            !decisions.contains_key(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED),
+            "fair telemetry must not engage under pressure"
+        );
+    }
+
+    #[test]
+    fn fair_multi_prefill_keeps_multimodal_atomic() {
+        let scheduler = Scheduler::new();
+        let mut input = SchedulerInput::new(
+            StepId(33),
+            vec![
+                make_multimodal_snapshot(1, 1, "qwen3", &[10, 11, 12, 13, 14, 15, 16, 17], 0),
+                make_snapshot(2, 2, "qwen3", &[20; 32], 0, &[], 16),
+            ],
+            None,
+            24,
+        );
+        input.multi_prefill_fair = true;
+        input.max_prefill_tokens_per_request_per_step = 4;
+        input.max_inflight_prefill_requests = 4;
+        input.block_size_tokens = 16;
+        input.available_kv_blocks = 1024;
+        input.total_kv_blocks = 1024;
+
+        let schedule_plan = scheduler.plan(&input);
+        // Multimodal needs 8 tokens but fair would only offer residual after
+        // or full remainder; atomic path defers multimodal when residual < 8.
+        // Oldest multimodal with budget 24: build_execution_item sees full
+        // remaining_budget for multimodal (not fair-capped), so it takes 8.
+        // Then text gets fair-capped 4.
+        assert!(
+            schedule_plan
+                .selected_requests
+                .contains(&RequestId(1)),
+            "multimodal with enough residual budget must schedule atomically"
+        );
+        let batch = schedule_plan.execution_batch.expect("batch");
+        let mm = batch
+            .items
+            .iter()
+            .find(|item| item.request_id == RequestId(1))
+            .expect("multimodal item");
+        assert_eq!(mm.scheduled_token_count, 8);
     }
 }

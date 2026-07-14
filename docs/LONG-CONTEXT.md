@@ -42,7 +42,7 @@ The detailed implementation contract lives in [KV-CACHE.md](KV-CACHE.md).
 | N-gram decode at depth | [Qwen3-4B n-gram depth diagnostic, 2026-05-15](../benchmarks/results/inference/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-ngram-depth.md) | AX n-gram decode was 2.225x vs `mlx_lm` at 4k depth and 2.686x at 8k depth, with 100% draft acceptance in this run | N-gram remains a decode-policy result and should not be credited as prefill or serving-concurrency evidence |
 | Server startup and concurrency | [Qwen3-4B P2 startup/concurrency](../benchmarks/results/inference/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md) | 8k benchmark-warm TTFT was 2509.7 ms; 4-request concurrent prefill was classified as serialized | This sets serving expectations; it does not prove continuous batching |
 | Hot-prefix correctness | [Qwen3.5 warm-repeat equivalence](../benchmarks/results/inference/mlx-inference/2026-05-13-hot-prefix-w2/equivalence-gate/warm_repeat/qwen3-5-9b-2026-05-13.json) | 5/5 prompts matched token-exactly, with 5 physical snapshot hits, 176 reused tokens, and 0 warmup tokens on the claimed hit path | AX can restore physical MLX prefix snapshots on the validated Qwen warm-repeat path |
-| Multi-turn long session | `benchmarks/results/profiling/kv-long-context/*fix-final-2026-05-14.json` | Qwen3.5, Qwen3.6, and Gemma4 E2B show repeated physical prefix hits and reduced post-first-turn TTFT; GLM-4.7 still shows no prefix hits in this artifact family | Long-running session reuse is promising on supported cache layouts, but not uniform across every architecture |
+| Multi-turn long session | `benchmarks/results/profiling/kv-long-context/*-2026-05-14.json` | Qwen3.5, Qwen3.6, and Gemma4 E2B show repeated physical prefix hits and reduced post-first-turn TTFT; GLM-4.7-Flash MLA multi-turn physical reuse is default-on (`…multiturn-mla-fixed-…`, 10 hits / 18,496 reused tokens) after the historical blocked path (`…multiturn-bugfix-final-…`) | Long-running session reuse works on FA, linear, sliding, and GLM MLA layouts when prompts are block-aligned; cold MLA prefill throughput under chunk alignment remains a follow-up surface |
 | Compressed KV | TurboQuant quality and microbench artifacts | Experimental and off by default | Not a production long-context support claim yet |
 
 ## Multi-Turn Evidence
@@ -57,7 +57,8 @@ context cost.
 | `qwen3.5-9b-4bit-multiturn-fix-final-2026-05-14.json` | 0.690 s | 0.077 s | 10 | 18,496 | Physical prefix reuse captures the long-session win |
 | `qwen3.6-35b-a3b-4bit-multiturn-fix-final-2026-05-14.json` | 0.633 s | 0.109 s | 10 | 18,496 | Physical prefix reuse captures the long-session win |
 | `gemma4-e2b-4bit-multiturn-fix-final-2026-05-14.json` | 0.235 s | 0.037 s | 10 | 18,784 | Physical prefix reuse captures the long-session win |
-| `glm47-flash-4bit-multiturn-fix-final-2026-05-14.json` | 0.791 s | 1.716 s | 0 | 0 | MLA multi-turn prefix snapshot reuse is still a follow-up surface |
+| `glm47-flash-4bit-multiturn-bugfix-final-2026-05-14.json` | 0.791 s | 1.716 s | 0 | 0 | Historical blocked path (pre default-on restore): no physical hits; TTFT grows |
+| `glm47-flash-4bit-multiturn-mla-fixed-2026-05-14.json` | 5.109 s | 0.433 s | 10 | 18,496 | Default-on MLA restore: physical hits capture the multi-turn win; cold turn-1 TTFT is not latency-parity with Qwen/Gemma |
 
 These rows are intentionally not mixed into the README short/mid-prompt
 throughput table. They answer a different question: whether a long-running
@@ -83,8 +84,10 @@ Do not claim yet:
 - AX is universally faster than `mlx_lm` at 8k or longer cold-prefill contexts.
 - AX has production continuous batching for concurrent long prompts.
 - TurboQuant compressed KV is a production long-context path.
-- Prefix reuse works equally across Qwen, Gemma, GLM, and future architectures
-  without architecture-specific validation.
+- Prefix reuse has identical cold-prefill latency across Qwen, Gemma, and GLM
+  without architecture-specific chunk policy and validation.
+- Fair multi-prefill progress (scheduler caps) implies continuous batching or
+  concurrent-prefill `partial_overlap` on Apple Silicon.
 
 ## Benchmarking Best Practices
 

@@ -73,11 +73,12 @@ python -m maturin develop --quiet
 # model_id + UTC date, so we pass distinct output dirs per mode).
 #   warm_repeat: same-prompt full-prefix snapshot path. Verifies Strategies
 #       1/2/3 do bit-exact restore (Decode-mode item, snapshot HIT).
-#   warm_extend: cold(P+suffix) vs warm(P then P+suffix). Verifies both the
-#       cee4227e full-recompute fallback path AND, for non-MLA architectures,
-#       the snapshot+chunked_prefill extension path. MLA's Prefill-mode
-#       snapshot path is intentionally gated to fall through to full
-#       recompute (the snapshot+extend math drifts on MLA layers).
+#   warm_extend: cold(P+suffix) vs warm(P then P+suffix). Verifies the
+#       snapshot+chunked_prefill extension path for FA, linear, sliding, and
+#       MLA under default env. MLA warm_extend restore is default-on (dual-path
+#       chunk alignment: MLA_DEFAULT_PREFILL_CHUNK=16). The historical full
+#       recompute gate is only re-engaged with AX_DISABLE_MLA_PREFIX_RESTORE=1.
+#       Do not require AX_ALLOW_MLA_PREFIX_RESTORE for the default path.
 WARM_REPEAT_DIR="$AX_PREFIX_REUSE_OUTPUT_DIR/warm_repeat"
 WARM_EXTEND_DIR="$AX_PREFIX_REUSE_OUTPUT_DIR/warm_extend"
 mkdir -p "$WARM_REPEAT_DIR" "$WARM_EXTEND_DIR"

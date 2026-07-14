@@ -84,6 +84,12 @@ pub struct EngineCore {
     runner: Box<dyn ExecutionRunner>,
     sampler: Box<dyn TokenSampler>,
     prefix_reuse_enabled: bool,
+    /// Fair multi-prefill progress (default OFF). When ON, each text prefill
+    /// is token-capped per step so multiple prompts make progress under a
+    /// shared budget. Raises concurrent live KV; see SchedulerInput headroom.
+    multi_prefill_fair: bool,
+    max_prefill_tokens_per_request_per_step: u32,
+    max_inflight_prefill_requests: u32,
     next_step_id: u64,
     // Per-step scratch buffers — cleared and reused each step to avoid heap churn.
     scratch_seen_request_ids: HashSet<RequestId>,
@@ -157,6 +163,9 @@ impl EngineCore {
             runner: Box::new(runner),
             sampler: Box::new(sampler),
             prefix_reuse_enabled: true,
+            multi_prefill_fair: false,
+            max_prefill_tokens_per_request_per_step: 0,
+            max_inflight_prefill_requests: 0,
             next_step_id: 0,
             scratch_seen_request_ids: HashSet::with_capacity(32),
             scratch_update_index: HashMap::with_capacity(32),
@@ -177,6 +186,24 @@ impl EngineCore {
     /// Enables or disables logical KV prefix reuse for subsequent steps.
     pub fn set_prefix_reuse_enabled(&mut self, enabled: bool) {
         self.prefix_reuse_enabled = enabled;
+    }
+
+    /// Configure fair multi-prefill progress policy (default OFF).
+    ///
+    /// When `fair` is true, each text prefill is capped to
+    /// `max_tokens_per_request_per_step` tokens (or `block_size_tokens` when
+    /// that value is 0) and at most `max_inflight_prefill_requests` prefills
+    /// are admitted per step (0 = unlimited). Multimodal prefills remain
+    /// atomic. Fair mode is ignored under KV memory pressure.
+    pub fn set_multi_prefill_fair(
+        &mut self,
+        fair: bool,
+        max_tokens_per_request_per_step: u32,
+        max_inflight_prefill_requests: u32,
+    ) {
+        self.multi_prefill_fair = fair;
+        self.max_prefill_tokens_per_request_per_step = max_tokens_per_request_per_step;
+        self.max_inflight_prefill_requests = max_inflight_prefill_requests;
     }
 
     pub fn last_metal_dispatch(&self) -> Option<crate::metal::MetalDispatchTrace> {
@@ -266,12 +293,10 @@ impl EngineCore {
             "prepared step state"
         );
 
-        let schedule_plan = self.scheduler.plan(&SchedulerInput {
-            step_id,
-            request_snapshots: self.request_manager.snapshots(),
-            memory_pressure: self.kv_manager.memory_pressure(),
-            global_token_budget,
-        });
+        let request_snapshots = self.request_manager.snapshots();
+        let schedule_plan = self
+            .scheduler
+            .plan(&self.scheduler_input(step_id, request_snapshots, global_token_budget));
         trace!(
             scheduled_requests = schedule_plan.selected_requests.len(),
             deferred_requests = schedule_plan.deferred_requests.len(),
@@ -408,17 +433,17 @@ impl EngineCore {
                 deferred_requests = resolved_plan.deferred_requests.len(),
                 "retrying scheduler after KV capacity blocked the initial batch"
             );
-            let fallback_schedule_plan = self.scheduler.plan(&SchedulerInput {
-                step_id: resolved_plan.step_id,
-                request_snapshots: self
-                    .request_manager
-                    .snapshots()
-                    .into_iter()
-                    .filter(|snapshot| !blocked_request_ids.contains(&snapshot.request_id))
-                    .collect(),
-                memory_pressure: self.kv_manager.memory_pressure(),
+            let fallback_snapshots = self
+                .request_manager
+                .snapshots()
+                .into_iter()
+                .filter(|snapshot| !blocked_request_ids.contains(&snapshot.request_id))
+                .collect();
+            let fallback_schedule_plan = self.scheduler.plan(&self.scheduler_input(
+                resolved_plan.step_id,
+                fallback_snapshots,
                 global_token_budget,
-            });
+            ));
             let (fallback_plan, fallback_prefix_hits, fallback_preemption_metrics) =
                 self.resolve_kv_schedule_plan_level(fallback_schedule_plan, global_token_budget)?;
 
@@ -712,13 +737,38 @@ impl EngineCore {
 
         Ok((
             prefix_reuse,
-            self.scheduler.plan(&SchedulerInput {
-                step_id: schedule_plan.step_id,
-                request_snapshots: self.request_manager.snapshots(),
-                memory_pressure: self.kv_manager.memory_pressure(),
-                global_token_budget,
-            }),
+            {
+                let request_snapshots = self.request_manager.snapshots();
+                self.scheduler.plan(&self.scheduler_input(
+                    schedule_plan.step_id,
+                    request_snapshots,
+                    global_token_budget,
+                ))
+            },
         ))
+    }
+
+    fn scheduler_input(
+        &self,
+        step_id: StepId,
+        request_snapshots: Vec<crate::request::RequestSnapshot>,
+        global_token_budget: u32,
+    ) -> SchedulerInput {
+        let kv_config = self.kv_manager.config();
+        let mut input = SchedulerInput::new(
+            step_id,
+            request_snapshots,
+            self.kv_manager.memory_pressure(),
+            global_token_budget,
+        );
+        input.multi_prefill_fair = self.multi_prefill_fair;
+        input.max_prefill_tokens_per_request_per_step =
+            self.max_prefill_tokens_per_request_per_step;
+        input.max_inflight_prefill_requests = self.max_inflight_prefill_requests;
+        input.block_size_tokens = kv_config.block_size_tokens;
+        input.available_kv_blocks = self.kv_manager.available_block_count();
+        input.total_kv_blocks = kv_config.total_blocks;
+        input
     }
 
     fn dispatch_runner(

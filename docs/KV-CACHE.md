@@ -347,14 +347,15 @@ route telemetry.
 
 `restore_reused_prefix_state` and `store_prompt_prefix_snapshots` gate the
 physical snapshot path by architecture and request mode. Coverage as of
-ADR 0018 Strategies 1–3 + the slice 8 MLA fix:
+ADR 0018 Strategies 1–3, the slice-8 MLA fix, and the default-on MLA
+warm-extend restore path:
 
 | Architecture        | Models                  | warm_repeat (Decode)        | warm_extend (Prefill)                      | store constraint           |
 |---------------------|-------------------------|-----------------------------|--------------------------------------------|----------------------------|
 | Standard FA         | (none in current tier)  | snapshot path               | snapshot path                              | every block boundary       |
 | Linear attention    | Qwen3.5, Qwen3.6        | snapshot path               | snapshot path                              | full prefix, block-aligned |
 | Sliding window      | Gemma 4 E2B             | snapshot path               | snapshot path                              | full prefix, block-aligned |
-| MLA                 | GLM-4.7-Flash           | snapshot path               | **blocked → full recompute fallback**      | full prefix, block-aligned |
+| MLA                 | GLM-4.7-Flash           | snapshot path               | **default snapshot path** (see notes)      | full prefix, block-aligned |
 
 Two store-side constraints apply to all non-FA architectures:
 
@@ -367,13 +368,34 @@ Two store-side constraints apply to all non-FA architectures:
   `blocked_trim_failure`) because `trim_to(full_block_tokens)` would
   otherwise leave `(seq_len, recurrent_state)` inconsistent.
 
-The MLA + Prefill block is a different constraint: the snapshot CAN be
-stored and the lookup CAN match, but the runner refuses the restore
-because `chunked_prefill` extending from `seq_len > 0` produces fp drift
-across chunk boundaries on MLA's compressed-latent forward. The
-`full_prefill_recompute_tokens_for_warmup_fallback` path bit-exactly
-re-prefills the matched prefix as new work. warm_repeat (Decode-mode,
-zero suffix tokens) is unaffected on MLA.
+**MLA warm_extend is default-on.** Historical fp drift on MLA + Prefill came
+from shape-dependent SDPA kernel selection: a large cold chunk and smaller
+warm-extend chunks could diverge at the same absolute positions. The fix is
+dual-path chunking:
+
+- cold prefill (`seq_len == 0`) may use a larger caller-supplied chunk;
+- warm-extend after a restore uses `MLA_DEFAULT_PREFILL_CHUNK` (16, aligned
+  to the prefix-cache block size) via `fastpath::resolve_prefill_chunk`.
+
+Restore is enabled by default. The defensive kill switch
+`AX_DISABLE_MLA_PREFIX_RESTORE=1` re-engages the historical
+`mla_extend_unsafe` gate that refuses Prefill-mode snapshot restore and falls
+through to warmup recompute. Do **not** document
+`AX_ALLOW_MLA_PREFIX_RESTORE` as required for the default path.
+
+Checked-in multiturn evidence:
+
+- bugfix (blocked path):  
+  `benchmarks/results/profiling/kv-long-context/glm47-flash-4bit-multiturn-fix-final-2026-05-14.json`
+  — 0 physical hits, TTFT grows across turns;
+- default-on fix:  
+  `benchmarks/results/profiling/kv-long-context/glm47-flash-4bit-multiturn-mla-fixed-2026-05-14.json`
+  — 10 physical hits, 18,496 reused tokens, last-turn TTFT drops.
+
+Functional multi-turn reuse is supported on this GLM MLA path. That is **not**
+a claim of cold-prefill latency parity with Qwen/Gemma; cold TTFT under the
+aligned chunk path remains an active throughput surface (see
+`docs/designs/kv-weak-surfaces-2026-07-14.md` Track A / PR2).
 
 ### Reading the telemetry — operator cheat sheet
 
@@ -384,7 +406,7 @@ blocked_*) tuple identifies which code path served the warm reuse:
 |--------------------------------------------------------------------------|-----------------------------------------------------------|--------|
 | `hits ≥ 1, misses = 0, warmup_tokens = 0, blocked = 0`                   | Snapshot restored (best case)                             | none — working as designed |
 | `hits = 0, misses ≥ 1, warmup_tokens > 0, blocked = 0`                   | Snapshot was eligible but absent (LRU evicted or first encounter); warmup path replayed | normal in cold starts; investigate if persistent on hot prompts (cache may be undersized) |
-| `hits = 0, blocked ≥ 1, blocked_unsupported_layout ≥ 1, warmup_tokens > 0` | Architecture-restricted: MLA + Prefill, or model not yet supported. cee4227e's full-recompute path took over | expected on MLA `warm_extend`; otherwise look for an architecture-specific snapshot strategy |
+| `hits = 0, blocked ≥ 1, blocked_unsupported_layout ≥ 1, warmup_tokens > 0` | Snapshot path refused for this layout/mode (kill switch, unsupported architecture, or residual gate) | With default env, **not** expected on GLM MLA warm_extend; check `AX_DISABLE_MLA_PREFIX_RESTORE` and model layout support |
 | `hits = 0, blocked ≥ 1, blocked_policy_disabled ≥ 1`                     | Prefix cache disabled by size/count policy                | check policy config; either intentional or undersized cache |
 | `hits = 0, blocked ≥ 1, blocked_trim_failure ≥ 1, stores = 0`             | Linear / sliding / MLA + prompt not block-aligned; store skipped | normal — block-aligned prompts are the only safe path here |
 | `hits = 0, misses = 0, warmup_tokens = 0, blocked = 0`                   | KvManager did not signal a logical prefix hit — engine had no matched prefix to forward to the runner | check `prefix_reused_blocks` (engine-level) — likely first encounter, or prompt is shorter than `block_size_tokens` (16) |

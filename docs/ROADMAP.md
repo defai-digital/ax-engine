@@ -4,11 +4,15 @@ AX Engine v6 is the current serving-oriented runtime line. It carries forward
 the earlier serving baseline work, including:
 
 - disk-backed L2 prefix cache
-- MLA warm-extend correctness
+- MLA warm-extend correctness (default-on snapshot restore; kill switch
+  `AX_DISABLE_MLA_PREFIX_RESTORE`)
 - TurboQuant compressed-decode telemetry
-- per-request MLA prefill chunk decisions for GLM-4.7-Flash cold-prefill
-  recovery without losing warm-extend snapshot equivalence inside a single
-  session
+- per-request MLA dual-path prefill chunks for GLM-4.7-Flash (large cold /
+  block-aligned warm-extend) without losing warm-extend snapshot equivalence
+
+Active plan for remaining KV weak surfaces (MLA cold throughput recovery,
+fair multi-prefill progress, FA physical block-pool scaffold):
+[`docs/designs/kv-weak-surfaces-2026-07-14.md`](designs/kv-weak-surfaces-2026-07-14.md).
 
 The README summarizes the current product shape; this page carries active
 serving direction and evidence gates.
