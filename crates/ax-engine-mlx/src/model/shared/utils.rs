@@ -1,7 +1,7 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype,
-    concatenate, contiguous, gather_mm, gather_qmm, matmul, multiply, quantized_matmul, reshape,
-    slice, slice_last_dim, tanh, transpose,
+    concatenate, contiguous, expand_dims_axes, gather_mm, matmul, multiply, quantized_matmul,
+    reshape, slice, slice_last_dim, take, tanh, transpose,
 };
 use std::sync::OnceLock;
 
@@ -252,16 +252,23 @@ pub(crate) fn qw_gather(
     indices: &MlxArray,
     sorted_indices: bool,
 ) -> MlxArray {
-    if let Some(scales) = &qw.scales {
-        gather_qmm(
+    let y = if let Some(scales) = &qw.scales {
+        // MXFP4 has no affine group-bias channel; pass None for non-affine modes.
+        let mode = qw.mlx_quantization_mode();
+        let quant_biases = match mode {
+            mlx_sys::MlxQuantizationMode::Affine => qw.biases.as_ref(),
+            _ => None,
+        };
+        mlx_sys::gather_qmm_with_mode(
             x,
             &qw.weight,
             scales,
-            qw.biases.as_ref(),
+            quant_biases,
             indices,
             true,
             Some(qw.group_size),
             Some(qw.bits),
+            mode,
             sorted_indices,
             None,
         )
@@ -273,13 +280,83 @@ pub(crate) fn qw_gather(
         axes.swap(last - 1, last);
         let wt = transpose(&qw.weight, &axes, None);
         gather_mm(x, &wt, indices, sorted_indices, None)
+    };
+
+    // Dense SwitchLinear bias: y += bias[indices]  (mlx-lm switch_layers.py).
+    // bias shape [num_experts, out]; indices select experts → [..., top_k, out]
+    // after expand for broadcast against gather output.
+    if let Some(linear_bias) = &qw.linear_bias {
+        apply_expert_linear_bias(&y, linear_bias, indices)
+    } else {
+        y
     }
+}
+
+/// `y + expand_dims(linear_bias[indices], -2)` matching mlx-lm QuantizedSwitchLinear.
+fn apply_expert_linear_bias(y: &MlxArray, linear_bias: &MlxArray, indices: &MlxArray) -> MlxArray {
+    // take along expert axis 0: bias[indices] with indices of any rank.
+    // Use take for flat indices then reshape to indices.shape + [out].
+    let out_dim = *linear_bias
+        .shape()
+        .last()
+        .expect("expert linear bias must be [E, out]");
+    let flat_idx = reshape(indices, &[-1], None);
+    let gathered = take(linear_bias, &flat_idx, 0, None); // [N, out]
+    let mut bias_shape = indices.shape();
+    bias_shape.push(out_dim);
+    let gathered = reshape(&gathered, &bias_shape, None);
+    // gather_qmm output often has a singleton dim before the last (SwitchGLU
+    // expand_dims); expand bias so it broadcasts: insert dim at -2 when needed.
+    let y_shape = y.shape();
+    let bias = if y_shape.len() == gathered.ndim() + 1
+        && y_shape.get(y_shape.len().saturating_sub(2)) == Some(&1)
+    {
+        expand_dims_axes(&gathered, &[-2], None)
+    } else {
+        gathered
+    };
+    add(y, &bias, None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use mlx_sys::{MlxQuantizationMode, eval, quantize};
+
+    #[test]
+    fn expert_linear_bias_matches_mlx_lm_index_add() {
+        // bias: [E=3, out=2], indices: [1, 2] → bias[[1,2]] = [[2,3],[4,5]]
+        let bias_data = [0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let bias = MlxArray::from_raw_data(
+            bias_data.as_ptr() as *const u8,
+            bias_data.len() * 4,
+            &[3, 2],
+            MlxDtype::Float32,
+        );
+        let y_data = [10.0f32, 20.0, 30.0, 40.0];
+        let y = MlxArray::from_raw_data(
+            y_data.as_ptr() as *const u8,
+            y_data.len() * 4,
+            &[1, 2, 2],
+            MlxDtype::Float32,
+        );
+        let idx_data = [1u32, 2];
+        let indices = MlxArray::from_raw_data(
+            idx_data.as_ptr() as *const u8,
+            idx_data.len() * 4,
+            &[1, 2],
+            MlxDtype::Uint32,
+        );
+        let out = apply_expert_linear_bias(&y, &bias, &indices);
+        eval(&[&out]);
+        let got = out.data_f32();
+        // y[0] + bias[1] = [10,20]+[2,3] = [12,23]
+        // y[1] + bias[2] = [30,40]+[4,5] = [34,45]
+        assert!((got[0] - 12.0).abs() < 1e-5);
+        assert!((got[1] - 23.0).abs() < 1e-5);
+        assert!((got[2] - 34.0).abs() < 1e-5);
+        assert!((got[3] - 45.0).abs() < 1e-5);
+    }
 
     fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
         MlxArray::from_raw_data(
@@ -335,6 +412,8 @@ mod tests {
             biases: Some(quantized[2].clone()),
             group_size: 64,
             bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
         };
         let input_data: Vec<f32> = (0..2 * input_dim)
             .map(|index| ((index % 31) as f32 - 15.0) * 0.03125)

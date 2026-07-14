@@ -2606,6 +2606,12 @@ pub(crate) fn moe_router_gpt_oss(
     w: &LayerWeights,
     normed: &MlxArray,
 ) -> (MlxArray, MlxArray) {
+    // Matches mlx-lm gpt_oss.MLPBlock:
+    //   g = router(x)
+    //   experts, indices = topk(g, k)
+    //   expert_weights = softmax(experts, precise=True)
+    // i.e. top-k on raw logits, then softmax only over the selected experts
+    // (NOT full-softmax-then-topk).
     let router_proj = w
         .router_proj
         .as_ref()
@@ -2613,25 +2619,13 @@ pub(crate) fn moe_router_gpt_oss(
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
 
-    // Full softmax over all 128 experts.
-    let weights_all = softmax_precise(&logits, last_axis, None);
-
-    // Select top-k by weight magnitude.
     let (top_k_indices, top_k_raw) = top_k_by_argpartition(
-        &weights_all,
+        &logits,
         cfg.moe_expert_count,
         cfg.moe_experts_per_token,
         false,
     );
-
-    // Renormalize top-k weights to sum to 1.
-    let top_k_weights = if cfg.moe_experts_per_token > 1 {
-        let sum = sum_axis(&top_k_raw, last_axis, true, None);
-        divide(&top_k_raw, &sum, None)
-    } else {
-        top_k_raw
-    };
-
+    let top_k_weights = softmax_precise(&top_k_raw, last_axis, None);
     (top_k_indices, top_k_weights)
 }
 ///
@@ -2863,6 +2857,8 @@ impl QuantInputSlot {
             biases: self.biases.map(|i| inputs.get(i)),
             group_size: self.group_size,
             bits: self.bits,
+            mode: "affine".to_string(),
+            linear_bias: None,
         }
     }
 }
@@ -4061,6 +4057,8 @@ mod tests {
             biases: Some(gate_q[2].clone()),
             group_size: 32,
             bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
         };
         let up = QuantizedWeight {
             weight: up_q[0].clone(),
@@ -4068,6 +4066,8 @@ mod tests {
             biases: Some(up_q[2].clone()),
             group_size: 32,
             bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
         };
 
         let metal = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up)
@@ -4108,6 +4108,8 @@ mod tests {
             biases: Some(mlx_sys::zeros(&[16, 1], MlxDtype::Bfloat16, None)),
             group_size: 32,
             bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
         };
         let batched = mlx_sys::zeros(&[2, 1, 32], MlxDtype::Float32, None);
         let prefill = mlx_sys::zeros(&[1, 2, 32], MlxDtype::Float32, None);
@@ -4459,6 +4461,8 @@ mod tests {
             biases: None,
             group_size: 64,
             bits: 32,
+            mode: "affine".to_string(),
+            linear_bias: None,
         };
 
         // Capture a *clone* of the weight into the closure body. Per

@@ -666,6 +666,33 @@ fn render_presets_lists_glm_preset() {
     assert!(presets.contains("qwen3.5-9b\tmodel_id=qwen3.5-9b"));
     assert!(presets.contains("qwen3.6-27b\tmodel_id=qwen36-27b"));
     assert!(presets.contains("glm4.7-flash-4bit\tmodel_id=glm4_moe_lite"));
+    assert!(presets.contains("llama3.3-70b\tmodel_id=llama3.3-70b"));
+    assert!(presets.contains("mistral-small\tmodel_id=mistral-small"));
+    assert!(presets.contains("gpt-oss-20b\tmodel_id=gpt-oss-20b"));
+}
+
+#[test]
+fn secondary_family_presets_select_mlx_preview() {
+    for (preset, model_id) in [
+        (ServerPreset::Llama31_8b, "llama3.1-8b"),
+        (ServerPreset::Llama33_70b, "llama3.3-70b"),
+        (ServerPreset::Llama4Scout, "llama4-scout"),
+        (ServerPreset::MistralSmall, "mistral-small"),
+        (ServerPreset::Ministral8b, "ministral-8b"),
+        (ServerPreset::DevstralSmall, "devstral-small"),
+        (ServerPreset::GptOss20b, "gpt-oss-20b"),
+        (ServerPreset::GptOss120b, "gpt-oss-120b"),
+    ] {
+        let args = ServerArgs {
+            preset: Some(preset),
+            ..base_args()
+        };
+        assert_eq!(args.effective_model_id().unwrap(), model_id);
+        assert_eq!(
+            args.effective_support_tier(),
+            PreviewSupportTier::MlxPreview
+        );
+    }
 }
 
 #[test]

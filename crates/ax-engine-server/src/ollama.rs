@@ -1205,6 +1205,7 @@ fn ollama_template_hint(live: &LiveState) -> String {
         ChatPromptTemplate::Gemma4 => "gemma4".to_string(),
         ChatPromptTemplate::Llama3 => "llama3".to_string(),
         ChatPromptTemplate::Glm47 => "glm".to_string(),
+        ChatPromptTemplate::MistralInstruct => "mistral".to_string(),
         ChatPromptTemplate::Unsupported(family) => family.label().to_string(),
         ChatPromptTemplate::PlainRolePrefix => "plain".to_string(),
     }

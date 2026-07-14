@@ -24,6 +24,25 @@ pub enum ServerPreset {
     Qwen36_27b,
     #[value(name = "qwen3.6-35b", alias = "qwen36-35b")]
     Qwen36_35b,
+    // Secondary: research / enterprise Llama
+    #[value(name = "llama3.1-8b", alias = "llama31-8b")]
+    Llama31_8b,
+    #[value(name = "llama3.3-70b", alias = "llama33-70b")]
+    Llama33_70b,
+    #[value(name = "llama4-scout", alias = "llama-4-scout")]
+    Llama4Scout,
+    // Secondary: European market Mistral
+    #[value(name = "mistral-small", alias = "mistral-small-24b")]
+    MistralSmall,
+    #[value(name = "ministral-8b", alias = "ministral")]
+    Ministral8b,
+    #[value(name = "devstral-small", alias = "devstral")]
+    DevstralSmall,
+    // Secondary: open reasoner GPT-OSS (MXFP4)
+    #[value(name = "gpt-oss-20b", alias = "gptoss-20b")]
+    GptOss20b,
+    #[value(name = "gpt-oss-120b", alias = "gptoss-120b")]
+    GptOss120b,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,6 +172,123 @@ impl ServerPreset {
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
+            Self::Llama31_8b => PresetDefinition {
+                preset: self,
+                label: "llama3.1-8b",
+                model_id: "llama3.1-8b",
+                aliases: &[
+                    "llama3.1-8b",
+                    "llama31-8b",
+                    "llama-3.1-8b",
+                    "llama3.1-8b-4bit",
+                    "llama-3.1-8b-instruct-4bit",
+                ],
+                model_types: &["llama"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Llama33_70b => PresetDefinition {
+                preset: self,
+                label: "llama3.3-70b",
+                model_id: "llama3.3-70b",
+                aliases: &[
+                    "llama3.3-70b",
+                    "llama33-70b",
+                    "llama-3.3-70b",
+                    "llama3.3-70b-4bit",
+                    "llama-3.3-70b-instruct-4bit",
+                ],
+                model_types: &["llama"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Llama4Scout => PresetDefinition {
+                preset: self,
+                label: "llama4-scout",
+                model_id: "llama4-scout",
+                aliases: &[
+                    "llama4-scout",
+                    "llama-4-scout",
+                    "llama4-scout-4bit",
+                    "llama-4-scout-17b-16e-4bit",
+                ],
+                model_types: &["llama4"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::MistralSmall => PresetDefinition {
+                preset: self,
+                label: "mistral-small",
+                model_id: "mistral-small",
+                aliases: &[
+                    "mistral-small",
+                    "mistral-small-24b",
+                    "mistral-small-4bit",
+                    "mistral-small-24b-4bit",
+                    "mistral-small-3.1",
+                ],
+                model_types: &["mistral3", "mistral"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Ministral8b => PresetDefinition {
+                preset: self,
+                label: "ministral-8b",
+                model_id: "ministral-8b",
+                aliases: &[
+                    "ministral-8b",
+                    "ministral",
+                    "ministral-8b-4bit",
+                    "ministral-8b-instruct-4bit",
+                ],
+                model_types: &["mistral", "mistral3"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::DevstralSmall => PresetDefinition {
+                preset: self,
+                label: "devstral-small",
+                model_id: "devstral-small",
+                aliases: &[
+                    "devstral-small",
+                    "devstral",
+                    "devstral-small-4bit",
+                    "devstral-small-2505-4bit",
+                ],
+                model_types: &["mistral", "mistral3"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::GptOss20b => PresetDefinition {
+                preset: self,
+                label: "gpt-oss-20b",
+                model_id: "gpt-oss-20b",
+                aliases: &[
+                    "gpt-oss-20b",
+                    "gptoss-20b",
+                    "gpt-oss-20b-4bit",
+                    "gpt-oss-20b-mxfp4",
+                    "gpt-oss-20b-mxfp4-q4",
+                ],
+                model_types: &["gpt_oss"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::GptOss120b => PresetDefinition {
+                preset: self,
+                label: "gpt-oss-120b",
+                model_id: "gpt-oss-120b",
+                aliases: &[
+                    "gpt-oss-120b",
+                    "gptoss-120b",
+                    "gpt-oss-120b-4bit",
+                    "gpt-oss-120b-mxfp4",
+                    "gpt-oss-120b-mxfp4-q4",
+                ],
+                model_types: &["gpt_oss"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
         }
     }
 }
@@ -167,6 +303,14 @@ pub fn render_presets() -> String {
         ServerPreset::Qwen35_9b,
         ServerPreset::Qwen36_27b,
         ServerPreset::Qwen36_35b,
+        ServerPreset::Llama31_8b,
+        ServerPreset::Llama33_70b,
+        ServerPreset::Llama4Scout,
+        ServerPreset::MistralSmall,
+        ServerPreset::Ministral8b,
+        ServerPreset::DevstralSmall,
+        ServerPreset::GptOss20b,
+        ServerPreset::GptOss120b,
     ]
     .into_iter()
     .map(|preset| {

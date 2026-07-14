@@ -50,6 +50,39 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("gemma4-e2b-6bit", aliases)
         self.assertIn("gemma4-12b", aliases)
         self.assertIn("gemma4-12b-6bit", aliases)
+        # Secondary direct-mode catalog (Llama / Mistral / GPT-OSS).
+        self.assertIn("llama3.1-8b", aliases)
+        self.assertIn("llama3.3-70b", aliases)
+        self.assertIn("llama4-scout", aliases)
+        self.assertIn("mistral-small", aliases)
+        self.assertIn("ministral-8b", aliases)
+        self.assertIn("devstral-small", aliases)
+        self.assertIn("gpt-oss-20b", aliases)
+        self.assertIn("gpt-oss-120b", aliases)
+
+    def test_secondary_profile_aliases_resolve_repos(self) -> None:
+        cases = {
+            "llama3.3-70b": "mlx-community/Llama-3.3-70B-Instruct-4bit",
+            "llama3.1-8b-4bit": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+            "llama4-scout": "mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit",
+            "mistral-small": "mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit",
+            "ministral-8b": "mlx-community/Ministral-8B-Instruct-2410-4bit",
+            "devstral-small": "mlx-community/Devstral-Small-2505-4bit",
+            "gpt-oss-20b": "mlx-community/gpt-oss-20b-MXFP4-Q4",
+            "gpt-oss-120b-4bit": "mlx-community/gpt-oss-120b-MXFP4-Q4",
+        }
+        for alias, repo_id in cases.items():
+            profile = _cli._profile_for_model(alias)
+            self.assertIsNotNone(profile, alias)
+            assert profile is not None
+            self.assertEqual(profile.repo_id, repo_id, alias)
+            self.assertIsNotNone(profile.preset, alias)
+
+    def test_mxfp4_repo_quant_bits(self) -> None:
+        profile = _cli._profile_for_model("gpt-oss-20b")
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertEqual(_cli._profile_quant_bits(profile), 4)
 
     def test_download_list_text_shows_cache_policy(self) -> None:
         code, stdout = self.capture_main(["download", "--list"])

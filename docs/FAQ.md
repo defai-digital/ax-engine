@@ -36,7 +36,7 @@ but the better local setup is to match the model to the workflow.
 | Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
 | Embedding / RAG ingest | Qwen3-Embedding or EmbeddingGemma | 0.6B / 4B / 8B (Qwen3); 300M (EmbeddingGemma) | AX server `/v1/embeddings` | Sustained ingest-scale throughput; AX last-token pooling (Qwen3) or mean pooling + Dense head (EmbeddingGemma) |
 
-Suggested default stack:
+Suggested default stack (primary productivity):
 
 ```text
 Chatbot:
@@ -49,6 +49,23 @@ Coding agent:
 Qwen3-Coder-Next 6-bit + 16K
 ```
 
+Optional secondary stacks (same 128 GB class; one large model at a time):
+
+```text
+Research / enterprise Llama:
+ax-engine download llama3.3-70b   # or llama3.1-8b for smoke/draft
+ax-engine download llama4-scout  # next-gen MoE when memory allows
+
+European market:
+ax-engine download mistral-small
+ax-engine download ministral-8b
+ax-engine download devstral-small
+
+Open reasoner:
+ax-engine download gpt-oss-20b
+ax-engine download gpt-oss-120b  # prefer 128 GB+; experts stay MXFP4-packed
+```
+
 | Use case | Best pick |
 | --- | --- |
 | Daily chatbot | Gemma 4 |
@@ -56,6 +73,10 @@ Qwen3-Coder-Next 6-bit + 16K
 | Repo editing / coding agent | Qwen3-Coder-Next |
 | Fast lightweight coding | Qwen3.6-27B when available through a direct or delegated route |
 | Long-context coding | Qwen3-Coder-Next 4-bit + 32K |
+| Research / Llama baseline | Llama 3.3 70B 4-bit (or 3.1 8B) |
+| EU enterprise chat | Mistral Small 24B 4-bit |
+| EU coding | Devstral Small 4-bit |
+| Open reasoner | GPT-OSS 20B MXFP4-Q4 (120B when memory allows) |
 
 Client positioning:
 
@@ -64,10 +85,14 @@ Client positioning:
   Qwen3.6 for agent tasks.
 - **Higher-return path**: add Qwen3-Coder-Next as the dedicated local coding
   specialist in [ax-code](https://github.com/defai-digital/ax-code).
+- **Research / EU / open reasoner**: Llama, Mistral, and GPT-OSS download
+  aliases are first-class preview direct paths; keep Qwen/Gemma as the
+  performance hero stack.
 
 Model references: [Gemma 4](https://deepmind.google/models/gemma/gemma-4/),
-[Qwen3.6-35B-A3B](https://qwen.ai/blog?id=qwen3.6-35b-a3b), and
-[Qwen3-Coder-Next](https://unsloth.ai/docs/models/qwen3-coder-next).
+[Qwen3.6-35B-A3B](https://qwen.ai/blog?id=qwen3.6-35b-a3b),
+[Qwen3-Coder-Next](https://unsloth.ai/docs/models/qwen3-coder-next), and
+[SUPPORTED-MODELS](SUPPORTED-MODELS.md).
 
 ## Where is the serving roadmap?
 

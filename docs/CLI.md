@@ -128,12 +128,14 @@ Embed in Markdown:
 `download` wraps the same workflow as `scripts/download_model.py`: download
 through Hugging Face Hub, validate `config.json` and safetensors, and run
 `ax-engine-bench generate-manifest` when available. The JSON output is the
-`ax.download_model.v1` summary. The built-in download aliases target Qwen3.6 and
-Gemma 4 MLX models, including Qwen3.6 27B, Gemma 4 E2B 5/6/8-bit, and Gemma 4
-12B 4/6-bit variants where repo support is already tracked; other models should
-use an explicit repo id or local path. If the model argument is missing or an
-alias is unknown, `download` prints the same target list. The JSON form of
-`download --list` emits an `ax.download_options.v1` document for automation.
+`ax.download_model.v1` summary. Built-in download aliases cover the primary
+productivity stack (Gemma 4, Qwen 3.5/3.6, GLM 4.7 Flash) plus secondary
+preview-direct targets for research and regional use: Llama 3.1/3.3/4 Scout,
+Mistral Small / Ministral / Devstral, and GPT-OSS 20B/120B MXFP4-Q4. Other
+models should use an explicit repo id or local path. If the model argument is
+missing or an alias is unknown, `download` prints the same target list. The
+JSON form of `download --list` emits an `ax.download_options.v1` document for
+automation.
 
 Best practice is to keep the default Hugging Face Hub cache destination. That
 cache is shared with `mlx-lm` and `huggingface_hub`, and its location is

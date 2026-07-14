@@ -284,6 +284,47 @@ pub fn gelu_approx_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> 
     multiply(&gelu_approx(gate, s), x, s)
 }
 
+
+/// OpenAI GPT-OSS / llama.cpp `SWIGLU_OAI` expert activation.
+///
+/// Matches mlx-lm `gpt_oss.swiglu` and ggml `ggml_swiglu_oai`:
+///   gate' = min(gate, limit)
+///   up'   = clamp(up, -limit, limit)
+///   out   = gate' * sigmoid(alpha * gate') * (up' + 1)
+/// with alpha=1.702, limit=7.0.
+///
+/// Argument order matches mlx-lm SwiGLU(up, gate) call sites in SwitchGLU
+/// (`activation(x_up, x_gate)` → `swiglu(x_linear=up, x_glu=gate)`).
+pub fn swiglu_oai(up: &MlxArray, gate: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    swiglu_oai_with_params(up, gate, 1.702, 7.0, s)
+}
+
+/// Parameterized OpenAI MoE SwiGLU (see [`swiglu_oai`]).
+pub fn swiglu_oai_with_params(
+    up: &MlxArray,
+    gate: &MlxArray,
+    alpha: f32,
+    limit: f32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    let dtype = gate.dtype();
+    let limit_arr = cached_scalar(limit, dtype);
+    let neg_limit = cached_scalar(-limit, dtype);
+    let alpha_arr = cached_scalar(alpha, dtype);
+    let one = cached_scalar(1.0, dtype);
+
+    // gate' = min(gate, limit)  — mlx-lm only upper-clips the glu branch
+    let gate_c = minimum(gate, &limit_arr, s);
+    // up' = clamp(up, -limit, limit)
+    let up_c = clip(up, &neg_limit, &limit_arr, s);
+
+    let glu_scaled = multiply(&gate_c, &alpha_arr, s);
+    let sig = sigmoid(&glu_scaled, s);
+    let out_glu = multiply(&gate_c, &sig, s);
+    let up_p1 = add(&up_c, &one, s);
+    multiply(&out_glu, &up_p1, s)
+}
+
 /// Compute `silu(gate) * x` through AX's direct MLX C++ shim.
 ///
 /// This preserves Qwen-family SwiGLU math while collapsing the portable
@@ -1513,10 +1554,12 @@ pub fn gather_mm(
     }
 }
 
-/// Quantized batched matmul selecting experts via `rhs_indices`.
+/// Quantized batched matmul selecting experts via `rhs_indices` (affine mode).
 ///
 /// Equivalent to `gather_mm` on the dequantized weight. With `transpose=true`,
 /// computes `x @ w[rhs_i].T` for each selected expert.
+///
+/// For MXFP4 / other modes use [`gather_qmm_with_mode`].
 #[allow(clippy::too_many_arguments)]
 pub fn gather_qmm(
     x: &MlxArray,
@@ -1530,6 +1573,40 @@ pub fn gather_qmm(
     sorted_indices: bool,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    gather_qmm_with_mode(
+        x,
+        w,
+        scales,
+        biases,
+        rhs_indices,
+        transpose,
+        group_size,
+        bits,
+        MlxQuantizationMode::Affine,
+        sorted_indices,
+        s,
+    )
+}
+
+/// Quantized gather-matmul with an explicit quantization [`MlxQuantizationMode`].
+///
+/// GPT-OSS MoE experts use `mode = Mxfp4` with `group_size = 32`, `bits = 4`,
+/// and `biases = None` so expert weights can stay packed in memory instead of
+/// being dequantized to BF16 at load time.
+#[allow(clippy::too_many_arguments)]
+pub fn gather_qmm_with_mode(
+    x: &MlxArray,
+    w: &MlxArray,
+    scales: &MlxArray,
+    biases: Option<&MlxArray>,
+    rhs_indices: &MlxArray,
+    transpose: bool,
+    group_size: Option<i32>,
+    bits: Option<i32>,
+    mode: MlxQuantizationMode,
+    sorted_indices: bool,
+    s: Option<&MlxStream>,
+) -> MlxArray {
     crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
@@ -1537,11 +1614,11 @@ pub fn gather_qmm(
         let null_arr = null_ffi_array();
         let gs = ffi::mlx_optional_int_ {
             has_value: group_size.is_some(),
-            value: group_size.unwrap_or(64),
+            value: group_size.unwrap_or(mode.default_group_size()),
         };
         let bs = ffi::mlx_optional_int_ {
             has_value: bits.is_some(),
-            value: bits.unwrap_or(4),
+            value: bits.unwrap_or(mode.default_bits()),
         };
         let mut res = MlxArray::empty();
         checked_ffi!(
@@ -1557,7 +1634,7 @@ pub fn gather_qmm(
                 transpose,
                 gs,
                 bs,
-                c"affine".as_ptr(),
+                mode.as_ptr(),
                 sorted_indices,
                 stream,
             )
@@ -3464,6 +3541,152 @@ mod tests {
         eval(&[&row_sum]);
         for &s in row_sum.data_f32() {
             assert_close_f32(&[s], &[1.0], 1e-4);
+        }
+    }
+}
+
+#[cfg(test)]
+mod gather_qmm_mxfp4_tests {
+    use super::*;
+    use crate::eval;
+
+    #[test]
+    fn gather_qmm_mxfp4_matches_dequant_gather_mm() {
+        // Small expert tensor: E=4, out=8, in=64 (group_size=32 mxfp4).
+        let e = 4i32;
+        let out = 8i32;
+        let inn = 64i32;
+        let data: Vec<f32> = (0..(e * out * inn) as usize)
+            .map(|i| ((i % 17) as f32) * 0.01 - 0.08)
+            .collect();
+        let w = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            data.len() * std::mem::size_of::<f32>(),
+            &[e, out, inn],
+            MlxDtype::Float32,
+        );
+        let w = astype(&w, MlxDtype::Bfloat16, None);
+        let parts = quantize(&w, Some(32), Some(4), MlxQuantizationMode::Mxfp4, None, None);
+        assert_eq!(parts.len(), 2, "mxfp4 quant returns [packed, scales]");
+        let packed = &parts[0];
+        let scales = &parts[1];
+
+        let x_data = vec![0.02f32; 64];
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            x_data.len() * std::mem::size_of::<f32>(),
+            &[1, 1, 1, 1, inn],
+            MlxDtype::Float32,
+        );
+        let x = astype(&x, MlxDtype::Bfloat16, None);
+        let idx_data = [0u32, 1, 2, 3];
+        let indices = MlxArray::from_raw_data(
+            idx_data.as_ptr() as *const u8,
+            idx_data.len() * std::mem::size_of::<u32>(),
+            &[1, 1, 4],
+            MlxDtype::Uint32,
+        );
+
+        let y_q = gather_qmm_with_mode(
+            &x,
+            packed,
+            scales,
+            None,
+            &indices,
+            true,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            false,
+            None,
+        );
+        let dequant = dequantize_with_mode(
+            packed,
+            scales,
+            None,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            Some(MlxDtype::Bfloat16),
+            None,
+        );
+        // [E, out, in] -> [E, in, out] for dense gather_mm.
+        let ndim = dequant.ndim() as i32;
+        let mut axes: Vec<i32> = (0..ndim).collect();
+        let last = axes.len() - 1;
+        axes.swap(last - 1, last);
+        let wt = transpose(&dequant, &axes, None);
+        let y_d = gather_mm(&x, &wt, &indices, false, None);
+        eval(&[&y_q, &y_d]);
+        assert_eq!(y_q.shape(), y_d.shape());
+        let qf = astype(&y_q, MlxDtype::Float32, None);
+        let df = astype(&y_d, MlxDtype::Float32, None);
+        eval(&[&qf, &df]);
+        let qv = qf.data_f32();
+        let dv = df.data_f32();
+        assert_eq!(qv.len(), dv.len());
+        let max_abs = qv
+            .iter()
+            .zip(dv.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_abs == 0.0,
+            "mxfp4 gather_qmm must match dequant+gather_mm bit-exactly for BF16 path, max_abs={max_abs}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod swiglu_oai_tests {
+    use super::*;
+    use crate::eval;
+
+    #[test]
+    fn swiglu_oai_matches_portable_formula() {
+        // Reference: mlx-lm gpt_oss.swiglu / ggml_swiglu_oai
+        let up_data = [-10.0f32, -1.0, 0.0, 1.0, 3.5, 9.0];
+        let gate_data = [-2.0f32, -0.5, 0.0, 0.5, 7.0, 20.0];
+        let up = MlxArray::from_raw_data(
+            up_data.as_ptr() as *const u8,
+            up_data.len() * 4,
+            &[1, 6],
+            MlxDtype::Float32,
+        );
+        let gate = MlxArray::from_raw_data(
+            gate_data.as_ptr() as *const u8,
+            gate_data.len() * 4,
+            &[1, 6],
+            MlxDtype::Float32,
+        );
+        let out = swiglu_oai(&up, &gate, None);
+        eval(&[&out]);
+        let got = out.data_f32();
+
+        let alpha = 1.702f32;
+        let limit = 7.0f32;
+        for i in 0..6 {
+            let mut g = gate_data[i];
+            if g > limit {
+                g = limit;
+            }
+            let mut u = up_data[i];
+            if u > limit {
+                u = limit;
+            }
+            if u < -limit {
+                u = -limit;
+            }
+            let sig = 1.0 / (1.0 + (-alpha * g).exp());
+            let expected = (g * sig) * (u + 1.0);
+            let err = (got[i] - expected).abs();
+            assert!(
+                err < 1e-5,
+                "i={i} got={} expected={} err={err}",
+                got[i],
+                expected
+            );
         }
     }
 }

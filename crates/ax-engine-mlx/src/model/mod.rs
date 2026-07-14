@@ -3739,6 +3739,8 @@ mod tests {
             biases: Some(zeros(scale_shape, MlxDtype::Float32, None)),
             group_size: 64,
             bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
         }
     }
 
@@ -6284,6 +6286,8 @@ mod tests {
             biases: Some(q[2].clone()),
             group_size: 64,
             bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
         };
         let plain = QuantizedWeight {
             weight: weight.clone(),
@@ -6291,6 +6295,8 @@ mod tests {
             biases: None,
             group_size: 0,
             bits: 0,
+            mode: "affine".to_string(),
+            linear_bias: None,
         };
 
         for embedding in [&quantized, &plain] {

@@ -104,11 +104,14 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: false,
             uses_decoder_prefix: false,
         }),
-        "mistral3" | "ministral3" => Ok(ModelFamily {
+        // Classic Mistral dense (Ministral, Devstral, Nemo) uses model.layers.*.
+        // Mistral 3 multimodal text towers (Mistral Small 3.x) use language_model.model.*.
+        // Enable both maps via uses_language_model_prefix; standard map is always tried first.
+        "mistral" | "mistral3" | "ministral3" => Ok(ModelFamily {
             family_name: "mistral3",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: None,
-            uses_language_model_prefix: false,
+            uses_language_model_prefix: true,
             uses_decoder_prefix: false,
         }),
         "mixtral" => Ok(ModelFamily {

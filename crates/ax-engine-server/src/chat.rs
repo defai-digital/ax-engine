@@ -33,6 +33,8 @@ pub(crate) enum ChatPromptTemplate {
     Llama3,
     Gemma4,
     Glm47,
+    /// Mistral Instruct / Tekken-style `[INST]` chat (Small, Ministral, Devstral).
+    MistralInstruct,
     Unsupported(ChatUnsupportedFamily),
     PlainRolePrefix,
 }
@@ -40,8 +42,6 @@ pub(crate) enum ChatPromptTemplate {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChatUnsupportedFamily {
     Gemma3,
-    Llama4,
-    Mistral3,
     Mixtral,
     DeepSeek,
 }
@@ -50,8 +50,6 @@ impl ChatUnsupportedFamily {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Gemma3 => "gemma3",
-            Self::Llama4 => "llama4",
-            Self::Mistral3 => "mistral3",
             Self::Mixtral => "mixtral",
             Self::DeepSeek => "deepseek",
         }
@@ -77,20 +75,26 @@ impl ChatPromptTemplate {
         } else if normalized.contains("llama-4")
             || normalized.contains("llama4")
             || normalized.contains("llama_4")
-        {
-            Self::Unsupported(ChatUnsupportedFamily::Llama4)
-        } else if normalized.contains("llama-3")
+            || normalized.contains("llama-3")
             || normalized.contains("llama3")
             || normalized.contains("llama_3")
         {
+            // Llama 3.x and Llama 4 Instruct share the header/eot chat framing
+            // used by the Llama3 fallback renderer.
             Self::Llama3
         } else if normalized.contains("mixtral") {
             Self::Unsupported(ChatUnsupportedFamily::Mixtral)
-        } else if normalized.contains("mistral-3") || normalized.contains("mistral3") {
-            Self::Unsupported(ChatUnsupportedFamily::Mistral3)
+        } else if normalized.contains("mistral")
+            || normalized.contains("ministral")
+            || normalized.contains("devstral")
+            || normalized.contains("codestral")
+        {
+            Self::MistralInstruct
         } else if normalized.contains("deepseek") {
             Self::Unsupported(ChatUnsupportedFamily::DeepSeek)
         } else {
+            // GPT-OSS and other families without a verified AX chat fixture use
+            // plain role prefixes until a native template is added.
             Self::PlainRolePrefix
         }
     }
@@ -245,6 +249,9 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
             "<|user|>".to_string(),
             "<|observation|>".to_string(),
         ],
+        ChatPromptTemplate::MistralInstruct => {
+            vec!["</s>".to_string(), "[INST]".to_string()]
+        }
         ChatPromptTemplate::Unsupported(_) => Vec::new(),
         ChatPromptTemplate::PlainRolePrefix => Vec::new(),
     }
@@ -310,6 +317,7 @@ fn render_prompt_internal(
         ChatPromptTemplate::Llama3 => prompt.push_str("<|begin_of_text|>"),
         ChatPromptTemplate::Gemma4 => prompt.push_str("<bos>"),
         ChatPromptTemplate::Glm47 => prompt.push_str("[gMASK]<sop>"),
+        ChatPromptTemplate::MistralInstruct => prompt.push_str("<s>"),
         ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
         ChatPromptTemplate::Unsupported(family) => {
             return Err(format!(
@@ -318,6 +326,7 @@ fn render_prompt_internal(
             ));
         }
     }
+    let mut mistral_system: Option<&str> = None;
     for (role, content) in messages {
         let role = normalize_role(role)?;
         match template {
@@ -377,6 +386,36 @@ fn render_prompt_internal(
                     }
                 }
             }
+            ChatPromptTemplate::MistralInstruct => {
+                // Mistral Instruct / Tekken framing used by Small, Ministral, Devstral.
+                // System is emitted once before the first [INST] block.
+                match role {
+                    "system" => {
+                        mistral_system = Some(content.as_str());
+                    }
+                    "user" => {
+                        if let Some(system) = mistral_system.take() {
+                            prompt.push_str("[SYSTEM_PROMPT]");
+                            prompt.push_str(system);
+                            prompt.push_str("[/SYSTEM_PROMPT]");
+                        }
+                        prompt.push_str("[INST]");
+                        prompt.push_str(content);
+                        prompt.push_str("[/INST]");
+                    }
+                    "assistant" => {
+                        prompt.push_str(content);
+                        prompt.push_str("</s>");
+                    }
+                    "tool" | "function" => {
+                        // Tool results are folded into the next user turn as plain text.
+                        prompt.push_str("[INST]");
+                        prompt.push_str(content);
+                        prompt.push_str("[/INST]");
+                    }
+                    _ => {}
+                }
+            }
             ChatPromptTemplate::PlainRolePrefix => {
                 prompt.push_str(role);
                 prompt.push_str(": ");
@@ -391,6 +430,14 @@ fn render_prompt_internal(
     if qwen_tool_response_open {
         prompt.push_str("<|im_end|>\n");
     }
+    // System-only chats still need the system block emitted before generation.
+    if matches!(template, ChatPromptTemplate::MistralInstruct) {
+        if let Some(system) = mistral_system {
+            prompt.push_str("[SYSTEM_PROMPT]");
+            prompt.push_str(system);
+            prompt.push_str("[/SYSTEM_PROMPT]");
+        }
+    }
     match template {
         ChatPromptTemplate::QwenChatMl => {
             prompt.push_str(qwen_generation_prompt);
@@ -402,6 +449,7 @@ fn render_prompt_internal(
             prompt.push_str("<|turn>model\n<|channel>thought\n<channel|>")
         }
         ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|></think>"),
+        ChatPromptTemplate::MistralInstruct => {}
         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
         ChatPromptTemplate::Unsupported(_) => {
             unreachable!("unsupported templates are rejected before rendering")
@@ -693,8 +741,6 @@ mod tests {
         let messages = vec![("user".to_string(), "hello".to_string())];
         for model_id in [
             "google/gemma-3-4b-it",
-            "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-            "mistral3-small",
             "mixtral-8x7b-instruct",
             "deepseek-ai/DeepSeek-V3",
         ] {
@@ -704,6 +750,54 @@ mod tests {
                 "unexpected error for {model_id}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn llama_and_mistral_secondary_families_render_chat() {
+        let messages = vec![("user".to_string(), "hello".to_string())];
+        let llama = render_prompt("llama3.3-70b", &messages).expect("llama3 chat");
+        assert!(llama.contains("<|start_header_id|>user<|end_header_id|>"));
+        let scout = render_prompt("llama4-scout", &messages).expect("llama4 chat");
+        assert!(scout.contains("<|start_header_id|>user<|end_header_id|>"));
+        let mistral = render_prompt("mistral-small", &messages).expect("mistral chat");
+        assert!(mistral.contains("[INST]hello[/INST]"));
+        let ministral = render_prompt("ministral-8b", &messages).expect("ministral chat");
+        assert!(ministral.contains("[INST]hello[/INST]"));
+        let devstral = render_prompt("devstral-small", &messages).expect("devstral chat");
+        assert!(devstral.contains("[INST]hello[/INST]"));
+    }
+
+    #[test]
+    fn gpt_oss_uses_plain_role_chat_fallback() {
+        // Code-first path: no Harmony fixture yet; OpenAI fallback is plain roles.
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("gpt-oss-20b"),
+            ChatPromptTemplate::PlainRolePrefix
+        );
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("gpt-oss-120b"),
+            ChatPromptTemplate::PlainRolePrefix
+        );
+        let messages = vec![("user".to_string(), "hello".to_string())];
+        let prompt = render_prompt("gpt-oss-20b", &messages).expect("gpt-oss chat");
+        assert!(prompt.contains("user: hello"));
+        assert!(prompt.contains("assistant:"));
+    }
+
+    #[test]
+    fn primary_productivity_families_select_chat_templates() {
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("gemma4-31b"),
+            ChatPromptTemplate::Gemma4
+        );
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("qwen3.6-35b"),
+            ChatPromptTemplate::QwenChatMl
+        );
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("glm4.7-flash-4bit"),
+            ChatPromptTemplate::Glm47
+        );
     }
 
     #[test]

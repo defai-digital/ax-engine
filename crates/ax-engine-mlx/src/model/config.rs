@@ -452,8 +452,9 @@ pub struct ModelConfig {
     pub think_end_token_id: Option<u32>,
     /// Diffusion decoding config (DiffusionGemma). `None` = standard AR decoding.
     pub diffusion: Option<DiffusionConfig>,
-    /// GPT-OSS uses MXFP4 quantized expert weights (dequantized to BF16 at load time).
-    /// When true, the MoE forward path uses `mxfp4_gate_up_exps` / `mxfp4_down_exps` instead
+    /// GPT-OSS uses MXFP4 quantized expert weights kept packed at load time.
+    /// When true, the MoE forward path uses packed `mxfp4_gate_up_exps` /
+    /// `mxfp4_down_exps` via `gather_qmm(mode=mxfp4)` instead
     /// of the standard `gate_exps`/`up_exps`/`down_exps` QuantizedWeight path.
     pub gpt_oss_uses_mxfp4_experts: bool,
 }

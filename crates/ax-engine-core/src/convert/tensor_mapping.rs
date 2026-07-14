@@ -236,32 +236,54 @@ pub(crate) const LLAMA4_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
 
 /// Per-layer tensor patterns for GPT-OSS MoE layers.
 ///
-/// GPT-OSS stores MoE expert weights as MXFP4 block+scale pairs rather than
-/// single quantized tensors. The attention sink is a per-head learned bias.
+/// Two published layouts are supported (no weight download required to verify):
+///
+/// 1. **openai/gpt-oss-*** native MXFP4: fused `gate_up_proj_blocks` /
+///    `gate_up_proj_scales` + `down_proj_blocks` / `down_proj_scales`, and
+///    `self_attn.sinks`.
+/// 2. **mlx-community/gpt-oss-*-MXFP4-Q4**: split experts
+///    `experts.{gate,up,down}_proj.weight` (+ `.scales` sidecars) and
+///    `self_attn.sinks`.
 pub(crate) const GPT_OSS_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    // Per-head attention sinks (both openai + mlx-community).
     (
-        "self_attn.attn_sink.weight",
+        "self_attn.sinks",
         TensorMapping::PerLayer(NativeTensorRole::AttnSink),
     ),
+    // MoE router.
     (
         "mlp.router.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
     ),
+    // --- openai native MXFP4 fused experts (underscore suffix) ---
     (
-        "mlp.experts.gate_up_proj.blocks",
+        "mlp.experts.gate_up_proj_blocks",
         TensorMapping::PerLayer(NativeTensorRole::FfnGateUpExpsMxfp4Blocks),
     ),
     (
-        "mlp.experts.gate_up_proj.scales",
+        "mlp.experts.gate_up_proj_scales",
         TensorMapping::PerLayer(NativeTensorRole::FfnGateUpExpsMxfp4Scales),
     ),
     (
-        "mlp.experts.down_proj.blocks",
+        "mlp.experts.down_proj_blocks",
         TensorMapping::PerLayer(NativeTensorRole::FfnDownExpsMxfp4Blocks),
     ),
     (
-        "mlp.experts.down_proj.scales",
+        "mlp.experts.down_proj_scales",
         TensorMapping::PerLayer(NativeTensorRole::FfnDownExpsMxfp4Scales),
+    ),
+    // --- mlx-community split experts (weight+scales; mode from quant config) ---
+    (
+        "mlp.experts.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "mlp.experts.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "mlp.experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
     ),
 ];
 

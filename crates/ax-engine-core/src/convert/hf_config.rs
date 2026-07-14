@@ -346,6 +346,8 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
     let is_mixtral = model_type == "mixtral";
     let is_deepseek_v3 = matches!(model_type, "deepseek_v3" | "deepseek_v32");
     let is_llama4 = model_type == "llama4";
+    // GPT-OSS is always MoE (num_local_experts + num_experts_per_tok).
+    let is_gpt_oss = model_type == "gpt_oss";
     if !is_gemma4_moe
         && !is_diffusion_gemma_moe
         && !is_qwen3_moe
@@ -354,6 +356,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         && !is_mixtral
         && !is_deepseek_v3
         && !is_llama4
+        && !is_gpt_oss
     {
         return NativeMoeConfig::default();
     }
@@ -364,6 +367,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         .and_then(u64_to_u32);
     let experts_per_token = arch_u64(config, model_type, "top_k_experts")
         .or_else(|| arch_u64(config, model_type, "num_experts_per_tok"))
+        .or_else(|| arch_u64(config, model_type, "experts_per_token"))
         .and_then(u64_to_u32);
 
     let layer_freq = if is_deepseek_v3 {
@@ -389,11 +393,22 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         None
     };
 
+    // GPT-OSS (and some MoE configs) expose dense `intermediate_size` for the
+    // expert FFN width rather than a separate `moe_intermediate_size`.
+    let expert_intermediate_size = arch_u64(config, model_type, "moe_intermediate_size")
+        .or_else(|| {
+            if is_gpt_oss {
+                arch_u64(config, model_type, "intermediate_size")
+            } else {
+                None
+            }
+        })
+        .and_then(u64_to_u32);
+
     NativeMoeConfig {
         expert_count,
         experts_per_token,
-        expert_intermediate_size: arch_u64(config, model_type, "moe_intermediate_size")
-            .and_then(u64_to_u32),
+        expert_intermediate_size,
         layer_freq,
         first_dense_layers,
         shared_expert_count,

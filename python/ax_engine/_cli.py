@@ -114,7 +114,7 @@ MODEL_PROFILES = (
     ),
     ModelProfile(
         label="qwen3.6-27b",
-        preset=None,
+        preset="qwen3.6-27b",
         repo_id="mlx-community/Qwen3.6-27B-4bit",
         aliases=(
             "qwen3.6-27b",
@@ -168,6 +168,102 @@ MODEL_PROFILES = (
             "qwen36-35b-a3b",
         ),
         mtp_target="qwen3.6-35b-a3b",
+    ),
+    # --- Secondary: research / enterprise Llama (standard graph) ---
+    ModelProfile(
+        label="llama3.1-8b",
+        preset="llama3.1-8b",
+        repo_id="mlx-community/Llama-3.1-8B-Instruct-4bit",
+        aliases=(
+            "llama3.1-8b",
+            "llama31-8b",
+            "llama-3.1-8b",
+            "llama3.1-8b-4bit",
+            "llama-3.1-8b-instruct-4bit",
+        ),
+    ),
+    ModelProfile(
+        label="llama3.3-70b",
+        preset="llama3.3-70b",
+        repo_id="mlx-community/Llama-3.3-70B-Instruct-4bit",
+        aliases=(
+            "llama3.3-70b",
+            "llama33-70b",
+            "llama-3.3-70b",
+            "llama3.3-70b-4bit",
+            "llama-3.3-70b-instruct-4bit",
+        ),
+    ),
+    ModelProfile(
+        label="llama4-scout",
+        preset="llama4-scout",
+        repo_id="mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit",
+        aliases=(
+            "llama4-scout",
+            "llama-4-scout",
+            "llama4-scout-4bit",
+            "llama-4-scout-17b-16e-4bit",
+        ),
+    ),
+    # --- Secondary: European market Mistral ---
+    ModelProfile(
+        label="mistral-small",
+        preset="mistral-small",
+        repo_id="mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit",
+        aliases=(
+            "mistral-small",
+            "mistral-small-24b",
+            "mistral-small-4bit",
+            "mistral-small-24b-4bit",
+            "mistral-small-3.1",
+        ),
+    ),
+    ModelProfile(
+        label="ministral-8b",
+        preset="ministral-8b",
+        repo_id="mlx-community/Ministral-8B-Instruct-2410-4bit",
+        aliases=(
+            "ministral-8b",
+            "ministral",
+            "ministral-8b-4bit",
+            "ministral-8b-instruct-4bit",
+        ),
+    ),
+    ModelProfile(
+        label="devstral-small",
+        preset="devstral-small",
+        repo_id="mlx-community/Devstral-Small-2505-4bit",
+        aliases=(
+            "devstral-small",
+            "devstral",
+            "devstral-small-4bit",
+            "devstral-small-2505-4bit",
+        ),
+    ),
+    # --- Secondary: open reasoner GPT-OSS (MXFP4 experts) ---
+    ModelProfile(
+        label="gpt-oss-20b",
+        preset="gpt-oss-20b",
+        repo_id="mlx-community/gpt-oss-20b-MXFP4-Q4",
+        aliases=(
+            "gpt-oss-20b",
+            "gptoss-20b",
+            "gpt-oss-20b-4bit",
+            "gpt-oss-20b-mxfp4",
+            "gpt-oss-20b-mxfp4-q4",
+        ),
+    ),
+    ModelProfile(
+        label="gpt-oss-120b",
+        preset="gpt-oss-120b",
+        repo_id="mlx-community/gpt-oss-120b-MXFP4-Q4",
+        aliases=(
+            "gpt-oss-120b",
+            "gptoss-120b",
+            "gpt-oss-120b-4bit",
+            "gpt-oss-120b-mxfp4",
+            "gpt-oss-120b-mxfp4-q4",
+        ),
     ),
 )
 
@@ -252,14 +348,30 @@ def _downloadable_profiles() -> list[ModelProfile]:
 # pure functions of MODEL_PROFILES and do not change the download/JSON contract.
 # ---------------------------------------------------------------------------
 
-_QUANT_RE = re.compile(r"(\d+)bit", re.IGNORECASE)
+# Affine `*4bit*` / `*8bit*` plus MXFP4 product names (`MXFP4-Q4`, bare `MXFP4`).
+_QUANT_RE = re.compile(
+    r"(?P<bit>\d+)bit|(?P<q>q)(?P<qbits>\d+)|(?P<mxfp4>mxfp4)",
+    re.IGNORECASE,
+)
 _FAMILY_SUFFIX_RE = re.compile(r"-\d+bit$", re.IGNORECASE)
 
 
 def _profile_quant_bits(profile: ModelProfile) -> int | None:
-    """Quantization bit-width parsed from a profile's repo_id (e.g. 4, 8)."""
+    """Quantization bit-width parsed from a profile's repo_id (e.g. 4, 8).
+
+    Recognizes MLX affine names (`4bit`) and GPT-OSS MXFP4 product tags
+    (`MXFP4-Q4`, `MXFP4` → 4).
+    """
     match = _QUANT_RE.search(profile.repo_id)
-    return int(match.group(1)) if match else None
+    if match is None:
+        return None
+    if match.group("bit") is not None:
+        return int(match.group("bit"))
+    if match.group("qbits") is not None:
+        return int(match.group("qbits"))
+    if match.group("mxfp4") is not None:
+        return 4
+    return None
 
 
 def _profile_family_key(profile: ModelProfile) -> str:
@@ -325,9 +437,10 @@ def _download_options_payload() -> dict:
         ],
         "examples": [
             "ax-engine download qwen36-35b",
-            "ax-engine download qwen36-27b-8bit",
             "ax-engine download gemma4-12b",
-            "ax-engine download gemma4-e2b-6bit",
+            "ax-engine download llama3.3-70b",
+            "ax-engine download mistral-small",
+            "ax-engine download gpt-oss-20b",
             "ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json",
         ],
     }
@@ -335,7 +448,8 @@ def _download_options_payload() -> dict:
 
 def _format_download_options() -> str:
     lines = [
-        "Available Qwen3.5/3.6 and Gemma 4 MLX download targets:",
+        "Available direct-mode MLX download targets",
+        "(primary: Gemma 4 / Qwen 3.x; secondary: Llama, Mistral, GPT-OSS):",
     ]
     for profile in _downloadable_profiles():
         mtp = f"  [MTP: download-mtp {profile.mtp_target}]" if profile.mtp_target else ""
@@ -345,9 +459,10 @@ def _format_download_options() -> str:
             "",
             "Examples:",
             "  ax-engine download qwen36-35b",
-            "  ax-engine download qwen36-27b-8bit",
             "  ax-engine download gemma4-12b",
-            "  ax-engine download gemma4-e2b-6bit",
+            "  ax-engine download llama3.3-70b",
+            "  ax-engine download mistral-small",
+            "  ax-engine download gpt-oss-20b",
             "  ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json",
             "",
             "Destination:",

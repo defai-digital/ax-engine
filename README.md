@@ -205,18 +205,22 @@ Direct-support model families:
 
 | Family | Direct model IDs | Notes |
 | --- | --- | --- |
-| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | MLX affine 4/5/6-bit weights; assistant-MTP paths |
+| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | **Primary** productivity chat; MLX affine 4/5/6-bit; assistant-MTP paths |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed dense checkpoints | Dense SwiGLU graph |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | GatedDeltaNet linear attention |
-| Qwen 3.6 | `Qwen3.6-35B-A3B` 4/6-bit, `Qwen3.6-27B` 4/5/6-bit | `qwen3_next`; fused sidecar-MTP paths |
-| Qwen3-Coder-Next | `Qwen3-Coder-Next-4bit` | Direct coding-agent path |
+| Qwen 3.6 | `Qwen3.6-35B-A3B` 4/6-bit, `Qwen3.6-27B` 4/5/6-bit | **Primary** agent path; `qwen3_next`; fused sidecar-MTP |
+| Qwen3-Coder-Next | `Qwen3-Coder-Next-4bit` | **Primary** coding-agent path |
 | GLM 4.7 Flash | `glm4_moe_lite` / `glm4.7-flash-4bit` | Flash MLA + MoE graph |
-| GPT-OSS | `gpt-oss-20b`, `gpt-oss-120b` | MXFP4 MoE (128 experts, top-4); SwiGLU; alternating full/sliding-128 attention |
+| Llama 3.x / 4 | `llama3.1-8b`, `llama3.3-70b`, `llama4-scout` | **Secondary** research/enterprise; download aliases |
+| Mistral | `mistral-small`, `ministral-8b`, `devstral-small` | **Secondary** European market; download aliases |
+| GPT-OSS | `gpt-oss-20b`, `gpt-oss-120b` | **Secondary** open reasoner; MXFP4-Q4 downloads; experts stay MXFP4-packed at runtime |
 
 Direct support means AX owns the `ax-engine-mlx` graph and loads MLX safetensors
-through the AX manifest path. Unsupported families fail closed by default.
-`mlx_lm_delegated` and `llama_cpp` remain explicit compatibility adapters for
-migration and validation, not default deployment paths.
+through the AX manifest path. Primary families (Gemma/Qwen) own the deepest
+performance work and README tables. Secondary families ship as preview direct
+with one-command download/serve. `mlx_lm_delegated` and `llama_cpp` remain
+explicit compatibility adapters for migration and validation, not default
+deployment paths. See [SUPPORTED-MODELS](docs/SUPPORTED-MODELS.md).
 
 ## Typical Hardware
 

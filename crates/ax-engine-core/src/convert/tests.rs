@@ -157,6 +157,147 @@ fn converts_gemma4_assistant_q_only_external_kv_contract() {
 }
 
 #[test]
+fn mistral_and_llama_secondary_families_resolve() {
+    let empty_config = serde_json::json!({});
+    let classic =
+        model_family_for_type("mistral", &empty_config).expect("classic mistral should map");
+    assert_eq!(classic.family_name, "mistral3");
+    assert!(classic.uses_language_model_prefix);
+    // Classic dense tensors use model.layers.* (standard map tried first).
+    assert_eq!(
+        match_tensor("model.layers.0.self_attn.q_proj.weight", &classic),
+        Some((NativeTensorRole::AttentionQ, Some(0)))
+    );
+    // Mistral Small 3.x multimodal text tower uses language_model.model.*.
+    assert_eq!(
+        match_tensor(
+            "language_model.model.layers.0.self_attn.q_proj.weight",
+            &classic,
+        ),
+        Some((NativeTensorRole::AttentionQ, Some(0)))
+    );
+
+    let mistral3 =
+        model_family_for_type("mistral3", &empty_config).expect("mistral3 should be supported");
+    assert_eq!(mistral3.family_name, "mistral3");
+
+    let llama = model_family_for_type("llama", &empty_config).expect("llama should be supported");
+    assert_eq!(llama.family_name, "llama3");
+
+    let llama4 =
+        model_family_for_type("llama4", &empty_config).expect("llama4 should be supported");
+    assert_eq!(llama4.family_name, "llama4");
+    assert!(llama4.uses_language_model_prefix);
+
+    let gpt_oss =
+        model_family_for_type("gpt_oss", &empty_config).expect("gpt_oss should be supported");
+    assert_eq!(gpt_oss.family_name, "gpt_oss");
+    assert!(
+        gpt_oss.extra_tensor_map.is_some(),
+        "gpt_oss must register MXFP4 expert tensor map extras"
+    );
+}
+
+#[test]
+fn gpt_oss_moe_config_reads_expert_geometry() {
+    // Mirrors published openai/gpt-oss-20b and mlx-community MXFP4-Q4 config.json
+    // fields (no weight download).
+    let config = serde_json::json!({
+        "model_type": "gpt_oss",
+        "num_local_experts": 32,
+        "num_experts_per_tok": 4,
+        "intermediate_size": 2880,
+        "hidden_size": 2880,
+        "num_hidden_layers": 24,
+    });
+    let moe = moe_config(&config, "gpt_oss");
+    assert_eq!(moe.expert_count, Some(32));
+    assert_eq!(moe.experts_per_token, Some(4));
+    assert_eq!(
+        moe.expert_intermediate_size,
+        Some(2880),
+        "gpt_oss uses intermediate_size when moe_intermediate_size is absent"
+    );
+    assert!(
+        moe.is_enabled(),
+        "gpt_oss must enable MoE so gpt_oss_uses_mxfp4_experts can arm"
+    );
+}
+
+#[test]
+fn gpt_oss_tensor_map_matches_openai_and_mlx_community_keys() {
+    let empty_config = serde_json::json!({});
+    let family = model_family_for_type("gpt_oss", &empty_config).expect("gpt_oss");
+
+    // openai/gpt-oss native MXFP4 fused experts + sinks.
+    assert_eq!(
+        match_tensor(
+            "model.layers.0.mlp.experts.gate_up_proj_blocks",
+            &family,
+        ),
+        Some((NativeTensorRole::FfnGateUpExpsMxfp4Blocks, Some(0)))
+    );
+    assert_eq!(
+        match_tensor(
+            "model.layers.0.mlp.experts.gate_up_proj_scales",
+            &family,
+        ),
+        Some((NativeTensorRole::FfnGateUpExpsMxfp4Scales, Some(0)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.0.mlp.experts.down_proj_blocks", &family),
+        Some((NativeTensorRole::FfnDownExpsMxfp4Blocks, Some(0)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.0.mlp.experts.down_proj_scales", &family),
+        Some((NativeTensorRole::FfnDownExpsMxfp4Scales, Some(0)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.0.self_attn.sinks", &family),
+        Some((NativeTensorRole::AttnSink, Some(0)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.0.mlp.router.weight", &family),
+        Some((NativeTensorRole::FfnGateInp, Some(0)))
+    );
+
+    // mlx-community/gpt-oss-*-MXFP4-Q4 split experts.
+    assert_eq!(
+        match_tensor("model.layers.0.mlp.experts.gate_proj.weight", &family),
+        Some((NativeTensorRole::FfnGateExps, Some(0)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.0.mlp.experts.up_proj.weight", &family),
+        Some((NativeTensorRole::FfnUpExps, Some(0)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.0.mlp.experts.down_proj.weight", &family),
+        Some((NativeTensorRole::FfnDownExps, Some(0)))
+    );
+}
+
+#[test]
+fn primary_productivity_families_resolve() {
+    let empty_config = serde_json::json!({});
+    for (model_type, family_name, lm_prefix) in [
+        ("gemma4", "gemma4", true),
+        ("qwen3", "qwen3", false),
+        ("qwen3_5", "qwen3_5", true),
+        ("qwen3_next", "qwen3_next", true),
+        ("qwen3.6", "qwen3_next", true),
+        ("glm4_moe_lite", "glm4_moe_lite", false),
+    ] {
+        let family = model_family_for_type(model_type, &empty_config)
+            .unwrap_or_else(|e| panic!("{model_type} should map: {e}"));
+        assert_eq!(family.family_name, family_name, "type={model_type}");
+        assert_eq!(
+            family.uses_language_model_prefix, lm_prefix,
+            "type={model_type}"
+        );
+    }
+}
+
+#[test]
 fn gemma4_moe_expert_names_map_to_unambiguous_roles() {
     let empty_config = serde_json::json!({});
     let family =

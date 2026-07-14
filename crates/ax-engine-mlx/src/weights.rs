@@ -216,12 +216,17 @@ pub struct LayerWeights {
     pub gate_exps: Option<QuantizedWeight>,
     pub up_exps: Option<QuantizedWeight>,
     pub down_exps: Option<QuantizedWeight>,
-    /// GPT-OSS MXFP4 gate-up expert weights dequantized to BF16 at load time.
-    /// Shape: `[num_experts, 2 * intermediate, hidden]` (gate and up interleaved per expert).
-    pub mxfp4_gate_up_exps: Option<MlxArray>,
-    /// GPT-OSS MXFP4 down expert weights dequantized to BF16 at load time.
-    /// Shape: `[num_experts, hidden, intermediate]`.
-    pub mxfp4_down_exps: Option<MlxArray>,
+    /// GPT-OSS MXFP4 gate-up expert weights kept packed at load time.
+    ///
+    /// `weight` is the sanitized u32 view of the MXFP4 blocks tensor
+    /// (`[num_experts, 2 * intermediate, packed_in]`); `scales` is the
+    /// matching E8M0 scale tensor. Forward uses `gather_qmm` with
+    /// `mode=mxfp4` so expert parameters stay 4-bit in unified memory.
+    pub mxfp4_gate_up_exps: Option<Mxfp4ExpertWeight>,
+    /// GPT-OSS MXFP4 down expert weights kept packed at load time.
+    /// Shape convention matches gate-up: `[num_experts, hidden, packed_in]`
+    /// for the packed weight and matching scales.
+    pub mxfp4_down_exps: Option<Mxfp4ExpertWeight>,
     /// GPT-OSS per-head learned attention sink weight. Shape: `[num_attention_heads]`.
     pub attn_sink: Option<MlxArray>,
     /// Per-layer AWQ-lite smoothing reciprocal `1/s` of shape `[hidden_size]`.
@@ -269,6 +274,21 @@ enum LinearAttentionProjectionRowSource {
     A(usize),
 }
 
+/// Packed MXFP4 expert matrix for GPT-OSS MoE.
+///
+/// Stays quantized in memory; runtime matmul uses `gather_qmm` with
+/// `MlxQuantizationMode::Mxfp4` (group_size=32, bits=4, no biases).
+#[derive(Clone)]
+pub struct Mxfp4ExpertWeight {
+    pub weight: MlxArray,
+    pub scales: MlxArray,
+}
+
+impl Mxfp4ExpertWeight {
+    pub const GROUP_SIZE: i32 = 32;
+    pub const BITS: i32 = 4;
+}
+
 /// A weight matrix plus optional MLX affine quantization metadata.
 ///
 /// When `scales` is `Some`, the weight tensor contains packed affine-quantized
@@ -283,9 +303,18 @@ enum LinearAttentionProjectionRowSource {
 pub struct QuantizedWeight {
     pub weight: MlxArray,
     pub scales: Option<MlxArray>,
+    /// Affine (or mode-specific) **group** quant biases, shape tied to groups —
+    /// **not** the dense per-expert Linear bias.
     pub biases: Option<MlxArray>,
     pub group_size: i32,
     pub bits: i32,
+    /// Quantization mode string from the manifest (`affine`, `mxfp4`, …).
+    /// Defaults to affine for legacy checkpoints.
+    pub mode: String,
+    /// Dense Linear bias for switch/expert layers, shape `[num_experts, out]`.
+    /// Matches mlx-lm `SwitchLinear.bias` / `QuantizedSwitchLinear.bias`, applied
+    /// as `y += bias[indices]` after `gather_qmm` (see switch_layers.py).
+    pub linear_bias: Option<MlxArray>,
 }
 
 impl QuantizedWeight {
@@ -306,10 +335,31 @@ impl QuantizedWeight {
             biases,
             group_size: quantization.group_size as i32,
             bits: quantization.bits as i32,
+            mode: if quantization.mode.is_empty() {
+                "affine".to_string()
+            } else {
+                quantization.mode
+            },
+            linear_bias: None,
         }
     }
+
+    pub fn with_linear_bias(mut self, linear_bias: Option<MlxArray>) -> Self {
+        self.linear_bias = linear_bias;
+        self
+    }
+
     pub fn is_quantized(&self) -> bool {
         self.scales.is_some()
+    }
+
+    pub fn mlx_quantization_mode(&self) -> MlxQuantizationMode {
+        match self.mode.as_str() {
+            "mxfp4" => MlxQuantizationMode::Mxfp4,
+            "mxfp8" => MlxQuantizationMode::Mxfp8,
+            "nvfp4" => MlxQuantizationMode::Nvfp4,
+            _ => MlxQuantizationMode::Affine,
+        }
     }
 }
 
@@ -726,28 +776,22 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             None
         };
 
-        // GPT-OSS MXFP4 expert weights: dequantize blocks+scales → BF16 at load time.
-        let (mxfp4_gate_up_exps, mxfp4_down_exps) =
-            if has_role(specs, NativeTensorRole::FfnGateUpExpsMxfp4Blocks, idx) {
-                let gate_up = load_mxfp4_expert_weights(
+        // GPT-OSS openai native MXFP4: fused gate_up_proj_blocks → de-interleave
+        // into split gate/up experts (matches mlx-lm gpt_oss.Model.sanitize).
+        // mlx-community product checkpoints already ship split gate/up/down and
+        // are loaded above via FfnGateExps / FfnUpExps / FfnDownExps.
+        let (gate_exps, up_exps, down_exps, mxfp4_gate_up_exps, mxfp4_down_exps) =
+            if gate_exps.is_none()
+                && has_role(specs, NativeTensorRole::FfnGateUpExpsMxfp4Blocks, idx)
+            {
+                let (gate, up, down) = load_gpt_oss_openai_mxfp4_split_experts(
                     specs,
                     &mut name_map,
                     idx,
-                    NativeTensorRole::FfnGateUpExpsMxfp4Blocks,
-                    NativeTensorRole::FfnGateUpExpsMxfp4Scales,
-                    "gate_up_exps",
                 )?;
-                let down = load_mxfp4_expert_weights(
-                    specs,
-                    &mut name_map,
-                    idx,
-                    NativeTensorRole::FfnDownExpsMxfp4Blocks,
-                    NativeTensorRole::FfnDownExpsMxfp4Scales,
-                    "down_exps",
-                )?;
-                (Some(gate_up), Some(down))
+                (Some(gate), Some(up), Some(down), None, None)
             } else {
-                (None, None)
+                (gate_exps, up_exps, down_exps, None, None)
             };
 
         // GPT-OSS per-head attention sink.
@@ -1199,6 +1243,9 @@ fn mtp_take_weight(
         biases,
         group_size,
         bits,
+
+        mode: "affine".to_string(),
+        linear_bias: None,
     })
 }
 
@@ -1296,6 +1343,8 @@ fn build_draft_lm_head(
         biases: Some(biases),
         group_size: spec.group_size,
         bits: spec.bits,
+            mode: "affine".to_string(),
+        linear_bias: None,
     })
 }
 
@@ -2787,6 +2836,9 @@ fn split_deepseek_kv_b_projection(
                 biases: None,
                 group_size,
                 bits,
+
+                mode: "affine".to_string(),
+                linear_bias: None,
             },
             QuantizedWeight {
                 weight: unembed_out,
@@ -2794,6 +2846,9 @@ fn split_deepseek_kv_b_projection(
                 biases: None,
                 group_size,
                 bits,
+
+                mode: "affine".to_string(),
+                linear_bias: None,
             },
         ))
     }
@@ -2828,6 +2883,9 @@ fn requantize_affine_weight(
         biases: Some(biases),
         group_size,
         bits,
+
+        mode: "affine".to_string(),
+        linear_bias: None,
     })
 }
 
@@ -2879,6 +2937,8 @@ fn concat_quantized_weight_rows(
         biases,
         group_size: a.group_size,
         bits: a.bits,
+            mode: "affine".to_string(),
+        linear_bias: None,
     })
 }
 
@@ -3056,6 +3116,8 @@ fn pack_linear_attention_projection_rows(
         biases,
         group_size: first.group_size,
         bits: first.bits,
+            mode: "affine".to_string(),
+        linear_bias: None,
     })
 }
 
@@ -3325,11 +3387,15 @@ fn take_weight(
         .remove(&name)
         .ok_or_else(|| WeightLoadError::TensorMissing(name.clone()))?;
 
-    // Look for co-located `.scales` and `.biases` (MLX quantized format).
+    // Co-located sidecars:
+    // - `.scales` / `.biases` (plural): MLX group-quant metadata
+    // - `.bias` (singular): dense Linear bias (e.g. SwitchLinear.bias [E, out])
+    //   — must NOT be treated as affine group biases (mlx-lm switch_layers.py).
     let base = name.strip_suffix(".weight").unwrap_or(&name);
     let scales = name_map.remove(&format!("{base}.scales"));
-    let biases = name_map.remove(&format!("{base}.biases"));
-    let has_quantization_sidecars = scales.is_some() || biases.is_some();
+    let quant_biases = name_map.remove(&format!("{base}.biases"));
+    let linear_bias = name_map.remove(&format!("{base}.bias"));
+    let has_quantization_sidecars = scales.is_some() || quant_biases.is_some();
 
     if !spec.source_quantized && has_quantization_sidecars {
         return Err(WeightLoadError::InvalidLayer(format!(
@@ -3343,12 +3409,15 @@ fn take_weight(
         )));
     }
 
-    Ok(QuantizedWeight::with_quantization(
-        weight,
-        scales,
-        biases,
-        spec.quantization.as_ref(),
-    ))
+    Ok(
+        QuantizedWeight::with_quantization(
+            weight,
+            scales,
+            quant_biases,
+            spec.quantization.as_ref(),
+        )
+        .with_linear_bias(linear_bias),
+    )
 }
 
 fn try_take_weight(
@@ -3382,20 +3451,135 @@ fn try_take_plain(
     Ok(name_map.remove(&name))
 }
 
-/// Load GPT-OSS MXFP4 expert weights and dequantize to BF16.
+/// Load openai/gpt-oss native fused MXFP4 experts and sanitize to split
+/// `gate_proj` / `up_proj` / `down_proj` — matching mlx-lm `gpt_oss.Model.sanitize`.
 ///
-/// MXFP4 weights are stored as separate `blocks` (u8) and `scales` (u8 E8M0)
-/// tensors. The sanitize transform reinterprets blocks as u32 (packing 4 bytes
-/// per element) and flattens the last two dimensions before calling
-/// `dequantize_with_mode` in `Mxfp4` mode.
-fn load_mxfp4_expert_weights(
+/// OpenAI tensors:
+///   mlp.experts.gate_up_proj_blocks/scales  (fused, even/odd rows = gate/up)
+///   mlp.experts.down_proj_blocks/scales
+/// After sanitize (view u32 + flatten last two dims + de-interleave), weights
+/// stay packed MXFP4 (`mode=mxfp4`) for `gather_qmm` — no BF16 expand.
+fn load_gpt_oss_openai_mxfp4_split_experts(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    layer_index: Option<u32>,
+) -> Result<(QuantizedWeight, QuantizedWeight, QuantizedWeight), WeightLoadError> {
+    let (gate_up_w, gate_up_s) = load_mxfp4_blocks_scales(
+        specs,
+        name_map,
+        layer_index,
+        NativeTensorRole::FfnGateUpExpsMxfp4Blocks,
+        NativeTensorRole::FfnGateUpExpsMxfp4Scales,
+        "gate_up_exps",
+    )?;
+    let (down_w, down_s) = load_mxfp4_blocks_scales(
+        specs,
+        name_map,
+        layer_index,
+        NativeTensorRole::FfnDownExpsMxfp4Blocks,
+        NativeTensorRole::FfnDownExpsMxfp4Scales,
+        "down_exps",
+    )?;
+
+    // De-interleave fused gate_up along the out-feature axis (dim -2):
+    // even rows → gate, odd rows → up (mlx-lm gpt_oss.sanitize).
+    let gate_w = contiguous(&slice_even_odd_out_rows(&gate_up_w, /*even=*/ true), None);
+    let up_w = contiguous(&slice_even_odd_out_rows(&gate_up_w, /*even=*/ false), None);
+    let gate_s = contiguous(&slice_even_odd_out_rows(&gate_up_s, /*even=*/ true), None);
+    let up_s = contiguous(&slice_even_odd_out_rows(&gate_up_s, /*even=*/ false), None);
+
+    // Optional dense expert biases (openai: gate_up_proj_bias / down_proj_bias).
+    // mlx-lm renames and de-interleaves these to gate_proj.bias / up_proj.bias.
+    let (gate_b, up_b, down_b) =
+        take_gpt_oss_openai_expert_biases(specs, name_map, layer_index);
+
+    eval(&[&gate_w, &up_w, &down_w, &gate_s, &up_s, &down_s]);
+    if let Some(b) = &gate_b {
+        eval(&[b]);
+    }
+    if let Some(b) = &up_b {
+        eval(&[b]);
+    }
+    if let Some(b) = &down_b {
+        eval(&[b]);
+    }
+
+    let mxfp4 = NativeTensorQuantization {
+        mode: "mxfp4".to_string(),
+        group_size: 32,
+        bits: 4,
+    };
+    Ok((
+        QuantizedWeight::with_quantization(gate_w, Some(gate_s), None, Some(&mxfp4))
+            .with_linear_bias(gate_b),
+        QuantizedWeight::with_quantization(up_w, Some(up_s), None, Some(&mxfp4))
+            .with_linear_bias(up_b),
+        QuantizedWeight::with_quantization(down_w, Some(down_s), None, Some(&mxfp4))
+            .with_linear_bias(down_b),
+    ))
+}
+
+/// Pull openai fused expert bias tensors and de-interleave gate_up bias.
+fn take_gpt_oss_openai_expert_biases(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    layer_index: Option<u32>,
+) -> (Option<MlxArray>, Option<MlxArray>, Option<MlxArray>) {
+    // Discover names from the blocks tensors we already mapped (same layer).
+    let gate_up_blocks = specs.iter().find(|s| {
+        s.role == NativeTensorRole::FfnGateUpExpsMxfp4Blocks && s.layer_index == layer_index
+    });
+    let down_blocks = specs.iter().find(|s| {
+        s.role == NativeTensorRole::FfnDownExpsMxfp4Blocks && s.layer_index == layer_index
+    });
+
+    let mut gate_b = None;
+    let mut up_b = None;
+    if let Some(spec) = gate_up_blocks {
+        // model.layers.N.mlp.experts.gate_up_proj_blocks → gate_up_proj_bias
+        let bias_name = spec
+            .name
+            .replace("gate_up_proj_blocks", "gate_up_proj_bias");
+        if let Some(bias) = name_map.remove(&bias_name) {
+            // even/odd on last axis for bias [E, 2*inter] → [E, inter]
+            let gate = contiguous(&slice_even_odd_last_axis(&bias, true), None);
+            let up = contiguous(&slice_even_odd_last_axis(&bias, false), None);
+            gate_b = Some(gate);
+            up_b = Some(up);
+        }
+    }
+    let down_b = down_blocks.and_then(|spec| {
+        let bias_name = spec.name.replace("down_proj_blocks", "down_proj_bias");
+        name_map.remove(&bias_name)
+    });
+    (gate_b, up_b, down_b)
+}
+
+/// Even/odd slice on the last axis (bias de-interleave: [..., 2*I] → [..., I]).
+fn slice_even_odd_last_axis(x: &MlxArray, even: bool) -> MlxArray {
+    let shape = x.shape();
+    let ndim = shape.len();
+    assert!(ndim >= 1);
+    let last = ndim - 1;
+    let n = shape[last];
+    let start = if even { 0 } else { 1 };
+    let mut starts = vec![0i32; ndim];
+    let mut stops: Vec<i32> = shape.iter().copied().collect();
+    let mut strides = vec![1i32; ndim];
+    starts[last] = start;
+    stops[last] = n;
+    strides[last] = 2;
+    slice(x, &starts, &stops, &strides, None)
+}
+
+fn load_mxfp4_blocks_scales(
     specs: &[NativeTensorSpec],
     name_map: &mut HashMap<String, MlxArray>,
     layer_index: Option<u32>,
     blocks_role: NativeTensorRole,
     scales_role: NativeTensorRole,
     label: &str,
-) -> Result<MlxArray, WeightLoadError> {
+) -> Result<(MlxArray, MlxArray), WeightLoadError> {
     let blocks_name = specs
         .iter()
         .find(|s| s.role == blocks_role && s.layer_index == layer_index)
@@ -3414,26 +3598,31 @@ fn load_mxfp4_expert_weights(
         .remove(&scales_name)
         .ok_or(WeightLoadError::TensorMissing(scales_name))?;
 
-    // Sanitize: reinterpret u8 blocks as u32 (4 bytes packed per element).
+    // Sanitize: u8 blocks → u32 view, flatten last two dims (mlx-lm gpt_oss.sanitize).
     let blocks_u32 = view(&blocks, MlxDtype::Uint32, None);
-    // Flatten the last two dimensions to merge the packed trailing axis.
     let ndim = blocks_u32.ndim();
     let blocks_flat = flatten(&blocks_u32, (ndim - 2) as i32, (ndim - 1) as i32, None);
+    Ok((blocks_flat, scales))
+}
 
-    // Dequantize MXFP4 → BF16 (group_size=32, bits=4).
-    let dequantized = dequantize_with_mode(
-        &blocks_flat,
-        &scales,
-        None,
-        Some(32),
-        Some(4),
-        MlxQuantizationMode::Mxfp4,
-        None,
-        Some(MlxDtype::Bfloat16),
-        None,
+/// Slice even or odd rows along the expert out-feature axis (dim = ndim-2).
+fn slice_even_odd_out_rows(x: &MlxArray, even: bool) -> MlxArray {
+    let shape = x.shape();
+    let ndim = shape.len();
+    assert!(
+        ndim >= 2,
+        "gpt-oss expert tensor must be at least 2D, got {ndim}"
     );
-    eval(&[&dequantized]);
-    Ok(dequantized)
+    let out_axis = ndim - 2;
+    let out = shape[out_axis];
+    let start = if even { 0 } else { 1 };
+    let mut starts = vec![0i32; ndim];
+    let mut stops: Vec<i32> = shape.iter().copied().collect();
+    let mut strides = vec![1i32; ndim];
+    starts[out_axis] = start;
+    stops[out_axis] = out;
+    strides[out_axis] = 2;
+    slice(x, &starts, &stops, &strides, None)
 }
 
 fn take_layer_norms(
@@ -4261,6 +4450,9 @@ mod tests {
             biases: with_biases.then(|| zeros(&[2, 1], MlxDtype::Bfloat16, None)),
             group_size,
             bits,
+
+            mode: "affine".to_string(),
+            linear_bias: None,
         }
     }
 

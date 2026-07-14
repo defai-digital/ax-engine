@@ -39,7 +39,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_unified, gemma4_assistant, diffusion_gemma, glm4_moe_lite, llama3, mistral3, mixtral, deepseek_v3, llama4 draft manifests"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_unified, gemma4_assistant, diffusion_gemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, llama4, gpt_oss"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]

@@ -46,12 +46,16 @@ ax-engine download qwen36-27b --json
 ax-engine download gemma4-e2b --json
 ax-engine download gemma4-12b --json
 ax-engine download gemma4-31b --json
+ax-engine download llama3.3-70b --json
+ax-engine download mistral-small --json
+ax-engine download gpt-oss-20b --json
 ```
 
 Download and serve in one command:
 
 ```text
 ax-engine serve qwen36-35b --download --port 8080
+ax-engine serve llama3.3-70b --download --port 8080
 ```
 
 Raw `mlx-community` repo IDs are also accepted:
@@ -60,6 +64,7 @@ Raw `mlx-community` repo IDs are also accepted:
 ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
 ax-engine download mlx-community/Qwen3-Coder-Next-6bit --json
 ax-engine download mlx-community/gemma-4-e2b-it-4bit --json
+ax-engine download mlx-community/gpt-oss-20b-MXFP4-Q4 --json
 ```
 
 Copy a snapshot to an explicit directory only when needed:
@@ -78,6 +83,8 @@ path = download_model("mlx-community/Qwen3.6-35B-A3B-4bit")
 
 Built-in direct-download aliases:
 
+**Primary productivity (Gemma / Qwen / GLM)**
+
 | Alias | Repo |
 | --- | --- |
 | `qwen36-35b` | `mlx-community/Qwen3.6-35B-A3B-4bit` |
@@ -86,6 +93,31 @@ Built-in direct-download aliases:
 | `gemma4-12b`, `gemma4-12b-6bit` | `mlx-community/gemma-4-12B-it-{4,6}bit` |
 | `gemma4-26b` | `mlx-community/gemma-4-26b-a4b-it-4bit` |
 | `gemma4-31b` | `mlx-community/gemma-4-31b-it-4bit` |
+| `qwen3.5-9b` | `mlx-community/Qwen3.5-9B-MLX-4bit` |
+| `glm4.7-flash-4bit` | `mlx-community/GLM-4.7-Flash-4bit` |
+
+**Secondary — research / enterprise Llama**
+
+| Alias | Repo |
+| --- | --- |
+| `llama3.1-8b` | `mlx-community/Llama-3.1-8B-Instruct-4bit` |
+| `llama3.3-70b` | `mlx-community/Llama-3.3-70B-Instruct-4bit` |
+| `llama4-scout` | `mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit` |
+
+**Secondary — European market Mistral**
+
+| Alias | Repo |
+| --- | --- |
+| `mistral-small` | `mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit` |
+| `ministral-8b` | `mlx-community/Ministral-8B-Instruct-2410-4bit` |
+| `devstral-small` | `mlx-community/Devstral-Small-2505-4bit` |
+
+**Secondary — open reasoner GPT-OSS (MXFP4)**
+
+| Alias | Repo | Notes |
+| --- | --- | --- |
+| `gpt-oss-20b` | `mlx-community/gpt-oss-20b-MXFP4-Q4` | Comfortable on 64–128 GB |
+| `gpt-oss-120b` | `mlx-community/gpt-oss-120b-MXFP4-Q4` | Prefer 128 GB+; experts stay MXFP4-packed at runtime |
 
 Leave downloads in the Hugging Face Hub cache by default. The cache is shared
 with `mlx_lm` and other HF-aware tools, avoiding duplicate copies of large
@@ -193,6 +225,8 @@ evidence with a matching `mlx_lm.benchmark` baseline.
 
 Current direct-support LLM families:
 
+**Primary (productivity — deepest optim + public performance tables)**
+
 | Family | Direct model IDs | Current scope | Notes |
 | --- | --- | --- | --- |
 | Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters; processed/token-aligned Gemma4 unified media tensors on native generate and OpenAI token-array routes when the manifest contains unified media roles | Dense, unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention; K=V full-attention layers; logit softcapping |
@@ -200,7 +234,15 @@ Current direct-support LLM families:
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` / `qwen3.5-9b` preset | Repo-owned MLX runtime; MLX affine 4-bit weights | GatedDeltaNet linear attention + dense SwiGLU FFN; `attn_output_gate` per-head interleaving |
 | Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
 | GLM 4.7 Flash | `glm4_moe_lite` / `glm4.7-flash-4bit` | Repo-owned MLX runtime; MLX affine 4-bit weights | Flash MLA attention, sigmoid-routed MoE with dense+MoE layer split, shared expert; post-attention RMS norm |
-| GPT-OSS | `gpt-oss-20b`, `gpt-oss-120b` | Repo-owned MLX runtime; MXFP4 MoE weights dequantized to BF16 at load time | MoE decoder with 128 experts (top-4), SwiGLU, alternating full/sliding-128 attention, per-head learned attention sinks, YaRN RoPE (128K), GQA (64q/8k heads) |
+
+**Secondary (preview direct — download aliases + server presets; share standard / family graphs)**
+
+| Family | Direct model IDs / aliases | Current scope | Notes |
+| --- | --- | --- | --- |
+| Llama 3.x | `llama3.1-8b`, `llama3.3-70b` | Preview direct; MLX affine 4-bit; `llama3` / standard dense path | Research and enterprise baseline; Llama 3 chat template |
+| Llama 4 | `llama4-scout` | Preview direct; MLX affine 4-bit; `llama4` MoE path | Fits ~128 GB class; Maverick full 4-bit is out of scope for that class |
+| Mistral | `mistral-small`, `ministral-8b`, `devstral-small` | Preview direct; MLX affine 4-bit; `mistral3` / standard path | European market chat + coding; Instruct `[INST]` chat fallback |
+| GPT-OSS | `gpt-oss-20b`, `gpt-oss-120b` | Preview direct; MXFP4 MoE experts **kept packed** at load (`gather_qmm` mode=`mxfp4`) | MoE decoder with 128 experts (top-4), SwiGLU, alternating full/sliding-128 attention, per-head learned attention sinks, YaRN RoPE (128K), GQA (64q/8k heads). Prefer MXFP4-Q4 downloads. Expert residency stays ~4-bit so 120B is practical on 128 GB class hosts; attention/router tensors remain higher precision |
 
 Experimental direct-support model families:
 
@@ -212,10 +254,11 @@ All direct-support models use MLX safetensors format with the AX
 `model-manifest.json` descriptor. Adding a new direct-support architecture
 means implementing the model graph, not wiring up a generic loader.
 
-Architecture code, tensor-role metadata, or comments are not public direct
-support claims by themselves. LLaMA, Mistral, Mixtral, DeepSeek, and unlisted
-Gemma/Qwen variants stay unsupported by default until repo-owned manifest,
-smoke, and benchmark evidence are promoted here. Use `mlx_lm_delegated` or
+Architecture code alone is not a certified performance claim. Secondary
+families ship as **preview direct** with download aliases and chat fallbacks;
+public README tok/s tables remain focused on primary Gemma/Qwen evidence until
+paired benchmark artifacts exist. Mixtral, DeepSeek full, and unlisted
+Gemma/Qwen variants stay unsupported by default. Use `mlx_lm_delegated` or
 `llama_cpp` only when the caller explicitly wants a compatibility adapter.
 
 Before promoting another architecture, run:
