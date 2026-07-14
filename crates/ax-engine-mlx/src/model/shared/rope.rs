@@ -206,8 +206,7 @@ mod tests {
     #[test]
     fn yarn_gpt_oss_defaults_produce_mscale_and_freqs() {
         // openai/gpt-oss-20b: head_dim=64, rope_theta=150000, factor=32, orig=4096.
-        let (freqs, mscale) =
-            build_yarn_rope_freqs(64, 150_000.0, 32.0, 4096, 32.0, 1.0, 1.0, 0.0);
+        let (freqs, mscale) = build_yarn_rope_freqs(64, 150_000.0, 32.0, 4096, 32.0, 1.0, 1.0, 0.0);
         assert_eq!(freqs.shape(), vec![32]);
         // mscale = (0.1 * ln(32) + 1) / 1 ≈ 1.34657
         let expected = 0.1 * 32.0f32.ln() + 1.0;

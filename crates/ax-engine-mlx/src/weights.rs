@@ -780,19 +780,16 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         // into split gate/up experts (matches mlx-lm gpt_oss.Model.sanitize).
         // mlx-community product checkpoints already ship split gate/up/down and
         // are loaded above via FfnGateExps / FfnUpExps / FfnDownExps.
-        let (gate_exps, up_exps, down_exps, mxfp4_gate_up_exps, mxfp4_down_exps) =
-            if gate_exps.is_none()
-                && has_role(specs, NativeTensorRole::FfnGateUpExpsMxfp4Blocks, idx)
-            {
-                let (gate, up, down) = load_gpt_oss_openai_mxfp4_split_experts(
-                    specs,
-                    &mut name_map,
-                    idx,
-                )?;
-                (Some(gate), Some(up), Some(down), None, None)
-            } else {
-                (gate_exps, up_exps, down_exps, None, None)
-            };
+        let (gate_exps, up_exps, down_exps, mxfp4_gate_up_exps, mxfp4_down_exps) = if gate_exps
+            .is_none()
+            && has_role(specs, NativeTensorRole::FfnGateUpExpsMxfp4Blocks, idx)
+        {
+            let (gate, up, down) =
+                load_gpt_oss_openai_mxfp4_split_experts(specs, &mut name_map, idx)?;
+            (Some(gate), Some(up), Some(down), None, None)
+        } else {
+            (gate_exps, up_exps, down_exps, None, None)
+        };
 
         // GPT-OSS per-head attention sink.
         let attn_sink = try_take_plain(specs, &mut name_map, NativeTensorRole::AttnSink, idx)?;
@@ -1343,7 +1340,7 @@ fn build_draft_lm_head(
         biases: Some(biases),
         group_size: spec.group_size,
         bits: spec.bits,
-            mode: "affine".to_string(),
+        mode: "affine".to_string(),
         linear_bias: None,
     })
 }
@@ -3131,7 +3128,7 @@ fn pack_linear_attention_projection_rows(
         biases,
         group_size: first.group_size,
         bits: first.bits,
-            mode: "affine".to_string(),
+        mode: "affine".to_string(),
         linear_bias: None,
     })
 }
@@ -3505,8 +3502,7 @@ fn load_gpt_oss_openai_mxfp4_split_experts(
 
     // Optional dense expert biases (openai: gate_up_proj_bias / down_proj_bias).
     // mlx-lm renames and de-interleaves these to gate_proj.bias / up_proj.bias.
-    let (gate_b, up_b, down_b) =
-        take_gpt_oss_openai_expert_biases(specs, name_map, layer_index);
+    let (gate_b, up_b, down_b) = take_gpt_oss_openai_expert_biases(specs, name_map, layer_index);
 
     eval(&[&gate_w, &up_w, &down_w, &gate_s, &up_s, &down_s]);
     if let Some(b) = &gate_b {
