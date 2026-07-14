@@ -188,6 +188,44 @@ path.
 
 ## MLX Model-Inference Comparison
 
+### MLX runtime pin (0.31.2)
+
+Both AX Engine's native route and the `mlx_lm` reference run on the machine's
+installed MLX, and both sides of every comparison must use the same MLX build.
+The benchmark host pins **MLX 0.31.2**: MLX 0.32.0 loses the M5-class
+neural-accelerator GEMM path, dropping matrix–matrix throughput from ~56–61 to
+~15 TFLOP/s and cutting prompt prefill 2.8–3.5x for every MLX-based engine
+(decode, which is matrix–vector bound, is unaffected — which is how the
+regression can hide behind healthy decode numbers). Never mix prefill or TTFT
+rows across MLX versions.
+
+Minimal check before benchmarking after any MLX upgrade (expects roughly
+56 TFLOP/s on an M5 Max at these shapes; ~15 TFLOP/s means the fast GEMM path
+is gone):
+
+```python
+import time, mlx.core as mx
+def bench(fn, n=30):
+    for _ in range(5): mx.eval(fn())
+    mx.synchronize()
+    t = time.perf_counter()
+    for _ in range(n): mx.eval(fn())
+    mx.synchronize()
+    return (time.perf_counter() - t) / n * 1000
+
+M, K, N = 2048, 4096, 16384
+w = mx.random.normal((N, K)).astype(mx.float16)
+wq, s, b = mx.quantize(w, group_size=64, bits=4)
+x = mx.random.normal((M, K)).astype(mx.float16)
+ms = bench(lambda: mx.quantized_matmul(x, wq, s, b, transpose=True, group_size=64, bits=4))
+print(f"qmm 4-bit: {2*M*K*N/ms/1e9:.1f} TFLOP/s")
+```
+
+Benchmark artifacts record the runtime identity as
+`host.toolchain.python_mlx` (the MLX the `mlx_lm` reference imports) and
+`build.resolved_libmlx` (the libmlx the AX server binary actually links);
+check both when auditing cross-session comparisons.
+
 Use the MLX inference-stack harness when the question is performance versus an
 MLX-family reference:
 

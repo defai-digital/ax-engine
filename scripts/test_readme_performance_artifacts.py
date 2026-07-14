@@ -487,6 +487,54 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 key="prefill_s",
             )
 
+    def test_direct_generation_claim_boundary_accepts_archived_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "README.md"
+            readme.write_text(
+                "### Session Mode: Direct Generation\n\n"
+                "No current-head, matrix-wide direct peer comparison is published.\n"
+            )
+
+            self.assertEqual(
+                checker.validate_readme_direct_generation_claims(
+                    readme_path=readme
+                ),
+                ["direct-generation:current-head-claim-boundary"],
+            )
+
+    def test_direct_generation_claim_boundary_rejects_retired_chart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "README.md"
+            readme.write_text(
+                "### Session Mode: Direct Generation\n\n"
+                "No current-head, matrix-wide direct peer comparison is published.\n"
+                "![](docs/assets/perf-qwen-prefill-box-whisker.svg)\n"
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError, "retired direct-mode aggregate charts"
+            ):
+                checker.validate_readme_direct_generation_claims(
+                    readme_path=readme
+                )
+
+    def test_direct_generation_claim_boundary_rejects_matrix_wide_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "README.md"
+            readme.write_text(
+                "### Session Mode: Direct Generation\n\n"
+                "No current-head, matrix-wide direct peer comparison is published.\n"
+                "AX Engine leads `mlx_lm` on prefill, runner-time TTFT, and "
+                "direct decode.\n"
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError, "unsupported matrix-wide direct claim"
+            ):
+                checker.validate_readme_direct_generation_claims(
+                    readme_path=readme
+                )
+
     def test_repo_internal_absolute_prompt_path_resolves_to_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

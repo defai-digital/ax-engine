@@ -10,15 +10,15 @@ absent.
 
 Because llama.cpp Metal rows carry only aggregate medians (llama-bench does
 not expose per-trial samples the way the AX HTTP path does), this renders a
-grouped *bar* chart of medians per prompt length rather than the family
-box-and-whisker used for models mlx_lm can load.
+grouped *bar* chart of medians per prompt length rather than aggregating
+heterogeneous model families.
 
 Reads the ``ax.mlx_inference_stack.v2`` artifact written by
 bench_mlx_inference_stack.py.
 
 Usage:
   python3 scripts/render_gemma4_12b_direct_charts.py \\
-      --artifact benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json \\
+      --artifact benchmarks/results/inference/mlx-inference/2026-07-04-gemma4-12b-ax-direct-mtp-refresh/gemma-4-12b-it-4bit-with-llama-reference.json \\
       --assets-dir docs/assets
 """
 
@@ -36,7 +36,7 @@ FONT = "Inter,Segoe UI,Arial,sans-serif"
 RED = "#dc2626"
 PROMPT_TOKENS = (128, 512, 2048)
 AX_ENGINE_VERSION = "v6.8.2 (2026-07-11)"
-LLAMA_CPP_VERSION = "b9700"
+LLAMA_CPP_VERSION = "b9820"
 
 # (engine key in artifact, legend label, fill, stroke) — palette matches the
 # existing direct-comparison section in render_readme_performance_charts.py.
@@ -82,6 +82,14 @@ def short_number(value: float) -> str:
     if value >= 1000:
         compact = value / 1000
         return f"{compact:.0f}k" if compact.is_integer() else f"{compact:.1f}k"
+    if value.is_integer():
+        return f"{value:.0f}"
+    return f"{value:.1f}"
+
+
+def bar_number(value: float) -> str:
+    if value >= 1000:
+        return f"{value:,.0f}"
     if value.is_integer():
         return f"{value:.0f}"
     return f"{value:.1f}"
@@ -204,7 +212,7 @@ def render_chart(
                     f'<line x1="{bl:.1f}" y1="{y:.1f}" x2="{bl + bar_w:.1f}" y2="{y:.1f}" '
                     f'stroke="{stroke}" stroke-width="2.6"/>',
                     f'<text x="{cx:.1f}" y="{y - 6:.1f}" text-anchor="middle" font-family="{FONT}" '
-                    f'font-size="11" font-weight="700" fill="{label_fill}">{short_number(val)}</text>',
+                    f'font-size="11" font-weight="700" fill="{label_fill}">{bar_number(val)}</text>',
                 ]
             )
         parts.append(

@@ -1730,6 +1730,47 @@ def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
     ]
 
 
+def validate_readme_direct_generation_claims(*, readme_path: Path) -> list[str]:
+    text = readme_path.read_text()
+    if "### Session Mode: Direct Generation" not in text:
+        return []
+
+    retired_charts = (
+        "perf-direct-validation-2026-07-12.svg",
+        "perf-gemma4-decode-box-whisker.svg",
+        "perf-gemma4-prefill-box-whisker.svg",
+        "perf-gemma4-ttft-box-whisker.svg",
+        "perf-qwen-decode-box-whisker.svg",
+        "perf-qwen-prefill-box-whisker.svg",
+        "perf-qwen-ttft-box-whisker.svg",
+    )
+    referenced_retired_charts = [chart for chart in retired_charts if chart in text]
+    if referenced_retired_charts:
+        raise ArtifactCheckError(
+            "README references retired direct-mode aggregate charts: "
+            + ", ".join(referenced_retired_charts)
+        )
+
+    unsupported_claims = (
+        "AX Engine leads `mlx_lm` on prefill, runner-time TTFT, and direct decode",
+        "AX leads `mlx_lm` on prefill, runner-time TTFT, and decode",
+    )
+    for claim in unsupported_claims:
+        if claim in text:
+            raise ArtifactCheckError(
+                f"README contains unsupported matrix-wide direct claim: {claim}"
+            )
+
+    required_boundary = (
+        "No current-head, matrix-wide direct peer comparison is published."
+    )
+    if required_boundary not in text:
+        raise ArtifactCheckError(
+            "README direct-mode section must state the current-head publication boundary"
+        )
+    return ["direct-generation:current-head-claim-boundary"]
+
+
 def validate_concurrent_prefill_overlap_classification(
     *, artifact_path: Path, evidence: dict[str, Any]
 ) -> None:
@@ -3317,6 +3358,7 @@ def check_readme_performance_summary(
             concurrent_prefill_artifact_paths=concurrent_prefill_artifact_paths,
         ),
         *validate_readme_mtp_6bit_claims(readme_path=resolved_readme),
+        *validate_readme_direct_generation_claims(readme_path=resolved_readme),
     ]
     checked: list[str] = []
 

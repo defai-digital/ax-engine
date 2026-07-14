@@ -8,11 +8,12 @@ packaging, and benchmark contract.
 
 ## Why AX Engine
 
-AX Engine is built to win the full interactive local-model path, not just report
-one isolated kernel number. In the current public direct-mode high-water
-matrix, AX Engine leads `mlx_lm` on prefill, runner-time TTFT, and direct decode
-for every listed model row with an `mlx_lm` reference, at 128, 512, and 2,048
-prompt tokens. Peer rows and model-specific boundaries are kept visible.
+AX Engine is built to improve the full interactive local-model path, not just
+one isolated kernel number. The current public evidence supports exact
+sampled-MTP results on the stated model contracts, while retained v6.8.2 direct
+case studies show strong decode. It does not support a current-head,
+matrix-wide prefill or TTFT lead over `mlx_lm`; historical direct rows remain
+available below as an explicitly archived audit trail.
 
 - **First-class MTP:** one-command MTP package preparation through
   `ax-engine download-mtp`, including the Gemma 4 12B 4-bit quick-start target
@@ -287,14 +288,28 @@ This README keeps the headline charts and tables close to the project entry
 point. Use the linked docs when you need full methodology, raw artifact review,
 or reproduction commands.
 
+> [!IMPORTANT]
+> **MLX runtime pin: AX Engine runs on MLX `0.31.2`, not `0.32.0`.** MLX
+> 0.32.0 loses the M5-class neural-accelerator GEMM path: matrix–matrix
+> throughput drops from ~56–61 to ~15 TFLOP/s (fp16 GEMM and quantized matmul
+> alike), which cuts prompt prefill throughput 2.8–3.5x and inflates TTFT for
+> *every* MLX-based engine — `mlx_lm` regresses identically — while decode
+> (matrix–vector bound) is unaffected. All performance rows below therefore
+> run both AX Engine and the `mlx_lm` reference on the same pinned MLX
+> `0.31.2`. Prefill and TTFT numbers measured on MLX 0.32.0 are not
+> comparable to these tables. Verified on Apple M5 Max / macOS 26.5.2; the
+> minimal reproduction (a `quantized_matmul` microbenchmark) is documented in
+> the benchmark methodology docs.
+
 **Benchmarking session baseline (12-Jul-2026):** AX Engine benchmark rows use
 AX Engine `v6.8.2`. Direct-mode peer benchmarking is limited to the existing
 local `llama.cpp` and `mlx-lm` versions: `llama.cpp` `b9910` / `ggml` `0.15.3`
 for GGUF Metal reference rows and `mlx-lm` `0.31.3` for MLX reference rows.
 MTP peer benchmarking uses the current local MTPLX release, `MTPLX 2.0.1`.
-The headline tables and charts remain the clean 11-Jul high-water publication
-set; the newest 12-Jul direct validation is recorded separately below because
-it used one warmup and three measured repetitions.
+The 11-Jul direct high-water composite is retained below as a collapsed
+historical audit, not a current headline matrix. The 12-Jul AX-only direct
+validation is linked as a diagnostic because it used one warmup and three
+measured repetitions; neither set establishes a current-head peer claim.
 
 Performance results are grouped by **Session mode**. Read each mode as a
 separate benchmark session with its own route, workload shape, and headline
@@ -574,46 +589,34 @@ retained 12B result artifacts under
 ### Session Mode: Direct Generation
 
 Direct generation disables speculative drafting and measures the base
-autoregressive route. The charts in this section use decode tok/s, prefill
-tok/s, and TTFT; these are not MTP accept-rate or speedup measurements.
+autoregressive route. Where charts are retained, their titles and notes define
+the model-specific metric and comparison boundary; these are not MTP
+accept-rate or speedup measurements.
 
-#### Latest direct validation (2026-07-12)
+#### Direct evidence status
 
-The latest AX-only validation pass exercised the direct-prefill changes on
-Gemma 4 E2B, Gemma 4 31B, and Qwen 3.6 27B 4-bit at 128, 512, and 2,048
-prompt tokens. It used one warmup and three measured repetitions. These rows
-are useful for tracking the current implementation, but are not promoted into
-the headline high-water tables or charts because they do not use the README
-publication contract of two warmups, five measured repetitions, and a clean
-tracked build.
+No current-head, matrix-wide direct peer comparison is published. The recent
+prefill work produced useful targeted diagnostics, but the final clean paired
+sweep did not complete; those numbers are intentionally excluded from README
+tables and charts.
 
-<!-- readme-direct-validation-artifacts: benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-v2/; benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-validate/ -->
+| Evidence set | Coverage | Public interpretation |
+| --- | --- | --- |
+| Current HEAD | Incomplete clean paired sweep | No peer-performance claim |
+| 2026-07-12 AX-only validation | Gemma 4 E2B/31B and Qwen 3.6 27B 4-bit; one warmup and three measurements | Diagnostic only; [artifacts](benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-validate/sweep_summary.md) |
+| 2026-07-11 v6.8.2 composite | Gemma 4 and Qwen 3.6, mixed historical sessions | Archived row-level evidence below; not current-head performance |
 
-<img src="docs/assets/perf-direct-validation-2026-07-12.svg" alt="AX Engine direct validation chart for prefill, decode, and runner TTFT across Gemma 4 and Qwen 3.6 4-bit models">
-
-| Model | Prompt tokens | Prefill tok/s | Decode tok/s | Runner TTFT (ms) |
-| --- | ---: | ---: | ---: | ---: |
-| Gemma 4 E2B 4-bit | 128 | 2,336.5 | 216.4 | 54.8 |
-|  | 512 | 5,319.5 | 207.3 | 96.3 |
-|  | 2,048 | 7,640.0 | 206.9 | 268.1 |
-| Gemma 4 31B 4-bit | 128 | 159.1 | 29.0 | 804.5 |
-|  | 512 | 204.1 | 28.4 | 2,508.8 |
-|  | 2,048 | 204.8 | 27.0 | 10,000.4 |
-| Qwen 3.6 27B 4-bit | 128 | 191.1 | 34.7 | 670.0 |
-|  | 512 | 244.6 | 34.5 | 2,092.8 |
-|  | 2,048 | 261.4 | 34.2 | 7,835.8 |
-
-The corresponding complete artifacts are the [initial validation
-pass](benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-v2/sweep_summary.md)
-and the [three-model validation pass](benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-validate/sweep_summary.md).
-
-#### Gemma 4 12B
+#### Gemma 4 12B retained v6.8.2 case study
 
 Gemma 4 12B (`model_type: gemma4_unified`) is reported separately from the per-layer-embedding
 E2B/E4B and MoE 26B/31B checkpoints because it has a distinct graph, multimodal tensor contract,
 and benchmark boundary. **Upstream `mlx_lm` 0.31.3 cannot load it**
 (`ValueError: Model type gemma4_unified not supported`), so the direct peer here is
 **llama.cpp Metal** on a shape-compatible GGUF.
+
+This retained comparison measures AX Engine v6.8.2 rather than current HEAD.
+Its cross-run, shape-compatible peer boundary is useful as a case study, but it
+does not establish a current matrix-wide prefill or TTFT lead.
 
 > [!NOTE]
 > **AX Engine's repo-owned native MLX route supports Gemma 4 12B text plus inline base64
@@ -709,9 +712,9 @@ Direct rows use the 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated
 contract. llama.cpp decode is shown both at depth 0 (`tg`) and at matched context depth
 (`-d {prompt}`). Host/runtime for this retained Gemma 4 12B llama.cpp reference:
 Apple M5 Max · llama.cpp b9820 / ggml 0.15.3 (Metal, flash-attn) · `mlx_lm`
-0.31.3 has no `gemma4_unified` support. The current direct-mode high-water
-matrix uses the later b9910 llama.cpp sweep described in the provenance block
-below. MTP methodology and artifacts live with
+0.31.3 has no `gemma4_unified` support. The archived direct-mode high-water
+composite uses the later b9910 llama.cpp sweep described in the provenance
+block below. MTP methodology and artifacts live with
 [Session Mode: MTP Generation](#session-mode-mtp-generation).
 
 The llama.cpp peer columns are measured on llama.cpp b9820 / ggml 0.15.3; full per-prompt
@@ -820,90 +823,34 @@ and the bandwidth diagnostic live in
 
 <!-- readme-performance-artifacts: reference=benchmarks/results/inference/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-qwen36-direct-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/; reference=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-readme/ -->
 
-#### Gemma 4 and Qwen 3.6
+#### Gemma 4 and Qwen 3.6 historical direct evidence
 
-The family comparison below is a **high-water composite** for direct
-(non-speculative) decode across llama.cpp Metal, mlx_lm, and ax engine, covering
-Gemma 4 and Qwen 3.6 at 128/512/2048 prompt tokens. It combines the best
-validated cells from the artifact sources listed in the provenance block below;
-it is not a single same-session rerun of every row. `ax direct baseline`
-disables n-gram acceleration, MTP, and assistant drafting to measure the
-repo-owned direct decode path. Bench prompts are `mlx_lm.benchmark` seed-0
-random tokens, which keeps prompt-hash parity across MLX rows.
+The July 2026 v6.8.2 comparison is retained only as an audit trail. It is a
+cross-run **high-water composite**, not a current-head or same-session matrix:
+AX cells may come from different clean runs by metric, while peer cells come
+from older reference runs. `llama.cpp Metal*` is shape-compatible context and
+does not have prompt-hash parity with the MLX rows.
 
-The 2026-07-11 clean AX-only direct refresh is recorded in
-`benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-clean/`
-from AX Engine `v6.8.2` build `9c9db594`; its 4/6-bit rows use the
-2-warmup, 5-measurement contract. The README source projection records those
-current rows, keeps the condition-checked E2B 6-bit `clean-r6` rerun, and uses
-the condition-checked 2026-07-07 E4B 4-bit refresh because the 2026-07-11
-host-load gate was not publishable for that row. Two inventory-only 8-bit
-probes are excluded. The resulting Gemma direct cells are mixed by metric;
-Qwen 3.6 remains faster than `mlx_lm` throughout the refreshed direct rows.
-The refreshed Gemma 4 and Qwen 3.6 4-bit high-water rows come from
-`benchmarks/results/inference/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/`;
-the 2026-07-07 Qwen 3.6 overlay in
-`benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-qwen-publishable/`
-updates the published 6-bit cells where it raises the existing high-water mark
-and records clean build commit `f73f1ac2`. The 2026-07-07 Gemma 4 26B A4B
-4-bit AX-only overlay in
-`benchmarks/results/inference/mlx-inference/2026-07-07-gemma4-26b-4bit-ax-direct-refresh-gen128/`
-updates only decode cells that raise the existing high-water mark; its prefill
-and TTFT medians are retained as artifact evidence but are not published over
-faster earlier cells. AX leads `mlx_lm` on prefill, runner-time TTFT, and decode
-for every published Qwen 3.6 direct cell and every refreshed Gemma 4 4-bit row.
-The Gemma 4 26B A4B and 31B 6-bit rows were re-measured on 2026-07-02 as
-same-session paired `mlx_lm` + AX runs
-(`benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/`,
-clean build `4c0a8358`); AX now leads those rows on prefill, runner-time TTFT,
-and decode as well — the earlier 6-bit decode deficit was a stale measurement
-from the older `01976818` build, predating the decode-path improvements the
-4-bit refresh already captured. That means the repo-owned MLX route is
-especially valuable for interactive requests where prompt ingestion dominates
-perceived latency: AX keeps prompt prefill, first-token timing, model-specific
-graph paths, and route metadata in one measured runtime path. These are
-cold-prefix rows, not prompt-cache, continuous-batching, or speculative-decoding
-claims.
+The exact row-level tables show the result honestly: direct decode generally
+leads `mlx_lm`, while prefill and runner-time TTFT are mixed and are often
+materially worse, especially for longer prompts. No matrix-wide prefill or
+TTFT lead is claimed.
 
-<p>
-<strong>Gemma 4 decode rate</strong><br>
-<img width="100%" src="docs/assets/perf-gemma4-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Gemma 4 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
-</p>
-
-<p>
-<strong>Qwen 3.6 decode rate</strong><br>
-<img width="100%" src="docs/assets/perf-qwen-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Qwen 3.6 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
-</p>
-
-<p>
-<strong>Gemma 4 prefill rate</strong><br>
-<img width="100%" src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Gemma 4 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
-</p>
-
-<p>
-<strong>Qwen 3.6 prefill rate</strong><br>
-<img width="100%" src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Qwen 3.6 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
-</p>
-
-<p>
-<strong>Gemma 4 TTFT</strong><br>
-<img width="100%" src="docs/assets/perf-gemma4-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Gemma 4 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
-</p>
-
-<p>
-<strong>Qwen 3.6 TTFT</strong><br>
-<img width="100%" src="docs/assets/perf-qwen-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Qwen 3.6 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
-</p>
+The previous six family box-and-whisker charts were removed. Their medians
+combined different model sizes and quantizations, which hid the row-level gaps
+and encouraged comparisons across incompatible llama.cpp and MLX prompt
+contracts. Exact historical rows and their provenance remain collapsed below.
 
 > **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are **not** prompt-hash parity with the other columns. No percentage delta is shown. MLX bit-widths are mapped to the nearest Unsloth GGUF quant (4→Q4_K_M, 6→Q6_K), with explicit UD-* Unsloth Dynamic rows only when no standard root-level K-quant is published. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
 
 The AX direct cells use the 2026-07-11 clean sweep in
 `benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-clean/`
-from clean commit `9c9db594`, plus the two condition-checked exceptions noted
-above, with generation=128 and the 2-warmup, 5-measurement contract.
+from clean commit `9c9db594`, plus the provenance-listed historical overlays
+detailed inside the archive, with generation=128 and the 2-warmup,
+5-measurement contract.
 
 <details>
-<summary>Benchmark provenance and methodology</summary>
+<summary>Historical row-level tables and provenance</summary>
 
 The canonical README AX source projection for this refresh is
 `benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-readme/`;
@@ -923,11 +870,10 @@ prefix plus final prompt-token boundary — not full-logits prompt scoring
 throughput. Percentages are versus `mlx_lm`.
 
 The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference rows, produced with llama.cpp b9910 (Metal offload, `-b/-ub` matched to prompt length up to 2048, flash attention enabled). This is our benchmark boundary, not an upstream llama.cpp official bug statement.
-</details>
 
 Qwen 3.6 direct-mode decode verdict: AX is faster against `mlx_lm` in every refreshed 27B and 35B-A3B 4/6-bit cell. The 35B-A3B margins are large throughout; the dense 27B margins are roughly +5% across prompt lengths in this refresh.
 
-#### Prefill throughput (tok/s) — percentages vs mlx_lm
+#### Prefill throughput (archived v6.8.2 composite; tok/s)
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -968,7 +914,7 @@ Qwen 3.6 direct-mode decode verdict: AX is faster against `mlx_lm` in every refr
 |  |  | 512 | 2,921.1 | 1,394.4 | 1,035.6 (-25.7%) |
 |  |  | 2048 | 3,348.1 | 2,494.3 | 1,577.0 (-36.8%) |
 
-#### Decode throughput (tok/s) — generation=128 tokens, temp=0
+#### Decode throughput (archived v6.8.2 composite; tok/s)
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -1011,7 +957,7 @@ Qwen 3.6 direct-mode decode verdict: AX is faster against `mlx_lm` in every refr
 
 > Qwen 3.6 27B 4-bit at prompt=2,048 originally produced zero decode tokens because 4-bit quantization noise pushed an EOS token to argmax at decode step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness now sends `sampling.ignore_eos=true` for AX throughput runs, matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput. Production requests default to `ignore_eos=false`. Source: `benchmarks/results/inference/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/qwen3_6-27b-4bit.json`.
 
-#### Time to first token (ms) — generation=128 tokens, temp=0
+#### Time to first token (archived v6.8.2 composite; ms)
 
 **Lower is better.** `mlx_lm` values are derived from reported prefill throughput. AX values are measured directly from per-step runner timing in the SSE event stream.
 
@@ -1053,6 +999,8 @@ Qwen 3.6 direct-mode decode verdict: AX is faster against `mlx_lm` in every refr
 | Qwen 3.6 35B A3B | 6-bit | 128 | 79.9 | 296.6 | 323.0 (+8.9%) |
 |  |  | 512 | 175.3 | 367.2 | 494.4 (+34.6%) |
 |  |  | 2048 | 611.7 | 821.1 | 1,298.7 (+58.2%) |
+
+</details>
 
 ### Session Mode: Embeddings
 

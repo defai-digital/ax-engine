@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="400" viewBox="0 0 720 400" role="img" aria-labelledby="title desc">
 <title>Gemma 4 12B 4-bit — Time to first token</title>
-<desc>Grouped bar chart of median ms comparing llama.cpp Metal, AX Engine (native MLX) for Gemma 4 12B 4-bit at 128/512/2048 prompt tokens. mlx_lm is absent because it has no graph for the gemma4_unified architecture. AX Engine v6.8.2 (2026-07-11) is compared with llama.cpp Metal b9700.</desc>
+<desc>Grouped bar chart of median ms comparing llama.cpp Metal, AX Engine (native MLX) for Gemma 4 12B 4-bit at 128/512/2048 prompt tokens. mlx_lm is absent because it has no graph for the gemma4_unified architecture. AX Engine v6.8.2 (2026-07-11) is compared with llama.cpp Metal b9820.</desc>
 <rect width="100%" height="100%" fill="#f8fafc"/>
 <text x="64" y="26" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 12B 4-bit — Time to first token</text>
 <text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">median over reps · grouped by prompt tokens · mlx_lm N/A (no gemma4_unified graph)</text>
-<text x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX Engine v6.8.2 (2026-07-11) vs llama.cpp Metal b9700 (Unsloth Q4_K_M, shape-compatible)</text>
+<text x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX Engine v6.8.2 (2026-07-11) vs llama.cpp Metal b9820 (Unsloth Q4_K_M, shape-compatible)</text>
 <rect x="638" y="13" width="48" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
 <text x="662.0" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">ms</text>
 <text x="686" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">Lower is better</text>
@@ -12,27 +12,33 @@
 <line x1="64" y1="308.0" x2="500" y2="308.0" stroke="#e5e7eb" stroke-width="1"/>
 <text x="56" y="311.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">0</text>
 <line x1="64" y1="250.5" x2="500" y2="250.5" stroke="#e5e7eb" stroke-width="1"/>
-<text x="56" y="253.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">1.2k</text>
+<text x="56" y="253.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">375</text>
 <line x1="64" y1="193.0" x2="500" y2="193.0" stroke="#e5e7eb" stroke-width="1"/>
-<text x="56" y="196.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">2.5k</text>
+<text x="56" y="196.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">750</text>
 <line x1="64" y1="135.5" x2="500" y2="135.5" stroke="#e5e7eb" stroke-width="1"/>
-<text x="56" y="138.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">3.8k</text>
+<text x="56" y="138.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">1.1k</text>
 <line x1="64" y1="78.0" x2="500" y2="78.0" stroke="#e5e7eb" stroke-width="1"/>
-<text x="56" y="81.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">5k</text>
-<text x="110.9" y="302.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">N/A</text>
-<rect x="140.6" y="293.1" width="43.6" height="14.9" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="140.6" y1="293.1" x2="184.2" y2="293.1" stroke="#176c37" stroke-width="2.6"/>
-<text x="162.4" y="287.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">324.3</text>
+<text x="56" y="81.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">1.5k</text>
+<rect x="89.1" y="292.2" width="43.6" height="15.8" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
+<line x1="89.1" y1="292.2" x2="132.7" y2="292.2" stroke="#c2410c" stroke-width="2.6"/>
+<text x="110.9" y="286.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">102.9</text>
+<rect x="140.6" y="291.4" width="43.6" height="16.6" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="140.6" y1="291.4" x2="184.2" y2="291.4" stroke="#176c37" stroke-width="2.6"/>
+<text x="162.4" y="285.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">108.1</text>
 <text x="136.7" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">128 tok</text>
-<text x="256.3" y="302.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">N/A</text>
-<rect x="285.9" y="263.1" width="43.6" height="44.9" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="285.9" y1="263.1" x2="329.5" y2="263.1" stroke="#176c37" stroke-width="2.6"/>
-<text x="307.7" y="257.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">976.7</text>
+<rect x="234.5" y="262.9" width="43.6" height="45.1" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
+<line x1="234.5" y1="262.9" x2="278.1" y2="262.9" stroke="#c2410c" stroke-width="2.6"/>
+<text x="256.3" y="256.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">294.3</text>
+<rect x="285.9" y="266.0" width="43.6" height="42.0" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="285.9" y1="266.0" x2="329.5" y2="266.0" stroke="#176c37" stroke-width="2.6"/>
+<text x="307.7" y="260.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">274.2</text>
 <text x="282.0" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">512 tok</text>
-<text x="401.6" y="302.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">N/A</text>
-<rect x="431.3" y="138.8" width="43.6" height="169.2" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="431.3" y1="138.8" x2="474.9" y2="138.8" stroke="#176c37" stroke-width="2.6"/>
-<text x="453.1" y="132.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">3.7k</text>
+<rect x="379.8" y="104.6" width="43.6" height="203.4" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
+<line x1="379.8" y1="104.6" x2="423.4" y2="104.6" stroke="#c2410c" stroke-width="2.6"/>
+<text x="401.6" y="98.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1,327</text>
+<rect x="431.3" y="154.7" width="43.6" height="153.3" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="431.3" y1="154.7" x2="474.9" y2="154.7" stroke="#176c37" stroke-width="2.6"/>
+<text x="453.1" y="148.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">999.5</text>
 <text x="427.3" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2048 tok</text>
 <rect x="64.0" y="369" width="10" height="10" rx="2" fill="#f97316" fill-opacity="0.5" stroke="#c2410c" stroke-width="1.4"/>
 <text x="78.0" y="378" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">llama.cpp Metal</text>

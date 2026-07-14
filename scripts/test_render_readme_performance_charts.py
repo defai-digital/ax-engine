@@ -22,6 +22,17 @@ charts = importlib.util.module_from_spec(CHART_MODULE_SPEC)
 sys.modules[CHART_MODULE_SPEC.name] = charts
 CHART_MODULE_SPEC.loader.exec_module(charts)
 
+GEMMA12_CHART_SCRIPT_PATH = Path(__file__).with_name(
+    "render_gemma4_12b_direct_charts.py"
+)
+GEMMA12_CHART_MODULE_SPEC = importlib.util.spec_from_file_location(
+    "render_gemma4_12b_direct_charts", GEMMA12_CHART_SCRIPT_PATH
+)
+assert GEMMA12_CHART_MODULE_SPEC and GEMMA12_CHART_MODULE_SPEC.loader
+gemma12_charts = importlib.util.module_from_spec(GEMMA12_CHART_MODULE_SPEC)
+sys.modules[GEMMA12_CHART_MODULE_SPEC.name] = gemma12_charts
+GEMMA12_CHART_MODULE_SPEC.loader.exec_module(gemma12_charts)
+
 MTP_SCRIPT_PATH = Path(__file__).with_name("bench_mtp_6bit_ax_refresh.py")
 MTP_MODULE_SPEC = importlib.util.spec_from_file_location(
     "bench_mtp_6bit_ax_refresh", MTP_SCRIPT_PATH
@@ -62,6 +73,33 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             "claim_type": "exact_mtp_acceleration",
             "rows": rows,
         }
+
+    def test_family_aggregate_charts_are_unpublished(self) -> None:
+        self.assertEqual(charts.CHARTS, ())
+
+    def test_gemma4_12b_decode_uses_llama_matched_depth(self) -> None:
+        row = {
+            "engine": "llama_cpp_metal",
+            "decode_tok_s": {"median": 57.1},
+            "decode_at_depth_tok_s": {"median": 56.9},
+        }
+
+        self.assertEqual(gemma12_charts.metric_median(row, "decode_tok_s"), 56.9)
+
+    def test_gemma4_12b_chart_preserves_values_and_peer_version(self) -> None:
+        data = {
+            "llama_cpp_metal": {128: 1244.49, 512: 1739.45, 2048: 1543.56},
+            "ax_engine_mlx": {128: 1184.35, 512: 1867.30, 2048: 2049.06},
+        }
+
+        svg = gemma12_charts.render_chart(
+            title="Prefill", unit="tok/s", lower_is_better=False, data=data
+        )
+
+        self.assertIn("llama.cpp Metal b9820", svg)
+        self.assertNotIn("b9700", svg)
+        self.assertIn(">1,244</text>", svg)
+        self.assertIn(">1,184</text>", svg)
 
     def test_chart_merge_keeps_ax_high_water_row(self) -> None:
         rows = {
