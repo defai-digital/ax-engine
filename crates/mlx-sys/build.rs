@@ -48,6 +48,9 @@ fn find_mlx_dirs() -> MlxDirs {
     }
 
     // --- Priority 3: brew --prefix mlx ---
+    // `brew --prefix mlx` succeeds and prints the opt path even when the
+    // formula is NOT installed, so validate the directories before trusting
+    // them; otherwise fall through to the generic prefix.
     let mlx_prefix = std::process::Command::new("brew")
         .args(["--prefix", "mlx"])
         .output()
@@ -58,18 +61,38 @@ fn find_mlx_dirs() -> MlxDirs {
         .filter(|s| !s.is_empty());
 
     if let Some(p) = mlx_prefix {
-        return MlxDirs {
+        let dirs = MlxDirs {
             mlx_include_dir: format!("{p}/include"),
             mlx_lib_dir: format!("{p}/lib"),
         };
+        if mlx_dirs_valid(&dirs) {
+            return dirs;
+        }
     }
 
     // --- Priority 4: general Homebrew fallback ---
     let prefix = homebrew_prefix();
-    MlxDirs {
+    let dirs = MlxDirs {
         mlx_include_dir: format!("{prefix}/include"),
         mlx_lib_dir: format!("{prefix}/lib"),
+    };
+    if !mlx_dirs_valid(&dirs) {
+        panic!(
+            "No usable MLX installation found: checked MLX_LIB_DIR, the active \
+             Python's mlx package, `brew --prefix mlx`, and {prefix}. Install \
+             MLX (`brew install mlx` or `pip install mlx`) or point \
+             MLX_LIB_DIR/MLX_INCLUDE_DIR at an MLX build."
+        );
     }
+    dirs
+}
+
+/// A candidate is usable only if it has both the C++ headers and the dylib.
+fn mlx_dirs_valid(dirs: &MlxDirs) -> bool {
+    PathBuf::from(&dirs.mlx_lib_dir)
+        .join("libmlx.dylib")
+        .is_file()
+        && PathBuf::from(&dirs.mlx_include_dir).join("mlx").is_dir()
 }
 
 /// Locate a pip-installed `mlx` package that ships `lib/libmlx.dylib` + headers.
@@ -170,6 +193,12 @@ fn main() {
     // headerpad leaves room for install_name_tool rewrites if needed later.
     println!("cargo:rustc-link-arg=-Wl,-headerpad_max_install_names");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dirs.mlx_lib_dir);
+    // `rustc-link-arg` only reaches this package's own targets. Downstream
+    // packages that produce mlx-linking binaries or test executables must
+    // embed the rpath themselves; export the resolved directory as
+    // DEP_MLX_LIB_DIR (via the `links = "mlx"` key) so they stay in lockstep
+    // with the library actually linked here.
+    println!("cargo:lib_dir={}", dirs.mlx_lib_dir);
 
     // --- Rerun triggers ---
     println!("cargo:rerun-if-changed=build.rs");

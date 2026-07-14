@@ -109,6 +109,50 @@ pub(crate) fn qk_norm_rope_bhsd_from_proj(
     )
 }
 
+/// Apply RoPE to a BHSD array, working around an MLX <= 0.31.x bug: for a
+/// batched single-position input ([B, H, 1, D] with B > 1) and a non-zero
+/// position offset, MLX `fast::rope` rotates only batch 0 and returns the
+/// remaining batches unrotated (verified against a manual reference on
+/// 0.31.2; fixed upstream in 0.32.0). RoPE is per-vector, so folding the
+/// batch dimension into the head dimension is exact and sidesteps the bug.
+pub(crate) fn rope_bhsd_batch_offset_safe(
+    bhsd: &MlxArray,
+    rope_dims: i32,
+    rope_base: Option<f32>,
+    token_offset: i32,
+    rope_freqs: Option<&MlxArray>,
+) -> MlxArray {
+    let shape = bhsd.shape();
+    if let [batch, heads, seq, head_dim] = shape[..]
+        && batch > 1
+        && seq == 1
+        && token_offset > 0
+    {
+        let folded = reshape(bhsd, &[1, batch * heads, seq, head_dim], None);
+        let roped = rope(
+            &folded,
+            rope_dims,
+            false,
+            rope_base,
+            1.0,
+            token_offset,
+            rope_freqs,
+            None,
+        );
+        return reshape(&roped, &[batch, heads, seq, head_dim], None);
+    }
+    rope(
+        bhsd,
+        rope_dims,
+        false,
+        rope_base,
+        1.0,
+        token_offset,
+        rope_freqs,
+        None,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn qk_norm_rope_bhsd_from_proj_flat(
     qw_out: &MlxArray,
@@ -134,15 +178,12 @@ pub(crate) fn qk_norm_rope_bhsd_from_proj_flat(
         bshd
     };
     let bhsd = transpose(&normed, &[0, 2, 1, 3], None);
-    rope(
+    rope_bhsd_batch_offset_safe(
         &bhsd,
         rope_dims as i32,
-        false,
         rope_base,
-        1.0,
         token_offset as i32,
         rope_freqs,
-        None,
     )
 }
 
@@ -160,7 +201,11 @@ pub(crate) fn qk_norm_rope_bhsd_from_proj_with_route(
     rope_freqs: Option<&MlxArray>,
     direct_route_enabled: bool,
 ) -> MlxArray {
-    if direct_qk_norm_rope_route_allowed(direct_route_enabled, norm) {
+    // The fused C++ route calls MLX rope directly, so it inherits the
+    // MLX <= 0.31.x batched single-position offset bug; keep the buggy shape
+    // on the composed path where rope_bhsd_batch_offset_safe applies.
+    let batched_single_pos_offset = qw_out.shape()[0] > 1 && seq == 1 && token_offset > 0;
+    if direct_qk_norm_rope_route_allowed(direct_route_enabled, norm) && !batched_single_pos_offset {
         return direct_qk_norm_rope_bhsd_from_proj(
             qw_out,
             norm,
@@ -177,15 +222,12 @@ pub(crate) fn qk_norm_rope_bhsd_from_proj_with_route(
     }
 
     let q = qk_norm_bhsd_from_proj(qw_out, norm, n_heads, head_dim, seq, eps);
-    rope(
+    rope_bhsd_batch_offset_safe(
         &q,
         rope_dims as i32,
-        false,
         rope_base,
-        1.0,
         token_offset as i32,
         rope_freqs,
-        None,
     )
 }
 

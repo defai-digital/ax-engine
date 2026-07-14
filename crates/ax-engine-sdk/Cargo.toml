@@ -6,12 +6,15 @@ publish = false
 version.workspace = true
 
 [features]
-mlx-native = ["dep:ax-engine-mlx"]
+# mlx-sys rides along so build.rs receives DEP_MLX_LIB_DIR and can embed the
+# libmlx rpath in this package's test binaries when mlx linkage is active.
+mlx-native = ["dep:ax-engine-mlx", "dep:mlx-sys"]
 tokenizer = ["dep:tokenizers"]
 
 [dependencies]
 ax-engine-core = { path = "../ax-engine-core" }
 ax-engine-mlx = { path = "../ax-engine-mlx", optional = true }
+mlx-sys = { path = "../mlx-sys", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

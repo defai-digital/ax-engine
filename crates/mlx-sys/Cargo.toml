@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+# Declares ownership of the native `mlx` library so the build script can
+# export DEP_MLX_* metadata (lib_dir) to direct dependents' build scripts.
+links = "mlx"
 
 [lints.rust]
 # Internal MLX boundary: raw bindgen FFI plus safe wrappers live here for now.

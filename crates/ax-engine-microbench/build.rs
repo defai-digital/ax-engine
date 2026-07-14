@@ -1,21 +1,12 @@
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_build::configure()
-        .build_server(true)
-        .build_client(false)
-        .compile_protos(
-            &["../../proto/ax_engine/v1/ax_engine.proto"],
-            &["../../proto"],
-        )?;
-    println!("cargo:rerun-if-changed=../../proto/ax_engine/v1/ax_engine.proto");
-
+fn main() {
     // mlx-sys resolves which libmlx to link (MLX_LIB_DIR env, pip wheel, or
     // Homebrew) and exports the directory as DEP_MLX_LIB_DIR. The pip wheel's
-    // libmlx.dylib carries an `@rpath/` install name, so the server binary
+    // libmlx.dylib carries an `@rpath/` install name, so every mlx-linking
+    // executable this package produces (microbench binaries, test binaries)
     // must embed the matching rpath or it fails to load — or worse, silently
     // resolves a different MLX build than the one compiled against.
     if let Ok(lib_dir) = std::env::var("DEP_MLX_LIB_DIR") {
         println!("cargo:rustc-link-arg=-Wl,-headerpad_max_install_names");
         println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
     }
-    Ok(())
 }

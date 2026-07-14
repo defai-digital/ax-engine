@@ -224,8 +224,8 @@ fn prefer_split_qkv_projection(
         && (batch > 1
             || (model_family == "gemma4"
                 && batch == 1
-                && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
-                && seq <= GEMMA4_SPLIT_QKV_PREFILL_MAX_SEQ))
+                && (GEMMA4_SPLIT_PREFILL_MIN_SEQ..=GEMMA4_SPLIT_QKV_PREFILL_MAX_SEQ)
+                    .contains(&seq)))
 }
 
 pub(crate) fn attention_output_projection(

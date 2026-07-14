@@ -219,6 +219,7 @@ version = "6.8.2"
 dependencies = [
  "ax-engine-core",
  "ax-engine-mlx",
+ "mlx-sys",
  "serde",
  "serde_json",
  "sha2",
@@ -239,6 +240,7 @@ dependencies = [
  "clap",
  "hound",
  "image",
+ "mlx-sys",
  "parking_lot",
  "prost",
  "serde",
