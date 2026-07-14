@@ -967,6 +967,16 @@ def collect_host_metadata(
     mlxc_version = _command_output(["brew", "list", "--versions", "mlx-c"])
     if mlxc_version:
         toolchain["homebrew_mlx_c"] = mlxc_version
+    # The mlx_lm reference rows run on the Python mlx package, and the AX
+    # server may link a pip-wheel libmlx rather than the Homebrew bottle, so
+    # the Homebrew version alone is not the runtime identity. Record the
+    # version python3 actually imports (the same interpreter used to spawn
+    # `python3 -m mlx_lm.benchmark`).
+    python_mlx_version = _command_output(
+        ["python3", "-c", "import mlx.core as mx; print(mx.__version__)"]
+    )
+    if python_mlx_version:
+        toolchain["python_mlx"] = python_mlx_version
     if toolchain:
         metadata["toolchain"] = toolchain
     if performance_conditions is None:
@@ -1010,6 +1020,23 @@ def collect_build_metadata() -> dict[str, Any]:
         for line in _command_output_lines(["otool", "-L", str(AX_ENGINE_SERVER)])
         if any(token in line for token in ("libmlx", "libmlxc", "Metal.framework"))
     ]
+    # An `@rpath/libmlx.dylib` load command says nothing about which libmlx
+    # actually loads; resolve it against the binary's LC_RPATH entries so the
+    # artifact records the real library (pip wheel vs Homebrew bottle can
+    # differ by several times in prefill throughput on the same machine).
+    rpaths = [
+        match.group(1)
+        for line in _command_output_lines(["otool", "-l", str(AX_ENGINE_SERVER)])
+        if (match := re.match(r"\s*path (.+) \(offset ", line))
+    ]
+    resolved_libmlx = next(
+        (
+            str(Path(rpath) / "libmlx.dylib")
+            for rpath in rpaths
+            if (Path(rpath) / "libmlx.dylib").is_file()
+        ),
+        None,
+    )
     metadata: dict[str, Any] = {
         "commit": commit,
         "build_profile": "release",
@@ -1019,6 +1046,10 @@ def collect_build_metadata() -> dict[str, Any]:
     }
     if linked_libraries:
         metadata["linked_libraries"] = linked_libraries
+    if rpaths:
+        metadata["libmlx_rpaths"] = rpaths
+    if resolved_libmlx:
+        metadata["resolved_libmlx"] = resolved_libmlx
     return metadata
 
 
