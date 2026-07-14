@@ -1,9 +1,7 @@
-use std::collections::BTreeSet;
 use std::env;
-use std::fmt::Write as _;
 use std::fs;
 
-use ax_engine_core::{AX_NATIVE_MODEL_MANIFEST_FILE, NativeModelArtifacts, NativeTensorSpec};
+use ax_engine_core::NativeModelArtifacts;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -215,49 +213,13 @@ fn validate_batched_decode_certification(
 fn artifact_fingerprint_sha256(
     artifacts: &NativeModelArtifacts,
 ) -> Result<String, BatchedDecodeCertificationStatus> {
-    let manifest_path = artifacts.root_dir().join(AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest = fs::read(manifest_path)
-        .map_err(|_| BatchedDecodeCertificationStatus::ArtifactIdentityUnavailable)?;
-    let mut hasher = Sha256::new();
-    hasher.update(b"ax.mlx.batched_decode.artifact.v1\0");
-    hasher.update(&manifest);
-
-    let files = artifacts
-        .tensor_specs()
-        .iter()
-        .map(tensor_file)
-        .collect::<BTreeSet<_>>();
-    for file in files {
-        let path = artifacts.root_dir().join(file);
-        let target = fs::read_link(&path)
-            .map_err(|_| BatchedDecodeCertificationStatus::ArtifactIdentityUnavailable)?;
-        let content_hash = target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| is_sha256_hex(name))
-            .ok_or(BatchedDecodeCertificationStatus::ArtifactIdentityUnavailable)?;
-        let byte_len = fs::metadata(&path)
-            .map_err(|_| BatchedDecodeCertificationStatus::ArtifactIdentityUnavailable)?
-            .len();
-        hasher.update(file.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(content_hash.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(byte_len.to_le_bytes());
-    }
-    let digest = hasher.finalize();
-    Ok(hex_digest(&digest))
-}
-
-fn tensor_file(tensor: &NativeTensorSpec) -> &str {
-    tensor.file.to_str().unwrap_or("")
-}
-
-fn is_sha256_hex(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    // Shared content-identity helper; the historical domain keeps existing
+    // certification evidence values stable.
+    crate::artifact_identity::artifact_fingerprint_sha256_with_domain(
+        artifacts,
+        b"ax.mlx.batched_decode.artifact.v1\0",
+    )
+    .ok_or(BatchedDecodeCertificationStatus::ArtifactIdentityUnavailable)
 }
 
 fn numerics_env_sha256_from_iter<I>(vars: I) -> String
@@ -295,11 +257,7 @@ fn numerics_env_key_relevant(key: &str) -> bool {
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(&mut output, "{byte:02x}");
-    }
-    output
+    crate::artifact_identity::hex_digest(bytes)
 }
 
 #[cfg(test)]

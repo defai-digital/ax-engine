@@ -1082,6 +1082,13 @@ impl MlxKVCache {
     /// a partial / nested payload cannot be mistaken for a complete file.
     const SERIALIZE_MAGIC: &'static [u8; 4] = b"AXKB";
     const SERIALIZE_VERSION: u32 = 3;
+
+    /// Private KV wire-format version, exposed for the durable prefix
+    /// cache's canonical key (schema v3 commits to the payload version so a
+    /// format bump cleanly invalidates older disk entries).
+    pub const fn serialize_version() -> u32 {
+        Self::SERIALIZE_VERSION
+    }
     const LAYER_KIND_EMPTY: u8 = 0;
     const LAYER_KIND_FA: u8 = 1;
     const LAYER_KIND_MLA: u8 = 2;

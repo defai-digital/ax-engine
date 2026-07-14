@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ax_engine_mlx::disk_prefix_cache::{
-    DiskPrefixCache, DiskPrefixCacheEntry, canonical_key_bytes,
+    DiskPrefixCache, DiskPrefixCacheEntry, DiskPrefixKeyFields, canonical_key_bytes,
 };
 
 use super::{Workload, WorkloadContext, WorkloadOutcome};
@@ -88,24 +88,48 @@ impl Workload for PostRestartCacheSafety {
     }
 }
 
-/// Deterministic token content for a given count. Schema v2 disk keys
+/// Deterministic token content for a given count. Schema v3 disk keys
 /// commit to token content (SHA-256), so every key variant needs a token
 /// slice whose length matches its token_count.
 fn tokens_for(count: u32) -> Vec<u32> {
     (0..count).map(|i| i.wrapping_mul(2_654_435_761)).collect()
 }
 
+/// Schema-v3 key wrapper preserving this workload's older argument shape;
+/// `salt` (the former token_hash) uniquifies the artifact fingerprint.
+#[allow(clippy::too_many_arguments)]
+fn workload_key(
+    model_id: &str,
+    route_policy: &str,
+    layer_layout: &str,
+    block_size_tokens: u32,
+    token_count: u32,
+    salt: u64,
+    tokens: &[u32],
+) -> Vec<u8> {
+    canonical_key_bytes(&DiskPrefixKeyFields {
+        model_id,
+        artifact_fingerprint_sha256: &format!("{salt:064x}"),
+        route_policy,
+        layer_layout,
+        kv_payload_version: 3,
+        block_size_tokens,
+        token_count,
+        tokens,
+    })
+}
+
 impl PostRestartCacheSafety {
     fn baseline_key(&self) -> Vec<u8> {
-        canonical_key_bytes(
+        workload_key(
             &self.baseline_model_id,
             &self.baseline_policy,
             &self.baseline_layout,
             self.baseline_block_size_tokens,
             self.baseline_token_count,
             self.baseline_token_hash,
-                &tokens_for(self.baseline_token_count),
-            )
+            &tokens_for(self.baseline_token_count),
+        )
     }
 
     fn run_driver(&self, workspace: &Path, seed: u64) -> Result<WorkloadReport, String> {
@@ -130,6 +154,8 @@ impl PostRestartCacheSafety {
         let entry = DiskPrefixCacheEntry {
             payload: payload.clone(),
             prefill_output_token: Some(7),
+            producer_cold_prefill_us: 0,
+            producer_serialize_us: 0,
         };
         cache
             .insert(&baseline_key, &entry)
@@ -153,7 +179,7 @@ impl PostRestartCacheSafety {
         let counters = report.post_restart_cache_mut();
 
         if cache
-            .get(&canonical_key_bytes(
+            .get(&workload_key(
                 "qwen3-7b",
                 &self.baseline_policy,
                 &self.baseline_layout,
@@ -171,7 +197,7 @@ impl PostRestartCacheSafety {
         }
 
         if cache
-            .get(&canonical_key_bytes(
+            .get(&workload_key(
                 &self.baseline_model_id,
                 "low_latency",
                 &self.baseline_layout,
@@ -189,7 +215,7 @@ impl PostRestartCacheSafety {
         }
 
         if cache
-            .get(&canonical_key_bytes(
+            .get(&workload_key(
                 &self.baseline_model_id,
                 &self.baseline_policy,
                 "sliding_window",
@@ -207,7 +233,7 @@ impl PostRestartCacheSafety {
         }
 
         if cache
-            .get(&canonical_key_bytes(
+            .get(&workload_key(
                 &self.baseline_model_id,
                 &self.baseline_policy,
                 &self.baseline_layout,
@@ -225,7 +251,7 @@ impl PostRestartCacheSafety {
         }
 
         if cache
-            .get(&canonical_key_bytes(
+            .get(&workload_key(
                 &self.baseline_model_id,
                 &self.baseline_policy,
                 &self.baseline_layout,
@@ -246,7 +272,7 @@ impl PostRestartCacheSafety {
         // mean the same prompt-length cache was indexed by a different
         // token sequence; the entry is unsafe to reuse).
         if cache
-            .get(&canonical_key_bytes(
+            .get(&workload_key(
                 &self.baseline_model_id,
                 &self.baseline_policy,
                 &self.baseline_layout,
@@ -266,7 +292,7 @@ impl PostRestartCacheSafety {
         // Corrupted payload: re-insert under a fresh key, then bit-flip a
         // byte in the payload region and verify get returns None (the
         // SHA256 check should fail-close).
-        let corrupt_key = canonical_key_bytes(
+        let corrupt_key = workload_key(
             "corruption_test_model",
             &self.baseline_policy,
             &self.baseline_layout,
@@ -281,6 +307,8 @@ impl PostRestartCacheSafety {
                 &DiskPrefixCacheEntry {
                     payload: payload.clone(),
                     prefill_output_token: Some(7),
+                    producer_cold_prefill_us: 0,
+                    producer_serialize_us: 0,
                 },
             )
             .map_err(|e| format!("seed corrupt insert: {e}"))?;
@@ -299,7 +327,7 @@ impl PostRestartCacheSafety {
         // Truncated file: write a tiny stub that cannot satisfy the outer
         // header parse, then verify get returns None. We use a fresh key so
         // the truncated file lives at a new path.
-        let truncated_key = canonical_key_bytes(
+        let truncated_key = workload_key(
             "truncation_test_model",
             &self.baseline_policy,
             &self.baseline_layout,

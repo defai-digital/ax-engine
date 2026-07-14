@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_mlx::disk_prefix_cache::{
-    DiskPrefixCache, DiskPrefixCacheEntry, DiskPrefixCachePolicy, canonical_key_bytes,
+    DiskPrefixCache, DiskPrefixCacheEntry, DiskPrefixCachePolicy, canonical_key_bytes, DiskPrefixKeyFields,
 };
 use serde_json::json;
 
@@ -148,7 +148,8 @@ fn run_concurrent_stress(
     let policy = DiskPrefixCachePolicy {
         max_bytes: u64::MAX,
         max_entries: workers * iterations + overlap_keys + 16,
-    };
+..DiskPrefixCachePolicy::default()
+};
     DiskPrefixCache::with_policy(cache_dir, policy).map_err(|e| e.to_string())?;
 
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -213,7 +214,8 @@ fn run_worker(args: &[String]) -> Result<(), String> {
         DiskPrefixCachePolicy {
             max_bytes: u64::MAX,
             max_entries: usize::MAX,
-        },
+..DiskPrefixCachePolicy::default()
+},
     )
     .map_err(|e| e.to_string())?;
 
@@ -274,7 +276,8 @@ fn run_eviction_pressure(
     let policy = DiskPrefixCachePolicy {
         max_bytes: u64::MAX,
         max_entries: 2,
-    };
+..DiskPrefixCachePolicy::default()
+};
     let cache = DiskPrefixCache::with_policy(cache_dir, policy).map_err(|e| e.to_string())?;
     let mut total_evictions = 0u64;
     let inserted = 5usize;
@@ -315,15 +318,16 @@ fn run_eviction_pressure(
 fn stress_key(key_id: usize) -> Vec<u8> {
     let token_count = 16 * (key_id as u32 + 1);
     let tokens: Vec<u32> = (0..token_count).map(|i| i ^ key_id as u32).collect();
-    canonical_key_bytes(
-        "stress-model",
-        "stress-route",
-        "stress-layout",
-        16,
+    canonical_key_bytes(&DiskPrefixKeyFields {
+        model_id: "stress-model",
+        artifact_fingerprint_sha256: &format!("{:064x}", 0x5eed_0000_u64 + key_id as u64),
+        route_policy: "stress-route",
+        layer_layout: "stress-layout",
+        kv_payload_version: 3,
+        block_size_tokens: 16,
         token_count,
-        0x5eed_0000_u64 + key_id as u64,
-        &tokens,
-    )
+        tokens: &tokens,
+    })
 }
 
 fn stress_entry(key_id: usize, payload_bytes: usize) -> DiskPrefixCacheEntry {
@@ -333,6 +337,8 @@ fn stress_entry(key_id: usize, payload_bytes: usize) -> DiskPrefixCacheEntry {
     DiskPrefixCacheEntry {
         payload,
         prefill_output_token: Some((key_id as u32).wrapping_add(17)),
+        producer_cold_prefill_us: 0,
+        producer_serialize_us: 0,
     }
 }
 

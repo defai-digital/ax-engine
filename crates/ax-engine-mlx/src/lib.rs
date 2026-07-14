@@ -1,4 +1,5 @@
 pub(crate) mod attention_mask;
+pub(crate) mod artifact_identity;
 pub mod batched_decode_certification;
 pub mod batched_decode_session;
 pub mod batched_kv_cache;

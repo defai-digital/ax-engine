@@ -228,6 +228,30 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_MISSES: &str = "ax_mlx_prefix_cach
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERTS: &str = "ax_mlx_prefix_cache_disk_inserts";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERT_BYTES_KIB: &str =
     "ax_mlx_prefix_cache_disk_insert_bytes_kib";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_SOURCE: &str =
+    "ax_mlx_prefix_cache_restore_source";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_READ_WALL_US: &str =
+    "ax_mlx_prefix_cache_disk_read_wall_us";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_CHECKSUM_WALL_US: &str =
+    "ax_mlx_prefix_cache_disk_checksum_wall_us";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_DESERIALIZE_WALL_US: &str =
+    "ax_mlx_prefix_cache_disk_deserialize_wall_us";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_RESTORE_TOTAL_WALL_US: &str =
+    "ax_mlx_prefix_cache_disk_restore_total_wall_us";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_BYTES_READ_KIB: &str =
+    "ax_mlx_prefix_cache_disk_bytes_read_kib";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMITTED: &str =
+    "ax_mlx_prefix_cache_disk_admitted";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMISSION_REJECTED: &str =
+    "ax_mlx_prefix_cache_disk_admission_rejected";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMISSION_REASON_CODE: &str =
+    "ax_mlx_prefix_cache_disk_admission_reason_code";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_ENQUEUED: &str =
+    "ax_mlx_prefix_cache_disk_store_enqueued";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_DROPPED: &str =
+    "ax_mlx_prefix_cache_disk_store_dropped";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_FALLBACK_RECOMPUTE: &str =
+    "ax_mlx_prefix_cache_disk_fallback_recompute";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_EVICTIONS: &str =
     "ax_mlx_prefix_cache_disk_evictions";
 const ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_MULTIMODAL_PREFILL_REQUESTS: &str =
@@ -3678,6 +3702,12 @@ pub struct MlxRunner {
     /// closes that gap without a wire-format change, since `layer_layout`
     /// is already a free-form bucket in the on-disk key.
     model_artifacts_root: String,
+    /// Content-derived artifact identity (manifest + content-addressed
+    /// tensor hashes), computed once at load. `None` when the artifact
+    /// source cannot supply a stable content fingerprint — the durable L2
+    /// prefix tier is then ineligible (a path-only identity could restore
+    /// stale KV after an in-place checkpoint replacement).
+    artifact_fingerprint: Option<String>,
     states: Mutex<HashMap<RequestId, RequestState>>,
     /// Whether this model can use the experimental batched dense-decode path
     /// (computed once from the loaded model capabilities). Gates the `run()`
@@ -4308,6 +4338,11 @@ impl MlxRunner {
             binding_summary,
             terminal_token_ids,
             model_artifacts_root: artifacts.root_dir().to_string_lossy().into_owned(),
+            artifact_fingerprint:
+                crate::artifact_identity::artifact_fingerprint_sha256_with_domain(
+                    artifacts,
+                    crate::artifact_identity::PREFIX_CACHE_ARTIFACT_DOMAIN,
+                ),
             states: Mutex::new(HashMap::new()),
             batched_decode_model_eligible,
             batched_decode_model_rejections,
@@ -6163,6 +6198,7 @@ impl MlxRunner {
                             prefill_completes_prompt
                                 .then_some(tok)
                                 .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
+                            u64::from(elapsed_us(prefill_started)),
                         ),
                     );
                     let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
@@ -6399,6 +6435,27 @@ impl MlxRunner {
         )
     }
 
+    /// Canonical disk key (schema v3) for `key` plus the exact tokens, or
+    /// `None` when the loaded model has no content-derived artifact
+    /// identity — the durable L2 tier is then ineligible, because a
+    /// path-only identity could restore stale KV after an in-place
+    /// checkpoint replacement (spec §6).
+    fn disk_prefix_key_bytes(&self, key: &MlxPrefixCacheKey, tokens: &[u32]) -> Option<Vec<u8>> {
+        let fingerprint = self.artifact_fingerprint.as_deref()?;
+        Some(crate::disk_prefix_cache::canonical_key_bytes(
+            &crate::disk_prefix_cache::DiskPrefixKeyFields {
+                model_id: &key.model_id,
+                artifact_fingerprint_sha256: fingerprint,
+                route_policy: &key.route_policy,
+                layer_layout: &key.layer_layout,
+                kv_payload_version: MlxKVCache::serialize_version(),
+                block_size_tokens: key.block_size_tokens,
+                token_count: key.token_count,
+                tokens,
+            },
+        ))
+    }
+
     fn prefix_cache_key(
         &self,
         model_id: &str,
@@ -6493,19 +6550,11 @@ impl MlxRunner {
             if cache.contains_exact_tokens(&key, prefix) {
                 return true;
             }
-            if let Some(disk) = self.disk_prefix_cache.as_ref() {
-                let key_bytes = crate::disk_prefix_cache::canonical_key_bytes(
-                    &key.model_id,
-                    &key.route_policy,
-                    &key.layer_layout,
-                    key.block_size_tokens,
-                    key.token_count,
-                    key.token_hash,
-                    prefix,
-                );
-                if disk.contains(&key_bytes) {
-                    return true;
-                }
+            if let Some(disk) = self.disk_prefix_cache.as_ref()
+                && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, prefix)
+                && disk.contains(&key_bytes)
+            {
+                return true;
             }
             false
         })
@@ -6642,6 +6691,7 @@ impl MlxRunner {
                         .greedy_prefill_output_token
                         .filter(|_| prefill_output_token_cacheable(ctx, sampling));
                     telemetry.hits = telemetry.hits.saturating_add(1);
+                    telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
                     telemetry.reused_tokens = telemetry
                         .reused_tokens
                         .saturating_add(saturating_u32(snapshot.token_count));
@@ -6670,48 +6720,60 @@ impl MlxRunner {
         // per F3 PRD §3 (fail-closed): the cache miss path still runs,
         // the request still completes, telemetry records the disk
         // miss for observability.
-        if !mla_extend_unsafe && let Some(disk) = self.disk_prefix_cache.as_ref() {
-            let key_bytes = crate::disk_prefix_cache::canonical_key_bytes(
-                &key.model_id,
-                &key.route_policy,
-                &key.layer_layout,
-                key.block_size_tokens,
-                key.token_count,
-                key.token_hash,
-                reused_tokens,
-            );
-            match disk.get(&key_bytes) {
-                Ok(Some(entry)) => match MlxKVCache::try_deserialize_from_bytes(&entry.payload) {
-                    Ok(restored_cache) => {
-                        state.cache = restored_cache;
-                        state.prompt_prefix_tokens = reused_tokens.to_vec();
-                        // F3 M4 — file format v2 carries the greedy
-                        // prefill output token, so cross-restart L2
-                        // hits avoid recomputing at decode step 0
-                        // (which diverged for single-block prefixes
-                        // in the pre-fix run). When the slot is None
-                        // (older partial-prefix snapshot), decode_one
-                        // still runs as a fallback. Only a greedy,
-                        // no-repetition-penalty consumer may inherit the
-                        // stored greedy token; others resample.
-                        state.cached_prefill_output_token = entry
-                            .prefill_output_token
-                            .filter(|_| prefill_output_token_cacheable(ctx, sampling));
-                        telemetry.record_disk_hit();
-                        telemetry.reused_tokens = telemetry
-                            .reused_tokens
-                            .saturating_add(saturating_u32(reused_tokens.len()));
-                        return telemetry;
+        if !mla_extend_unsafe
+            && let Some(disk) = self.disk_prefix_cache.as_ref()
+            && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, reused_tokens)
+        {
+            match disk.get_timed(&key_bytes) {
+                Ok(Some((entry, read_timings))) => {
+                    let deserialize_started = Instant::now();
+                    match MlxKVCache::try_deserialize_from_bytes(&entry.payload) {
+                        Ok(restored_cache) => {
+                            let deserialize_us = u64::from(elapsed_us(deserialize_started));
+                            state.cache = restored_cache;
+                            state.prompt_prefix_tokens = reused_tokens.to_vec();
+                            // F3 M4 — the entry carries the greedy
+                            // prefill output token, so cross-restart L2
+                            // hits avoid recomputing at decode step 0
+                            // (which diverged for single-block prefixes
+                            // in the pre-fix run). When the slot is None
+                            // (older partial-prefix snapshot), decode_one
+                            // still runs as a fallback. Only a greedy,
+                            // no-repetition-penalty consumer may inherit the
+                            // stored greedy token; others resample.
+                            state.cached_prefill_output_token = entry
+                                .prefill_output_token
+                                .filter(|_| prefill_output_token_cacheable(ctx, sampling));
+                            telemetry.record_disk_hit();
+                            telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
+                            telemetry.record_disk_restore_stages(read_timings, deserialize_us);
+                            // Feed the observed restore throughput back into
+                            // the admission cost model.
+                            if let Some(writer) = self.disk_prefix_writer.as_ref() {
+                                writer.cost_model().record_restore(
+                                    read_timings.bytes_read,
+                                    read_timings
+                                        .read_wall_us
+                                        .saturating_add(read_timings.checksum_wall_us)
+                                        .saturating_add(deserialize_us),
+                                );
+                            }
+                            telemetry.reused_tokens = telemetry
+                                .reused_tokens
+                                .saturating_add(saturating_u32(reused_tokens.len()));
+                            return telemetry;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "ax_engine_mlx::prefix_cache",
+                                error = %e,
+                                "disk prefix-cache payload failed to deserialize; treating as miss",
+                            );
+                            telemetry.record_disk_miss();
+                            telemetry.record_disk_fallback_recompute();
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "ax_engine_mlx::prefix_cache",
-                            error = %e,
-                            "disk prefix-cache payload failed to deserialize; treating as miss",
-                        );
-                        telemetry.record_disk_miss();
-                    }
-                },
+                }
                 Ok(None) => {
                     telemetry.record_disk_miss();
                 }
@@ -6722,6 +6784,7 @@ impl MlxRunner {
                         "disk prefix-cache get failed; treating as miss",
                     );
                     telemetry.record_disk_miss();
+                    telemetry.record_disk_fallback_recompute();
                 }
             }
         }
@@ -6801,12 +6864,45 @@ impl MlxRunner {
     /// only as the no-writer fallback. A queue-full drop or write failure
     /// is a skipped store (disk is strictly additive); worker-side
     /// evictions drain into the next recording request's telemetry.
+    /// Run the L2 admission policy for one candidate snapshot and record
+    /// the decision in request telemetry. Returns whether the entry may be
+    /// mirrored to disk. Adaptive value inputs come from the producing
+    /// request's measured cold prefill and the background writer's
+    /// calibrated throughput model; without either, adaptive fails closed
+    /// with `NoCostModel`.
+    fn evaluate_disk_admission(
+        &self,
+        prefix_tokens: usize,
+        entry_bytes: u64,
+        cold_prefill_us: u64,
+        telemetry: &mut MlxPrefixCacheTelemetry,
+    ) -> bool {
+        let Some(disk) = self.disk_prefix_cache.as_ref() else {
+            return false;
+        };
+        let throughput = self
+            .disk_prefix_writer
+            .as_ref()
+            .and_then(|writer| writer.cost_model().snapshot());
+        let (reason, _estimate) = disk.policy().evaluate_admission(
+            u32::try_from(prefix_tokens).unwrap_or(u32::MAX),
+            entry_bytes,
+            (cold_prefill_us > 0).then_some(cold_prefill_us),
+            throughput,
+        );
+        telemetry.record_disk_admission(reason);
+        reason.admitted()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn store_disk_snapshot(
         &self,
         disk: &crate::disk_prefix_cache::DiskPrefixCache,
         key_bytes: Vec<u8>,
         payload: Arc<[u8]>,
         prefill_output_token: Option<u32>,
+        producer_cold_prefill_us: u64,
+        producer_serialize_us: u64,
         telemetry: &mut MlxPrefixCacheTelemetry,
     ) {
         let payload_bytes = payload.len() as u64;
@@ -6815,12 +6911,22 @@ impl MlxRunner {
                 key_bytes,
                 payload,
                 prefill_output_token,
+                producer_cold_prefill_us,
+                producer_serialize_us,
             }) {
                 telemetry.record_disk_insert(payload_bytes, writer.drain_evictions());
+            } else {
+                telemetry.record_disk_store_dropped();
             }
             return;
         }
-        match disk.insert_parts(&key_bytes, &payload, prefill_output_token) {
+        match disk.insert_parts(
+            &key_bytes,
+            &payload,
+            prefill_output_token,
+            producer_cold_prefill_us,
+            producer_serialize_us,
+        ) {
             Ok(outcome) => telemetry.record_disk_insert(payload_bytes, outcome.evictions),
             Err(e) => {
                 tracing::warn!(
@@ -6839,6 +6945,7 @@ impl MlxRunner {
         state: &RequestState,
         prefix_len: usize,
         snapshot_cache: &MlxKVCache,
+        cold_prefill_us: u64,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         let tokens = &state.prompt_prefix_tokens[..prefix_len];
@@ -6850,17 +6957,10 @@ impl MlxRunner {
         // early-return (an L1-resident entry still needs a disk write when
         // the disk layer is open but does not have it yet, e.g. after disk
         // eviction).
-        let disk_key_bytes = self.disk_prefix_cache.as_ref().map(|_| {
-            crate::disk_prefix_cache::canonical_key_bytes(
-                &key.model_id,
-                &key.route_policy,
-                &key.layer_layout,
-                key.block_size_tokens,
-                key.token_count,
-                key.token_hash,
-                tokens,
-            )
-        });
+        let disk_key_bytes = self
+            .disk_prefix_cache
+            .as_ref()
+            .and_then(|_| self.disk_prefix_key_bytes(&key, tokens));
         {
             let cache = self.prefix_cache.lock();
             if cache.contains_superseding_snapshot(&key, tokens, None) {
@@ -6874,8 +6974,20 @@ impl MlxRunner {
                 }
             }
         }
+        let serialize_started = Instant::now();
         let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
-        let disk_payload = disk_key_bytes.as_ref().map(|_| Arc::clone(&payload));
+        let serialize_us = u64::from(elapsed_us(serialize_started));
+        let disk_payload = disk_key_bytes
+            .as_ref()
+            .filter(|_| {
+                self.evaluate_disk_admission(
+                    prefix_len,
+                    payload.len() as u64,
+                    cold_prefill_us,
+                    &mut telemetry,
+                )
+            })
+            .map(|_| Arc::clone(&payload));
         let outcome = {
             let mut cache = self.prefix_cache.lock();
             let outcome = cache.insert(
@@ -6903,7 +7015,15 @@ impl MlxRunner {
                 disk_key_bytes,
                 disk_payload,
             ) {
-                self.store_disk_snapshot(disk, key_bytes, payload, None, &mut telemetry);
+                self.store_disk_snapshot(
+                    disk,
+                    key_bytes,
+                    payload,
+                    None,
+                    cold_prefill_us,
+                    serialize_us,
+                    &mut telemetry,
+                );
             }
         }
         telemetry
@@ -6916,6 +7036,7 @@ impl MlxRunner {
         state: &RequestState,
         linear_boundary_snapshot: Option<&(usize, MlxKVCache)>,
         greedy_prefill_output_token: Option<u32>,
+        cold_prefill_us: u64,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         if block_size_tokens == 0 || state.prompt_prefix_tokens.is_empty() {
@@ -6987,6 +7108,7 @@ impl MlxRunner {
                     state,
                     *boundary_len,
                     boundary_cache,
+                    cold_prefill_us,
                 ));
                 return telemetry;
             }
@@ -7027,15 +7149,8 @@ impl MlxRunner {
             if l1_superseding {
                 let disk_store_needed = is_largest
                     && self.disk_prefix_cache.as_ref().is_some_and(|disk| {
-                        !disk.contains(&crate::disk_prefix_cache::canonical_key_bytes(
-                            &key.model_id,
-                            &key.route_policy,
-                            &key.layer_layout,
-                            key.block_size_tokens,
-                            key.token_count,
-                            key.token_hash,
-                            tokens,
-                        ))
+                        self.disk_prefix_key_bytes(&key, tokens)
+                            .is_some_and(|key_bytes| !disk.contains(&key_bytes))
                     });
                 if !disk_store_needed {
                     continue;
@@ -7055,8 +7170,17 @@ impl MlxRunner {
             // prefill. The largest snapshot is also the most useful for
             // future hits because shorter prefixes always derive from
             // it.
+            let serialize_started = Instant::now();
             let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
-            let disk_payload = if is_largest && self.disk_prefix_cache.is_some() {
+            let serialize_us = u64::from(elapsed_us(serialize_started));
+            let disk_payload = if is_largest
+                && self.disk_prefix_cache.is_some()
+                && self.evaluate_disk_admission(
+                    prefix_len,
+                    payload.len() as u64,
+                    cold_prefill_us,
+                    &mut telemetry,
+                ) {
                 Some(Arc::clone(&payload))
             } else {
                 None
@@ -7088,23 +7212,20 @@ impl MlxRunner {
                 // (c) L1 actually stored it. A disk-write failure does
                 // not back out the L1 store — the in-memory layer
                 // alone is still useful and disk is strictly additive.
-                if let (Some(disk), Some(payload), Some(disk_key)) =
-                    (self.disk_prefix_cache.as_ref(), disk_payload, key_for_disk)
-                {
-                    let key_bytes = crate::disk_prefix_cache::canonical_key_bytes(
-                        &disk_key.model_id,
-                        &disk_key.route_policy,
-                        &disk_key.layer_layout,
-                        disk_key.block_size_tokens,
-                        disk_key.token_count,
-                        disk_key.token_hash,
-                        tokens,
-                    );
+                if let (Some(disk), Some(payload), Some(key_bytes)) = (
+                    self.disk_prefix_cache.as_ref(),
+                    disk_payload,
+                    key_for_disk
+                        .as_ref()
+                        .and_then(|disk_key| self.disk_prefix_key_bytes(disk_key, tokens)),
+                ) {
                     self.store_disk_snapshot(
                         disk,
                         key_bytes,
                         payload,
                         snapshot_prefill_output_token,
+                        cold_prefill_us,
+                        serialize_us,
                         &mut telemetry,
                     );
                 }
@@ -13463,6 +13584,7 @@ mod tests {
             disk_inserts: 8,
             disk_insert_bytes: 8192,
             disk_evictions: 9,
+            ..MlxPrefixCacheTelemetry::default()
         };
         let mut decisions = Vec::new();
 

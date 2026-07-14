@@ -265,13 +265,75 @@ pub(crate) struct DiskPrefixWriteJob {
     pub(crate) key_bytes: Vec<u8>,
     pub(crate) payload: Arc<[u8]>,
     pub(crate) prefill_output_token: Option<u32>,
+    /// Producing request's measured cold-prefill wall time (admission /
+    /// load-versus-compute hint persisted in the entry header).
+    pub(crate) producer_cold_prefill_us: u64,
+    /// Producing request's snapshot serialization wall time.
+    pub(crate) producer_serialize_us: u64,
 }
 
-/// How many stores may wait for the background disk writer before new
-/// stores are dropped. Payloads can be hundreds of MiB, so the queue
-/// bounds memory, not throughput; a dropped store is safe (disk is
-/// strictly additive) and logged.
-const DISK_WRITE_QUEUE_DEPTH: usize = 2;
+/// EWMA smoothing for observed storage throughput (small alpha: single
+/// observations are noisy, calibration seeds the baseline).
+const COST_EWMA_ALPHA: f64 = 0.2;
+
+/// Process-local disk throughput model for adaptive admission.
+///
+/// Seeded once by the worker's open-time calibration probe (without it,
+/// `adaptive` could never bootstrap: admission needs cost data, but cost
+/// data would only come from admitted stores). Refined by an EWMA over
+/// observed background writes and validated restores. Never part of
+/// correctness — only the admission decision reads it.
+pub(crate) struct DiskCostModel {
+    inner: Mutex<Option<crate::disk_prefix_cache::DiskThroughputSnapshot>>,
+}
+
+impl DiskCostModel {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> Option<crate::disk_prefix_cache::DiskThroughputSnapshot> {
+        *self.inner.lock()
+    }
+
+    fn seed(&self, write_bytes_per_us: f64, restore_bytes_per_us: f64) {
+        let mut inner = self.inner.lock();
+        if inner.is_none() {
+            *inner = Some(crate::disk_prefix_cache::DiskThroughputSnapshot {
+                write_bytes_per_us,
+                restore_bytes_per_us,
+            });
+        }
+    }
+
+    pub(crate) fn record_write(&self, bytes: u64, wall_us: u64) {
+        if let Some(rate) = throughput(bytes, wall_us) {
+            let mut inner = self.inner.lock();
+            if let Some(snapshot) = inner.as_mut() {
+                snapshot.write_bytes_per_us = ewma(snapshot.write_bytes_per_us, rate);
+            }
+        }
+    }
+
+    pub(crate) fn record_restore(&self, bytes: u64, wall_us: u64) {
+        if let Some(rate) = throughput(bytes, wall_us) {
+            let mut inner = self.inner.lock();
+            if let Some(snapshot) = inner.as_mut() {
+                snapshot.restore_bytes_per_us = ewma(snapshot.restore_bytes_per_us, rate);
+            }
+        }
+    }
+}
+
+fn throughput(bytes: u64, wall_us: u64) -> Option<f64> {
+    (bytes > 0 && wall_us > 0).then(|| bytes as f64 / wall_us as f64)
+}
+
+fn ewma(current: f64, observed: f64) -> f64 {
+    current * (1.0 - COST_EWMA_ALPHA) + observed * COST_EWMA_ALPHA
+}
 
 /// Background writer for L2 disk prefix-cache inserts.
 ///
@@ -289,24 +351,44 @@ pub(crate) struct DiskPrefixCacheWriter {
     sender: Option<std::sync::mpsc::SyncSender<DiskPrefixWriteJob>>,
     handle: Option<std::thread::JoinHandle<()>>,
     pending_evictions: Arc<std::sync::atomic::AtomicU32>,
+    /// Set by the worker after its final job so shutdown can bound its
+    /// drain wait instead of blocking on `join` indefinitely.
+    worker_finished: Arc<std::sync::atomic::AtomicBool>,
+    cost_model: Arc<DiskCostModel>,
+    shutdown_drain: std::time::Duration,
 }
 
 impl DiskPrefixCacheWriter {
     pub(crate) fn spawn(disk: Arc<crate::disk_prefix_cache::DiskPrefixCache>) -> Option<Self> {
+        let policy = *disk.policy();
         let (sender, receiver) =
-            std::sync::mpsc::sync_channel::<DiskPrefixWriteJob>(DISK_WRITE_QUEUE_DEPTH);
+            std::sync::mpsc::sync_channel::<DiskPrefixWriteJob>(policy.write_queue_depth.max(1));
         let pending_evictions = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let worker_evictions = Arc::clone(&pending_evictions);
+        let worker_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished = Arc::clone(&worker_finished);
+        let cost_model = Arc::new(DiskCostModel::new());
+        let worker_cost_model = Arc::clone(&cost_model);
         let handle = std::thread::Builder::new()
             .name("ax-mlx-disk-prefix-writer".into())
             .spawn(move || {
+                // Calibrate before serving jobs: adaptive admission cannot
+                // bootstrap otherwise (no stores -> no cost data -> no
+                // stores). Off the request path by construction.
+                calibrate_disk_throughput(&disk, &worker_cost_model, policy.io_chunk_bytes);
                 while let Ok(job) = receiver.recv() {
+                    let bytes = job.payload.len() as u64;
+                    let write_started = std::time::Instant::now();
                     match disk.insert_parts(
                         &job.key_bytes,
                         &job.payload,
                         job.prefill_output_token,
+                        job.producer_cold_prefill_us,
+                        job.producer_serialize_us,
                     ) {
                         Ok(outcome) => {
+                            worker_cost_model
+                                .record_write(bytes, elapsed_wall_us(write_started));
                             worker_evictions
                                 .fetch_add(outcome.evictions, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -319,12 +401,16 @@ impl DiskPrefixCacheWriter {
                         }
                     }
                 }
+                finished.store(true, std::sync::atomic::Ordering::Release);
             });
         match handle {
             Ok(handle) => Some(Self {
                 sender: Some(sender),
                 handle: Some(handle),
                 pending_evictions,
+                worker_finished,
+                cost_model,
+                shutdown_drain: std::time::Duration::from_millis(policy.shutdown_drain_ms),
             }),
             Err(e) => {
                 tracing::warn!(
@@ -335,6 +421,11 @@ impl DiskPrefixCacheWriter {
                 None
             }
         }
+    }
+
+    /// Storage throughput model for adaptive admission.
+    pub(crate) fn cost_model(&self) -> &DiskCostModel {
+        &self.cost_model
     }
 
     /// Queue a store without blocking. Returns `false` (with a warning)
@@ -366,13 +457,96 @@ impl DiskPrefixCacheWriter {
 
 impl Drop for DiskPrefixCacheWriter {
     fn drop(&mut self) {
-        // Close the channel so the worker drains queued jobs and exits,
-        // then join so in-flight writes complete before the cache
-        // directory owner goes away.
+        // Close the channel so the worker drains queued jobs and exits.
+        // Wait a bounded time for in-flight writes, then detach: a stuck
+        // filesystem must not stall process shutdown indefinitely
+        // (spec §4, AX_MLX_PREFIX_CACHE_DISK_SHUTDOWN_DRAIN_MS).
         drop(self.sender.take());
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + self.shutdown_drain;
+        while !self.worker_finished.load(std::sync::atomic::Ordering::Acquire) {
+            if std::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    target: "ax_engine_mlx::prefix_cache",
+                    "disk prefix-cache writer did not drain within the shutdown budget; \
+                     detaching background write",
+                );
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        let _ = handle.join();
+    }
+}
+
+fn elapsed_wall_us(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+/// One-shot storage calibration: write, fsync, read back, and checksum a
+/// single io-chunk-sized probe file in the cache directory, seeding the
+/// cost model's write/restore throughput. Best-effort — on any failure the
+/// model stays empty and adaptive admission keeps reporting `NoCostModel`.
+fn calibrate_disk_throughput(
+    disk: &crate::disk_prefix_cache::DiskPrefixCache,
+    cost_model: &DiskCostModel,
+    chunk_bytes: usize,
+) {
+    use sha2::Digest;
+    use std::io::{Read, Write};
+
+    let path = disk
+        .dir()
+        .join(format!(".calib.tmp.{}", std::process::id()));
+    let data = vec![0xA5u8; chunk_bytes.max(64 * 1024)];
+
+    let write_started = std::time::Instant::now();
+    let wrote = std::fs::File::create(&path)
+        .and_then(|mut file| {
+            file.write_all(&data)?;
+            file.sync_all()
+        })
+        .is_ok();
+    let write_us = elapsed_wall_us(write_started);
+    if !wrote {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+
+    let restore_started = std::time::Instant::now();
+    let mut hasher = sha2::Sha256::new();
+    let read_ok = std::fs::File::open(&path)
+        .and_then(|mut file| {
+            let mut buf = vec![0u8; 256 * 1024];
+            loop {
+                let n = file.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+            }
+            Ok(())
+        })
+        .is_ok();
+    let restore_us = elapsed_wall_us(restore_started);
+    let _ = std::fs::remove_file(&path);
+    if !read_ok {
+        return;
+    }
+
+    let bytes = data.len() as u64;
+    if let (Some(write_rate), Some(restore_rate)) =
+        (throughput(bytes, write_us), throughput(bytes, restore_us))
+    {
+        cost_model.seed(write_rate, restore_rate);
+        tracing::debug!(
+            target: "ax_engine_mlx::prefix_cache",
+            write_bytes_per_us = write_rate,
+            restore_bytes_per_us = restore_rate,
+            "disk prefix-cache throughput calibrated",
+        );
     }
 }
 
@@ -507,7 +681,27 @@ pub(crate) struct MlxPrefixCacheTelemetry {
     pub(crate) disk_inserts: u32,
     pub(crate) disk_insert_bytes: u64,
     pub(crate) disk_evictions: u32,
+    // Durable-tiered-prefix-cache stage telemetry (spec §11.1). Restore
+    // sources: 0 = none recorded, 2 = memory L1, 3 = disk L2,
+    // 4 = recomputed after an L2 candidate failed.
+    pub(crate) restore_source_code: u32,
+    pub(crate) disk_read_wall_us: u32,
+    pub(crate) disk_checksum_wall_us: u32,
+    pub(crate) disk_deserialize_wall_us: u32,
+    pub(crate) disk_restore_total_wall_us: u32,
+    pub(crate) disk_bytes_read_kib: u32,
+    pub(crate) disk_admitted: u32,
+    pub(crate) disk_admission_rejected: u32,
+    pub(crate) disk_admission_reason_code: u32,
+    pub(crate) disk_store_enqueued: u32,
+    pub(crate) disk_store_dropped: u32,
+    pub(crate) disk_fallback_recompute: u32,
 }
+
+/// Stable route codes for `restore_source_code`.
+pub(crate) const RESTORE_SOURCE_MEMORY_L1: u32 = 2;
+pub(crate) const RESTORE_SOURCE_DISK_L2: u32 = 3;
+pub(crate) const RESTORE_SOURCE_RECOMPUTED: u32 = 4;
 
 impl MlxPrefixCacheTelemetry {
     pub(crate) fn record_stats(&mut self, stats: MlxPrefixCacheStats) {
@@ -541,6 +735,38 @@ impl MlxPrefixCacheTelemetry {
             .disk_insert_bytes
             .saturating_add(other.disk_insert_bytes);
         self.disk_evictions = self.disk_evictions.saturating_add(other.disk_evictions);
+        if other.restore_source_code != 0 {
+            self.restore_source_code = other.restore_source_code;
+        }
+        self.disk_read_wall_us = self.disk_read_wall_us.saturating_add(other.disk_read_wall_us);
+        self.disk_checksum_wall_us = self
+            .disk_checksum_wall_us
+            .saturating_add(other.disk_checksum_wall_us);
+        self.disk_deserialize_wall_us = self
+            .disk_deserialize_wall_us
+            .saturating_add(other.disk_deserialize_wall_us);
+        self.disk_restore_total_wall_us = self
+            .disk_restore_total_wall_us
+            .saturating_add(other.disk_restore_total_wall_us);
+        self.disk_bytes_read_kib = self
+            .disk_bytes_read_kib
+            .saturating_add(other.disk_bytes_read_kib);
+        self.disk_admitted = self.disk_admitted.saturating_add(other.disk_admitted);
+        self.disk_admission_rejected = self
+            .disk_admission_rejected
+            .saturating_add(other.disk_admission_rejected);
+        if other.disk_admission_reason_code != 0 {
+            self.disk_admission_reason_code = other.disk_admission_reason_code;
+        }
+        self.disk_store_enqueued = self
+            .disk_store_enqueued
+            .saturating_add(other.disk_store_enqueued);
+        self.disk_store_dropped = self
+            .disk_store_dropped
+            .saturating_add(other.disk_store_dropped);
+        self.disk_fallback_recompute = self
+            .disk_fallback_recompute
+            .saturating_add(other.disk_fallback_recompute);
     }
 
     pub(crate) fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -596,6 +822,54 @@ impl MlxPrefixCacheTelemetry {
                 ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_EVICTIONS,
                 self.disk_evictions,
             ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_SOURCE,
+                self.restore_source_code,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_READ_WALL_US,
+                self.disk_read_wall_us,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_CHECKSUM_WALL_US,
+                self.disk_checksum_wall_us,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_DESERIALIZE_WALL_US,
+                self.disk_deserialize_wall_us,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_RESTORE_TOTAL_WALL_US,
+                self.disk_restore_total_wall_us,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_BYTES_READ_KIB,
+                self.disk_bytes_read_kib,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMITTED,
+                self.disk_admitted,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMISSION_REJECTED,
+                self.disk_admission_rejected,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMISSION_REASON_CODE,
+                self.disk_admission_reason_code,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_ENQUEUED,
+                self.disk_store_enqueued,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_DROPPED,
+                self.disk_store_dropped,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_FALLBACK_RECOMPUTE,
+                self.disk_fallback_recompute,
+            ),
         ];
 
         for (key, value) in entries {
@@ -627,9 +901,65 @@ impl MlxPrefixCacheTelemetry {
     }
 
     pub(crate) fn record_disk_insert(&mut self, bytes: u64, evictions: u32) {
+        // An enqueued background store is not yet durable: report it as
+        // enqueued (spec §8 — the request route must not claim
+        // `store_committed`; durable commit is a process-level event).
         self.disk_inserts = self.disk_inserts.saturating_add(1);
+        self.disk_store_enqueued = self.disk_store_enqueued.saturating_add(1);
         self.disk_insert_bytes = self.disk_insert_bytes.saturating_add(bytes);
         self.disk_evictions = self.disk_evictions.saturating_add(evictions);
+    }
+
+    pub(crate) fn record_disk_store_dropped(&mut self) {
+        self.disk_store_dropped = self.disk_store_dropped.saturating_add(1);
+    }
+
+    pub(crate) fn record_restore_source(&mut self, code: u32) {
+        self.restore_source_code = code;
+    }
+
+    pub(crate) fn record_disk_admission(
+        &mut self,
+        reason: crate::disk_prefix_cache::DiskAdmissionReason,
+    ) {
+        if reason.admitted() {
+            self.disk_admitted = self.disk_admitted.saturating_add(1);
+        } else {
+            self.disk_admission_rejected = self.disk_admission_rejected.saturating_add(1);
+        }
+        self.disk_admission_reason_code = reason.code();
+    }
+
+    pub(crate) fn record_disk_restore_stages(
+        &mut self,
+        timings: crate::disk_prefix_cache::DiskReadStageTimings,
+        deserialize_wall_us: u64,
+    ) {
+        self.disk_read_wall_us = self
+            .disk_read_wall_us
+            .saturating_add(saturating_u32(timings.read_wall_us as usize));
+        self.disk_checksum_wall_us = self
+            .disk_checksum_wall_us
+            .saturating_add(saturating_u32(timings.checksum_wall_us as usize));
+        self.disk_deserialize_wall_us = self
+            .disk_deserialize_wall_us
+            .saturating_add(saturating_u32(deserialize_wall_us as usize));
+        self.disk_restore_total_wall_us = self.disk_restore_total_wall_us.saturating_add(
+            saturating_u32(
+                (timings
+                    .read_wall_us
+                    .saturating_add(timings.checksum_wall_us)
+                    .saturating_add(deserialize_wall_us)) as usize,
+            ),
+        );
+        self.disk_bytes_read_kib = self
+            .disk_bytes_read_kib
+            .saturating_add(kib_ceil(timings.bytes_read));
+    }
+
+    pub(crate) fn record_disk_fallback_recompute(&mut self) {
+        self.disk_fallback_recompute = self.disk_fallback_recompute.saturating_add(1);
+        self.restore_source_code = RESTORE_SOURCE_RECOMPUTED;
     }
 }
 
@@ -651,13 +981,16 @@ mod tests {
         let disk =
             Arc::new(crate::disk_prefix_cache::DiskPrefixCache::open(&dir).expect("open disk"));
         let key_bytes = crate::disk_prefix_cache::canonical_key_bytes(
-            "writer-model",
-            "writer-policy",
-            "writer-layout",
-            16,
-            4,
-            0xfeed,
-            &[5, 6, 7, 8],
+            &crate::disk_prefix_cache::DiskPrefixKeyFields {
+                model_id: "writer-model",
+                artifact_fingerprint_sha256: "f".repeat(64).as_str(),
+                route_policy: "writer-policy",
+                layer_layout: "writer-layout",
+                kv_payload_version: 3,
+                block_size_tokens: 16,
+                token_count: 4,
+                tokens: &[5, 6, 7, 8],
+            },
         );
         let payload: Arc<[u8]> = b"writer-payload".to_vec().into();
 
@@ -666,6 +999,8 @@ mod tests {
             key_bytes: key_bytes.clone(),
             payload: Arc::clone(&payload),
             prefill_output_token: Some(321),
+            producer_cold_prefill_us: 1234,
+            producer_serialize_us: 56,
         }));
         // Drop joins the worker after it drains the queue, so the entry
         // must be durable and readable afterwards.
@@ -677,6 +1012,60 @@ mod tests {
             .expect("queued store must be durable after writer shutdown");
         assert_eq!(entry.payload, payload.as_ref());
         assert_eq!(entry.prefill_output_token, Some(321));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn writer_calibration_seeds_cost_model_for_adaptive_admission() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "ax-engine-calib-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let disk =
+            Arc::new(crate::disk_prefix_cache::DiskPrefixCache::open(&dir).expect("open disk"));
+        let writer = DiskPrefixCacheWriter::spawn(Arc::clone(&disk)).expect("spawn writer");
+
+        // Calibration runs before the worker serves jobs; poll briefly.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let snapshot = loop {
+            if let Some(snapshot) = writer.cost_model().snapshot() {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "calibration must seed the cost model"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(snapshot.write_bytes_per_us > 0.0);
+        assert!(snapshot.restore_bytes_per_us > 0.0);
+
+        // The seeded model unlocks adaptive admission (no NoCostModel).
+        let (reason, _) = disk.policy().evaluate_admission(
+            4096,
+            1024,
+            Some(60_000_000),
+            Some(snapshot),
+        );
+        assert!(
+            matches!(
+                reason,
+                crate::disk_prefix_cache::DiskAdmissionReason::AdmittedPositiveValue
+                    | crate::disk_prefix_cache::DiskAdmissionReason::PredictedNoSavings
+            ),
+            "cost model present -> value decision, got {reason:?}"
+        );
+
+        // EWMA updates move the estimate without panicking.
+        writer.cost_model().record_write(1024 * 1024, 1000);
+        writer.cost_model().record_restore(1024 * 1024, 500);
+        assert!(writer.cost_model().snapshot().is_some());
+
+        drop(writer);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
