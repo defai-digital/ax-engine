@@ -52,7 +52,7 @@ pub use closure::{MlxClosure, MlxVectorArray};
 pub use error::{install_recoverable_error_handler, runtime_version, take_last_error};
 pub use fast::{
     ScaledDotProductAttentionMask, rms_norm, rope, rope_dynamic, scaled_dot_product_attention,
-    scaled_dot_product_attention_with_mask,
+    scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
 };
 pub use io::{load_safetensors, load_safetensors_mmap};
 pub use mempressure::{

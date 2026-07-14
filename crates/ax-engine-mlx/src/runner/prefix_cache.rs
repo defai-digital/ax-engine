@@ -26,7 +26,11 @@ impl MlxPrefixSnapshot {
         token_count: usize,
         greedy_prefill_output_token: Option<u32>,
     ) -> Self {
-        let bytes = payload.len() as u64;
+        // Charge the token vector against the byte budget too: a 32K-token
+        // prefix carries 128 KiB of tokens per entry, which the payload-only
+        // accounting silently exempted from `max_bytes`.
+        let bytes = (payload.len() as u64)
+            .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64));
         Self {
             kv_cache_payload: Arc::from(payload.into_boxed_slice()),
             tokens,
@@ -200,11 +204,13 @@ impl MlxPrefixCache {
     }
 
     pub(crate) fn stale_lru_compaction_limit(&self) -> usize {
-        self.entries
-            .len()
-            .max(self.policy.max_entries)
-            .max(1)
-            .saturating_mul(4)
+        // Scale with the LIVE entry count, not the policy ceiling: with
+        // `max_entries` set very large (byte budget doing the real
+        // limiting), a policy-derived limit never triggers and the journal
+        // grows by one record per get/insert forever. 4× live entries
+        // keeps compaction amortized O(1) per operation; the +64 floor
+        // avoids thrashing tiny caches.
+        self.entries.len().saturating_mul(4).saturating_add(64)
     }
 
     pub(crate) fn compact_stale_lru_if_needed(&mut self) {
@@ -314,6 +320,13 @@ pub(crate) fn open_disk_prefix_cache_from_env() -> Option<crate::disk_prefix_cac
     ) {
         (Some(dir), false) => {
             let policy = crate::disk_prefix_cache::DiskPrefixCachePolicy::from_env();
+            if !policy.enabled() {
+                tracing::info!(
+                    target: "ax_engine_mlx::prefix_cache",
+                    "disk prefix cache disabled via zero byte/entry budget",
+                );
+                return None;
+            }
             match crate::disk_prefix_cache::DiskPrefixCache::with_policy(&dir, policy) {
                 Ok(c) => Some(c),
                 Err(e) => {

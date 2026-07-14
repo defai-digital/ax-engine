@@ -88,6 +88,13 @@ impl Workload for PostRestartCacheSafety {
     }
 }
 
+/// Deterministic token content for a given count. Schema v2 disk keys
+/// commit to token content (SHA-256), so every key variant needs a token
+/// slice whose length matches its token_count.
+fn tokens_for(count: u32) -> Vec<u32> {
+    (0..count).map(|i| i.wrapping_mul(2_654_435_761)).collect()
+}
+
 impl PostRestartCacheSafety {
     fn baseline_key(&self) -> Vec<u8> {
         canonical_key_bytes(
@@ -97,7 +104,8 @@ impl PostRestartCacheSafety {
             self.baseline_block_size_tokens,
             self.baseline_token_count,
             self.baseline_token_hash,
-        )
+                &tokens_for(self.baseline_token_count),
+            )
     }
 
     fn run_driver(&self, workspace: &Path, seed: u64) -> Result<WorkloadReport, String> {
@@ -152,6 +160,7 @@ impl PostRestartCacheSafety {
                 self.baseline_block_size_tokens,
                 self.baseline_token_count,
                 self.baseline_token_hash,
+                &tokens_for(self.baseline_token_count),
             ))
             .map_err(|e| format!("get model_mismatch: {e}"))?
             .is_none()
@@ -169,6 +178,7 @@ impl PostRestartCacheSafety {
                 self.baseline_block_size_tokens,
                 self.baseline_token_count,
                 self.baseline_token_hash,
+                &tokens_for(self.baseline_token_count),
             ))
             .map_err(|e| format!("get policy_mismatch: {e}"))?
             .is_none()
@@ -186,6 +196,7 @@ impl PostRestartCacheSafety {
                 self.baseline_block_size_tokens,
                 self.baseline_token_count,
                 self.baseline_token_hash,
+                &tokens_for(self.baseline_token_count),
             ))
             .map_err(|e| format!("get layout_mismatch: {e}"))?
             .is_none()
@@ -203,6 +214,7 @@ impl PostRestartCacheSafety {
                 self.baseline_block_size_tokens.wrapping_add(1),
                 self.baseline_token_count,
                 self.baseline_token_hash,
+                &tokens_for(self.baseline_token_count),
             ))
             .map_err(|e| format!("get block_size_mismatch: {e}"))?
             .is_none()
@@ -220,6 +232,7 @@ impl PostRestartCacheSafety {
                 self.baseline_block_size_tokens,
                 self.baseline_token_count.wrapping_add(1),
                 self.baseline_token_hash,
+                &tokens_for(self.baseline_token_count.wrapping_add(1)),
             ))
             .map_err(|e| format!("get token_count_mismatch: {e}"))?
             .is_none()
@@ -240,6 +253,7 @@ impl PostRestartCacheSafety {
                 self.baseline_block_size_tokens,
                 self.baseline_token_count,
                 self.baseline_token_hash.wrapping_add(1),
+                &tokens_for(self.baseline_token_count),
             ))
             .map_err(|e| format!("get token_hash_mismatch: {e}"))?
             .is_none()
@@ -259,7 +273,8 @@ impl PostRestartCacheSafety {
             self.baseline_block_size_tokens,
             self.baseline_token_count,
             self.baseline_token_hash,
-        );
+                &tokens_for(self.baseline_token_count),
+            );
         cache
             .insert(
                 &corrupt_key,
@@ -291,7 +306,8 @@ impl PostRestartCacheSafety {
             self.baseline_block_size_tokens,
             self.baseline_token_count,
             self.baseline_token_hash,
-        );
+                &tokens_for(self.baseline_token_count),
+            );
         let truncated_path = cache.path_for(&truncated_key);
         std::fs::write(&truncated_path, b"AX").map_err(|e| format!("write truncated stub: {e}"))?;
         if cache

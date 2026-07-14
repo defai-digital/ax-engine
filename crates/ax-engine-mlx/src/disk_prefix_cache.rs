@@ -61,6 +61,13 @@ const ENTRY_EXTENSION: &str = "axkv";
 /// Sentinel file used for the directory-level cross-process lock.
 /// The file itself is not a cache entry and is ignored by eviction.
 const LOCK_FILE_NAME: &str = ".axkv.lock";
+/// Longest a mutating operation waits for the directory lock before
+/// giving up. Disk is strictly additive, so a timed-out operation is
+/// reported as an IO error the caller degrades on (skip the store /
+/// sweep) instead of stalling the request path behind a wedged holder.
+const LOCK_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// Poll interval while waiting for the directory lock.
+const LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// Default per-process disk-cache size budget when no env override is
 /// set. Matches the value documented in
@@ -97,21 +104,30 @@ impl DiskPrefixCachePolicy {
     /// defaults when an entry is unset, blank, or unparseable. Reads
     /// `AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES` and
     /// `AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES`.
+    ///
+    /// An explicit `0` is preserved (not treated as unset): it means
+    /// "disabled", matching the in-memory tier's env semantics, and is
+    /// honored by [`Self::enabled`] at the open site.
     pub fn from_env() -> Self {
         let max_bytes = std::env::var("AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES")
             .ok()
             .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .filter(|&n| n > 0)
             .unwrap_or(DEFAULT_DISK_CACHE_MAX_BYTES);
         let max_entries = std::env::var("AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES")
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .filter(|&n| n > 0)
             .unwrap_or(DEFAULT_DISK_CACHE_MAX_ENTRIES);
         Self {
             max_bytes,
             max_entries,
         }
+    }
+
+    /// Whether this policy admits any entry at all. A zero byte or
+    /// entry budget disables the disk tier, mirroring the in-memory
+    /// `MlxPrefixCachePolicy::enabled` semantics.
+    pub fn enabled(&self) -> bool {
+        self.max_bytes > 0 && self.max_entries > 0
     }
 }
 
@@ -147,6 +163,14 @@ impl std::error::Error for DiskPrefixCacheError {}
 /// shape matches the in-memory `MlxPrefixCacheKey` used by the runner
 /// so M2 can plumb the key through without re-serialising it.
 ///
+/// Schema v2 additionally commits to the **token content** via a
+/// SHA-256 over the little-endian token bytes. The in-memory L1 tier
+/// verifies hits by exact token comparison, but disk entries outlive
+/// the process; without a cryptographic content hash, a collision in
+/// the 64-bit FNV `token_hash` between two same-length prompts would
+/// silently restore the wrong KV cache. The embedded-key comparison in
+/// `parse_file` turns that collision into a miss instead.
+///
 /// `model_id` / `route_policy` / `layer_layout` are length-prefixed
 /// UTF-8 strings so the canonical bytes have no ambiguity around
 /// boundary tokens.
@@ -157,23 +181,44 @@ pub fn canonical_key_bytes(
     block_size_tokens: u32,
     token_count: u32,
     token_hash: u64,
+    tokens: &[u32],
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(
-        4 + 4 + 4 + 8 + 2 + model_id.len() + 2 + route_policy.len() + 2 + layer_layout.len(),
+    debug_assert_eq!(
+        tokens.len(),
+        token_count as usize,
+        "canonical key token slice must match token_count"
     );
-    out.extend_from_slice(&1u32.to_le_bytes()); // schema version of the key encoding
+    let mut out = Vec::with_capacity(
+        4 + 4 + 4 + 8 + 32 + 4 + model_id.len() + 4 + route_policy.len() + 4 + layer_layout.len(),
+    );
+    out.extend_from_slice(&2u32.to_le_bytes()); // schema version of the key encoding
     out.extend_from_slice(&block_size_tokens.to_le_bytes());
     out.extend_from_slice(&token_count.to_le_bytes());
     out.extend_from_slice(&token_hash.to_le_bytes());
+    out.extend_from_slice(&token_content_sha256(tokens));
     push_lp_string(&mut out, model_id);
     push_lp_string(&mut out, route_policy);
     push_lp_string(&mut out, layer_layout);
     out
 }
 
+fn token_content_sha256(tokens: &[u32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    for token in tokens {
+        hasher.update(token.to_le_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
 fn push_lp_string(out: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
-    let len = u16::try_from(bytes.len()).expect("key string too long");
+    // u32 length prefix: key strings embed operator-controlled paths
+    // (`layer_layout` folds in the model artifacts root), which a u16
+    // prefix would panic on for pathological inputs.
+    let len = u32::try_from(bytes.len()).expect("key string too long");
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(bytes);
 }
@@ -355,7 +400,46 @@ impl DiskPrefixCache {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
-        Ok(parse_file(&raw, key_bytes))
+        match parse_file(&raw, key_bytes) {
+            Some(entry) => {
+                // Best-effort recency bump so mtime-ordered eviction
+                // approximates LRU instead of FIFO-by-write-time: without
+                // this, a hot entry written early is evicted before cold
+                // entries written later.
+                let _ = fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .and_then(|file| file.set_modified(std::time::SystemTime::now()));
+                Ok(Some(entry))
+            }
+            None => {
+                self.remove_unparseable_entry(&path, key_bytes);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Best-effort removal of a file that failed header / checksum / key
+    /// validation. Re-validates under the exclusive lock before unlinking
+    /// so a concurrent insert that just replaced the file with a healthy
+    /// entry is never deleted. Without this cleanup, corrupt or
+    /// stale-version files consume budget until mtime eviction reaches
+    /// them, and keys that are never re-produced linger forever.
+    fn remove_unparseable_entry(&self, path: &Path, key_bytes: &[u8]) {
+        let Ok(_lock) = self.lock_exclusive() else {
+            return;
+        };
+        let still_invalid = match fs::read(path) {
+            Ok(raw) => parse_file(&raw, key_bytes).is_none(),
+            Err(_) => false,
+        };
+        if still_invalid && fs::remove_file(path).is_ok() {
+            tracing::warn!(
+                target: "ax_engine_mlx::prefix_cache",
+                path = %path.display(),
+                "removed unparseable disk prefix-cache entry",
+            );
+        }
     }
 
     /// Write `payload` for `key_bytes`. Uses an atomic rename so
@@ -372,6 +456,20 @@ impl DiskPrefixCache {
         key_bytes: &[u8],
         entry: &DiskPrefixCacheEntry,
     ) -> Result<DiskPrefixCacheInsertOutcome, DiskPrefixCacheError> {
+        // A single entry larger than the whole byte budget can never be
+        // durable: post-insert eviction would remove every older entry
+        // and then the entry itself, while telemetry reported a
+        // successful insert. Skip the write up front instead.
+        let file_len = (FIXED_HEADER_LEN + key_bytes.len() + entry.payload.len()) as u64;
+        if file_len > self.policy.max_bytes {
+            tracing::warn!(
+                target: "ax_engine_mlx::prefix_cache",
+                file_len,
+                max_bytes = self.policy.max_bytes,
+                "disk prefix-cache entry exceeds the byte budget; skipping store",
+            );
+            return Ok(DiskPrefixCacheInsertOutcome::default());
+        }
         let _lock = self.lock_exclusive()?;
         let final_path = self.path_for(key_bytes);
         let tmp_path = self.dir.join(format!(
@@ -492,8 +590,27 @@ impl DiskPrefixCache {
             .create(true)
             .truncate(false)
             .open(&path)?;
-        file.lock_exclusive()?;
-        Ok(DiskPrefixCacheLock { file })
+        // Bounded wait instead of a blocking flock: a wedged process
+        // holding the lock must not stall runner startup (the open-time
+        // temp sweep) or the prefill store path indefinitely. Disk is
+        // strictly additive, so timing out and skipping the operation is
+        // always safe.
+        let deadline = std::time::Instant::now() + LOCK_ACQUIRE_TIMEOUT;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(DiskPrefixCacheLock { file }),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(DiskPrefixCacheError::Io(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "disk prefix-cache lock acquisition timed out",
+                        )));
+                    }
+                    std::thread::sleep(LOCK_RETRY_INTERVAL);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 
     fn list_entries(&self) -> Result<Vec<EntryStat>, DiskPrefixCacheError> {
@@ -637,7 +754,7 @@ mod tests {
         let dir = unique_tempdir("roundtrip");
         let cache = DiskPrefixCache::open(&dir).expect("open");
         let key_bytes =
-            canonical_key_bytes("model-a", "policy-a", "layout-a", 16, 1024, 0xdead_beef);
+            canonical_key_bytes("model-a", "policy-a", "layout-a", 16, 4, 0xdead_beef, &[11, 22, 33, 44]);
         let payload = b"PAYLOAD-FOR-CACHE".to_vec();
         cache
             .insert(&key_bytes, &payload_only(&payload))
@@ -657,7 +774,7 @@ mod tests {
         // First open seeds the directory with one live entry.
         let cache = DiskPrefixCache::open(&dir).expect("open");
         let key_bytes =
-            canonical_key_bytes("model-a", "policy-a", "layout-a", 16, 1024, 0xdead_beef);
+            canonical_key_bytes("model-a", "policy-a", "layout-a", 16, 4, 0xdead_beef, &[11, 22, 33, 44]);
         cache
             .insert(&key_bytes, &payload_only(b"PAYLOAD"))
             .expect("insert");
@@ -681,7 +798,7 @@ mod tests {
         // restore path can avoid recomputing at decode step 0.
         let dir = unique_tempdir("prefill-tok-roundtrip");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_bytes = canonical_key_bytes("m", "p", "l", 16, 1024, 0xfeed_d00d);
+        let key_bytes = canonical_key_bytes("m", "p", "l", 16, 4, 0xfeed_d00d, &[11, 22, 33, 44]);
         let entry = DiskPrefixCacheEntry {
             payload: b"payload".to_vec(),
             prefill_output_token: Some(987_654),
@@ -698,7 +815,7 @@ mod tests {
         let dir = unique_tempdir("miss");
         let cache = DiskPrefixCache::open(&dir).expect("open");
         let key_bytes =
-            canonical_key_bytes("model-b", "policy-b", "layout-b", 16, 1024, 0xfeed_face);
+            canonical_key_bytes("model-b", "policy-b", "layout-b", 16, 4, 0xfeed_face, &[11, 22, 33, 44]);
         assert!(cache.get(&key_bytes).expect("get").is_none());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -707,8 +824,8 @@ mod tests {
     fn key_mismatch_returns_miss() {
         let dir = unique_tempdir("collision");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_a = canonical_key_bytes("model-c", "policy-c", "layout-c", 16, 1024, 1);
-        let key_b = canonical_key_bytes("model-c", "policy-c", "layout-c", 16, 1024, 2);
+        let key_a = canonical_key_bytes("model-c", "policy-c", "layout-c", 16, 4, 1, &[11, 22, 33, 44]);
+        let key_b = canonical_key_bytes("model-c", "policy-c", "layout-c", 16, 4, 2, &[11, 22, 33, 44]);
         cache
             .insert(&key_a, &payload_only(b"payload-a"))
             .expect("insert");
@@ -731,7 +848,7 @@ mod tests {
     fn corrupt_payload_returns_miss() {
         let dir = unique_tempdir("corrupt");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_bytes = canonical_key_bytes("model-d", "policy-d", "layout-d", 16, 1024, 9);
+        let key_bytes = canonical_key_bytes("model-d", "policy-d", "layout-d", 16, 4, 9, &[11, 22, 33, 44]);
         cache
             .insert(&key_bytes, &payload_only(b"payload-correct"))
             .expect("insert");
@@ -751,7 +868,7 @@ mod tests {
         let dir = unique_tempdir("contains-hit");
         let cache = DiskPrefixCache::open(&dir).expect("open");
         let key_bytes =
-            canonical_key_bytes("model-c1", "policy-c1", "layout-c1", 16, 1024, 0xc04e_7415);
+            canonical_key_bytes("model-c1", "policy-c1", "layout-c1", 16, 4, 0xc04e_7415, &[11, 22, 33, 44]);
         assert!(!cache.contains(&key_bytes), "before insert: must not exist");
         cache
             .insert(&key_bytes, &payload_only(b"payload-x"))
@@ -770,7 +887,7 @@ mod tests {
         let dir = unique_tempdir("contains-corrupt");
         let cache = DiskPrefixCache::open(&dir).expect("open");
         let key_bytes =
-            canonical_key_bytes("model-c2", "policy-c2", "layout-c2", 16, 1024, 0xc0c0_dead);
+            canonical_key_bytes("model-c2", "policy-c2", "layout-c2", 16, 4, 0xc0c0_dead, &[11, 22, 33, 44]);
         cache
             .insert(&key_bytes, &payload_only(b"payload-valid"))
             .expect("insert");
@@ -802,9 +919,9 @@ mod tests {
         };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
 
-        let key_a = canonical_key_bytes("m", "p", "l", 16, 1024, 0xa1);
-        let key_b = canonical_key_bytes("m", "p", "l", 16, 1024, 0xb2);
-        let key_c = canonical_key_bytes("m", "p", "l", 16, 1024, 0xc3);
+        let key_a = canonical_key_bytes("m", "p", "l", 16, 4, 0xa1, &[11, 22, 33, 44]);
+        let key_b = canonical_key_bytes("m", "p", "l", 16, 4, 0xb2, &[11, 22, 33, 44]);
+        let key_c = canonical_key_bytes("m", "p", "l", 16, 4, 0xc3, &[11, 22, 33, 44]);
 
         // Insert in order a, b, c with sleeps so mtimes are strictly
         // increasing (1-second filesystem resolution is the worst-case
@@ -847,8 +964,8 @@ mod tests {
         };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
 
-        let key_a = canonical_key_bytes("m", "p", "l", 16, 1024, 0xa1);
-        let key_b = canonical_key_bytes("m", "p", "l", 16, 1024, 0xb2);
+        let key_a = canonical_key_bytes("m", "p", "l", 16, 4, 0xa1, &[11, 22, 33, 44]);
+        let key_b = canonical_key_bytes("m", "p", "l", 16, 4, 0xb2, &[11, 22, 33, 44]);
         let payload = vec![0u8; payload_size];
 
         cache
@@ -881,7 +998,7 @@ mod tests {
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
         fs::write(dir.join("NOTES.md"), b"hello").expect("write junk");
 
-        let key_a = canonical_key_bytes("m", "p", "l", 16, 1024, 0xaa);
+        let key_a = canonical_key_bytes("m", "p", "l", 16, 4, 0xaa, &[11, 22, 33, 44]);
         cache
             .insert(&key_a, &payload_only(b"payload-a"))
             .expect("insert a");
@@ -904,7 +1021,7 @@ mod tests {
             max_entries: 1,
         };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
-        let key = canonical_key_bytes("m", "p", "l", 16, 1024, 0x10cc);
+        let key = canonical_key_bytes("m", "p", "l", 16, 4, 0x10cc, &[11, 22, 33, 44]);
 
         let outcome = cache
             .insert(&key, &payload_only(b"payload-a"))
@@ -927,9 +1044,9 @@ mod tests {
         let dir = unique_tempdir("reopen-evict");
         {
             let cache = DiskPrefixCache::open(&dir).expect("open default");
-            let key_a = canonical_key_bytes("m", "p", "l", 16, 1024, 0xa1);
-            let key_b = canonical_key_bytes("m", "p", "l", 16, 1024, 0xb2);
-            let key_c = canonical_key_bytes("m", "p", "l", 16, 1024, 0xc3);
+            let key_a = canonical_key_bytes("m", "p", "l", 16, 4, 0xa1, &[11, 22, 33, 44]);
+            let key_b = canonical_key_bytes("m", "p", "l", 16, 4, 0xb2, &[11, 22, 33, 44]);
+            let key_c = canonical_key_bytes("m", "p", "l", 16, 4, 0xc3, &[11, 22, 33, 44]);
             cache
                 .insert(&key_a, &payload_only(b"payload-a"))
                 .expect("insert a");
@@ -965,7 +1082,7 @@ mod tests {
         );
 
         // The newest of the three entries (c) must survive.
-        let key_c = canonical_key_bytes("m", "p", "l", 16, 1024, 0xc3);
+        let key_c = canonical_key_bytes("m", "p", "l", 16, 4, 0xc3, &[11, 22, 33, 44]);
         assert!(cache.contains(&key_c), "newest entry must survive");
 
         let _ = fs::remove_dir_all(&dir);
@@ -1045,7 +1162,7 @@ mod tests {
                 let mut written = Vec::with_capacity(inserts_per_thread);
                 for op in 0..inserts_per_thread {
                     let token_hash = ((worker_id as u64) << 32) | op as u64;
-                    let key = canonical_key_bytes("m", "p", "l", 16, 1024, token_hash);
+                    let key = canonical_key_bytes("m", "p", "l", 16, 4, token_hash, &[11, 22, 33, 44]);
                     let payload = format!("payload-w{worker_id}-op{op}").into_bytes();
                     cache
                         .insert(
@@ -1148,7 +1265,7 @@ mod tests {
         // The .tmp.* file should not survive a successful insert.
         let dir = unique_tempdir("atomic");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_bytes = canonical_key_bytes("model-e", "policy-e", "layout-e", 16, 1024, 42);
+        let key_bytes = canonical_key_bytes("model-e", "policy-e", "layout-e", 16, 4, 42, &[11, 22, 33, 44]);
         cache
             .insert(&key_bytes, &payload_only(b"payload-e"))
             .expect("insert");
@@ -1272,7 +1389,11 @@ mod tests {
     }
 
     #[test]
-    fn policy_from_env_rejects_zero_values() {
+    fn policy_from_env_zero_means_disabled() {
+        // `0` must mean "disable the disk tier" — matching the in-memory
+        // tier's env semantics — not silently fall back to the 8 GiB
+        // default, which is the opposite of what an operator setting 0
+        // intends.
         let key_bytes = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
         let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
         let _env_lock = ENV_LOCK.lock().expect("env lock");
@@ -1282,13 +1403,17 @@ mod tests {
             env::set_var(key_entries, "0");
         }
         let policy = DiskPrefixCachePolicy::from_env();
-        assert_eq!(
-            policy.max_bytes, DEFAULT_DISK_CACHE_MAX_BYTES,
-            "zero max_bytes must fall back to default"
-        );
-        assert_eq!(
-            policy.max_entries, DEFAULT_DISK_CACHE_MAX_ENTRIES,
-            "zero max_entries must fall back to default"
+        assert_eq!(policy.max_bytes, 0, "zero max_bytes must be preserved");
+        assert_eq!(policy.max_entries, 0, "zero max_entries must be preserved");
+        assert!(!policy.enabled(), "zero budgets disable the disk tier");
+
+        unsafe {
+            env::remove_var(key_bytes);
+            env::remove_var(key_entries);
+        }
+        assert!(
+            DiskPrefixCachePolicy::from_env().enabled(),
+            "default policy is enabled"
         );
     }
 
@@ -1297,7 +1422,7 @@ mod tests {
         // Simulate two independent sessions sharing the same cache directory.
         // Session 1 writes; session 2 opens the same dir and reads.
         let dir = unique_tempdir("cross-session");
-        let key_bytes = canonical_key_bytes("model-x", "policy-x", "layout-x", 16, 1024, 0xcafe);
+        let key_bytes = canonical_key_bytes("model-x", "policy-x", "layout-x", 16, 4, 0xcafe, &[11, 22, 33, 44]);
         let payload = b"session-1-payload".to_vec();
         let entry = DiskPrefixCacheEntry {
             payload: payload.clone(),
@@ -1334,13 +1459,13 @@ mod tests {
 
         // 256 KiB payload — should fit within 1 MiB budget
         let payload_256k = vec![0xAB_u8; 256 * 1024];
-        let key1 = canonical_key_bytes("m", "p", "l", 16, 1024, 1);
+        let key1 = canonical_key_bytes("m", "p", "l", 16, 4, 1, &[11, 22, 33, 44]);
         cache
             .insert(&key1, &payload_only(&payload_256k))
             .expect("insert 256k");
 
         // Second 256 KiB — still within budget
-        let key2 = canonical_key_bytes("m", "p", "l", 16, 1024, 2);
+        let key2 = canonical_key_bytes("m", "p", "l", 16, 4, 2, &[11, 22, 33, 44]);
         let outcome = cache
             .insert(&key2, &payload_only(&payload_256k))
             .expect("insert second 256k");
@@ -1364,13 +1489,13 @@ mod tests {
         };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
 
-        let key1 = canonical_key_bytes("m", "p", "l", 16, 1024, 0xaa);
+        let key1 = canonical_key_bytes("m", "p", "l", 16, 4, 0xaa, &[11, 22, 33, 44]);
         cache
             .insert(&key1, &payload_only(&vec![0u8; 2048]))
             .expect("insert first");
         std::thread::sleep(std::time::Duration::from_millis(1100));
 
-        let key2 = canonical_key_bytes("m", "p", "l", 16, 1024, 0xbb);
+        let key2 = canonical_key_bytes("m", "p", "l", 16, 4, 0xbb, &[11, 22, 33, 44]);
         let outcome = cache
             .insert(&key2, &payload_only(&vec![0u8; 2048]))
             .expect("insert second");
@@ -1388,7 +1513,7 @@ mod tests {
         {
             let cache = DiskPrefixCache::open(&dir).expect("open default");
             for i in 0..5u64 {
-                let key = canonical_key_bytes("m", "p", "l", 16, 1024, i);
+                let key = canonical_key_bytes("m", "p", "l", 16, 4, i, &[11, 22, 33, 44]);
                 cache
                     .insert(&key, &payload_only(format!("payload-{i}").as_bytes()))
                     .expect("insert");
@@ -1404,14 +1529,119 @@ mod tests {
 
         // Entries 0-2 must be evicted; 3-4 must survive.
         for i in 0..3 {
-            let key = canonical_key_bytes("m", "p", "l", 16, 1024, i);
+            let key = canonical_key_bytes("m", "p", "l", 16, 4, i, &[11, 22, 33, 44]);
             assert!(!cache.contains(&key), "entry {i} must be evicted");
         }
         for i in 3..5 {
-            let key = canonical_key_bytes("m", "p", "l", 16, 1024, i);
+            let key = canonical_key_bytes("m", "p", "l", 16, 4, i, &[11, 22, 33, 44]);
             assert!(cache.contains(&key), "entry {i} must survive");
         }
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn token_content_mismatch_returns_miss() {
+        // Simulated 64-bit FNV token_hash collision: two different prompts
+        // with the SAME token_hash and token_count. Schema v2 commits to
+        // the token content via SHA-256, so the embedded-key comparison
+        // must reject the swapped file instead of restoring the wrong KV.
+        let dir = unique_tempdir("fnv-collision");
+        let cache = DiskPrefixCache::open(&dir).expect("open");
+        let key_x = canonical_key_bytes("m", "p", "l", 16, 4, 7, &[1, 2, 3, 4]);
+        let key_y = canonical_key_bytes("m", "p", "l", 16, 4, 7, &[9, 9, 9, 9]);
+        assert_ne!(
+            key_x, key_y,
+            "same token_hash but different tokens must produce different keys"
+        );
+        cache
+            .insert(&key_x, &payload_only(b"payload-x"))
+            .expect("insert");
+        fs::rename(cache.path_for(&key_x), cache.path_for(&key_y)).expect("rename");
+        assert!(
+            cache.get(&key_y).expect("get").is_none(),
+            "token-content mismatch must miss, never restore the wrong KV"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_entry_is_unlinked_on_get() {
+        // A file that fails validation must be reclaimed, not left
+        // consuming budget until mtime eviction reaches it.
+        let dir = unique_tempdir("corrupt-unlink");
+        let cache = DiskPrefixCache::open(&dir).expect("open");
+        let key = canonical_key_bytes("m", "p", "l", 16, 4, 0xbad, &[11, 22, 33, 44]);
+        cache
+            .insert(&key, &payload_only(b"payload"))
+            .expect("insert");
+        let path = cache.path_for(&key);
+        let mut raw = fs::read(&path).expect("read");
+        let last = raw.len() - 1;
+        raw[last] ^= 0xFF;
+        fs::write(&path, raw).expect("corrupt");
+
+        assert!(cache.get(&key).expect("get").is_none(), "corruption misses");
+        assert!(
+            !path.exists(),
+            "corrupt entry must be unlinked by the failed get"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn get_refreshes_mtime_so_eviction_approximates_lru() {
+        // Hot entries must survive eviction over cold-but-newer ones.
+        let dir = unique_tempdir("lru-touch");
+        let policy = DiskPrefixCachePolicy {
+            max_bytes: u64::MAX,
+            max_entries: 2,
+        };
+        let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
+        let key_a = canonical_key_bytes("m", "p", "l", 16, 4, 0xa, &[11, 22, 33, 44]);
+        let key_b = canonical_key_bytes("m", "p", "l", 16, 4, 0xb, &[11, 22, 33, 44]);
+        let key_c = canonical_key_bytes("m", "p", "l", 16, 4, 0xc, &[11, 22, 33, 44]);
+
+        cache.insert(&key_a, &payload_only(b"a")).expect("insert a");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        cache.insert(&key_b, &payload_only(b"b")).expect("insert b");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // Touch a: it is now more recently used than b.
+        assert!(cache.get(&key_a).expect("get").is_some());
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        cache.insert(&key_c, &payload_only(b"c")).expect("insert c");
+
+        assert!(cache.contains(&key_a), "hot entry must survive");
+        assert!(!cache.contains(&key_b), "cold entry must be evicted");
+        assert!(cache.contains(&key_c), "new entry must survive");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oversized_payload_is_skipped_not_self_evicting() {
+        let dir = unique_tempdir("oversized");
+        let policy = DiskPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: usize::MAX,
+        };
+        let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
+        let key_small = canonical_key_bytes("m", "p", "l", 16, 4, 1, &[11, 22, 33, 44]);
+        cache
+            .insert(&key_small, &payload_only(b"small"))
+            .expect("insert small");
+
+        let key_big = canonical_key_bytes("m", "p", "l", 16, 4, 2, &[11, 22, 33, 44]);
+        let outcome = cache
+            .insert(&key_big, &payload_only(&vec![0u8; 4096]))
+            .expect("oversized insert returns Ok");
+        assert_eq!(outcome.evictions, 0, "skipped store must not evict");
+        assert!(
+            !cache.contains(&key_big),
+            "oversized entry must not be written"
+        );
+        assert!(
+            cache.contains(&key_small),
+            "existing entries must not be sacrificed for an undurable store"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

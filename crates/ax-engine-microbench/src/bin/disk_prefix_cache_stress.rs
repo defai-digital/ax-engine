@@ -313,13 +313,16 @@ fn run_eviction_pressure(
 }
 
 fn stress_key(key_id: usize) -> Vec<u8> {
+    let token_count = 16 * (key_id as u32 + 1);
+    let tokens: Vec<u32> = (0..token_count).map(|i| i ^ key_id as u32).collect();
     canonical_key_bytes(
         "stress-model",
         "stress-route",
         "stress-layout",
         16,
-        16 * (key_id as u32 + 1),
+        token_count,
         0x5eed_0000_u64 + key_id as u64,
+        &tokens,
     )
 }
 

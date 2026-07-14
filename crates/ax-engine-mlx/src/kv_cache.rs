@@ -23,7 +23,7 @@ use crate::turboquant_metal::{
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
 /// the logical sequence length exceeds capacity, so the number of grow operations
 /// per session is at most ceil(total_tokens / CHUNK).
-const KV_CHUNK_TOKENS: usize = 256;
+pub(crate) const KV_CHUNK_TOKENS: usize = 256;
 
 fn elapsed_us_u64(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
@@ -1088,7 +1088,7 @@ impl MlxKVCache {
     /// `AXKV` (used by the future disk wrapper for outer file framing) so
     /// a partial / nested payload cannot be mistaken for a complete file.
     const SERIALIZE_MAGIC: &'static [u8; 4] = b"AXKB";
-    const SERIALIZE_VERSION: u32 = 2;
+    const SERIALIZE_VERSION: u32 = 3;
     const LAYER_KIND_EMPTY: u8 = 0;
     const LAYER_KIND_FA: u8 = 1;
     const LAYER_KIND_MLA: u8 = 2;
@@ -1175,9 +1175,11 @@ impl MlxKVCache {
     //
     //   header:
     //     magic[4]         = b"AXKB"
-    //     version: u32     = 1
+    //     version: u32     = 3
     //     seq_len: u64
     //     growth_count: u64
+    //     rope_offset: u64  (v3+; extra RoPE position beyond seq_len,
+    //                        e.g. after capped MTP warmup)
     //     layer_count: u32
     //     reserved: u32
     //
@@ -1186,7 +1188,10 @@ impl MlxKVCache {
     //     reserved[7]
     //     layer-kind-specific payload (see below)
     //
-    //   FA payload:     [K tensor][V tensor]
+    //   FA payload:     [rotating_window: u64 (v3+; 0 = ordered storage,
+    //                    otherwise the sliding window of a rotated ring whose
+    //                    K/V tensors are slot-ordered, token t at slot
+    //                    t % capacity)][K tensor][V tensor]
     //   MLA payload:    [kv_latent tensor][k_pe tensor]
     //   Linear payload: [tag:u8][optional conv_state][tag:u8][optional recurrent_state]
     //   Empty payload:  (nothing)
@@ -1517,6 +1522,7 @@ impl MlxKVCache {
         out.extend_from_slice(&Self::SERIALIZE_VERSION.to_le_bytes());
         out.extend_from_slice(&(self.seq_len as u64).to_le_bytes());
         out.extend_from_slice(&self.growth_count.to_le_bytes());
+        out.extend_from_slice(&(self.rope_offset as u64).to_le_bytes());
         let layer_count = self.layers.len() as u32;
         out.extend_from_slice(&layer_count.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes()); // reserved
@@ -1528,6 +1534,11 @@ impl MlxKVCache {
             if let Some(fa) = &self.layers[idx] {
                 out.push(Self::LAYER_KIND_FA);
                 out.extend_from_slice(&[0u8; 7]);
+                // Ring geometry must survive the round trip: a rotated
+                // layer's buffer is slot-ordered, and restoring it as
+                // ordered storage would make the first post-restore append
+                // treat ring slots as a token-ordered prefix.
+                out.extend_from_slice(&(fa.rotating_window.unwrap_or(0) as u64).to_le_bytes());
                 // Rotating-window layers store slots, not token order — the
                 // full buffer is the logical state and must not be trimmed.
                 let logical_tokens = if fa.rotating_window.is_none() {
@@ -1595,12 +1606,14 @@ impl MlxKVCache {
         }
         let seq_len = cursor.read_u64()? as usize;
         let growth_count = cursor.read_u64()?;
+        let rope_offset = cursor.read_usize()?;
         let layer_count = cursor.read_u32()? as usize;
         let _reserved = cursor.read_u32()?;
 
         let mut cache = Self::new(layer_count);
         cache.seq_len = seq_len;
         cache.growth_count = growth_count;
+        cache.rope_offset = rope_offset;
 
         for idx in 0..layer_count {
             let kind = cursor.read_u8()?;
@@ -1608,10 +1621,29 @@ impl MlxKVCache {
             match kind {
                 k if k == Self::LAYER_KIND_EMPTY => continue,
                 k if k == Self::LAYER_KIND_FA => {
+                    let ring_window = cursor.read_usize()?;
                     let k_arr = Self::read_tensor(&mut cursor)?;
                     let v_arr = Self::read_tensor(&mut cursor)?;
                     let shape = k_arr.shape();
                     if shape.len() < 4 {
+                        return Err(MlxKVCacheSerializeError::BadShape(shape.len()));
+                    }
+                    let capacity = shape[2] as usize;
+                    let rotating_window = (ring_window != 0).then_some(ring_window);
+                    if let Some(window) = rotating_window {
+                        // A ring narrower than its window (or an ordered
+                        // buffer shorter than seq_len) cannot have been
+                        // produced by the serializer.
+                        if capacity < window {
+                            return Err(MlxKVCacheSerializeError::BadShape(shape.len()));
+                        }
+                        // Re-latch the ring configuration so post-restore
+                        // appends reproduce the same geometry instead of
+                        // reconverting (which would read slot-ordered data
+                        // as token order).
+                        cache.use_rotating_sliding_decode = true;
+                        cache.rotating_slack = capacity - window;
+                    } else if seq_len > capacity {
                         return Err(MlxKVCacheSerializeError::BadShape(shape.len()));
                     }
                     cache.layers[idx] = Some(LayerKV {
@@ -1619,8 +1651,8 @@ impl MlxKVCache {
                         last_v_view: None,
                         n_kv_heads: shape[1],
                         head_dim: shape[3],
-                        capacity: shape[2] as usize,
-                        rotating_window: None,
+                        capacity,
+                        rotating_window,
                         dtype: k_arr.dtype(),
                         k: k_arr,
                         v: v_arr,
@@ -1872,6 +1904,20 @@ impl MlxKVCache {
                 });
             }
             Some(lkv) => {
+                // A rotated ring stores slots, not token order; writing at
+                // logical positions (or growing, which copies slots as an
+                // ordered prefix) would silently corrupt it. Ring-eligible
+                // forwards must go through `append_rotating_retained_window`;
+                // anything else on a rotated layer is a caller bug.
+                assert!(
+                    lkv.rotating_window.is_none(),
+                    "ordered KV append on rotated ring layer {layer} (window {:?}, capacity {}): \
+                     forward of {new_tokens} tokens is not ring-eligible \
+                     (rotating_slack {}) and would corrupt slot-ordered state",
+                    lkv.rotating_window,
+                    lkv.capacity,
+                    self.rotating_slack,
+                );
                 assert_eq!(
                     lkv.n_kv_heads, n_kv_heads,
                     "KV cache append cannot change n_kv_heads for an existing layer"
@@ -1899,7 +1945,6 @@ impl MlxKVCache {
                     // Invalidate cached views — they point to the old (smaller) buffer.
                     lkv.last_k_view = None;
                     lkv.last_v_view = None;
-                    lkv.rotating_window = None;
                     self.growth_count = self.growth_count.saturating_add(1);
                 }
                 let start = [0i32, 0, write_start as i32, 0];
@@ -1955,6 +2000,18 @@ impl MlxKVCache {
             .as_mut()
             .expect("rotating sliding decode requires an existing prefill cache");
         if lkv.rotating_window != Some(window) || lkv.capacity != capacity {
+            // Conversion reads the source at logical token indices, which is
+            // only meaningful for ordered storage. An already-rotated layer
+            // reaching here means the ring geometry changed mid-request
+            // (window or slack drift) — reconverting would read slot-ordered
+            // data as token order.
+            assert!(
+                lkv.rotating_window.is_none(),
+                "sliding ring geometry changed mid-request for layer {layer}: \
+                 existing window {:?} capacity {}, requested window {window} capacity {capacity}",
+                lkv.rotating_window,
+                lkv.capacity,
+            );
             let k_old = lkv.k.clone();
             let v_old = lkv.v.clone();
             let buf_shape = [1i32, lkv.n_kv_heads, capacity as i32, lkv.head_dim];
@@ -5052,6 +5109,7 @@ mod tests {
         payload.extend_from_slice(&99u32.to_le_bytes()); // wrong version
         payload.extend_from_slice(&0u64.to_le_bytes()); // seq_len
         payload.extend_from_slice(&0u64.to_le_bytes()); // growth_count
+        payload.extend_from_slice(&0u64.to_le_bytes()); // rope_offset
         payload.extend_from_slice(&0u32.to_le_bytes()); // layer_count
         payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
         let result = MlxKVCache::try_deserialize_from_bytes(&payload);
@@ -5085,12 +5143,14 @@ mod tests {
         payload.extend_from_slice(&MlxKVCache::SERIALIZE_VERSION.to_le_bytes());
         payload.extend_from_slice(&0u64.to_le_bytes()); // seq_len
         payload.extend_from_slice(&0u64.to_le_bytes()); // growth_count
+        payload.extend_from_slice(&0u64.to_le_bytes()); // rope_offset
         payload.extend_from_slice(&1u32.to_le_bytes()); // layer_count
         payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
 
         // Single FA layer
         payload.push(MlxKVCache::LAYER_KIND_FA);
         payload.extend_from_slice(&[0u8; 7]);
+        payload.extend_from_slice(&0u64.to_le_bytes()); // rotating_window: none
         // K tensor header: f32, 4-dim shape [1, 2, 4, 8] = 64 elements × 4 bytes
         payload.push(MlxKVCache::dtype_to_tag(MlxDtype::Float32));
         payload.push(4);
@@ -5123,12 +5183,14 @@ mod tests {
         payload.extend_from_slice(&MlxKVCache::SERIALIZE_VERSION.to_le_bytes());
         payload.extend_from_slice(&0u64.to_le_bytes()); // seq_len
         payload.extend_from_slice(&0u64.to_le_bytes()); // growth_count
+        payload.extend_from_slice(&0u64.to_le_bytes()); // rope_offset
         payload.extend_from_slice(&1u32.to_le_bytes()); // layer_count
         payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
 
         // Single FA layer with one tensor carrying an invalid dtype.
         payload.push(MlxKVCache::LAYER_KIND_FA);
         payload.extend_from_slice(&[0u8; 7]);
+        payload.extend_from_slice(&0u64.to_le_bytes()); // rotating_window: none
         // 0xEE is not a valid dtype tag in dtype_from_tag's table.
         payload.push(0xEE);
         payload.push(4); // ndim
@@ -5157,6 +5219,7 @@ mod tests {
         payload.extend_from_slice(&MlxKVCache::SERIALIZE_VERSION.to_le_bytes());
         payload.extend_from_slice(&0u64.to_le_bytes()); // seq_len
         payload.extend_from_slice(&0u64.to_le_bytes()); // growth_count
+        payload.extend_from_slice(&0u64.to_le_bytes()); // rope_offset
         payload.extend_from_slice(&1u32.to_le_bytes()); // layer_count
         payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
 
@@ -5185,11 +5248,13 @@ mod tests {
         payload.extend_from_slice(&MlxKVCache::SERIALIZE_VERSION.to_le_bytes());
         payload.extend_from_slice(&0u64.to_le_bytes());
         payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes()); // rope_offset
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
 
         payload.push(MlxKVCache::LAYER_KIND_FA);
         payload.extend_from_slice(&[0u8; 7]);
+        payload.extend_from_slice(&0u64.to_le_bytes()); // rotating_window: none
         payload.push(MlxKVCache::dtype_to_tag(MlxDtype::Float32));
         payload.push(0); // ndim = 0 (invalid)
         payload.extend_from_slice(&[0u8; 6]);
@@ -5266,6 +5331,94 @@ mod tests {
             trimmed_bytes.len(),
             full_bytes.len()
         );
+    }
+
+    #[test]
+    fn serialize_roundtrips_rope_offset() {
+        let mut cache = MlxKVCache::new(1);
+        cache.seq_len = 4;
+        cache.rope_offset = 9;
+
+        let restored = MlxKVCache::try_deserialize_from_bytes(&cache.serialize_to_bytes())
+            .expect("round-trip");
+
+        assert_eq!(restored.seq_len, 4);
+        assert_eq!(
+            restored.rope_offset, 9,
+            "rope_offset is positional state and must survive the round trip"
+        );
+    }
+
+    #[test]
+    fn serialize_roundtrips_rotated_ring_geometry_and_appends_continue() {
+        const HD: usize = 4;
+        // Build a bounded ring exactly like the rotating-decode tests:
+        // window 4, slack 3 → capacity 7, tokens 0..=8 with 7 and 8 wrapped.
+        let mut cache = MlxKVCache::new(1);
+        cache.set_rotating_sliding_decode(true);
+        cache.set_rotating_sliding_slack(3);
+        let k = tokens_f32(&[1.0, 2.0, 3.0, 4.0], HD);
+        let v = tokens_f32(&[1.0, 2.0, 3.0, 4.0], HD);
+        cache.append(0, k, v);
+        cache.seq_len = 4;
+        for (t, value) in [(4usize, 5.0f32), (5, 6.0), (6, 7.0), (7, 8.0), (8, 9.0)] {
+            let k = tokens_f32(&[value], HD);
+            let v = tokens_f32(&[value], HD);
+            cache.append_with_retained_window(0, k, v, Some(4));
+            cache.seq_len = t + 1;
+        }
+        let expected_slots = token_row_values(&cache.layers[0].as_ref().unwrap().k, HD);
+        assert_eq!(expected_slots, vec![8.0, 9.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+
+        let restored = MlxKVCache::try_deserialize_from_bytes(&cache.serialize_to_bytes())
+            .expect("round-trip");
+        let lkv = restored.layers[0].as_ref().expect("layer restored");
+        assert_eq!(lkv.rotating_window, Some(4), "ring window must survive");
+        assert_eq!(lkv.capacity, 7, "ring capacity must survive");
+        assert_eq!(restored.rotating_sliding_slack(), 3, "slack re-latched");
+        assert_eq!(
+            token_row_values(&lkv.k, HD),
+            expected_slots,
+            "slot-ordered ring contents must survive byte-identical"
+        );
+
+        // Post-restore decode must keep rotating: token 9 lands at slot
+        // 9 % 7 = 2, not at logical position 9 of an ordered buffer.
+        let mut restored = restored;
+        let k = tokens_f32(&[10.0], HD);
+        let v = tokens_f32(&[10.0], HD);
+        restored.append_with_retained_window(0, k, v, Some(4));
+        restored.seq_len = 10;
+        let lkv = restored.layers[0].as_ref().unwrap();
+        assert_eq!(lkv.capacity, 7, "restored ring must not regrow");
+        assert_eq!(
+            token_row_values(&lkv.k, HD),
+            vec![8.0, 9.0, 10.0, 4.0, 5.0, 6.0, 7.0]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ordered KV append on rotated ring layer")]
+    fn ordered_append_on_rotated_ring_fails_closed() {
+        const HD: usize = 4;
+        let mut cache = MlxKVCache::new(1);
+        cache.set_rotating_sliding_decode(true);
+        let k = tokens_f32(&[1.0, 2.0, 3.0, 4.0], HD);
+        let v = tokens_f32(&[1.0, 2.0, 3.0, 4.0], HD);
+        cache.append(0, k, v);
+        cache.seq_len = 4;
+        // Convert to a pure ring (window 4, slack 0).
+        let k = tokens_f32(&[5.0], HD);
+        let v = tokens_f32(&[5.0], HD);
+        cache.append_with_retained_window(0, k, v, Some(4));
+        cache.seq_len = 5;
+
+        // A 2-token forward is not ring-eligible in pure mode; before the
+        // fail-closed assert this fell through to the ordered path and
+        // silently grew the ring, copying slots as a token-ordered prefix.
+        let k = tokens_f32(&[6.0, 7.0], HD);
+        let v = tokens_f32(&[6.0, 7.0], HD);
+        let _ = cache.append_with_retained_window(0, k, v, Some(4));
     }
 
     #[test]

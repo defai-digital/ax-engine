@@ -1,9 +1,11 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, broadcast_to,
-    concatenate, eval, matmul, multiply,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, concatenate, eval,
     qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
-    scaled_dot_product_attention_with_mask, slice, slice_update, softmax_precise, transpose,
+    scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
+    slice_update, transpose,
 };
+#[cfg(test)]
+use mlx_sys::{broadcast_to, matmul, multiply, slice, softmax_precise};
 use std::time::Instant;
 
 use crate::attention_mask::{create_causal_mask, create_ring_sliding_mask};
@@ -433,8 +435,48 @@ pub(crate) fn attention_with_sinks(
     seq: usize,
     mask_opt: &Option<MlxArray>,
 ) -> MlxArray {
+    // MLX fast SDPA supports sinks natively (fused kernel, native GQA
+    // broadcast). The previous hand-rolled score-matrix implementation could
+    // not broadcast grouped queries against fewer KV heads (64 q-heads vs
+    // 8 kv-heads is not a broadcastable batch shape for `matmul`), so it
+    // aborted on every GQA sinks model; it also materialized the full
+    // `[B, H, S, K+1]` score/penalty tensors in f32. Mask mapping mirrors
+    // `full_precision_attention`.
+    let mask = match mask_opt.as_ref() {
+        Some(mask) => ScaledDotProductAttentionMask::Array(mask),
+        None if seq > 1 => ScaledDotProductAttentionMask::Causal,
+        None => ScaledDotProductAttentionMask::None,
+    };
+    scaled_dot_product_attention_with_mask_and_sinks(q, k, v, query_scale, mask, Some(sinks), None)
+}
+
+/// Unfused reference for [`attention_with_sinks`], kept as the test oracle:
+/// explicit score matrix, sink column appended before softmax and excluded
+/// from the value weighted sum. K/V are expanded per query-head group so GQA
+/// shapes evaluate exactly.
+#[cfg(test)]
+pub(crate) fn attention_with_sinks_reference(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    sinks: &MlxArray,
+    query_scale: f32,
+    seq: usize,
+    mask_opt: &Option<MlxArray>,
+) -> MlxArray {
+    let n_q_heads = q.shape()[1];
+    let n_kv_heads = k.shape()[1];
+    let (k, v) = if n_q_heads != n_kv_heads {
+        (
+            repeat_kv_heads(k, n_q_heads, n_kv_heads),
+            repeat_kv_heads(v, n_q_heads, n_kv_heads),
+        )
+    } else {
+        (k.clone(), v.clone())
+    };
+
     // scores = Q @ K^T * scale → [B, n_q_heads, seq, key_len]
-    let k_t = transpose(k, &[0, 1, 3, 2], None);
+    let k_t = transpose(&k, &[0, 1, 3, 2], None);
     let scores = multiply(&matmul(q, &k_t, None), &scalar_array(query_scale), None);
 
     // Append sink scores as an extra column → [B, n_q_heads, seq, key_len + 1]
@@ -453,7 +495,10 @@ pub(crate) fn attention_with_sinks(
     // ones along the last axis for the extra column.
     let true_val = scalar_array(1.0);
     let masked_scores = if let Some(mask) = mask_opt.as_ref() {
-        let extended_mask = mlx_sys::pad(mask, &[3], &[0], &[1], &true_val, None);
+        // Masks arrive as [seq, key_len] (2D, SDPA-broadcast) — pad the last
+        // axis, wherever it is, for the always-visible sink column.
+        let last_axis = mask.shape().len() as i32 - 1;
+        let extended_mask = mlx_sys::pad(mask, &[last_axis], &[0], &[1], &true_val, None);
         let neg_inf = scalar_array(f32::NEG_INFINITY);
         let zero = scalar_array(0.0);
         let penalty = mlx_sys::where_cond(&extended_mask, &zero, &neg_inf, None);
@@ -461,7 +506,8 @@ pub(crate) fn attention_with_sinks(
     } else if seq > 1 {
         let key_len = k.shape()[2] as usize;
         let causal = create_causal_mask(seq, key_len.saturating_sub(seq), None);
-        let extended_mask = mlx_sys::pad(&causal, &[3], &[0], &[1], &true_val, None);
+        let last_axis = causal.shape().len() as i32 - 1;
+        let extended_mask = mlx_sys::pad(&causal, &[last_axis], &[0], &[1], &true_val, None);
         let neg_inf = scalar_array(f32::NEG_INFINITY);
         let zero = scalar_array(0.0);
         let penalty = mlx_sys::where_cond(&extended_mask, &zero, &neg_inf, None);
@@ -488,10 +534,28 @@ pub(crate) fn attention_with_sinks(
         None,
     );
 
-    matmul(&weights_real, v, None)
+    matmul(&weights_real, &v, None)
+}
+
+/// Expand `[B, n_kv_heads, K, D]` K/V to `[B, n_q_heads, K, D]` by repeating
+/// each KV head over its contiguous query-head group (standard GQA mapping:
+/// query head `h` reads KV head `h / (n_q_heads / n_kv_heads)`).
+#[cfg(test)]
+fn repeat_kv_heads(kv: &MlxArray, n_q_heads: i32, n_kv_heads: i32) -> MlxArray {
+    assert!(n_q_heads % n_kv_heads == 0, "GQA requires divisible heads");
+    let group = n_q_heads / n_kv_heads;
+    let shape = kv.shape();
+    let (batch, key_len, head_dim) = (shape[0], shape[2], shape[3]);
+    let expanded = broadcast_to(
+        &reshape(kv, &[batch, n_kv_heads, 1, key_len, head_dim], None),
+        &[batch, n_kv_heads, group, key_len, head_dim],
+        None,
+    );
+    reshape(&expanded, &[batch, n_q_heads, key_len, head_dim], None)
 }
 
 /// Create a scalar MlxArray from a single f32 value.
+#[cfg(test)]
 fn scalar_array(val: f32) -> MlxArray {
     MlxArray::from_raw_data(
         &val as *const f32 as *const u8,
@@ -618,13 +682,17 @@ pub(crate) fn bidirectional_attention(
         let full_key_len = full_k.shape()[2] as usize;
         let cached_seq = full_key_len.saturating_sub(canvas_size);
         if let Some(buf) = kv_buffer {
-            if buf.cached_mask.is_none() {
-                let m = build_bidirectional_canvas_mask(canvas_size, cached_seq, window);
-                buf.cached_mask = Some(m.clone());
-                buf.cached_mask_seq = cached_seq;
-                m
-            } else {
-                buf.cached_mask.clone().unwrap()
+            // Reuse only when the cached-prefix length still matches: a
+            // buffer carried across blocks (cached_seq grows as blocks
+            // commit) would otherwise apply a stale, wrong-width mask.
+            match buf.cached_mask.as_ref() {
+                Some(mask) if buf.cached_mask_seq == cached_seq => mask.clone(),
+                _ => {
+                    let m = build_bidirectional_canvas_mask(canvas_size, cached_seq, window);
+                    buf.cached_mask = Some(m.clone());
+                    buf.cached_mask_seq = cached_seq;
+                    m
+                }
             }
         } else {
             build_bidirectional_canvas_mask(canvas_size, cached_seq, window)
@@ -1284,5 +1352,75 @@ mod tests {
                 1, 1, 1, 1, 1, 1,
             ]
         );
+    }
+
+    #[test]
+    fn fused_sinks_attention_matches_reference_under_gqa() {
+        // GPT-OSS shape class: grouped queries (8 q-heads over 2 kv-heads).
+        // The fused path must agree with the unfused reference on every mask
+        // mode the gpt_oss forward can produce: single-token decode (no
+        // mask), offset-causal prefill (None + seq > 1), and an explicit
+        // sliding mask.
+        use super::{
+            attention_mask_array, attention_with_sinks, attention_with_sinks_reference,
+        };
+        use mlx_sys::{astype, reshape};
+
+        let (n_heads, kv_heads, head_dim) = (8usize, 2usize, 4usize);
+        let fill = |n: usize, seed: f32| -> Vec<f32> {
+            (0..n).map(|i| (i as f32 * 0.29 + seed).sin()).collect()
+        };
+        let read_f32 = |arr: &MlxArray| -> Vec<f32> {
+            let arr = astype(arr, mlx_sys::MlxDtype::Float32, None);
+            eval(&[&arr]);
+            let len = arr.nbytes() / std::mem::size_of::<f32>();
+            let ptr = arr.data_raw() as *const f32;
+            unsafe { std::slice::from_raw_parts(ptr, len).to_vec() }
+        };
+
+        // (seq, key_len, sliding_window)
+        for (seq, key_len, window) in [
+            (1usize, 6usize, None),
+            (1, 9, Some(4usize)),
+            (5, 5, None),
+            (5, 12, None),
+            (5, 12, Some(4)),
+        ] {
+            let q = reshape(
+                &MlxArray::from_f32_slice(&fill(n_heads * seq * head_dim, 0.1)),
+                &[1, n_heads as i32, seq as i32, head_dim as i32],
+                None,
+            );
+            let k = reshape(
+                &MlxArray::from_f32_slice(&fill(kv_heads * key_len * head_dim, 0.5)),
+                &[1, kv_heads as i32, key_len as i32, head_dim as i32],
+                None,
+            );
+            let v = reshape(
+                &MlxArray::from_f32_slice(&fill(kv_heads * key_len * head_dim, 0.9)),
+                &[1, kv_heads as i32, key_len as i32, head_dim as i32],
+                None,
+            );
+            let sinks = MlxArray::from_f32_slice(&fill(n_heads, 0.3));
+            let mask = attention_mask_array(seq, key_len, window);
+            let scale = 1.0 / (head_dim as f32).sqrt();
+
+            let fused = attention_with_sinks(&q, &k, &v, &sinks, scale, seq, &mask);
+            let reference =
+                attention_with_sinks_reference(&q, &k, &v, &sinks, scale, seq, &mask);
+            let fused = read_f32(&fused);
+            let reference = read_f32(&reference);
+            assert_eq!(fused.len(), reference.len());
+            let max_diff = fused
+                .iter()
+                .zip(&reference)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                max_diff < 1e-5,
+                "fused sinks diverged from reference (seq {seq}, key_len {key_len}, \
+                 window {window:?}): max diff {max_diff}"
+            );
+        }
     }
 }

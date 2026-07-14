@@ -159,6 +159,22 @@ pub fn scaled_dot_product_attention_with_mask(
     mask: ScaledDotProductAttentionMask<'_>,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    scaled_dot_product_attention_with_mask_and_sinks(queries, keys, values, scale, mask, None, s)
+}
+
+/// Scaled dot-product attention with an explicit MLX mask and optional
+/// per-query-head attention sinks (`[n_q_heads]`). The sink logit joins the
+/// softmax denominator but contributes no value — matching mlx-lm's
+/// `scaled_dot_product_attention(..., sinks=)` used by GPT-OSS.
+pub fn scaled_dot_product_attention_with_mask_and_sinks(
+    queries: &MlxArray,
+    keys: &MlxArray,
+    values: &MlxArray,
+    scale: f32,
+    mask: ScaledDotProductAttentionMask<'_>,
+    sinks: Option<&MlxArray>,
+    s: Option<&MlxStream>,
+) -> MlxArray {
     crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
@@ -173,6 +189,7 @@ pub fn scaled_dot_product_attention_with_mask(
             ScaledDotProductAttentionMask::Array(mask) => mask.inner,
             ScaledDotProductAttentionMask::None | ScaledDotProductAttentionMask::Causal => null_arr,
         };
+        let sinks_arr = sinks.map(|sinks| sinks.inner).unwrap_or(null_arr);
         let mut res = MlxArray::empty();
         checked_ffi!(
             "mlx_fast_scaled_dot_product_attention",
@@ -184,7 +201,7 @@ pub fn scaled_dot_product_attention_with_mask(
                 scale,
                 mask_mode.as_ptr(),
                 mask_arr,
-                null_arr, // sinks
+                sinks_arr,
                 stream,
             )
         );

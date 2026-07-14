@@ -6497,6 +6497,7 @@ impl MlxRunner {
                     key.block_size_tokens,
                     key.token_count,
                     key.token_hash,
+                    prefix,
                 );
                 if disk.contains(&key_bytes) {
                     return true;
@@ -6673,6 +6674,7 @@ impl MlxRunner {
                 key.block_size_tokens,
                 key.token_count,
                 key.token_hash,
+                reused_tokens,
             );
             match disk.get(&key_bytes) {
                 Ok(Some(entry)) => match MlxKVCache::try_deserialize_from_bytes(&entry.payload) {
@@ -6814,6 +6816,7 @@ impl MlxRunner {
                 key.block_size_tokens,
                 key.token_count,
                 key.token_hash,
+                tokens,
             )
         });
         {
@@ -7004,6 +7007,7 @@ impl MlxRunner {
                             key.block_size_tokens,
                             key.token_count,
                             key.token_hash,
+                            tokens,
                         ))
                     });
                 if !disk_store_needed {
@@ -7067,6 +7071,7 @@ impl MlxRunner {
                         disk_key.block_size_tokens,
                         disk_key.token_count,
                         disk_key.token_hash,
+                        tokens,
                     );
                     let entry = crate::disk_prefix_cache::DiskPrefixCacheEntry {
                         payload,

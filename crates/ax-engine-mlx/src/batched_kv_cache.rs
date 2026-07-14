@@ -46,10 +46,7 @@
 
 use mlx_sys::{MlxArray, MlxDtype, contiguous, eval, slice, slice_update, zeros};
 
-use crate::kv_cache::MlxKVCache;
-
-/// Pre-allocated chunk size (tokens); mirrors `kv_cache::KV_CHUNK_TOKENS`.
-const KV_CHUNK_TOKENS: usize = 256;
+use crate::kv_cache::{KV_CHUNK_TOKENS, MlxKVCache};
 
 fn chunk_ceiling(n: usize) -> usize {
     n.div_ceil(KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS
