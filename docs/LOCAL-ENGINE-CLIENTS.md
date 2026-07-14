@@ -97,6 +97,18 @@ Products own install/prepare/start/stop UX. Recommended operations:
   document the validated engine commit in their manifest comments.
 - Bumping either pin is a deliberate integration change, not a silent float.
 
+## Fleet / AX Serving
+
+For multi-process and multi-Mac fleets, prefer:
+
+1. `ax-engine-server` as the runtime (HTTP OpenAI `/v1/*`)
+2. `ax-runtime-agent` as the thin proxy that registers with AX Serving
+3. Optional LAN mDNS advertise (`--advertise-lan`) so agents can resolve the
+   runtime URL without hard-coding IPs — see [LAN-DISCOVERY.md](./LAN-DISCOVERY.md)
+
+Do **not** link `ax-engine-sdk` into the portable AX Serving gateway. In-process
+SDK use stays limited to products that own a single local session (e.g. Studio).
+
 ## Implementation checklist for new clients
 
 1. Choose default backend (`in_process` vs `sidecar_http`).

@@ -588,6 +588,23 @@ per-request block-table allocation details.
 
 ---
 
+## FA Physical Block Pool Scaffold (PR4, default OFF)
+
+Track C of
+[`docs/designs/kv-weak-surfaces-2026-07-14.md`](designs/kv-weak-surfaces-2026-07-14.md)
+introduces an FA-only private block allocator in
+`crates/ax-engine-mlx/src/kv_block_pool.rs`.
+
+| Item | Status |
+|---|---|
+| Pure allocator (`allocate` / `free`, fail-closed exhaustion) | Implemented |
+| Env opt-in `AX_MLX_FA_KV_BLOCK_POOL` | Present (default OFF); **not** yet wired into live decode |
+| Integration into `MlxKVCache` / SDPA materialize | Not yet — contiguous per-request buffers remain the production path |
+| Cross-request sharing / MLA pairs | Out of scope until PR5+ |
+
+Do **not** claim memory savings or paged-attention performance from this
+scaffold alone.
+
 ## Key Invariants
 
 - `KvManager.free()` calls `promote_prompt_prefix_to_cache()` before removing

@@ -116,6 +116,43 @@ pub(crate) async fn health(
     })))
 }
 
+/// Unauthenticated discovery document for LAN browse verification.
+/// Schema: `ax.engine.discovery.v1` (see docs/LAN-DISCOVERY.md).
+///
+/// Fail closed when the generation worker is down so agents do not register a
+/// dead peer after mDNS browse (same readiness bar as `/health`).
+pub(crate) async fn discovery_info(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
+    if !live.generation_service.is_ready() {
+        return Err(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "generation_worker_unavailable",
+            "the native generation worker is unavailable".into(),
+        ));
+    }
+    let auth_required = state.api_key.is_some();
+    let mut operations = vec![
+        "chat_completions".to_string(),
+        "completions".to_string(),
+        "embeddings".to_string(),
+    ];
+    operations.sort();
+    Ok(Json(json!({
+        "schema": "ax.engine.discovery.v1",
+        "service": "ax-engine-server",
+        "version": state.discovery.version,
+        "model_id": live.model_id.as_ref(),
+        "auth_required": auth_required,
+        "openai_base_path": "/v1",
+        "operations": operations,
+        "cluster": state.discovery.cluster,
+        "instance_id": state.discovery.instance_id,
+        "runtime": live.runtime_report.clone(),
+    })))
+}
+
 pub(crate) async fn runtime_info(State(state): State<AppState>) -> Json<ServerInfoResponse> {
     let live = state.snapshot();
     Json(server_info_response(&live))

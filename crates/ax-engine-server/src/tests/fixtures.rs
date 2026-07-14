@@ -302,6 +302,10 @@ pub(super) fn base_server_args() -> ServerArgs {
         rate_limit_burst: None,
         stream_idle_timeout_secs: None,
         stream_max_duration_secs: None,
+        advertise_lan: false,
+        lan_cluster: None,
+        lan_instance_name: None,
+        lan_advertise_host: None,
     }
 }
 

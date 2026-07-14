@@ -29,6 +29,14 @@ pub(crate) struct LiveState {
     pub(crate) embedding_batcher: Arc<EmbeddingMicroBatcher>,
 }
 
+/// Metadata published on `GET /v1/discovery` and mDNS TXT (no secrets).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DiscoveryMeta {
+    pub(crate) instance_id: String,
+    pub(crate) cluster: Option<String>,
+    pub(crate) version: String,
+}
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     /// Swappable model state — take a snapshot at the start of each handler.
@@ -39,6 +47,7 @@ pub(crate) struct AppState {
     pub(crate) loading: Arc<AtomicBool>,
     pub(crate) limits: Arc<ServerLimits>,
     pub(crate) admission: Arc<AdmissionController>,
+    pub(crate) discovery: Arc<DiscoveryMeta>,
     next_live_generation: Arc<AtomicU64>,
     next_request_id: Arc<AtomicU64>,
 }
@@ -55,6 +64,7 @@ impl AppState {
             loading: Arc::new(AtomicBool::new(false)),
             limits: Arc::new(ServerLimits::default()),
             admission: Arc::new(AdmissionController::new(None)),
+            discovery: Arc::new(DiscoveryMeta::default()),
             next_live_generation: Arc::new(AtomicU64::new(2)),
             next_request_id: Arc::new(AtomicU64::new(1)),
         }
@@ -92,6 +102,11 @@ impl AppState {
 
     pub(crate) fn with_api_key(mut self, api_key: Option<String>) -> Self {
         self.api_key = api_key.map(Arc::new);
+        self
+    }
+
+    pub(crate) fn with_discovery(mut self, discovery: DiscoveryMeta) -> Self {
+        self.discovery = Arc::new(discovery);
         self
     }
 

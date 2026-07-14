@@ -30,6 +30,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/health", get(health))
         .route("/healthz", get(health))
+        .route("/v1/discovery", get(crate::metadata::discovery_info))
         .route("/metrics", get(prometheus_metrics))
         .route("/v1/runtime", get(runtime_info))
         .route("/v1/models", get(models))
@@ -175,7 +176,9 @@ impl Drop for InFlightRequestGuard {
 }
 
 fn is_health_probe(path: &str) -> bool {
-    matches!(path, "/health" | "/healthz")
+    // /v1/discovery is intentionally unauthenticated so LAN browsers can verify
+    // a candidate without holding the inference API key (keys stay out of mDNS).
+    matches!(path, "/health" | "/healthz" | "/v1/discovery")
 }
 
 fn request_has_valid_bearer_token<B>(request: &axum::http::Request<B>, expected: &str) -> bool {

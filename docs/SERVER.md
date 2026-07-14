@@ -24,6 +24,11 @@ The current preview server is intentionally narrow:
   repo-owned MLX sessions plus the llama.cpp delegated path
 - optional API key authentication for HTTP API routes
 
+Optional LAN discovery:
+
+- `--advertise-lan` publishes DNS-SD `_ax-engine._tcp` so AX Serving agents can
+  resolve this server without a hard-coded IP (see [LAN-DISCOVERY.md](./LAN-DISCOVERY.md)).
+
 It is not yet:
 
 - a production server surface
@@ -36,6 +41,7 @@ Current preview endpoints:
 
 - `GET /health`
 - `GET /healthz`
+- `GET /v1/discovery` (unauthenticated LAN verify document; see [LAN-DISCOVERY.md](./LAN-DISCOVERY.md))
 - `GET /metrics`
 - `GET /v1/runtime`
 - `GET /v1/models`

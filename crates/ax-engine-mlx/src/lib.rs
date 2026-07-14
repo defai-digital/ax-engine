@@ -9,6 +9,7 @@ pub mod fastpath;
 pub mod gemma4_assistant_mtp;
 pub(crate) mod gemma4_unified;
 pub mod generate;
+pub mod kv_block_pool;
 pub mod kv_cache;
 // Public for the kernel-dispatch probe binaries (`src/bin/`), like the
 // sibling modules; not a stable external API.

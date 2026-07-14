@@ -264,13 +264,78 @@ pub struct ServerArgs {
     /// behavior. Falls back to AX_ENGINE_STREAM_MAX_DURATION_SECS.
     #[arg(long = "stream-max-duration-secs")]
     pub stream_max_duration_secs: Option<u64>,
+
+    /// Opt-in mDNS / DNS-SD advertisement so AX Serving agents can discover
+    /// this server on the local LAN (`_ax-engine._tcp`). Requires a non-loopback
+    /// bind host (typically `--host 0.0.0.0`). See docs/LAN-DISCOVERY.md.
+    #[arg(long = "advertise-lan", default_value_t = false)]
+    pub advertise_lan: bool,
+
+    /// Optional cluster / namespace label for LAN isolation (TXT `cluster`).
+    #[arg(long = "lan-cluster")]
+    pub lan_cluster: Option<String>,
+
+    /// DNS-SD instance name. Defaults to hostname or `ax-engine`.
+    #[arg(long = "lan-instance-name")]
+    pub lan_instance_name: Option<String>,
+
+    /// IPv4 address published in mDNS and discovery URLs. Defaults to a
+    /// detected private interface address when `--host` is unspecified.
+    #[arg(long = "lan-advertise-host")]
+    pub lan_advertise_host: Option<String>,
 }
+
+const ADVERTISE_LAN_ENV: &str = "AX_ENGINE_ADVERTISE_LAN";
+const LAN_CLUSTER_ENV: &str = "AX_ENGINE_LAN_CLUSTER";
+const LAN_INSTANCE_NAME_ENV: &str = "AX_ENGINE_LAN_INSTANCE_NAME";
+const LAN_ADVERTISE_HOST_ENV: &str = "AX_ENGINE_LAN_ADVERTISE_HOST";
 
 impl ServerArgs {
     pub fn resolved_api_key(&self) -> Option<String> {
         self.api_key
             .clone()
             .or_else(|| std::env::var(API_KEY_ENV).ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn resolved_advertise_lan(&self) -> bool {
+        if self.advertise_lan {
+            return true;
+        }
+        matches!(
+            std::env::var(ADVERTISE_LAN_ENV)
+                .ok()
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        )
+    }
+
+    pub fn resolved_lan_cluster(&self) -> Option<String> {
+        self.lan_cluster
+            .clone()
+            .or_else(|| std::env::var(LAN_CLUSTER_ENV).ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn resolved_lan_instance_name(&self) -> String {
+        self.lan_instance_name
+            .clone()
+            .or_else(|| std::env::var(LAN_INSTANCE_NAME_ENV).ok())
+            .or_else(|| std::env::var("HOSTNAME").ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "ax-engine".into())
+    }
+
+    pub fn resolved_lan_advertise_host(&self) -> Option<String> {
+        self.lan_advertise_host
+            .clone()
+            .or_else(|| std::env::var(LAN_ADVERTISE_HOST_ENV).ok())
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     }

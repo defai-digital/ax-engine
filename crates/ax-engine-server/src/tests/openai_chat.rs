@@ -571,10 +571,10 @@ fn openai_chat_prompt_renderer_rejects_known_families_without_verified_fallback(
     ]))
     .expect("sample messages should deserialize");
 
+    // Llama 4 and Mistral Instruct families have verified fallbacks; keep this
+    // list aligned with `ChatUnsupportedFamily` (gemma3 / mixtral / deepseek).
     for model_id in [
         "google/gemma-3-4b-it",
-        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-        "mistral3-small",
         "mixtral-8x7b-instruct",
         "deepseek-ai/DeepSeek-V3",
     ] {
@@ -586,6 +586,12 @@ fn openai_chat_prompt_renderer_rejects_known_families_without_verified_fallback(
             "unexpected error for {model_id}: {}",
             error.1.error.message
         );
+    }
+
+    // Supported secondary families must still render (not fail closed).
+    for model_id in ["meta-llama/Llama-4-Scout-17B-16E-Instruct", "mistral-small"] {
+        render_openai_chat_prompt(model_id, &messages)
+            .unwrap_or_else(|err| panic!("{model_id} should render chat: {}", err.1.error.message));
     }
 }
 

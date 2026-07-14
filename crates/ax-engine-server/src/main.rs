@@ -18,6 +18,7 @@ mod generation;
 mod grpc;
 mod grpc_auth;
 mod grpc_metrics;
+mod lan_advertise;
 mod metadata;
 mod metrics;
 mod model_load;
@@ -78,13 +79,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limit: args.resolved_rate_limit(),
         stream_deadlines: args.resolved_stream_deadlines(),
     };
+    let api_key = args.resolved_api_key();
+    let discovery_instance_id = new_instance_id();
+    let lan_cluster = args.resolved_lan_cluster();
     let state = build_app_state(model_id.clone(), session_config)?
-        .with_api_key(args.resolved_api_key())
-        .with_limits(limits);
+        .with_api_key(api_key.clone())
+        .with_limits(limits)
+        .with_discovery(app_state::DiscoveryMeta {
+            instance_id: discovery_instance_id.clone(),
+            cluster: lan_cluster.clone(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        });
     let app = build_router(state.clone());
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
+    // Use the OS-assigned port when `--port 0` so mDNS advertises a reachable endpoint.
+    let bound_port = listener.local_addr()?.port();
 
     let grpc_bind_address = args.grpc_bind_address.clone();
+
+    // Keep the advertiser alive for the process lifetime.
+    let _lan_advertiser = if args.resolved_advertise_lan() {
+        if is_loopback_bind_host(&args.host) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "--advertise-lan requires a non-loopback --host (use 0.0.0.0 or a LAN IP)",
+            )
+            .into());
+        }
+        let advertise_ip = lan_advertise::pick_advertise_ipv4(
+            args.resolved_lan_advertise_host().as_deref(),
+            &args.host,
+        )
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+        if api_key.is_none() {
+            warn!(
+                "LAN advertise is enabled without --api-key / AX_ENGINE_API_KEY; \
+                 peers will see auth=open. Prefer requiring a bearer token on non-loopback binds."
+            );
+        }
+        let advertiser = lan_advertise::LanAdvertiser::start(lan_advertise::LanAdvertiseConfig {
+            instance_name: args.resolved_lan_instance_name(),
+            port: bound_port,
+            advertise_ip,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            model_id: model_id.clone(),
+            auth_required: api_key.is_some(),
+            cluster: lan_cluster,
+            instance_id: discovery_instance_id,
+        })
+        .map_err(|message| std::io::Error::other(message))?;
+        if !tracing_enabled {
+            eprintln!(
+                "ax-engine-server LAN mDNS advertise on {}:{} (_ax-engine._tcp)",
+                advertise_ip, bound_port
+            );
+        }
+        Some(advertiser)
+    } else {
+        None
+    };
 
     if tracing_enabled {
         info!(
@@ -141,6 +194,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_server.await?;
     }
     Ok(())
+}
+
+/// Per-process instance identity for discovery/mDNS. Mixes wall time, pid, and
+/// OS entropy (via [`std::hash::RandomState`]) so parallel starts do not share IDs.
+fn new_instance_id() -> String {
+    use std::hash::{BuildHasher, Hasher, RandomState};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let mut hasher = RandomState::new().build_hasher();
+    hasher.write_u128(nanos);
+    hasher.write_u32(pid);
+    let entropy = hasher.finish();
+    format!("axeng-{pid:x}-{entropy:016x}")
+}
+
+fn is_loopback_bind_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        // Non-IP hostnames (e.g. machine.local) are treated as non-loopback;
+        // advertise still requires a resolvable private IPv4 via pick_advertise_ipv4.
+        Err(_) => false,
+    }
 }
 
 async fn shutdown_signal() {
