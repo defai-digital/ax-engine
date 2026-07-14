@@ -27,3 +27,10 @@ Related docs:
 - [Server](../SERVER.md)
 - [OpenAI-compatible API contract](../API-COMPATIBILITY.md)
 - [CLI](../CLI.md)
+
+## Product integration model
+
+First-party apps (AX Studio, AX Code) choose **in-process** or **sidecar HTTP**
+per [LOCAL-ENGINE-CLIENTS.md](../LOCAL-ENGINE-CLIENTS.md). Most language SDKs in
+this folder target a running HTTP server; the Rust SDK is the in-process session
+contract used by the server itself and by embedded hosts.

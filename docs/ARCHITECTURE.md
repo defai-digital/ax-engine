@@ -166,3 +166,15 @@ When adding a crate, ask:
 4. Will this make error handling and observability clearer, or blur crate responsibilities?
 
 For AX Engine, a smaller and clearer core is usually the better default.
+
+## First-Party Product Clients
+
+AX Engine is consumed in two supported ways:
+
+1. **In-process** via `ax-engine-sdk` (and language bindings that embed the session API)
+2. **Sidecar HTTP** via `ax-engine-server` / `ax-engine serve` exposing OpenAI-compatible `/v1/*`
+
+Product defaults, lifecycle phases, and non-goals are specified in
+[LOCAL-ENGINE-CLIENTS.md](./LOCAL-ENGINE-CLIENTS.md). AX Studio defaults to
+in-process MLX; AX Code defaults to a managed local server. Do not force a
+single process model across products.
