@@ -1,0 +1,713 @@
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "claim_gate": {
+    "schema_version": "ax.phase0_claim_gate.v1",
+    "scope": "mlx_inference_stack_public_readme",
+    "requires_prompt_hash_parity": true,
+    "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
+    "shape_only_external_rows": [
+      "llama_cpp_metal"
+    ],
+    "requires_runtime_identity": true,
+    "requires_decode_policy_identity": true,
+    "requires_prefill_decode_split": true,
+    "requires_clean_build_commit": true,
+    "minimum_warmup_repetitions": 2,
+    "minimum_measurement_repetitions": 5,
+    "forbidden_public_claims_without_artifacts": [
+      "continuous_batching",
+      "prefix_reuse",
+      "long_context_prefill_improvement"
+    ]
+  },
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.5.2",
+    "platform": "darwin",
+    "os_build": "25F84",
+    "toolchain": {
+      "macos_sdk_version": "26.5",
+      "xcodebuild_version": [
+        "Xcode 26.6",
+        "Build version 17F113"
+      ],
+      "rustc_version": [
+        "rustc 1.96.1 (31fca3adb 2026-06-26) (Homebrew)",
+        "binary: rustc",
+        "commit-hash: 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd",
+        "commit-date: 2026-06-26",
+        "host: aarch64-apple-darwin",
+        "release: 1.96.1",
+        "LLVM version: 22.1.8"
+      ],
+      "cargo_version": "cargo 1.96.1 (356927216 2026-06-26) (Homebrew)",
+      "homebrew_mlx": "mlx 0.32.0",
+      "homebrew_mlx_c": "mlx-c 0.6.0_3"
+    },
+    "performance_conditions": {
+      "load_average": {
+        "one_minute": 3.31,
+        "five_minutes": 3.025,
+        "fifteen_minutes": 2.833
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 58717,
+          "state": "S",
+          "cpu_percent": 33.2,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 24.2,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 16.6,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 12.4,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 88058,
+          "state": "S",
+          "cpu_percent": 4.9,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 99164,
+          "state": "S",
+          "cpu_percent": 2.2,
+          "command": "replayd"
+        },
+        {
+          "pid": 89106,
+          "state": "S+",
+          "cpu_percent": 1.9,
+          "command": "ax-engine"
+        },
+        {
+          "pid": 41015,
+          "state": "S",
+          "cpu_percent": 1.7,
+          "command": "Code Helper (Renderer)"
+        }
+      ]
+    }
+  },
+  "benchmark_window": {
+    "started_at": "2026-07-12T21:57:20-0400",
+    "finished_at": "2026-07-12T21:58:10-0400",
+    "elapsed_seconds": 50.2,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 3.604,
+        "five_minutes": 2.999,
+        "fifteen_minutes": 2.814
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 58717,
+          "state": "S",
+          "cpu_percent": 36.0,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 15.4,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 88060,
+          "state": "R",
+          "cpu_percent": 11.4,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 9.8,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 593,
+          "state": "Ss",
+          "cpu_percent": 4.4,
+          "command": "dasd"
+        },
+        {
+          "pid": 88058,
+          "state": "S",
+          "cpu_percent": 4.0,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 582,
+          "state": "Ss",
+          "cpu_percent": 2.7,
+          "command": "opendirectoryd"
+        },
+        {
+          "pid": 99164,
+          "state": "S",
+          "cpu_percent": 2.0,
+          "command": "replayd"
+        }
+      ]
+    },
+    "performance_conditions_end": {
+      "load_average": {
+        "one_minute": 3.31,
+        "five_minutes": 3.025,
+        "fifteen_minutes": 2.833
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 58717,
+          "state": "S",
+          "cpu_percent": 33.2,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 24.2,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 16.6,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 12.4,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 88058,
+          "state": "S",
+          "cpu_percent": 4.9,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 99164,
+          "state": "S",
+          "cpu_percent": 2.2,
+          "command": "replayd"
+        },
+        {
+          "pid": 89106,
+          "state": "S+",
+          "cpu_percent": 1.9,
+          "command": "ax-engine"
+        },
+        {
+          "pid": 41015,
+          "state": "S",
+          "cpu_percent": 1.7,
+          "command": "Code Helper (Renderer)"
+        }
+      ]
+    }
+  },
+  "build": {
+    "commit": "b25015874a73ea159879e443459e999e1fcd2959",
+    "build_profile": "release",
+    "server_binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-server",
+    "git_tracked_dirty": false,
+    "git_tracked_status": [],
+    "linked_libraries": [
+      "/opt/homebrew/opt/mlx/lib/libmlx.dylib (compatibility version 0.0.0, current version 0.0.0)",
+      "/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 373.2.0)"
+    ]
+  },
+  "model": "mlx-community/gemma-4-e4b-it-4bit",
+  "model_repo_id": "mlx-community/gemma-4-e4b-it-4bit",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e4b-it-4bit/snapshots/deb1db712068b1c9f83fb1c97f08c1204b9459a1",
+  "model_dir_source": "huggingface_cache",
+  "hf_cache_root": "/Volumes/Ext4T/models/hub",
+  "model_config": {
+    "model_type": "gemma4",
+    "quantization": {
+      "group_size": 64,
+      "bits": 4,
+      "mode": "affine"
+    },
+    "model_family": "gemma4",
+    "linear_attention_enabled": false,
+    "linear_attention": {}
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "external_gguf_reference": "llama.cpp Metal llama-bench",
+    "external_gguf_reference_present": false,
+    "external_gguf_reference_required": false,
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback. llama_cpp_metal rows are shape-compatible external GGUF rows, not prompt-hash parity or repo-owned MLX throughput evidence.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer/gemma-4-e4b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+          "token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+          "token_count": 128,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 512,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer/gemma-4-e4b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json",
+          "token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+          "token_count": 512,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 2048,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer/gemma-4-e4b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+          "token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
+          "token_count": 2048,
+          "prompt_source": "random"
+        }
+      ]
+    },
+    "strictness": "mlx_lm_prompt_algorithm_reproduced; llama_cpp_metal_shape_compatible_only"
+  },
+  "prompt_tokens": [
+    128,
+    512,
+    2048
+  ],
+  "generation_tokens": 128,
+  "seed": 0,
+  "repetitions": 5,
+  "warmup_repetitions": 0,
+  "cooldown": 0.0,
+  "prefill_step_size": 2048,
+  "ax_mtp_max_depth": null,
+  "ax_mtp_disable_ngram_stacking": false,
+  "ax_mtp_approximate_optimistic": false,
+  "ax_mtp_fast_tail_topk_sampling": false,
+  "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+  "prefill_ttft_measurement_contract": "cold_prefill_no_cross_request_prefix_cache",
+  "prefill_timing_scope_contract": {
+    "mlx_lm": "upstream_mlx_lm_response_stats",
+    "ax_engine_primary_prefill": "server_sse_runner_time_us",
+    "ax_engine_client_wall_ttft": "http_sse_first_output_token_observed_by_client",
+    "long_greedy_ax_prefill_work": "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+  },
+  "concurrency": 1,
+  "concurrent_prefill_overlap_classification": {
+    "classification": "single_request_no_overlap",
+    "continuous_batching_claim": false,
+    "concurrency": 1
+  },
+  "prefix_reuse_evidence": {
+    "hit_count": 0,
+    "miss_count": 0,
+    "blocked_count": 0,
+    "blocked_policy_disabled_count": 0,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "stored_prefix_count": 0,
+    "eviction_count": 0,
+    "reused_token_count": 0,
+    "warmup_token_count": 0,
+    "cache_entry_count": 0,
+    "cache_bytes_kib": 0,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": false,
+    "physical_snapshot_coverage": "none_observed",
+    "blocked_reason_count": 0,
+    "blocked_reason_accounting_gap_count": 0
+  },
+  "run_stability_summary": {
+    "schema_version": "ax.benchmark_run_stability_summary.v1",
+    "scope": "ax_engine_rows",
+    "row_count": 0,
+    "stable_enough_count": 0,
+    "unstable_count": 0,
+    "missing_count": 0,
+    "classification_counts": {},
+    "unstable_rows": [],
+    "publication_candidate": false
+  },
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "ax_linear_attention_projection_pack": false,
+  "ax_linear_attention_projection_pack_compare": false,
+  "ax_dense_ffn_gate_up_pack": false,
+  "ax_dense_ffn_gate_up_pack_compare": false,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal": false,
+  "ax_direct_linear_attention_post_input_route_compare": false,
+  "ax_prefill_profile": false,
+  "ax_decode_profile": false,
+  "results": [
+    {
+      "prefill_tok_s": {
+        "mean": 1908.5726,
+        "median": 1907.323,
+        "min": 1896.06,
+        "max": 1918.496
+      },
+      "decode_tok_s": {
+        "mean": 136.5742,
+        "median": 136.585,
+        "min": 136.26,
+        "max": 136.803
+      },
+      "peak_memory_gb": {
+        "mean": 4.4588,
+        "median": 4.459,
+        "min": 4.458,
+        "max": 4.46
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 1918.496,
+          "decode_tok_s": 136.52,
+          "peak_memory_gb": 4.458,
+          "total_time_s": 1.11,
+          "ttft_ms": 66.71892982836555
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 1904.956,
+          "decode_tok_s": 136.26,
+          "peak_memory_gb": 4.458,
+          "total_time_s": 1.115,
+          "ttft_ms": 67.19315301770749
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 1896.06,
+          "decode_tok_s": 136.803,
+          "peak_memory_gb": 4.459,
+          "total_time_s": 1.114,
+          "ttft_ms": 67.50841218104912
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 1916.028,
+          "decode_tok_s": 136.703,
+          "peak_memory_gb": 4.459,
+          "total_time_s": 1.12,
+          "ttft_ms": 66.80486923990672
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 1907.323,
+          "decode_tok_s": 136.585,
+          "peak_memory_gb": 4.46,
+          "total_time_s": 1.128,
+          "ttft_ms": 67.10976588653311
+        }
+      ],
+      "total_time_s": {
+        "mean": 1.1174,
+        "median": 1.115,
+        "min": 1.11,
+        "max": 1.128
+      },
+      "reported_averages": {
+        "prefill_tok_s": 1908.573,
+        "decode_tok_s": 136.574,
+        "peak_memory_gb": 4.459
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer/gemma-4-e4b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+      "prompt_token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+      "prompt_source": "random",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 67.0670260307124,
+        "median": 67.10976588653311,
+        "min": 66.71892982836555,
+        "max": 67.50841218104912
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 2481.5732,
+        "median": 2476.044,
+        "min": 2470.603,
+        "max": 2499.761
+      },
+      "decode_tok_s": {
+        "mean": 133.13060000000002,
+        "median": 133.094,
+        "min": 132.391,
+        "max": 133.647
+      },
+      "peak_memory_gb": {
+        "mean": 4.9398,
+        "median": 4.94,
+        "min": 4.939,
+        "max": 4.941
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 2486.869,
+          "decode_tok_s": 133.094,
+          "peak_memory_gb": 4.939,
+          "total_time_s": 1.278,
+          "ttft_ms": 205.88137131469327
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 2474.589,
+          "decode_tok_s": 133.619,
+          "peak_memory_gb": 4.939,
+          "total_time_s": 1.291,
+          "ttft_ms": 206.9030453137875
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 2499.761,
+          "decode_tok_s": 132.902,
+          "peak_memory_gb": 4.94,
+          "total_time_s": 1.278,
+          "ttft_ms": 204.8195807519199
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 2476.044,
+          "decode_tok_s": 132.391,
+          "peak_memory_gb": 4.94,
+          "total_time_s": 1.286,
+          "ttft_ms": 206.7814626880621
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 2470.603,
+          "decode_tok_s": 133.647,
+          "peak_memory_gb": 4.941,
+          "total_time_s": 1.279,
+          "ttft_ms": 207.2368567511656
+        }
+      ],
+      "total_time_s": {
+        "mean": 1.2824,
+        "median": 1.279,
+        "min": 1.278,
+        "max": 1.291
+      },
+      "reported_averages": {
+        "prefill_tok_s": 2481.573,
+        "decode_tok_s": 133.131,
+        "peak_memory_gb": 4.94
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer/gemma-4-e4b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json",
+      "prompt_token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+      "prompt_source": "random",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 206.32446336392567,
+        "median": 206.7814626880621,
+        "min": 204.8195807519199,
+        "max": 207.2368567511656
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 2602.296,
+        "median": 2608.659,
+        "min": 2588.415,
+        "max": 2612.48
+      },
+      "decode_tok_s": {
+        "mean": 130.1156,
+        "median": 130.05,
+        "min": 129.755,
+        "max": 130.512
+      },
+      "peak_memory_gb": {
+        "mean": 5.0938,
+        "median": 5.094,
+        "min": 5.093,
+        "max": 5.095
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 2612.48,
+          "decode_tok_s": 130.512,
+          "peak_memory_gb": 5.093,
+          "total_time_s": 1.872,
+          "ttft_ms": 783.9294463498285
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 2611.071,
+          "decode_tok_s": 130.249,
+          "peak_memory_gb": 5.093,
+          "total_time_s": 1.873,
+          "ttft_ms": 784.3524745209916
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 2590.855,
+          "decode_tok_s": 130.05,
+          "peak_memory_gb": 5.094,
+          "total_time_s": 1.884,
+          "ttft_ms": 790.4726432007967
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 2588.415,
+          "decode_tok_s": 129.755,
+          "peak_memory_gb": 5.094,
+          "total_time_s": 1.892,
+          "ttft_ms": 791.2177915828798
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 2608.659,
+          "decode_tok_s": 130.012,
+          "peak_memory_gb": 5.095,
+          "total_time_s": 1.883,
+          "ttft_ms": 785.0776970083097
+        }
+      ],
+      "total_time_s": {
+        "mean": 1.8808,
+        "median": 1.883,
+        "min": 1.872,
+        "max": 1.892
+      },
+      "reported_averages": {
+        "prefill_tok_s": 2602.296,
+        "decode_tok_s": 130.115,
+        "peak_memory_gb": 5.094
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer/gemma-4-e4b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+      "prompt_token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
+      "prompt_source": "random",
+      "prompt_tokens": 2048,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 787.0100105325612,
+        "median": 785.0776970083097,
+        "min": 783.9294463498285,
+        "max": 791.2177915828798
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    }
+  ],
+  "bandwidth_accounting": {
+    "safetensor_bytes": 5217361182,
+    "moe_block": null,
+    "moe_active_bytes": null,
+    "bytes_used_for_estimate": 5217361182,
+    "estimate_kind": "dense_safetensor_total",
+    "peak_bandwidth_gb_s": null,
+    "peak_bandwidth_source": null,
+    "ax_bandwidth_peak_source": null,
+    "per_row": []
+  }
+}

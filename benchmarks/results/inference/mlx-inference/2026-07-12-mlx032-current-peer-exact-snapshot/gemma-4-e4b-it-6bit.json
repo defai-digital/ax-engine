@@ -1,0 +1,83 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e4b-it-6bit/snapshots/d786394b6a0cfb1cebb74bac11d81fcb1b3ce8c8",
+  "model_repo_id": "mlx-community/gemma-4-e4b-it-6bit",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e4b-it-6bit/snapshots/d786394b6a0cfb1cebb74bac11d81fcb1b3ce8c8",
+  "output_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer-exact-snapshot/gemma-4-e4b-it-6bit.json",
+  "benchmark_window": {
+    "started_at": "2026-07-12T22:52:38-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 2.846,
+        "five_minutes": 3.181,
+        "fifteen_minutes": 3.206
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 41015,
+          "state": "S",
+          "cpu_percent": 18.4,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 32916,
+          "state": "S+",
+          "cpu_percent": 18.3,
+          "command": "Python"
+        },
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 18.3,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 58717,
+          "state": "S",
+          "cpu_percent": 17.8,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 17.4,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 12.7,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 88058,
+          "state": "S",
+          "cpu_percent": 7.2,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 88077,
+          "state": "S",
+          "cpu_percent": 1.7,
+          "command": "Code Helper"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "schema": "ax.mtp_6bit_ax_acceleration_summary.v3",
+  "publication_candidate": true,
+  "claim_type": "exact_mtp_acceleration",
+  "run_dir": "benchmarks/results/speculative/mtp-6bit/2026-07-12-exact-mtp-smoke",
+  "methodology": {
+    "targets": [
+      "qwen3.6-27b-6bit"
+    ],
+    "suites": [
+      "flappy"
+    ],
+    "generated_tokens": 64,
+    "repetitions": 1,
+    "warmup_repetitions": 0,
+    "cooldown_s": 0.0,
+    "inter_case_cooldown_s": 0.0,
+    "sampling": {
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "top_k": 0
+    },
+    "correctness_contract": "distribution-exact MTP with deterministic-delta proposals, residual rejection correction, and per-mode seed reproducibility",
+    "comparison": "AX MTP decode median divided by AX direct decode median for the same model package and prompt suite.",
+    "mtp_ngram": "disabled; no MTP+n-gram rows are run or promoted"
+  },
+  "peer_support": {
+    "mtplx": {
+      "value": null,
+      "label": "N/A",
+      "reason": "Not run: this artifact is AX Engine only and compares each prepared 6-bit download-mtp package against the same package with MTP disabled."
+    },
+    "lightning_mlx": {
+      "value": null,
+      "label": "N/A",
+      "reason": "Not run: this artifact is AX Engine only and compares each prepared 6-bit download-mtp package against the same package with MTP disabled."
+    }
+  },
+  "rows": [
+    {
+      "model_id": "qwen3.6-27b-6bit",
+      "model": "Qwen3.6 27B",
+      "suite_id": "flappy",
+      "suite": "flappy",
+      "mode": "Qwen fused sidecar",
+      "depth": 3,
+      "ax_direct_decode_tok_s": 25.237404954561125,
+      "ax_mtp_decode_tok_s": 36.444608337096106,
+      "ax_mtp_speedup_x": 1.4440711476759625,
+      "ax_mtp_prefill_tok_s": 238.96267648444095,
+      "ax_mtp_ttft_ms": 1374.3850000000002,
+      "ax_mtp_accept_rate_pct": 96.55172413793103,
+      "ax_mtp_accept_rate_kind": "verified_accept_rate",
+      "ax_mtp_draft_quality_pct": 100.0,
+      "ax_mtp_draft_quality_kind": "target_argmax_match_ewma",
+      "ax_mtp_step_coverage_pct": 100.0,
+      "ax_mtp_decode_steps": 36,
+      "ax_mtp_emitted_tokens": 252,
+      "ax_mtp_direct_fallback_steps": 0,
+      "ax_mtp_decode_route_steps": 36,
+      "ax_mtp_fallback_prompt_count": 0,
+      "prompt_count": 4,
+      "publication_candidate": true,
+      "ax_mtp_ngram_telemetry": {
+        "ax_ngram_accepted_tokens": 0,
+        "ax_ngram_draft_tokens": 0,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_mtp_ngram_accepted_tokens": 0,
+        "ax_mtp_ngram_proposed_tokens": 0,
+        "ax_mtp_ngram_submitted_tokens": 0,
+        "ax_mtp_ngram_submitted_accepted_tokens": 0,
+        "ax_mtp_ngram_hit_steps": 0,
+        "ax_mtp_ngram_attempt_steps": 0
+      },
+      "artifact": "benchmarks/results/speculative/mtp-6bit/2026-07-12-exact-mtp-smoke/qwen3.6-27b-6bit/flappy/ax_mtp.json",
+      "mtplx": "N/A",
+      "lightning_mlx": "N/A"
+    }
+  ]
+}

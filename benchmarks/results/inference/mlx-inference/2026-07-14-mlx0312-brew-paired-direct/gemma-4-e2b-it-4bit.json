@@ -1,0 +1,83 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "mlx-community/gemma-4-e2b-it-4bit",
+  "model_repo_id": "mlx-community/gemma-4-e2b-it-4bit",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/2c3e507453b4f218d05fe3cc97bea5c5a654257e",
+  "output_path": "benchmarks/results/inference/mlx-inference/2026-07-14-mlx0312-brew-paired-direct/gemma-4-e2b-it-4bit.json",
+  "benchmark_window": {
+    "started_at": "2026-07-14T00:42:26-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.982,
+        "five_minutes": 1.853,
+        "fifteen_minutes": 1.882
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t100%; charged; 0:00 remaining present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 81.1,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 30593,
+          "state": "Ss",
+          "cpu_percent": 26.7,
+          "command": "XprotectService"
+        },
+        {
+          "pid": 34232,
+          "state": "S+",
+          "cpu_percent": 23.1,
+          "command": "claude"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 16.0,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 66737,
+          "state": "S",
+          "cpu_percent": 10.8,
+          "command": "Python"
+        },
+        {
+          "pid": 1418,
+          "state": "S",
+          "cpu_percent": 10.3,
+          "command": "avconferenced"
+        },
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 7.8,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 19695,
+          "state": "Ss",
+          "cpu_percent": 6.3,
+          "command": "VTEncoderXPCService"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e4b-it-4bit/snapshots/475b9088d29754a3379866cf5aeb6b41acd313c2",
+  "model_repo_id": "mlx-community/gemma-4-e4b-it-4bit",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e4b-it-4bit/snapshots/475b9088d29754a3379866cf5aeb6b41acd313c2",
+  "output_path": "benchmarks/results/inference/mlx-inference/2026-07-13-mlx032-current-snapshot-paired-direct-clean/gemma-4-e4b-it-4bit.json",
+  "benchmark_window": {
+    "started_at": "2026-07-13T08:55:35-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.779,
+        "five_minutes": 1.821,
+        "fifteen_minutes": 1.85
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 21.5,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 58717,
+          "state": "S",
+          "cpu_percent": 17.6,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 13.0,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 59728,
+          "state": "S",
+          "cpu_percent": 11.2,
+          "command": "Python"
+        },
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 10.4,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 88058,
+          "state": "S",
+          "cpu_percent": 4.4,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 582,
+          "state": "Ss",
+          "cpu_percent": 3.2,
+          "command": "opendirectoryd"
+        },
+        {
+          "pid": 761,
+          "state": "Ss",
+          "cpu_percent": 2.5,
+          "command": "sysmond"
+        }
+      ]
+    }
+  }
+}

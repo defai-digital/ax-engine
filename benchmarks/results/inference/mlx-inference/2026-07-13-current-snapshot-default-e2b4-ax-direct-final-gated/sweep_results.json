@@ -1,0 +1,74 @@
+{
+  "schema_version": "ax.ax_only_sweep.v1",
+  "manifest_path": "/Users/akiralam/code/ax-engine/benchmarks/manifests/llama_cpp_metal/inventory.json",
+  "reuse_reference_root": null,
+  "model_snapshot_reference_root": null,
+  "ax_direct_only": true,
+  "prompt_tokens": "128,512,2048",
+  "generation_tokens": 128,
+  "repetitions": 5,
+  "warmup_repetitions": 2,
+  "cooldown": 15.0,
+  "max_load_average": 2.0,
+  "max_top_process_cpu_percent": 50.0,
+  "load_average_wait_timeout": 3600.0,
+  "load_average_poll_interval": 10.0,
+  "started_at": "2026-07-13T15:22:53-0400",
+  "elapsed_seconds": 2264.0,
+  "benchmark_window": {
+    "started_at": "2026-07-13T15:22:53-0400",
+    "finished_at": "2026-07-13T16:00:37-0400",
+    "elapsed_seconds": 2264.0,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 2.571,
+        "five_minutes": 2.754,
+        "fifteen_minutes": 2.874
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t100%; charged; 0:00 remaining present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false
+    },
+    "performance_conditions_end": {
+      "load_average": {
+        "one_minute": 2.941,
+        "five_minutes": 2.781,
+        "fifteen_minutes": 2.632
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t100%; charged; 0:00 remaining present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false
+    }
+  },
+  "planned_row_count": 1,
+  "completed_row_count": 0,
+  "publication_candidate": false,
+  "failed_row_count": 1,
+  "status_counts": {
+    "interrupted": 1
+  },
+  "rows": [
+    {
+      "slug": "gemma-4-e2b-it-4bit",
+      "readme_model": "Gemma 4 E2B",
+      "readme_quant": "4-bit",
+      "status": "interrupted",
+      "started_at": "2026-07-13T15:22:53-0400",
+      "note": "received SIGINT"
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "mlx-community/gemma-4-e2b-it-6bit",
+  "model_repo_id": "mlx-community/gemma-4-e2b-it-6bit",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e2b-it-6bit/snapshots/40d43b05f94ee798c0e40fe19fcd9ef49928486b",
+  "output_path": "benchmarks/results/inference/mlx-inference/2026-07-14-mlx0312-brew-paired-direct/gemma-4-e2b-it-6bit.json",
+  "benchmark_window": {
+    "started_at": "2026-07-14T00:43:12-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.803,
+        "five_minutes": 1.826,
+        "fifteen_minutes": 1.869
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t100%; charged; 0:00 remaining present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 68860,
+          "state": "S",
+          "cpu_percent": 9.4,
+          "command": "Python"
+        },
+        {
+          "pid": 89106,
+          "state": "S+",
+          "cpu_percent": 5.7,
+          "command": "ax-engine"
+        },
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 5.4,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 88060,
+          "state": "R",
+          "cpu_percent": 4.7,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 17153,
+          "state": "S+",
+          "cpu_percent": 4.6,
+          "command": "codex"
+        },
+        {
+          "pid": 1418,
+          "state": "R",
+          "cpu_percent": 4.3,
+          "command": "avconferenced"
+        },
+        {
+          "pid": 34232,
+          "state": "S+",
+          "cpu_percent": 4.3,
+          "command": "claude"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 3.6,
+          "command": "WindowServer"
+        }
+      ]
+    }
+  }
+}

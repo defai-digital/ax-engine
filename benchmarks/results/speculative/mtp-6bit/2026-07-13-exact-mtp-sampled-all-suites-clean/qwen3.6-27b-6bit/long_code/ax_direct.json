@@ -1,0 +1,83 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1",
+  "model_repo_id": "ax-local/mlx-community--Qwen3.6-27B-6bit-MTP",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1",
+  "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/speculative/mtp-6bit/2026-07-13-exact-mtp-sampled-all-suites-clean/qwen3.6-27b-6bit/long_code/ax_direct.json",
+  "benchmark_window": {
+    "started_at": "2026-07-13T03:14:12-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 2.549,
+        "five_minutes": 2.37,
+        "fifteen_minutes": 2.307
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 50.7,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 1,
+          "state": "Ss",
+          "cpu_percent": 36.2,
+          "command": "launchd"
+        },
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 20.5,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 61253,
+          "state": "Ss",
+          "cpu_percent": 16.9,
+          "command": "Python"
+        },
+        {
+          "pid": 58717,
+          "state": "S",
+          "cpu_percent": 16.5,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 17153,
+          "state": "S+",
+          "cpu_percent": 8.5,
+          "command": "codex"
+        },
+        {
+          "pid": 61254,
+          "state": "S",
+          "cpu_percent": 5.3,
+          "command": "Python"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 4.1,
+          "command": "WindowServer"
+        }
+      ]
+    }
+  }
+}

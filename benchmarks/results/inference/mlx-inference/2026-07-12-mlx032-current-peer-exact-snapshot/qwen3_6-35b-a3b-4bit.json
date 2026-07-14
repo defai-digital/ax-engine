@@ -1,0 +1,1060 @@
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "claim_gate": {
+    "schema_version": "ax.phase0_claim_gate.v1",
+    "scope": "mlx_inference_stack_public_readme",
+    "requires_prompt_hash_parity": true,
+    "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
+    "shape_only_external_rows": [
+      "llama_cpp_metal"
+    ],
+    "requires_runtime_identity": true,
+    "requires_decode_policy_identity": true,
+    "requires_prefill_decode_split": true,
+    "requires_clean_build_commit": true,
+    "minimum_warmup_repetitions": 2,
+    "minimum_measurement_repetitions": 5,
+    "forbidden_public_claims_without_artifacts": [
+      "continuous_batching",
+      "prefix_reuse",
+      "long_context_prefill_improvement"
+    ]
+  },
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.5.2",
+    "platform": "darwin",
+    "os_build": "25F84",
+    "toolchain": {
+      "macos_sdk_version": "26.5",
+      "xcodebuild_version": [
+        "Xcode 26.6",
+        "Build version 17F113"
+      ],
+      "rustc_version": [
+        "rustc 1.96.1 (31fca3adb 2026-06-26) (Homebrew)",
+        "binary: rustc",
+        "commit-hash: 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd",
+        "commit-date: 2026-06-26",
+        "host: aarch64-apple-darwin",
+        "release: 1.96.1",
+        "LLVM version: 22.1.8"
+      ],
+      "cargo_version": "cargo 1.96.1 (356927216 2026-06-26) (Homebrew)",
+      "homebrew_mlx": "mlx 0.32.0",
+      "homebrew_mlx_c": "mlx-c 0.6.0_3"
+    },
+    "performance_conditions": {
+      "load_average": {
+        "one_minute": 2.341,
+        "five_minutes": 2.334,
+        "fifteen_minutes": 2.709
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t79%; charging; 1:18 remaining present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 28.6,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 16.2,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 41015,
+          "state": "S",
+          "cpu_percent": 13.7,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 88058,
+          "state": "S",
+          "cpu_percent": 5.2,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 5.2,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 89106,
+          "state": "S+",
+          "cpu_percent": 2.5,
+          "command": "ax-engine"
+        },
+        {
+          "pid": 88077,
+          "state": "S",
+          "cpu_percent": 1.1,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 77611,
+          "state": "S+",
+          "cpu_percent": 0.8,
+          "command": "grok"
+        }
+      ]
+    }
+  },
+  "benchmark_window": {
+    "started_at": "2026-07-12T23:06:10-0400",
+    "finished_at": "2026-07-12T23:06:50-0400",
+    "elapsed_seconds": 39.9,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 2.194,
+        "five_minutes": 2.299,
+        "fifteen_minutes": 2.715
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t79%; charging; (no estimate) present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 8.8,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 4.7,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 615,
+          "state": "Rs",
+          "cpu_percent": 3.5,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 88058,
+          "state": "S",
+          "cpu_percent": 3.3,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 582,
+          "state": "Ss",
+          "cpu_percent": 2.0,
+          "command": "opendirectoryd"
+        },
+        {
+          "pid": 71737,
+          "state": "S+",
+          "cpu_percent": 1.9,
+          "command": "curl"
+        },
+        {
+          "pid": 89106,
+          "state": "S+",
+          "cpu_percent": 1.5,
+          "command": "ax-engine"
+        },
+        {
+          "pid": 541,
+          "state": "Ss",
+          "cpu_percent": 1.0,
+          "command": "logd"
+        }
+      ]
+    },
+    "performance_conditions_end": {
+      "load_average": {
+        "one_minute": 2.341,
+        "five_minutes": 2.334,
+        "fifteen_minutes": 2.709
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t79%; charging; 1:18 remaining present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 693,
+          "state": "Ss",
+          "cpu_percent": 28.6,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 16.2,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 41015,
+          "state": "S",
+          "cpu_percent": 13.7,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 88058,
+          "state": "S",
+          "cpu_percent": 5.2,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 5.2,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 89106,
+          "state": "S+",
+          "cpu_percent": 2.5,
+          "command": "ax-engine"
+        },
+        {
+          "pid": 88077,
+          "state": "S",
+          "cpu_percent": 1.1,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 77611,
+          "state": "S+",
+          "cpu_percent": 0.8,
+          "command": "grok"
+        }
+      ]
+    }
+  },
+  "build": {
+    "commit": "25c5a07ad79d34a4fac39d6934691987cc7b46c7",
+    "build_profile": "release",
+    "server_binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-server",
+    "git_tracked_dirty": true,
+    "git_tracked_status": [
+      " M crates/ax-engine-mlx/src/weights.rs"
+    ],
+    "linked_libraries": [
+      "/opt/homebrew/opt/mlx/lib/libmlx.dylib (compatibility version 0.0.0, current version 0.0.0)",
+      "/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 373.2.0)"
+    ]
+  },
+  "model": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46",
+  "model_repo_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46",
+  "model_dir_source": "explicit",
+  "hf_cache_root": null,
+  "model_config": {
+    "model_type": "qwen3_5_moe",
+    "quantization": {
+      "group_size": 64,
+      "bits": 4,
+      "mode": "affine",
+      "language_model.model.layers.0.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.0.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.1.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.1.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.2.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.2.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.3.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.3.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.4.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.4.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.5.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.5.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.6.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.6.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.7.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.7.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.8.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.8.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.9.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.9.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.10.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.10.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.11.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.11.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.12.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.12.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.13.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.13.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.14.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.14.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.15.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.15.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.16.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.16.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.17.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.17.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.18.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.18.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.19.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.19.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.20.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.20.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.21.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.21.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.22.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.22.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.23.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.23.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.24.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.24.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.25.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.25.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.26.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.26.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.27.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.27.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.28.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.28.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.29.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.29.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.30.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.30.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.31.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.31.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.32.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.32.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.33.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.33.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.34.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.34.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.35.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.35.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.36.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.36.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.37.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.37.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.38.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.38.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.39.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.39.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      }
+    },
+    "model_family": "qwen3_5",
+    "linear_attention_enabled": true,
+    "linear_attention": {
+      "full_attention_interval": 4,
+      "num_value_heads": 32,
+      "num_key_heads": 16,
+      "key_head_dim": 128,
+      "value_head_dim": 128,
+      "conv_kernel_dim": 4
+    },
+    "linear_attention_projection_layout": {
+      "schema_version": "ax.linear_attention_projection_layout.v1",
+      "layout": "split_qkv_z_a_b",
+      "linear_layers": 30,
+      "packed_layers": 0,
+      "split_layers": 30,
+      "role_counts": {
+        "linear_attention_in_proj_a": 30,
+        "linear_attention_in_proj_b": 30,
+        "linear_attention_in_proj_qkv": 30,
+        "linear_attention_in_proj_z": 30
+      },
+      "offline_pack_candidate": true
+    }
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "external_gguf_reference": "llama.cpp Metal llama-bench",
+    "external_gguf_reference_present": false,
+    "external_gguf_reference_required": false,
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback. llama_cpp_metal rows are shape-compatible external GGUF rows, not prompt-hash parity or repo-owned MLX throughput evidence.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer-exact-snapshot/qwen3_6-35b-a3b-4bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+          "token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+          "token_count": 128,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 512,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer-exact-snapshot/qwen3_6-35b-a3b-4bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+          "token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+          "token_count": 512,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 2048,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer-exact-snapshot/qwen3_6-35b-a3b-4bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+          "token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
+          "token_count": 2048,
+          "prompt_source": "random"
+        }
+      ]
+    },
+    "strictness": "mlx_lm_prompt_algorithm_reproduced; llama_cpp_metal_shape_compatible_only"
+  },
+  "prompt_tokens": [
+    128,
+    512,
+    2048
+  ],
+  "generation_tokens": 128,
+  "seed": 0,
+  "repetitions": 5,
+  "warmup_repetitions": 0,
+  "cooldown": 0.0,
+  "prefill_step_size": 2048,
+  "ax_mtp_max_depth": null,
+  "ax_mtp_disable_ngram_stacking": false,
+  "ax_mtp_approximate_optimistic": false,
+  "ax_mtp_fast_tail_topk_sampling": false,
+  "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+  "prefill_ttft_measurement_contract": "cold_prefill_no_cross_request_prefix_cache",
+  "prefill_timing_scope_contract": {
+    "mlx_lm": "upstream_mlx_lm_response_stats",
+    "ax_engine_primary_prefill": "server_sse_runner_time_us",
+    "ax_engine_client_wall_ttft": "http_sse_first_output_token_observed_by_client",
+    "long_greedy_ax_prefill_work": "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+  },
+  "concurrency": 1,
+  "concurrent_prefill_overlap_classification": {
+    "classification": "single_request_no_overlap",
+    "continuous_batching_claim": false,
+    "concurrency": 1
+  },
+  "prefix_reuse_evidence": {
+    "hit_count": 0,
+    "miss_count": 0,
+    "blocked_count": 0,
+    "blocked_policy_disabled_count": 0,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "stored_prefix_count": 0,
+    "eviction_count": 0,
+    "reused_token_count": 0,
+    "warmup_token_count": 0,
+    "cache_entry_count": 0,
+    "cache_bytes_kib": 0,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": false,
+    "physical_snapshot_coverage": "none_observed",
+    "blocked_reason_count": 0,
+    "blocked_reason_accounting_gap_count": 0
+  },
+  "run_stability_summary": {
+    "schema_version": "ax.benchmark_run_stability_summary.v1",
+    "scope": "ax_engine_rows",
+    "row_count": 0,
+    "stable_enough_count": 0,
+    "unstable_count": 0,
+    "missing_count": 0,
+    "classification_counts": {},
+    "unstable_rows": [],
+    "publication_candidate": false
+  },
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "ax_linear_attention_projection_pack": false,
+  "ax_linear_attention_projection_pack_compare": false,
+  "ax_dense_ffn_gate_up_pack": false,
+  "ax_dense_ffn_gate_up_pack_compare": false,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal": false,
+  "ax_direct_linear_attention_post_input_route_compare": false,
+  "ax_prefill_profile": false,
+  "ax_decode_profile": false,
+  "results": [
+    {
+      "prefill_tok_s": {
+        "mean": 1004.632,
+        "median": 1002.49,
+        "min": 999.766,
+        "max": 1017.453
+      },
+      "decode_tok_s": {
+        "mean": 135.7672,
+        "median": 135.693,
+        "min": 134.575,
+        "max": 137.258
+      },
+      "peak_memory_gb": {
+        "mean": 19.8012,
+        "median": 19.801,
+        "min": 19.8,
+        "max": 19.802
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 1000.069,
+          "decode_tok_s": 136.684,
+          "peak_memory_gb": 19.8,
+          "total_time_s": 1.163,
+          "ttft_ms": 127.99116860936596
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 999.766,
+          "decode_tok_s": 134.626,
+          "peak_memory_gb": 19.801,
+          "total_time_s": 1.174,
+          "ttft_ms": 128.02995901040845
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 1003.382,
+          "decode_tok_s": 135.693,
+          "peak_memory_gb": 19.801,
+          "total_time_s": 1.164,
+          "ttft_ms": 127.56856311952974
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 1002.49,
+          "decode_tok_s": 134.575,
+          "peak_memory_gb": 19.802,
+          "total_time_s": 1.17,
+          "ttft_ms": 127.68207164161238
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 1017.453,
+          "decode_tok_s": 137.258,
+          "peak_memory_gb": 19.802,
+          "total_time_s": 1.149,
+          "ttft_ms": 125.80433690794563
+        }
+      ],
+      "total_time_s": {
+        "mean": 1.1640000000000001,
+        "median": 1.164,
+        "min": 1.149,
+        "max": 1.174
+      },
+      "reported_averages": {
+        "prefill_tok_s": 1004.632,
+        "decode_tok_s": 135.767,
+        "peak_memory_gb": 19.801
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer-exact-snapshot/qwen3_6-35b-a3b-4bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "prompt_source": "random",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 127.41521985777243,
+        "median": 127.68207164161238,
+        "min": 125.80433690794563,
+        "max": 128.02995901040845
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 1606.4671999999998,
+        "median": 1604.321,
+        "min": 1598.253,
+        "max": 1615.743
+      },
+      "decode_tok_s": {
+        "mean": 135.227,
+        "median": 135.026,
+        "min": 134.649,
+        "max": 136.268
+      },
+      "peak_memory_gb": {
+        "mean": 20.1768,
+        "median": 20.177,
+        "min": 20.176,
+        "max": 20.178
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 1615.743,
+          "decode_tok_s": 135.026,
+          "peak_memory_gb": 20.176,
+          "total_time_s": 1.357,
+          "ttft_ms": 316.88207839984454
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 1604.321,
+          "decode_tok_s": 135.442,
+          "peak_memory_gb": 20.176,
+          "total_time_s": 1.358,
+          "ttft_ms": 319.13812759416606
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 1610.441,
+          "decode_tok_s": 134.75,
+          "peak_memory_gb": 20.177,
+          "total_time_s": 1.365,
+          "ttft_ms": 317.92533846319117
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 1598.253,
+          "decode_tok_s": 134.649,
+          "peak_memory_gb": 20.177,
+          "total_time_s": 1.364,
+          "ttft_ms": 320.34978191813184
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 1603.578,
+          "decode_tok_s": 136.268,
+          "peak_memory_gb": 20.178,
+          "total_time_s": 1.352,
+          "ttft_ms": 319.2859966899022
+        }
+      ],
+      "total_time_s": {
+        "mean": 1.3592,
+        "median": 1.358,
+        "min": 1.352,
+        "max": 1.365
+      },
+      "reported_averages": {
+        "prefill_tok_s": 1606.467,
+        "decode_tok_s": 135.227,
+        "peak_memory_gb": 20.177
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer-exact-snapshot/qwen3_6-35b-a3b-4bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+      "prompt_token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+      "prompt_source": "random",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 318.7162646130472,
+        "median": 319.13812759416606,
+        "min": 316.88207839984454,
+        "max": 320.34978191813184
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 1979.3856,
+        "median": 1979.484,
+        "min": 1975.236,
+        "max": 1982.527
+      },
+      "decode_tok_s": {
+        "mean": 132.427,
+        "median": 132.836,
+        "min": 130.997,
+        "max": 133.255
+      },
+      "peak_memory_gb": {
+        "mean": 21.4492,
+        "median": 21.449,
+        "min": 21.448,
+        "max": 21.45
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 1980.502,
+          "decode_tok_s": 132.836,
+          "peak_memory_gb": 21.448,
+          "total_time_s": 2.097,
+          "ttft_ms": 1034.081258186056
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 1982.527,
+          "decode_tok_s": 133.094,
+          "peak_memory_gb": 21.449,
+          "total_time_s": 2.097,
+          "ttft_ms": 1033.0250231144394
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 1979.484,
+          "decode_tok_s": 133.255,
+          "peak_memory_gb": 21.449,
+          "total_time_s": 2.094,
+          "ttft_ms": 1034.613060777455
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 1975.236,
+          "decode_tok_s": 130.997,
+          "peak_memory_gb": 21.45,
+          "total_time_s": 2.109,
+          "ttft_ms": 1036.8381297222204
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 1979.179,
+          "decode_tok_s": 131.953,
+          "peak_memory_gb": 21.45,
+          "total_time_s": 2.099,
+          "ttft_ms": 1034.7724991019002
+        }
+      ],
+      "total_time_s": {
+        "mean": 2.0992,
+        "median": 2.097,
+        "min": 2.094,
+        "max": 2.109
+      },
+      "reported_averages": {
+        "prefill_tok_s": 1979.386,
+        "decode_tok_s": 132.427,
+        "peak_memory_gb": 21.449
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-inference/2026-07-12-mlx032-current-peer-exact-snapshot/qwen3_6-35b-a3b-4bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+      "prompt_token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
+      "prompt_source": "random",
+      "prompt_tokens": 2048,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 1034.6659941804141,
+        "median": 1034.613060777455,
+        "min": 1033.0250231144394,
+        "max": 1036.8381297222204
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    }
+  ],
+  "bandwidth_accounting": {
+    "safetensor_bytes": 20402204271,
+    "moe_block": {
+      "expert_count": 256,
+      "experts_per_token": 8,
+      "expert_intermediate_size": 512
+    },
+    "moe_active_bytes": 1739760896,
+    "bytes_used_for_estimate": 1739760896,
+    "estimate_kind": "moe_active_estimate",
+    "peak_bandwidth_gb_s": null,
+    "peak_bandwidth_source": null,
+    "ax_bandwidth_peak_source": null,
+    "per_row": []
+  }
+}
