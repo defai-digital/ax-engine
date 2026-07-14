@@ -231,6 +231,21 @@ class TestAXEngineChatModel(unittest.TestCase):
         self.assertIsInstance(result, AIMessage)
         self.assertEqual(result.content, "Hi there!")
 
+    def test_null_message_content_becomes_empty_string(self):
+        self.srv.set_response({
+            "id": "chatcmpl-null",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": None},
+                "finish_reason": "tool_calls",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        })
+        chat = self._make_chat()
+        result = chat.invoke([HumanMessage(content="x")])
+        self.assertEqual(result.content, "")
+
     def test_request_path(self):
         self.srv.set_response(_chat_response())
         chat = self._make_chat()
@@ -283,6 +298,18 @@ class TestAXEngineChatModel(unittest.TestCase):
         text = "".join(c.content for c in chunks)
         self.assertEqual(text, "Hello world")
 
+    def test_stream_flushes_trailing_event_without_blank_line(self):
+        # Server closes without a final \n\n after the last data frame.
+        trailing = (
+            'data: {"id":"c1","object":"chat.completion.chunk","choices":'
+            '[{"index":0,"delta":{"content":"tail"},"finish_reason":null}]}'
+        )
+        self.srv.set_response(trailing)
+        chat = self._make_chat()
+        chunks = list(chat.stream([HumanMessage(content="x")]))
+        text = "".join(c.content for c in chunks)
+        self.assertEqual(text, "tail")
+
     def test_stream_request_has_stream_true(self):
         self.srv.set_response(_chat_sse("ok"))
         chat = self._make_chat()
@@ -334,6 +361,16 @@ class TestAXEngineLLM(unittest.TestCase):
         llm = self._make_llm(max_tokens=16)
         result = llm.invoke("Hello")
         self.assertEqual(result, "world")
+
+    def test_null_completion_text_becomes_empty_string(self):
+        self.srv.set_response({
+            "id": "cmpl-null",
+            "object": "text_completion",
+            "choices": [{"index": 0, "text": None, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1},
+        })
+        llm = self._make_llm()
+        self.assertEqual(llm.invoke("x"), "")
 
     def test_request_path(self):
         self.srv.set_response(_completion_response())

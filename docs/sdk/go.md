@@ -6,7 +6,7 @@ It is intentionally thin:
 
 - it speaks to `ax-engine-server`, not directly to `ax-engine-core`
 - zero external dependencies (stdlib only)
-- typed generics for streaming responses (Go 1.22+)
+- typed generics for streaming responses (Go 1.25+)
 - channel-based streaming — no iterator interface to implement
 
 ## Module

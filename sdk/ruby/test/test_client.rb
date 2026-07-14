@@ -129,6 +129,13 @@ class TestClient < Minitest::Test
     assert_equal 7,      body["seed"]
   end
 
+  def test_completion_accepts_positional_hash
+    @srv.set_response(body: { choices: [{ text: "ok" }] })
+    @client.completion({ "prompt" => "hash-form", "max_tokens" => 8 })
+    assert_equal "hash-form", @srv.last_body["prompt"]
+    assert_equal 8, @srv.last_body["max_tokens"]
+  end
+
   # --- chat_completion ---
 
   def test_chat_completion

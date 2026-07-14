@@ -40,13 +40,13 @@ module AxEngine
     end
 
     # POST /v1/generate  (ax-engine native token-based API)
-    def generate(request)
-      post("/v1/generate", request)
+    def generate(request = nil, **kwargs)
+      post("/v1/generate", request_body(request, kwargs))
     end
 
     # POST /v1/requests  (submit without blocking for completion)
-    def submit(request)
-      post("/v1/requests", request)
+    def submit(request = nil, **kwargs)
+      post("/v1/requests", request_body(request, kwargs))
     end
 
     # GET /v1/requests/:id
@@ -65,24 +65,24 @@ module AxEngine
     end
 
     # POST /v1/completions  (OpenAI-compat text completion)
-    def completion(request)
-      post("/v1/completions", request)
+    def completion(request = nil, **kwargs)
+      post("/v1/completions", request_body(request, kwargs))
     end
 
     # POST /v1/chat/completions  (OpenAI-compat chat completion)
-    def chat_completion(request)
-      post("/v1/chat/completions", request)
+    def chat_completion(request = nil, **kwargs)
+      post("/v1/chat/completions", request_body(request, kwargs))
     end
 
     # POST /v1/embeddings
-    def embeddings(request)
-      post("/v1/embeddings", request)
+    def embeddings(request = nil, **kwargs)
+      post("/v1/embeddings", request_body(request, kwargs))
     end
 
     # POST /v1/model/load — hot-swap the running model without server restart.
     # request: { model_id:, model_path: }
-    def load_model(request)
-      post("/v1/model/load", request)
+    def load_model(request = nil, **kwargs)
+      post("/v1/model/load", request_body(request, kwargs))
     end
 
     # Stream POST /v1/generate/stream  — yields SSE event hashes.
@@ -90,21 +90,32 @@ module AxEngine
     #   client.stream_generate(input_tokens: [1, 2, 3], max_output_tokens: 32) do |event|
     #     puts event["data"]["delta_text"] if event["event"] == "step"
     #   end
-    def stream_generate(request, &block)
-      stream("/v1/generate/stream", request, &block)
+    def stream_generate(request = nil, **kwargs, &block)
+      stream("/v1/generate/stream", request_body(request, kwargs), &block)
     end
 
     # Stream POST /v1/completions (stream: true) — yields SSE event hashes.
-    def stream_completion(request, &block)
-      stream("/v1/completions", request.merge(stream: true), &block)
+    def stream_completion(request = nil, **kwargs, &block)
+      stream("/v1/completions", request_body(request, kwargs).merge(stream: true), &block)
     end
 
     # Stream POST /v1/chat/completions (stream: true) — yields SSE event hashes.
-    def stream_chat_completion(request, &block)
-      stream("/v1/chat/completions", request.merge(stream: true), &block)
+    def stream_chat_completion(request = nil, **kwargs, &block)
+      stream("/v1/chat/completions", request_body(request, kwargs).merge(stream: true), &block)
     end
 
     private
+
+    # Accept both a positional Hash (Ruby 2.7 style) and true kwargs (Ruby 3+).
+    def request_body(request, kwargs)
+      if request.nil?
+        kwargs
+      elsif kwargs.empty?
+        request
+      else
+        request.merge(kwargs)
+      end
+    end
 
     def get(path)
       uri = URI("#{@base_url}#{path}")
@@ -131,8 +142,15 @@ module AxEngine
       req.body             = JSON.generate(body)
 
       reader = SseReader.new
+      use_ssl = uri.scheme == "https"
 
-      Net::HTTP.start(uri.host, uri.port, open_timeout: @timeout, read_timeout: @timeout) do |http|
+      Net::HTTP.start(
+        uri.host,
+        uri.port,
+        open_timeout: @timeout,
+        read_timeout: @timeout,
+        use_ssl: use_ssl
+      ) do |http|
         http.request(req) do |response|
           raise_on_error(response, path)
           response.read_body do |chunk|
@@ -158,6 +176,7 @@ module AxEngine
 
     def execute(uri, req)
       http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = (uri.scheme == "https")
       http.open_timeout = @timeout
       http.read_timeout = @timeout
       response = http.request(req)

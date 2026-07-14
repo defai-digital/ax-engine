@@ -184,6 +184,17 @@ public final class AxEngineClient: @unchecked Sendable {
                     urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     let (asyncBytes, response) = try await session.bytes(for: urlRequest)
+                    // Drain the body on non-2xx so callers get the server error message,
+                    // matching non-stream execute() behavior.
+                    if let http = response as? HTTPURLResponse,
+                       http.statusCode < 200 || http.statusCode >= 300 {
+                        var errorData = Data()
+                        for try await byte in asyncBytes {
+                            errorData.append(byte)
+                        }
+                        try self.validate(response: response, data: errorData)
+                        return
+                    }
                     try self.validate(response: response, data: nil)
                     for try await event in SSEParser(bytes: asyncBytes) {
                         if event.event == "error" {

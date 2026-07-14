@@ -134,7 +134,11 @@ impl LlamaCppStreamHandle {
                 continue;
             }
 
-            if let Some(value) = line.strip_prefix("data: ") {
+            // SSE allows optional whitespace after the colon (`data:` or `data: `).
+            if let Some(value) = line
+                .strip_prefix("data:")
+                .map(|s| s.strip_prefix(' ').unwrap_or(s))
+            {
                 if value == "[DONE]" {
                     return Ok(None);
                 }
@@ -1104,6 +1108,25 @@ mod tests {
         assert_eq!(strip_bos_leading_space(" hello".to_string()), "hello");
         assert_eq!(strip_bos_leading_space("hello".to_string()), "hello");
         assert_eq!(strip_bos_leading_space("  hi".to_string()), " hi");
+    }
+
+    #[test]
+    fn openai_chat_stream_accepts_data_prefix_without_space() {
+        // Some servers emit `data:{...}` without the optional space after `:`.
+        let body = b"data:{\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n\
+                     data:[DONE]\n\n";
+        let mut stream = LlamaCppStreamHandle::new(
+            "http://127.0.0.1:8081/v1/chat/completions".to_string(),
+            LlamaCppStreamFormat::OpenAiChatCompletion,
+            Box::new(std::io::Cursor::new(body.to_vec())),
+        );
+        let chunk = stream
+            .next_chunk()
+            .expect("chunk without space after data: should parse")
+            .expect("chunk should exist");
+        assert_eq!(chunk.content, "hi");
+        assert!(chunk.stop);
+        assert_eq!(stream.next_chunk().expect("[DONE] should end stream"), None);
     }
 
     #[test]

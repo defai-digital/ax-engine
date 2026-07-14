@@ -145,8 +145,9 @@ impl MlxLmStreamHandle {
                 continue;
             }
 
-            let data = match line.strip_prefix("data: ") {
-                Some(data) => data,
+            // SSE allows optional whitespace after the colon (`data:` or `data: `).
+            let data = match line.strip_prefix("data:") {
+                Some(rest) => rest.strip_prefix(' ').unwrap_or(rest),
                 None => continue,
             };
 
@@ -838,6 +839,26 @@ mod tests {
         assert_eq!(second.finish_reason.as_deref(), Some("stop"));
         assert_eq!(second.prompt_token_count, Some(5));
         assert_eq!(second.output_token_count, Some(2));
+    }
+
+    #[test]
+    fn stream_handle_accepts_data_prefix_without_space() {
+        let mut stream = mlx_lm_stream(
+            "data:{\"choices\":[{\"text\":\"ok\",\"finish_reason\":\"stop\"}],\"usage\":null}\n\n\
+             data:[DONE]\n\n",
+        );
+        let chunk = stream
+            .next_chunk()
+            .expect("chunk without space after data: should parse")
+            .expect("chunk should exist");
+        assert_eq!(chunk.text, "ok");
+        assert_eq!(chunk.finish_reason.as_deref(), Some("stop"));
+        assert!(
+            stream
+                .next_chunk()
+                .expect("[DONE] should end stream")
+                .is_none()
+        );
     }
 
     #[test]

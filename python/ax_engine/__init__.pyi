@@ -326,9 +326,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> GenerateResult: ...
     def generate_text(
@@ -339,9 +342,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> GenerateResult: ...
     def submit(
@@ -354,9 +360,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> int: ...
     def submit_text(
@@ -367,9 +376,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> int: ...
     def step(self) -> StepReport: ...
@@ -385,9 +397,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]: ...
     def stream_text(
@@ -398,9 +413,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]: ...
     def chat(
@@ -411,9 +429,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> GenerateResult: ...
     def submit_chat(
@@ -424,9 +445,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> int: ...
     def stream_chat(
@@ -437,9 +461,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]: ...
     # ------------------------------------------------------------------

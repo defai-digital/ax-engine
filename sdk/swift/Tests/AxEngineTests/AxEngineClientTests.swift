@@ -255,6 +255,20 @@ final class AxEngineClientTests: XCTestCase {
         }
     }
 
+    func testStreamHTTPErrorIncludesServerMessage() async throws {
+        MockURLProtocol.handler = { _ in
+            jsonResponse(["error": ["message": "stream rejected"]], statusCode: 400)
+        }
+        do {
+            for try await _ in makeClient().streamCompletion(.init(prompt: "x")) {}
+            XCTFail("Expected AxEngineHTTPError")
+        } catch let err as AxEngineHTTPError {
+            XCTAssertEqual(err.statusCode, 400)
+            XCTAssertEqual(err.message, "stream rejected")
+            XCTAssertNotNil(err.payload)
+        }
+    }
+
     func testStreamChatCompletion() async throws {
         let sse = """
         data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3_dense","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}

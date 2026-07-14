@@ -85,6 +85,38 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
         raise RuntimeError(f"ax-engine HTTP {exc.code}: {detail or exc.reason}") from exc
 
 
+def _parse_sse_block(block: bytes) -> tuple[str | None, str] | None:
+    """Parse one SSE event block into (event_type, raw_data), or None if empty."""
+    # Per the SSE spec, an event may carry multiple `data:` lines that are
+    # concatenated with a newline; keeping only the last one would drop content.
+    data_lines: list[str] = []
+    event_type: str | None = None
+    for line in block.splitlines():
+        line = line.decode()
+        if line.startswith("data:"):
+            data_lines.append(line[len("data:") :].lstrip())
+        elif line.startswith("event:"):
+            event_type = line[len("event:") :].lstrip()
+    if not data_lines:
+        return None
+    return event_type, "\n".join(data_lines)
+
+
+def _sse_error_message(raw_data: str) -> str:
+    try:
+        error_data = json.loads(raw_data)
+        if isinstance(error_data, dict):
+            err = error_data.get("error")
+            if isinstance(err, dict):
+                return err.get("message", "") or "unknown error"
+            if err:
+                return str(err)
+            return "unknown error"
+        return str(error_data)
+    except (json.JSONDecodeError, AttributeError):
+        return raw_data or "unknown error"
+
+
 def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
     """Yield decoded SSE data objects from a streaming HTTP response."""
     data = json.dumps(payload).encode()
@@ -109,45 +141,38 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
                         break
                 else:
                     break
-                # Per the SSE spec, an event may carry multiple `data:` lines
-                # that are concatenated with a newline; keeping only the last
-                # one would drop content from spec-compliant servers.
-                data_lines = []
-                event_type = None
-                for line in block.splitlines():
-                    line = line.decode()
-                    if line.startswith("data:"):
-                        data_lines.append(line[len("data:") :].lstrip())
-                    elif line.startswith("event:"):
-                        event_type = line[len("event:") :].lstrip()
-                if not data_lines:
+                parsed = _parse_sse_block(block)
+                if parsed is None:
                     continue
-                raw_data = "\n".join(data_lines)
+                event_type, raw_data = parsed
                 if raw_data == "[DONE]":
                     return
                 # Surface mid-stream error events to the caller, matching the
                 # JavaScript SDK's AxEngineStreamError behavior.
                 if event_type == "error":
-                    try:
-                        error_data = json.loads(raw_data)
-                        if isinstance(error_data, dict):
-                            err = error_data.get("error")
-                            message = (
-                                err.get("message", "")
-                                if isinstance(err, dict)
-                                else str(err)
-                                if err
-                                else ""
-                            )
-                        else:
-                            message = str(error_data)
-                    except (json.JSONDecodeError, AttributeError):
-                        message = raw_data
-                    raise RuntimeError(f"ax-engine stream error: {message or 'unknown error'}")
+                    raise RuntimeError(
+                        f"ax-engine stream error: {_sse_error_message(raw_data)}"
+                    )
                 try:
                     yield json.loads(raw_data)
                 except json.JSONDecodeError:
                     continue
+
+        # Flush a trailing event if the server closed without a final blank line.
+        if buffer.strip():
+            parsed = _parse_sse_block(buffer)
+            if parsed is not None:
+                event_type, raw_data = parsed
+                if raw_data == "[DONE]":
+                    return
+                if event_type == "error":
+                    raise RuntimeError(
+                        f"ax-engine stream error: {_sse_error_message(raw_data)}"
+                    )
+                try:
+                    yield json.loads(raw_data)
+                except json.JSONDecodeError:
+                    pass
 
 
 class AXEngineChatModel(BaseChatModel):
@@ -225,7 +250,9 @@ class AXEngineChatModel(BaseChatModel):
         if not choices:
             raise RuntimeError("Server returned empty choices array")
         choice = choices[0]
-        text = choice.get("message", {}).get("content", "")
+        # JSON null content (e.g. tool-call turns) must become "", not None.
+        content = (choice.get("message") or {}).get("content")
+        text = "" if content is None else content
         return ChatResult(
             generations=[
                 ChatGeneration(
@@ -330,7 +357,8 @@ class AXEngineLLM(LLM):
         choices = resp.get("choices", [])
         if not choices:
             raise RuntimeError("Server returned empty choices array")
-        return choices[0].get("text", "")
+        text = choices[0].get("text")
+        return "" if text is None else text
 
     def _stream(
         self,

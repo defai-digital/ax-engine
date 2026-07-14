@@ -1,3 +1,3 @@
 module github.com/ax-engine/ax-engine-go
 
-go 1.22
+go 1.25.0
