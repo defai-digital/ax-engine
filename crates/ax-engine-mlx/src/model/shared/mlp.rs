@@ -2595,23 +2595,20 @@ pub(crate) fn moe_router_deepseek_v3(
     (top_k_indices, top_k_weights)
 }
 
-/// GPT-OSS MoE router: proj → softmax over ALL experts → top-k → renormalize.
+/// GPT-OSS MoE router: top-k on raw logits, then softmax on the selected set.
 ///
-/// This differs from Qwen3 (argpartition-first, then softmax on top-k subset)
-/// and Gemma4 (rms_norm → proj → argpartition → softmax). GPT-OSS always
-/// computes full softmax first, then selects the top-k by weight magnitude,
-/// then renormalizes the selected weights to sum to 1.
+/// Matches mlx-lm `gpt_oss.MLPBlock`:
+///   g = router(x)
+///   experts, indices = topk(g, k)
+///   expert_weights = softmax(experts, precise=True)
+///
+/// Differs from Qwen3/Gemma4 (softmax-all then top-k, or argpartition then
+/// softmax with different pre-norms). Do **not** full-softmax then top-k.
 pub(crate) fn moe_router_gpt_oss(
     cfg: &ModelConfig,
     w: &LayerWeights,
     normed: &MlxArray,
 ) -> (MlxArray, MlxArray) {
-    // Matches mlx-lm gpt_oss.MLPBlock:
-    //   g = router(x)
-    //   experts, indices = topk(g, k)
-    //   expert_weights = softmax(experts, precise=True)
-    // i.e. top-k on raw logits, then softmax only over the selected experts
-    // (NOT full-softmax-then-topk).
     let router_proj = w
         .router_proj
         .as_ref()
@@ -2845,11 +2842,33 @@ pub(crate) struct QuantInputSlot {
     weight: usize,
     scales: Option<usize>,
     biases: Option<usize>,
+    linear_bias: Option<usize>,
     group_size: i32,
     bits: i32,
+    /// Quant mode string pointer length is small; store as fixed for Copy.
+    /// Supported: "affine" | "mxfp4" | "mxfp8" | "nvfp4" (default affine).
+    mode_tag: u8,
 }
 
 impl QuantInputSlot {
+    fn mode_tag(mode: &str) -> u8 {
+        match mode {
+            "mxfp4" => 1,
+            "mxfp8" => 2,
+            "nvfp4" => 3,
+            _ => 0, // affine / unknown
+        }
+    }
+
+    fn mode_str(tag: u8) -> &'static str {
+        match tag {
+            1 => "mxfp4",
+            2 => "mxfp8",
+            3 => "nvfp4",
+            _ => "affine",
+        }
+    }
+
     fn rebuild(&self, inputs: &MlxVectorArray) -> QuantizedWeight {
         QuantizedWeight {
             weight: inputs.get(self.weight),
@@ -2857,8 +2876,8 @@ impl QuantInputSlot {
             biases: self.biases.map(|i| inputs.get(i)),
             group_size: self.group_size,
             bits: self.bits,
-            mode: "affine".to_string(),
-            linear_bias: None,
+            mode: Self::mode_str(self.mode_tag).to_string(),
+            linear_bias: self.linear_bias.map(|i| inputs.get(i)),
         }
     }
 }
@@ -2895,12 +2914,15 @@ fn push_quant_inputs(
     inputs.push(q.weight.clone());
     let scales = push_optional_input(inputs, q.scales.as_ref());
     let biases = push_optional_input(inputs, q.biases.as_ref());
+    let linear_bias = push_optional_input(inputs, q.linear_bias.as_ref());
     Some(QuantInputSlot {
         weight,
         scales,
         biases,
+        linear_bias,
         group_size: q.group_size,
         bits: q.bits,
+        mode_tag: QuantInputSlot::mode_tag(&q.mode),
     })
 }
 

@@ -31,7 +31,7 @@ pub(crate) use mlp::{
     qkv_project_batched, qkv_project_embed, shared_expert_forward,
 };
 pub(crate) use norm::rms_norm_opt;
-pub(super) use rope::build_llama3_rope_freqs;
+pub(super) use rope::{build_llama3_rope_freqs, build_yarn_rope_freqs};
 pub(crate) use utils::scale_hidden_pub;
 pub(crate) use utils::{
     ProjectionBatchPolicy, add_then_multiply_scalar, apply_final_logit_softcap, qw, qw_gather,

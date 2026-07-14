@@ -2972,6 +2972,7 @@ mod tests {
             glm_router: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,
+            rope_mscale: 1.0,
             no_rope_layer_interval: 0,
             attn_temperature_floor: 8192.0,
             attn_temperature_scale: 0.1,

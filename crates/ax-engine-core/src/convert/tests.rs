@@ -199,6 +199,44 @@ fn mistral_and_llama_secondary_families_resolve() {
 }
 
 #[test]
+fn gpt_oss_layer_types_from_config_and_default_alternate() {
+    // openai/gpt-oss-20b ships explicit layer_types alternating sliding/full.
+    let with_types = serde_json::json!({
+        "model_type": "gpt_oss",
+        "layer_types": [
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention"
+        ]
+    });
+    assert_eq!(
+        parse_layer_types(&with_types, "gpt_oss", 4),
+        vec![
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ]
+    );
+
+    // mlx-lm default when layer_types is omitted: sliding, full, sliding, full…
+    let empty = serde_json::json!({ "model_type": "gpt_oss" });
+    assert_eq!(
+        parse_layer_types(&empty, "gpt_oss", 4),
+        vec![
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ]
+    );
+
+    // Non-interleaved families still return empty (global SWA path).
+    assert!(parse_layer_types(&empty, "mistral", 4).is_empty());
+}
+
+#[test]
 fn gpt_oss_moe_config_reads_expert_geometry() {
     // Mirrors published openai/gpt-oss-20b and mlx-community MXFP4-Q4 config.json
     // fields (no weight download).

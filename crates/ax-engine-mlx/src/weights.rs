@@ -2931,14 +2931,29 @@ fn concat_quantized_weight_rows(
             ));
         }
     };
+    let linear_bias = match (a.linear_bias.as_ref(), b.linear_bias.as_ref()) {
+        (Some(ba), Some(bb)) => Some(concatenate(&[ba, bb], 0, None)),
+        (None, None) => None,
+        _ => {
+            return Err(WeightLoadError::InvalidLayer(
+                "cannot fuse projections where only one has dense linear bias".to_string(),
+            ));
+        }
+    };
+    if a.mode != b.mode {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "cannot fuse projections with different quant modes: {} vs {}",
+            a.mode, b.mode
+        )));
+    }
     Ok(QuantizedWeight {
         weight: concatenate(&[&a.weight, &b.weight], 0, None),
         scales,
         biases,
         group_size: a.group_size,
         bits: a.bits,
-            mode: "affine".to_string(),
-        linear_bias: None,
+        mode: a.mode.clone(),
+        linear_bias,
     })
 }
 

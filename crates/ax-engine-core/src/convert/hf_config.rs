@@ -556,15 +556,23 @@ pub(crate) fn parse_rope_scaling(
     )
 }
 
-/// Parse per-layer type list from config (e.g. Gemma4's `layer_types` field).
-/// Gemma4 reference implementations derive it from `sliding_window_pattern`
-/// when the field is omitted.
+/// Parse per-layer type list from config (e.g. Gemma4 / GPT-OSS `layer_types`).
+///
+/// - **Gemma4 / EmbeddingGemma:** use `layer_types` when present; otherwise
+///   derive from `sliding_window_pattern` (default period 5).
+/// - **GPT-OSS:** use `layer_types` when present (openai ships the full list);
+///   otherwise alternate `sliding_attention` / `full_attention` matching
+///   mlx-lm `gpt_oss.GptOssMoeModel` defaults.
 pub(crate) fn parse_layer_types(
     config: &serde_json::Value,
     model_type: &str,
     layer_count: u32,
 ) -> Vec<String> {
-    if !is_gemma4_text_model_type(model_type) && !is_embeddinggemma_model_type(model_type) {
+    let is_gpt_oss = model_type == "gpt_oss";
+    if !is_gemma4_text_model_type(model_type)
+        && !is_embeddinggemma_model_type(model_type)
+        && !is_gpt_oss
+    {
         return Vec::new();
     }
     if let Some(layer_types) = config
@@ -586,6 +594,19 @@ pub(crate) fn parse_layer_types(
         })
     {
         return layer_types;
+    }
+
+    if is_gpt_oss {
+        // mlx-lm: ["sliding_attention", "full_attention"] * (n_layers // 2)
+        return (0..layer_count)
+            .map(|i| {
+                if i % 2 == 0 {
+                    "sliding_attention".to_string()
+                } else {
+                    "full_attention".to_string()
+                }
+            })
+            .collect();
     }
 
     let pattern = arch_u64(config, model_type, "sliding_window_pattern")

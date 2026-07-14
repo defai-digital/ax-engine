@@ -418,10 +418,13 @@ pub struct ModelConfig {
     pub glm_router: Option<GlmRouterConfig>,
     /// Epsilon for all RMSNorm operations (1e-6 for Qwen/Gemma, 1e-5 for GLM/LLaMA/Mistral).
     pub rms_norm_eps: f32,
-    /// Precomputed LLaMA-3 corrected RoPE frequencies `[dims/2]`.
+    /// Precomputed LLaMA-3 / YaRN corrected RoPE frequencies `[dims/2]`.
     /// `None` means standard RoPE (compute freqs from `rope_theta` at runtime).
     /// `Some(freqs)` is passed directly to `mlx_sys::rope` as the `freqs` arg.
     pub rope_freqs: Option<MlxArray>,
+    /// YaRN attention mscale applied to Q/K before RoPE (1.0 = no scale).
+    /// Matches mlx-lm `YarnRoPE.mscale` for GPT-OSS and other yarn models.
+    pub rope_mscale: f32,
     /// LLaMA-4 iRoPE interval: every N-th layer has no RoPE. 0 = all layers use RoPE.
     pub no_rope_layer_interval: usize,
     /// LLaMA-4 attention temperature floor scale (positions / floor → log scale).
@@ -498,17 +501,33 @@ impl ModelConfig {
             None
         };
 
-        // LLaMA-3 corrected RoPE frequencies, precomputed once at model load.
-        let rope_freqs = if m.rope_scaling_type.as_deref() == Some("llama3") {
-            let factor = m.rope_scaling_factor.unwrap_or(8.0);
-            let low_ff = m.rope_low_freq_factor.unwrap_or(1.0);
-            let high_ff = m.rope_high_freq_factor.unwrap_or(4.0);
-            let orig_ctx = m.rope_original_context_len.unwrap_or(8192);
-            Some(super::shared::build_llama3_rope_freqs(
-                rope_dims, rope_theta, factor, low_ff, high_ff, orig_ctx,
-            ))
-        } else {
-            None
+        // Scaled RoPE frequencies, precomputed once at model load.
+        // llama3: LLaMA-3 smooth wavelength correction.
+        // yarn / deepseek_yarn: YaRN (GPT-OSS); also yields attention mscale.
+        let (rope_freqs, rope_mscale) = match m.rope_scaling_type.as_deref() {
+            Some("llama3") => {
+                let factor = m.rope_scaling_factor.unwrap_or(8.0);
+                let low_ff = m.rope_low_freq_factor.unwrap_or(1.0);
+                let high_ff = m.rope_high_freq_factor.unwrap_or(4.0);
+                let orig_ctx = m.rope_original_context_len.unwrap_or(8192);
+                (
+                    Some(super::shared::build_llama3_rope_freqs(
+                        rope_dims, rope_theta, factor, low_ff, high_ff, orig_ctx,
+                    )),
+                    1.0,
+                )
+            }
+            Some("yarn") | Some("deepseek_yarn") | Some("telechat3-yarn") => {
+                let factor = m.rope_scaling_factor.unwrap_or(1.0);
+                let orig_ctx = m.rope_original_context_len.unwrap_or(4096);
+                // beta_fast/slow are not separate manifest fields yet;
+                // openai/gpt-oss and mlx-lm YarnRoPE defaults are 32 / 1.
+                let (freqs, mscale) = super::shared::build_yarn_rope_freqs(
+                    rope_dims, rope_theta, factor, orig_ctx, 32.0, 1.0, 1.0, 0.0,
+                );
+                (Some(freqs), mscale)
+            }
+            _ => (None, 1.0),
         };
 
         let moe_norm_topk_prob = if m.model_family == "qwen3_5" && m.moe.is_enabled() {
@@ -554,6 +573,7 @@ impl ModelConfig {
                 .rms_norm_eps
                 .unwrap_or_else(|| default_rms_norm_eps(&m.model_family)),
             rope_freqs,
+            rope_mscale,
             no_rope_layer_interval: m.no_rope_layer_interval as usize,
             attn_temperature_floor: m.attn_temperature_floor.unwrap_or(8192) as f32,
             attn_temperature_scale: m.attn_temperature_scale.unwrap_or(0.1),

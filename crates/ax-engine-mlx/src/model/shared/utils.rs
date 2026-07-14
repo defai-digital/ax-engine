@@ -69,7 +69,10 @@ pub(crate) fn qw_with_policy(
 }
 
 fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
-    if let Some(scales) = &qw.scales {
+    // Dense Linear bias (`QuantizedWeight.linear_bias`) is separate from affine
+    // group-quant biases (`qw.biases`). Matches mlx-lm `nn.Linear` /
+    // `QuantizedLinear`: y = x @ W + b. Required for GPT-OSS Q/K/V/O + router.
+    let y = if let Some(scales) = &qw.scales {
         quantized_matmul(
             x,
             &qw.weight,
@@ -83,6 +86,11 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     } else {
         let wt = transpose(&qw.weight, &[1, 0], None);
         matmul(x, &wt, None)
+    };
+    if let Some(bias) = &qw.linear_bias {
+        add(&y, bias, None)
+    } else {
+        y
     }
 }
 
@@ -322,6 +330,30 @@ fn apply_expert_linear_bias(y: &MlxArray, linear_bias: &MlxArray, indices: &MlxA
 mod tests {
     use super::*;
     use mlx_sys::{MlxQuantizationMode, eval, quantize};
+
+    #[test]
+    fn qw_applies_dense_linear_bias() {
+        // Dense Linear: y = x @ W^T + b  (mlx-lm nn.Linear with bias=True).
+        let w_data = [1.0f32, 0.0, 0.0, 1.0]; // 2x2 identity
+        let weight = array_f32(&w_data, &[2, 2]);
+        let bias = array_f32(&[0.5, -0.25], &[2]);
+        let qw = QuantizedWeight {
+            weight,
+            scales: None,
+            biases: None,
+            group_size: 1,
+            bits: 32,
+            mode: "affine".to_string(),
+            linear_bias: Some(bias),
+        };
+        let x = array_f32(&[1.0, 2.0], &[1, 1, 2]);
+        let out = super::qw(&x, &qw);
+        eval(&[&out]);
+        let got = out.data_f32();
+        // identity + bias → [1.5, 1.75]
+        assert!((got[0] - 1.5).abs() < 1e-5, "got {}", got[0]);
+        assert!((got[1] - 1.75).abs() < 1e-5, "got {}", got[1]);
+    }
 
     #[test]
     fn expert_linear_bias_matches_mlx_lm_index_add() {

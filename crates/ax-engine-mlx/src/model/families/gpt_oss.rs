@@ -1,5 +1,5 @@
 use mlx_sys::{
-    MlxArray, add, astype, expand_dims_axes, rms_norm, rope, swiglu_oai, transpose,
+    MlxArray, add, astype, expand_dims_axes, multiply, rms_norm, rope, swiglu_oai, transpose,
 };
 
 use super::super::ModelConfig;
@@ -59,6 +59,16 @@ pub(crate) fn layer_forward(
         seq,
         cfg.rms_norm_eps,
     );
+    // YaRN mscale (mlx-lm YarnRoPE): scale rotated dims before rope.
+    let q = if (cfg.rope_mscale - 1.0).abs() > 1e-6 {
+        multiply(
+            &q,
+            &mlx_sys::ops::cached_scalar(cfg.rope_mscale, q.dtype()),
+            None,
+        )
+    } else {
+        q
+    };
     let q_rope = rope(
         &q,
         rope_dims as i32,
@@ -82,6 +92,15 @@ pub(crate) fn layer_forward(
         seq,
         cfg.rms_norm_eps,
     );
+    let k = if (cfg.rope_mscale - 1.0).abs() > 1e-6 {
+        multiply(
+            &k,
+            &mlx_sys::ops::cached_scalar(cfg.rope_mscale, k.dtype()),
+            None,
+        )
+    } else {
+        k
+    };
     let k_rope = rope(
         &k,
         rope_dims as i32,
