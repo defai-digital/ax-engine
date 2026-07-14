@@ -1,5 +1,9 @@
 # TurboQuant Quality Artifact Run
 
+Status: `retired_runtime_path` — the TurboQuant runtime path was retired in
+favor of the durable tiered prefix cache (ADR-002); this artifact is
+historical evidence only.
+
 Generated: 20260514T202156Z
 
 - Model directory: `.internal/models/gemma-4-e2b-it-4bit`

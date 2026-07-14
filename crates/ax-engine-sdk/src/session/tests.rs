@@ -15,7 +15,7 @@ use ax_engine_core::metal::{
 };
 use ax_engine_core::{
     CacheGroupId, DeterministicRunner, DeterministicSampler, ExecutionRunner, ExecutionStatus,
-    KvCompressionConfig, KvManagerConfig, KvWriteSummary, MetalBinaryArchiveInfo,
+    KvManagerConfig, KvWriteSummary, MetalBinaryArchiveInfo,
     MetalBinaryArchiveState, MetalCommandBufferStatus, MetalDispatchArenaInfo,
     MetalDispatchKernelTrace, MetalDispatchTrace, MetalDispatchWorkload, MetalThreadgroupSize,
     ModelId, NativeModelArtifactsSummary, NativeTensorFormat, RequestExecutionUpdate,
@@ -707,7 +707,6 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         mlx_disable_ngram_acceleration: true,
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
-        mlx_kv_compression: KvCompressionConfig::turboquant_shadow(),
         mlx_prefill_chunk: None,
     });
 
@@ -744,10 +743,6 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
     );
     assert!(config.mlx_disable_ngram_acceleration);
     assert!(config.mlx_mtp_disable_ngram_stacking);
-    assert_eq!(
-        config.mlx_kv_compression,
-        KvCompressionConfig::turboquant_shadow()
-    );
 }
 
 fn llama_cpp_server_session(server_url: String) -> EngineSession {

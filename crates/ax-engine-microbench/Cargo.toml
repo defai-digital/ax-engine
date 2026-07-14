@@ -15,10 +15,6 @@ serde_json.workspace = true
 workspace = true
 
 [[bin]]
-name = "turboquant-microbench"
-path = "src/bin/turboquant_microbench.rs"
-
-[[bin]]
 name = "rmsnorm-fused-probe"
 path = "src/bin/rmsnorm_fused_probe.rs"
 

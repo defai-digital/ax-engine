@@ -296,57 +296,15 @@ as a secondary baseline through an explicit `BenchmarkHelpers` / `MLXLMCommon`
 generation adapter that reads the emitted prompt token JSON. The older SwiftLM
 application-server benchmark is retired.
 
-For TurboQuant evidence collection, the MLX inference-stack harness can pass
-through the server's experimental shadow policy:
-
-```text
-python3 scripts/bench_mlx_inference_stack.py \
-  --model-dir /path/to/local/mlx-model \
-  --prompt-tokens 8192 \
-  --generation-tokens 256 \
-  --experimental-mlx-kv-compression turboquant-shadow
-```
-
-The engine default is `disabled` (the fused route holds greedy parity but a
-gemma4-12b A/B measured ~2x slower decode, so it stays opt-in); pass
-`--experimental-mlx-kv-compression turboquant-fused-experimental` to exercise
-the fused route, or `turboquant-shadow` for accounting-only evidence
-collection. Shadow mode is
-the full-precision shadow path: generation still uses the existing MLX KV
-decode path, while the side path records eligibility, estimated saved KiB,
-runtime shadow-storage writes, shadow-storage sync calls and wall time, current
-compression decode path, and fused decode candidate/attempt/success/fallback
-counters. Route telemetry is not a production support claim and should be
-paired with `scripts/check_turboquant_quality_artifact.py` before being used as
-promotion evidence.
-
-For runner-route experiments, `--experimental-mlx-kv-compression
-turboquant-fused-experimental` requests compressed decode selection and may
-report `fused_compressed_decode` when the eligible K8/V4 single-token path uses
-the two-stage Metal cold decode plus full-precision hot-tail merge. If Metal is
-unavailable, the runtime falls back to the full-precision MLX KV path instead
-of using the CPU oracle. A fallback reason label of `runner_not_integrated`
-means no runtime decode attempt was observed yet; `cpu_oracle_unavailable`
-identifies legacy/debug artifacts where the compressed-decode oracle path was
-not available. Only `fused_compressed_decode` route evidence with successful
-attempts, Metal fused decode successes, and zero fallbacks can feed the internal
-quality artifact gate; shadow and legacy CPU oracle rows are diagnostic only.
-
-For offline TurboQuant policy search, use the diagnostic grid harness:
-
-```text
-python3 scripts/search_turboquant_kv_policy.py \
-  --metadata /path/to/metadata.json \
-  --baseline /path/to/baseline-shape.json \
-  --kv-presets disabled,TurboQuantK8V4 \
-  --hot-window-tokens 256,512 \
-  --fallback-policies fail_closed
-```
-
-This writes an `ax.offline_policy_search.v1` artifact to
-`benchmarks/results/profiling/offline-policy-search/<date>/` when `--output` is omitted.
-It enumerates candidate policies only; it does not run inference, benchmarks,
-or promote TurboQuant support. Validate checked-in artifacts with
+The experimental compressed-KV runtime path and its
+`--experimental-mlx-kv-compression` harness pass-through were retired in favor
+of the durable tiered prefix cache (ADR-002); native uncompressed KV is the
+only decode behavior. Historical compressed-KV artifacts remain under
+`benchmarks/results/` for provenance only. Offline policy search stays
+available as a diagnostic planning layer: it writes
+`ax.offline_policy_search.v1` artifacts to
+`benchmarks/results/profiling/offline-policy-search/<date>/` without running
+inference. Validate checked-in artifacts with
 `bash scripts/check-offline-policy-search-artifacts.sh`.
 
 ## Delegated llama.cpp Checks

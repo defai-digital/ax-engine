@@ -26,16 +26,6 @@ bench = importlib.util.module_from_spec(MODULE_SPEC)
 sys.modules["bench_mlx_inference_stack"] = bench
 MODULE_SPEC.loader.exec_module(bench)
 
-CHECKER_PATH = Path(__file__).with_name("check_turboquant_quality_artifact.py")
-CHECKER_SPEC = importlib.util.spec_from_file_location(
-    "check_turboquant_quality_artifact",
-    CHECKER_PATH,
-)
-assert CHECKER_SPEC and CHECKER_SPEC.loader
-turboquant_checker = importlib.util.module_from_spec(CHECKER_SPEC)
-CHECKER_SPEC.loader.exec_module(turboquant_checker)
-
-
 def write_gateddelta_model(
     root: Path,
     *,
@@ -540,16 +530,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 model_repo_id_arg_explicit=False,
                 model_dir_explicit=False,
             )
-
-    def test_kv_compression_blocker_keys_match_quality_gate_contract(self) -> None:
-        self.assertEqual(
-            bench.KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS,
-            turboquant_checker.FUSED_DECODE_BLOCKED_COUNTERS,
-        )
-        self.assertEqual(
-            bench.KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS,
-            turboquant_checker.FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS,
-        )
 
     def test_parse_mlx_lm_trials_and_reported_averages(self) -> None:
         parsed = bench.parse_mlx_lm_benchmark_output(
@@ -1202,56 +1182,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(run["output_tokens"], 3.0)
         self.assertEqual(run["decode_s"], 1.0)
         self.assertEqual(run["decode_tok_s"], 3.0)
-
-    def test_axengine_summary_exposes_kv_compression_blocker_row_fields(self) -> None:
-        run = {
-            "prefill_s": 0.3,
-            "decode_s": 0.1,
-            "ttft_ms": 300.0,
-            "prefill_tok_s": 10.0,
-            "decode_tok_s": 20.0,
-            "output_tokens": 3.0,
-            "kv_compression_telemetry": {
-                "ax_mlx_kv_compression_decode_path": 1,
-                "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
-                "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 2,
-                "ax_mlx_kv_compression_fused_decode_blocked_linear_attention": 2,
-                "ax_mlx_kv_compression_fused_decode_blocked_missing_storage": 1,
-            },
-        }
-        with patch.object(bench, "axengine_one_run", side_effect=[run, run]):
-            row = bench.bench_axengine(
-                19091,
-                [1, 2, 3],
-                3,
-                1,
-                0.0,
-                model_metadata={},
-                direct_mode=True,
-                kv_compression="turboquant-fused-experimental",
-            )
-
-        self.assertEqual(
-            row["kv_compression_claim_status"],
-            "telemetry_only_full_precision_generation",
-        )
-        self.assertEqual(
-            row["kv_compression_fused_decode_fallback_reason_label"],
-            "shadow_only",
-        )
-        self.assertEqual(row["kv_compression_fused_decode_blocked_total"], 3)
-        self.assertEqual(
-            row["kv_compression_fused_decode_blocked_reasons"],
-            ["attention_kind", "missing_storage"],
-        )
-        self.assertEqual(
-            row["kv_compression_fused_decode_blocked_attention_kind_total"],
-            2,
-        )
-        self.assertEqual(
-            row["kv_compression_fused_decode_blocked_attention_kind_reasons"],
-            ["linear_attention"],
-        )
 
     def test_axengine_summary_can_label_linear_attention_pack_row(self) -> None:
         runs = [
@@ -4285,207 +4215,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             125,
         )
 
-    def test_ax_mlx_kv_compression_telemetry_is_extracted_and_summarized(self) -> None:
-        telemetry = bench.extract_ax_mlx_kv_compression_telemetry(
-            {
-                "crossover_decisions": {
-                    "ax_mlx_kv_compression_request_snapshots": 1,
-                    "ax_mlx_kv_compression_status": 2,
-                    "ax_mlx_kv_compression_preset": 1,
-                    "ax_mlx_kv_compression_key_bits": 8,
-                    "ax_mlx_kv_compression_value_bits": 4,
-                    "ax_mlx_kv_compression_candidate_token_layers": 100,
-                    "ax_mlx_kv_compression_estimated_saved_kib": 20,
-                    "ax_mlx_kv_compression_route_metadata_schema": 1,
-                    "ax_mlx_kv_compression_production_ready": 0,
-                    "ax_mlx_kv_compression_production_blockers": 1,
-                    "ax_mlx_kv_compression_runtime_storage_written_slots": 50,
-                    "ax_mlx_kv_compression_shadow_sync_calls": 1,
-                    "ax_mlx_kv_compression_shadow_sync_wall_us": 1234,
-                    "ax_mlx_kv_compression_decode_path": 1,
-                    "ax_mlx_kv_compression_fused_decode_candidates": 1,
-                    "ax_mlx_kv_compression_fused_decode_attempts": 0,
-                    "ax_mlx_kv_compression_fused_decode_successes": 0,
-                    "ax_mlx_kv_compression_fused_decode_metal_successes": 0,
-                    "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
-                    "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
-                    "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 2,
-                    "ax_mlx_kv_compression_fused_decode_blocked_linear_attention": 2,
-                    "ax_mlx_kv_compression_fused_decode_blocked_missing_storage": 1,
-                    "unrelated": 99,
-                }
-            }
-        )
-
-        self.assertEqual(telemetry["ax_mlx_kv_compression_preset"], 1)
-        self.assertEqual(telemetry["ax_mlx_kv_compression_key_bits"], 8)
-        self.assertEqual(
-            telemetry["ax_mlx_kv_compression_runtime_storage_written_slots"],
-            50,
-        )
-        self.assertEqual(telemetry["ax_mlx_kv_compression_shadow_sync_calls"], 1)
-        self.assertEqual(telemetry["ax_mlx_kv_compression_shadow_sync_wall_us"], 1234)
-        self.assertEqual(telemetry["ax_mlx_kv_compression_decode_path"], 1)
-        self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_candidates"], 1)
-        self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_attempts"], 0)
-        self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_fallbacks"], 0)
-        self.assertEqual(
-            telemetry["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1
-        )
-        self.assertEqual(
-            telemetry["ax_mlx_kv_compression_fused_decode_blocked_attention_kind"],
-            2,
-        )
-        self.assertEqual(
-            telemetry["ax_mlx_kv_compression_fused_decode_blocked_linear_attention"],
-            2,
-        )
-        self.assertEqual(
-            telemetry["ax_mlx_kv_compression_fused_decode_blocked_missing_storage"],
-            1,
-        )
-        self.assertNotIn("unrelated", telemetry)
-
-        summary = bench.summarize_ax_mlx_kv_compression_telemetry(
-            [
-                {"kv_compression_telemetry": telemetry},
-                {
-                    "kv_compression_telemetry": {
-                        "ax_mlx_kv_compression_request_snapshots": 1,
-                        "ax_mlx_kv_compression_status": 2,
-                        "ax_mlx_kv_compression_preset": 1,
-                        "ax_mlx_kv_compression_runtime_storage_written_slots": 75,
-                        "ax_mlx_kv_compression_shadow_sync_calls": 1,
-                        "ax_mlx_kv_compression_shadow_sync_wall_us": 4321,
-                        "ax_mlx_kv_compression_decode_path": 1,
-                        "ax_mlx_kv_compression_fused_decode_candidates": 1,
-                        "ax_mlx_kv_compression_fused_decode_attempts": 0,
-                        "ax_mlx_kv_compression_fused_decode_successes": 0,
-                        "ax_mlx_kv_compression_fused_decode_metal_successes": 0,
-                        "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
-                        "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
-                        "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 3,
-                        "ax_mlx_kv_compression_fused_decode_blocked_linear_attention": 1,
-                        "ax_mlx_kv_compression_fused_decode_blocked_sliding_window": 2,
-                        "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim": 4,
-                    }
-                },
-            ]
-        )
-
-        self.assertEqual(summary["ax_mlx_kv_compression_request_snapshots"], 2)
-        self.assertEqual(summary["ax_mlx_kv_compression_status"], 2)
-        self.assertEqual(summary["ax_mlx_kv_compression_preset"], 1)
-        self.assertEqual(
-            summary["ax_mlx_kv_compression_runtime_storage_written_slots"],
-            125,
-        )
-        self.assertEqual(summary["ax_mlx_kv_compression_shadow_sync_calls"], 2)
-        self.assertEqual(summary["ax_mlx_kv_compression_shadow_sync_wall_us"], 5555)
-        self.assertEqual(summary["ax_mlx_kv_compression_decode_path"], 1)
-        self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_candidates"], 2)
-        self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_attempts"], 0)
-        self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_successes"], 0)
-        self.assertEqual(
-            summary["ax_mlx_kv_compression_fused_decode_metal_successes"], 0
-        )
-        self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_fallbacks"], 0)
-        self.assertEqual(
-            summary["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1
-        )
-        self.assertEqual(
-            summary["ax_mlx_kv_compression_fused_decode_blocked_attention_kind"],
-            5,
-        )
-        self.assertEqual(
-            summary["ax_mlx_kv_compression_fused_decode_blocked_linear_attention"],
-            3,
-        )
-        self.assertEqual(
-            summary["ax_mlx_kv_compression_fused_decode_blocked_sliding_window"],
-            2,
-        )
-        self.assertEqual(
-            summary["ax_mlx_kv_compression_fused_decode_blocked_missing_storage"],
-            1,
-        )
-        self.assertEqual(
-            summary["ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim"],
-            4,
-        )
-        self.assertEqual(
-            bench.kv_compression_fused_decode_blocked_summary(summary),
-            {
-                "total": 10,
-                "reasons": [
-                    "attention_kind",
-                    "unsupported_head_dim",
-                    "missing_storage",
-                ],
-                "counters": {
-                    "prefill_only": 0,
-                    "attention_kind": 5,
-                    "ineligible_layer": 0,
-                    "unsupported_preset": 0,
-                    "unsupported_head_dim": 4,
-                    "gqa": 0,
-                    "missing_storage": 1,
-                },
-            },
-        )
-        self.assertEqual(
-            bench.kv_compression_fused_decode_blocked_attention_kind_summary(summary),
-            {
-                "total": 5,
-                "reasons": [
-                    "linear_attention",
-                    "sliding_window",
-                ],
-                "counters": {
-                    "linear_attention": 3,
-                    "sliding_window": 2,
-                    "kv_shared": 0,
-                },
-            },
-        )
-        self.assertEqual(
-            bench.kv_compression_decode_path_label(summary),
-            "full_precision_shadow",
-        )
-        self.assertEqual(
-            bench.kv_compression_fused_decode_fallback_reason_label(summary),
-            "shadow_only",
-        )
-
-        summary["ax_mlx_kv_compression_decode_path"] = 2
-        self.assertEqual(
-            bench.kv_compression_decode_path_label(summary),
-            "fused_compressed_decode",
-        )
-        summary["ax_mlx_kv_compression_decode_path"] = 3
-        self.assertEqual(
-            bench.kv_compression_decode_path_label(summary),
-            "cpu_oracle_compressed_decode",
-        )
-        summary["ax_mlx_kv_compression_fused_decode_fallback_reason"] = 4
-        self.assertEqual(
-            bench.kv_compression_fused_decode_fallback_reason_label(summary),
-            "runner_not_integrated",
-        )
-        summary["ax_mlx_kv_compression_fused_decode_fallback_reason"] = 5
-        self.assertEqual(
-            bench.kv_compression_fused_decode_fallback_reason_label(summary),
-            "cpu_oracle_unavailable",
-        )
-
-    def test_absent_ax_mlx_kv_compression_telemetry_stays_silent(self) -> None:
-        self.assertEqual(
-            bench.extract_ax_mlx_kv_compression_telemetry(
-                {"crossover_decisions": {"ax_mlx_decode_steps": 2}}
-            ),
-            {},
-        )
-
     def test_absent_ax_mlx_gemma4_moe_profile_stays_silent(self) -> None:
         self.assertEqual(
             bench.extract_ax_mlx_gemma4_moe_profile(
@@ -4585,50 +4314,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0][0], "response")
         self.assertEqual(events[0][1]["response"]["output_tokens"], [7])
-
-    def test_axengine_command_can_enable_experimental_kv_compression(self) -> None:
-        with (
-            patch.object(bench, "ensure_port_available") as ensure_port_available,
-            patch.object(bench.subprocess, "Popen") as popen,
-        ):
-            bench.start_axengine(
-                Path("/tmp/ax-engine-server"),
-                Path("/tmp/model"),
-                19091,
-                model_id="test-model",
-                direct_mode=True,
-                kv_compression="turboquant-shadow",
-                kv_compression_hot_window_tokens=128,
-                kv_compression_min_context_tokens=1024,
-            )
-
-        ensure_port_available.assert_called_once_with(19091)
-        command = popen.call_args.args[0]
-        self.assertIn("--disable-ngram-acceleration", command)
-        self.assertIn("--experimental-mlx-kv-compression", command)
-        self.assertIn("turboquant-shadow", command)
-        self.assertIn("--experimental-mlx-kv-compression-hot-window-tokens", command)
-        self.assertIn("--experimental-mlx-kv-compression-min-context-tokens", command)
-
-    def test_axengine_command_can_request_fused_experimental_kv_compression(
-        self,
-    ) -> None:
-        with (
-            patch.object(bench, "ensure_port_available"),
-            patch.object(bench.subprocess, "Popen") as popen,
-        ):
-            bench.start_axengine(
-                Path("/tmp/ax-engine-server"),
-                Path("/tmp/model"),
-                19091,
-                model_id="test-model",
-                direct_mode=True,
-                kv_compression="turboquant-fused-experimental",
-            )
-
-        command = popen.call_args.args[0]
-        self.assertIn("--experimental-mlx-kv-compression", command)
-        self.assertIn("turboquant-fused-experimental", command)
 
     def test_axengine_command_can_enable_gemma4_moe_profile(self) -> None:
         with (

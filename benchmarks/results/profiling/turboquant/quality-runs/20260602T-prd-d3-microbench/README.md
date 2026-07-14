@@ -1,5 +1,9 @@
 # TurboQuant D3 PRD Microbench Evidence
 
+Status: `retired_runtime_path` — the TurboQuant runtime path was retired in
+favor of the durable tiered prefix cache (ADR-002); this artifact is
+historical evidence only.
+
 This directory records standalone fused cold-decode kernel evidence for
 `PRD-2026-06-01-turboquant-codec-kernel-improvements.md`.
 

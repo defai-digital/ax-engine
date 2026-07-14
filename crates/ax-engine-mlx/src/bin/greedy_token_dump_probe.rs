@@ -17,8 +17,8 @@ use std::time::Instant;
 use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::{
     generate::{
-        DEFAULT_PREFILL_CHUNK, advance_direct_pipeline_with_timings_and_turboquant_context,
-        chunked_prefill, start_direct_pipeline,
+        DEFAULT_PREFILL_CHUNK, advance_direct_pipeline_with_timings, chunked_prefill,
+        start_direct_pipeline,
     },
     kv_cache::MlxKVCache,
     model::ModelConfig,
@@ -80,9 +80,7 @@ fn main() {
     let mut generated = vec![bootstrap_tok];
     let mut pending = start_direct_pipeline(&cfg, &weights, bootstrap_tok, &mut cache);
     while generated.len() < steps {
-        let advanced = advance_direct_pipeline_with_timings_and_turboquant_context(
-            &cfg, &weights, &pending, &mut cache, None,
-        );
+        let advanced = advance_direct_pipeline_with_timings(&cfg, &weights, &pending, &mut cache);
         generated.push(advanced.token);
         pending = advanced.next_pending;
     }

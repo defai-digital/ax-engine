@@ -9,7 +9,6 @@ use super::super::shared::{
     attention_mask_array, attention_output_projection, full_precision_attention,
     moe_experts_forward, prepare_value_bhsd, qkv_project, qw, shared_expert_forward,
 };
-use super::super::turboquant_context::TurboQuantModelDecodeContext;
 use crate::kv_cache::MlxKVCache;
 use crate::weights::LayerWeights;
 
@@ -42,7 +41,6 @@ pub(crate) fn layer_forward(
     layer_idx: usize,
     token_offset: usize,
     shared_mask: Option<&Option<MlxArray>>,
-    _turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
     let use_rope = layer_uses_rope(cfg, layer_idx);
     let is_moe = layer_is_moe(cfg, layer_idx);

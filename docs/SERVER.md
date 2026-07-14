@@ -286,54 +286,10 @@ prefers the n-gram utility gate. Explicit per-knob env vars still override the
 profile, and the resolved posture is reported in route metadata as
 `ax_mlx_speculation_profile`.
 
-MLX KV compression defaults to `disabled`. The TurboQuant fused route is
-functionally complete — it engages on eligible global-attention layers, holds
-greedy parity with full precision on real long prompts, and reports honest
-route telemetry — but it is demoted from default-on because a gemma4-12b A/B
-measured ~2x slower decode at 700-token context (per-layer synchronous Metal
-dispatch, query readback, and the CPU hot-tail merge), failing the >=0.85
-decode-throughput promotion gate. Opt in with `--experimental-mlx-kv-compression
-turboquant-fused-experimental`; `AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` is the
-runtime kill switch when it is enabled. Opt-in route selection does not imply
-production TurboQuant support: promotion remains gated on the long-context
-quality artifact and the decode-throughput gate. The `turboquant-shadow` mode is for benchmark
-evidence and route telemetry only: it keeps generation on the existing
-full-precision MLX KV path, does not change SDPA inputs, logits, sampling, or
-output tokens.
-
-`turboquant-fused-experimental` is the opt-in fused route selection. It
-requests compressed decode and tries the two-stage Metal cold decode plus
-full-precision hot-tail merge for eligible K8/V4 single-token decode layers.
-When Metal succeeds, route metadata reports `fused_compressed_decode`; when
-Metal is unavailable, the runtime falls back to the full-precision MLX KV path
-instead of using the CPU oracle. Use route metadata to inspect candidate,
-attempt, success, fallback, and fallback-reason counters. Fallback reason label
-`runner_not_integrated` means no runtime decode attempt was observed yet;
-`cpu_oracle_unavailable` identifies legacy/debug artifacts where the
-compressed-decode oracle path was not available. Only `fused_compressed_decode`
-route evidence with successful attempts, Metal fused decode successes, and zero
-fallbacks can feed the internal quality artifact gate; shadow and legacy CPU
-oracle rows are diagnostic only. Public-support promotion remains blocked
-unless the separate readiness report also passes the decode-throughput
-performance gate.
-
-```text
-cargo run -p ax-engine-server -- \
-  --model-id qwen3_dense \
-  --mlx \
-  --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
-  --experimental-mlx-kv-compression turboquant-shadow \
-  --experimental-mlx-kv-compression-hot-window-tokens 256 \
-  --experimental-mlx-kv-compression-min-context-tokens 512 \
-  --port 8080
-```
-
-When enabled, route metadata includes TurboQuant eligibility, estimated
-compressed/saved KiB, production-readiness blockers, and runtime shadow-storage
-counters, including shadow sync calls and wall time. It also reports the current
-compression decode path plus fused decode candidate, attempt, success, fallback,
-and fallback-reason counters. When disabled, the server emits no TurboQuant
-compression metadata.
+The experimental MLX compressed-KV runtime path and its
+`--experimental-mlx-kv-compression` server flags were retired in favor of the
+durable tiered prefix cache (ADR-002). Native uncompressed KV is the only
+decode behavior, and the server emits no compressed-KV route metadata.
 
 For common repo-owned MLX targets, use a preset to select the model id, MLX
 runtime, support tier, and current safe defaults while keeping model artifacts

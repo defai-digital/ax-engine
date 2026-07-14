@@ -1,7 +1,6 @@
 use mlx_sys::MlxArray;
 
 use super::super::ModelConfig;
-use super::super::turboquant_context::TurboQuantModelDecodeContext;
 use crate::kv_cache::MlxKVCache;
 use crate::weights::LayerWeights;
 
@@ -23,7 +22,6 @@ pub(crate) fn layer_forward(
     layer_idx: usize,
     token_offset: usize,
     shared_mask: Option<&Option<MlxArray>>,
-    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
     super::standard::layer_forward(
         cfg,
@@ -34,7 +32,6 @@ pub(crate) fn layer_forward(
         token_offset,
         None, // no per-layer inputs
         shared_mask,
-        turboquant_context,
         false, // last_position_only_after_attention
         false, // skip_post_attention_ffn
     )

@@ -35,9 +35,6 @@ cd "$ROOT_DIR"
   scripts/test_gateddelta_prefill_model.py \
   scripts/test_run_gateddelta_prefill_profile.py \
   scripts/test_readme_performance_artifacts.py \
-  scripts/test_turboquant_quality_artifact.py \
-  scripts/test_turboquant_microbench_artifact.py \
-  scripts/test_turboquant_prd_completion.py \
   scripts/test_probe_mlx_model_support.py \
   -v
 "$PYTHON_BIN" scripts/check_readme_performance_artifacts.py

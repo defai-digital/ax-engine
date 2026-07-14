@@ -6,7 +6,6 @@ the earlier serving baseline work, including:
 - disk-backed L2 prefix cache
 - MLA warm-extend correctness (default-on snapshot restore; kill switch
   `AX_DISABLE_MLA_PREFIX_RESTORE`)
-- TurboQuant compressed-decode telemetry
 - per-request MLA dual-path prefill chunks for GLM-4.7-Flash (large cold /
   block-aligned warm-extend) without losing warm-extend snapshot equivalence
 

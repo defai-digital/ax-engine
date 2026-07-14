@@ -1,6 +1,6 @@
 use ax_engine_sdk::{
-    DelegatedHttpTimeouts, EngineSessionConfig, KvCompressionConfig, KvCompressionMode,
-    PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier, TurboQuantPreset,
+    DelegatedHttpTimeouts, EngineSessionConfig, PreviewBackendRequest,
+    PreviewSessionConfigRequest, SupportTier,
 };
 use std::env;
 use std::path::PathBuf;
@@ -10,33 +10,9 @@ use super::artifacts::{
 };
 use super::presets::PresetDefinition;
 use super::{
-    DEFAULT_MODEL_ID, MODEL_ARTIFACTS_ENV, ModelArtifactResolution, PreviewMlxKvCompression,
-    PreviewSupportTier, ServerArgs, ServerPreset,
+    DEFAULT_MODEL_ID, MODEL_ARTIFACTS_ENV, ModelArtifactResolution, PreviewSupportTier,
+    ServerArgs, ServerPreset,
 };
-
-impl PreviewMlxKvCompression {
-    fn as_config(self, hot_window_tokens: usize, min_context_tokens: usize) -> KvCompressionConfig {
-        match self {
-            Self::Disabled => KvCompressionConfig {
-                hot_window_tokens,
-                min_context_tokens,
-                ..KvCompressionConfig::disabled()
-            },
-            Self::TurboQuantShadow => KvCompressionConfig {
-                mode: KvCompressionMode::TurboQuantShadow,
-                preset: TurboQuantPreset::K8V4,
-                hot_window_tokens,
-                min_context_tokens,
-            },
-            Self::TurboQuantFusedExperimental => KvCompressionConfig {
-                mode: KvCompressionMode::TurboQuantFusedExperimental,
-                preset: TurboQuantPreset::K8V4,
-                hot_window_tokens,
-                min_context_tokens,
-            },
-        }
-    }
-}
 
 impl PreviewSupportTier {
     pub fn as_sdk_support_tier(self) -> SupportTier {
@@ -144,10 +120,6 @@ impl ServerArgs {
             mlx_speculation_profile: self
                 .speculation_profile
                 .map(|profile| profile.as_name().to_string()),
-            mlx_kv_compression: self.experimental_mlx_kv_compression.as_config(
-                self.experimental_mlx_kv_compression_hot_window_tokens,
-                self.experimental_mlx_kv_compression_min_context_tokens,
-            ),
             mlx_prefill_chunk: self.prefill_chunk,
         })
         .map_err(|error| error.to_string())

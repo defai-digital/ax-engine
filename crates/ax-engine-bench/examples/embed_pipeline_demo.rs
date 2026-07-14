@@ -92,7 +92,6 @@ fn build_session(model_dir: &Path) -> EngineSession {
         mlx_disable_ngram_acceleration: false,
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
-        mlx_kv_compression: ax_engine_sdk::KvCompressionConfig::disabled(),
         mlx_prefill_chunk: None,
     })
     .expect("config");

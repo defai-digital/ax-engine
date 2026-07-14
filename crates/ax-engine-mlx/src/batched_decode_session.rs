@@ -81,7 +81,6 @@ pub(crate) struct BatchedDecodeCapabilities {
     certification_status: BatchedDecodeCertificationStatus,
     has_mtp: bool,
     is_diffusion: bool,
-    kv_compression_on: bool,
     has_sliding_window: bool,
     has_moe: bool,
     has_linear_attention: bool,
@@ -94,7 +93,6 @@ impl BatchedDecodeCapabilities {
     pub(crate) fn from_loaded_model(
         has_mtp: bool,
         is_diffusion: bool,
-        kv_compression_on: bool,
         layer_windows: &[Option<usize>],
         layers: &[LayerWeights],
         certification_status: BatchedDecodeCertificationStatus,
@@ -103,7 +101,6 @@ impl BatchedDecodeCapabilities {
             certification_status,
             has_mtp,
             is_diffusion,
-            kv_compression_on,
             has_sliding_window: layer_windows.iter().any(Option::is_some),
             has_moe: layers.iter().any(|weights| weights.router_proj.is_some()),
             has_linear_attention: layers.iter().any(|weights| weights.linear_attn.is_some()),
@@ -131,9 +128,6 @@ impl BatchedDecodeCapabilities {
         }
         if self.is_diffusion {
             reasons.push("diffusion");
-        }
-        if self.kv_compression_on {
-            reasons.push("kv_compression");
         }
         if !self.certification_status.is_certified() && !allow_uncertified {
             reasons.push(self.certification_status.route_reason());
@@ -334,7 +328,6 @@ mod tests {
         let uncertified = BatchedDecodeCapabilities::from_loaded_model(
             false,
             false,
-            false,
             &no_windows,
             &[],
             BatchedDecodeCertificationStatus::Missing,
@@ -349,7 +342,6 @@ mod tests {
             BatchedDecodeCapabilities::from_loaded_model(
                 false,
                 false,
-                false,
                 &no_windows,
                 &[],
                 BatchedDecodeCertificationStatus::Certified,
@@ -360,7 +352,6 @@ mod tests {
             !BatchedDecodeCapabilities::from_loaded_model(
                 true,
                 false,
-                false,
                 &no_windows,
                 &[],
                 BatchedDecodeCertificationStatus::Missing,
@@ -371,7 +362,6 @@ mod tests {
             !BatchedDecodeCapabilities::from_loaded_model(
                 false,
                 true,
-                false,
                 &no_windows,
                 &[],
                 BatchedDecodeCertificationStatus::Missing,
@@ -380,18 +370,6 @@ mod tests {
         );
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
-                false,
-                false,
-                true,
-                &no_windows,
-                &[],
-                BatchedDecodeCertificationStatus::Missing,
-            )
-            .eligible(true)
-        );
-        assert!(
-            !BatchedDecodeCapabilities::from_loaded_model(
-                false,
                 false,
                 false,
                 &[Some(4096)],
@@ -407,7 +385,6 @@ mod tests {
         let reasons = BatchedDecodeCapabilities::from_loaded_model(
             true,
             true,
-            true,
             &[Some(4096)],
             &[],
             BatchedDecodeCertificationStatus::Missing,
@@ -419,7 +396,6 @@ mod tests {
             vec![
                 "mtp",
                 "diffusion",
-                "kv_compression",
                 "certification_missing",
                 "sliding_window"
             ]

@@ -13,8 +13,8 @@ consistent across the workspace.
 - `ax-engine-core`: request lifecycle, scheduler, KV cache, runner integration,
   and deterministic bring-up loop
 - `ax-engine-mlx`: MLX model graphs, KV cache, n-gram acceleration, MTP,
-  TurboQuant, and runner dispatch (only crate where `unsafe` is permitted,
-  via `mlx-sys`)
+  and runner dispatch (only crate where `unsafe` is permitted, via
+  `mlx-sys`)
 - `mlx-sys`: bindgen FFI over `ax_shim.h` to MLX C++; safe `MlxArray` RAII
   wrappers and type-tagged handle system
 - `ax-engine-sdk`: backend resolution, session management, request lifecycle
@@ -24,7 +24,7 @@ consistent across the workspace.
 - `ax-engine-bench`: workload-contract CLI, replay harness, reporting,
   bounded autotune, readiness, and bring-up checks
 - `ax-engine-microbench`: isolated microbenchmarks and kernel dispatch probes
-  (TurboQuant, RMSNorm, MoE, diffusion, MLA, disk-prefix-cache); depends on
+  (RMSNorm, MoE, diffusion, MLA, disk-prefix-cache); depends on
   `ax-engine-core`, `ax-engine-mlx`, and `mlx-sys` only
 
 This means AX Engine already has a practical split between:

@@ -173,7 +173,7 @@ python -m unittest discover -s python/tests -v
 ## Repository Areas
 
 - `crates/ax-engine-core`: core runtime contracts and bring-up execution loop
-- `crates/ax-engine-mlx`: MLX model graphs, KV cache, n-gram acceleration, MTP, TurboQuant, and runner dispatch
+- `crates/ax-engine-mlx`: MLX model graphs, KV cache, n-gram acceleration, MTP, and runner dispatch
 - `crates/mlx-sys`: bindgen FFI over `ax_shim.h` to MLX C++; safe `MlxArray` RAII wrappers
 - `crates/ax-engine-bench`: workload-contract CLI and bring-up runtime harness
 - `crates/ax-engine-microbench`: isolated microbenchmarks and kernel dispatch probes

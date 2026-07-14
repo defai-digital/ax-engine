@@ -32,7 +32,7 @@ CHECKER_SPEC.loader.exec_module(checker)
 
 def metadata() -> dict[str, object]:
     return {
-        "target": "turboquant_kv_policy",
+        "target": "ngram_speculation_policy",
         "status": "diagnostic_only",
         "created_at": "2026-05-14T00:00:00Z",
         "repo": {
@@ -50,7 +50,7 @@ def metadata() -> dict[str, object]:
             "support_tier": "repo_owned_runtime",
         },
         "space": {
-            "kv_preset": ["disabled", "TurboQuantK8V4"],
+            "ngram_profile": ["disabled", "aggressive"],
             "hot_window_tokens": [256],
         },
     }
@@ -79,7 +79,7 @@ def candidate(policy_id: str = "k8v4-hot-256") -> dict[str, object]:
         "generation_tokens": 256,
         "seed": 42,
         "policy": {
-            "kv_preset": "TurboQuantK8V4",
+            "ngram_profile": "aggressive",
             "hot_window_tokens": 256,
             "eligible_layer_mask": "full_attention_only",
         },

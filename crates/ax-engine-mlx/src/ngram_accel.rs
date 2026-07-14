@@ -9,8 +9,7 @@ use crate::sampling::{
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
-    ModelConfig, TurboQuantModelDecodeContext, forward_all_positions,
-    forward_all_positions_update_cache, forward_with_turboquant_context,
+    ModelConfig, forward, forward_all_positions, forward_all_positions_update_cache,
 };
 use crate::weights::ModelWeights;
 
@@ -1076,7 +1075,7 @@ pub fn ngram_accel_decode_step_with_sampling_buffers(
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Vec<u32> {
     if draft.is_empty() || sampling.uses_repetition_penalty() {
-        return single_decode_with_turboquant_context(
+        return single_decode_with_sampling_buffers(
             cfg,
             weights,
             cache,
@@ -1085,7 +1084,6 @@ pub fn ngram_accel_decode_step_with_sampling_buffers(
             sampling,
             repetition_tokens,
             rng,
-            None,
             sampling_probs_buf,
             sampling_logits_buf,
             sampling_candidates_buf,
@@ -1465,7 +1463,7 @@ pub fn single_decode(
     let mut probs_buf = Vec::new();
     let mut logits_buf = Vec::new();
     let mut candidates_buf = Vec::new();
-    single_decode_with_turboquant_context(
+    single_decode_with_sampling_buffers(
         cfg,
         weights,
         cache,
@@ -1474,7 +1472,6 @@ pub fn single_decode(
         sampling_request.params,
         sampling_request.repetition_tokens,
         rng,
-        None,
         &mut probs_buf,
         &mut logits_buf,
         &mut candidates_buf,
@@ -1482,7 +1479,7 @@ pub fn single_decode(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn single_decode_with_turboquant_context(
+pub fn single_decode_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     cache: &mut MlxKVCache,
@@ -1491,20 +1488,12 @@ pub fn single_decode_with_turboquant_context(
     sampling: MlxSamplingParams,
     repetition_tokens: &[u32],
     rng: &mut Xorshift64,
-    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
     sampling_probs_buf: &mut Vec<f32>,
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Vec<u32> {
     let token_offset = cache.seq_len();
-    let logits = forward_with_turboquant_context(
-        cfg,
-        weights,
-        &[last_token],
-        cache,
-        token_offset,
-        turboquant_context,
-    );
+    let logits = forward(cfg, weights, &[last_token], cache, token_offset);
     cache.advance(1);
 
     let tok = if sampling.temperature > 0.0

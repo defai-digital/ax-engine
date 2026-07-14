@@ -375,7 +375,7 @@ pub struct ModelConfig {
     /// after hot-swap.
     pub compile_cache_identity: u64,
     /// Model family string from the manifest (e.g. "gemma4", "qwen3", "llama3").
-    /// Used for named dispatch in `layer_forward_with_turboquant_context`.
+    /// Used for named dispatch in `layer_forward`.
     pub model_family: String,
     pub layer_count: usize,
     pub hidden_size: usize,

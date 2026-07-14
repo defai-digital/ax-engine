@@ -115,91 +115,6 @@ pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB: &str = "ax_mlx_kv_linear_st
 pub const ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT: &str = "ax_mlx_kv_growth_count";
 pub const ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM: &str = "ax_mlx_model_mla_kv_latent_dim";
 pub const ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS: &str = "ax_mlx_model_moe_active_experts";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS: &str =
-    "ax_mlx_kv_compression_request_snapshots";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS: &str = "ax_mlx_kv_compression_status";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET: &str = "ax_mlx_kv_compression_preset";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS: &str = "ax_mlx_kv_compression_key_bits";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS: &str =
-    "ax_mlx_kv_compression_value_bits";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS: &str =
-    "ax_mlx_kv_compression_eligible_layers";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS: &str =
-    "ax_mlx_kv_compression_candidate_token_layers";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS: &str =
-    "ax_mlx_kv_compression_hot_token_layers";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB: &str =
-    "ax_mlx_kv_compression_full_precision_kib";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB: &str =
-    "ax_mlx_kv_compression_estimated_compressed_kib";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB: &str =
-    "ax_mlx_kv_compression_estimated_saved_kib";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI: &str =
-    "ax_mlx_kv_compression_ratio_milli";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ROUTE_METADATA_SCHEMA: &str =
-    "ax_mlx_kv_compression_route_metadata_schema";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_READY: &str =
-    "ax_mlx_kv_compression_production_ready";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_BLOCKERS: &str =
-    "ax_mlx_kv_compression_production_blockers";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_LAYERS: &str =
-    "ax_mlx_kv_compression_runtime_storage_layers";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_TOKEN_LAYERS: &str =
-    "ax_mlx_kv_compression_runtime_storage_token_layers";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_KIB: &str =
-    "ax_mlx_kv_compression_runtime_storage_kib";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_WRITTEN_SLOTS: &str =
-    "ax_mlx_kv_compression_runtime_storage_written_slots";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_SHADOW_SYNC_CALLS: &str =
-    "ax_mlx_kv_compression_shadow_sync_calls";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_SHADOW_SYNC_WALL_US: &str =
-    "ax_mlx_kv_compression_shadow_sync_wall_us";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH: &str =
-    "ax_mlx_kv_compression_decode_path";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES: &str =
-    "ax_mlx_kv_compression_fused_decode_candidates";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS: &str =
-    "ax_mlx_kv_compression_fused_decode_attempts";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES: &str =
-    "ax_mlx_kv_compression_fused_decode_successes";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES: &str =
-    "ax_mlx_kv_compression_fused_decode_metal_successes";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS: &str =
-    "ax_mlx_kv_compression_fused_decode_fallbacks";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON: &str =
-    "ax_mlx_kv_compression_fused_decode_fallback_reason";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_READY_CANDIDATES: &str =
-    "ax_mlx_kv_compression_fused_decode_ready_candidates";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_PREFILL_ONLY: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_prefill_only";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_attention_kind";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_LINEAR_ATTENTION: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_linear_attention";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SLIDING_WINDOW: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_sliding_window";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_KV_SHARED: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_kv_shared";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_INELIGIBLE_LAYER: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_ineligible_layer";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_PRESET: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_unsupported_preset";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_HEAD_DIM: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_GQA: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_gqa";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_MISSING_STORAGE: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_missing_storage";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SHORT_CONTEXT: &str =
-    "ax_mlx_kv_compression_fused_decode_blocked_short_context";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_QUERY_READBACK_WALL_US: &str =
-    "ax_mlx_kv_compression_fused_decode_query_readback_wall_us";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_COLD_METAL_WALL_US: &str =
-    "ax_mlx_kv_compression_fused_decode_cold_metal_wall_us";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_HOT_TAIL_MERGE_WALL_US: &str =
-    "ax_mlx_kv_compression_fused_decode_hot_tail_merge_wall_us";
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_OUTPUT_STAGING_WALL_US: &str =
-    "ax_mlx_kv_compression_fused_decode_output_staging_wall_us";
 pub const ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS: &str =
     "ax_scheduler_scheduled_prefill_tokens";
 pub const ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS: &str =
@@ -255,53 +170,6 @@ pub const ROUTE_DECISION_AX_MLX_MODEL_KEYS: [&str; 2] = [
     ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM,
     ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS,
 ];
-pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS: [&str; 44] = [
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ROUTE_METADATA_SCHEMA,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_READY,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_BLOCKERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_TOKEN_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_KIB,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_WRITTEN_SLOTS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_SHADOW_SYNC_CALLS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_SHADOW_SYNC_WALL_US,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_READY_CANDIDATES,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_PREFILL_ONLY,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_LINEAR_ATTENTION,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SLIDING_WINDOW,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_KV_SHARED,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_INELIGIBLE_LAYER,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_PRESET,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_HEAD_DIM,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_GQA,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_MISSING_STORAGE,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SHORT_CONTEXT,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_QUERY_READBACK_WALL_US,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_COLD_METAL_WALL_US,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_HOT_TAIL_MERGE_WALL_US,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_OUTPUT_STAGING_WALL_US,
-];
-
 impl RouteMetadata {
     pub fn empty() -> Self {
         Self {
@@ -953,32 +821,6 @@ mod tests {
         );
         assert!(
             ROUTE_DECISION_AX_MLX_MODEL_KEYS
-                .iter()
-                .all(|key| !key.contains('-'))
-        );
-    }
-
-    #[test]
-    fn mlx_kv_compression_route_decision_keys_are_stable_and_unique() {
-        assert_eq!(
-            ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS.len(),
-            ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS
-                .into_iter()
-                .collect::<BTreeSet<_>>()
-                .len()
-        );
-        assert!(
-            ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS
-                .iter()
-                .all(|key| key.starts_with("ax_mlx_kv_compression_"))
-        );
-        assert!(
-            ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS
-                .iter()
-                .all(|key| key.is_ascii())
-        );
-        assert!(
-            ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS
                 .iter()
                 .all(|key| !key.contains('-'))
         );

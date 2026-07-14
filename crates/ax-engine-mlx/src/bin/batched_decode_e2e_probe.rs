@@ -44,8 +44,8 @@ use std::path::Path;
 
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::{
-    ExecutionBatch, ExecutionItem, ExecutionMode, ExecutionRunner, KvCompressionConfig,
-    NativeModelArtifacts, PositionRange, RequestId, RouteMetadata, RunnerInput, StepId,
+    ExecutionBatch, ExecutionItem, ExecutionMode, ExecutionRunner, NativeModelArtifacts,
+    PositionRange, RequestId, RouteMetadata, RunnerInput, StepId,
 };
 use ax_engine_mlx::{
     MlxRunner,
@@ -401,13 +401,8 @@ fn main() {
     });
 
     // Build a runner. run() uses interior mutability, so one runner drives all.
-    let runner = MlxRunner::from_artifacts(
-        &artifacts,
-        DEFAULT_PREFILL_CHUNK,
-        true,
-        KvCompressionConfig::disabled(),
-    )
-    .expect("runner");
+    let runner =
+        MlxRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK, true).expect("runner");
 
     // Prefill every request (one run() per prefill item); record the first token.
     let mut cur: Vec<u32> = Vec::with_capacity(batch);
@@ -526,13 +521,8 @@ fn main() {
     // This is the gate-3 promotion check — for sampled cohorts it proves the
     // batched sampler is token-exact with the single-sequence sampler, RNG and
     // tie-break included. A second runner keeps its own per-request KV/RNG state.
-    let seq_runner = MlxRunner::from_artifacts(
-        &artifacts,
-        DEFAULT_PREFILL_CHUNK,
-        true,
-        KvCompressionConfig::disabled(),
-    )
-    .expect("sequential runner");
+    let seq_runner = MlxRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK, true)
+        .expect("sequential runner");
     let seq_streams = decode_sequential(&seq_runner, &prompts, &sampling, gen_len);
     let mut ok = true;
     for r in 0..batch {

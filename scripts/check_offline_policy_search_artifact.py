@@ -19,14 +19,12 @@ from typing import Any
 SCHEMA_VERSION = "ax.offline_policy_search.v1"
 
 RUNTIME_POLICY_TARGETS = {
-    "turboquant_kv_policy",
     "ngram_speculation_policy",
     "prefix_cache_retention_policy",
     "moe_locality_policy",
 }
 
 FALLBACK_REQUIRED_TARGETS = {
-    "turboquant_kv_policy",
     "ngram_speculation_policy",
 }
 

@@ -288,11 +288,6 @@ pub(super) fn base_server_args() -> ServerArgs {
         mlx_mtp_disable_ngram_stacking: false,
         speculation_profile: None,
         prefill_chunk: None,
-        experimental_mlx_kv_compression: args::PreviewMlxKvCompression::Disabled,
-        experimental_mlx_kv_compression_hot_window_tokens:
-            ax_engine_sdk::KvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS,
-        experimental_mlx_kv_compression_min_context_tokens:
-            ax_engine_sdk::KvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
         grpc_bind_address: None,
         max_concurrent_requests: None,
         max_request_body_bytes: None,

@@ -37,7 +37,7 @@
 //!
 //! ## Out of scope (deliberately)
 //!
-//! MLA / linear-attention / TurboQuant / sliding-window / rollback / disk
+//! MLA / linear-attention / sliding-window / rollback / disk
 //! serialization, and runner-side slot compaction. This is the full-attention
 //! foundation those layer on top of; [`BatchedKvCache::reset_row`] is the
 //! primitive the runner's slot reuse will build on. Decode advances all rows in

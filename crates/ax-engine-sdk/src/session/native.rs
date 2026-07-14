@@ -95,7 +95,6 @@ fn build_mlx_core(
         prefill_chunk,
         config.mlx_disable_ngram_acceleration,
         config.mlx_mtp_disable_ngram_stacking,
-        config.mlx_kv_compression,
         prefix_cache_store,
         shared_weights,
     )

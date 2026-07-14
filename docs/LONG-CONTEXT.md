@@ -43,7 +43,7 @@ The detailed implementation contract lives in [KV-CACHE.md](KV-CACHE.md).
 | Server startup and concurrency | [Qwen3-4B P2 startup/concurrency](../benchmarks/results/inference/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md) | 8k benchmark-warm TTFT was 2509.7 ms; 4-request concurrent prefill was classified as serialized | This sets serving expectations; it does not prove continuous batching |
 | Hot-prefix correctness | [Qwen3.5 warm-repeat equivalence](../benchmarks/results/inference/mlx-inference/2026-05-13-hot-prefix-w2/equivalence-gate/warm_repeat/qwen3-5-9b-2026-05-13.json) | 5/5 prompts matched token-exactly, with 5 physical snapshot hits, 176 reused tokens, and 0 warmup tokens on the claimed hit path | AX can restore physical MLX prefix snapshots on the validated Qwen warm-repeat path |
 | Multi-turn long session | `benchmarks/results/profiling/kv-long-context/*-2026-05-14.json` | Qwen3.5, Qwen3.6, and Gemma4 E2B show repeated physical prefix hits and reduced post-first-turn TTFT; GLM-4.7-Flash MLA multi-turn physical reuse is default-on (`…multiturn-mla-fixed-…`, 10 hits / 18,496 reused tokens) after the historical blocked path (`…multiturn-bugfix-final-…`) | Long-running session reuse works on FA, linear, sliding, and GLM MLA layouts when prompts are block-aligned; cold MLA prefill throughput under chunk alignment remains a follow-up surface |
-| Compressed KV | TurboQuant quality and microbench artifacts | Experimental and off by default | Not a production long-context support claim yet |
+| Compressed KV | Historical quality and microbench artifacts under `benchmarks/results/profiling/` | The experimental compressed-KV runtime path was retired in favor of the durable tiered prefix cache (ADR-002) | Native uncompressed KV is the only decode behavior |
 
 ## Multi-Turn Evidence
 
@@ -83,7 +83,8 @@ Do not claim yet:
 
 - AX is universally faster than `mlx_lm` at 8k or longer cold-prefill contexts.
 - AX has production continuous batching for concurrent long prompts.
-- TurboQuant compressed KV is a production long-context path.
+- Compressed KV decode exists: the experimental compressed-KV runtime path
+  was retired (ADR-002); native uncompressed KV is the only decode behavior.
 - Prefix reuse has identical cold-prefill latency across Qwen, Gemma, and GLM
   without architecture-specific chunk policy and validation.
 - Fair multi-prefill progress (scheduler caps) implies continuous batching or

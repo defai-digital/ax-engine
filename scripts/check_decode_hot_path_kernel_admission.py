@@ -24,7 +24,6 @@ ALLOWED_CLASSES = {
     "graph_compile",
     "phase1_metal",
     "mlx_sidecar",
-    "kv_turboquant",
     "sampling",
 }
 ALLOWED_STATUSES = {

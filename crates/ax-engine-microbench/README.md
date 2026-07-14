@@ -10,7 +10,6 @@ correctness probes, promotion evidence, and stress checks. It may depend on
 ## Binaries
 
 ```bash
-cargo run -p ax-engine-microbench --release --bin turboquant-microbench -- --help
 cargo run -p ax-engine-microbench --release --bin dequant-dtype-probe
 cargo run -p ax-engine-microbench --release --bin kernel-chain-batching-probe
 cargo run -p ax-engine-microbench --release --bin rmsnorm-fused-probe

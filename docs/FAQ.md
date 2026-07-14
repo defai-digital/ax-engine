@@ -188,13 +188,9 @@ direct path and the N-gram path on the same prompt/decode shape.
   Coding-shaped workloads with repeated local structure are the intended
   high-value case; random, high-entropy, very short, or deliberately diverse
   outputs may see little benefit.
-- **TurboQuant KV compression**: experimental and off by default. The
-  `turboquant-shadow` and `turboquant-fused-experimental` modes are evidence and
-  route-telemetry surfaces, not production support claims. The correctness
-  quality gate for the K8/V4 fused path now passes for Gemma 4 E2B; the remaining
-  blocker is a long-context performance promotion artifact at 8192-token context
-  or higher. Run `scripts/check_turboquant_promotion_readiness.py` before
-  changing any public support wording.
+- **KV compression**: the experimental compressed-KV runtime path was retired
+  in favor of the durable tiered prefix cache (ADR-002). Native uncompressed
+  KV is the only decode behavior.
 
 ## Which runtime path should I choose first?
 

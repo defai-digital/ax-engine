@@ -127,8 +127,8 @@ pub struct MoeProfileSnapshot {
 ///   Q/K RMSNorm on BSHD tensors.
 /// - `pre_sdpa_rope_kv_wall_us` — subset of pre_sdpa after QK norm: transpose,
 ///   V normalization, RoPE, and KV append.
-/// - `sdpa_wall_us` — `scaled_dot_product_attention_with_mask` (or TurboQuant
-///   fused fallback). Dense full-attention layers only.
+/// - `sdpa_wall_us` — `scaled_dot_product_attention_with_mask`. Dense
+///   full-attention layers only.
 /// - `post_attn_wall_us` — transpose-back, output projection, residual,
 ///   FFN/MoE, per-layer-input gating, layer_scalar.  Includes the full layer
 ///   tail for linear/MLA layers (since pre_sdpa/sdpa do not apply).

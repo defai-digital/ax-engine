@@ -142,19 +142,6 @@ impl GenerateRouteReport {
         self.crossover_decisions.get(key).copied()
     }
 
-    /// Returns true when TurboQuant KV compression is active for this request.
-    /// This reflects the `ax_mlx_kv_compression_status` decision (non-zero = active).
-    pub fn kv_compression_active(&self) -> bool {
-        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS)
-            .is_some_and(|v| v > 0)
-    }
-
-    /// Returns the TurboQuant preset route code when KV compression is active.
-    /// Maps to `TurboQuantPreset::route_code()`: K8V4=1, K4V4=2, K3V4Research=3.
-    pub fn kv_compression_preset_code(&self) -> Option<u32> {
-        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET)
-    }
-
     /// Returns the KV cache capacity in KiB allocated for this request.
     pub fn kv_capacity_kib(&self) -> Option<u32> {
         self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB)

@@ -1,21 +1,17 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, concatenate, eval,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, concatenate,
     qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
     scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
     slice_update, transpose,
 };
 #[cfg(test)]
 use mlx_sys::{broadcast_to, matmul, multiply, slice, softmax_precise};
-use std::time::Instant;
 
 use crate::attention_mask::{create_causal_mask, create_ring_sliding_mask};
 use crate::fastpath;
-use crate::kv_cache::{
-    MlxKVCache, MlxKvCompressionDecodeOutcome, MlxKvCompressionFusedDecodeTiming,
-};
+use crate::kv_cache::MlxKVCache;
 
 use super::super::config::ModelConfig;
-use super::super::profile::saturating_profile_us;
 use super::norm::{rms_norm_no_scale_bshd, use_flat_qk_norm_path};
 
 #[allow(dead_code)]
@@ -740,129 +736,6 @@ fn build_bidirectional_canvas_mask(
     )
 }
 
-pub(crate) struct TurboQuantExperimentalDecodeOutput {
-    pub attention: MlxArray,
-    pub outcome: MlxKvCompressionDecodeOutcome,
-    pub timing: MlxKvCompressionFusedDecodeTiming,
-}
-
-pub(crate) enum TurboQuantQueryReadbackArray<'a> {
-    Borrowed(&'a MlxArray),
-    Owned(MlxArray),
-}
-
-impl TurboQuantQueryReadbackArray<'_> {
-    pub fn as_array(&self) -> &MlxArray {
-        match self {
-            Self::Borrowed(array) => array,
-            Self::Owned(array) => array,
-        }
-    }
-}
-
-pub(crate) fn turboquant_query_readback_array(
-    q_rope: &MlxArray,
-) -> TurboQuantQueryReadbackArray<'_> {
-    if q_rope.dtype() == MlxDtype::Float32 {
-        TurboQuantQueryReadbackArray::Borrowed(q_rope)
-    } else {
-        TurboQuantQueryReadbackArray::Owned(astype(q_rope, MlxDtype::Float32, None))
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn turboquant_decode_attention_experimental(
-    cache: &MlxKVCache,
-    layer_idx: usize,
-    q_rope: &MlxArray,
-    seq: usize,
-    n_heads: usize,
-    head_dim: usize,
-    query_scale: f32,
-) -> Option<TurboQuantExperimentalDecodeOutput> {
-    if seq != 1 {
-        return None;
-    }
-    let expected_scale = (head_dim as f32).sqrt().recip();
-    if !query_scale.is_finite() || query_scale <= 0.0 {
-        return None;
-    }
-
-    let query_readback_started = Instant::now();
-    let q_readback = turboquant_query_readback_array(q_rope);
-    let q_readback_array = q_readback.as_array();
-    eval(&[q_readback_array]);
-    let q_data = q_readback_array.data_f32();
-    let query_readback_wall_us = saturating_profile_us(query_readback_started) as u64;
-    if q_data.len() != n_heads.saturating_mul(head_dim) {
-        return None;
-    }
-    let query_multiplier = query_scale / expected_scale;
-    let scaled_queries;
-    let query_values = if (query_multiplier - 1.0).abs() > 1.0e-6 {
-        scaled_queries = q_data
-            .iter()
-            .map(|value| *value * query_multiplier)
-            .collect::<Vec<_>>();
-        scaled_queries.as_slice()
-    } else {
-        q_data
-    };
-
-    let total_tokens = cache.seq_len().saturating_add(seq);
-    if let Ok(decoded) = cache
-        .debug_turboquant_shadow_decode_attention_metal_flat_query_timed_for_layer_with_total_tokens(
-            layer_idx,
-            query_values,
-            n_heads,
-            total_tokens,
-        )
-    {
-        let output_started = Instant::now();
-        return turboquant_attention_output_array_from_flat(
-            decoded.outputs,
-            n_heads,
-            head_dim,
-            q_rope.dtype(),
-        )
-        .map(|attention| {
-            let mut timing = decoded.timing;
-            timing.query_readback_wall_us = query_readback_wall_us;
-            timing.output_staging_wall_us = saturating_profile_us(output_started) as u64;
-            TurboQuantExperimentalDecodeOutput {
-                attention,
-                outcome: MlxKvCompressionDecodeOutcome::Metal,
-                timing,
-            }
-        });
-    }
-
-    None
-}
-
-pub(crate) fn turboquant_attention_output_array_from_flat(
-    output: Vec<f32>,
-    n_heads: usize,
-    head_dim: usize,
-    dtype: MlxDtype,
-) -> Option<MlxArray> {
-    if output.len() != n_heads.saturating_mul(head_dim) {
-        return None;
-    }
-
-    let out = MlxArray::from_raw_data(
-        output.as_ptr().cast(),
-        output.len() * std::mem::size_of::<f32>(),
-        &[1, n_heads as i32, 1, head_dim as i32],
-        MlxDtype::Float32,
-    );
-    if dtype == MlxDtype::Float32 {
-        Some(out)
-    } else {
-        Some(astype(&out, dtype, None))
-    }
-}
-
 /// Pre-compute one SDPA mask per unique sliding-window size before the layer
 /// loop.  Mirrors Python mlx_lm's `_make_masks` and Swift's `maskByType`:
 /// all layers of the same attention type share one mask object, avoiding
@@ -1361,9 +1234,7 @@ mod tests {
         // mode the gpt_oss forward can produce: single-token decode (no
         // mask), offset-causal prefill (None + seq > 1), and an explicit
         // sliding mask.
-        use super::{
-            attention_mask_array, attention_with_sinks, attention_with_sinks_reference,
-        };
+        use super::{attention_mask_array, attention_with_sinks, attention_with_sinks_reference};
         use mlx_sys::{astype, reshape};
 
         let (n_heads, kv_heads, head_dim) = (8usize, 2usize, 4usize);
@@ -1406,8 +1277,7 @@ mod tests {
             let scale = 1.0 / (head_dim as f32).sqrt();
 
             let fused = attention_with_sinks(&q, &k, &v, &sinks, scale, seq, &mask);
-            let reference =
-                attention_with_sinks_reference(&q, &k, &v, &sinks, scale, seq, &mask);
+            let reference = attention_with_sinks_reference(&q, &k, &v, &sinks, scale, seq, &mask);
             let fused = read_f32(&fused);
             let reference = read_f32(&reference);
             assert_eq!(fused.len(), reference.len());

@@ -49,7 +49,7 @@ pub enum BatchedSamplingClass {
 }
 
 /// Classify how request with these sampling params must produce its next token
-/// in the batched path, mirroring `single_decode_with_turboquant_context`'s
+/// in the batched path, mirroring `single_decode`'s
 /// branch order exactly so the batched token equals the single-sequence token.
 ///
 /// Returns `None` for the **pure-temperature** branch (`temperature > 0`, no
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(got[0], want);
     }
 
-    /// The classifier mirrors `single_decode_with_turboquant_context`'s branch
+    /// The classifier mirrors `single_decode`'s branch
     /// order: greedy → `Greedy`, host-sampled → `HostSampled`, pure-temperature
     /// → `None` (ineligible, GPU `random_categorical`).
     #[test]

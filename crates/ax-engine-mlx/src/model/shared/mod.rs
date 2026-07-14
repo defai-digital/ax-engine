@@ -16,7 +16,6 @@ pub(crate) use attention::{
     full_precision_attention, prepare_value_bhsd, prepare_value_bhsd_from_proj,
     prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj_flat, qk_norm_rope_bhsd_from_proj_with_route,
-    turboquant_decode_attention_experimental,
 };
 pub(crate) use linear_attention::linear_attention_forward;
 pub(crate) use mla::glm_mla_attention_forward;
@@ -40,10 +39,7 @@ pub(crate) use utils::{
 
 // Additional re-exports used by test code (via `use super::*` in #[cfg(test)] mod).
 #[cfg(test)]
-pub(super) use attention::{
-    TurboQuantQueryReadbackArray, attention_mask_key_len, bhsd_view_from_proj, qk_norm_bshd,
-    turboquant_attention_output_array_from_flat, turboquant_query_readback_array,
-};
+pub(super) use attention::{attention_mask_key_len, bhsd_view_from_proj, qk_norm_bshd};
 #[cfg(test)]
 pub(super) use mla::{
     glm_mla_embed_q_decode, glm_mla_embed_q_prefill, glm_mla_project_and_cache_inputs,

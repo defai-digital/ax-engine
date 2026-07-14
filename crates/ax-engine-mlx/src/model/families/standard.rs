@@ -18,16 +18,11 @@ use super::super::shared::{
     moe_router_glm, moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
     qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project,
     qkv_project_batched, qw, rms_norm_opt, shape_element_count, shared_expert_forward,
-    turboquant_decode_attention_experimental,
-};
-use super::super::turboquant_context::{
-    TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
-    TurboQuantModelDecodeContext,
 };
 use crate::attention_mask::create_ring_sliding_mask;
 use crate::batched_kv_cache::BatchedKvCache;
 use crate::fastpath;
-use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeOutcome};
+use crate::kv_cache::MlxKVCache;
 use crate::per_layer_compile::{apply_layer_gemma4_dual_path_decode, apply_layer_moe_decode};
 use crate::weights::LayerWeights;
 
@@ -382,8 +377,8 @@ fn layer_shell_post_attention(
 /// Full layer forward for standard GQA attention families (Gemma4, Gemma3, Qwen3).
 ///
 /// Handles per-head QK norm, KV-sharing (Gemma4), sliding window attention,
-/// Gemma4 dual-path MoE, Qwen3 MoE, dense FFN, per-layer input gating (Gemma4),
-/// and the TurboQuant experimental decode path.
+/// Gemma4 dual-path MoE, Qwen3 MoE, dense FFN, and per-layer input gating
+/// (Gemma4).
 ///
 /// `last_position_only_after_attention`: when `true` and `seq > 1`, the layer
 /// slices its attention-residual stream to the last sequence position before
@@ -412,7 +407,6 @@ pub(crate) fn layer_forward(
     token_offset: usize,
     per_layer_input: Option<&MlxArray>,
     shared_mask: Option<&Option<MlxArray>>,
-    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
     last_position_only_after_attention: bool,
     skip_post_attention_ffn: bool,
 ) -> MlxArray {
@@ -789,22 +783,6 @@ pub(crate) fn layer_forward(
                 &refs,
             );
         }
-        let turboquant_candidate = turboquant_context
-            .map(|context| {
-                context.decode_candidate(
-                    cfg,
-                    cache,
-                    layer_idx,
-                    seq,
-                    head_dim,
-                    cached_k.shape()[1] as usize,
-                    sliding_window,
-                    kv_source,
-                )
-            })
-            .unwrap_or_else(TurboQuantModelDecodeCandidate::disabled);
-        cache.record_turboquant_decode_candidate(turboquant_candidate.telemetry_status());
-
         // 8. SDPA.
         let key_len = cached_k.shape()[2] as usize;
         let local_mask: Option<MlxArray>;
@@ -824,47 +802,14 @@ pub(crate) fn layer_forward(
             &local_mask
         };
         let sdpa_started = profile_forward_layer.then(Instant::now);
-        let attn_sdpa =
-            if turboquant_candidate.status == TurboQuantModelDecodeCandidateStatus::Ready {
-                let turboquant_out = turboquant_decode_attention_experimental(
-                    cache,
-                    layer_idx,
-                    &q_rope,
-                    seq,
-                    cfg.n_heads,
-                    head_dim,
-                    cfg.query_scale,
-                );
-                let outcome = turboquant_out
-                    .as_ref()
-                    .map(|output| output.outcome)
-                    .unwrap_or(MlxKvCompressionDecodeOutcome::Fallback);
-                cache.record_turboquant_fused_decode_attempt(outcome);
-                if let Some(output) = turboquant_out.as_ref() {
-                    cache.record_turboquant_fused_decode_timing(output.timing);
-                }
-                turboquant_out
-                    .map(|output| output.attention)
-                    .unwrap_or_else(|| {
-                        full_precision_attention(
-                            &q_rope,
-                            &cached_k,
-                            &cached_v,
-                            cfg.query_scale,
-                            seq,
-                            mask_opt,
-                        )
-                    })
-            } else {
-                full_precision_attention(
-                    &q_rope,
-                    &cached_k,
-                    &cached_v,
-                    cfg.query_scale,
-                    seq,
-                    mask_opt,
-                )
-            };
+        let attn_sdpa = full_precision_attention(
+            &q_rope,
+            &cached_k,
+            &cached_v,
+            cfg.query_scale,
+            seq,
+            mask_opt,
+        );
         if let Some(started) = sdpa_started {
             forward_profile_eval_elapsed(
                 profile_decode_layer,

@@ -166,7 +166,12 @@ def build_offline_policy_search_artifact(
     seed: int = 42,
     max_wall_time_seconds: int = 3600,
 ) -> dict[str, Any]:
-    target = str(metadata.get("target", "turboquant_kv_policy"))
+    target_value = metadata.get("target")
+    if not isinstance(target_value, str) or not target_value:
+        raise OfflinePolicySearchBuildError(
+            "metadata.target must be a non-empty string"
+        )
+    target = target_value
     model = require_mapping(metadata.get("model"), "metadata.model")
     route = require_mapping(
         metadata.get(

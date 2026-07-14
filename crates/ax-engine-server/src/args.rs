@@ -1,4 +1,4 @@
-use ax_engine_sdk::{DelegatedHttpTimeouts, KvCompressionConfig};
+use ax_engine_sdk::DelegatedHttpTimeouts;
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
@@ -27,16 +27,6 @@ pub enum PreviewSupportTier {
     MlxPreview,
     MlxLmDelegated,
     LlamaCpp,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-pub enum PreviewMlxKvCompression {
-    #[default]
-    Disabled,
-    #[value(name = "turboquant-shadow")]
-    TurboQuantShadow,
-    #[value(name = "turboquant-fused-experimental")]
-    TurboQuantFusedExperimental,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -179,24 +169,6 @@ pub struct ServerArgs {
     /// long-prefill Metal specialization capacity.
     #[arg(long = "prefill-chunk")]
     pub prefill_chunk: Option<usize>,
-
-    /// MLX KV compression policy. Disabled by default: the TurboQuant fused
-    /// route is functionally complete and holds greedy parity on real
-    /// prompts, but a gemma4-12b A/B measured ~2x slower decode at 700-token
-    /// context (per-layer synchronous dispatch + query readback + CPU
-    /// hot-tail merge), failing the >=0.85 decode-throughput promotion gate.
-    /// Opt in with `turboquant-fused-experimental`;
-    /// `AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` is the runtime kill switch.
-    #[arg(long = "experimental-mlx-kv-compression", value_enum, default_value_t = PreviewMlxKvCompression::Disabled)]
-    pub experimental_mlx_kv_compression: PreviewMlxKvCompression,
-
-    /// Full-precision tail retained when experimental MLX KV compression is enabled.
-    #[arg(long = "experimental-mlx-kv-compression-hot-window-tokens", default_value_t = KvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS)]
-    pub experimental_mlx_kv_compression_hot_window_tokens: usize,
-
-    /// Minimum context before experimental MLX KV compression becomes eligible.
-    #[arg(long = "experimental-mlx-kv-compression-min-context-tokens", default_value_t = KvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS)]
-    pub experimental_mlx_kv_compression_min_context_tokens: usize,
 
     /// When set, also bind a tonic gRPC server at this address. Omit to run
     /// HTTP only. Format `host:port`, e.g. `127.0.0.1:50051`.

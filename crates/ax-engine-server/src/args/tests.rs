@@ -1,7 +1,7 @@
 use super::*;
 use ax_engine_sdk::{
-    BackendPolicy, EngineSessionConfig, KvCompressionMode, LlamaCppConfig, PreviewBackendRequest,
-    PreviewSessionConfigRequest, ResolvedBackend, SelectedBackend, SupportTier, TurboQuantPreset,
+    BackendPolicy, EngineSessionConfig, LlamaCppConfig, PreviewBackendRequest,
+    PreviewSessionConfigRequest, ResolvedBackend, SelectedBackend, SupportTier,
 };
 use std::fs;
 use std::path::Path;
@@ -73,11 +73,6 @@ fn base_args() -> ServerArgs {
         mlx_mtp_disable_ngram_stacking: false,
         speculation_profile: None,
         prefill_chunk: None,
-        experimental_mlx_kv_compression: PreviewMlxKvCompression::Disabled,
-        experimental_mlx_kv_compression_hot_window_tokens:
-            KvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS,
-        experimental_mlx_kv_compression_min_context_tokens:
-            KvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
         grpc_bind_address: None,
         max_concurrent_requests: None,
         max_request_body_bytes: None,
@@ -114,7 +109,6 @@ fn assert_configs_match(actual: &EngineSessionConfig, expected: &EngineSessionCo
         actual.mlx_mtp_disable_ngram_stacking,
         expected.mlx_mtp_disable_ngram_stacking
     );
-    assert_eq!(actual.mlx_kv_compression, expected.mlx_kv_compression);
 }
 
 #[test]
@@ -183,7 +177,6 @@ fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         mlx_disable_ngram_acceleration: false,
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
-        mlx_kv_compression: KvCompressionConfig::disabled(),
         mlx_prefill_chunk: None,
         backend_request: PreviewBackendRequest {
             support_tier: SupportTier::MlxPreview,
@@ -226,7 +219,6 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         mlx_disable_ngram_acceleration: false,
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
-        mlx_kv_compression: KvCompressionConfig::disabled(),
         mlx_prefill_chunk: None,
         backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
             PathBuf::from("llama-cli"),
@@ -323,7 +315,6 @@ fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
         mlx_disable_ngram_acceleration: false,
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
-        mlx_kv_compression: KvCompressionConfig::disabled(),
         mlx_prefill_chunk: None,
         backend_request: PreviewBackendRequest {
             support_tier: SupportTier::MlxLmDelegated,
@@ -929,69 +920,6 @@ fn default_args_do_not_disable_global_ngram_acceleration() {
     assert!(
         actual.mlx_mtp_disable_ngram_stacking,
         "MTP n-gram stacking should be opt-in by default"
-    );
-}
-
-#[test]
-fn default_flag_value_leaves_mlx_kv_compression_disabled() {
-    // TurboQuant fused decode is demoted from default-on: a gemma4-12b A/B
-    // measured ~2x slower decode at 700-token context, failing the >=0.85
-    // decode-throughput promotion gate. The route stays opt-in via
-    // `--experimental-mlx-kv-compression turboquant-fused-experimental`.
-    let args = ServerArgs {
-        mlx: true,
-        experimental_mlx_kv_compression: PreviewMlxKvCompression::default(),
-        ..base_args()
-    };
-
-    let actual = args.session_config().expect("session config should build");
-
-    assert_eq!(actual.mlx_kv_compression, KvCompressionConfig::disabled());
-}
-
-#[test]
-fn experimental_mlx_kv_compression_flag_is_opt_in_shadow_config() {
-    let args = ServerArgs {
-        mlx: true,
-        experimental_mlx_kv_compression: PreviewMlxKvCompression::TurboQuantShadow,
-        experimental_mlx_kv_compression_hot_window_tokens: 384,
-        experimental_mlx_kv_compression_min_context_tokens: 768,
-        ..base_args()
-    };
-
-    let actual = args.session_config().expect("session config should build");
-
-    assert_eq!(
-        actual.mlx_kv_compression,
-        KvCompressionConfig {
-            mode: KvCompressionMode::TurboQuantShadow,
-            preset: TurboQuantPreset::K8V4,
-            hot_window_tokens: 384,
-            min_context_tokens: 768,
-        }
-    );
-}
-
-#[test]
-fn experimental_mlx_kv_compression_flag_can_request_fused_route_selection() {
-    let args = ServerArgs {
-        mlx: true,
-        experimental_mlx_kv_compression: PreviewMlxKvCompression::TurboQuantFusedExperimental,
-        experimental_mlx_kv_compression_hot_window_tokens: 384,
-        experimental_mlx_kv_compression_min_context_tokens: 768,
-        ..base_args()
-    };
-
-    let actual = args.session_config().expect("session config should build");
-
-    assert_eq!(
-        actual.mlx_kv_compression,
-        KvCompressionConfig {
-            mode: KvCompressionMode::TurboQuantFusedExperimental,
-            preset: TurboQuantPreset::K8V4,
-            hot_window_tokens: 384,
-            min_context_tokens: 768,
-        }
     );
 }
 

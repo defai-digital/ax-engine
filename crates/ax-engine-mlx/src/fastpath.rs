@@ -88,78 +88,6 @@ macro_rules! env_flag_default_on {
 }
 
 env_flag!(
-    /// Engaged by `AX_DISABLE_TURBOQUANT_FUSED_DECODE` (truthy values per
-    /// the module-level parser contract). Forces every layer's TurboQuant
-    /// fused-decode candidate to `Disabled`, routing decode through the
-    /// full-precision SDPA fallback. The `Disabled` status reuses the
-    /// existing `record_turboquant_decode_candidate` telemetry bucket, so
-    /// the env path is observable without a counter-schema change.
-    turboquant_fused_decode_disabled,
-    "AX_DISABLE_TURBOQUANT_FUSED_DECODE"
-);
-
-env_flag_default_on!(
-    /// `AX_TURBOQUANT_INCREMENTAL_DECODE` — maintain the TurboQuant shadow
-    /// compressed runtime buffer on short decode advances (1-4 new cold tokens)
-    /// instead of waiting for the next 256-token block boundary.
-    ///
-    /// **Default: ON** (kill-switch via `AX_TURBOQUANT_INCREMENTAL_DECODE=0`).
-    turboquant_incremental_decode_enabled,
-    "AX_TURBOQUANT_INCREMENTAL_DECODE"
-);
-
-env_flag_default_on!(
-    /// `AX_TURBOQUANT_INCREMENTAL_UPLOAD` — refresh the TurboQuant shadow
-    /// Metal buffer by uploading only the byte range written since the last
-    /// sync (`slice_update` into the existing device array) instead of
-    /// re-uploading the whole compressed buffer. Falls back to a full upload
-    /// automatically when the buffer grows (256-token block boundary).
-    ///
-    /// **Default: ON** (kill-switch via `AX_TURBOQUANT_INCREMENTAL_UPLOAD=0`).
-    turboquant_incremental_upload_enabled,
-    "AX_TURBOQUANT_INCREMENTAL_UPLOAD"
-);
-
-/// Minimum total context tokens before the TurboQuant fused compressed-decode
-/// path engages. Below this threshold every layer routes through full-precision
-/// SDPA because the per-step CPU sync overhead (query readback + hot-tail
-/// merge) dominates at short contexts. Defaults to 4096; configurable via
-/// `AX_TURBOQUANT_FUSED_DECODE_MIN_CONTEXT`.
-pub fn turboquant_fused_decode_min_context_tokens() -> usize {
-    static CACHED: OnceLock<usize> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        parse_positive_usize_env("AX_TURBOQUANT_FUSED_DECODE_MIN_CONTEXT").unwrap_or(4096)
-    })
-}
-
-/// Sparse-V minimum normalized attention weight for the TurboQuant two-stage
-/// value-sum kernel. Defaults to the PRD value (`1e-5`) and treats invalid or
-/// negative input as the default.
-pub fn turboquant_sparse_v_threshold() -> f32 {
-    static CACHED: OnceLock<f32> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        parse_nonnegative_f32_env("AX_TURBOQUANT_SPARSE_V_THRESHOLD").unwrap_or(1.0e-5)
-    })
-}
-
-/// Minimum total context length before sparse-V thresholding engages. Shorter
-/// contexts use threshold 0 so the two-stage path remains dense.
-pub fn turboquant_sparse_v_min_context_tokens() -> usize {
-    static CACHED: OnceLock<usize> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        parse_positive_usize_env("AX_TURBOQUANT_SPARSE_V_MIN_CONTEXT").unwrap_or(4096)
-    })
-}
-
-pub fn turboquant_sparse_v_threshold_for_context(total_context_tokens: usize) -> f32 {
-    if total_context_tokens >= turboquant_sparse_v_min_context_tokens() {
-        turboquant_sparse_v_threshold()
-    } else {
-        0.0
-    }
-}
-
-env_flag!(
     /// Engaged by `AX_NO_SPEC` (the CLAUDE.md-documented convention for
     /// forcing greedy direct decode). When set, `MlxRunner::from_artifacts`
     /// ORs this value into the `disable_ngram_acceleration` parameter, so
@@ -1538,21 +1466,6 @@ mod tests {
                 "expected None for {value:?}"
             );
         }
-    }
-
-    #[test]
-    fn turboquant_incremental_decode_uses_default_on_kill_switch_contract() {
-        assert!(parse_bool_env_default_on(
-            "AX_FASTPATH_TEST_TURBOQUANT_INCREMENTAL_UNSET"
-        ));
-        assert!(!probe_default_on(
-            "AX_FASTPATH_TEST_TURBOQUANT_INCREMENTAL_DISABLED",
-            "0"
-        ));
-        assert!(probe_default_on(
-            "AX_FASTPATH_TEST_TURBOQUANT_INCREMENTAL_ENABLED",
-            "1"
-        ));
     }
 
     #[test]

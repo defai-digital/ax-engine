@@ -5,7 +5,7 @@
 //! Usage: cargo run --release --bin decode-trace -- <model_dir> [decode_steps]
 //!
 //! No mlx_lm comparison, no SSE/server stack — exercises
-//! `advance_direct_pipeline_with_timings_and_turboquant_context` in a tight
+//! `advance_direct_pipeline_with_timings` in a tight
 //! loop so the host-wall split is visible without a full bench sweep.
 
 use std::env;
@@ -16,8 +16,8 @@ use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::{
     diagnostics::take_linear_attention_profile_snapshot,
     generate::{
-        DEFAULT_PREFILL_CHUNK, advance_direct_pipeline_with_timings_and_turboquant_context,
-        chunked_prefill, start_direct_pipeline,
+        DEFAULT_PREFILL_CHUNK, advance_direct_pipeline_with_timings, chunked_prefill,
+        start_direct_pipeline,
     },
     kv_cache::MlxKVCache,
     model::ModelConfig,
@@ -66,9 +66,7 @@ fn main() {
     // Warmup: drain JIT / kernel-cache cost so the reported numbers reflect
     // steady-state direct-pipeline cost.
     for _ in 0..warmup_steps {
-        let advanced = advance_direct_pipeline_with_timings_and_turboquant_context(
-            &cfg, &weights, &pending, &mut cache, None,
-        );
+        let advanced = advance_direct_pipeline_with_timings(&cfg, &weights, &pending, &mut cache);
         pending = advanced.next_pending;
     }
 
@@ -80,9 +78,7 @@ fn main() {
     let mut full_layer_count_sum = 0u64;
     let bench_start = Instant::now();
     for _ in 0..decode_steps {
-        let advanced = advance_direct_pipeline_with_timings_and_turboquant_context(
-            &cfg, &weights, &pending, &mut cache, None,
-        );
+        let advanced = advance_direct_pipeline_with_timings(&cfg, &weights, &pending, &mut cache);
         linear_layer_ops_sum =
             linear_layer_ops_sum.saturating_add(advanced.timings.linear_attention_layer_ops);
         linear_layer_count_sum = linear_layer_count_sum

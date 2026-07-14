@@ -770,7 +770,6 @@ pub(crate) fn session_config_from_runtime(
         mlx_disable_ngram_acceleration: false,
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
-        mlx_kv_compression: ax_engine_sdk::KvCompressionConfig::disabled(),
         // Match mlx-lm's prefill_step_size=2048 default for like-for-like
         // bench comparisons. The runner auto-clamps for linear-attention
         // (512) and MLA (16) model families. See

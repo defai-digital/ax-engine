@@ -13,7 +13,7 @@ reports.
 Output schema: `ax.kv_multiturn_chat_evidence.v1` with per-turn rows
 plus a derived `ttft_growth_ratio = turn_N.ttft_s / turn_2.ttft_s` and
 a coarse verdict suggestion. Artifacts also record selected environment
-flags that can alter prefix-cache, n-gram, or TurboQuant paths.
+flags that can alter prefix-cache or n-gram paths.
 
 Usage:
 
@@ -46,7 +46,6 @@ PROVENANCE_ENV_FLAGS = [
     # AX_DISABLE_MLA_PREFIX_RESTORE as the fail-closed switch.
     "AX_ALLOW_MLA_PREFIX_RESTORE",
     "AX_DISABLE_MLA_PREFIX_RESTORE",
-    "AX_DISABLE_TURBOQUANT_FUSED_DECODE",
     "AX_MLX_DIRECT_CLEAR_CACHE_CADENCE",
     "AX_MLX_MLA_PREFILL_CHUNK",
     "AX_MLX_NGRAM_POLICY",
@@ -59,7 +58,6 @@ PROVENANCE_ENV_FLAGS = [
 BOOLEAN_PROVENANCE_ENV_FLAGS = {
     "AX_ALLOW_MLA_PREFIX_RESTORE",
     "AX_DISABLE_MLA_PREFIX_RESTORE",
-    "AX_DISABLE_TURBOQUANT_FUSED_DECODE",
     "AX_NO_SPEC",
 }
 

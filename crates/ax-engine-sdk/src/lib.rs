@@ -26,11 +26,9 @@ pub use ax_engine_core::gemma4_unified::{
     Gemma4UnifiedVideoInput, Gemma4UnifiedVideoRuntimeInput, Gemma4UnifiedVisionProcessor,
 };
 pub use ax_engine_core::{
-    CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvCompressionConfig, KvCompressionMode,
-    KvManagerConfig, RequestMultimodalInputs, RequestWorkloadHints, TurboQuantPreset,
+    CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvManagerConfig, RequestMultimodalInputs,
+    RequestWorkloadHints,
 };
-#[allow(deprecated)]
-pub use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode, MlxTurboQuantPreset};
 #[cfg(feature = "mlx-native")]
 pub use ax_engine_mlx::MlxPrefixCacheStore;
 

@@ -38,7 +38,7 @@ def candidate(
         "generation_tokens": generation_tokens,
         "seed": 42,
         "policy": {
-            "kv_preset": "TurboQuantK8V4",
+            "ngram_profile": "aggressive",
             "hot_window_tokens": 256,
             "eligible_layer_mask": "full_attention_only",
         },
@@ -79,7 +79,7 @@ def artifact(
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema": checker.SCHEMA_VERSION,
-        "target": "turboquant_kv_policy",
+        "target": "ngram_speculation_policy",
         "status": "diagnostic_only",
         "created_at": "2026-05-14T00:00:00Z",
         "repo": {
@@ -104,7 +104,7 @@ def artifact(
                 "max_wall_time_seconds": 3600,
             },
             "space": {
-                "kv_preset": ["disabled", "TurboQuantK8V4"],
+                "ngram_profile": ["disabled", "aggressive"],
                 "hot_window_tokens": [256, 512],
             },
         },
@@ -213,8 +213,8 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
                         "cooldown_seconds": 20,
                     },
                     "companion_prd_gates": [
-                        "TURBOQUANT-PROMOTION-PRD Gate B",
-                        "TURBOQUANT-PROMOTION-PRD Gate C",
+                        "COMPANION-PRD Gate B",
+                        "COMPANION-PRD Gate C",
                     ],
                 },
             )
@@ -306,7 +306,7 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
 
     def test_search_space_dimension_values_must_be_unique_scalars(self) -> None:
         payload = artifact()
-        payload["search"]["space"] = {"kv_preset": ["TurboQuantK8V4", "TurboQuantK8V4"]}  # type: ignore[index]
+        payload["search"]["space"] = {"kv_preset": ["aggressive", "aggressive"]}  # type: ignore[index]
         path = self.write_fixture(payload)
 
         with self.assertRaisesRegex(
@@ -529,7 +529,7 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
                         "cooldown_seconds": 20,
                     },
                     "companion_prd_gates": [
-                        "TURBOQUANT-PROMOTION-PRD Gate B",
+                        "COMPANION-PRD Gate B",
                     ],
                 },
             )
@@ -554,7 +554,7 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
                         "cooldown_seconds": 20,
                     },
                     "companion_prd_gates": [
-                        "TURBOQUANT-PROMOTION-PRD Gate B",
+                        "COMPANION-PRD Gate B",
                     ],
                 },
             )
@@ -579,7 +579,7 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
                         "cooldown_seconds": 20,
                     },
                     "companion_prd_gates": [
-                        "TURBOQUANT-PROMOTION-PRD Gate B",
+                        "COMPANION-PRD Gate B",
                     ],
                 },
             )

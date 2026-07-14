@@ -705,154 +705,23 @@ eval barriers between stages and disables production decode pipelining, so use
 it to rank direct-decode hotspots before implementing cache or fusion work, not
 as headline throughput evidence.
 
-For internal TurboQuant evidence capture, the harness can pass through the
-server's experimental shadow policy:
+The experimental compressed-KV evidence modes were removed together with the
+retired compressed-KV runtime path (ADR-002); the durable tiered prefix cache
+is the supported KV direction, and native uncompressed KV is the only decode
+behavior. Historical compressed-KV quality, microbench, and policy-search
+artifacts remain under `benchmarks/results/` for provenance only.
 
-```text
-python3 scripts/bench_mlx_inference_stack.py \
-  --model-dir /path/to/local/mlx-model \
-  --prompt-tokens 8192 \
-  --generation-tokens 256 \
-  --experimental-mlx-kv-compression turboquant-shadow
-```
-
-Use `--experimental-mlx-kv-compression turboquant-fused-experimental` only for
-runner-route selection evidence. It requests compressed decode and can report
-`fused_compressed_decode` when the eligible K8/V4 single-token path uses the
-two-stage Metal cold decode plus full-precision hot tail. If Metal is
-unavailable, the runtime falls back to full-precision generation instead of
-using the CPU oracle. Fallback reason label `runner_not_integrated` means no
-runtime decode attempt was observed yet; `cpu_oracle_unavailable` identifies
-legacy/debug artifacts where the compressed-decode oracle path was not
-available.
-The TurboQuant reference codec and microbench artifacts include a split-softmax
-oracle for the hot-window merge: cold and hot partitions must be combined
-through shared log-sum-exp normalization, not by adding independently normalized
-output vectors.
-
-The engine default is `disabled`; pass `turboquant-fused-experimental` for a
-fused-route row (demoted from default after a measured ~2x decode regression
-on gemma4 12B). `turboquant-shadow` keeps generation on the
-full-precision MLX decode path and records route counters for eligibility,
-estimated saved KiB, runtime shadow-storage writes, shadow-storage sync calls
-and wall time, current compression decode path, fused decode candidate
-snapshots, attempt/success/fallback counters, and remaining production blockers
-when the runtime emits them. It is artifact evidence only; promoted TurboQuant
-support still requires a long-context quality artifact validated by
-`scripts/check_turboquant_quality_artifact.py`.
-
-Offline policy search is the diagnostic planning layer for TurboQuant KV policy
-choices. It enumerates candidate policies such as `kv_preset`,
-`hot_window_tokens`, eligible-layer mask, fallback policy, and quality profile,
-then writes an `ax.offline_policy_search.v1` artifact under
-`benchmarks/results/profiling/offline-policy-search/<date>/`. This does not run a model,
-benchmark, or fused kernel. Candidate rows must remain
+Offline policy search remains a diagnostic planning layer for runtime policy
+choices (for example n-gram speculation or prefix-cache retention). It writes
+`ax.offline_policy_search.v1` artifacts under
+`benchmarks/results/profiling/offline-policy-search/<date>/` without running a
+model, benchmark, or kernel. Candidate rows must remain
 `measurement_status=not_run` until a separate measurement harness supplies real
-evidence.
-
-Use the TurboQuant policy-grid harness to create a diagnostic artifact:
-
-```text
-python3 scripts/search_turboquant_kv_policy.py \
-  --metadata /path/to/metadata.json \
-  --baseline /path/to/baseline-shape.json \
-  --kv-presets disabled,TurboQuantK8V4 \
-  --hot-window-tokens 256,512 \
-  --fallback-policies fail_closed
-```
-
-When `--output` is omitted, the artifact is written to the canonical
-offline-policy-search result path. Validate checked-in search artifacts with:
+evidence. Validate checked-in search artifacts with:
 
 ```text
 bash scripts/check-offline-policy-search-artifacts.sh
 ```
-
-The quality artifact gate is stricter than telemetry collection. Quality/path
-evidence must use candidate mode `turboquant-fused-experimental`, route
-metadata schema `>= 2`, K8/V4, fused_compressed_decode path code `2`, fused
-decode attempts, successes, and Metal successes greater than zero, and zero
-fused decode fallbacks. Shadow rows and legacy cpu_oracle_compressed_decode
-rows are useful for diagnosis, but they are rejected as quality evidence.
-Public-support promotion also requires the readiness report's decode-throughput
-performance gate to pass; a quality artifact can pass while public docs remain
-experimental.
-For model-level quality evidence, run the baseline and fused candidate AX rows
-with `bench_mlx_inference_stack.py --capture-output-token-ids`, then extract
-same-shaped output vectors with `scripts/build_turboquant_decode_outputs.py`
-before building the quality metrics JSON.
-The repo-owned wrapper is `scripts/run-turboquant-quality-artifact.sh`; it runs
-the baseline, fused candidate, decode-output extraction, quality metrics,
-artifact validation, and promotion-readiness report in one fail-closed bundle.
-Run it with `--dry-run` first to inspect inferred model metadata and planned
-commands without loading the model.
-
-Before changing public support wording, run
-`scripts/check_turboquant_promotion_readiness.py`. Public docs must remain
-experimental while that report has blockers, for example when the available
-model manifests cannot exercise the current `head_dim=128`, `head_dim=256`, or
-`head_dim=512` fused K8/V4 gate or no passing long-context fused-path quality
-artifact exists.
-
-The active internal TurboQuant promotion plan lives in
-`.internal/prd/TURBOQUANT-PROMOTION-PRD.md`, with the architecture boundary
-captured in `.internal/adr/ADR-016-turboquant-codec-kernel-improvements.md`.
-It separates microkernel timing, optional shadow-storage overhead, integrated
-fused compressed decode, and long-context quality gates so TurboQuant results
-can report decode ratio, prefill ratio, KV saved percent, runtime storage
-coverage, fallback rate, and quality pass/fail without mixing evidence types.
-
-For fused-kernel-only evidence, use the `ax-engine-microbench` microbenchmark:
-
-```text
-cargo run -p ax-engine-microbench --release --bin turboquant-microbench -- \
-  --cold-tokens 512,2048,8192 \
-  --hot-tokens 128 \
-  --repetitions 5 \
-  --output benchmarks/results/turboquant/<date>/microbench.json
-```
-
-The output schema is `ax.turboquant_fused_decode_microbench.v1`. It compares
-the K8/V4 MLX/Metal fused cold-decode kernel with the CPU compressed reference
-oracle. This is kernel evidence only; it does not mean the server generation
-path is using fused compressed decode. When `--hot-tokens` is positive, the
-artifact also records `hot_tail_merge` quality for the shared log-sum-exp merge
-contract between compressed cold partition stats and full-precision hot-tail
-stats. The default variant set focuses on the runtime candidate,
-`two_stage_scores`; pass `--variants dim_parallel,two_stage_scores` only when
-you explicitly need the diagnostic speedup comparison against the older
-dim-parallel kernel.
-
-Validate saved fused-kernel evidence without rerunning Metal:
-
-```text
-python3 scripts/check_turboquant_microbench_artifact.py \
-  benchmarks/results/turboquant/<date>/microbench.json
-```
-
-For the D3 PRD acceptance gate, require the head-dim=128 long-cold row and the
-reference speedup margin explicitly:
-
-```text
-python3 scripts/check_turboquant_microbench_artifact.py \
-  --min-cold-tokens 8192 \
-  --min-speedup-vs-dim 1.5 \
-  --require-dim-parallel \
-  benchmarks/results/turboquant/<date>/microbench.json
-```
-
-Before marking the TurboQuant codec/kernel PRD complete, generate the aggregate
-completion report:
-
-```text
-python3 scripts/check_turboquant_prd_completion.py \
-  --output benchmarks/results/turboquant/<date>/prd-completion.json \
-  --fail-on-blockers
-```
-
-That final gate is intentionally stricter than any single artifact checker: it
-requires model-family quality evidence, D3 fused microbench evidence, D4 short
-decode speedup evidence, and promotion readiness with no blockers.
 
 N-gram acceleration AX result objects also include `ngram_acceleration_telemetry` when the
 runtime emits route counters. The stored counters cover draft attempts, draft

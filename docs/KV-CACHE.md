@@ -24,8 +24,7 @@ ax-engine-mlx (GPU / physical)
 │        └── MlxKVCache (GPU backing buffers)              │
 │            ├── LayerKV    (standard / Gemma4 sliding)    │
 │            ├── GlmMlaLayerCache  (latent + rope_key)     │
-│            ├── LinearLayerState  (conv + recurrent)      │
-│            └── TurboQuantShadowLayerStorage  [experiment]│
+│            └── LinearLayerState  (conv + recurrent)      │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -511,39 +510,13 @@ an intermediate recurrent state from a token-index boundary alone.
 
 ---
 
-## TurboQuant Compression
+## Compressed KV (retired)
 
-`TurboQuantShadowLayerStorage` holds a CPU-side compressed copy of cold tokens
-for a subset of layers. Cold tokens are those beyond a recency window;
-hot tokens remain in GPU memory uncompressed.
-
-Supported presets:
-
-- `K8V4`: 8-bit keys, 4-bit values (default research target)
-- `K4V4`: 4-bit keys, 4-bit values (aggressive)
-- `K3V4Research`: 3-bit keys, 4-bit values (research only)
-
-Sync is triggered every `KV_CHUNK_TOKENS` cold token advances via
-`sync_turboquant_shadow_storage`, which performs a blocking GPU→CPU download
-followed by CPU-side quantization. This is a synchronous operation that stalls
-the step loop for the duration of the transfer.
-
-The fused decode path (`turboquant-fused-experimental`) is opt-in: a
-two-stage Metal kernel reads compressed cold K/V in place on GPU and
-merges with a full-precision hot tail; layers that fail any eligibility gate
-(linear attention, sliding window, shared KV, non-K8V4 preset, unsupported
-head dim) fall back to full-precision SDPA per step. GLM (MLA) models are not
-supported: the GLM families never consult the TurboQuant decode candidate and
-always use their own full-precision KV path.
-`AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` is the runtime kill switch. The route
-holds greedy parity with full precision on real long prompts (verified on
-gemma4 12B at 1.4k-token context), but is demoted from default-on after an
-A/B measured ~2x slower decode: each fused layer pays a synchronous Metal
-dispatch, a query readback, and a CPU hot-tail merge, fragmenting MLX's lazy
-single-graph decode step. Recovering the bandwidth win requires moving the
-hot-tail merge on-GPU and batching the per-layer dispatches.
-`TurboQuantProductionRequirements` also still reports the long-context
-benchmark artifact as an open blocker in route metadata.
+The experimental compressed-KV runtime path (shadow storage plus the fused
+compressed-decode route) was retired in favor of the durable tiered prefix
+cache (ADR-002). Native uncompressed KV is the only decode behavior.
+Historical quality and microbench artifacts remain under
+`benchmarks/results/` for provenance only.
 
 ---
 

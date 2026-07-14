@@ -1,5 +1,9 @@
 # TurboQuant Runtime Slice S6 Microbench
 
+Status: `retired_runtime_path` — the TurboQuant runtime path was retired in
+favor of the durable tiered prefix cache (ADR-002); this artifact is
+historical evidence only.
+
 This run records the same-shape standalone fused cold-decode microbenchmark
 after the P3-S6 production hot-tail merge allocation slice. It is diagnostic
 kernel evidence only; it does not promote TurboQuant runtime support.

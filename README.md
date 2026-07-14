@@ -1294,11 +1294,9 @@ AX Engine's benchmark design and compatibility checks are informed by local refe
 | MLX | [ml-explore/mlx](https://github.com/ml-explore/mlx) |
 | mlx-engine | [lmstudio-ai/mlx-engine](https://github.com/lmstudio-ai/mlx-engine) |
 | mlx-lm | [ml-explore/mlx-lm](https://github.com/ml-explore/mlx-lm) |
-| mlx-turboquant | [rachittshah/mlx-turboquant](https://github.com/rachittshah/mlx-turboquant) |
 | MTPLX | [youssofal/MTPLX](https://github.com/youssofal/MTPLX) |
 | oMLX | [jundot/omlx](https://github.com/jundot/omlx) |
 | Rapid-MLX | [raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) |
-| turboquant-mlx | [arozanov/turboquant-mlx](https://github.com/arozanov/turboquant-mlx) |
 | vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) |
 
 The oMLX checkout is tracked for its Apple Silicon server, continuous batching,
@@ -1315,7 +1313,6 @@ Some reference projects are experimental, version-unstable, focused on a differe
 - **Qwen3.5 long-prompt prefill**: Qwen3.5 prefill can trail upstream MLX references on longer prompts; decode and Qwen3-Next are not affected in the same way.
 - **Raw HuggingFace weights**: use pre-sanitized MLX community weights or convert first with `mlx_lm.convert`.
 - **N-gram acceleration rows**: effective-throughput measurements, not raw model-kernel speedups.
-- **TurboQuant KV compression**: experimental and off by default.
 
 See the [FAQ limitations entry](docs/FAQ.md#what-are-the-current-limitations) for details.
 

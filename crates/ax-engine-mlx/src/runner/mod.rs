@@ -17,51 +17,9 @@ use mlx_sys::{
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
-    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvCompressionConfig, KvWriteSummary,
-    NativeModelArtifacts, NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
+    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
+    NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
     ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_GQA,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_INELIGIBLE_LAYER,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_KV_SHARED,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_LINEAR_ATTENTION,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_MISSING_STORAGE,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_PREFILL_ONLY,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SHORT_CONTEXT,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SLIDING_WINDOW,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_HEAD_DIM,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_PRESET,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_COLD_METAL_WALL_US,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_HOT_TAIL_MERGE_WALL_US,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_OUTPUT_STAGING_WALL_US,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_QUERY_READBACK_WALL_US,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_READY_CANDIDATES,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_BLOCKERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_READY,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ROUTE_METADATA_SCHEMA,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_KIB,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_TOKEN_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_WRITTEN_SLOTS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_SHADOW_SYNC_CALLS,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_SHADOW_SYNC_WALL_US,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS,
     ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB, ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS,
@@ -86,20 +44,19 @@ use crate::gemma4_assistant_mtp::{
     resolve_gemma4_assistant_mtp_deep_gate, resolve_gemma4_assistant_mtp_first_gate,
 };
 use crate::generate::{
-    DirectPipelineTimings, advance_direct_pipeline_with_timings_and_turboquant_context,
-    chunked_prefill, chunked_prefill_gemma4_unified_with_sampling_buffers,
+    DirectPipelineTimings, advance_direct_pipeline_with_timings, chunked_prefill,
+    chunked_prefill_gemma4_unified_with_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
-    decode_step, start_direct_pipeline_with_turboquant_context,
+    decode_step, start_direct_pipeline,
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
     DecodeProfileSnapshot, DenseFfnFastpathSnapshot, Gemma4MoeProfileSnapshot,
     LinearAttentionProfileSnapshot, ModelConfig, MoeProfileSnapshot, PrefillProfileSnapshot,
-    TurboQuantModelDecodeContext, forward_all_positions_post_norm_last_lm_head,
-    forward_all_positions_with_post_norm, take_decode_profile_snapshot,
-    take_dense_ffn_fastpath_snapshot, take_gemma4_moe_profile_snapshot,
-    take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
-    take_prefill_profile_snapshot,
+    forward_all_positions_post_norm_last_lm_head, forward_all_positions_with_post_norm,
+    take_decode_profile_snapshot, take_dense_ffn_fastpath_snapshot,
+    take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
+    take_moe_profile_snapshot, take_prefill_profile_snapshot,
 };
 use crate::mtp::{
     glm_mtp_draft_tokens, glm_mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens,
@@ -109,7 +66,7 @@ use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
     NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable, classify_prompt_class,
     effective_draft_confidence_threshold, ngram_accel_decode_step_with_sampling_buffers,
-    ngram_feedback_policy, recompute_committed_prefix, single_decode_with_turboquant_context,
+    ngram_feedback_policy, recompute_committed_prefix, single_decode_with_sampling_buffers,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64, sample_categorical_into,
@@ -117,10 +74,6 @@ use crate::sampling::{
     token_distribution,
 };
 use crate::speculation_profile::speculation_profile_from_env;
-use crate::turboquant::{
-    TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION, TurboQuantProductionRequirements,
-    turboquant_support_report,
-};
 #[cfg(test)]
 use crate::weights::{LayerWeights, QuantizedWeight};
 use crate::weights::{ModelWeights, load_weights};
@@ -197,15 +150,6 @@ const NGRAM_REPEATING_PROMPT_FEED_MAX: usize = 512;
 /// Below this, failed speculation attempts + cooldown intervals (8-16 steps)
 /// consume a disproportionate share of the total generation window.
 const NGRAM_MIN_OUTPUT_FOR_ACCELERATION: u32 = 64;
-const KV_COMPRESSION_DECODE_PATH_FULL_PRECISION_SHADOW: u32 = 1;
-const KV_COMPRESSION_DECODE_PATH_FUSED_COMPRESSED_DECODE: u32 = 2;
-const KV_COMPRESSION_DECODE_PATH_CPU_ORACLE_COMPRESSED_DECODE: u32 = 3;
-const KV_COMPRESSION_FUSED_DECODE_FALLBACK_NONE: u32 = 0;
-const KV_COMPRESSION_FUSED_DECODE_FALLBACK_SHADOW_ONLY: u32 = 1;
-const KV_COMPRESSION_FUSED_DECODE_FALLBACK_MISSING_RUNTIME_STORAGE: u32 = 2;
-const KV_COMPRESSION_FUSED_DECODE_FALLBACK_UNSUPPORTED_PRESET: u32 = 3;
-const KV_COMPRESSION_FUSED_DECODE_FALLBACK_RUNNER_NOT_INTEGRATED: u32 = 4;
-const KV_COMPRESSION_FUSED_DECODE_FALLBACK_CPU_ORACLE_UNAVAILABLE: u32 = 5;
 const DEFAULT_PREFIX_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_PREFIX_CACHE_MAX_ENTRIES: usize = 64;
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_HITS: &str = "ax_mlx_prefix_cache_hits";
@@ -240,8 +184,7 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_RESTORE_TOTAL_WALL_US: &str =
     "ax_mlx_prefix_cache_disk_restore_total_wall_us";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_BYTES_READ_KIB: &str =
     "ax_mlx_prefix_cache_disk_bytes_read_kib";
-const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMITTED: &str =
-    "ax_mlx_prefix_cache_disk_admitted";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMITTED: &str = "ax_mlx_prefix_cache_disk_admitted";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMISSION_REJECTED: &str =
     "ax_mlx_prefix_cache_disk_admission_rejected";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMISSION_REASON_CODE: &str =
@@ -2797,102 +2740,9 @@ struct KvCacheTelemetry {
     linear_state_layers: u64,
     linear_state_bytes: u64,
     growth_count: u64,
-    compression_request_snapshots: u32,
-    compression_status: u32,
-    compression_preset: u32,
-    compression_key_bits: u32,
-    compression_value_bits: u32,
-    compression_eligible_layers: u64,
-    compression_candidate_token_layers: u64,
-    compression_hot_token_layers: u64,
-    compression_full_precision_bytes: u64,
-    compression_estimated_compressed_bytes: u64,
-    compression_estimated_saved_bytes: u64,
-    compression_ratio_milli: u32,
-    compression_route_metadata_schema: u32,
-    compression_production_ready: u32,
-    compression_production_blockers: u32,
-    compression_runtime_storage_layers: u64,
-    compression_runtime_storage_token_layers: u64,
-    compression_runtime_storage_bytes: u64,
-    compression_runtime_storage_written_slots: u64,
-    compression_shadow_sync_calls: u64,
-    compression_shadow_sync_wall_us: u64,
-    compression_decode_path: u32,
-    compression_fused_decode_candidates: u64,
-    compression_fused_decode_attempts: u64,
-    compression_fused_decode_successes: u64,
-    compression_fused_decode_metal_successes: u64,
-    compression_fused_decode_fallbacks: u64,
-    compression_fused_decode_fallback_reason: u32,
-    compression_fused_decode_ready_candidates: u64,
-    compression_fused_decode_blocked_prefill_only: u64,
-    compression_fused_decode_blocked_attention_kind: u64,
-    compression_fused_decode_blocked_linear_attention: u64,
-    compression_fused_decode_blocked_sliding_window: u64,
-    compression_fused_decode_blocked_kv_shared: u64,
-    compression_fused_decode_blocked_ineligible_layer: u64,
-    compression_fused_decode_blocked_unsupported_preset: u64,
-    compression_fused_decode_blocked_unsupported_head_dim: u64,
-    compression_fused_decode_blocked_gqa: u64,
-    compression_fused_decode_blocked_missing_storage: u64,
-    compression_fused_decode_blocked_short_context: u64,
-    compression_fused_decode_query_readback_wall_us: u64,
-    compression_fused_decode_cold_metal_wall_us: u64,
-    compression_fused_decode_hot_tail_merge_wall_us: u64,
-    compression_fused_decode_output_staging_wall_us: u64,
 }
 
 impl KvCacheTelemetry {
-    fn record_compression_shadow_sync(&mut self, wall_us: u32) {
-        self.compression_shadow_sync_calls = self.compression_shadow_sync_calls.saturating_add(1);
-        self.compression_shadow_sync_wall_us = self
-            .compression_shadow_sync_wall_us
-            .saturating_add(wall_us as u64);
-    }
-
-    fn merge_fused_decode_blocked_counters(
-        &mut self,
-        compression: &crate::kv_cache::MlxKvCompressionUsage,
-    ) {
-        self.compression_fused_decode_ready_candidates = self
-            .compression_fused_decode_ready_candidates
-            .saturating_add(compression.fused_decode_ready_candidates);
-        self.compression_fused_decode_blocked_prefill_only = self
-            .compression_fused_decode_blocked_prefill_only
-            .saturating_add(compression.fused_decode_blocked_prefill_only);
-        self.compression_fused_decode_blocked_attention_kind = self
-            .compression_fused_decode_blocked_attention_kind
-            .saturating_add(compression.fused_decode_blocked_attention_kind);
-        self.compression_fused_decode_blocked_linear_attention = self
-            .compression_fused_decode_blocked_linear_attention
-            .saturating_add(compression.fused_decode_blocked_linear_attention);
-        self.compression_fused_decode_blocked_sliding_window = self
-            .compression_fused_decode_blocked_sliding_window
-            .saturating_add(compression.fused_decode_blocked_sliding_window);
-        self.compression_fused_decode_blocked_kv_shared = self
-            .compression_fused_decode_blocked_kv_shared
-            .saturating_add(compression.fused_decode_blocked_kv_shared);
-        self.compression_fused_decode_blocked_ineligible_layer = self
-            .compression_fused_decode_blocked_ineligible_layer
-            .saturating_add(compression.fused_decode_blocked_ineligible_layer);
-        self.compression_fused_decode_blocked_unsupported_preset = self
-            .compression_fused_decode_blocked_unsupported_preset
-            .saturating_add(compression.fused_decode_blocked_unsupported_preset);
-        self.compression_fused_decode_blocked_unsupported_head_dim = self
-            .compression_fused_decode_blocked_unsupported_head_dim
-            .saturating_add(compression.fused_decode_blocked_unsupported_head_dim);
-        self.compression_fused_decode_blocked_gqa = self
-            .compression_fused_decode_blocked_gqa
-            .saturating_add(compression.fused_decode_blocked_gqa);
-        self.compression_fused_decode_blocked_missing_storage = self
-            .compression_fused_decode_blocked_missing_storage
-            .saturating_add(compression.fused_decode_blocked_missing_storage);
-        self.compression_fused_decode_blocked_short_context = self
-            .compression_fused_decode_blocked_short_context
-            .saturating_add(compression.fused_decode_blocked_short_context);
-    }
-
     fn merge_from(&mut self, usage: MlxKVCacheUsage) {
         self.request_snapshots = self.request_snapshots.saturating_add(1);
         self.logical_tokens = self
@@ -2931,138 +2781,6 @@ impl KvCacheTelemetry {
             .linear_state_bytes
             .saturating_add(usage.linear_state_bytes);
         self.growth_count = self.growth_count.saturating_add(usage.growth_count);
-
-        let compression = usage.kv_compression;
-        if compression.policy_enabled {
-            let production_readiness =
-                TurboQuantProductionRequirements::mlx_shadow_fused_kernel().evaluate();
-            self.compression_request_snapshots =
-                self.compression_request_snapshots.saturating_add(1);
-            self.compression_status = compression.status_code;
-            self.compression_preset = compression.preset_code;
-            self.compression_key_bits = compression.key_bits;
-            self.compression_value_bits = compression.value_bits;
-            self.compression_decode_path = KV_COMPRESSION_DECODE_PATH_FULL_PRECISION_SHADOW;
-            self.compression_route_metadata_schema = TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION;
-            self.compression_production_ready = u32::from(production_readiness.is_ready());
-            self.compression_production_blockers =
-                saturating_u32_from_u64(production_readiness.blockers.len() as u64);
-            self.compression_runtime_storage_layers = self
-                .compression_runtime_storage_layers
-                .saturating_add(compression.runtime_storage_layers as u64);
-            self.compression_runtime_storage_token_layers = self
-                .compression_runtime_storage_token_layers
-                .saturating_add(compression.runtime_storage_token_layers as u64);
-            self.compression_runtime_storage_bytes = self
-                .compression_runtime_storage_bytes
-                .saturating_add(compression.runtime_storage_bytes);
-            self.compression_runtime_storage_written_slots = self
-                .compression_runtime_storage_written_slots
-                .saturating_add(compression.runtime_storage_written_slots as u64);
-            self.compression_eligible_layers = self
-                .compression_eligible_layers
-                .saturating_add(compression.eligible_layers as u64);
-            self.compression_candidate_token_layers = self
-                .compression_candidate_token_layers
-                .saturating_add(compression.candidate_token_layers as u64);
-            self.compression_hot_token_layers = self
-                .compression_hot_token_layers
-                .saturating_add(compression.hot_token_layers as u64);
-            self.compression_full_precision_bytes = self
-                .compression_full_precision_bytes
-                .saturating_add(compression.full_precision_bytes);
-            self.compression_estimated_compressed_bytes = self
-                .compression_estimated_compressed_bytes
-                .saturating_add(compression.estimated_compressed_bytes);
-            self.compression_estimated_saved_bytes = self
-                .compression_estimated_saved_bytes
-                .saturating_add(compression.estimated_saved_bytes);
-            self.compression_ratio_milli = if self.compression_full_precision_bytes == 0 {
-                0
-            } else {
-                self.compression_estimated_compressed_bytes
-                    .saturating_mul(1000)
-                    .saturating_div(self.compression_full_precision_bytes)
-                    .min(u32::MAX as u64) as u32
-            };
-
-            let fused_decode_candidate = compression.preset_code == 1
-                && compression.key_bits == 8
-                && compression.value_bits == 4
-                && compression.candidate_token_layers > 0
-                && compression.runtime_storage_written_slots > 0;
-            if fused_decode_candidate {
-                self.compression_fused_decode_candidates =
-                    self.compression_fused_decode_candidates.saturating_add(1);
-                self.merge_fused_decode_blocked_counters(&compression);
-                if compression.fused_decode_attempts > 0 {
-                    self.compression_fused_decode_attempts = self
-                        .compression_fused_decode_attempts
-                        .saturating_add(compression.fused_decode_attempts);
-                    self.compression_fused_decode_successes = self
-                        .compression_fused_decode_successes
-                        .saturating_add(compression.fused_decode_successes);
-                    self.compression_fused_decode_metal_successes = self
-                        .compression_fused_decode_metal_successes
-                        .saturating_add(compression.fused_decode_metal_successes);
-                    self.compression_fused_decode_fallbacks = self
-                        .compression_fused_decode_fallbacks
-                        .saturating_add(compression.fused_decode_fallbacks);
-                    self.compression_fused_decode_query_readback_wall_us = self
-                        .compression_fused_decode_query_readback_wall_us
-                        .saturating_add(compression.fused_decode_query_readback_wall_us);
-                    self.compression_fused_decode_cold_metal_wall_us = self
-                        .compression_fused_decode_cold_metal_wall_us
-                        .saturating_add(compression.fused_decode_cold_metal_wall_us);
-                    self.compression_fused_decode_hot_tail_merge_wall_us = self
-                        .compression_fused_decode_hot_tail_merge_wall_us
-                        .saturating_add(compression.fused_decode_hot_tail_merge_wall_us);
-                    self.compression_fused_decode_output_staging_wall_us = self
-                        .compression_fused_decode_output_staging_wall_us
-                        .saturating_add(compression.fused_decode_output_staging_wall_us);
-                    if compression.fused_decode_metal_successes > 0 {
-                        self.compression_decode_path =
-                            KV_COMPRESSION_DECODE_PATH_FUSED_COMPRESSED_DECODE;
-                    } else if compression.fused_decode_successes > 0 {
-                        self.compression_decode_path =
-                            KV_COMPRESSION_DECODE_PATH_CPU_ORACLE_COMPRESSED_DECODE;
-                    }
-                    self.compression_fused_decode_fallback_reason =
-                        if compression.fused_decode_fallbacks > 0 {
-                            KV_COMPRESSION_FUSED_DECODE_FALLBACK_CPU_ORACLE_UNAVAILABLE
-                        } else {
-                            KV_COMPRESSION_FUSED_DECODE_FALLBACK_NONE
-                        };
-                } else if compression.fused_decode_requested {
-                    self.compression_fused_decode_fallback_reason =
-                        KV_COMPRESSION_FUSED_DECODE_FALLBACK_RUNNER_NOT_INTEGRATED;
-                } else {
-                    self.compression_fused_decode_fallback_reason =
-                        KV_COMPRESSION_FUSED_DECODE_FALLBACK_SHADOW_ONLY;
-                }
-            } else if compression.preset_code != 1
-                || compression.key_bits != 8
-                || compression.value_bits != 4
-            {
-                self.compression_fused_decode_fallback_reason =
-                    KV_COMPRESSION_FUSED_DECODE_FALLBACK_UNSUPPORTED_PRESET;
-            } else if compression.candidate_token_layers > 0 {
-                self.compression_fused_decode_fallback_reason =
-                    KV_COMPRESSION_FUSED_DECODE_FALLBACK_MISSING_RUNTIME_STORAGE;
-            } else {
-                self.compression_fused_decode_fallback_reason =
-                    KV_COMPRESSION_FUSED_DECODE_FALLBACK_NONE;
-            }
-
-            if compression.fused_decode_requested
-                && !fused_decode_candidate
-                && self.compression_fused_decode_fallback_reason
-                    != KV_COMPRESSION_FUSED_DECODE_FALLBACK_NONE
-            {
-                self.compression_fused_decode_fallbacks =
-                    self.compression_fused_decode_fallbacks.saturating_add(1);
-            }
-        }
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -3135,195 +2853,6 @@ impl KvCacheTelemetry {
 
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);
-        }
-
-        if self.compression_request_snapshots > 0 {
-            let compression_entries = [
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS,
-                    self.compression_request_snapshots,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS,
-                    self.compression_status,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET,
-                    self.compression_preset,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS,
-                    self.compression_key_bits,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS,
-                    self.compression_value_bits,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,
-                    saturating_u32_from_u64(self.compression_eligible_layers),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
-                    saturating_u32_from_u64(self.compression_candidate_token_layers),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
-                    saturating_u32_from_u64(self.compression_hot_token_layers),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB,
-                    kib_ceil(self.compression_full_precision_bytes),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB,
-                    kib_ceil(self.compression_estimated_compressed_bytes),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB,
-                    kib_ceil(self.compression_estimated_saved_bytes),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI,
-                    self.compression_ratio_milli,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ROUTE_METADATA_SCHEMA,
-                    self.compression_route_metadata_schema,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_READY,
-                    self.compression_production_ready,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_BLOCKERS,
-                    self.compression_production_blockers,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_LAYERS,
-                    saturating_u32_from_u64(self.compression_runtime_storage_layers),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_TOKEN_LAYERS,
-                    saturating_u32_from_u64(self.compression_runtime_storage_token_layers),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_KIB,
-                    kib_ceil(self.compression_runtime_storage_bytes),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_WRITTEN_SLOTS,
-                    saturating_u32_from_u64(self.compression_runtime_storage_written_slots),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_SHADOW_SYNC_CALLS,
-                    saturating_u32_from_u64(self.compression_shadow_sync_calls),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_SHADOW_SYNC_WALL_US,
-                    saturating_u32_from_u64(self.compression_shadow_sync_wall_us),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH,
-                    self.compression_decode_path,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES,
-                    saturating_u32_from_u64(self.compression_fused_decode_candidates),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS,
-                    saturating_u32_from_u64(self.compression_fused_decode_attempts),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES,
-                    saturating_u32_from_u64(self.compression_fused_decode_successes),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES,
-                    saturating_u32_from_u64(self.compression_fused_decode_metal_successes),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS,
-                    saturating_u32_from_u64(self.compression_fused_decode_fallbacks),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON,
-                    self.compression_fused_decode_fallback_reason,
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_READY_CANDIDATES,
-                    saturating_u32_from_u64(self.compression_fused_decode_ready_candidates),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_PREFILL_ONLY,
-                    saturating_u32_from_u64(self.compression_fused_decode_blocked_prefill_only),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND,
-                    saturating_u32_from_u64(self.compression_fused_decode_blocked_attention_kind),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_LINEAR_ATTENTION,
-                    saturating_u32_from_u64(self.compression_fused_decode_blocked_linear_attention),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SLIDING_WINDOW,
-                    saturating_u32_from_u64(self.compression_fused_decode_blocked_sliding_window),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_KV_SHARED,
-                    saturating_u32_from_u64(self.compression_fused_decode_blocked_kv_shared),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_INELIGIBLE_LAYER,
-                    saturating_u32_from_u64(self.compression_fused_decode_blocked_ineligible_layer),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_PRESET,
-                    saturating_u32_from_u64(
-                        self.compression_fused_decode_blocked_unsupported_preset,
-                    ),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_HEAD_DIM,
-                    saturating_u32_from_u64(
-                        self.compression_fused_decode_blocked_unsupported_head_dim,
-                    ),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_GQA,
-                    saturating_u32_from_u64(self.compression_fused_decode_blocked_gqa),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_MISSING_STORAGE,
-                    saturating_u32_from_u64(self.compression_fused_decode_blocked_missing_storage),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SHORT_CONTEXT,
-                    saturating_u32_from_u64(self.compression_fused_decode_blocked_short_context),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_QUERY_READBACK_WALL_US,
-                    saturating_u32_from_u64(self.compression_fused_decode_query_readback_wall_us),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_COLD_METAL_WALL_US,
-                    saturating_u32_from_u64(self.compression_fused_decode_cold_metal_wall_us),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_HOT_TAIL_MERGE_WALL_US,
-                    saturating_u32_from_u64(self.compression_fused_decode_hot_tail_merge_wall_us),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_OUTPUT_STAGING_WALL_US,
-                    saturating_u32_from_u64(self.compression_fused_decode_output_staging_wall_us),
-                ),
-            ];
-
-            for (key, value) in compression_entries {
-                decisions.upsert_route_decision(key, value);
-            }
         }
     }
 }
@@ -3733,10 +3262,6 @@ pub struct MlxRunner {
     gemma4_assistant_mtp_status: Gemma4AssistantMtpStatus,
     gemma4_assistant_mtp: Option<Gemma4AssistantMtpRuntime>,
     ngram_policy_variant: NgramPolicyVariant,
-    /// Optional KV compression policy. Disabled by default and never changes logits in shadow mode.
-    kv_compression: KvCompressionConfig,
-    /// Per-layer compression eligibility. Empty when compression is disabled.
-    kv_compression_layer_eligible: Vec<bool>,
     /// Serialized, thread-agnostic KV snapshots for block-aligned exact prompt prefixes.
     prefix_cache: Arc<Mutex<MlxPrefixCache>>,
     /// Optional L2 file-backed prefix cache (F3). Populated when
@@ -3978,7 +3503,6 @@ impl MlxRunner {
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
         disable_mtp_ngram_stacking: bool,
-        kv_compression: KvCompressionConfig,
         prefix_cache_store: Option<MlxPrefixCacheStore>,
         shared_weights: Option<&MlxSharedWeightsCell>,
     ) -> Result<Self, MlxRunnerError> {
@@ -3987,7 +3511,6 @@ impl MlxRunner {
             prefill_chunk,
             disable_ngram_acceleration,
             disable_mtp_ngram_stacking,
-            kv_compression,
             prefix_cache_store,
             shared_weights,
         )
@@ -3997,14 +3520,12 @@ impl MlxRunner {
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
-        kv_compression: KvCompressionConfig,
     ) -> Result<Self, MlxRunnerError> {
         Self::from_artifacts_with_mtp_options(
             artifacts,
             prefill_chunk,
             disable_ngram_acceleration,
             mtp_disable_ngram_stacking_from_env(),
-            kv_compression,
         )
     }
 
@@ -4013,14 +3534,12 @@ impl MlxRunner {
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
         disable_mtp_ngram_stacking: bool,
-        kv_compression: KvCompressionConfig,
     ) -> Result<Self, MlxRunnerError> {
         Self::from_artifacts_inner(
             artifacts,
             prefill_chunk,
             disable_ngram_acceleration,
             disable_mtp_ngram_stacking,
-            kv_compression,
             None,
             None,
         )
@@ -4030,7 +3549,6 @@ impl MlxRunner {
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
-        kv_compression: KvCompressionConfig,
         prefix_cache_store: MlxPrefixCacheStore,
     ) -> Result<Self, MlxRunnerError> {
         Self::from_artifacts_with_prefix_cache_and_mtp_options(
@@ -4038,7 +3556,6 @@ impl MlxRunner {
             prefill_chunk,
             disable_ngram_acceleration,
             mtp_disable_ngram_stacking_from_env(),
-            kv_compression,
             prefix_cache_store,
         )
     }
@@ -4048,7 +3565,6 @@ impl MlxRunner {
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
         disable_mtp_ngram_stacking: bool,
-        kv_compression: KvCompressionConfig,
         prefix_cache_store: MlxPrefixCacheStore,
     ) -> Result<Self, MlxRunnerError> {
         Self::from_artifacts_inner(
@@ -4056,7 +3572,6 @@ impl MlxRunner {
             prefill_chunk,
             disable_ngram_acceleration,
             disable_mtp_ngram_stacking,
-            kv_compression,
             Some(prefix_cache_store),
             None,
         )
@@ -4068,7 +3583,6 @@ impl MlxRunner {
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
         disable_mtp_ngram_stacking: bool,
-        kv_compression: KvCompressionConfig,
         prefix_cache_store: Option<MlxPrefixCacheStore>,
         shared_weights: Option<&MlxSharedWeightsCell>,
     ) -> Result<Self, MlxRunnerError> {
@@ -4161,17 +3675,6 @@ impl MlxRunner {
             .ok()
             .and_then(|raw| raw.parse::<u32>().ok())
             .unwrap_or(256);
-        let kv_compression_layer_eligible = if kv_compression.is_enabled() {
-            turboquant_support_report(&cfg, kv_compression.preset)
-                .map_err(|error| {
-                    MlxRunnerError::UnsupportedFeature(format!(
-                        "invalid TurboQuant compression policy: {error}"
-                    ))
-                })?
-                .eligible_layer_mask()
-        } else {
-            Vec::new()
-        };
         // Weight arrays are immutable once loaded (Arc-shared, evaluated
         // leaves), so a populated share cell lets this build skip the full
         // safetensors read + GPU eval entirely.
@@ -4310,7 +3813,6 @@ impl MlxRunner {
         let batched_decode_capabilities = BatchedDecodeCapabilities::from_loaded_model(
             has_mtp,
             cfg.diffusion.is_some(),
-            kv_compression.mode != ax_engine_core::KvCompressionMode::Disabled,
             &kv_layer_windows,
             &weights.layers,
             batched_decode_certification,
@@ -4338,11 +3840,10 @@ impl MlxRunner {
             binding_summary,
             terminal_token_ids,
             model_artifacts_root: artifacts.root_dir().to_string_lossy().into_owned(),
-            artifact_fingerprint:
-                crate::artifact_identity::artifact_fingerprint_sha256_with_domain(
-                    artifacts,
-                    crate::artifact_identity::PREFIX_CACHE_ARTIFACT_DOMAIN,
-                ),
+            artifact_fingerprint: crate::artifact_identity::artifact_fingerprint_sha256_with_domain(
+                artifacts,
+                crate::artifact_identity::PREFIX_CACHE_ARTIFACT_DOMAIN,
+            ),
             states: Mutex::new(HashMap::new()),
             batched_decode_model_eligible,
             batched_decode_model_rejections,
@@ -4356,8 +3857,6 @@ impl MlxRunner {
             gemma4_assistant_mtp_status,
             gemma4_assistant_mtp,
             ngram_policy_variant,
-            kv_compression,
-            kv_compression_layer_eligible,
             prefix_cache,
             disk_prefix_cache,
             disk_prefix_writer,
@@ -4396,15 +3895,6 @@ impl MlxRunner {
             mean_pool_misses: stats.mean_pool_misses,
             mean_pool_len,
         }
-    }
-
-    fn turboquant_model_decode_context(&self) -> Option<TurboQuantModelDecodeContext<'_>> {
-        self.kv_compression
-            .requests_fused_decode()
-            .then_some(TurboQuantModelDecodeContext {
-                config: self.kv_compression,
-                layer_eligible: &self.kv_compression_layer_eligible,
-            })
     }
 }
 
@@ -4899,9 +4389,6 @@ impl ExecutionRunner for MlxRunner {
             decode_profile.merge_from(result.decode_profile);
             kv_cache.merge_from(result.kv_usage);
             prefix_cache.merge_from(result.prefix_cache);
-            if let Some(wall_us) = result.kv_compression_shadow_sync_wall_us {
-                kv_cache.record_compression_shadow_sync(wall_us);
-            }
             request_updates.push(result.update);
         }
         {
@@ -5862,7 +5349,6 @@ impl MlxRunner {
                 decode_profile: DecodeProfileSnapshot::default(),
                 kv_usage: MlxKVCacheUsage::default(),
                 prefix_cache: MlxPrefixCacheTelemetry::default(),
-                kv_compression_shadow_sync_wall_us: None,
             };
         }
 
@@ -5923,11 +5409,6 @@ impl MlxRunner {
             )
         };
 
-        let kv_compression_layer_eligible = if self.kv_compression.is_enabled() {
-            Some(self.kv_compression_layer_eligible.as_slice())
-        } else {
-            None
-        };
         // Apply the request's rotating sliding-KV decision. Before
         // `initialize_generation_state` latches one (i.e. during prefill
         // runs), fall back to the session default. The latch must win on
@@ -5940,7 +5421,6 @@ impl MlxRunner {
             .unwrap_or((self.rotating_sliding_decode && is_greedy, 0));
         state.cache.set_rotating_sliding_decode(rotate_sliding);
         state.cache.set_rotating_sliding_slack(rotate_slack);
-        let mut kv_compression_shadow_sync_wall_us = None;
 
         // GPU work — mutex is NOT held during prefill, decode, or n-gram acceleration steps.
         let sampled_tokens = match item.mode {
@@ -5991,13 +5471,7 @@ impl MlxRunner {
                         .decode_telemetry
                         .record_prefill(elapsed_us(prefill_started));
                     let generation_state_started = Instant::now();
-                    kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
-                        &mut state,
-                        max_output,
-                        kv_compression_layer_eligible,
-                        Some(tok),
-                        is_greedy,
-                    );
+                    self.initialize_generation_state(&mut state, max_output, Some(tok), is_greedy);
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
                     state.decode_telemetry.record_prefill_breakdown(
@@ -6212,10 +5686,9 @@ impl MlxRunner {
                     let mut prefill_generation_state_wall_us = 0;
                     if prefill_completes_prompt {
                         let generation_state_started = Instant::now();
-                        kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
+                        self.initialize_generation_state(
                             &mut state,
                             max_output,
-                            kv_compression_layer_eligible,
                             Some(tok),
                             is_greedy,
                         );
@@ -6260,10 +5733,9 @@ impl MlxRunner {
                 }
                 let tokens = if generated_len == 0 {
                     if let Some(tok) = state.cached_prefill_output_token.take() {
-                        kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
+                        self.initialize_generation_state(
                             &mut state,
                             max_output,
-                            kv_compression_layer_eligible,
                             Some(tok),
                             is_greedy,
                         );
@@ -6331,30 +5803,9 @@ impl MlxRunner {
             .decode_profile
             .merge_from(take_decode_profile_snapshot());
         let decode_profile = state.decode_profile;
-        {
-            let force_shadow_sync = is_prefill
-                && prefill_completes_prompt
-                && kv_compression_shadow_sync_wall_us.is_none();
-            let sync_wall_us = self.sync_turboquant_shadow_storage_if_needed(
-                &mut state,
-                force_shadow_sync,
-                kv_compression_layer_eligible,
-            );
-            if sync_wall_us.is_some() {
-                kv_compression_shadow_sync_wall_us = sync_wall_us;
-            }
-        }
-        let mut kv_usage = state
+        let kv_usage = state
             .cache
-            .usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
-                &self.kv_layer_windows,
-                self.kv_compression,
-                kv_compression_layer_eligible,
-            );
-        let turboquant_decode_usage = state.cache.take_turboquant_decode_usage();
-        kv_usage
-            .kv_compression
-            .apply_decode_usage(turboquant_decode_usage);
+            .usage_snapshot_with_layer_windows(&self.kv_layer_windows);
         if stop_reason.is_none() {
             let mut states = self.states.lock();
             states.insert(item.request_id, state);
@@ -6391,7 +5842,6 @@ impl MlxRunner {
             decode_profile,
             kv_usage,
             prefix_cache,
-            kv_compression_shadow_sync_wall_us,
         }
     }
 
@@ -6412,13 +5862,7 @@ impl MlxRunner {
         } else {
             "ngram"
         };
-        format!(
-            "{decode_policy};kv_mode={:?};kv_preset={:?};hot={};min={}",
-            self.kv_compression.mode,
-            self.kv_compression.preset,
-            self.kv_compression.hot_window_tokens,
-            self.kv_compression.min_context_tokens
-        )
+        decode_policy.to_string()
     }
 
     fn prefix_cache_layer_layout(&self) -> String {
@@ -6992,12 +6436,7 @@ impl MlxRunner {
             let mut cache = self.prefix_cache.lock();
             let outcome = cache.insert(
                 key,
-                MlxPrefixSnapshot::from_shared_payload(
-                    payload,
-                    tokens.to_vec(),
-                    prefix_len,
-                    None,
-                ),
+                MlxPrefixSnapshot::from_shared_payload(payload, tokens.to_vec(), prefix_len, None),
             );
             telemetry.record_stats(cache.stats());
             outcome
@@ -7411,14 +6850,8 @@ impl MlxRunner {
 
     fn run_direct_pipeline_bootstrap(&self, state: &mut RequestState, last_token: u32) -> u32 {
         let bootstrap_started = Instant::now();
-        let turboquant_context = self.turboquant_model_decode_context();
-        let bootstrap_token = start_direct_pipeline_with_turboquant_context(
-            &self.cfg,
-            &self.weights,
-            last_token,
-            &mut state.cache,
-            turboquant_context.as_ref(),
-        );
+        let bootstrap_token =
+            start_direct_pipeline(&self.cfg, &self.weights, last_token, &mut state.cache);
         state
             .decode_telemetry
             .record_direct_bootstrap(elapsed_us(bootstrap_started));
@@ -7431,14 +6864,8 @@ impl MlxRunner {
         last_token: u32,
     ) -> u32 {
         let bootstrap_started = Instant::now();
-        let turboquant_context = self.turboquant_model_decode_context();
-        let bootstrap_token = start_direct_pipeline_with_turboquant_context(
-            &self.cfg,
-            &self.weights,
-            last_token,
-            &mut state.cache,
-            turboquant_context.as_ref(),
-        );
+        let bootstrap_token =
+            start_direct_pipeline(&self.cfg, &self.weights, last_token, &mut state.cache);
         state
             .decode_telemetry
             .record_direct_bootstrap(elapsed_us(bootstrap_started));
@@ -7475,13 +6902,11 @@ impl MlxRunner {
         let branch_started = Instant::now();
         let stage_profile = crate::generate::direct_pipeline_stage_profile_enabled();
         let op_count_before = stage_profile.then(mlx_sys::op_count_snapshot);
-        let turboquant_context = self.turboquant_model_decode_context();
-        let advanced = advance_direct_pipeline_with_timings_and_turboquant_context(
+        let advanced = advance_direct_pipeline_with_timings(
             &self.cfg,
             &self.weights,
             &bootstrap_token,
             &mut state.cache,
-            turboquant_context.as_ref(),
         );
         state
             .decode_telemetry
@@ -7670,36 +7095,6 @@ impl MlxRunner {
         }
     }
 
-    fn sync_turboquant_shadow_storage_if_needed(
-        &self,
-        state: &mut RequestState,
-        force: bool,
-        layer_eligible: Option<&[bool]>,
-    ) -> Option<u32> {
-        if !self.kv_compression.is_enabled() {
-            return None;
-        }
-
-        let should_sync = force
-            || state.cache.turboquant_shadow_storage_sync_due(
-                &self.kv_layer_windows,
-                self.kv_compression,
-                layer_eligible,
-            );
-
-        if should_sync {
-            let sync_started = Instant::now();
-            state.cache.sync_turboquant_shadow_storage(
-                &self.kv_layer_windows,
-                self.kv_compression,
-                layer_eligible,
-            );
-            Some(elapsed_us(sync_started))
-        } else {
-            None
-        }
-    }
-
     fn run_single_decode(
         &self,
         state: &mut RequestState,
@@ -7707,9 +7102,8 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
     ) -> Vec<u32> {
         let branch_started = Instant::now();
-        let turboquant_context = self.turboquant_model_decode_context();
         let repetition_history = state.repetition_history(&[], sampling);
-        let result = single_decode_with_turboquant_context(
+        let result = single_decode_with_sampling_buffers(
             &self.cfg,
             &self.weights,
             &mut state.cache,
@@ -7718,7 +7112,6 @@ impl MlxRunner {
             sampling,
             &repetition_history,
             &mut state.rng,
-            turboquant_context.as_ref(),
             &mut state.sampling_probs_buf,
             &mut state.sampling_logits_buf,
             &mut state.sampling_candidates_buf,
@@ -9143,10 +8536,9 @@ impl MlxRunner {
         &self,
         state: &mut RequestState,
         max_output: u32,
-        layer_eligible: Option<&[bool]>,
         prefill_output_token: Option<u32>,
         is_greedy: bool,
-    ) -> Option<u32> {
+    ) {
         // When MTP is active, use a wider prompt window (NGRAM_MTP_PROMPT_FEED_MAX)
         // so real-code bigrams are seeded before the first decode step. Without
         // MTP, keep the conservative 64-token guard to avoid random-token false
@@ -9339,8 +8731,6 @@ impl MlxRunner {
             .cache
             .set_rotating_sliding_slack(rotating_latch.unwrap_or(0));
 
-        let kv_compression_shadow_sync_wall_us =
-            self.sync_turboquant_shadow_storage_if_needed(state, true, layer_eligible);
         let approximate_profile = mtp_optimistic_allowed(self.weights.glm_mtp.is_some())
             && (self.mtp_optimistic || mtp_auto_optimistic_enabled_from_env());
         let exact_supported = is_greedy;
@@ -9372,14 +8762,8 @@ impl MlxRunner {
             && let Some(prefill_tok) = prefill_output_token
         {
             let bootstrap_started = Instant::now();
-            let turboquant_context = self.turboquant_model_decode_context();
-            let bootstrap_token = start_direct_pipeline_with_turboquant_context(
-                &self.cfg,
-                &self.weights,
-                prefill_tok,
-                &mut state.cache,
-                turboquant_context.as_ref(),
-            );
+            let bootstrap_token =
+                start_direct_pipeline(&self.cfg, &self.weights, prefill_tok, &mut state.cache);
             state.pending_direct = Some(bootstrap_token);
             // The first generated token was produced at the prefill boundary.
             // Count it so the periodic cleanup cadence remains aligned with
@@ -9389,8 +8773,6 @@ impl MlxRunner {
                 .decode_telemetry
                 .record_direct_bootstrap(elapsed_us(bootstrap_started));
         }
-
-        kv_compression_shadow_sync_wall_us
     }
 
     /// Run one model decode step, updating the n-gram accept-rate gate.
@@ -10783,7 +10165,6 @@ struct MlxItemRun {
     decode_profile: DecodeProfileSnapshot,
     kv_usage: MlxKVCacheUsage,
     prefix_cache: MlxPrefixCacheTelemetry,
-    kv_compression_shadow_sync_wall_us: Option<u32>,
 }
 
 fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemRun {
@@ -10809,7 +10190,6 @@ fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemR
         decode_profile: DecodeProfileSnapshot::default(),
         kv_usage: MlxKVCacheUsage::default(),
         prefix_cache: MlxPrefixCacheTelemetry::default(),
-        kv_compression_shadow_sync_wall_us: None,
     }
 }
 
@@ -15187,7 +14567,7 @@ mod tests {
         let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
             .expect("real MLX manifest should load");
 
-        MlxRunner::from_artifacts(&artifacts, 8, true, KvCompressionConfig::disabled())
+        MlxRunner::from_artifacts(&artifacts, 8, true)
             .expect("real Qwen3.5 MLX runner should warm up");
     }
 
@@ -16735,12 +16115,6 @@ mod tests {
             Some(&3)
         );
         assert!(
-            !decisions
-                .keys()
-                .any(|key| key.starts_with("ax_mlx_kv_compression_")),
-            "compression counters must stay absent when the policy is disabled"
-        );
-        assert!(
             ax_engine_core::ROUTE_DECISION_AX_MLX_KV_KEYS
                 .iter()
                 .all(|key| decisions.contains_key(*key)),
@@ -16785,462 +16159,6 @@ mod tests {
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT),
             Some(&0)
-        );
-        assert!(
-            !decisions
-                .keys()
-                .any(|key| key.starts_with("ax_mlx_kv_compression_")),
-            "empty disabled snapshots must not add compression metadata"
-        );
-    }
-
-    #[test]
-    fn kv_cache_telemetry_emits_compression_counters_only_when_enabled() {
-        let mut telemetry = KvCacheTelemetry::default();
-        telemetry.merge_from(MlxKVCacheUsage {
-            kv_compression: crate::kv_cache::MlxKvCompressionUsage {
-                policy_enabled: true,
-                status_code: 1,
-                preset_code: 1,
-                key_bits: 8,
-                value_bits: 4,
-                eligible_layers: 2,
-                candidate_token_layers: 688,
-                hot_token_layers: 512,
-                full_precision_bytes: 22_016,
-                estimated_compressed_bytes: 8_256,
-                estimated_saved_bytes: 13_760,
-                estimated_ratio_milli: 375,
-                ..crate::kv_cache::MlxKvCompressionUsage::default()
-            },
-            ..MlxKVCacheUsage::default()
-        });
-        telemetry.record_compression_shadow_sync(1_234);
-        telemetry.record_compression_shadow_sync(4_321);
-
-        let mut decisions = Vec::new();
-        telemetry.append_route_decisions(&mut decisions);
-        let decisions = decisions
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>();
-
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS),
-            Some(&1)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS),
-            Some(&1)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS),
-            Some(&688)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB),
-            Some(&22)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB),
-            Some(&9)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB),
-            Some(&14)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI),
-            Some(&375)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ROUTE_METADATA_SCHEMA),
-            Some(&TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_READY),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_BLOCKERS),
-            Some(&1)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_LAYERS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_TOKEN_LAYERS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_KIB),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_WRITTEN_SLOTS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_SHADOW_SYNC_CALLS),
-            Some(&2)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_SHADOW_SYNC_WALL_US),
-            Some(&5_555)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH),
-            Some(&KV_COMPRESSION_DECODE_PATH_FULL_PRECISION_SHADOW)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON),
-            Some(&KV_COMPRESSION_FUSED_DECODE_FALLBACK_MISSING_RUNTIME_STORAGE)
-        );
-        for key in ax_engine_core::ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS {
-            assert!(
-                decisions.contains_key(key),
-                "missing canonical compression counter {key}"
-            );
-        }
-    }
-
-    #[test]
-    fn kv_cache_telemetry_marks_unsupported_value_bits_as_unsupported_preset() {
-        // K8V8 satisfies preset_code==1 and key_bits==8 but value_bits!=4.
-        // Before the fix the condition `preset_code != 1 || key_bits != 8` was
-        // false, so the code fell through to MISSING_RUNTIME_STORAGE even though
-        // the real reason is an unsupported value quantisation depth.
-        let mut telemetry = KvCacheTelemetry::default();
-        telemetry.merge_from(MlxKVCacheUsage {
-            kv_compression: crate::kv_cache::MlxKvCompressionUsage {
-                policy_enabled: true,
-                status_code: 1,
-                preset_code: 1,
-                key_bits: 8,
-                value_bits: 8, // NOT 4-bit — should be UNSUPPORTED_PRESET
-                eligible_layers: 1,
-                candidate_token_layers: 512,
-                runtime_storage_written_slots: 512,
-                ..crate::kv_cache::MlxKvCompressionUsage::default()
-            },
-            ..MlxKVCacheUsage::default()
-        });
-
-        let mut decisions = Vec::new();
-        telemetry.append_route_decisions(&mut decisions);
-        let decisions = decisions
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>();
-
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON),
-            Some(&KV_COMPRESSION_FUSED_DECODE_FALLBACK_UNSUPPORTED_PRESET)
-        );
-    }
-
-    #[test]
-    fn kv_cache_telemetry_marks_fused_decode_candidates_as_shadow_only() {
-        let mut telemetry = KvCacheTelemetry::default();
-        telemetry.merge_from(MlxKVCacheUsage {
-            kv_compression: crate::kv_cache::MlxKvCompressionUsage {
-                policy_enabled: true,
-                status_code: 1,
-                preset_code: 1,
-                key_bits: 8,
-                value_bits: 4,
-                eligible_layers: 1,
-                candidate_token_layers: 512,
-                runtime_storage_written_slots: 512,
-                ..crate::kv_cache::MlxKvCompressionUsage::default()
-            },
-            ..MlxKVCacheUsage::default()
-        });
-
-        let mut decisions = Vec::new();
-        telemetry.append_route_decisions(&mut decisions);
-        let decisions = decisions
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>();
-
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH),
-            Some(&KV_COMPRESSION_DECODE_PATH_FULL_PRECISION_SHADOW)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES),
-            Some(&1)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON),
-            Some(&KV_COMPRESSION_FUSED_DECODE_FALLBACK_SHADOW_ONLY)
-        );
-    }
-
-    #[test]
-    fn kv_cache_telemetry_does_not_invent_fused_experimental_attempts() {
-        let mut telemetry = KvCacheTelemetry::default();
-        telemetry.merge_from(MlxKVCacheUsage {
-            kv_compression: crate::kv_cache::MlxKvCompressionUsage {
-                policy_enabled: true,
-                fused_decode_requested: true,
-                status_code: 1,
-                preset_code: 1,
-                key_bits: 8,
-                value_bits: 4,
-                eligible_layers: 1,
-                candidate_token_layers: 512,
-                hot_token_layers: 256,
-                runtime_storage_written_slots: 512,
-                ..crate::kv_cache::MlxKvCompressionUsage::default()
-            },
-            ..MlxKVCacheUsage::default()
-        });
-
-        let mut decisions = Vec::new();
-        telemetry.append_route_decisions(&mut decisions);
-        let decisions = decisions
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>();
-
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH),
-            Some(&KV_COMPRESSION_DECODE_PATH_FULL_PRECISION_SHADOW)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES),
-            Some(&1)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON),
-            Some(&KV_COMPRESSION_FUSED_DECODE_FALLBACK_RUNNER_NOT_INTEGRATED)
-        );
-    }
-
-    #[test]
-    fn kv_cache_telemetry_records_cpu_oracle_successes_as_experimental_path() {
-        let mut telemetry = KvCacheTelemetry::default();
-        telemetry.merge_from(MlxKVCacheUsage {
-            kv_compression: crate::kv_cache::MlxKvCompressionUsage {
-                policy_enabled: true,
-                fused_decode_requested: true,
-                fused_decode_attempts: 2,
-                fused_decode_successes: 2,
-                status_code: 1,
-                preset_code: 1,
-                key_bits: 8,
-                value_bits: 4,
-                eligible_layers: 1,
-                candidate_token_layers: 512,
-                hot_token_layers: 256,
-                runtime_storage_written_slots: 512,
-                ..crate::kv_cache::MlxKvCompressionUsage::default()
-            },
-            ..MlxKVCacheUsage::default()
-        });
-
-        let mut decisions = Vec::new();
-        telemetry.append_route_decisions(&mut decisions);
-        let decisions = decisions
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>();
-
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH),
-            Some(&KV_COMPRESSION_DECODE_PATH_CPU_ORACLE_COMPRESSED_DECODE)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS),
-            Some(&2)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES),
-            Some(&2)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON),
-            Some(&KV_COMPRESSION_FUSED_DECODE_FALLBACK_NONE)
-        );
-    }
-
-    #[test]
-    fn kv_cache_telemetry_records_metal_successes_as_fused_decode_path() {
-        let mut telemetry = KvCacheTelemetry::default();
-        telemetry.merge_from(MlxKVCacheUsage {
-            kv_compression: crate::kv_cache::MlxKvCompressionUsage {
-                policy_enabled: true,
-                fused_decode_requested: true,
-                fused_decode_attempts: 2,
-                fused_decode_successes: 2,
-                fused_decode_metal_successes: 2,
-                fused_decode_query_readback_wall_us: 11,
-                fused_decode_cold_metal_wall_us: 22,
-                fused_decode_hot_tail_merge_wall_us: 33,
-                fused_decode_output_staging_wall_us: 44,
-                status_code: 1,
-                preset_code: 1,
-                key_bits: 8,
-                value_bits: 4,
-                eligible_layers: 1,
-                candidate_token_layers: 512,
-                hot_token_layers: 256,
-                runtime_storage_written_slots: 512,
-                ..crate::kv_cache::MlxKvCompressionUsage::default()
-            },
-            ..MlxKVCacheUsage::default()
-        });
-
-        let mut decisions = Vec::new();
-        telemetry.append_route_decisions(&mut decisions);
-        let decisions = decisions
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>();
-
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH),
-            Some(&KV_COMPRESSION_DECODE_PATH_FUSED_COMPRESSED_DECODE)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS),
-            Some(&2)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES),
-            Some(&2)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES),
-            Some(&2)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON),
-            Some(&KV_COMPRESSION_FUSED_DECODE_FALLBACK_NONE)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_QUERY_READBACK_WALL_US),
-            Some(&11)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_COLD_METAL_WALL_US),
-            Some(&22)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_HOT_TAIL_MERGE_WALL_US),
-            Some(&33)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_OUTPUT_STAGING_WALL_US),
-            Some(&44)
-        );
-    }
-
-    #[test]
-    fn kv_cache_telemetry_records_cpu_oracle_fallbacks_without_path_promotion() {
-        let mut telemetry = KvCacheTelemetry::default();
-        telemetry.merge_from(MlxKVCacheUsage {
-            kv_compression: crate::kv_cache::MlxKvCompressionUsage {
-                policy_enabled: true,
-                fused_decode_requested: true,
-                fused_decode_attempts: 2,
-                fused_decode_successes: 0,
-                fused_decode_fallbacks: 2,
-                status_code: 1,
-                preset_code: 1,
-                key_bits: 8,
-                value_bits: 4,
-                eligible_layers: 1,
-                candidate_token_layers: 512,
-                hot_token_layers: 256,
-                runtime_storage_written_slots: 512,
-                ..crate::kv_cache::MlxKvCompressionUsage::default()
-            },
-            ..MlxKVCacheUsage::default()
-        });
-
-        let mut decisions = Vec::new();
-        telemetry.append_route_decisions(&mut decisions);
-        let decisions = decisions
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>();
-
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_DECODE_PATH),
-            Some(&KV_COMPRESSION_DECODE_PATH_FULL_PRECISION_SHADOW)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS),
-            Some(&2)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES),
-            Some(&0)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS),
-            Some(&2)
-        );
-        assert_eq!(
-            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON),
-            Some(&KV_COMPRESSION_FUSED_DECODE_FALLBACK_CPU_ORACLE_UNAVAILABLE)
         );
     }
 

@@ -603,68 +603,6 @@ AX_MLX_DECODE_PROFILE_KEYS = [
     "ax_mlx_decode_profile_lm_head_wall_us",
 ]
 
-AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
-    "ax_mlx_kv_compression_request_snapshots",
-    "ax_mlx_kv_compression_status",
-    "ax_mlx_kv_compression_preset",
-    "ax_mlx_kv_compression_key_bits",
-    "ax_mlx_kv_compression_value_bits",
-    "ax_mlx_kv_compression_eligible_layers",
-    "ax_mlx_kv_compression_candidate_token_layers",
-    "ax_mlx_kv_compression_hot_token_layers",
-    "ax_mlx_kv_compression_full_precision_kib",
-    "ax_mlx_kv_compression_estimated_compressed_kib",
-    "ax_mlx_kv_compression_estimated_saved_kib",
-    "ax_mlx_kv_compression_ratio_milli",
-    "ax_mlx_kv_compression_route_metadata_schema",
-    "ax_mlx_kv_compression_production_ready",
-    "ax_mlx_kv_compression_production_blockers",
-    "ax_mlx_kv_compression_runtime_storage_layers",
-    "ax_mlx_kv_compression_runtime_storage_token_layers",
-    "ax_mlx_kv_compression_runtime_storage_kib",
-    "ax_mlx_kv_compression_runtime_storage_written_slots",
-    "ax_mlx_kv_compression_shadow_sync_calls",
-    "ax_mlx_kv_compression_shadow_sync_wall_us",
-    "ax_mlx_kv_compression_decode_path",
-    "ax_mlx_kv_compression_fused_decode_candidates",
-    "ax_mlx_kv_compression_fused_decode_attempts",
-    "ax_mlx_kv_compression_fused_decode_successes",
-    "ax_mlx_kv_compression_fused_decode_metal_successes",
-    "ax_mlx_kv_compression_fused_decode_fallbacks",
-    "ax_mlx_kv_compression_fused_decode_fallback_reason",
-    "ax_mlx_kv_compression_fused_decode_ready_candidates",
-    "ax_mlx_kv_compression_fused_decode_blocked_prefill_only",
-    "ax_mlx_kv_compression_fused_decode_blocked_attention_kind",
-    "ax_mlx_kv_compression_fused_decode_blocked_linear_attention",
-    "ax_mlx_kv_compression_fused_decode_blocked_sliding_window",
-    "ax_mlx_kv_compression_fused_decode_blocked_kv_shared",
-    "ax_mlx_kv_compression_fused_decode_blocked_ineligible_layer",
-    "ax_mlx_kv_compression_fused_decode_blocked_unsupported_preset",
-    "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim",
-    "ax_mlx_kv_compression_fused_decode_blocked_gqa",
-    "ax_mlx_kv_compression_fused_decode_blocked_missing_storage",
-    "ax_mlx_kv_compression_fused_decode_query_readback_wall_us",
-    "ax_mlx_kv_compression_fused_decode_cold_metal_wall_us",
-    "ax_mlx_kv_compression_fused_decode_hot_tail_merge_wall_us",
-    "ax_mlx_kv_compression_fused_decode_output_staging_wall_us",
-]
-
-KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS = {
-    "prefill_only": "ax_mlx_kv_compression_fused_decode_blocked_prefill_only",
-    "attention_kind": "ax_mlx_kv_compression_fused_decode_blocked_attention_kind",
-    "ineligible_layer": "ax_mlx_kv_compression_fused_decode_blocked_ineligible_layer",
-    "unsupported_preset": "ax_mlx_kv_compression_fused_decode_blocked_unsupported_preset",
-    "unsupported_head_dim": "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim",
-    "gqa": "ax_mlx_kv_compression_fused_decode_blocked_gqa",
-    "missing_storage": "ax_mlx_kv_compression_fused_decode_blocked_missing_storage",
-}
-
-KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS = {
-    "linear_attention": "ax_mlx_kv_compression_fused_decode_blocked_linear_attention",
-    "sliding_window": "ax_mlx_kv_compression_fused_decode_blocked_sliding_window",
-    "kv_shared": "ax_mlx_kv_compression_fused_decode_blocked_kv_shared",
-}
-
 
 def _sysctl(key: str) -> str:
     try:
@@ -2584,9 +2522,6 @@ def start_axengine(
     *,
     model_id: str,
     direct_mode: bool,
-    kv_compression: str = "disabled",
-    kv_compression_hot_window_tokens: int | None = None,
-    kv_compression_min_context_tokens: int | None = None,
     gemma4_moe_profile: bool = False,
     linear_attention_profile: bool = False,
     prefill_profile: bool = False,
@@ -2624,22 +2559,6 @@ def start_axengine(
         cmd.extend(["--prefill-chunk", str(prefill_chunk)])
     if max_batch_tokens is not None:
         cmd.extend(["--max-batch-tokens", str(max_batch_tokens)])
-    if kv_compression != "disabled":
-        cmd.extend(["--experimental-mlx-kv-compression", kv_compression])
-        if kv_compression_hot_window_tokens is not None:
-            cmd.extend(
-                [
-                    "--experimental-mlx-kv-compression-hot-window-tokens",
-                    str(kv_compression_hot_window_tokens),
-                ]
-            )
-        if kv_compression_min_context_tokens is not None:
-            cmd.extend(
-                [
-                    "--experimental-mlx-kv-compression-min-context-tokens",
-                    str(kv_compression_min_context_tokens),
-                ]
-            )
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
     if not prefix_cache_enabled:
         env.update(AX_PREFIX_CACHE_DISABLED_ENV)
@@ -2881,20 +2800,6 @@ def extract_ax_mlx_prefill_profile(
     if "ax_mlx_prefill_profile_enabled" not in decisions:
         return {}
     return {key: int(decisions.get(key, 0)) for key in AX_MLX_PREFILL_PROFILE_KEYS}
-
-
-def extract_ax_mlx_kv_compression_telemetry(
-    route: dict[str, Any] | None,
-) -> dict[str, int]:
-    if not route:
-        return {}
-    decisions = route.get("crossover_decisions") or {}
-    present = [key for key in AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS if key in decisions]
-    if not present:
-        return {}
-    return {
-        key: int(decisions.get(key, 0)) for key in AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS
-    }
 
 
 def route_with_more_decisions(
@@ -3872,84 +3777,6 @@ def summarize_ax_mlx_prefill_profile(runs: list[dict[str, Any]]) -> dict[str, in
     return totals
 
 
-def summarize_ax_mlx_kv_compression_telemetry(
-    runs: list[dict[str, Any]],
-) -> dict[str, int]:
-    totals: dict[str, int] = {}
-    latest_keys = {
-        "ax_mlx_kv_compression_status",
-        "ax_mlx_kv_compression_preset",
-        "ax_mlx_kv_compression_key_bits",
-        "ax_mlx_kv_compression_value_bits",
-        "ax_mlx_kv_compression_ratio_milli",
-        "ax_mlx_kv_compression_route_metadata_schema",
-        "ax_mlx_kv_compression_production_ready",
-        "ax_mlx_kv_compression_production_blockers",
-        "ax_mlx_kv_compression_decode_path",
-        "ax_mlx_kv_compression_fused_decode_fallback_reason",
-    }
-    for run in runs:
-        telemetry = run.get("kv_compression_telemetry") or {}
-        for key, value in telemetry.items():
-            if key in latest_keys:
-                totals[key] = int(value)
-            else:
-                totals[key] = totals.get(key, 0) + int(value)
-    return totals
-
-
-def kv_compression_decode_path_label(telemetry: dict[str, int]) -> str:
-    if telemetry.get("ax_mlx_kv_compression_decode_path") == 2:
-        return "fused_compressed_decode"
-    if telemetry.get("ax_mlx_kv_compression_decode_path") == 3:
-        return "cpu_oracle_compressed_decode"
-    return "full_precision_shadow"
-
-
-def kv_compression_fused_decode_fallback_reason_label(
-    telemetry: dict[str, int],
-) -> str:
-    reason = telemetry.get("ax_mlx_kv_compression_fused_decode_fallback_reason", 0)
-    return {
-        0: "none",
-        1: "shadow_only",
-        2: "missing_runtime_storage",
-        3: "unsupported_preset",
-        4: "runner_not_integrated",
-        5: "cpu_oracle_unavailable",
-    }.get(reason, f"unknown_{reason}")
-
-
-def kv_compression_fused_decode_blocked_summary(
-    telemetry: dict[str, int],
-) -> dict[str, Any]:
-    counters = {
-        label: int(telemetry.get(key, 0))
-        for label, key in KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS.items()
-    }
-    reasons = [label for label, value in counters.items() if value > 0]
-    return {
-        "total": sum(counters.values()),
-        "reasons": reasons,
-        "counters": counters,
-    }
-
-
-def kv_compression_fused_decode_blocked_attention_kind_summary(
-    telemetry: dict[str, int],
-) -> dict[str, Any]:
-    counters = {
-        label: int(telemetry.get(key, 0))
-        for label, key in KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS.items()
-    }
-    reasons = [label for label, value in counters.items() if value > 0]
-    return {
-        "total": sum(counters.values()),
-        "reasons": reasons,
-        "counters": counters,
-    }
-
-
 def is_ax_prefill_step(step: dict[str, Any], *, seen_prefill: bool) -> bool:
     route = step.get("route") or {}
     route_labels = [
@@ -4198,9 +4025,6 @@ def axengine_one_run(
     decode_profile = extract_ax_mlx_decode_profile(final_route)
     if decode_profile:
         run["ax_mlx_decode_profile"] = decode_profile
-    compression_telemetry = extract_ax_mlx_kv_compression_telemetry(final_route)
-    if compression_telemetry:
-        run["kv_compression_telemetry"] = compression_telemetry
     return run
 
 
@@ -4297,7 +4121,6 @@ def bench_axengine(
     model_metadata: dict[str, Any],
     direct_mode: bool = False,
     engine_key_override: str | None = None,
-    kv_compression: str = "disabled",
     capture_output_token_ids: bool = False,
     server_pid: int | None = None,
     prefix_cache_enabled: bool = False,
@@ -4323,8 +4146,7 @@ def bench_axengine(
     )
     print(
         f"  [ax-engine/{engine_key}] prompt={len(tokens)} "
-        f"generation={generation_tokens} policy={decode_policy} "
-        f"kv_compression={kv_compression}",
+        f"generation={generation_tokens} policy={decode_policy}",
         file=sys.stderr,
     )
     for warmup_index in range(warmup_repetitions):
@@ -4557,37 +4379,6 @@ def bench_axengine(
     if all("peak_memory_gb" in run for run in runs):
         row["peak_memory_gb"] = summarize_runs(runs, "peak_memory_gb")
         row["memory_source"] = "server_process_rss_after_stream"
-    compression_summary = summarize_ax_mlx_kv_compression_telemetry(runs)
-    if kv_compression != "disabled":
-        row["experimental_mlx_kv_compression"] = kv_compression
-        decode_path = kv_compression_decode_path_label(compression_summary)
-        row["kv_compression_decode_path"] = decode_path
-        row["kv_compression_claim_status"] = (
-            "integrated_fused_compressed_decode"
-            if decode_path == "fused_compressed_decode"
-            else "telemetry_only_full_precision_generation"
-        )
-        row["kv_compression_fused_decode_fallback_reason_label"] = (
-            kv_compression_fused_decode_fallback_reason_label(compression_summary)
-        )
-        blocked_summary = kv_compression_fused_decode_blocked_summary(
-            compression_summary
-        )
-        row["kv_compression_fused_decode_blocked_total"] = blocked_summary["total"]
-        row["kv_compression_fused_decode_blocked_reasons"] = blocked_summary["reasons"]
-        attention_kind_blocked_summary = (
-            kv_compression_fused_decode_blocked_attention_kind_summary(
-                compression_summary
-            )
-        )
-        row["kv_compression_fused_decode_blocked_attention_kind_total"] = (
-            attention_kind_blocked_summary["total"]
-        )
-        row["kv_compression_fused_decode_blocked_attention_kind_reasons"] = (
-            attention_kind_blocked_summary["reasons"]
-        )
-    if compression_summary:
-        row["kv_compression_telemetry"] = compression_summary
     assert_no_distribution_exact_promotion_under_sampling(row)
     return row
 
@@ -6097,25 +5888,6 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--experimental-mlx-kv-compression",
-        choices=["disabled", "turboquant-shadow", "turboquant-fused-experimental"],
-        default="disabled",
-        help=(
-            "Pass the AX server experimental MLX KV compression flag through "
-            "for AX rows. Default is disabled."
-        ),
-    )
-    parser.add_argument(
-        "--experimental-mlx-kv-compression-hot-window-tokens",
-        type=int,
-        help="Pass through the AX server experimental KV compression hot-window token count.",
-    )
-    parser.add_argument(
-        "--experimental-mlx-kv-compression-min-context-tokens",
-        type=int,
-        help="Pass through the AX server experimental KV compression minimum context token count.",
-    )
-    parser.add_argument(
         "--prompt-artifact-root",
         type=Path,
         help="Directory for canonical mlx_lm random-token prompt JSON files",
@@ -6125,8 +5897,8 @@ def main() -> None:
         action="store_true",
         help=(
             "Record AX response output token IDs in each trial. This is opt-in "
-            "because it increases artifact size and is intended for TurboQuant "
-            "quality-gate evidence."
+            "because it increases artifact size and is intended for "
+            "output-equivalence evidence."
         ),
     )
     parser.add_argument(
@@ -6353,11 +6125,6 @@ def main() -> None:
         if args.ax_gemma4_moe_profile:
             parser.error(
                 "--gateddelta-prefill-profile conflicts with --ax-gemma4-moe-profile"
-            )
-        if args.experimental_mlx_kv_compression != "disabled":
-            parser.error(
-                "--gateddelta-prefill-profile requires KV compression disabled so "
-                "prefill evidence is not mixed with compression experiments"
             )
         args.ax_direct = True
     if args.max_load_average is not None and args.max_load_average < 0.0:
@@ -6697,13 +6464,6 @@ def main() -> None:
                     args.axengine_port,
                     model_id=args.model,
                     direct_mode=direct_mode,
-                    kv_compression=args.experimental_mlx_kv_compression,
-                    kv_compression_hot_window_tokens=(
-                        args.experimental_mlx_kv_compression_hot_window_tokens
-                    ),
-                    kv_compression_min_context_tokens=(
-                        args.experimental_mlx_kv_compression_min_context_tokens
-                    ),
                     gemma4_moe_profile=args.ax_gemma4_moe_profile,
                     linear_attention_profile=ax_linear_attention_profile_enabled(args),
                     prefill_profile=args.ax_prefill_profile,
@@ -6758,7 +6518,6 @@ def main() -> None:
                             model_metadata=model_metadata,
                             direct_mode=direct_mode,
                             engine_key_override=engine_key,
-                            kv_compression=args.experimental_mlx_kv_compression,
                             capture_output_token_ids=args.capture_output_token_ids,
                             server_pid=proc.pid,
                             prefix_cache_enabled=args.ax_enable_prefix_cache,

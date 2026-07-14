@@ -9,11 +9,9 @@ use crate::gemma4_unified::build_chunk_embeddings;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
-    FinalLogitsMode, ModelConfig, TurboQuantModelDecodeContext, forward,
-    forward_all_positions_post_norm_last_lm_head, forward_all_positions_with_final_hidden,
-    forward_argmax_with_turboquant_context, forward_cache_only,
-    forward_lazy_single_argmax_with_turboquant_context,
-    forward_with_initial_hidden_and_media_ranges, forward_with_turboquant_context,
+    FinalLogitsMode, ModelConfig, forward, forward_all_positions_post_norm_last_lm_head,
+    forward_all_positions_with_final_hidden, forward_argmax, forward_cache_only,
+    forward_lazy_single_argmax, forward_with_initial_hidden_and_media_ranges,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
@@ -29,7 +27,7 @@ pub const DEFAULT_PREFILL_CHUNK: usize = GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 pub struct DirectPipelineTimings {
     pub forward_wall_us: u32,
     /// Subset of `forward_wall_us`: time spent inside the 64-layer
-    /// `layer_forward_with_turboquant_context` loop. Zero unless
+    /// `layer_forward` loop. Zero unless
     /// `AX_MLX_DIRECT_PIPELINE_STAGE_PROFILE=1` is set. The residual
     /// `forward_wall_us - layer_loop_wall_us - head_wall_us` covers
     /// embed-tokens + per-layer-input + dtype-cast + scale-hidden graph-build
@@ -278,7 +276,7 @@ pub fn chunked_prefill_with_sampling_buffers(
             forward(cfg, weights, chunk, cache, cache.seq_len())
         } else if is_final_chunk {
             // Final chunk, greedy: need argmax but not full f32 logits.
-            forward_argmax_with_turboquant_context(cfg, weights, chunk, cache, cache.seq_len(), None)
+            forward_argmax(cfg, weights, chunk, cache, cache.seq_len())
         } else {
             // Non-final chunk: skip lm_head projection entirely.
             forward_cache_only(cfg, weights, chunk, cache, cache.seq_len())
@@ -700,25 +698,8 @@ pub fn start_direct_pipeline(
     last_token: u32,
     cache: &mut MlxKVCache,
 ) -> MlxArray {
-    start_direct_pipeline_with_turboquant_context(cfg, weights, last_token, cache, None)
-}
-
-pub fn start_direct_pipeline_with_turboquant_context(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    last_token: u32,
-    cache: &mut MlxKVCache,
-    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
-) -> MlxArray {
     let token_offset = cache.seq_len();
-    let logits = forward_argmax_with_turboquant_context(
-        cfg,
-        weights,
-        &[last_token],
-        cache,
-        token_offset,
-        turboquant_context,
-    );
+    let logits = forward_argmax(cfg, weights, &[last_token], cache, token_offset);
     cache.advance(1);
     // KV cache is in token_arr's computation graph; no extra refs needed.
     let token_arr = argmax(&logits, None);
@@ -742,32 +723,15 @@ pub fn advance_direct_pipeline(
     pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
     cache: &mut MlxKVCache,
 ) -> (u32, MlxArray) {
-    advance_direct_pipeline_with_turboquant_context(cfg, weights, pending, cache, None)
-}
-
-pub fn advance_direct_pipeline_with_turboquant_context(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
-    cache: &mut MlxKVCache,
-    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
-) -> (u32, MlxArray) {
-    let advanced = advance_direct_pipeline_with_timings_and_turboquant_context(
-        cfg,
-        weights,
-        pending,
-        cache,
-        turboquant_context,
-    );
+    let advanced = advance_direct_pipeline_with_timings(cfg, weights, pending, cache);
     (advanced.token, advanced.next_pending)
 }
 
-pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
+pub fn advance_direct_pipeline_with_timings(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
     cache: &mut MlxKVCache,
-    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> DirectPipelineAdvance {
     // Build next step's graph using the lazy pending token.
     // forward_lazy_single accepts an unevaluated MlxArray, so this runs entirely
@@ -778,14 +742,7 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
         reset_forward_stage_timings();
     }
     let forward_started = Instant::now();
-    let logits = forward_lazy_single_argmax_with_turboquant_context(
-        cfg,
-        weights,
-        pending,
-        cache,
-        token_offset,
-        turboquant_context,
-    );
+    let logits = forward_lazy_single_argmax(cfg, weights, pending, cache, token_offset);
     let forward_wall_us = elapsed_us(forward_started);
     let forward_stage = if stage_profile {
         take_forward_stage_timings()
@@ -861,14 +818,13 @@ pub fn decode_step(
     let mut sampling_probs_buf = Vec::new();
     let mut sampling_logits_buf = Vec::new();
     let mut sampling_candidates_buf = Vec::new();
-    decode_step_with_sampling_buffers_and_turboquant_context(
+    decode_step_with_sampling_buffers(
         cfg,
         weights,
         last_token,
         cache,
         sampling_request,
         rng,
-        None,
         &mut sampling_probs_buf,
         &mut sampling_logits_buf,
         &mut sampling_candidates_buf,
@@ -887,80 +843,13 @@ pub fn decode_step_with_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> u32 {
-    decode_step_with_sampling_buffers_and_turboquant_context(
-        cfg,
-        weights,
-        last_token,
-        cache,
-        sampling_request,
-        rng,
-        None,
-        sampling_probs_buf,
-        sampling_logits_buf,
-        sampling_candidates_buf,
-    )
-}
-
-pub fn decode_step_with_turboquant_context(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    last_token: u32,
-    cache: &mut MlxKVCache,
-    sampling_request: MlxSamplingRequest<'_>,
-    rng: &mut Xorshift64,
-    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
-) -> u32 {
-    let mut sampling_probs_buf = Vec::new();
-    let mut sampling_logits_buf = Vec::new();
-    let mut sampling_candidates_buf = Vec::new();
-    decode_step_with_sampling_buffers_and_turboquant_context(
-        cfg,
-        weights,
-        last_token,
-        cache,
-        sampling_request,
-        rng,
-        turboquant_context,
-        &mut sampling_probs_buf,
-        &mut sampling_logits_buf,
-        &mut sampling_candidates_buf,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn decode_step_with_sampling_buffers_and_turboquant_context(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    last_token: u32,
-    cache: &mut MlxKVCache,
-    sampling_request: MlxSamplingRequest<'_>,
-    rng: &mut Xorshift64,
-    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
-    sampling_probs_buf: &mut Vec<f32>,
-    sampling_logits_buf: &mut Vec<f32>,
-    sampling_candidates_buf: &mut Vec<(usize, f32)>,
-) -> u32 {
     let sampling = sampling_request.params;
     let token_offset = cache.seq_len();
     let deterministic_argmax = sampling.temperature <= 0.0 && !sampling.uses_repetition_penalty();
     let logits = if deterministic_argmax {
-        forward_argmax_with_turboquant_context(
-            cfg,
-            weights,
-            &[last_token],
-            cache,
-            token_offset,
-            turboquant_context,
-        )
+        forward_argmax(cfg, weights, &[last_token], cache, token_offset)
     } else {
-        forward_with_turboquant_context(
-            cfg,
-            weights,
-            &[last_token],
-            cache,
-            token_offset,
-            turboquant_context,
-        )
+        forward(cfg, weights, &[last_token], cache, token_offset)
     };
     cache.advance(1);
 

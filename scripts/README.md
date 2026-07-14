@@ -178,12 +178,7 @@ throughput baselines.
   `mlx_lm.benchmark`. AX rows disable the shared MLX prefix cache by default so
   prefill throughput and TTFT stay cold-prefill measurements across warmup and
   repeated trials; use `--ax-enable-prefix-cache` only for explicit
-  prefix-cache experiments. It can pass through
-  `--experimental-mlx-kv-compression turboquant-shadow` or
-  `turboquant-fused-experimental` for AX rows and records TurboQuant KV
-  compression route counters, including shadow-storage sync calls and wall time
-  plus fused decode candidate/attempt/success/fallback counters and fallback
-  reason labels, when the runtime emits them. It also supports opt-in
+  prefix-cache experiments. It also supports opt-in
   `--ax-decode-profile` rows that expose direct-decode stage counters for
   Gemma per-layer-input, QKV projection, SDPA, post-attention/FFN, and lm-head
   diagnosis; those profile rows insert eval barriers and are not headline
@@ -302,24 +297,6 @@ throughput baselines.
   GatedDelta profile runs. It checks `config.json` plus `model-manifest.json`
   before release-server build and requires a `qwen3_5`/`qwen3_next`
   linear-attention manifest with the gated-delta kernel dimensions configured.
-- `check_turboquant_quality_artifact.py`: fail-closed validator for internal
-  TurboQuant long-context quality gate artifacts. It checks model identity,
-  long-context shape, baseline/candidate provenance, candidate mode
-  `turboquant-fused-experimental`, K8/V4 route metadata schema `>= 2`,
-  fused_compressed_decode path code `2`, fused decode successes, Metal fused
-  decode successes, zero fallbacks, decode quality thresholds, recorded
-  throughput ratio, and memory-savings evidence. Decode-throughput promotion is
-  checked separately by the readiness report.
-- `check_turboquant_microbench_artifact.py`: fail-closed validator for
-  standalone fused cold-decode microbenchmark artifacts. It checks K8/V4
-  metadata, long-cold-context coverage, `two_stage_scores` quality, memory
-  savings, and speedup against the CPU reference plus `dim_parallel` when
-  present. Use `--require-dim-parallel` for D3 evidence checks where that
-  comparison is mandatory.
-- `check_turboquant_prd_completion.py`: fail-closed TurboQuant PRD completion
-  report. It joins quality/promotion readiness, fused microbench evidence, and
-  short-decode speedup artifacts so the PRD is not marked complete from code
-  presence alone.
 - `check_decode_hot_path_kernel_admission.py`: fail-closed validator for
   `.internal/analysis/decode-hot-path-kernels/*/candidate.json` manifests. It
   implements the decode hot-path PRD admission checklist for promoted/default-on
@@ -329,25 +306,11 @@ throughput baselines.
   candidate roots pass so the checker can live in CI before a candidate exists.
 - `test_check_decode_hot_path_kernel_admission.py`: unit tests for the decode
   hot-path admission validator.
-- `build_turboquant_quality_artifact.py`: compiles a TurboQuant quality artifact
-  from MLX inference-stack benchmark output and a quality-metrics JSON file,
-  then validates it through the same fail-closed gate. Full-precision shadow
-  and legacy CPU oracle rows are rejected as promotion evidence; promoted
-  runtime rows must report Metal fused decode successes.
-- `build_turboquant_decode_outputs.py`: extracts opt-in AX response
-  `output_token_ids` from MLX inference-stack benchmark artifacts into the
-  `decode_outputs` vector format consumed by TurboQuant quality metrics. Rerun
-  the benchmark with `--capture-output-token-ids` when producing real-model
-  quality evidence.
-- `run-turboquant-quality-artifact.sh`: real-model TurboQuant promotion-evidence
-  runner. It builds the release server, runs full-precision and
-  `turboquant-fused-experimental` AX rows with output-token capture, extracts
-  decode vectors, builds quality metrics, validates the quality artifact, and
-  writes a promotion-readiness report. Its default repetitions match the
-  repeated-measurement readiness contract, and its preflight rejects short
-  context/generation shapes, zero-cooldown runs, and unsupported head dims
-  before loading a model. Use `--dry-run` first to inspect inferred metadata and
-  planned commands without loading a model.
+- `check_no_turboquant_references.py`: repo-wide guard for the KV-quantization
+  runtime path retired by ADR-002 in favor of the durable tiered prefix cache.
+  It fails when references to the retired path appear outside historical
+  benchmark artifacts, historical design docs, internal notes, and release
+  notes.
 - `verify_disk_prefix_cache_cross_restart.py`: F3 M4 disk prefix-cache
   cross-restart validator. It launches a cold phase that writes `.axkv`
   snapshots, then a fresh phase that must hit L2 and reproduce the same output
@@ -438,13 +401,6 @@ throughput baselines.
   classification.
 - `test_render_mlx_p2_latency_report.py`: unit tests for the P2 latency report
   renderer.
-- `build_turboquant_quality_metrics.py`: compares baseline and candidate decode
-  output vectors and emits the max/mean absolute error plus minimum cosine
-  similarity JSON consumed by the TurboQuant quality artifact builder.
-- `test_turboquant_quality_artifact.py`: unit tests for the TurboQuant quality
-  artifact validator.
-- `test_turboquant_microbench_artifact.py`: unit tests for the TurboQuant fused
-  microbenchmark artifact validator.
 - `probe_mlx_model_support.py`: support-contract probe for downloaded MLX
   model artifacts. It reads `config.json`, safetensors index metadata, and
   local reference implementations so new architectures fail closed with named
@@ -453,31 +409,6 @@ throughput baselines.
   classification and fail-closed partial-reference behavior.
 - `check-bench-inference-stack.sh`: lightweight contract check for the MLX
   inference-stack benchmark harness. It does not load a model.
-- `check-turboquant-quality-gate.sh`: lightweight CLI pipeline check for
-  TurboQuant quality evidence. It builds synthetic quality metrics, compiles a
-  quality artifact, validates it, and proves `full_precision_shadow` candidates
-  fail promotion.
-- `check-turboquant-microbench-gate.sh`: lightweight CLI pipeline check for
-  TurboQuant fused-kernel evidence. It validates a synthetic speed-positive
-  `two_stage_scores` artifact and proves a CPU-regressed artifact fails.
-- `check_turboquant_public_docs.py`: lightweight public-docs contract check for
-  the optional TurboQuant switch, telemetry-only shadow boundary, and sync
-  timing docs.
-- `check_turboquant_promotion_readiness.py`: fail-closed readiness report for
-  TurboQuant public-support promotion. It scans local model manifests and
-  quality-gate artifacts, then reports whether public docs must remain
-  experimental. Passing quality/path evidence alone is not enough for public
-  promotion when the decode-throughput performance gate is still blocked.
-- `check_turboquant_prd_completion.py --fail-on-blockers`: final TurboQuant PRD
-  closeout gate. Use this only after recording model-family quality evidence,
-  D3 fused microbench evidence, D4 short-decode speedup evidence, and a passing
-  promotion-readiness report.
-- `cargo run -p ax-engine-microbench --release --bin turboquant-microbench -- ...`:
-  TurboQuant fused cold-decode microbenchmark. It compares the K8/V4 MLX/Metal
-  kernels against the CPU reference oracle and writes
-  `ax.turboquant_fused_decode_microbench.v1` JSON artifacts. Use `--variants`
-  to limit longer sweeps to selected kernel variants and `--hot-tokens` to
-  include shared log-sum-exp hot-tail merge evidence.
 - `reproduce-mlx-inference-benchmark.sh`: public reproduction wrapper for
   external Apple Silicon benchmark bundles. It records doctor output, command
   logs, prompt artifacts, environment metadata, and raw JSON results.

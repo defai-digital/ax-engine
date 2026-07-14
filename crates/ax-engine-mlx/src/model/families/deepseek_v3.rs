@@ -5,7 +5,6 @@ use super::super::shared::{
     glm_mla_attention_forward, moe_experts_forward, moe_router_deepseek_v3, qw,
     shared_expert_forward,
 };
-use super::super::turboquant_context::TurboQuantModelDecodeContext;
 use crate::kv_cache::MlxKVCache;
 use crate::weights::LayerWeights;
 
@@ -17,7 +16,6 @@ pub(crate) fn layer_forward(
     cache: &mut MlxKVCache,
     layer_idx: usize,
     token_offset: usize,
-    _turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
     // 1. Attention norm + MLA forward (same as GLM4MoELite).
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
