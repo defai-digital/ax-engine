@@ -2,6 +2,7 @@
   "schema": "ax.mtp_6bit_ax_acceleration_summary.v3",
   "publication_candidate": true,
   "claim_type": "exact_mtp_acceleration",
+  "engine_version": "6.8.2",
   "run_dir": "benchmarks/results/speculative/mtp-6bit/2026-07-13-exact-mtp-sampled-flappy-clean",
   "methodology": {
     "targets": [

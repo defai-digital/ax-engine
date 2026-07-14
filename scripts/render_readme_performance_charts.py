@@ -28,20 +28,40 @@ def _load_embedding_publish_gate():
     spec.loader.exec_module(module)
     return module
 
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def workspace_version() -> str:
+    cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    match = re.search(
+        r"\[workspace\.package\][\s\S]*?^version\s*=\s*\"([^\"]+)\"",
+        cargo_toml,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise RuntimeError("could not determine workspace package version")
+    return match.group(1)
+
+
+AX_ENGINE_VERSION = workspace_version()
+
 LABEL_TO_SLUG = {
     label: slug for slug, label in readme_artifacts.ARTIFACT_LABELS.items()
 }
 
 PROMPT_TOKENS = (128, 512, 2048)
-AX_ENGINE_CHART_LABEL = "AX Engine v6.8.2 (2026-07-11)"
+AX_ENGINE_CHART_LABEL = f"AX Engine v{AX_ENGINE_VERSION}"
 
 SERIES = [
     ("llama_cpp_metal", "llama.cpp b9910", "#f97316", "#c2410c"),
     ("mlx_lm", "mlx-lm 0.31.3", "#f2b705", "#9a6a00"),
     ("ax_engine_mlx", AX_ENGINE_CHART_LABEL, "#2eaf5f", "#176c37"),
-    ("ax_engine_mlx_ngram_accel", "AX+ngram v6.8.2 (2026-07-11)", "#137a3d", "#0b4f28"),
+    ("ax_engine_mlx_ngram_accel", f"AX+ngram v{AX_ENGINE_VERSION}", "#137a3d", "#0b4f28"),
 ]
-DIRECT_VERSIONS_FOOTNOTE = "llama.cpp b9910 · mlx-lm 0.31.3 · AX Engine v6.8.2 (2026-07-11)"
+DIRECT_VERSIONS_FOOTNOTE = (
+    f"llama.cpp b9910 · mlx-lm 0.31.3 · AX Engine v{AX_ENGINE_VERSION}"
+)
 
 FAMILY_SLUGS: dict[str, list[str]] = {
     "gemma4": [
@@ -1055,6 +1075,11 @@ def load_mtp_6bit_summary(summary_path: Path) -> dict[str, Any]:
         raise ChartError(
             f"MTP 6-bit summary has invalid claim_type for {schema}: {summary_path}"
         )
+    engine_version = summary.get("engine_version")
+    if not isinstance(engine_version, str) or not re.fullmatch(
+        r"\d+\.\d+\.\d+", engine_version
+    ):
+        raise ChartError(f"MTP 6-bit summary has no semantic engine_version: {summary_path}")
     rows = summary.get("rows")
     if not isinstance(rows, list) or not rows:
         raise ChartError(f"MTP 6-bit summary has no rows: {summary_path}")
@@ -1190,6 +1215,7 @@ def render_mtp_6bit_ax_acceleration_chart(
     summary_path: Path,
     *,
     approximate_diagnostic: bool = False,
+    engine_version: str | None = None,
 ) -> str:
     run_date_match = re.match(r"(\d{4}-\d{2}-\d{2})", summary_path.parent.name)
     run_date = run_date_match.group(1) if run_date_match else summary_path.parent.name
@@ -1298,7 +1324,8 @@ def render_mtp_6bit_ax_acceleration_chart(
         )
         label_y += MTP_6BIT_ROW_GAP
 
-    version_label = f"Runtime: AX Engine v6.8.2 ({run_date}); MLX 0.32.0 / mlx-lm 0.31.3."
+    version = engine_version or "unrecorded"
+    version_label = f"Runtime: AX Engine v{version} ({run_date})."
     source_label = f"Source: {summary_path.parent.as_posix()} / summary.json. " + (
         "No MTP+n-gram stacking; approximate and not publication eligible."
         if approximate_diagnostic
@@ -1336,7 +1363,7 @@ MTP_PEER_LABELS = {
 #   MTPLX         = /opt/homebrew/var/mtplx/venv-2.0.1 (pip: mtplx 2.0.1)
 #   lightning-mlx = .internal/reference/lightning-mlx v0.7.0 (git rev ec19b3d, incl. post-tag streaming fix #3)
 MTP_PEER_VERSIONS = {
-    "ax_engine": "6.8.2 (2026-07-11)",
+    "ax_engine": AX_ENGINE_VERSION,
     "mtplx": "2.0.1",
     "lightning_mlx": "0.7.0",
 }
@@ -2794,6 +2821,7 @@ def main() -> int:
             mtp_6bit_summary["rows"],
             mtp_6bit_summary_path,
             approximate_diagnostic=mtp_6bit_approximate,
+            engine_version=str(mtp_6bit_summary["engine_version"]),
         )
         if not write_chart(mtp_6bit_output_path, mtp_6bit_content, args.check):
             mismatches.append(mtp_6bit_output_path)
@@ -2821,7 +2849,7 @@ def main() -> int:
             "Source: 2026-07-12 same-session paired mlx-lm+AX "
             "(0.6B/4B/8B, ax.embedding_ingest_scale.v2); not B=1 single-call"
         ),
-        ax_label="AX Engine v6.8.2 (2026-07-12)",
+        ax_label=AX_ENGINE_CHART_LABEL,
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)

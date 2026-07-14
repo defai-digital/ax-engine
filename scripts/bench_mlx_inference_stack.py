@@ -989,6 +989,7 @@ def collect_host_metadata(
 def collect_build_metadata() -> dict[str, Any]:
     """Collect git commit and build profile for artifact provenance."""
     commit = "unknown"
+    engine_version = "unknown"
     tracked_status: list[str] = []
     try:
         commit = subprocess.check_output(
@@ -997,6 +998,17 @@ def collect_build_metadata() -> dict[str, Any]:
             stderr=subprocess.DEVNULL,
         ).strip()
     except Exception:
+        pass
+    try:
+        cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
+        match = re.search(
+            r"\[workspace\.package\][\s\S]*?^version\s*=\s*\"([^\"]+)\"",
+            cargo_toml,
+            re.MULTILINE,
+        )
+        if match is not None:
+            engine_version = match.group(1)
+    except OSError:
         pass
     try:
         status = subprocess.check_output(
@@ -1039,6 +1051,7 @@ def collect_build_metadata() -> dict[str, Any]:
     )
     metadata: dict[str, Any] = {
         "commit": commit,
+        "engine_version": engine_version,
         "build_profile": "release",
         "server_binary": str(AX_ENGINE_SERVER),
         "git_tracked_dirty": bool(tracked_status),

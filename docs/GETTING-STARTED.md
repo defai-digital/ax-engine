@@ -64,12 +64,12 @@ successfully while missing the top-level `ax-engine` CLI subcommands used here.
 For the Python SDK plus the top-level orchestration CLI:
 
 ```bash
-python3 -m pip install "ax-engine[download]>=6.8.2,<7"
+python3 -m pip install "ax-engine[download]>=6.9.0,<7"
 ax-engine doctor
 ```
 
 The current macOS arm64 wheel bundles `ax-engine-server` and `ax-engine-bench`
-behind the Python entrypoints. If pip cannot find `>=6.8.2` for your platform,
+behind the Python entrypoints. If pip cannot find `>=6.9.0` for your platform,
 use the source build below instead of silently accepting an older release.
 The wheel also bundles the AX and MLX Metal runtime assets used by normal
 serving. Xcode and Apple's Metal Toolchain are only required when you build from
@@ -86,7 +86,7 @@ brew info defai-digital/ax-engine/ax-engine
 brew install defai-digital/ax-engine/ax-engine
 ```
 
-Use Homebrew for this guide only when the formula reports `6.8.2` or newer.
+Use Homebrew for this guide only when the formula reports `6.9.0` or newer.
 The current formula should install `ax-engine`, `ax-engine-server`, and
 `ax-engine-bench`; older formulae may install only the lower-level tools. The
 formula also installs the `mlx` runtime dependency used by the released
@@ -226,7 +226,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install `mlx-lm` first, or install the current Python package with
-`python3 -m pip install "ax-engine[download]>=6.8.2,<7"`.
+`python3 -m pip install "ax-engine[download]>=6.9.0,<7"`.
 
 Or via the script (also uses `mlx-lm` and generates the manifest automatically):
 

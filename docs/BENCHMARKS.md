@@ -188,16 +188,15 @@ path.
 
 ## MLX Model-Inference Comparison
 
-### MLX runtime pin (0.31.2)
+### MLX runtime admission
 
 Both AX Engine's native route and the `mlx_lm` reference run on the machine's
-installed MLX, and both sides of every comparison must use the same MLX build.
-The benchmark host pins **MLX 0.31.2**: MLX 0.32.0 loses the M5-class
-neural-accelerator GEMM path, dropping matrix–matrix throughput from ~56–61 to
-~15 TFLOP/s and cutting prompt prefill 2.8–3.5x for every MLX-based engine
-(decode, which is matrix–vector bound, is unaffected — which is how the
-regression can hide behind healthy decode numbers). Never mix prefill or TTFT
-rows across MLX versions.
+installed MLX, and both sides of every comparison must resolve the same MLX
+build. The benchmark host currently uses **MLX 0.31.2** because the affected
+Homebrew 0.32.0 bottle and source builds targeting macOS below 26.2 omit the
+M5 neural-accelerator GEMM path. The PyPI MLX 0.32.0 wheel is not affected by
+that packaging defect. Never mix prefill or TTFT rows across different resolved
+`libmlx` builds, even if their package version matches.
 
 Minimal check before benchmarking after any MLX upgrade (expects roughly
 56 TFLOP/s on an M5 Max at these shapes; ~15 TFLOP/s means the fast GEMM path

@@ -311,7 +311,7 @@ mod tests {
             schema_version: String::from(BATCHED_DECODE_CERTIFICATION_SCHEMA),
             model_family: String::from("qwen3"),
             artifact_fingerprint_sha256: String::from("artifact"),
-            engine_version: String::from("6.8.2"),
+            engine_version: String::from("6.9.0"),
             mlx_version: String::from("0.29.3"),
             device_architecture: String::from("applegpu_test"),
             runtime_contract: String::from(BATCHED_DECODE_RUNTIME_CONTRACT),

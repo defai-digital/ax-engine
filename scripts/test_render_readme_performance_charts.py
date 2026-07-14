@@ -71,6 +71,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             "schema": charts.MTP_6BIT_EXACT_SCHEMA,
             "publication_candidate": True,
             "claim_type": "exact_mtp_acceleration",
+            "engine_version": "6.9.0",
             "rows": rows,
         }
 

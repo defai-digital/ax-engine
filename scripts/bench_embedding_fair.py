@@ -19,6 +19,7 @@ import json
 import math
 import os
 import platform
+import re
 import statistics
 import subprocess
 import sys
@@ -562,6 +563,16 @@ def git_commit() -> str | None:
 def collect_build_metadata() -> dict[str, Any]:
     """Git commit + dirty flag so artifacts identify the measured binary tree."""
     commit = git_commit() or "unknown"
+    try:
+        cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
+        version_match = re.search(
+            r"\[workspace\.package\][\s\S]*?^version\s*=\s*\"([^\"]+)\"",
+            cargo_toml,
+            re.MULTILINE,
+        )
+        engine_version = version_match.group(1) if version_match else "unknown"
+    except OSError:
+        engine_version = "unknown"
     tracked_status: list[str] = []
     try:
         status = subprocess.check_output(
@@ -582,6 +593,7 @@ def collect_build_metadata() -> dict[str, Any]:
         pass
     return {
         "commit": commit,
+        "engine_version": engine_version,
         "git_tracked_dirty": bool(tracked_status),
         "git_tracked_status": tracked_status[:50],
     }

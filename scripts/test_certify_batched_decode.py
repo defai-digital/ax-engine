@@ -29,7 +29,7 @@ class CertifyBatchedDecodeTests(unittest.TestCase):
             "schema_version": "ax.mlx.batched_decode_certification.v1",
             "model_family": "qwen3",
             "artifact_fingerprint_sha256": "artifact",
-            "engine_version": "6.8.2",
+            "engine_version": "6.9.0",
             "mlx_version": "0.29.3",
             "device_architecture": "applegpu_test",
             "runtime_contract": "ax.mlx.batched_decode.runtime.v2",

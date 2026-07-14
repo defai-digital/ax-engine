@@ -28,14 +28,29 @@ import argparse
 import html
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def workspace_version() -> str:
+    cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    match = re.search(
+        r"\[workspace\.package\][\s\S]*?^version\s*=\s*\"([^\"]+)\"",
+        cargo_toml,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise RuntimeError("could not determine workspace package version")
+    return match.group(1)
+
+
 FONT = "Inter,Segoe UI,Arial,sans-serif"
 RED = "#dc2626"
 PROMPT_TOKENS = (128, 512, 2048)
-AX_ENGINE_VERSION = "v6.8.2 (2026-07-11)"
+AX_ENGINE_VERSION = f"v{workspace_version()}"
 LLAMA_CPP_VERSION = "b9820"
 
 # (engine key in artifact, legend label, fill, stroke) — palette matches the

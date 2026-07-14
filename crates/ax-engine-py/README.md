@@ -12,7 +12,7 @@ commands shown below.
 ### Python (pip)
 
 ```bash
-python3 -m pip install "ax-engine[download]>=6.8.2,<7"
+python3 -m pip install "ax-engine[download]>=6.9.0,<7"
 ```
 
 Requires macOS 26+, Apple Silicon (M2 Max or newer), Python 3.10+.
@@ -56,8 +56,8 @@ Then point any OpenAI client at `http://127.0.0.1:8080`.
 Install the OpenAI shim or image/audio helpers with the matching extra:
 
 ```bash
-python3 -m pip install "ax-engine[openai]>=6.8.2,<7"
-python3 -m pip install "ax-engine[multimodal]>=6.8.2,<7"
+python3 -m pip install "ax-engine[openai]>=6.9.0,<7"
+python3 -m pip install "ax-engine[multimodal]>=6.9.0,<7"
 ```
 
 ## Requirements

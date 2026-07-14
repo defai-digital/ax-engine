@@ -106,6 +106,18 @@ SUPPORTED_TARGETS = (
 TARGETS_BY_KEY = {target.key: target for target in SUPPORTED_TARGETS}
 
 
+def workspace_version() -> str:
+    cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    match = re.search(
+        r"\[workspace\.package\][\s\S]*?^version\s*=\s*\"([^\"]+)\"",
+        cargo_toml,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ValueError("could not determine workspace package version")
+    return match.group(1)
+
+
 def existing_artifact_ok(path: Path) -> bool:
     if not path.is_file():
         return False
@@ -512,6 +524,7 @@ def build_summary(
             if args.approximate_speed_ceiling
             else "exact_mtp_acceleration"
         ),
+        "engine_version": workspace_version(),
         "run_dir": str(output_dir.relative_to(REPO_ROOT)),
         "methodology": {
             "targets": [target.key for target in targets],
@@ -653,6 +666,11 @@ def validate_readme_publication_summary(summary: dict[str, Any]) -> None:
         raise ValueError("README update requires a publication-candidate MTP summary")
     if summary.get("claim_type") != "exact_mtp_acceleration":
         raise ValueError("README update requires an exact MTP acceleration claim")
+    engine_version = summary.get("engine_version")
+    if not isinstance(engine_version, str) or not re.fullmatch(
+        r"\d+\.\d+\.\d+", engine_version
+    ):
+        raise ValueError("README update requires a semantic engine_version")
 
     methodology = summary.get("methodology")
     if not isinstance(methodology, dict):
@@ -734,10 +752,11 @@ def render_readme_section(summary: dict[str, Any]) -> str:
     date_match = re.search(r"(?:^|/)(\d{4}-\d{2}-\d{2})", run_dir)
     assert date_match is not None
     run_date = date_match.group(1)
+    engine_version = summary["engine_version"]
     min_speedup = min(float(row["ax_mtp_speedup_x"]) for row in rows)
     max_speedup = max(float(row["ax_mtp_speedup_x"]) for row in rows)
     lines = [
-        f"#### AX Engine 6-bit exact sampled-MTP acceleration ({run_date})",
+        f"#### AX Engine v{engine_version} 6-bit exact sampled-MTP acceleration ({run_date})",
         "",
         "This AX Engine-only matrix compares each prepared 6-bit `download-mtp`",
         "package with MTP disabled and enabled. The enabled route uses",
@@ -750,7 +769,7 @@ def render_readme_section(summary: dict[str, Any]) -> str:
         "steps, and zero n-gram accepted, proposed, submitted, or hit-step",
         "telemetry.",
         "",
-        '<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">',
+        f'<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine v{engine_version} 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">',
         "",
         *table_lines(rows, approximate_diagnostic=False),
         "",
@@ -770,9 +789,12 @@ def render_readme_section(summary: dict[str, Any]) -> str:
 def update_readme(readme: Path, summary: dict[str, Any]) -> None:
     section = render_readme_section(summary)
     text = readme.read_text()
-    section_start = text.find("#### AX Engine 6-bit")
-    if section_start < 0:
+    section_match = re.search(
+        r"^#### AX Engine(?: v\d+\.\d+\.\d+)? 6-bit", text, re.MULTILINE
+    )
+    if section_match is None:
         raise ValueError("README has no AX Engine 6-bit MTP section")
+    section_start = section_match.start()
     section_end = text.find(
         "#### Qwen3.6 MTP peer decode comparison",
         section_start,

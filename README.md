@@ -95,7 +95,7 @@ for end users.
 
 ```bash
 python3 -m pip install --upgrade pip
-python3 -m pip install -U "ax-engine[download]>=6.8.2,<7"
+python3 -m pip install -U "ax-engine[download]>=6.9.0,<7"
 ax-engine doctor
 ```
 
@@ -289,27 +289,25 @@ point. Use the linked docs when you need full methodology, raw artifact review,
 or reproduction commands.
 
 > [!IMPORTANT]
-> **MLX runtime pin: AX Engine runs on MLX `0.31.2`, not `0.32.0`.** MLX
-> 0.32.0 loses the M5-class neural-accelerator GEMM path: matrix–matrix
-> throughput drops from ~56–61 to ~15 TFLOP/s (fp16 GEMM and quantized matmul
-> alike), which cuts prompt prefill throughput 2.8–3.5x and inflates TTFT for
-> *every* MLX-based engine — `mlx_lm` regresses identically — while decode
-> (matrix–vector bound) is unaffected. All performance rows below therefore
-> run both AX Engine and the `mlx_lm` reference on the same pinned MLX
-> `0.31.2`. Prefill and TTFT numbers measured on MLX 0.32.0 are not
-> comparable to these tables. Verified on Apple M5 Max / macOS 26.5.2; the
-> minimal reproduction (a `quantized_matmul` microbenchmark) is documented in
-> the benchmark methodology docs.
+> **MLX runtime admission: verify the resolved build, not only its version.**
+> A Homebrew MLX 0.32.0 bottle and source builds with a deployment target below
+> macOS 26.2 can omit the M5-class neural-accelerator GEMM path. On the affected
+> build, matrix–matrix throughput drops from ~56–61 to ~15 TFLOP/s (fp16 GEMM
+> and quantized matmul alike), cutting prefill throughput and inflating TTFT for
+> every MLX-based engine; PyPI's MLX 0.32.0 wheel is not affected by that
+> packaging defect. Each comparison must use the same resolved `libmlx` on both
+> sides and pass the documented `quantized_matmul` admission check. The current
+> v6.9.0 sweep uses the known-good local MLX 0.31.2 build until an admitted 0.32
+> build is available.
 
-**Benchmarking session baseline (12-Jul-2026):** AX Engine benchmark rows use
-AX Engine `v6.8.2`. Direct-mode peer benchmarking is limited to the existing
+**Benchmarking session baseline (14-Jul-2026):** New AX Engine benchmark rows
+use AX Engine `v6.9.0`. Direct-mode peer benchmarking is limited to the existing
 local `llama.cpp` and `mlx-lm` versions: `llama.cpp` `b9910` / `ggml` `0.15.3`
 for GGUF Metal reference rows and `mlx-lm` `0.31.3` for MLX reference rows.
 MTP peer benchmarking uses the current local MTPLX release, `MTPLX 2.0.1`.
-The 11-Jul direct high-water composite is retained below as a collapsed
-historical audit, not a current headline matrix. The 12-Jul AX-only direct
-validation is linked as a diagnostic because it used one warmup and three
-measured repetitions; neither set establishes a current-head peer claim.
+The v6.8.2 direct high-water composite is retained below as a collapsed
+historical audit, not a current headline matrix. v6.9.0 headline tables and
+charts are regenerated only from complete 2-warmup/5-measurement sweeps.
 
 Performance results are grouped by **Session mode**. Read each mode as a
 separate benchmark session with its own route, workload shape, and headline
@@ -359,7 +357,7 @@ Install with the download extra, prepare a target, then run the serve command
 printed by the CLI.
 
 ```bash
-python3 -m pip install -U "ax-engine[download]>=6.8.2,<7"
+python3 -m pip install -U "ax-engine[download]>=6.9.0,<7"
 ax-engine download-mtp gemma-4-12b-4bit
 ```
 
@@ -432,7 +430,7 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### AX Engine 6-bit exact sampled-MTP acceleration (2026-07-13)
+#### AX Engine v6.8.2 6-bit exact sampled-MTP acceleration (2026-07-13)
 
 This AX Engine-only matrix compares each prepared 6-bit `download-mtp`
 package with MTP disabled and enabled. The enabled route uses
@@ -445,7 +443,7 @@ Every row has 100% MTP step coverage, zero direct-fallback prompts or
 steps, and zero n-gram accepted, proposed, submitted, or hit-step
 telemetry.
 
-<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">
+<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine v6.8.2 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">
 
 | Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |
 |---|---|---:|---:|---:|---:|---:|---:|
