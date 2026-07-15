@@ -1,9 +1,9 @@
 # AX Engine
 
-AX Engine is a Mac-first LLM inference runtime for Apple Silicon. For
-direct-support Gemma, Qwen, and GLM families it owns the MLX graph path,
-KV/runtime behavior, local server, model packaging, and benchmark contract —
-not just a thin wrapper around `mlx_lm`.
+AX Engine is a Mac-first LLM inference runtime for Apple Silicon. Install a
+wheel, download a model, and serve OpenAI-compatible endpoints locally — with
+a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP, and
+peer-backed benchmarks against `mlx-lm`, llama.cpp, MTPLX, and lightning-mlx.
 
 **Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 Max or newer).**
 
