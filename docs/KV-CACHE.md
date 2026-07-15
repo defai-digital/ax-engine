@@ -303,7 +303,8 @@ the `.axkv` extension. Outer file format **v3** stores:
 - fixed header with flags, lengths, entry SHA-256 (key + semantic fields + payload),
   optional greedy prefill token, and producer cost metadata;
 - embedded canonical key bytes for collision detection;
-- serialized `MlxKVCache` payload **v4** (TurboQuant shadow section removed).
+- serialized `MlxKVCache` payload **v4** (drops the retired experimental
+  KV-compression shadow section).
 
 Readers fail closed. Truncation, stale version, mismatched key bytes, checksum
 failure, or missing content-derived model artifact fingerprint yields a miss.
