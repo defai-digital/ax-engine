@@ -6524,9 +6524,7 @@ impl MlxRunner {
             producer_cold_prefill_us,
             producer_serialize_us,
         ) {
-            Ok(outcome) => {
-                telemetry.record_disk_store_committed(payload_bytes, outcome.evictions)
-            }
+            Ok(outcome) => telemetry.record_disk_store_committed(payload_bytes, outcome.evictions),
             Err(e) => {
                 telemetry.record_disk_store_commit_failed();
                 tracing::warn!(

@@ -993,8 +993,7 @@ impl MlxPrefixCacheTelemetry {
     /// Drain process-level writer outcomes into this request's route telemetry.
     pub(crate) fn absorb_writer_commits(&mut self, drain: DiskWriterCommitDrain) {
         if drain.commits > 0 {
-            self.disk_store_committed =
-                self.disk_store_committed.saturating_add(drain.commits);
+            self.disk_store_committed = self.disk_store_committed.saturating_add(drain.commits);
             self.disk_inserts = self.disk_inserts.saturating_add(drain.commits);
             self.disk_insert_bytes = self.disk_insert_bytes.saturating_add(drain.bytes);
         }

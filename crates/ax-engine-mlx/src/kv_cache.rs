@@ -829,8 +829,8 @@ impl MlxKVCache {
         }
         let seq_len = read_u64_from(reader)? as usize;
         let growth_count = read_u64_from(reader)?;
-        let rope_offset =
-            usize::try_from(read_u64_from(reader)?).map_err(|_| MlxKVCacheSerializeError::BadShape(8))?;
+        let rope_offset = usize::try_from(read_u64_from(reader)?)
+            .map_err(|_| MlxKVCacheSerializeError::BadShape(8))?;
         let layer_count = read_u32_from(reader)? as usize;
         let _reserved = read_u32_from(reader)?;
 
@@ -846,9 +846,8 @@ impl MlxKVCache {
             match kind {
                 k if k == Self::LAYER_KIND_EMPTY => continue,
                 k if k == Self::LAYER_KIND_FA => {
-                    let ring_window =
-                        usize::try_from(read_u64_from(reader)?)
-                            .map_err(|_| MlxKVCacheSerializeError::BadShape(8))?;
+                    let ring_window = usize::try_from(read_u64_from(reader)?)
+                        .map_err(|_| MlxKVCacheSerializeError::BadShape(8))?;
                     let k_arr = Self::read_tensor_from_reader(reader)?;
                     let v_arr = Self::read_tensor_from_reader(reader)?;
                     let shape = k_arr.shape();

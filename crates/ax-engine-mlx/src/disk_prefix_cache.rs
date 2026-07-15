@@ -7,9 +7,9 @@
 //! while readers remain lock-free.
 //!
 //! What is implemented here:
-//!   - Outer framing: magic, version, flags, lengths, entry SHA-256 over key
-//!     + semantic header fields + payload, optional prefill token, producer
-//!     cost metadata, embedded canonical key, and KV payload bytes.
+//!   - Outer framing: magic, version, flags, lengths, entry SHA-256 over
+//!     key + semantic header fields + payload, optional prefill token,
+//!     producer cost metadata, embedded canonical key, and KV payload bytes.
 //!   - Atomic-rename writes (temp file, fsync, rename, directory sync).
 //!   - Streaming outer read with entry checksum; native restore path
 //!     deserializes tensors directly from the file without a second full
