@@ -44,11 +44,19 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"gemma-4-12b-it","messages":[{"role":"user","content":"Say hello in one sentence."}],"max_tokens":64}'
 ```
 
-Interactive UI (models, downloads, chat):
+Interactive UI (models, downloads, serve, chat):
 
 ```bash
 ax-engine tui
 ```
+
+<p align="center">
+  <img
+    src="docs/assets/ax-engine-tui-home.png"
+    width="720"
+    alt="AX Engine TUI Home: installed models, hardware fit, and quick serve actions"
+  >
+</p>
 
 Serve a direct model in one command:
 
