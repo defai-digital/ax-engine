@@ -1,0 +1,549 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "AX 的 Agentic 定位：從推論引擎走向 Agent-aware 基礎設施",
+    "description": "針對 AX Engine 與 AX Serving 的 agentic 市場定位、產品邊界、利弊、路線選擇與 12 個月下注建議。",
+    "generatedAt": "2026-07-14T07:08:28Z",
+    "charts": [
+      {
+        "id": "multi_turn_ttft",
+        "title": "支援實體 prefix snapshot 的多輪 TTFT",
+        "subtitle": "AX Engine 文件中的固定本機基準；數值僅代表這些模型與測試條件。",
+        "type": "bar",
+        "dataset": "multi_turn_ttft",
+        "sourceId": "ax_engine_long_context",
+        "encodings": {
+          "x": {
+            "field": "model",
+            "type": "nominal",
+            "label": "模型"
+          },
+          "y": {
+            "field": "ttft_seconds",
+            "type": "quantitative",
+            "label": "TTFT（秒）",
+            "format": "number"
+          },
+          "color": {
+            "field": "turn_stage",
+            "type": "nominal",
+            "label": "輪次"
+          },
+          "tooltip": [
+            {
+              "field": "speedup_x",
+              "type": "quantitative",
+              "label": "首輪到末輪改善倍數",
+              "format": "number"
+            },
+            {
+              "field": "reduction_pct",
+              "type": "quantitative",
+              "label": "TTFT 降幅",
+              "format": "percent"
+            },
+            {
+              "field": "reused_tokens",
+              "type": "quantitative",
+              "label": "重用 tokens",
+              "format": "number"
+            }
+          ]
+        },
+        "yAxisTitle": "TTFT（秒）",
+        "valueFormat": "number",
+        "layout": "full"
+      }
+    ],
+    "tables": [
+      {
+        "id": "portfolio_roles",
+        "title": "建議的三層責任邊界",
+        "subtitle": "Agent-aware 表示理解 workload 與 session 訊號，不代表執行工具或擁有 workflow。",
+        "dataset": "portfolio_roles",
+        "sourceId": "portfolio_roles_assessment",
+        "defaultSort": {
+          "field": "layer_order",
+          "direction": "asc"
+        },
+        "columns": [
+          {
+            "field": "layer_order",
+            "label": "序",
+            "type": "number"
+          },
+          {
+            "field": "layer",
+            "label": "產品層",
+            "type": "text"
+          },
+          {
+            "field": "positioning",
+            "label": "建議定位",
+            "type": "text"
+          },
+          {
+            "field": "owns",
+            "label": "應擁有",
+            "type": "text"
+          },
+          {
+            "field": "does_not_own",
+            "label": "不應擁有",
+            "type": "text"
+          },
+          {
+            "field": "next_move",
+            "label": "下一個關鍵能力",
+            "type": "text"
+          }
+        ],
+        "layout": "full"
+      },
+      {
+        "id": "strategy_options",
+        "title": "三條產品路線的加權比較",
+        "subtitle": "5 分制；權重：技術契合 25%、差異化 20%、上市速度 15%、市場拉力 20%、可防禦性 10%、執行風險 10%（高分代表低風險）。",
+        "dataset": "strategy_options",
+        "sourceId": "strategy_options_assessment",
+        "defaultSort": {
+          "field": "weighted_score",
+          "direction": "desc"
+        },
+        "columns": [
+          {
+            "field": "option",
+            "label": "路線",
+            "type": "text"
+          },
+          {
+            "field": "weighted_score",
+            "label": "加權分數 / 5",
+            "format": "number"
+          },
+          {
+            "field": "strongest_upside",
+            "label": "最大優點",
+            "type": "text"
+          },
+          {
+            "field": "biggest_risk",
+            "label": "最大風險",
+            "type": "text"
+          },
+          {
+            "field": "decision",
+            "label": "判斷",
+            "type": "text"
+          }
+        ],
+        "layout": "full"
+      }
+    ],
+    "sources": [
+      {
+        "id": "ax_engine_readme",
+        "label": "AX Engine README，commit 98b9bf1a",
+        "href": "https://github.com/defai-digital/ax-engine/blob/98b9bf1a3a1325406c77d07f7c12c6fc674ce61b/README.md"
+      },
+      {
+        "id": "ax_engine_architecture",
+        "label": "AX Engine Architecture，commit 98b9bf1a",
+        "href": "https://github.com/defai-digital/ax-engine/blob/98b9bf1a3a1325406c77d07f7c12c6fc674ce61b/docs/ARCHITECTURE.md"
+      },
+      {
+        "id": "ax_engine_api",
+        "label": "AX Engine API Compatibility，commit 98b9bf1a",
+        "href": "https://github.com/defai-digital/ax-engine/blob/98b9bf1a3a1325406c77d07f7c12c6fc674ce61b/docs/API-COMPATIBILITY.md"
+      },
+      {
+        "id": "ax_engine_long_context",
+        "label": "AX Engine Long Context 與 prefix reuse 基準，commit 98b9bf1a",
+        "href": "https://github.com/defai-digital/ax-engine/blob/98b9bf1a3a1325406c77d07f7c12c6fc674ce61b/docs/LONG-CONTEXT.md",
+        "query": {
+          "engine": "duckdb",
+          "language": "sql",
+          "sql": "SELECT model, turn_stage, ttft_seconds, prefix_hits, reused_tokens, speedup_x, reduction_pct FROM (VALUES ('Qwen3.5', '首輪', 0.690, 10, 18496, 8.96, 0.888), ('Qwen3.5', '第 11 輪', 0.077, 10, 18496, 8.96, 0.888), ('Qwen3.6', '首輪', 0.633, 10, 18496, 5.81, 0.828), ('Qwen3.6', '第 11 輪', 0.109, 10, 18496, 5.81, 0.828), ('Gemma4 E2B', '首輪', 0.235, 10, 18784, 6.35, 0.843), ('Gemma4 E2B', '第 11 輪', 0.037, 10, 18784, 6.35, 0.843)) AS benchmark(model, turn_stage, ttft_seconds, prefix_hits, reused_tokens, speedup_x, reduction_pct)",
+          "description": "將 AX Engine LONG-CONTEXT.md 中支援 physical prefix snapshot 的三組首輪／末輪 TTFT benchmark 轉為 tidy rows；改善倍數與降幅由文件數值計算後四捨五入。",
+          "url": "https://github.com/defai-digital/ax-engine/blob/98b9bf1a3a1325406c77d07f7c12c6fc674ce61b/docs/LONG-CONTEXT.md",
+          "executed_at": "2026-07-14T06:59:18Z",
+          "filters": [
+            "只納入文件中 physical prefix snapshot hits = 10 的模型",
+            "排除沒有 prefix hit 的 GLM4.7"
+          ],
+          "metric_definitions": [
+            "TTFT：文件報告的 time to first token，單位為秒",
+            "speedup_x：首輪 TTFT 除以第 11 輪 TTFT",
+            "reduction_pct：1 減去第 11 輪 TTFT 除以首輪 TTFT"
+          ]
+        }
+      },
+      {
+        "id": "ax_engine_server",
+        "label": "AX Engine Server contract，commit 98b9bf1a",
+        "href": "https://github.com/defai-digital/ax-engine/blob/98b9bf1a3a1325406c77d07f7c12c6fc674ce61b/docs/SERVER.md"
+      },
+      {
+        "id": "ax_serving_readme",
+        "label": "AX Serving README，commit 7d3636ee",
+        "href": "https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/README.md"
+      },
+      {
+        "id": "ax_serving_positioning",
+        "label": "AX Serving market positioning，commit 7d3636ee",
+        "href": "https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/docs/market-positioning.md"
+      },
+      {
+        "id": "ax_serving_contract",
+        "label": "AX Fabric runtime contract，commit 7d3636ee",
+        "href": "https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/docs/contracts/ax-fabric-runtime-contract.md"
+      },
+      {
+        "id": "ax_serving_tuning",
+        "label": "AX Serving service tuning 與 production gates，commit 7d3636ee",
+        "href": "https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/docs/perf/service-tuning.md"
+      },
+      {
+        "id": "ax_serving_inventory",
+        "label": "AX Serving runtime responsibility inventory，commit 7d3636ee",
+        "href": "https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/docs/contracts/ax-serving-runtime-responsibility-inventory.md"
+      },
+      {
+        "id": "ax_serving_deployment_prd",
+        "label": "AX Serving CPU-only container deployment PRD，commit 7d3636ee",
+        "href": "https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/.internal/prd/PRD-CPU-ONLY-CONTAINER-DEPLOYMENT.md"
+      },
+      {
+        "id": "ax_serving_helm",
+        "label": "AX Serving first-party Helm chart，commit 7d3636ee",
+        "href": "https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/deploy/helm/ax-serving/README.md"
+      },
+      {
+        "id": "ax_serving_compose",
+        "label": "AX Serving Docker Compose evaluation stack，commit 7d3636ee",
+        "href": "https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/deploy/compose/README.md"
+      },
+      {
+        "id": "ax_serving_ci_run",
+        "label": "AX Serving main CI run 29312964367，2026-07-14",
+        "href": "https://github.com/defai-digital/ax-serving/actions/runs/29312964367"
+      },
+      {
+        "id": "mckinsey_ai_2025",
+        "label": "McKinsey — The State of AI 2025",
+        "href": "https://www.mckinsey.com/capabilities/quantumblack/our-insights/the-state-of-ai"
+      },
+      {
+        "id": "gartner_agentic_risk",
+        "label": "Gartner — Agentic AI project cancellation forecast",
+        "href": "https://www.gartner.com/en/newsroom/press-releases/2025-06-25-gartner-predicts-over-40-percent-of-agentic-ai-projects-will-be-canceled-by-end-of-2027"
+      },
+      {
+        "id": "aaif",
+        "label": "Linux Foundation — Agentic AI Foundation",
+        "href": "https://www.linuxfoundation.org/press/linux-foundation-announces-the-formation-of-the-agentic-ai-foundation"
+      },
+      {
+        "id": "nvidia_agent_aware",
+        "label": "NVIDIA Dynamo — Agent-aware serving",
+        "href": "https://docs.dynamo.nvidia.com/dynamo/dev/user-guides/agents"
+      },
+      {
+        "id": "nvidia_agentic_inference",
+        "label": "NVIDIA Dynamo — Full-stack agentic inference",
+        "href": "https://docs.nvidia.com/dynamo/dev/digest/agentic-inference"
+      },
+      {
+        "id": "autellix",
+        "label": "Autellix — Program-aware LLM serving for agents",
+        "href": "https://arxiv.org/abs/2502.13965"
+      },
+      {
+        "id": "vllm_docs",
+        "label": "vLLM documentation",
+        "href": "https://docs.vllm.ai/en/latest/"
+      },
+      {
+        "id": "vllm_session_routing",
+        "label": "vLLM — Session-Aware Agentic Routing",
+        "href": "https://vllm-project.github.io/2026/06/02/session-aware-agentic-routing.html"
+      },
+      {
+        "id": "aws_agentcore",
+        "label": "AWS — Amazon Bedrock AgentCore GA",
+        "href": "https://aws.amazon.com/about-aws/whats-new/2025/10/amazon-bedrock-agentcore-available/"
+      },
+      {
+        "id": "openai_agents_sdk",
+        "label": "OpenAI — The next evolution of the Agents SDK",
+        "href": "https://openai.com/index/the-next-evolution-of-the-agents-sdk/"
+      },
+      {
+        "id": "owasp_agentic",
+        "label": "OWASP Top 10 for Agentic Applications 2026",
+        "href": "https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/"
+      },
+      {
+        "id": "apple_foundation_models",
+        "label": "Apple Foundation Models framework",
+        "href": "https://developer.apple.com/documentation/FoundationModels"
+      },
+      {
+        "id": "llama_cpp_server",
+        "label": "llama.cpp server documentation",
+        "href": "https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"
+      },
+      {
+        "id": "lmstudio_developer",
+        "label": "LM Studio developer documentation",
+        "href": "https://lmstudio.ai/docs/developer"
+      },
+      {
+        "id": "docker_model_runner",
+        "label": "Docker Model Runner documentation",
+        "href": "https://docs.docker.com/ai/model-runner/"
+      },
+      {
+        "id": "portfolio_roles_assessment",
+        "label": "本報告的產品責任邊界評估",
+        "query": {
+          "engine": "duckdb",
+          "language": "sql",
+          "sql": "SELECT layer_order, layer, positioning, owns, does_not_own, next_move FROM (VALUES (1, 'AX Engine', 'Apple Silicon 上的 agent-aware inference runtime', 'tokenization、模板、模型執行、KV／prefix lifecycle、runtime scheduler、structured generation、tool-call parsing、runtime telemetry', 'planner、工具執行、MCP client、權限、網路副作用、durable workflow memory', 'session cache pin／TTL、constrained schema、增量 tool streaming、workload-aware scheduling'), (2, 'AX Serving', '私有異質 fleet 的 agent-aware inference fabric／control plane', 'auth、tenant admission、session affinity、endpoint selection、deployment identity、safe failover、drain、fleet observability', 'token generation、KV bytes、模型內 scheduler、agent planner、工具與 sandbox', 'Agent Session Contract、session-aware routing／lock、capability negotiation、agent trace replay'), (3, 'External agent harness', '可替換的 agent control／application layer', 'goals、planning、tools／MCP、approvals、sandbox、identity、long-term memory、checkpoint 與 workflow', '底層 KV 配置、batching、speculation、fleet health 與 runtime failover', '提供 reference adapters 與 conformance traces，而非內嵌到 AX')) AS roles(layer_order, layer, positioning, owns, does_not_own, next_move)",
+          "description": "依 AX Engine 與 AX Serving 的現有 architecture／responsibility 文件，加上 agent harness 市場慣例，整理建議的三層責任邊界。",
+          "executed_at": "2026-07-14T06:59:18Z",
+          "metric_definitions": [
+            "此表是規範性產品建議，不是實測資料"
+          ]
+        }
+      },
+      {
+        "id": "strategy_options_assessment",
+        "label": "本報告的加權策略路線評估",
+        "query": {
+          "engine": "duckdb",
+          "language": "sql",
+          "sql": "SELECT option, weighted_score, strongest_upside, biggest_risk, decision FROM (VALUES ('B. Agent-aware inference stack', 4.45, '同時放大 Engine 的 session/KV 優勢與 Serving 的 routing/control-plane 優勢', '跨 runtime contract 與可攜狀態語意複雜，必須以 capability-gated 方式推進', '建議主路線'), ('A. 純 inference engine + 通用 gateway', 3.70, '範圍最清楚、上市速度最快、執行風險最低', 'agent 相關能力成為零散功能，難形成 portfolio 差異化', '可保留為底層技術描述，不宜作唯一市場定位'), ('C. 完整 agent runtime／platform', 2.25, '端到端故事直觀，能提供完整 demo', 'scope、安全、可靠性與競爭急劇擴張，稀釋現有核心', '目前不建議')) AS options(option, weighted_score, strongest_upside, biggest_risk, decision)",
+          "description": "以已核對的產品能力、競品功能、採用趨勢與執行風險，按技術契合、差異化、上市速度、市場拉力、可防禦性與執行風險加權評分。",
+          "executed_at": "2026-07-14T06:59:18Z"
+        }
+      }
+    ],
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# AX 的 Agentic 定位：從推論引擎走向 Agent-aware 基礎設施"
+      },
+      {
+        "id": "executive_summary",
+        "type": "markdown",
+        "body": "## Executive Summary（執行摘要）\n\n- **應該重新定位，但不要變成完整的 agent runtime／framework。** 最佳路線是把產品組合定位成 **private agentic inference infrastructure**：AX Engine 是 Apple Silicon 上的 **agent-aware inference runtime**；AX Serving 是跨 AX Engine、vLLM、SGLang 的 **agent-aware inference fabric／fleet control plane**。\n\n- **真正的產品下注是共享的 Agent Session Contract，而不是再加一個 tools API。** Contract 應攜帶穩定、租戶隔離的 session identity、workload class、priority、expected output、cache retention／tool-wait hint 與 trace lineage。Engine 用它管理 KV、排程、結構化輸出；Serving 用它做 session-aware routing、admission、failover 與觀測。\n\n- **外部 agent harness 繼續擁有 planner、工具執行、MCP、權限、sandbox、長期記憶與 durable workflow。** 若 AX 跨入這一層，會直接進入 OpenAI Agents SDK、AWS AgentCore 與大量 framework 的擁擠市場，同時承擔新的安全與可靠性責任。\n\n- **建議先做 soft reposition，再用證據決定是否 hard rebrand。** 目前判斷信心為中等：架構契合度高，但尚缺客戶需求、完整 agent trace benchmark，以及 AX Serving production certification 的證據。"
+      },
+      {
+        "id": "market_trend",
+        "type": "markdown",
+        "body": "## 市場方向：Agent 採用在升溫，但規模化仍早期\n\n**市場拉力是真實的，但 hype 明顯高於 production maturity。** [McKinsey 2025 調查](https://www.mckinsey.com/capabilities/quantumblack/our-insights/the-state-of-ai)顯示，62% 受訪組織至少正在實驗 AI agents，23% 已在某處擴大 agentic system；但任何單一職能中，規模化比例都不超過 10%。[Gartner](https://www.gartner.com/en/newsroom/press-releases/2025-06-25-gartner-predicts-over-40-percent-of-agentic-ai-projects-will-be-canceled-by-end-of-2027)則預測，到 2027 年底超過 40% 的 agentic AI 專案會因成本、價值不清與風險控制不足而取消，並特別警告「agent washing」。\n\n**標準化正在把工具連接層商品化。** Linux Foundation 成立 [Agentic AI Foundation](https://www.linuxfoundation.org/press/linux-foundation-announces-the-formation-of-the-agentic-ai-foundation)，將 MCP 等專案置於中立治理；主流本機與 serving 產品——[Apple Foundation Models](https://developer.apple.com/documentation/FoundationModels)、[llama.cpp](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)、[LM Studio](https://lmstudio.ai/docs/developer)、[Docker Model Runner](https://docs.docker.com/ai/model-runner/) 與 [vLLM](https://docs.vllm.ai/en/latest/)——都已提供不同程度的 tool calling、structured output 或 agent 整合。只把「有 tools／MCP」當定位，無法形成護城河。\n\n**推論基礎設施的競爭單位，正從單一 request 轉向 session／program。** [NVIDIA Dynamo](https://docs.dynamo.nvidia.com/dynamo/dev/user-guides/agents)明確讓 harness 保留 agent semantics，而 serving 層利用 session metadata 做 observability、priority、replay 與 cache-aware routing；[Autellix](https://arxiv.org/abs/2502.13965)研究 program-aware scheduling；[vLLM 的 session-aware routing](https://vllm-project.github.io/2026/06/02/session-aware-agentic-routing.html)則處理工具迴圈期間的 session lock、可攜狀態與 prefix-cache-aware switching。這正是 AX 最值得切入的層。"
+      },
+      {
+        "id": "why_not_full_runtime",
+        "type": "markdown",
+        "body": "## 不要把「agentic inference runtime」說成「完整 agent runtime」\n\n完整 agent runtime 在市場上的預期已包括 durable execution、checkpoint、身份與權限、工具／MCP gateway、sandbox、長期記憶和 workflow orchestration；[AWS AgentCore](https://aws.amazon.com/about-aws/whats-new/2025/10/amazon-bedrock-agentcore-available/)與 [OpenAI Agents SDK](https://openai.com/index/the-next-evolution-of-the-agents-sdk/)都在擴張這個範圍。這不只是命名差異：一旦 AX 執行工具與網路副作用，就必須處理 prompt injection、越權、供應鏈與任意程式碼執行等 [OWASP agentic security](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)風險。\n\nAX Engine 現有文件本來就寫明，工具執行、權限、網路副作用、workflow orchestration 應留在 caller 或獨立 control plane；AX Serving 也明確把 runtime token execution 與 fleet control 分開。**最佳策略不是推翻這些邊界，而是讓兩個產品更了解 agent workload。**"
+      },
+      {
+        "id": "existing_fit",
+        "type": "markdown",
+        "body": "## AX 已有的資產，和 agent workload 高度相符\n\n**AX Engine 已不只是最小的 token loop。** 現有能力包括 model-native tool calling、OpenAI／Ollama surface、request lifecycle、scheduler、KV cache、實體 prefix snapshot reuse、workload hints、telemetry，以及 coding／agentic speculation profile。AX Serving 則已具備 auth、tenant admission、priority aging、cache affinity、KV／queue 壓力感知路由、deployment identity、保守 retry／failover、drain 與 trace continuity。\n\n現有多輪基準也指出一個可驗證的 agentic wedge：在支援實體 prefix snapshot 的三個模型上，第 11 輪 TTFT 比首輪低約 82.8%–88.8%，重用了約 18.5k tokens。這不是普遍效能保證，也不代表所有模型都支援；它證明的是 **agent session reuse 已經能產生可量測價值**，值得成為產品主線而非隱藏優化。"
+      },
+      {
+        "id": "serving_current_main",
+        "type": "markdown",
+        "body": "## 實際 AX Serving main 強化了 control-plane 路線，但尚未增加 agent semantics\n\n使用指定的實際乾淨 `main`、commit `7d3636e` 重新核對後，最近四個 commit 已加入 [CPU-only gateway／runtime-agent 部署契約](https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/.internal/prd/PRD-CPU-ONLY-CONTAINER-DEPLOYMENT.md)、[第一方 Helm chart](https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/deploy/helm/ax-serving/README.md)、[Compose evaluation stack](https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/deploy/compose/README.md)、`/readyz` 與 `/routablez` 分離，以及跨完整 stream 的 drain admission。**這些變更讓 Serving 更像可部署的獨立 control plane，也使路線 B 更可信。**\n\n但搜尋目前程式與 contract，仍只有 priority、deadline、minimum context 與 opaque cache affinity，沒有穩定的 `session_id`、expected output、tool-wait／pause-resume 或 session portability contract。因此這批變更改善的是 operational chassis，不是 full agent runtime。\n\n目前也有三項需要先收斂的狀態漂移：README 仍把 `/readyz` 描述成需要 routable worker；implementation ledger 仍寫著沒有 first-party Helm、readiness 尚待拆分；而 [最新 main CI](https://github.com/defai-digital/ax-serving/actions/runs/29312964367) 因 formatting、Helm／Kubernetes YAML parse 與 Clippy 失敗。**所以建議的定位不變，但 hard rebrand 的證據門檻應保持嚴格。**"
+      },
+      {
+        "id": "ttft_chart",
+        "type": "chart",
+        "chartId": "multi_turn_ttft",
+        "layout": "full"
+      },
+      {
+        "id": "ttft_note",
+        "type": "markdown",
+        "sourceId": "ax_engine_long_context",
+        "body": "### 證據解讀\n\nQwen3.5 從 0.690 秒降至 0.077 秒（8.96×），Qwen3.6 從 0.633 秒降至 0.109 秒（5.81×），Gemma4 E2B 從 0.235 秒降至 0.037 秒（6.35×）。同一文件也顯示 GLM4.7 在該路徑沒有 prefix hit，因此對外訊息必須限定於已驗證的 model family 與 workload。"
+      },
+      {
+        "id": "portfolio_split",
+        "type": "markdown",
+        "body": "## 最佳產品架構：一個組合、三層清楚分工\n\n**產品家族可以共用一個上層故事，但每層要有精確名稱。** 建議 portfolio category 使用 **Private Agentic Inference Infrastructure**；AX Engine 對單機／開發者，AX Serving 對多 endpoint、跨 runtime、私有與混合 fleet 的平台團隊，agent harness 則保持可替換。\n\n建議英文訊息：**Run private agents across Apple Silicon and CUDA—fast, session-aware, observable, and safely routed. Bring your own agent harness.**"
+      },
+      {
+        "id": "portfolio_table",
+        "type": "table",
+        "tableId": "portfolio_roles",
+        "layout": "full"
+      },
+      {
+        "id": "options_intro",
+        "type": "markdown",
+        "body": "## 三條路線中，Agent-aware inference stack 的風險報酬最好\n\n評分不是市場規模預測，而是用目前可核對的架構與市場證據，對產品決策做相對比較。路線 B 同時重用 Engine 與 Serving 的既有資產，也避開 full agent platform 的高風險範圍。"
+      },
+      {
+        "id": "options_table",
+        "type": "table",
+        "tableId": "strategy_options",
+        "layout": "full"
+      },
+      {
+        "id": "pros_cons",
+        "type": "markdown",
+        "body": "## 各路線的利與弊\n\n### A. 維持純 inference engine／通用 gateway\n\n**優點：**範圍最清楚、執行風險最低、效能基準容易和同層競品比較。  \n**缺點：**tool calling、prefix reuse、priority、affinity 等能力會像零散功能；Engine 與 Serving 的組合價值說不清，也較難在 llama.cpp、vLLM、SGLang 等成熟專案旁建立差異。\n\n### B. Agent-aware inference stack（建議）\n\n**優點：**直接放大現有 KV、scheduler、routing、telemetry 與安全 failover；同時抓住 session-aware serving 趨勢，並用 Apple Silicon + CUDA 的私有異質 fleet 形成較窄但可信的 wedge。  \n**缺點：**需要跨 repo contract、端到端 agent trace 與 runtime-specific capability negotiation；若命名不精確，市場仍可能誤以為 AX 會執行 agent workflow。\n\n### C. 完整 agent runtime／platform\n\n**優點：**可提供更完整 demo 與單一責任窗口，表面 TAM 最大。  \n**缺點：**需要新增 planner、工具／MCP executor、sandbox、identity、memory、durability 與 policy；安全面與競爭面都急劇擴張，且直接違反目前文件的清楚邊界。這會稀釋 AX 在推論核心與 fleet control 的優勢。"
+      },
+      {
+        "id": "best_bet",
+        "type": "markdown",
+        "body": "## 最佳下注：先推出 Agent Session Contract v1\n\n這個 contract 應是跨 AX Engine、AX Serving 與外部 harness 的薄協議，不是新的 orchestration DSL。建議最小欄位：\n\n1. **Identity：**租戶隔離的 `session_id`、`run_id`、parent／branch lineage；不傳 prompt 或全域可追蹤 ID。\n2. **Workload hints：**`interactive`、`background`、`tool_resume`、`subagent`，加上 priority、deadline、minimum context 與 expected output length。\n3. **Cache lifecycle：**reuse intent、retention TTL、tool-wait／pause-resume hint，以及狀態是否可跨 worker 攜帶。\n4. **Observability：**trace continuity、time-to-first-action、time-to-next-tool-call、recomputed tokens、session cache hit、queue／KV pressure。\n5. **Capability negotiation：**只有 runtime 明確宣告支援時，Serving 才使用 session lock、cache retention 或 tool-boundary pause；不以名稱猜測等價性。\n\n**Engine 的第一批工作：**schema-constrained structured generation、tool-call parser conformance、增量 tool-call streaming、session cache pin／TTL、根據 workload hint 調整排程與 speculation。  \n**Serving 的第一批工作：**opaque session affinity、session-aware routing、非可攜狀態期間的 safe lock、agent session telemetry，以及把既有 priority／deadline／cache-affinity 收斂到同一 contract。"
+      },
+      {
+        "id": "roadmap",
+        "type": "markdown",
+        "body": "## 建議的 12 個月執行順序\n\n### 0–6 週：定位與 contract\n\n- 對外採用 portfolio 故事；Engine 用 **agent-aware inference runtime**，Serving 用 **agent-aware inference fabric／fleet control plane**。\n- 發布跨 repo Agent Session Contract v1 RFC，並保留 OpenAI-compatible fallback。\n- 先讓 main 回到綠燈，並修正文檔狀態漂移：Engine 的 structured mode 說明、Serving 的 `/readyz`／`/routablez` 定義，以及 Helm／Compose implementation status。\n- 建立 OpenAI Agents SDK、LangGraph 與至少一個 coding-agent harness 的 reference adapter／conformance test；不把 harness 內嵌到 AX。\n\n### 6–16 週：把 agent loop 變成可量測的 runtime feature\n\n- Engine 完成 schema-constrained decoding、可靠 tool streaming 與 cache retention primitives。\n- Serving 完成 session-aware routing、safe session lock、runtime capability negotiation 與 agent-specific traces。\n- 優先評估 Anthropic Messages 與 OpenAI Responses 相容層，因 coding agents 的採用價值高於再新增一套自有 agent API。\n\n### 4–9 個月：證明 program-level 優勢\n\n- 用真實或可重播的 coding、research、RAG + tools traces 測 program p95，而不只測 tokens/s。\n- 實驗 tool-boundary pause/resume、program-aware admission 與 subagent fairness；先以 capability-gated profile 發布。\n- 與 5–10 個 design partners 驗證 private Apple Silicon + CUDA fleet 是否真的是付費 wedge。\n\n### 9–12 個月：只在證據成立時 hard rebrand\n\n若 AX 在多個外部 harness 上穩定改善 time-to-next-action，且 Serving 通過 production gates，再把 agentic inference 提升為主品牌；否則維持 secondary use-case positioning。"
+      },
+      {
+        "id": "gates",
+        "type": "markdown",
+        "body": "## 建議的 go／no-go 門檻\n\n- 至少 **5 個外部 design partners**，其中至少 2 個在每週使用跨 Engine／Serving 的 agent session path。\n- 2–3 個旗艦 model families 的 tool-call 與 schema validity 達 **99% 以上**。\n- 在保留的 agent traces 上，p95 **time-to-next-action 改善至少 25%**，且 task success 不下降。\n- 支援模型在首輪後的 session prefix hit 率達 **80% 以上**，沒有 priority starvation。\n- Serving 滿足既有 production gate：同 LAN p95 added setup latency 不超過 15 ms、normalized goodput loss 低於 3%、60 分鐘 soak 無 state leak，且 failover 沒有 semantic-equivalence 違規。\n- 在客戶明確要求 integrated sandbox／memory／workflow 之前，**不擴張為 full agent platform**。"
+      },
+      {
+        "id": "further_questions",
+        "type": "markdown",
+        "body": "## Further Questions（後續要回答的問題）\n\n1. 目前最有可能付費的 ICP 是單台高記憶體 Mac 的 agent developer，還是管理 Apple Silicon + CUDA 私有 fleet 的平台團隊？兩者的採購與 onboarding 完全不同。\n2. AX Serving 的跨 runtime 會話在什麼狀態下可安全 failover？prompt 可 replay 不代表 KV、tool side effect 或 hidden state 可攜。\n3. 哪三個 agent traces 最能代表付費 workload：coding、document research、RAG + enterprise tools，還是長時背景 subagents？\n4. 「AX Fabric」是否作為 portfolio 名稱，需避免與文件中既有 contract 名稱及 `ax-runtime-agent` 這個容易和 AI agent 混淆的 process 名稱互相干擾。"
+      },
+      {
+        "id": "caveats",
+        "type": "markdown",
+        "body": "## Caveats and Assumptions（限制與假設）\n\n- 本結論是產品與市場的方向性判斷，不是營收預測；沒有使用客戶訪談、付費轉換、部署規模或成本資料。\n- AX Engine 的 TTFT 圖來自 repo 中的固定本機 benchmark，不能外推為所有模型、硬體或 production workload 的效能。\n- NVIDIA、vLLM 與 Autellix 的效能改善為各來源在其測試條件下的報告，本報告只用來證明業界研究方向，不拿來推估 AX 的改善幅度。\n- AX Serving 的實際乾淨 `main` 已核對到 commit `7d3636e`；它加入 deployment chassis，但 production certification 尚未完成，而且該 commit 的 GitHub Actions CI 仍失敗。\n- Serving 的 README、runtime contract 與 implementation ledger 在 readiness／Helm 狀態上不一致；本報告以目前程式與 commit 內容判斷「已實作」，以正式 certification artifacts 判斷「尚未可宣稱 production-ready」。\n- 因需求證據仍不足，整體建議狀態為 **可分享但附帶限制（share with caveats）**，信心為 **中等**。"
+      },
+      {
+        "id": "key_sources",
+        "type": "markdown",
+        "body": "## 關鍵來源\n\n產品證據：[AX Engine Architecture](https://github.com/defai-digital/ax-engine/blob/98b9bf1a3a1325406c77d07f7c12c6fc674ce61b/docs/ARCHITECTURE.md)、[API Compatibility](https://github.com/defai-digital/ax-engine/blob/98b9bf1a3a1325406c77d07f7c12c6fc674ce61b/docs/API-COMPATIBILITY.md)、[Long Context](https://github.com/defai-digital/ax-engine/blob/98b9bf1a3a1325406c77d07f7c12c6fc674ce61b/docs/LONG-CONTEXT.md)、[AX Serving README](https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/README.md)、[runtime contract](https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/docs/contracts/ax-fabric-runtime-contract.md)、[CPU-only deployment PRD](https://github.com/defai-digital/ax-serving/blob/7d3636eea9a5552ee9ea868fffa863b1761e02b0/.internal/prd/PRD-CPU-ONLY-CONTAINER-DEPLOYMENT.md)、[main CI snapshot](https://github.com/defai-digital/ax-serving/actions/runs/29312964367)。\n\n市場與技術：[McKinsey](https://www.mckinsey.com/capabilities/quantumblack/our-insights/the-state-of-ai)、[Gartner](https://www.gartner.com/en/newsroom/press-releases/2025-06-25-gartner-predicts-over-40-percent-of-agentic-ai-projects-will-be-canceled-by-end-of-2027)、[AAIF](https://www.linuxfoundation.org/press/linux-foundation-announces-the-formation-of-the-agentic-ai-foundation)、[NVIDIA Dynamo](https://docs.nvidia.com/dynamo/dev/digest/agentic-inference)、[Autellix](https://arxiv.org/abs/2502.13965)、[vLLM session-aware routing](https://vllm-project.github.io/2026/06/02/session-aware-agentic-routing.html)、[OWASP Agentic Top 10](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)。"
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-07-14T07:08:28Z",
+    "status": "ready",
+    "datasets": {
+      "multi_turn_ttft": [
+        {
+          "model": "Qwen3.5",
+          "turn_stage": "首輪",
+          "ttft_seconds": 0.69,
+          "prefix_hits": 10,
+          "reused_tokens": 18496,
+          "speedup_x": 8.96,
+          "reduction_pct": 0.888
+        },
+        {
+          "model": "Qwen3.5",
+          "turn_stage": "第 11 輪",
+          "ttft_seconds": 0.077,
+          "prefix_hits": 10,
+          "reused_tokens": 18496,
+          "speedup_x": 8.96,
+          "reduction_pct": 0.888
+        },
+        {
+          "model": "Qwen3.6",
+          "turn_stage": "首輪",
+          "ttft_seconds": 0.633,
+          "prefix_hits": 10,
+          "reused_tokens": 18496,
+          "speedup_x": 5.81,
+          "reduction_pct": 0.828
+        },
+        {
+          "model": "Qwen3.6",
+          "turn_stage": "第 11 輪",
+          "ttft_seconds": 0.109,
+          "prefix_hits": 10,
+          "reused_tokens": 18496,
+          "speedup_x": 5.81,
+          "reduction_pct": 0.828
+        },
+        {
+          "model": "Gemma4 E2B",
+          "turn_stage": "首輪",
+          "ttft_seconds": 0.235,
+          "prefix_hits": 10,
+          "reused_tokens": 18784,
+          "speedup_x": 6.35,
+          "reduction_pct": 0.843
+        },
+        {
+          "model": "Gemma4 E2B",
+          "turn_stage": "第 11 輪",
+          "ttft_seconds": 0.037,
+          "prefix_hits": 10,
+          "reused_tokens": 18784,
+          "speedup_x": 6.35,
+          "reduction_pct": 0.843
+        }
+      ],
+      "portfolio_roles": [
+        {
+          "layer_order": 1,
+          "layer": "AX Engine",
+          "positioning": "Apple Silicon 上的 agent-aware inference runtime",
+          "owns": "tokenization、模板、模型執行、KV／prefix lifecycle、runtime scheduler、structured generation、tool-call parsing、runtime telemetry",
+          "does_not_own": "planner、工具執行、MCP client、權限、網路副作用、durable workflow memory",
+          "next_move": "session cache pin／TTL、constrained schema、增量 tool streaming、workload-aware scheduling"
+        },
+        {
+          "layer_order": 2,
+          "layer": "AX Serving",
+          "positioning": "私有異質 fleet 的 agent-aware inference fabric／control plane",
+          "owns": "auth、tenant admission、session affinity、endpoint selection、deployment identity、safe failover、drain、fleet observability",
+          "does_not_own": "token generation、KV bytes、模型內 scheduler、agent planner、工具與 sandbox",
+          "next_move": "Agent Session Contract、session-aware routing／lock、capability negotiation、agent trace replay"
+        },
+        {
+          "layer_order": 3,
+          "layer": "External agent harness",
+          "positioning": "可替換的 agent control／application layer",
+          "owns": "goals、planning、tools／MCP、approvals、sandbox、identity、long-term memory、checkpoint 與 workflow",
+          "does_not_own": "底層 KV 配置、batching、speculation、fleet health 與 runtime failover",
+          "next_move": "提供 reference adapters 與 conformance traces，而非內嵌到 AX"
+        }
+      ],
+      "strategy_options": [
+        {
+          "option": "B. Agent-aware inference stack",
+          "weighted_score": 4.45,
+          "strongest_upside": "同時放大 Engine 的 session/KV 優勢與 Serving 的 routing/control-plane 優勢",
+          "biggest_risk": "跨 runtime contract 與可攜狀態語意複雜，必須以 capability-gated 方式推進",
+          "decision": "建議主路線"
+        },
+        {
+          "option": "A. 純 inference engine + 通用 gateway",
+          "weighted_score": 3.7,
+          "strongest_upside": "範圍最清楚、上市速度最快、執行風險最低",
+          "biggest_risk": "agent 相關能力成為零散功能，難形成 portfolio 差異化",
+          "decision": "可保留為底層技術描述，不宜作唯一市場定位"
+        },
+        {
+          "option": "C. 完整 agent runtime／platform",
+          "weighted_score": 2.25,
+          "strongest_upside": "端到端故事直觀，能提供完整 demo",
+          "biggest_risk": "scope、安全、可靠性與競爭急劇擴張，稀釋現有核心",
+          "decision": "目前不建議"
+        }
+      ]
+    }
+  },
+  "sources": []
+}
