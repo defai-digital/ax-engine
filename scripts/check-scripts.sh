@@ -160,6 +160,9 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/check_no_turboquant_references.py \
   scripts/test_check_no_turboquant_references.py \
+  scripts/check_disk_prefix_cache_promotion.py \
+  scripts/test_check_disk_prefix_cache_promotion.py \
+  scripts/run_disk_prefix_cache_promotion.py \
   scripts/probe_mlx_model_support.py \
   scripts/test_probe_mlx_model_support.py \
   scripts/diagnose_server_rss.py \
@@ -213,6 +216,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_offline_policy_search_artifact.py \
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/test_check_no_turboquant_references.py \
+  scripts/test_check_disk_prefix_cache_promotion.py \
   scripts/test_check_direct_mlx_hotpath_probe_artifact.py \
   scripts/test_check_direct_mlx_no_production_route.py \
   scripts/test_check_mlx_fastpath_env_controls.py \
@@ -246,3 +250,6 @@ bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_mla_prefix_restore_retirement.py
 "$PYTHON_BIN" scripts/render_readme_performance_charts.py --check
 "$PYTHON_BIN" scripts/check_no_turboquant_references.py
+"$PYTHON_BIN" scripts/test_check_disk_prefix_cache_promotion.py
+"$PYTHON_BIN" scripts/check_disk_prefix_cache_promotion.py --help >/dev/null
+"$PYTHON_BIN" scripts/run_disk_prefix_cache_promotion.py --help >/dev/null

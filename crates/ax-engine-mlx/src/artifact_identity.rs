@@ -9,7 +9,9 @@
 //! 1. the exact native model manifest bytes;
 //! 2. every referenced tensor filename, in sorted order;
 //! 3. each tensor's content-addressed store hash (the SHA-256 the tensor
-//!    symlink resolves to) and byte length.
+//!    symlink resolves to) and byte length;
+//! 4. optional tokenizer/template/config files present beside the manifest
+//!    that can affect token IDs or execution (content-hashed when present).
 //!
 //! The fingerprint is domain-separated per consumer so evidence formats
 //! stay independently versioned: batched-decode certification keeps its
@@ -32,6 +34,18 @@ use sha2::{Digest, Sha256};
 /// Domain string for the durable prefix cache's artifact identity
 /// (canonical key schema v3).
 pub(crate) const PREFIX_CACHE_ARTIFACT_DOMAIN: &[u8] = b"ax.mlx.prefix_cache.artifact.v1\0";
+
+/// Aux files that can change token IDs or model execution without
+/// retargeting weight tensors. Present files are content-hashed; missing
+/// files are skipped (not fail-closed).
+const AUX_IDENTITY_FILES: &[&str] = &[
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "chat_template.jinja",
+    "config.json",
+    "generation_config.json",
+    "special_tokens_map.json",
+];
 
 /// Compute the content fingerprint under a consumer-specific domain.
 /// Returns `None` when the artifact source cannot supply a stable content
@@ -66,6 +80,28 @@ pub(crate) fn artifact_fingerprint_sha256_with_domain(
         hasher.update(b"\0");
         hasher.update(byte_len.to_le_bytes());
     }
+
+    // Tokenizer / template / config content when present beside the
+    // manifest (spec §6). Sorted fixed list keeps the domain stable.
+    for name in AUX_IDENTITY_FILES {
+        let path = artifacts.root_dir().join(name);
+        let Ok(meta) = fs::metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        hasher.update(b"aux\0");
+        hasher.update(name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(b"\0");
+        hasher.update(&bytes);
+    }
+
     Some(hex_digest(&hasher.finalize()))
 }
 

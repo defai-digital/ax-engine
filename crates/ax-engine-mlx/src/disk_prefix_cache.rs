@@ -11,12 +11,14 @@
 //!     + semantic header fields + payload, optional prefill token, producer
 //!     cost metadata, embedded canonical key, and KV payload bytes.
 //!   - Atomic-rename writes (temp file, fsync, rename, directory sync).
-//!   - Streaming outer read into a single owned payload buffer with bounded
-//!     I/O chunks (inner tensor deserialize still uses the payload buffer).
+//!   - Streaming outer read with entry checksum; native restore path
+//!     deserializes tensors directly from the file without a second full
+//!     payload+tensor peak (DTPC-007).
 //!   - Content-addressed key filenames (SHA-256 of key schema v3 bytes) with
 //!     embedded-key collision checks.
 //!   - Adaptive admission, oversize rejection, owner-only permissions, and
-//!     byte/entry budgets with mtime-ordered eviction (utility ranking is P1).
+//!     byte/entry budgets with utility-aware eviction (stale first, then
+//!     lowest cold-prefill-per-byte, mtime tie-break).
 //!
 //! Explicitly out of scope for this layer:
 //!   - Network filesystems, mmap demand-paging of active attention, and
@@ -556,6 +558,18 @@ pub struct DiskReadStageTimings {
     pub bytes_read: u64,
 }
 
+/// Metadata restored with a native L2 hit (no payload buffer retained).
+pub struct DiskPrefixCacheRestored {
+    /// Native MLX cache reconstructed by streaming deserialize.
+    pub cache: crate::kv_cache::MlxKVCache,
+    /// Greedy prefill output token from the producing prefill, if present.
+    pub prefill_output_token: Option<u32>,
+    /// Producing request's measured cold-prefill wall time.
+    pub producer_cold_prefill_us: u64,
+    /// Producing request's snapshot serialization wall time.
+    pub producer_serialize_us: u64,
+}
+
 impl DiskPrefixCache {
     /// Open a disk cache rooted at `dir` with the default policy.
     /// Equivalent to [`DiskPrefixCache::with_policy`] with
@@ -690,6 +704,9 @@ impl DiskPrefixCache {
     }
 
     /// Validated lookup with per-stage timings for restore telemetry.
+    /// Materializes the full payload buffer (for tests and callers that
+    /// need opaque bytes). Prefer [`Self::get_restored_timed`] on the
+    /// request hot path.
     pub fn get_timed(
         &self,
         key_bytes: &[u8],
@@ -697,14 +714,7 @@ impl DiskPrefixCache {
         let path = self.path_for(key_bytes);
         match self.read_entry_streaming(&path, key_bytes) {
             Ok(Some(hit)) => {
-                // Best-effort recency bump so mtime-ordered eviction
-                // approximates LRU instead of FIFO-by-write-time: without
-                // this, a hot entry written early is evicted before cold
-                // entries written later.
-                let _ = fs::OpenOptions::new()
-                    .append(true)
-                    .open(&path)
-                    .and_then(|file| file.set_modified(std::time::SystemTime::now()));
+                self.touch_recency(&path);
                 Ok(Some(hit))
             }
             Ok(None) => Ok(None),
@@ -715,6 +725,38 @@ impl DiskPrefixCache {
             }
             Err(ReadEntryError::Io(e)) => Err(e.into()),
         }
+    }
+
+    /// Validated L2 hit that streams the payload into a native
+    /// [`crate::kv_cache::MlxKVCache`] without retaining a full intermediate
+    /// payload `Vec` for tensor materialization (DTPC-007 / NFR-004).
+    pub fn get_restored_timed(
+        &self,
+        key_bytes: &[u8],
+    ) -> Result<Option<(DiskPrefixCacheRestored, DiskReadStageTimings)>, DiskPrefixCacheError> {
+        let path = self.path_for(key_bytes);
+        match self.read_entry_restored(&path, key_bytes) {
+            Ok(Some(hit)) => {
+                self.touch_recency(&path);
+                Ok(Some(hit))
+            }
+            Ok(None) => Ok(None),
+            Err(ReadEntryError::NotFound) => Ok(None),
+            Err(ReadEntryError::Invalid) => {
+                self.remove_unparseable_entry(&path, key_bytes);
+                Ok(None)
+            }
+            Err(ReadEntryError::Io(e)) => Err(e.into()),
+        }
+    }
+
+    fn touch_recency(&self, path: &Path) {
+        // Best-effort recency bump so eviction approximates LRU instead of
+        // FIFO-by-write-time.
+        let _ = fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now()));
     }
 
     /// Stream one entry through a bounded chunk buffer: fixed header first
@@ -852,6 +894,136 @@ impl DiskPrefixCache {
         Ok(Some((
             DiskPrefixCacheEntry {
                 payload,
+                prefill_output_token,
+                producer_cold_prefill_us,
+                producer_serialize_us,
+            },
+            timings,
+        )))
+    }
+
+    /// Stream outer framing + payload into a native cache without holding
+    /// a full payload `Vec` while tensors are also resident.
+    fn read_entry_restored(
+        &self,
+        path: &Path,
+        expected_key: &[u8],
+    ) -> Result<Option<(DiskPrefixCacheRestored, DiskReadStageTimings)>, ReadEntryError> {
+        use std::io::{Read, Take};
+
+        let meta = match fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ReadEntryError::NotFound);
+            }
+            Err(e) => return Err(ReadEntryError::Io(e)),
+        };
+        if !meta.file_type().is_file() {
+            return Err(ReadEntryError::Invalid);
+        }
+
+        let mut file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ReadEntryError::NotFound);
+            }
+            Err(e) => return Err(ReadEntryError::Io(e)),
+        };
+
+        let mut timings = DiskReadStageTimings::default();
+        let read_started = std::time::Instant::now();
+        let mut header = [0u8; FIXED_HEADER_LEN];
+        if file.read_exact(&mut header).is_err() {
+            return Err(ReadEntryError::Invalid);
+        }
+        timings.read_wall_us = elapsed_us(read_started);
+        timings.bytes_read = FIXED_HEADER_LEN as u64;
+
+        if &header[0..4] != FILE_MAGIC {
+            return Err(ReadEntryError::Invalid);
+        }
+        let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        if version != FILE_VERSION {
+            return Err(ReadEntryError::Invalid);
+        }
+        let header_len = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+        let flags = u32::from_le_bytes(header[12..16].try_into().unwrap());
+        if flags != 0 || header_len != FIXED_HEADER_LEN {
+            return Err(ReadEntryError::Invalid);
+        }
+        let key_len = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
+        let payload_len = u64::from_le_bytes(header[20..28].try_into().unwrap());
+        let expected_hash: [u8; 32] = header[28..60].try_into().unwrap();
+        let prefill_slot = u32::from_le_bytes(header[60..64].try_into().unwrap());
+        let producer_cold_prefill_us = u64::from_le_bytes(header[64..72].try_into().unwrap());
+        let producer_serialize_us = u64::from_le_bytes(header[72..80].try_into().unwrap());
+
+        if key_len != expected_key.len() {
+            return Err(ReadEntryError::Invalid);
+        }
+        let total_len = (FIXED_HEADER_LEN as u64)
+            .checked_add(key_len as u64)
+            .and_then(|n| n.checked_add(payload_len))
+            .ok_or(ReadEntryError::Invalid)?;
+        if total_len != meta.len()
+            || payload_len > self.policy.max_entry_bytes.max(self.policy.max_bytes)
+            || payload_len > usize::MAX as u64
+        {
+            return Err(ReadEntryError::Invalid);
+        }
+
+        let read_started = std::time::Instant::now();
+        let mut embedded_key = vec![0u8; key_len];
+        if file.read_exact(&mut embedded_key).is_err() {
+            return Err(ReadEntryError::Invalid);
+        }
+        timings.read_wall_us = timings
+            .read_wall_us
+            .saturating_add(elapsed_us(read_started));
+        timings.bytes_read = timings.bytes_read.saturating_add(key_len as u64);
+        if embedded_key != expected_key {
+            return Err(ReadEntryError::Invalid);
+        }
+
+        let mut hasher = Self::entry_sha256_hasher(
+            prefill_slot,
+            producer_cold_prefill_us,
+            producer_serialize_us,
+            expected_key,
+        );
+        let mut limited: Take<&mut fs::File> = (&mut file).take(payload_len);
+        let cache = {
+            let mut hashing = HashingRead {
+                inner: &mut limited,
+                hasher: &mut hasher,
+                timings: &mut timings,
+            };
+            match crate::kv_cache::MlxKVCache::try_deserialize_from_reader(&mut hashing) {
+                Ok(cache) => cache,
+                Err(_) => return Err(ReadEntryError::Invalid),
+            }
+        };
+        // Fail closed on trailing payload bytes the deserializer did not consume.
+        if limited.limit() != 0 {
+            return Err(ReadEntryError::Invalid);
+        }
+        let checksum_started = std::time::Instant::now();
+        let digest = hasher.finalize();
+        timings.checksum_wall_us = timings
+            .checksum_wall_us
+            .saturating_add(elapsed_us(checksum_started));
+        if digest.as_slice() != expected_hash {
+            return Err(ReadEntryError::Invalid);
+        }
+
+        let prefill_output_token = if prefill_slot == PREFILL_TOKEN_NONE {
+            None
+        } else {
+            Some(prefill_slot)
+        };
+        Ok(Some((
+            DiskPrefixCacheRestored {
+                cache,
                 prefill_output_token,
                 producer_cold_prefill_us,
                 producer_serialize_us,
@@ -1074,7 +1246,14 @@ impl DiskPrefixCache {
             }
         };
 
-        entries.sort_by_key(|entry| entry.mtime);
+        // Spec §10: stale/corrupt versions first, then lowest utility
+        // (cold-prefill savings per byte), mtime as tie-break.
+        entries.sort_by(|a, b| {
+            b.stale_version
+                .cmp(&a.stale_version)
+                .then_with(|| a.utility_score().cmp(&b.utility_score()))
+                .then_with(|| a.mtime.cmp(&b.mtime))
+        });
         let mut total_bytes: u64 = entries.iter().map(|e| e.size).sum();
         let mut total_entries = entries.len();
         let mut evictions: u32 = 0;
@@ -1155,16 +1334,91 @@ impl DiskPrefixCache {
             };
             let size = metadata.len();
             let mtime = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
-            out.push(EntryStat { path, size, mtime });
+            let (producer_cold_prefill_us, stale_version) = peek_entry_utility_fields(&path);
+            out.push(EntryStat {
+                path,
+                size,
+                mtime,
+                producer_cold_prefill_us,
+                stale_version,
+            });
         }
         Ok(out)
     }
+}
+
+/// Best-effort fixed-header peek for eviction ranking. Failures yield
+/// conservative defaults (utility 0, not marked stale) so eviction still
+/// progresses under partial IO errors.
+fn peek_entry_utility_fields(path: &Path) -> (u64, bool) {
+    use std::io::Read;
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return (0, false),
+    };
+    let mut header = [0u8; FIXED_HEADER_LEN];
+    if file.read_exact(&mut header).is_err() {
+        return (0, true);
+    }
+    if &header[0..4] != FILE_MAGIC {
+        return (0, true);
+    }
+    let version = u32::from_le_bytes(header[4..8].try_into().unwrap_or([0; 4]));
+    if version != FILE_VERSION {
+        return (0, true);
+    }
+    let producer_cold_prefill_us = u64::from_le_bytes(header[64..72].try_into().unwrap_or([0; 8]));
+    (producer_cold_prefill_us, false)
 }
 
 struct EntryStat {
     path: PathBuf,
     size: u64,
     mtime: std::time::SystemTime,
+    /// Producer cold-prefill microseconds from the v3 header (0 if unknown).
+    producer_cold_prefill_us: u64,
+    /// True when the outer file version is not the current format.
+    stale_version: bool,
+}
+
+impl EntryStat {
+    /// Higher is more valuable to retain (saved recompute per stored byte).
+    fn utility_score(&self) -> u128 {
+        if self.size == 0 {
+            return 0;
+        }
+        (u128::from(self.producer_cold_prefill_us.max(1))).saturating_mul(1_000_000)
+            / u128::from(self.size)
+    }
+}
+
+/// `Read` adapter that updates the entry checksum and stage timings while
+/// the native cache deserializer consumes the payload.
+struct HashingRead<'a, R> {
+    inner: R,
+    hasher: &'a mut Sha256,
+    timings: &'a mut DiskReadStageTimings,
+}
+
+impl<R: std::io::Read> std::io::Read for HashingRead<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read_started = std::time::Instant::now();
+        let n = self.inner.read(buf)?;
+        self.timings.read_wall_us = self
+            .timings
+            .read_wall_us
+            .saturating_add(elapsed_us(read_started));
+        if n > 0 {
+            let checksum_started = std::time::Instant::now();
+            self.hasher.update(&buf[..n]);
+            self.timings.checksum_wall_us = self
+                .timings
+                .checksum_wall_us
+                .saturating_add(elapsed_us(checksum_started));
+            self.timings.bytes_read = self.timings.bytes_read.saturating_add(n as u64);
+        }
+        Ok(n)
+    }
 }
 
 struct DiskPrefixCacheLock {
@@ -2565,6 +2819,41 @@ mod tests {
         assert!(
             timings.bytes_read >= payload.len() as u64,
             "bytes_read covers header + key + payload"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn get_restored_timed_streams_native_kv_without_payload_vec() {
+        let dir = unique_tempdir("restored-native");
+        let cache = DiskPrefixCache::open(&dir).expect("open");
+        let key = test_key("m", "p", "l", 16, 4, 0x88, &[1, 2, 3, 4]);
+        let native = crate::kv_cache::MlxKVCache::new(2);
+        let payload = native.serialize_to_bytes();
+        cache
+            .insert_parts(&key, &payload, Some(7), 50_000, 1_000)
+            .expect("insert");
+        let (restored, timings) = cache
+            .get_restored_timed(&key)
+            .expect("get_restored")
+            .expect("hit");
+        assert_eq!(restored.prefill_output_token, Some(7));
+        assert_eq!(restored.producer_cold_prefill_us, 50_000);
+        assert_eq!(restored.cache.seq_len(), 0);
+        assert!(
+            timings.bytes_read >= payload.len() as u64,
+            "streamed read covers header + key + payload"
+        );
+        // Corrupt trailing payload must miss (fail closed).
+        let path = cache.path_for(&key);
+        let mut raw = fs::read(&path).expect("read");
+        if let Some(last) = raw.last_mut() {
+            *last ^= 0xff;
+        }
+        fs::write(&path, raw).expect("corrupt");
+        assert!(
+            cache.get_restored_timed(&key).expect("io").is_none(),
+            "corrupt entry is a miss"
         );
         let _ = fs::remove_dir_all(&dir);
     }

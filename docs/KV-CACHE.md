@@ -669,8 +669,9 @@ Per `crates/ax-engine-mlx/src/disk_prefix_cache.rs` (80-byte fixed header):
 
 Writes are atomic-rename (temp file, fsync, rename, directory sync). Mutating
 operations take a directory-level advisory lock; readers stay lock-free.
-Outer read stages through a bounded I/O chunk into one owned payload buffer;
-inner tensor materialization still uses that payload (not demand-paged SSD).
+The request hot path streams the payload into native tensors under the entry
+checksum (`get_restored_timed`) without retaining a full intermediate payload
+`Vec` for deserialize. Decode never demand-pages `.axkv` files.
 
 ### Payload-level validation
 

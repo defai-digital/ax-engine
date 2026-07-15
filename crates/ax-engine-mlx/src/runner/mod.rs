@@ -5977,17 +5977,19 @@ impl MlxRunner {
     }
 
     fn prefix_cache_layer_layout(&self) -> String {
-        // `model_artifacts_root` guards against a hot-swap that reuses the
-        // same `model_id` label for a different checkpoint (see the field
-        // doc comment on `MlxRunner::model_artifacts_root`): folding it in
-        // here means a swap to a different artifacts directory always
-        // misses stale L1/L2 entries instead of risking a wrong-checkpoint
-        // KV hit or a shape-mismatch panic on a coincidentally-matching
-        // architecture.
-        format!(
-            "layers={};full_attention_only;root={}",
-            self.cfg.layer_count, self.model_artifacts_root
-        )
+        // When a content-derived artifact fingerprint is available it is
+        // already in the durable L2 key (schema v3). Keep the layout class
+        // path-free so the same weights at a new path still share L1/L2.
+        // Without a fingerprint, fold in `model_artifacts_root` so a
+        // hot-swap that reuses `model_id` cannot hit wrong-checkpoint KV.
+        if self.artifact_fingerprint.is_some() {
+            format!("layers={};full_attention_only", self.cfg.layer_count)
+        } else {
+            format!(
+                "layers={};full_attention_only;root={}",
+                self.cfg.layer_count, self.model_artifacts_root
+            )
+        }
     }
 
     /// Canonical disk key (schema v3) for `key` plus the exact tokens, or
@@ -6328,55 +6330,43 @@ impl MlxRunner {
             && let Some(disk) = self.disk_prefix_cache.as_ref()
             && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, reused_tokens)
         {
-            match disk.get_timed(&key_bytes) {
-                Ok(Some((entry, read_timings))) => {
-                    let deserialize_started = Instant::now();
-                    match MlxKVCache::try_deserialize_from_bytes(&entry.payload) {
-                        Ok(restored_cache) => {
-                            let deserialize_us = u64::from(elapsed_us(deserialize_started));
-                            state.cache = restored_cache;
-                            state.prompt_prefix_tokens = reused_tokens.to_vec();
-                            // F3 M4 — the entry carries the greedy
-                            // prefill output token, so cross-restart L2
-                            // hits avoid recomputing at decode step 0
-                            // (which diverged for single-block prefixes
-                            // in the pre-fix run). When the slot is None
-                            // (older partial-prefix snapshot), decode_one
-                            // still runs as a fallback. Only a greedy,
-                            // no-repetition-penalty consumer may inherit the
-                            // stored greedy token; others resample.
-                            state.cached_prefill_output_token = entry
-                                .prefill_output_token
-                                .filter(|_| prefill_output_token_cacheable(ctx, sampling));
-                            telemetry.record_disk_hit();
-                            telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
-                            telemetry.record_disk_restore_stages(read_timings, deserialize_us);
-                            // Feed the observed restore throughput back into
-                            // the admission cost model.
-                            if let Some(writer) = self.disk_prefix_writer.as_ref() {
-                                writer.cost_model().record_restore(
-                                    read_timings.bytes_read,
-                                    read_timings
-                                        .read_wall_us
-                                        .saturating_add(read_timings.checksum_wall_us)
-                                        .saturating_add(deserialize_us),
-                                );
-                            }
-                            telemetry.reused_tokens = telemetry
-                                .reused_tokens
-                                .saturating_add(saturating_u32(reused_tokens.len()));
-                            return telemetry;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                target: "ax_engine_mlx::prefix_cache",
-                                error = %e,
-                                "disk prefix-cache payload failed to deserialize; treating as miss",
-                            );
-                            telemetry.record_disk_miss();
-                            telemetry.record_disk_fallback_recompute();
-                        }
+            match disk.get_restored_timed(&key_bytes) {
+                Ok(Some((restored, read_timings))) => {
+                    // Streaming restore materializes tensors while reading;
+                    // stage timings already include payload IO + checksum.
+                    let deserialize_us = 0u64;
+                    state.cache = restored.cache;
+                    state.prompt_prefix_tokens = reused_tokens.to_vec();
+                    // F3 M4 — the entry carries the greedy
+                    // prefill output token, so cross-restart L2
+                    // hits avoid recomputing at decode step 0
+                    // (which diverged for single-block prefixes
+                    // in the pre-fix run). When the slot is None
+                    // (older partial-prefix snapshot), decode_one
+                    // still runs as a fallback. Only a greedy,
+                    // no-repetition-penalty consumer may inherit the
+                    // stored greedy token; others resample.
+                    state.cached_prefill_output_token = restored
+                        .prefill_output_token
+                        .filter(|_| prefill_output_token_cacheable(ctx, sampling));
+                    telemetry.record_disk_hit();
+                    telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
+                    telemetry.record_disk_restore_stages(read_timings, deserialize_us);
+                    // Feed the observed restore throughput back into
+                    // the admission cost model.
+                    if let Some(writer) = self.disk_prefix_writer.as_ref() {
+                        writer.cost_model().record_restore(
+                            read_timings.bytes_read,
+                            read_timings
+                                .read_wall_us
+                                .saturating_add(read_timings.checksum_wall_us)
+                                .saturating_add(deserialize_us),
+                        );
                     }
+                    telemetry.reused_tokens = telemetry
+                        .reused_tokens
+                        .saturating_add(saturating_u32(reused_tokens.len()));
+                    return telemetry;
                 }
                 Ok(None) => {
                     telemetry.record_disk_miss();

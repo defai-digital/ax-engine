@@ -275,54 +275,37 @@ impl std::fmt::Display for MlxKVCacheSerializeError {
 
 impl std::error::Error for MlxKVCacheSerializeError {}
 
-/// Minimal positional reader over a byte slice. Used by
-/// `MlxKVCache::try_deserialize_from_bytes` so the per-field reads stay
-/// readable; the cursor refuses to advance past the end of the slice.
-struct DeserializeCursor<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+fn read_exact_from(
+    reader: &mut dyn std::io::Read,
+    buf: &mut [u8],
+) -> Result<(), MlxKVCacheSerializeError> {
+    reader
+        .read_exact(buf)
+        .map_err(|_| MlxKVCacheSerializeError::UnexpectedEof)
 }
 
-impl<'a> DeserializeCursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
+fn read_u8_from(reader: &mut dyn std::io::Read) -> Result<u8, MlxKVCacheSerializeError> {
+    let mut buf = [0u8; 1];
+    read_exact_from(reader, &mut buf)?;
+    Ok(buf[0])
+}
 
-    fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], MlxKVCacheSerializeError> {
-        let end = self
-            .pos
-            .checked_add(n)
-            .ok_or(MlxKVCacheSerializeError::UnexpectedEof)?;
-        if end > self.bytes.len() {
-            return Err(MlxKVCacheSerializeError::UnexpectedEof);
-        }
-        let out = &self.bytes[self.pos..end];
-        self.pos = end;
-        Ok(out)
-    }
+fn read_u32_from(reader: &mut dyn std::io::Read) -> Result<u32, MlxKVCacheSerializeError> {
+    let mut buf = [0u8; 4];
+    read_exact_from(reader, &mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
 
-    fn read_u8(&mut self) -> Result<u8, MlxKVCacheSerializeError> {
-        Ok(self.read_bytes(1)?[0])
-    }
+fn read_i32_from(reader: &mut dyn std::io::Read) -> Result<i32, MlxKVCacheSerializeError> {
+    let mut buf = [0u8; 4];
+    read_exact_from(reader, &mut buf)?;
+    Ok(i32::from_le_bytes(buf))
+}
 
-    fn read_u32(&mut self) -> Result<u32, MlxKVCacheSerializeError> {
-        let bytes = self.read_bytes(4)?;
-        Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
-    }
-
-    fn read_i32(&mut self) -> Result<i32, MlxKVCacheSerializeError> {
-        let bytes = self.read_bytes(4)?;
-        Ok(i32::from_le_bytes(bytes.try_into().unwrap()))
-    }
-
-    fn read_u64(&mut self) -> Result<u64, MlxKVCacheSerializeError> {
-        let bytes = self.read_bytes(8)?;
-        Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
-    }
-
-    fn read_usize(&mut self) -> Result<usize, MlxKVCacheSerializeError> {
-        usize::try_from(self.read_u64()?).map_err(|_| MlxKVCacheSerializeError::BadShape(8))
-    }
+fn read_u64_from(reader: &mut dyn std::io::Read) -> Result<u64, MlxKVCacheSerializeError> {
+    let mut buf = [0u8; 8];
+    read_exact_from(reader, &mut buf)?;
+    Ok(u64::from_le_bytes(buf))
 }
 
 /// Borrowed view of a GLM-MLA layer's cached KV state. Returned by
@@ -671,27 +654,40 @@ impl MlxKVCache {
         }
     }
 
-    fn read_tensor(
-        cursor: &mut DeserializeCursor<'_>,
+    /// Read one tensor from a streaming reader directly into its final
+    /// owned buffer (spec §7.2 / DTPC-007). Peak transient cost beyond the
+    /// completed tensors is one tensor buffer — not a second full-payload copy.
+    fn read_tensor_from_reader(
+        reader: &mut dyn std::io::Read,
     ) -> Result<MlxArray, MlxKVCacheSerializeError> {
-        let dtype_tag = cursor.read_u8()?;
-        let ndim = cursor.read_u8()? as usize;
+        let dtype_tag = read_u8_from(reader)?;
+        let ndim = read_u8_from(reader)? as usize;
         if ndim == 0 || ndim > 4 {
             return Err(MlxKVCacheSerializeError::BadShape(ndim));
         }
-        cursor.read_bytes(6)?; // reserved
+        let mut reserved = [0u8; 6];
+        read_exact_from(reader, &mut reserved)?;
         let mut shape = [0i32; 4];
         for s in &mut shape {
-            *s = cursor.read_i32()?;
+            *s = read_i32_from(reader)?;
         }
         let dtype = Self::dtype_from_tag(dtype_tag)?;
-        let byte_count = cursor.read_u64()? as usize;
+        let byte_count = read_u64_from(reader)? as usize;
+        Self::validate_tensor_byte_count(ndim, &shape, dtype, byte_count)?;
+        let mut owned = vec![0u8; byte_count];
+        read_exact_from(reader, &mut owned)?;
+        Self::mlx_array_from_owned_bytes(owned, &shape[..ndim], dtype)
+    }
 
+    fn validate_tensor_byte_count(
+        ndim: usize,
+        shape: &[i32; 4],
+        dtype: MlxDtype,
+        byte_count: usize,
+    ) -> Result<(), MlxKVCacheSerializeError> {
         // Pre-validate shape × dtype against `byte_count` so a tampered or
         // corrupted payload returns a structured error instead of tripping
-        // the assert inside `MlxArray::from_managed_data`. Any of:
-        // negative dim, overflow in product, or undersized `byte_count`
-        // is flagged as `BadShape(ndim)`.
+        // the assert inside `MlxArray::from_managed_data`.
         let mut element_count: usize = 1;
         for &dim in shape[..ndim].iter() {
             if dim < 0 {
@@ -707,32 +703,29 @@ impl MlxKVCache {
         if byte_count < required_bytes {
             return Err(MlxKVCacheSerializeError::BadShape(ndim));
         }
+        Ok(())
+    }
 
-        let bytes_view = cursor.read_bytes(byte_count)?;
-
-        // `MlxArray::from_raw_data` borrows the data buffer (see
-        // mlx-sys/src/array.rs:80: "MLX does **not** copy"), so passing the
-        // input slice's pointer would leave the array dangling once the
-        // caller's payload buffer is dropped. The deserializer must own
-        // the bytes for the array's lifetime. We allocate a `Vec<u8>` on
-        // the heap, hand its data pointer to MLX via `from_managed_data`,
-        // and register a destructor that reclaims the boxed Vec when MLX
-        // releases the array. This makes the returned `MlxArray`
-        // self-sufficient and decoupled from the input slice lifetime.
-        let owned: Box<Vec<u8>> = Box::new(bytes_view.to_vec());
+    fn mlx_array_from_owned_bytes(
+        owned: Vec<u8>,
+        shape: &[i32],
+        dtype: MlxDtype,
+    ) -> Result<MlxArray, MlxKVCacheSerializeError> {
+        // `MlxArray::from_raw_data` borrows the data buffer (MLX does not
+        // copy), so the deserializer must own the bytes for the array's
+        // lifetime via `from_managed_data` + `vec_payload_drop`.
+        let byte_count = owned.len();
+        let owned: Box<Vec<u8>> = Box::new(owned);
         let data_ptr = owned.as_ptr();
         let payload = Box::into_raw(owned) as *mut std::ffi::c_void;
         // SAFETY: data_ptr points at heap memory owned by the boxed Vec.
         // The Vec's buffer outlives the MlxArray because `vec_payload_drop`
-        // only fires when MLX releases the array's last reference,
-        // reclaiming the Box and freeing the buffer. `byte_count` matches
-        // the Vec's length, which equals shape × dtype size by
-        // construction (the serialiser wrote the same value).
+        // only fires when MLX releases the array's last reference.
         Ok(unsafe {
             MlxArray::from_managed_data(
                 data_ptr,
                 byte_count,
-                &shape[..ndim],
+                shape,
                 dtype,
                 payload,
                 vec_payload_drop,
@@ -814,20 +807,32 @@ impl MlxKVCache {
     /// mismatch, truncated data, unknown dtype tags, or shape errors —
     /// never silently degrades.
     pub fn try_deserialize_from_bytes(bytes: &[u8]) -> Result<Self, MlxKVCacheSerializeError> {
-        let mut cursor = DeserializeCursor::new(bytes);
-        let magic = cursor.read_bytes(4)?;
-        if magic != Self::SERIALIZE_MAGIC {
+        let mut cursor = std::io::Cursor::new(bytes);
+        Self::try_deserialize_from_reader(&mut cursor)
+    }
+
+    /// Streaming deserialize for durable L2 restore (spec §7.2 / §9).
+    /// Each tensor is read directly into its final owned buffer while the
+    /// caller updates integrity state (e.g. entry SHA-256). Prefer this
+    /// over materializing a full payload `Vec` then copying again.
+    pub fn try_deserialize_from_reader(
+        reader: &mut dyn std::io::Read,
+    ) -> Result<Self, MlxKVCacheSerializeError> {
+        let mut magic = [0u8; 4];
+        read_exact_from(reader, &mut magic)?;
+        if magic != *Self::SERIALIZE_MAGIC {
             return Err(MlxKVCacheSerializeError::BadMagic);
         }
-        let version = cursor.read_u32()?;
+        let version = read_u32_from(reader)?;
         if version != Self::SERIALIZE_VERSION {
             return Err(MlxKVCacheSerializeError::UnsupportedVersion(version));
         }
-        let seq_len = cursor.read_u64()? as usize;
-        let growth_count = cursor.read_u64()?;
-        let rope_offset = cursor.read_usize()?;
-        let layer_count = cursor.read_u32()? as usize;
-        let _reserved = cursor.read_u32()?;
+        let seq_len = read_u64_from(reader)? as usize;
+        let growth_count = read_u64_from(reader)?;
+        let rope_offset =
+            usize::try_from(read_u64_from(reader)?).map_err(|_| MlxKVCacheSerializeError::BadShape(8))?;
+        let layer_count = read_u32_from(reader)? as usize;
+        let _reserved = read_u32_from(reader)?;
 
         let mut cache = Self::new(layer_count);
         cache.seq_len = seq_len;
@@ -835,14 +840,17 @@ impl MlxKVCache {
         cache.rope_offset = rope_offset;
 
         for idx in 0..layer_count {
-            let kind = cursor.read_u8()?;
-            cursor.read_bytes(7)?; // reserved
+            let kind = read_u8_from(reader)?;
+            let mut reserved = [0u8; 7];
+            read_exact_from(reader, &mut reserved)?;
             match kind {
                 k if k == Self::LAYER_KIND_EMPTY => continue,
                 k if k == Self::LAYER_KIND_FA => {
-                    let ring_window = cursor.read_usize()?;
-                    let k_arr = Self::read_tensor(&mut cursor)?;
-                    let v_arr = Self::read_tensor(&mut cursor)?;
+                    let ring_window =
+                        usize::try_from(read_u64_from(reader)?)
+                            .map_err(|_| MlxKVCacheSerializeError::BadShape(8))?;
+                    let k_arr = Self::read_tensor_from_reader(reader)?;
+                    let v_arr = Self::read_tensor_from_reader(reader)?;
                     let shape = k_arr.shape();
                     if shape.len() < 4 {
                         return Err(MlxKVCacheSerializeError::BadShape(shape.len()));
@@ -878,8 +886,8 @@ impl MlxKVCache {
                     });
                 }
                 k if k == Self::LAYER_KIND_MLA => {
-                    let kv_latent = Self::read_tensor(&mut cursor)?;
-                    let k_pe = Self::read_tensor(&mut cursor)?;
+                    let kv_latent = Self::read_tensor_from_reader(reader)?;
+                    let k_pe = Self::read_tensor_from_reader(reader)?;
                     let kv_shape = kv_latent.shape();
                     let pe_shape = k_pe.shape();
                     if kv_shape.len() < 4 || pe_shape.len() < 4 {
@@ -895,15 +903,15 @@ impl MlxKVCache {
                     });
                 }
                 k if k == Self::LAYER_KIND_LINEAR => {
-                    let conv_present = cursor.read_u8()?;
+                    let conv_present = read_u8_from(reader)?;
                     let conv_state = if conv_present == Self::TENSOR_PRESENT_TAG {
-                        Some(Self::read_tensor(&mut cursor)?)
+                        Some(Self::read_tensor_from_reader(reader)?)
                     } else {
                         None
                     };
-                    let rec_present = cursor.read_u8()?;
+                    let rec_present = read_u8_from(reader)?;
                     let recurrent_state = if rec_present == Self::TENSOR_PRESENT_TAG {
-                        Some(Self::read_tensor(&mut cursor)?)
+                        Some(Self::read_tensor_from_reader(reader)?)
                     } else {
                         None
                     };
