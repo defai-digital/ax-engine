@@ -153,16 +153,31 @@ matching wheel for the current guide. Install Xcode first, open it once to
 finish Apple's setup prompts, then install the Metal Toolchain component:
 
 ```text
-brew install mlx protobuf
+brew install protobuf
 xcodebuild -downloadComponent MetalToolchain
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip maturin
+python -m pip install mlx
 cargo build --release -p ax-engine-server -p ax-engine-bench
 maturin develop --release
 export PATH="$PWD/target/release:$PATH"
 ax-engine doctor
 ```
+
+> [!IMPORTANT]
+> Install `mlx` with `pip`, not `brew install mlx`. Homebrew's `mlx` formula
+> derives its build's deployment target from `MacOS.version.major.minor`,
+> which structurally truncates to `26.0` on every macOS 26.x host (Homebrew
+> stopped tracking minor OS versions after Big Sur). MLX's NAX (Neural
+> Accelerator) GEMM/attention kernels require a build target of macOS 26.2+;
+> below that they silently compile out — no build error, ~3-4x slower
+> prefill, only visible via `otool -l libmlx.dylib`'s `LC_BUILD_VERSION`.
+> `crates/mlx-sys/build.rs` already prefers a pip-installed `mlx` over
+> Homebrew's when both are present, so installing it into the active venv
+> before `cargo build` is what makes that resolution pick the correct one.
+> See `scripts/build-pypi-wheel.sh`'s header comment for the full
+> investigation.
 
 Run the Python test slice from the same environment with:
 
