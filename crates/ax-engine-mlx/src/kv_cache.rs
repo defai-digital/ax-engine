@@ -777,30 +777,6 @@ impl MlxKVCache {
         }
     }
 
-    /// Align the private FA pool to the session `KvManager` geometry.
-    ///
-    /// Call after construction when the session knows `block_size_tokens` and
-    /// `total_blocks`. No-op when the contiguous path is active. Replaces the
-    /// pool only when empty (no live allocations).
-    pub fn align_fa_block_pool_to_kv(
-        &mut self,
-        block_size_tokens: u32,
-        max_blocks: u32,
-    ) -> Result<(), FaBlockPoolError> {
-        let Some(pool) = self.fa_pool.as_ref() else {
-            return Ok(());
-        };
-        if pool.allocated_blocks() != 0 {
-            return Ok(());
-        }
-        let config = FaBlockPoolConfig {
-            block_size_tokens: block_size_tokens.max(1),
-            max_blocks: max_blocks.max(1),
-        };
-        self.fa_pool = Some(FaBlockPool::new(config)?);
-        Ok(())
-    }
-
     /// Whether this cache owns a private FA block pool (paged pure-FA path).
     pub fn fa_block_pool_enabled(&self) -> bool {
         self.fa_pool.is_some()

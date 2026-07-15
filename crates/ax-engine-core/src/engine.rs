@@ -2160,6 +2160,49 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_input_reflects_live_kv_state_across_calls() {
+        // Regression for the design doc's own top-named risk on fair
+        // multi-prefill (docs/designs/kv-weak-surfaces-2026-07-14.md §B.2:
+        // "SchedulerInput incomplete plumbing misses re-plan phases or stale
+        // free counts"). Every Scheduler::plan() call site must observe the
+        // KvManager's *current* available_kv_blocks, not a value captured
+        // earlier — pin that `scheduler_input()` re-reads live state on each
+        // call rather than caching it from construction time.
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+            DeterministicRunner,
+            DeterministicSampler,
+        );
+        engine.set_multi_prefill_fair(true, 0, 0);
+
+        let before = engine.scheduler_input(StepId(100), Vec::new(), 64);
+        let initial_available = before.available_kv_blocks;
+        assert_eq!(
+            initial_available,
+            engine.kv_manager().available_block_count()
+        );
+
+        engine.submit(make_submission(30, 1, 1)).unwrap();
+        engine.step(64, true).unwrap();
+
+        let live_available = engine.kv_manager().available_block_count();
+        assert!(
+            live_available < initial_available,
+            "prefill scheduling must have allocated at least one KV block"
+        );
+
+        let after = engine.scheduler_input(StepId(101), Vec::new(), 64);
+        assert_eq!(
+            after.available_kv_blocks, live_available,
+            "scheduler_input must reflect the KvManager's current state, not a stale snapshot"
+        );
+        assert_ne!(
+            after.available_kv_blocks, initial_available,
+            "regression: scheduler_input returned a cached/stale available_kv_blocks"
+        );
+    }
+
+    #[test]
     fn step_forwards_sampling_filters_to_runner_context() {
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::validated(CacheGroupId(2), 4, 8),

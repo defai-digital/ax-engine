@@ -259,6 +259,27 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
 }
 
 #[test]
+fn session_config_propagates_non_default_multi_prefill_fair_settings() {
+    // Every other multi_prefill_fair fixture in this file uses the
+    // false/0/0 defaults, which cannot catch a constructor/mapping
+    // function that silently drops one of these fields back to its
+    // default. Exercise non-default values end-to-end from ServerArgs
+    // through session_config() into EngineSessionConfig.
+    let args = ServerArgs {
+        multi_prefill_fair: true,
+        max_prefill_tokens_per_request_per_step: 64,
+        max_inflight_prefill_requests: 3,
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert!(actual.multi_prefill_fair);
+    assert_eq!(actual.max_prefill_tokens_per_request_per_step, 64);
+    assert_eq!(actual.max_inflight_prefill_requests, 3);
+}
+
+#[test]
 fn session_config_applies_delegated_http_timeouts_to_server_backends() {
     let timeouts = DelegatedHttpTimeouts::from_secs(2, 11, 13);
     let args = ServerArgs {

@@ -1834,6 +1834,52 @@ mod tests {
     }
 
     #[test]
+    fn fair_multi_prefill_admission_cap_can_defer_multimodal_via_shared_counter() {
+        // Multimodal prefills are excluded from the fair-N *chunk-sizing*
+        // denominator (candidate_prefill_count) and are exempt from the
+        // per-request *token* cap (always full-or-defer, never split — see
+        // `fair_multi_prefill_keeps_multimodal_atomic`). They are NOT
+        // exempt from the admission *count* gate
+        // (`admitted_prefill_requests >= prefill_request_cap`): that check
+        // fires for any Prefill-mode candidate regardless of modality. A
+        // multimodal item arriving after the cap is already exhausted by
+        // text prefills gets deferred purely by the shared counter, even
+        // though its own token/block footprint would trivially fit. The
+        // design doc's own wording here is soft ("may use a block
+        // estimate... when deciding whether residual can host it") rather
+        // than mandating a separate admission path, so this test pins the
+        // current behavior as a known interaction rather than asserting it
+        // is the only correct design.
+        let scheduler = Scheduler::new();
+        let mut input = SchedulerInput::new(
+            StepId(37),
+            vec![
+                make_snapshot(1, 1, "qwen3", &[10; 32], 0, &[], 16),
+                make_multimodal_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 0),
+            ],
+            None,
+            64,
+        );
+        input.multi_prefill_fair = true;
+        input.max_prefill_tokens_per_request_per_step = 16;
+        input.max_inflight_prefill_requests = 1;
+        input.block_size_tokens = 16;
+        input.available_kv_blocks = 1024;
+        input.total_kv_blocks = 1024;
+
+        let schedule_plan = scheduler.plan(&input);
+        assert!(
+            schedule_plan.selected_requests.contains(&RequestId(1)),
+            "the earlier text prefill fills the admission cap"
+        );
+        assert!(
+            schedule_plan.deferred_requests.contains(&RequestId(2)),
+            "multimodal item deferred by the shared admission-count gate \
+             even though its own footprint would trivially fit"
+        );
+    }
+
+    #[test]
     fn fair_multi_prefill_auto_chunk_scales_with_residual_budget_and_candidates() {
         let scheduler = Scheduler::new();
         let mut input = SchedulerInput::new(

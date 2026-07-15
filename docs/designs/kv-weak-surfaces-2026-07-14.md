@@ -686,7 +686,7 @@ flowchart TD
 #### C.2 Target data model (PR4 scaffold)
 
 ```text
-PhysicalBlockPool (flag AX_MLX_PAGED_KV, default OFF)
+PhysicalBlockPool (flag AX_MLX_FA_KV_BLOCK_POOL, default OFF)
 ├── config: block_size_tokens, max_blocks, dtype policy
 ├── free_list: Vec<PhysicalBlockId>
 ├── refcount: HashMap<PhysicalBlockId, u32>  // private alloc: always 1 in PR4
@@ -699,15 +699,31 @@ RequestView (behind MlxKVCache facade when flag on, FA layers only)
 └── append: alloc free blocks or InsufficientCapacity; write token slice
 ```
 
-**Pool sizing / exhaustion:**
+**Pool sizing / exhaustion (as-shipped):**
 
-- `max_blocks` should be **≥ `KvManager.total_blocks`** for the session (or equal
-  when 1:1 mapping is intended). Document the coupling in session bring-up:
-  if engine and pool diverge, fail closed at runner init or first alloc.
-- On pool exhaustion: fail the append/alloc the same way a contiguous OOM would
-  surface — prefer mapping to existing engine `InsufficientCapacity` /
-  `BlockedOnMemory` path rather than silent truncate. **No** partial layer
-  writes.
+- Each request's `MlxKVCache` owns its **own** `FaBlockPool` instance
+  (allocated in `MlxKVCache::new_with_fa_block_pool` / on `.clone()`), not
+  one session-wide singleton — the ASCII sketch above depicts the logical
+  shape, not literal sharing. `max_blocks` is a **per-cache ceiling**:
+  `MlxRunner::align_fa_block_pool_to_kv` sets it to `KvManager.total_blocks`
+  at session bring-up (or the operator override
+  `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` when set), so one request's paged
+  footprint cannot exceed the session's logical block budget. There is
+  **no** init-time fail-closed check for engine/pool divergence, and no
+  cross-request shared physical budget in PR4 — a real session-wide pool
+  is PR5+ scope (see the risk noted in Alternatives / Track C.2 history).
+- On pool exhaustion: **fail-soft**, not fail-closed. `append_paged_fa`
+  materializes the already-written physical blocks into a fresh contiguous
+  buffer (`demote_paged_layer_to_contiguous`), frees the private blocks back
+  to the pool, and finishes the append on the historical contiguous growth
+  path instead of erroring the request or mapping to
+  `InsufficientCapacity`/`BlockedOnMemory`. No partial writes and no
+  double-free (freed blocks are exactly the demoted layer's own, already
+  copied out); `ax_mlx_kv_paged_pool_exhaustion_fallbacks` counts each
+  demotion. One consequence: `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` bounds only
+  the paged fast path, not a demoted layer's subsequent (contiguous,
+  effectively unbounded) growth — set it expecting demotion to absorb
+  overflow, not to hard-cap per-request memory.
 
 **Attention materialization (accepted PR4 cost):**
 
@@ -770,7 +786,15 @@ materialize-on-use without behavior change when flag is off.
   must match contiguous `MlxKVCache` **token-exactly** on greedy decode.
 - Property tests: random append lengths, trim_to, clone-then-diverge
   (clone remains full-view CoW or materialize+copy in PR4).
-- Exhaustion tests: alloc fails closed when pool empty.
+- Exhaustion tests: alloc fails **soft** — demotes to contiguous storage
+  with no partial writes and no double-free, rather than erroring the
+  request. `fa_paged_pool_exhaustion_demotes_to_contiguous` and
+  `fa_paged_pool_shared_across_layers_demotes_independently` cover
+  shape/counters and sibling-layer isolation;
+  `fa_paged_pool_exhaustion_demotion_matches_contiguous_oracle` closes the
+  token-exact gap by value-comparing the demoted layer itself — at the
+  demotion boundary, across further post-demotion appends, and across a
+  trim — against a from-scratch contiguous run of the identical sequence.
 
 ---
 
@@ -801,10 +825,10 @@ materialize-on-use without behavior change when flag is off.
 
 | API | Change |
 |---|---|
-| Env `AX_MLX_PAGED_KV` | Opt-in FA private pool; default OFF |
+| Env `AX_MLX_FA_KV_BLOCK_POOL` | Opt-in FA private pool; default OFF |
 | `MlxKVCache` | Signature-stable; internal FA storage enum `Contiguous | Paged` |
 | `serialize_to_bytes` | PR4: contiguous materialization |
-| Pool vs `KvManager.total_blocks` | Init-time coupling; exhaustion → fail closed |
+| Pool vs `KvManager.total_blocks` | Per-cache pool sized to `KvManager.total_blocks` as a ceiling (`MlxRunner::align_fa_block_pool_to_kv`; override via `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`); exhaustion → fail-soft demote to contiguous, **not** fail-closed |
 
 ---
 
@@ -1104,8 +1128,8 @@ Staged evidence:
 | **Title** | Scaffold FA private KV block pool behind flag with dense materialize |
 | **Files / components** | New `kv_block_pool.rs` (or similar); `kv_cache.rs` FA storage enum; env flag; oracle + exhaustion tests; `docs/KV-CACHE.md` subsection |
 | **Dependencies** | PR2 preferred (MLA contiguous path stable); not hard-blocked by PR3 |
-| **Description** | FA-only private blocks; materialize contiguous K/V for SDPA (measure cost); serialize materializes contiguous (no I-2 bump). `max_blocks` coupled to `KvManager.total_blocks`; exhaustion fail closed. Non-FA layers unchanged. No memory-savings claim. MLA pairs out of scope. |
-| **Acceptance tests / evidence** | Token-exact FA oracle vs contiguous; exhaustion tests; existing suite green with flag off; optional microbench for materialize cost |
+| **Description** | FA-only private blocks; materialize contiguous K/V for SDPA (measure cost); serialize materializes contiguous (no I-2 bump). `max_blocks` coupled to `KvManager.total_blocks` as a per-cache ceiling; exhaustion is **fail-soft** (demote to contiguous, not fail-closed). Non-FA layers unchanged. No memory-savings claim. MLA pairs out of scope. |
+| **Acceptance tests / evidence** | Token-exact FA oracle vs contiguous, including the exhaustion/demotion path itself (not just shape/counters or a sibling layer); existing suite green with flag off; optional microbench for materialize cost |
 | **Risk** | **Med** (isolated by default-off; materialize cost measured not claimed as win) |
 
 ### PR5+ — Optional sharing, MLA pool, eviction, benchmarks
