@@ -193,6 +193,10 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_ADMISSION_REASON_CODE: &str =
     "ax_mlx_prefix_cache_disk_admission_reason_code";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_ENQUEUED: &str =
     "ax_mlx_prefix_cache_disk_store_enqueued";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_COMMITTED: &str =
+    "ax_mlx_prefix_cache_disk_store_committed";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_COMMIT_FAILED: &str =
+    "ax_mlx_prefix_cache_disk_store_commit_failed";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_DROPPED: &str =
     "ax_mlx_prefix_cache_disk_store_dropped";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_FALLBACK_RECOMPUTE: &str =
@@ -6314,6 +6318,12 @@ impl MlxRunner {
         // per F3 PRD §3 (fail-closed): the cache miss path still runs,
         // the request still completes, telemetry records the disk
         // miss for observability.
+        if !mla_extend_unsafe && self.disk_prefix_cache.is_some() {
+            self.record_disk_artifact_identity_if_unavailable(&mut telemetry);
+            if let Some(writer) = self.disk_prefix_writer.as_ref() {
+                telemetry.absorb_writer_commits(writer.drain_commits());
+            }
+        }
         if !mla_extend_unsafe
             && let Some(disk) = self.disk_prefix_cache.as_ref()
             && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, reused_tokens)
@@ -6501,6 +6511,9 @@ impl MlxRunner {
     ) {
         let payload_bytes = payload.len() as u64;
         if let Some(writer) = self.disk_prefix_writer.as_ref() {
+            // Absorb earlier background commits before enqueue so durable
+            // counters stay fresh even when this request only queues work.
+            telemetry.absorb_writer_commits(writer.drain_commits());
             if writer.enqueue(DiskPrefixWriteJob {
                 key_bytes,
                 payload,
@@ -6508,7 +6521,7 @@ impl MlxRunner {
                 producer_cold_prefill_us,
                 producer_serialize_us,
             }) {
-                telemetry.record_disk_insert(payload_bytes, writer.drain_evictions());
+                telemetry.record_disk_store_enqueued(payload_bytes);
             } else {
                 telemetry.record_disk_store_dropped();
             }
@@ -6521,14 +6534,31 @@ impl MlxRunner {
             producer_cold_prefill_us,
             producer_serialize_us,
         ) {
-            Ok(outcome) => telemetry.record_disk_insert(payload_bytes, outcome.evictions),
+            Ok(outcome) => {
+                telemetry.record_disk_store_committed(payload_bytes, outcome.evictions)
+            }
             Err(e) => {
+                telemetry.record_disk_store_commit_failed();
                 tracing::warn!(
                     target: "ax_engine_mlx::prefix_cache",
                     error = %e,
                     "disk prefix-cache insert failed; L1 store still active",
                 );
             }
+        }
+    }
+
+    /// When L2 is open but the loaded model has no content fingerprint,
+    /// durable keys are ineligible (spec §6). Emit a closed admission
+    /// reason so ops can see the bypass instead of a silent skip.
+    fn record_disk_artifact_identity_if_unavailable(
+        &self,
+        telemetry: &mut MlxPrefixCacheTelemetry,
+    ) {
+        if self.disk_prefix_cache.is_some() && self.artifact_fingerprint.is_none() {
+            telemetry.record_disk_admission(
+                crate::disk_prefix_cache::DiskAdmissionReason::ArtifactIdentityUnavailable,
+            );
         }
     }
 
@@ -6579,6 +6609,9 @@ impl MlxRunner {
         let serialize_started = Instant::now();
         let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
         let serialize_us = u64::from(elapsed_us(serialize_started));
+        if self.disk_prefix_cache.is_some() {
+            self.record_disk_artifact_identity_if_unavailable(&mut telemetry);
+        }
         let disk_payload = disk_key_bytes
             .as_ref()
             .filter(|_| {
@@ -6770,8 +6803,13 @@ impl MlxRunner {
             let serialize_started = Instant::now();
             let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
             let serialize_us = u64::from(elapsed_us(serialize_started));
+            let disk_open = self.disk_prefix_cache.is_some();
+            if is_largest && disk_open {
+                self.record_disk_artifact_identity_if_unavailable(&mut telemetry);
+            }
             let disk_payload = if is_largest
-                && self.disk_prefix_cache.is_some()
+                && disk_open
+                && self.artifact_fingerprint.is_some()
                 && self.evaluate_disk_admission(
                     prefix_len,
                     payload.len() as u64,
@@ -13227,7 +13265,8 @@ mod tests {
         let mut other = MlxPrefixCacheTelemetry::default();
         other.record_blocked_trim_failure();
         other.record_blocked_unsupported_layout();
-        other.record_disk_insert(8192, 2);
+        other.record_disk_store_committed(8192, 2);
+        other.record_disk_store_enqueued(4096);
         telemetry.merge_from(other);
 
         assert_eq!(telemetry.blocked, 4);
@@ -13235,6 +13274,8 @@ mod tests {
         assert_eq!(telemetry.blocked_unsupported_layout, 2);
         assert_eq!(telemetry.blocked_trim_failure, 1);
         assert_eq!(telemetry.disk_inserts, 1);
+        assert_eq!(telemetry.disk_store_committed, 1);
+        assert_eq!(telemetry.disk_store_enqueued, 1);
         assert_eq!(telemetry.disk_insert_bytes, 8192);
         assert_eq!(telemetry.disk_evictions, 2);
     }
@@ -13259,6 +13300,9 @@ mod tests {
             disk_inserts: 8,
             disk_insert_bytes: 8192,
             disk_evictions: 9,
+            disk_store_enqueued: 10,
+            disk_store_committed: 8,
+            disk_store_commit_failed: 1,
             ..MlxPrefixCacheTelemetry::default()
         };
         let mut decisions = Vec::new();
@@ -13278,6 +13322,9 @@ mod tests {
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_inserts".into(), 8)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_insert_bytes_kib".into(), 8)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_evictions".into(), 9)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_store_enqueued".into(), 10)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_store_committed".into(), 8)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_store_commit_failed".into(), 1)));
     }
 
     #[test]

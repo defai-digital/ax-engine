@@ -1,36 +1,26 @@
-//! F3 — disk-backed prefix cache over `MlxKVCache::serialize_to_bytes`.
+//! Durable L2 disk prefix cache over `MlxKVCache::serialize_to_bytes`.
 //!
-//! This module owns the on-disk framing for the future durable
-//! prefix-cache layer scoped by
-//! `.internal/prd/MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md`. The
-//! current implementation owns file-level get / insert primitives,
-//! wire framing around the kv_cache payload, runner-side L2 lookup,
-//! and best-effort post-insert eviction. Mutating operations take a
-//! directory-level advisory lock so concurrent processes serialize
-//! `insert -> atomic rename -> eviction` work while readers remain
-//! lock-free.
+//! Contract: ADR-002 and TECH-SPEC-DURABLE-TIERED-PREFIX-CACHE (internal
+//! design package). Outer file format v3, canonical key schema v3, payload
+//! wire v4. Mutating operations take a directory-level advisory lock so
+//! concurrent local processes serialize `insert -> atomic rename -> eviction`
+//! while readers remain lock-free.
 //!
 //! What is implemented here:
-//!   - On-disk file layout: outer magic + version + payload SHA256 +
-//!     payload length + payload bytes. The payload is exactly what
-//!     `MlxKVCache::serialize_to_bytes` produces.
-//!   - Atomic-rename writes (write to a temp file, fsync, rename) so
-//!     a torn write cannot leave a half-finished file visible to
-//!     readers.
-//!   - Read-side integrity check via SHA256 of the payload region. A
-//!     mismatched payload fails closed (returns `Ok(None)`) — the
-//!     reader treats it like a cache miss.
-//!   - SHA256-of-key-canonicalisation as the filename, taking the
-//!     same `MlxPrefixCacheKey` fields used by the in-memory cache
-//!     so future M2 wire-up only needs to hand the existing key
-//!     down. The key bytes are also written into the file header for
-//!     hash-collision detection on load.
-//!   - Cross-process advisory locking around mutating operations via
-//!     a sentinel lock file in the cache directory.
+//!   - Outer framing: magic, version, flags, lengths, entry SHA-256 over key
+//!     + semantic header fields + payload, optional prefill token, producer
+//!     cost metadata, embedded canonical key, and KV payload bytes.
+//!   - Atomic-rename writes (temp file, fsync, rename, directory sync).
+//!   - Streaming outer read into a single owned payload buffer with bounded
+//!     I/O chunks (inner tensor deserialize still uses the payload buffer).
+//!   - Content-addressed key filenames (SHA-256 of key schema v3 bytes) with
+//!     embedded-key collision checks.
+//!   - Adaptive admission, oversize rejection, owner-only permissions, and
+//!     byte/entry budgets with mtime-ordered eviction (utility ranking is P1).
 //!
-//! What is explicitly out of scope for this layer:
-//!   - Network or mmap I/O (PRD §5.3 explicitly defers mmap to a
-//!     follow-up).
+//! Explicitly out of scope for this layer:
+//!   - Network filesystems, mmap demand-paging of active attention, and
+//!     lossy storage codecs (separate ADRs).
 
 use std::fs;
 use std::io::Write;
@@ -72,13 +62,12 @@ const LOCK_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// Poll interval while waiting for the directory lock.
 const LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// Default per-process disk-cache size budget when no env override is
-/// set. Matches the value documented in
-/// `MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md` §3.5.
+/// Default per-process disk-cache size budget when no env override is set
+/// (tech-spec §4).
 const DEFAULT_DISK_CACHE_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024; // 8 GiB
 
-/// Default per-process disk-cache entry budget when no env override is
-/// set. PRD §3.5.
+/// Default per-process disk-cache entry budget when no env override is set
+/// (tech-spec §4).
 const DEFAULT_DISK_CACHE_MAX_ENTRIES: usize = 1024;
 /// Default adaptive-admission floor on prefix length (spec §4;
 /// provisional until K1 cost evidence).
@@ -142,12 +131,19 @@ impl DiskAdmissionReason {
     }
 }
 
-/// Inputs and derived quantities of one admission decision (spec §5).
+/// Inputs and derived quantities of one admission decision (spec §5.1).
+///
+/// Snapshot-era note: `total_serialize_us` / `incremental_serialize_us` are
+/// recorded for producer accounting when available. Adaptive admission uses
+/// only write + `min_savings_us` because L1 already required the shared
+/// payload (`incremental_serialize_us == 0` for the L2 decision).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DiskCacheCostEstimate {
     pub prefix_tokens: u32,
     pub estimated_entry_bytes: u64,
     pub cold_prefill_us: u64,
+    pub total_serialize_us: u64,
+    pub incremental_serialize_us: u64,
     pub restore_us: u64,
     pub write_us: u64,
     pub expected_hits: u32,
@@ -275,18 +271,23 @@ impl DiskPrefixCachePolicy {
 
     /// Evaluate store admission for one candidate entry (spec §5.1).
     ///
-    /// `adaptive` admits only when the predicted one-hit saving exceeds
-    /// the lifecycle cost by `min_savings_us`:
+    /// Normative snapshot-era formula (ADR-002 / PRD / tech-spec aligned):
     ///
     /// ```text
-    /// gross_savings_us = expected_hits * sat_sub(cold_prefill_us, restore_us)
-    /// admit when gross_savings_us >= write_us + min_savings_us
+    /// gross_savings_us = expected_hits * saturating_sub(cold_prefill_us, restore_us)
+    /// lifecycle_cost_us = incremental_serialize_us + write_us
+    /// admit when gross_savings_us >= lifecycle_cost_us + min_savings_us
     /// ```
     ///
-    /// `incremental_serialize_us` is zero in the snapshot era because L1
-    /// already required the exact shared payload, so it does not appear in
-    /// the lifecycle sum. Hard size/length floors apply before the value
-    /// model; `always` bypasses only the value model, never the size caps.
+    /// With L1 still requiring the shared serialized payload,
+    /// `incremental_serialize_us` is zero for the L2 decision (total
+    /// serialization remains a producer TTFT measurement only).
+    /// `expected_hits` defaults to 1 unless a later session-retention hint
+    /// raises it. Hard size/length floors apply before the value model;
+    /// `always` bypasses only the value model, never the size caps.
+    /// `UnsupportedLayout`, `CapacityPressure`, and
+    /// `ArtifactIdentityUnavailable` are closed reasons emitted by callers
+    /// outside this value model.
     pub fn evaluate_admission(
         &self,
         prefix_tokens: u32,
@@ -298,6 +299,8 @@ impl DiskPrefixCachePolicy {
             prefix_tokens,
             estimated_entry_bytes: entry_bytes,
             expected_hits: 1,
+            // Snapshot era: L1 already paid for the shared payload.
+            incremental_serialize_us: 0,
             ..DiskCacheCostEstimate::default()
         };
         if matches!(self.admission, DiskAdmissionMode::Disabled) {
@@ -322,7 +325,10 @@ impl DiskPrefixCachePolicy {
         estimate.write_us = throughput.write_us(entry_bytes);
         let gross_savings_us = u64::from(estimate.expected_hits)
             .saturating_mul(cold_prefill_us.saturating_sub(estimate.restore_us));
-        if gross_savings_us >= estimate.write_us.saturating_add(self.min_savings_us) {
+        let lifecycle_cost_us = estimate
+            .incremental_serialize_us
+            .saturating_add(estimate.write_us);
+        if gross_savings_us >= lifecycle_cost_us.saturating_add(self.min_savings_us) {
             (DiskAdmissionReason::AdmittedPositiveValue, estimate)
         } else {
             (DiskAdmissionReason::PredictedNoSavings, estimate)

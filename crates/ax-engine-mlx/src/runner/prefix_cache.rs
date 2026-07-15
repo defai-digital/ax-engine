@@ -344,13 +344,17 @@ fn ewma(current: f64, observed: f64) -> f64 {
 /// `try_send` that never blocks, and a full queue drops the newest store
 /// with a warning instead of stalling prefill.
 ///
-/// Worker-side eviction counts accumulate in an atomic that the next
+/// Worker-side completion counters accumulate in atomics that the next
 /// telemetry-recording request drains, so aggregate metrics stay accurate
-/// even though attribution shifts to a later request.
+/// even though attribution shifts to a later request (spec §8 / §11:
+/// request route reports enqueue; durable commit is process-level).
 pub(crate) struct DiskPrefixCacheWriter {
     sender: Option<std::sync::mpsc::SyncSender<DiskPrefixWriteJob>>,
     handle: Option<std::thread::JoinHandle<()>>,
     pending_evictions: Arc<std::sync::atomic::AtomicU32>,
+    pending_commits: Arc<std::sync::atomic::AtomicU32>,
+    pending_commit_bytes: Arc<std::sync::atomic::AtomicU64>,
+    pending_commit_failures: Arc<std::sync::atomic::AtomicU32>,
     /// Set by the worker after its final job so shutdown can bound its
     /// drain wait instead of blocking on `join` indefinitely.
     worker_finished: Arc<std::sync::atomic::AtomicBool>,
@@ -365,6 +369,12 @@ impl DiskPrefixCacheWriter {
             std::sync::mpsc::sync_channel::<DiskPrefixWriteJob>(policy.write_queue_depth.max(1));
         let pending_evictions = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let worker_evictions = Arc::clone(&pending_evictions);
+        let pending_commits = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let worker_commits = Arc::clone(&pending_commits);
+        let pending_commit_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let worker_commit_bytes = Arc::clone(&pending_commit_bytes);
+        let pending_commit_failures = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let worker_commit_failures = Arc::clone(&pending_commit_failures);
         let worker_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let finished = Arc::clone(&worker_finished);
         let cost_model = Arc::new(DiskCostModel::new());
@@ -390,8 +400,13 @@ impl DiskPrefixCacheWriter {
                             worker_cost_model.record_write(bytes, elapsed_wall_us(write_started));
                             worker_evictions
                                 .fetch_add(outcome.evictions, std::sync::atomic::Ordering::Relaxed);
+                            worker_commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            worker_commit_bytes
+                                .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
                         }
                         Err(e) => {
+                            worker_commit_failures
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             tracing::warn!(
                                 target: "ax_engine_mlx::prefix_cache",
                                 error = %e,
@@ -407,6 +422,9 @@ impl DiskPrefixCacheWriter {
                 sender: Some(sender),
                 handle: Some(handle),
                 pending_evictions,
+                pending_commits,
+                pending_commit_bytes,
+                pending_commit_failures,
                 worker_finished,
                 cost_model,
                 shutdown_drain: std::time::Duration::from_millis(policy.shutdown_drain_ms),
@@ -452,6 +470,34 @@ impl DiskPrefixCacheWriter {
         self.pending_evictions
             .swap(0, std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Durable commit outcomes from the background worker since the last drain.
+    ///
+    /// These are process-level events: they may complete after the producing
+    /// request ends, so route telemetry attributes them to a later request.
+    pub(crate) fn drain_commits(&self) -> DiskWriterCommitDrain {
+        DiskWriterCommitDrain {
+            commits: self
+                .pending_commits
+                .swap(0, std::sync::atomic::Ordering::Relaxed),
+            bytes: self
+                .pending_commit_bytes
+                .swap(0, std::sync::atomic::Ordering::Relaxed),
+            failures: self
+                .pending_commit_failures
+                .swap(0, std::sync::atomic::Ordering::Relaxed),
+            evictions: self.drain_evictions(),
+        }
+    }
+}
+
+/// Process-level background-writer outcomes drained into request telemetry.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DiskWriterCommitDrain {
+    pub commits: u32,
+    pub bytes: u64,
+    pub failures: u32,
+    pub evictions: u32,
 }
 
 impl Drop for DiskPrefixCacheWriter {
@@ -696,6 +742,8 @@ pub(crate) struct MlxPrefixCacheTelemetry {
     pub(crate) disk_admission_rejected: u32,
     pub(crate) disk_admission_reason_code: u32,
     pub(crate) disk_store_enqueued: u32,
+    pub(crate) disk_store_committed: u32,
+    pub(crate) disk_store_commit_failed: u32,
     pub(crate) disk_store_dropped: u32,
     pub(crate) disk_fallback_recompute: u32,
 }
@@ -765,6 +813,12 @@ impl MlxPrefixCacheTelemetry {
         self.disk_store_enqueued = self
             .disk_store_enqueued
             .saturating_add(other.disk_store_enqueued);
+        self.disk_store_committed = self
+            .disk_store_committed
+            .saturating_add(other.disk_store_committed);
+        self.disk_store_commit_failed = self
+            .disk_store_commit_failed
+            .saturating_add(other.disk_store_commit_failed);
         self.disk_store_dropped = self
             .disk_store_dropped
             .saturating_add(other.disk_store_dropped);
@@ -867,6 +921,14 @@ impl MlxPrefixCacheTelemetry {
                 self.disk_store_enqueued,
             ),
             (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_COMMITTED,
+                self.disk_store_committed,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_COMMIT_FAILED,
+                self.disk_store_commit_failed,
+            ),
+            (
                 ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_STORE_DROPPED,
                 self.disk_store_dropped,
             ),
@@ -904,14 +966,43 @@ impl MlxPrefixCacheTelemetry {
         self.disk_misses = self.disk_misses.saturating_add(1);
     }
 
-    pub(crate) fn record_disk_insert(&mut self, bytes: u64, evictions: u32) {
-        // An enqueued background store is not yet durable: report it as
-        // enqueued (spec §8 — the request route must not claim
-        // `store_committed`; durable commit is a process-level event).
-        self.disk_inserts = self.disk_inserts.saturating_add(1);
+    /// Record that a store was accepted onto the background write queue.
+    /// Does **not** increment durable insert/commit counters (spec §8).
+    pub(crate) fn record_disk_store_enqueued(&mut self, _bytes: u64) {
         self.disk_store_enqueued = self.disk_store_enqueued.saturating_add(1);
+    }
+
+    /// Record a durable L2 store success (inline write or drained worker commit).
+    ///
+    /// `disk_inserts` / `disk_insert_bytes` remain the historical "durable
+    /// write" counters for compatibility with evidence scripts; they now
+    /// advance only on commit, not on enqueue.
+    pub(crate) fn record_disk_store_committed(&mut self, bytes: u64, evictions: u32) {
+        self.disk_store_committed = self.disk_store_committed.saturating_add(1);
+        self.disk_inserts = self.disk_inserts.saturating_add(1);
         self.disk_insert_bytes = self.disk_insert_bytes.saturating_add(bytes);
         self.disk_evictions = self.disk_evictions.saturating_add(evictions);
+    }
+
+    pub(crate) fn record_disk_store_commit_failed(&mut self) {
+        self.disk_store_commit_failed = self.disk_store_commit_failed.saturating_add(1);
+    }
+
+    /// Drain process-level writer outcomes into this request's route telemetry.
+    pub(crate) fn absorb_writer_commits(&mut self, drain: DiskWriterCommitDrain) {
+        if drain.commits > 0 {
+            self.disk_store_committed =
+                self.disk_store_committed.saturating_add(drain.commits);
+            self.disk_inserts = self.disk_inserts.saturating_add(drain.commits);
+            self.disk_insert_bytes = self.disk_insert_bytes.saturating_add(drain.bytes);
+        }
+        if drain.failures > 0 {
+            self.disk_store_commit_failed =
+                self.disk_store_commit_failed.saturating_add(drain.failures);
+        }
+        if drain.evictions > 0 {
+            self.disk_evictions = self.disk_evictions.saturating_add(drain.evictions);
+        }
     }
 
     pub(crate) fn record_disk_store_dropped(&mut self) {

@@ -98,10 +98,10 @@ Current checked-in evidence covers correctness and cache primitive safety:
 
 | Artifact | Coverage | Key result | Interpretation |
 | --- | --- | --- | --- |
-| `benchmarks/results/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json` | Gemma 4 E2B, standard FA + sliding window | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the Gemma tier |
-| `benchmarks/results/disk-prefix-cache-cross-restart/qwen35-9b-2026-05-14.json` | Qwen3.5-9B, hybrid MLA + linear attention | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the hybrid tier |
-| `benchmarks/results/disk-prefix-cache-cross-restart/glm47-flash-2026-05-14.json` | GLM-4.7-Flash, pure MLA | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the pure-MLA tier |
-| `benchmarks/results/disk-prefix-cache-stress/2026-05-14-m3b-stress.json` | 4 worker processes over overlapping keys plus tight eviction pressure | PASS, zero corruption load failures, zero read misses, 3 evictions | The disk-cache primitive survived short concurrent writer and eviction stress |
+| `benchmarks/results/profiling/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json` | Gemma 4 E2B, standard FA + sliding window | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the Gemma tier |
+| `benchmarks/results/profiling/disk-prefix-cache-cross-restart/qwen35-9b-2026-05-14.json` | Qwen3.5-9B, hybrid MLA + linear attention | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the hybrid tier |
+| `benchmarks/results/profiling/disk-prefix-cache-cross-restart/glm47-flash-2026-05-14.json` | GLM-4.7-Flash, pure MLA | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the pure-MLA tier |
+| `benchmarks/results/profiling/disk-prefix-cache-stress/2026-05-14-m3b-stress.json` | 4 worker processes over overlapping keys plus tight eviction pressure | PASS, zero corruption load failures, zero read misses, 3 evictions | The disk-cache primitive survived short concurrent writer and eviction stress |
 
 This evidence supports an opt-in runtime claim: AX can persist validated MLX
 prefix snapshots to a local disk cache and restore them across process

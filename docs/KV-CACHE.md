@@ -275,28 +275,40 @@ The disk layer is additive:
 |---|---:|---|
 | `AX_MLX_PREFIX_CACHE_DIR` | unset | Enables the disk tier and selects the local cache directory. Empty or unset disables the disk tier. |
 | `AX_MLX_PREFIX_CACHE_DISK_DISABLED` | unset | Kill switch. When truthy, disables the disk tier even if `AX_MLX_PREFIX_CACHE_DIR` is set. |
-| `AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES` | 8 GiB | Post-insert byte budget. Invalid, blank, or zero values fall back to the default. |
-| `AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES` | 1024 | Post-insert entry budget. Invalid, blank, or zero values fall back to the default. |
+| `AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES` | 8 GiB | Aggregate byte budget. Invalid/blank → default; explicit `0` disables the tier. |
+| `AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES` | 1024 | Aggregate entry budget. Invalid/blank → default; explicit `0` disables the tier. |
+| `AX_MLX_PREFIX_CACHE_DISK_ADMISSION` | `adaptive` | `adaptive`, `always` (diagnostic), or `disabled`. |
+| `AX_MLX_PREFIX_CACHE_DISK_MIN_PREFIX_TOKENS` | 2048 | Adaptive hard floor on prefix length (provisional until promotion cost curves). |
+| `AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRY_BYTES` | `min(512 MiB, max_bytes/4)` | Reject one entry before write when estimate exceeds this. |
+| `AX_MLX_PREFIX_CACHE_DISK_MIN_SAVINGS_US` | 10000 | Minimum predicted one-hit TTFT saving after lifecycle costs (provisional). |
+| `AX_MLX_PREFIX_CACHE_DISK_IO_CHUNK_BYTES` | 4 MiB | Streaming outer-read staging chunk (clamped 64 KiB..16 MiB). |
+| `AX_MLX_PREFIX_CACHE_DISK_WRITE_QUEUE_DEPTH` | 2 | Snapshot-sized background write jobs (clamped 1..8). |
+| `AX_MLX_PREFIX_CACHE_DISK_SHUTDOWN_DRAIN_MS` | 5000 | Best-effort writer drain before detaching unfinished I/O. |
 
-The cache assumes a local filesystem. Writers use a directory-level advisory
-lock on `.axkv.lock`; readers remain lock-free and rely on atomic rename plus
-payload checksum validation. Network filesystems may have different advisory
-lock and rename semantics, so do not treat this as a distributed cache.
+The cache assumes a **local** filesystem with cooperative writers. Writers use a
+directory-level advisory lock on `.axkv.lock`; readers remain lock-free and rely
+on atomic rename plus entry checksum validation. Network filesystems and
+hostile multi-tenant hosts are unsupported.
+
+**Security note:** cache files hold prompt-derived activations (not raw prompt
+text). New roots use owner-only modes (`0700` / `0600`). Treat the directory as
+sensitive local state; encryption at rest is not yet provided.
 
 ### File and Integrity Contract
 
-Each entry is named by the SHA256 of the canonical prefix-cache key and uses the
-`.axkv` extension. The file stores:
+Each entry is named by the SHA-256 of canonical key schema **v3** bytes and uses
+the `.axkv` extension. Outer file format **v3** stores:
 
-- `AXKV` magic and a format version;
-- payload SHA256;
-- serialized canonical key bytes for collision detection;
-- optional greedy prefill output token for full-prompt restores;
-- serialized `MlxKVCache` payload.
+- `AXKV` magic and file version `3` (v1/v2 are clean misses);
+- fixed header with flags, lengths, entry SHA-256 (key + semantic fields + payload),
+  optional greedy prefill token, and producer cost metadata;
+- embedded canonical key bytes for collision detection;
+- serialized `MlxKVCache` payload **v4** (TurboQuant shadow section removed).
 
-Readers fail closed. If the file is truncated, has a stale version, mismatched
-key bytes, or a checksum mismatch, the lookup is treated as a miss. The runner
-must never continue with a partially restored KV state.
+Readers fail closed. Truncation, stale version, mismatched key bytes, checksum
+failure, or missing content-derived model artifact fingerprint yields a miss.
+The runner never continues with partial KV state. Decode never performs
+filesystem I/O against an `.axkv` file.
 
 ### Disk Telemetry
 
@@ -306,24 +318,32 @@ When the disk tier is active, route metadata can include:
 |---|---|
 | `ax_mlx_prefix_cache_disk_hits` | Disk entry restored successfully. |
 | `ax_mlx_prefix_cache_disk_misses` | Disk tier was eligible but no valid entry was restored. |
-| `ax_mlx_prefix_cache_disk_inserts` | Disk entries written after a prompt-prefix snapshot store. |
-| `ax_mlx_prefix_cache_disk_insert_bytes_kib` | Serialized disk-entry bytes written, rounded to KiB. |
+| `ax_mlx_prefix_cache_disk_store_enqueued` | Background store accepted onto the write queue (not yet durable). |
+| `ax_mlx_prefix_cache_disk_store_committed` | Durable publish completed (may be attributed to a later request). |
+| `ax_mlx_prefix_cache_disk_store_commit_failed` | Background or inline durable write failed. |
+| `ax_mlx_prefix_cache_disk_store_dropped` | Queue full; L2 store skipped without blocking prefill. |
+| `ax_mlx_prefix_cache_disk_inserts` | **Durable** commits only (legacy name; same as committed). |
+| `ax_mlx_prefix_cache_disk_insert_bytes_kib` | Durable serialized bytes, rounded to KiB. |
 | `ax_mlx_prefix_cache_disk_evictions` | Files removed by post-insert eviction. |
+| `ax_mlx_prefix_cache_disk_admitted` / `_admission_rejected` / `_admission_reason_code` | Closed admission decisions. |
+| `ax_mlx_prefix_cache_disk_*_wall_us` / `_bytes_read_kib` | Restore stage timings when L2 is exercised. |
 
 These counters are separate from the in-memory `ax_mlx_prefix_cache_hits` /
 `misses` counters. A request can miss L1 and hit L2; that is the expected
-cross-restart path.
+cross-restart path. Enqueue is not a durable write: prefer
+`disk_store_committed` / `disk_inserts` for commit evidence.
 
 ### Validation Evidence
 
-Current checked-in disk-prefix-cache evidence:
+Current checked-in disk-prefix-cache evidence (correctness only; not a
+performance promotion gate):
 
 | Artifact | Coverage | Result |
 |---|---|---|
-| `benchmarks/results/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json` | Gemma 4 E2B, standard FA + sliding window | PASS, 2/2 token-exact, 2 phase-B disk hits |
-| `benchmarks/results/disk-prefix-cache-cross-restart/qwen35-9b-2026-05-14.json` | Qwen3.5-9B, hybrid MLA + linear attention | PASS, 2/2 token-exact, 2 phase-B disk hits |
-| `benchmarks/results/disk-prefix-cache-cross-restart/glm47-flash-2026-05-14.json` | GLM-4.7-Flash, pure MLA | PASS, 2/2 token-exact, 2 phase-B disk hits |
-| `benchmarks/results/disk-prefix-cache-stress/2026-05-14-m3b-stress.json` | 4 worker processes over overlapping keys plus `max_entries=2` eviction pressure | PASS, zero corruption load failures, zero read misses, 3 evictions |
+| `benchmarks/results/profiling/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json` | Gemma 4 E2B, standard FA + sliding window | PASS, 2/2 token-exact, 2 phase-B disk hits |
+| `benchmarks/results/profiling/disk-prefix-cache-cross-restart/qwen35-9b-2026-05-14.json` | Qwen3.5-9B, hybrid MLA + linear attention | PASS, 2/2 token-exact, 2 phase-B disk hits |
+| `benchmarks/results/profiling/disk-prefix-cache-cross-restart/glm47-flash-2026-05-14.json` | GLM-4.7-Flash, pure MLA | PASS, 2/2 token-exact, 2 phase-B disk hits |
+| `benchmarks/results/profiling/disk-prefix-cache-stress/2026-05-14-m3b-stress.json` | 4 worker processes over overlapping keys plus `max_entries=2` eviction pressure | PASS, zero corruption load failures, zero read misses, 3 evictions |
 
 Reusable commands:
 
@@ -331,16 +351,16 @@ Reusable commands:
 PYTHONPATH=python python3 scripts/verify_disk_prefix_cache_cross_restart.py \
   --model-id gemma-4-e2b-it-4bit \
   --mlx-artifacts-dir .internal/models/gemma-4-e2b-it-4bit \
-  --output benchmarks/results/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json
+  --output benchmarks/results/profiling/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json
 
 cargo run -p ax-engine-microbench --bin disk-prefix-cache-stress -- \
-  --output benchmarks/results/disk-prefix-cache-stress/2026-05-14-m3b-stress.json
+  --output benchmarks/results/profiling/disk-prefix-cache-stress/2026-05-14-m3b-stress.json
 ```
 
 The stress artifact validates the cache primitive, not a long-running
-multi-user AX server soak. Keep production-serving claims behind a separate
-serving artifact with request latency, queueing, memory pressure, and model
-route telemetry.
+multi-user AX server soak. Keep production-serving performance claims behind a
+separate promotion artifact with cold/warm filesystem methodology, stage
+timings, and model-family gates.
 
 ### Snapshot path support matrix
 
@@ -600,77 +620,72 @@ scaffold alone.
 
 ## Disk Prefix Cache Restore Contract (I-2)
 
-ADR-007 / invariant I-2 commits AX Engine to a fail-closed cross-restart
-cache: any persisted prefix material must round-trip through a canonical
-key and an integrity-checked file format, and **any mismatch must fall
-back to recomputation**. Partial trust is forbidden.
+AX Engine commits to a fail-closed cross-restart cache (ADR-002 / durable
+tiered prefix-cache package): any persisted prefix material must round-trip
+through a canonical key and an integrity-checked file format, and **any
+mismatch must fall back to recomputation**. Partial trust is forbidden.
 
-### Canonical key encoding
+### Canonical key encoding (schema v3)
 
 `ax_engine_mlx::disk_prefix_cache::canonical_key_bytes` produces the byte
-string used to derive each file's on-disk name (SHA256 of the bytes, hex,
-plus `.axkv` extension). Field order is stable and length-prefixed; a
-field addition is a **format-version bump**, not a backwards-compatible
-extension.
+string used to derive each file's on-disk name (SHA-256 of the bytes, hex,
+plus `.axkv` extension). Encoding is length-prefixed and domain-separated by
+`ax.mlx.disk_prefix_key.v3`. A field addition is a **key-schema version
+bump**, not a backwards-compatible extension.
 
-| Offset | Width | Field |
-|---|---|---|
-| 0  | 4 | key schema version (`1u32` LE) |
-| 4  | 4 | `block_size_tokens` (LE) |
-| 8  | 4 | `token_count` (LE) |
-| 12 | 8 | `token_hash` (LE) |
-| 20 | 2 + N | `model_id` (u16 LE length + UTF-8 bytes) |
-| ...| 2 + N | `route_policy` (u16 LE length + UTF-8 bytes) |
-| ...| 2 + N | `layer_layout` (u16 LE length + UTF-8 bytes) |
+Committed fields (order fixed in code):
 
-Mismatch on any field produces a different file path and therefore a
-clean miss. The disk cache reader also re-validates the embedded key
-bytes against the request key (defeats hash collisions).
+1. domain string `ax.mlx.disk_prefix_key.v3`
+2. `model_id`
+3. `artifact_fingerprint_sha256` (content-derived; path/mtime alone is not enough)
+4. `route_policy`
+5. `layer_layout`
+6. `kv_payload_version` (`MlxKVCache::serialize_version()`, currently **4**)
+7. `block_size_tokens`
+8. `token_count`
+9. `token_content_sha256` (SHA-256 over little-endian token IDs)
 
-### Outer file framing
+When a model source cannot supply a content fingerprint, L2 is ineligible and
+telemetry reports `ArtifactIdentityUnavailable` (reason code 10). The disk
+reader also re-validates the embedded key bytes against the request key.
 
-Per `crates/ax-engine-mlx/src/disk_prefix_cache.rs`:
+### Outer file framing (file v3)
+
+Per `crates/ax-engine-mlx/src/disk_prefix_cache.rs` (80-byte fixed header):
 
 | Bytes | Field |
 |---|---|
 | 0..4 | magic `AXKV` (distinct from the inner payload's `AXKB`) |
-| 4..8 | file-format version (currently `2`; `1` is rejected as a miss) |
-| 8..40 | SHA256 of the payload bytes |
-| 40..48 | payload length (`u64` LE) |
-| 48..52 | embedded key length (`u32` LE) |
-| 52..56 | greedy prefill output token (`u32` LE, `u32::MAX` = absent) |
-| 56..56+key_len | embedded canonical key bytes |
-| ...    | payload bytes (`MlxKVCache::serialize_to_bytes` output) |
+| 4..8 | file-format version (**`3`**; 1–2 are clean misses) |
+| 8..12 | header length |
+| 12..16 | flags (must be zero today) |
+| 16..20 | embedded key length |
+| 20..28 | payload length |
+| 28..60 | entry SHA-256 (key + semantic header fields + payload) |
+| 60..64 | greedy prefill output token (`u32::MAX` = absent) |
+| 64..72 | producer cold-prefill microseconds (admission hint only) |
+| 72..80 | producer serialization microseconds (accounting only) |
+| 80.. | canonical key bytes, then KV payload |
 
-Writes are atomic-rename (write to a temp file, fsync, rename) so a torn
-write cannot leave a half-finished file visible to readers. Mutating
+Writes are atomic-rename (temp file, fsync, rename, directory sync). Mutating
 operations take a directory-level advisory lock; readers stay lock-free.
+Outer read stages through a bounded I/O chunk into one owned payload buffer;
+inner tensor materialization still uses that payload (not demand-paged SSD).
 
 ### Payload-level validation
 
-The inner payload is `MlxKVCache::serialize_to_bytes` output. Its
-deserializer (`MlxKVCache::try_deserialize_from_bytes`) refuses to
-construct a cache on any of the following — each produces a structured
-`MlxKVCacheSerializeError`, never a partial restore:
+The inner payload is `MlxKVCache::serialize_to_bytes` output (wire **v4**).
+Its deserializer refuses to construct a cache on any of the following — each
+produces a structured `MlxKVCacheSerializeError`, never a partial restore:
 
 | Condition | Error |
 |---|---|
 | Wrong inner magic (`AXKB`) | `BadMagic` |
-| Inner format version not equal to current `SERIALIZE_VERSION` | `UnsupportedVersion(v)` |
+| Inner format version not equal to current `SERIALIZE_VERSION` (4) | `UnsupportedVersion(v)` |
 | Payload ends before structure-required bytes | `UnexpectedEof` |
 | Layer discriminator outside `EMPTY` / `FA` / `MLA` / `LINEAR` | `UnknownLayerKind(b)` |
 | Tensor dtype tag not in `dtype_from_tag` | `UnknownDtype(b)` |
 | Tensor rank == 0, > 4, negative dim, or `byte_count` < required | `BadShape(ndim)` |
-
-### Required identity fields (PRD §7.1)
-
-The canonical key currently isolates `(model_id, route_policy,
-layer_layout, block_size_tokens, token_count, token_hash, format_version)`.
-The PRD lists `weight_revision` as a future field; until it lands the
-operator is responsible for clearing the disk cache on a weight-revision
-change. Adding it would bump the key schema version per PRD §9
-("mitigate cache key over-specification by versioning the key schema
-itself").
 
 ### Reproducing the contract locally
 
@@ -686,4 +701,4 @@ cargo test -p ax-engine-mlx --quiet deserialize_rejects
 Each deviation in the fixture's report appears under
 `post_restart_cache.rejected_*` counters on the
 `ax.serving_workload.report.v1` artifact; `rejected_other` covers
-SHA256 payload-corruption rejections.
+entry checksum rejections.
