@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="460" viewBox="0 0 760 460" role="img" aria-labelledby="title desc">
 <title>Gemma 4 12B 4-bit-FFN — Decode throughput</title>
-<desc>Grouped box-and-whisker plot comparing AX direct (same prompts), AX assistant MTP across flappy, long_code, python_modules_long prompt suites.</desc>
+<desc>Grouped box-and-whisker plot comparing AX direct (same prompts), AX assistant MTP across flappy, long_code, python_modules_long prompt suites. Within each prompt-suite group, the highest median value label is red.</desc>
 <rect width="100%" height="100%" fill="#f8fafc"/>
 <text x="24" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 12B 4-bit-FFN — Decode throughput</text>
 <text x="24" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">All suites | box=IQR | whiskers=min/max | dots=runs</text>
@@ -19,8 +19,6 @@
 <text x="56" y="156.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">150</text>
 <line x1="64" y1="86.0" x2="560" y2="86.0" stroke="#e5e7eb" stroke-width="1"/>
 <text x="56" y="89.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">200</text>
-<line x1="64" y1="222.8" x2="560" y2="222.8" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>
-<text x="568" y="217.8" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626" data-label="highest median">highest: 97.9</text>
 <text x="146.7" y="398" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">flappy</text>
 <circle cx="95.8" cy="274.8" r="1.45" fill="#d97706" fill-opacity="0.46"/>
 <circle cx="98.8" cy="275.0" r="1.45" fill="#d97706" fill-opacity="0.46"/>
@@ -73,7 +71,7 @@
 <line x1="173.1" y1="230.6" x2="197.6" y2="230.6" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
 <rect x="168.3" y="219.4" width="34.0" height="6.6" rx="2" fill="#2eaf5f" fill-opacity="0.18" stroke="#2eaf5f" stroke-opacity="0.9" stroke-width="1.8"/>
 <line x1="168.3" y1="222.8" x2="202.3" y2="222.8" stroke="#2eaf5f" stroke-opacity="0.96" stroke-width="2.6"/>
-<text x="208.3" y="226.8" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">97.9</text>
+<text x="208.3" y="226.8" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626" stroke="#ffffff" stroke-width="3" paint-order="stroke">97.9</text>
 <text x="312.0" y="398" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">long_code</text>
 <circle cx="261.1" cy="275.9" r="1.45" fill="#d97706" fill-opacity="0.46"/>
 <circle cx="264.2" cy="276.0" r="1.45" fill="#d97706" fill-opacity="0.46"/>
@@ -126,7 +124,7 @@
 <line x1="338.4" y1="227.7" x2="362.9" y2="227.7" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
 <rect x="333.7" y="223.5" width="34.0" height="2.7" rx="2" fill="#2eaf5f" fill-opacity="0.18" stroke="#2eaf5f" stroke-opacity="0.9" stroke-width="1.8"/>
 <line x1="333.7" y1="224.9" x2="367.7" y2="224.9" stroke="#2eaf5f" stroke-opacity="0.96" stroke-width="2.6"/>
-<text x="373.7" y="228.9" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">96.3</text>
+<text x="373.7" y="228.9" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626" stroke="#ffffff" stroke-width="3" paint-order="stroke">96.3</text>
 <text x="477.3" y="398" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
 <circle cx="426.4" cy="274.8" r="1.45" fill="#d97706" fill-opacity="0.46"/>
 <circle cx="429.5" cy="274.9" r="1.45" fill="#d97706" fill-opacity="0.46"/>
@@ -169,7 +167,7 @@
 <line x1="503.8" y1="243.0" x2="528.2" y2="243.0" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
 <rect x="499.0" y="232.9" width="34.0" height="9.9" rx="2" fill="#2eaf5f" fill-opacity="0.18" stroke="#2eaf5f" stroke-opacity="0.9" stroke-width="1.8"/>
 <line x1="499.0" y1="233.4" x2="533.0" y2="233.4" stroke="#2eaf5f" stroke-opacity="0.96" stroke-width="2.6"/>
-<text x="539.0" y="237.4" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">90.0</text>
+<text x="539.0" y="237.4" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626" stroke="#ffffff" stroke-width="3" paint-order="stroke">90.0</text>
 <rect x="64.0" y="433" width="10" height="10" rx="2" fill="#d97706" fill-opacity="0.72"/>
 <text x="78.0" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX direct (same prompts)</text>
 <rect x="312.0" y="433" width="10" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.72"/>

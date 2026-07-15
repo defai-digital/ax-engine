@@ -162,7 +162,6 @@ def write_box_whisker_svg(
 
     stats_by_key: dict[tuple[int, str], BoxStats] = {}
     all_values: list[float] = []
-    all_medians: list[float] = []
     for gi, group in enumerate(groups):
         for engine in engines:
             values = [float(v) for v in group["values"].get(engine, []) if v is not None]
@@ -171,13 +170,22 @@ def write_box_whisker_svg(
             stats = box_stats(values)
             stats_by_key[(gi, engine)] = stats
             all_values.extend(values)
-            all_medians.append(stats.median)
+
+    best_by_group: dict[int, float] = {}
+    for gi in range(len(groups)):
+        medians = [
+            stats.median
+            for engine in engines
+            if (stats := stats_by_key.get((gi, engine))) is not None
+        ]
+        if medians:
+            best_by_group[gi] = (
+                min(medians) if lower_is_better else max(medians)
+            )
 
     max_value = axis_max if axis_max is not None else nice_axis_ceiling(max(all_values or [1.0]) * 1.08)
     if max_value <= axis_min:
         max_value = axis_min + 1.0
-    best_value = min(all_medians) if lower_is_better and all_medians else max(all_medians or [0.0])
-
     def fy(value: float) -> float:
         clamped = max(axis_min, min(value, max_value))
         return top + plot_h - ((clamped - axis_min) / (max_value - axis_min)) * plot_h
@@ -195,9 +203,6 @@ def write_box_whisker_svg(
         return [start_x + step * i for i in range(count)]
 
     direction_fill = "#dc2626"
-    best_line_label = "lowest median" if lower_is_better else "highest median"
-    best_side_label = "lowest" if lower_is_better else "highest"
-    best_label = f"{best_side_label}: {point_label(best_value, unit)}"
     engine_desc = ", ".join(ENGINE_LABELS[e] for e in engines)
     group_desc = ", ".join(group["label"] for group in groups)
     unit_w = max(48, len(unit) * 7 + 24)
@@ -206,7 +211,9 @@ def write_box_whisker_svg(
         f'viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
         f"<title>{html.escape(title)}</title>",
         f"<desc>Grouped box-and-whisker plot comparing {html.escape(engine_desc)} "
-        f"across {html.escape(group_desc)} prompt suites.</desc>",
+        f"across {html.escape(group_desc)} prompt suites. Within each prompt-suite "
+        f"group, the {'lowest' if lower_is_better else 'highest'} median value label "
+        f"is red.</desc>",
         '<rect width="100%" height="100%" fill="#f8fafc"/>',
         f'<text x="24" y="24" font-family="{FONT}" font-size="16" font-weight="700" '
         f'fill="#111827">{html.escape(title)}</text>',
@@ -244,18 +251,6 @@ def write_box_whisker_svg(
             f'font-size="11" fill="#6b7280">{axis_label(value, unit)}</text>'
         )
 
-    if best_value > 0:
-        best_y = fy(best_value)
-        parts.append(
-            f'<line x1="{left}" y1="{best_y:.1f}" x2="{plot_right}" y2="{best_y:.1f}" '
-            f'stroke="#dc2626" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
-        )
-        parts.append(
-            f'<text x="{plot_right + 8}" y="{max(top + 11, best_y - 5):.1f}" text-anchor="start" '
-            f'font-family="{FONT}" font-size="11" font-weight="700" fill="#dc2626" '
-            f'data-label="{html.escape(best_line_label)}">{html.escape(best_label)}</text>'
-        )
-
     dot_slots = 9
     dot_jitter = [(-0.36 + 0.72 * i / (dot_slots - 1)) * box_w for i in range(dot_slots)]
     for gi, group in enumerate(groups):
@@ -282,6 +277,11 @@ def write_box_whisker_svg(
             cap_left = x - box_w * 0.36
             cap_right = x + box_w * 0.36
             box_left = x - box_w / 2
+            label_fill = (
+                "#dc2626"
+                if math.isclose(stats.median, best_by_group[gi])
+                else "#111827"
+            )
             for vi, value in enumerate(stats.values):
                 parts.append(
                     f'<circle cx="{x + dot_jitter[vi % len(dot_jitter)]:.1f}" '
@@ -301,7 +301,7 @@ def write_box_whisker_svg(
                     f'<line x1="{box_left:.1f}" y1="{y_med:.1f}" x2="{box_left + box_w:.1f}" '
                     f'y2="{y_med:.1f}" stroke="{color}" stroke-opacity="0.96" stroke-width="2.6"/>',
                     f'<text x="{box_left + box_w + 6:.1f}" y="{y_med + 4:.1f}" text-anchor="start" '
-                    f'font-family="{FONT}" font-size="11" font-weight="700" fill="#111827" '
+                    f'font-family="{FONT}" font-size="11" font-weight="700" fill="{label_fill}" '
                     f'stroke="#ffffff" stroke-width="3" paint-order="stroke">'
                     f"{html.escape(point_label(stats.median, unit))}</text>",
                 ]
