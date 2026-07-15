@@ -37,7 +37,7 @@ fn find_mlx_lib_dir() -> Option<String> {
 
     let python = ["PYO3_PYTHON", "PYTHON", "PYTHON_SYS_EXECUTABLE"]
         .iter()
-        .find_map(|k| std::env::var_os(k))
+        .find_map(std::env::var_os)
         .unwrap_or_else(|| "python3".into());
     let out = std::process::Command::new(python)
         .args([
