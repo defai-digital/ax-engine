@@ -1735,8 +1735,8 @@ def validate_readme_direct_generation_claims(*, readme_path: Path) -> list[str]:
     if "### Session Mode: Direct Generation" not in text:
         return []
 
-    retired_charts = (
-        "perf-direct-validation-2026-07-12.svg",
+    retired_charts = ("perf-direct-validation-2026-07-12.svg",)
+    restored_box_charts = (
         "perf-gemma4-decode-box-whisker.svg",
         "perf-gemma4-prefill-box-whisker.svg",
         "perf-gemma4-ttft-box-whisker.svg",
@@ -1750,6 +1750,21 @@ def validate_readme_direct_generation_claims(*, readme_path: Path) -> list[str]:
             "README references retired direct-mode aggregate charts: "
             + ", ".join(referenced_retired_charts)
         )
+    referenced_box_charts = [chart for chart in restored_box_charts if chart in text]
+    if referenced_box_charts:
+        required_boxplot_boundary = (
+            "cross-run distribution diagnostics, not exact per-model deltas or a",
+            "same-session peer benchmark",
+            "the exact AX values are in the table below",
+        )
+        missing_boundary = [
+            phrase for phrase in required_boxplot_boundary if phrase not in text
+        ]
+        if missing_boundary:
+            raise ArtifactCheckError(
+                "README direct peer boxplots require an explicit cross-run boundary: "
+                + ", ".join(missing_boundary)
+            )
 
     unsupported_claims = (
         "AX Engine leads `mlx_lm` on prefill, runner-time TTFT, and direct decode",

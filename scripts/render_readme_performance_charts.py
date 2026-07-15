@@ -60,7 +60,8 @@ SERIES = [
     ("ax_engine_mlx_ngram_accel", f"AX+ngram v{AX_ENGINE_VERSION}", "#137a3d", "#0b4f28"),
 ]
 DIRECT_VERSIONS_FOOTNOTE = (
-    f"llama.cpp b9910 · mlx-lm 0.31.3 · AX Engine v{AX_ENGINE_VERSION}"
+    f"AX Engine v{AX_ENGINE_VERSION} snapshot (2026-07-14) · retained "
+    "mlx-lm 0.31.3 · retained llama.cpp b9910 · cross-run distribution"
 )
 
 FAMILY_SLUGS: dict[str, list[str]] = {
@@ -176,9 +177,72 @@ class EmbeddingModelBoxGroup:
     engine_rows: tuple[EmbeddingEngineBoxRow, ...]
 
 
-# Family-level boxplots are intentionally unpublished: their medians combine
-# different model sizes and quantizations and obscure exact peer deltas.
-CHARTS: tuple[ChartSpec, ...] = ()
+BOX_CHART_SUBTITLE = (
+    "AX v6.9.0 snapshot vs retained peer rows | cross-run distribution; "
+    "use the exact table for per-model values."
+)
+CHARTS: tuple[ChartSpec, ...] = (
+    ChartSpec(
+        title="Gemma 4 — Prefill rate",
+        subtitle=BOX_CHART_SUBTITLE,
+        unit="tok/s",
+        direction_label="Higher is better",
+        output_slug="gemma4-prefill",
+        metric="prefill",
+        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        family="gemma4",
+    ),
+    ChartSpec(
+        title="Gemma 4 — Decode rate",
+        subtitle=BOX_CHART_SUBTITLE,
+        unit="tok/s",
+        direction_label="Higher is better",
+        output_slug="gemma4-decode",
+        metric="decode",
+        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        family="gemma4",
+    ),
+    ChartSpec(
+        title="Gemma 4 — TTFT",
+        subtitle=BOX_CHART_SUBTITLE,
+        unit="ms",
+        direction_label="Lower is better",
+        output_slug="gemma4-ttft",
+        metric="ttft",
+        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        family="gemma4",
+    ),
+    ChartSpec(
+        title="Qwen 3.6 — Prefill rate",
+        subtitle=BOX_CHART_SUBTITLE,
+        unit="tok/s",
+        direction_label="Higher is better",
+        output_slug="qwen-prefill",
+        metric="prefill",
+        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        family="qwen",
+    ),
+    ChartSpec(
+        title="Qwen 3.6 — Decode rate",
+        subtitle=BOX_CHART_SUBTITLE,
+        unit="tok/s",
+        direction_label="Higher is better",
+        output_slug="qwen-decode",
+        metric="decode",
+        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        family="qwen",
+    ),
+    ChartSpec(
+        title="Qwen 3.6 — TTFT",
+        subtitle=BOX_CHART_SUBTITLE,
+        unit="ms",
+        direction_label="Lower is better",
+        output_slug="qwen-ttft",
+        metric="ttft",
+        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        family="qwen",
+    ),
+)
 
 
 MTP_WIDTH = 380
@@ -325,6 +389,8 @@ NGRAM_OPPORTUNITY_CATEGORIES: list[tuple[str, str]] = [
 ]
 
 NGRAM_ARTIFACT_GLOB = "benchmarks/results/ngram-compare/*/artifact.json"
+
+AX_DIRECT_SNAPSHOT_METRICS = ("decode_tok_s", "prefill_tok_s", "ttft_ms")
 
 
 class ChartError(RuntimeError):
@@ -498,6 +564,27 @@ def load_composite_rows(
     return list(merged.values())
 
 
+def load_retained_mlx_lm_rows(readme: Path, slugs: list[str]) -> list[dict[str, Any]]:
+    rows: dict[tuple[str, int, int], dict[str, Any]] = {}
+    for source in readme_artifacts.default_artifact_sources(readme.resolve()):
+        if (
+            source.include_engines is not None
+            and "mlx_lm" not in source.include_engines
+        ):
+            continue
+        for row in load_rows(source.artifact_dir, slugs, required=False):
+            if row.get("engine") != "mlx_lm":
+                continue
+            prompt_tokens = row.get("prompt_tokens")
+            generation_tokens = row.get("generation_tokens")
+            if prompt_tokens not in PROMPT_TOKENS or not isinstance(
+                generation_tokens, int
+            ):
+                continue
+            rows[(str(row["_slug"]), int(prompt_tokens), generation_tokens)] = row
+    return list(rows.values())
+
+
 def merge_chart_row(
     rows: dict[tuple[str, str, int, int], dict[str, Any]],
     key: tuple[str, str, int, int],
@@ -619,6 +706,142 @@ def short_number(value: float) -> str:
 
 def chart_output_name(spec: ChartSpec) -> str:
     return f"perf-{spec.output_slug}-box-whisker.svg"
+
+
+def find_ax_direct_snapshot(readme: Path) -> Path | None:
+    match = re.search(
+        r"readme-ax-direct-snapshot:\s*([^\s]+)",
+        readme.read_text(encoding="utf-8"),
+    )
+    if match is None:
+        return None
+    return (readme.parent / match.group(1)).resolve()
+
+
+def load_ax_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
+    if not snapshot_path.exists():
+        raise ChartError(f"AX-only direct snapshot is missing: {snapshot_path}")
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    if snapshot.get("publication_candidate") is not True:
+        raise ChartError("AX-only direct snapshot is not publication eligible")
+    if snapshot.get("ax_direct_only") is not True:
+        raise ChartError("AX-only direct snapshot is not AX-only")
+
+    rows = snapshot.get("rows")
+    if not isinstance(rows, list) or len(rows) != 12:
+        raise ChartError("AX-only direct snapshot must contain all 12 model rows")
+
+    normalized_rows: list[dict[str, Any]] = []
+    versions: set[str] = set()
+    commits: set[str] = set()
+    mlx_versions: set[str] = set()
+    for row in rows:
+        if row.get("status") != "ok":
+            raise ChartError("AX-only direct snapshot has a non-successful model row")
+        result_doc = row.get("result_doc")
+        if not isinstance(result_doc, dict):
+            raise ChartError("AX-only direct snapshot row has no benchmark result")
+        build = result_doc.get("build")
+        host = result_doc.get("host")
+        if not isinstance(build, dict) or not isinstance(host, dict):
+            raise ChartError("AX-only direct snapshot row has incomplete provenance")
+        version = build.get("engine_version")
+        commit = build.get("commit")
+        toolchain = host.get("toolchain")
+        if not isinstance(version, str) or not isinstance(commit, str):
+            raise ChartError("AX-only direct snapshot row has incomplete build identity")
+        if not isinstance(toolchain, dict) or not isinstance(
+            toolchain.get("homebrew_mlx"), str
+        ):
+            raise ChartError("AX-only direct snapshot row has incomplete MLX identity")
+        versions.add(version)
+        commits.add(commit)
+        mlx_versions.add(toolchain["homebrew_mlx"])
+
+        model = row.get("readme_model")
+        quant = row.get("readme_quant")
+        if not isinstance(model, str) or not isinstance(quant, str):
+            raise ChartError("AX-only direct snapshot row has no display label")
+        if model.startswith("Gemma 4 "):
+            family = "gemma"
+            short_model = model.removeprefix("Gemma 4 ")
+        elif model.startswith("Qwen 3.6 "):
+            family = "qwen"
+            short_model = model.removeprefix("Qwen 3.6 ")
+        else:
+            raise ChartError(f"AX-only direct snapshot has unsupported model: {model}")
+        slug = LABEL_TO_SLUG.get((model, quant))
+        if slug is None:
+            raise ChartError(f"AX-only direct snapshot model has no slug: {model}")
+
+        metrics: dict[str, dict[int, float]] = {
+            metric: {} for metric in AX_DIRECT_SNAPSHOT_METRICS
+        }
+        results = result_doc.get("results")
+        if not isinstance(results, list):
+            raise ChartError("AX-only direct snapshot row has no prompt results")
+        for result in results:
+            prompt_tokens = result.get("prompt_tokens")
+            if prompt_tokens not in PROMPT_TOKENS:
+                continue
+            for metric in AX_DIRECT_SNAPSHOT_METRICS:
+                value = result.get(metric)
+                if not isinstance(value, dict) or not isinstance(value.get("median"), (int, float)):
+                    raise ChartError(
+                        f"AX-only direct snapshot is missing {metric} median"
+                    )
+                metrics[metric][prompt_tokens] = float(value["median"])
+        if any(set(values) != set(PROMPT_TOKENS) for values in metrics.values()):
+            raise ChartError("AX-only direct snapshot row has incomplete prompt coverage")
+        normalized_rows.append(
+            {
+                "family": family,
+                "slug": slug,
+                "label": f"{short_model} {quant}",
+                "metrics": metrics,
+            }
+        )
+
+    if len(versions) != 1 or len(commits) != 1 or len(mlx_versions) != 1:
+        raise ChartError("AX-only direct snapshot has mixed benchmark provenance")
+    if versions != {AX_ENGINE_VERSION}:
+        raise ChartError(
+            f"AX-only direct snapshot version {sorted(versions)} does not match {AX_ENGINE_VERSION}"
+        )
+    return {
+        "rows": normalized_rows,
+        "engine_version": versions.pop(),
+        "commit": commits.pop(),
+        "mlx_version": mlx_versions.pop(),
+        "date": str(snapshot.get("started_at", "unknown"))[:10],
+    }
+
+
+def ax_direct_snapshot_chart_rows(
+    snapshot: dict[str, Any], metric: str
+) -> list[dict[str, Any]]:
+    metric_key = {
+        "decode": "decode_tok_s",
+        "prefill": "prefill_tok_s",
+        "ttft": "ttft_ms",
+    }.get(metric)
+    if metric_key is None:
+        raise ChartError(f"unknown AX-only direct snapshot metric: {metric}")
+    rows: list[dict[str, Any]] = []
+    for snapshot_row in snapshot["rows"]:
+        for prompt_tokens in PROMPT_TOKENS:
+            rows.append(
+                {
+                    "_slug": snapshot_row["slug"],
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": prompt_tokens,
+                    "generation_tokens": 128,
+                    metric_key: {
+                        "median": snapshot_row["metrics"][metric_key][prompt_tokens]
+                    },
+                }
+            )
+    return rows
 
 
 def collect_family_values(
@@ -2783,7 +3006,42 @@ def main() -> int:
         action="store_true",
         help="Verify generated SVGs match files on disk without writing.",
     )
+    parser.add_argument(
+        "--only-ax-direct-snapshot",
+        action="store_true",
+        help="Render or verify only the README direct peer boxplot charts.",
+    )
     args = parser.parse_args()
+
+    if args.only_ax_direct_snapshot:
+        snapshot_path = find_ax_direct_snapshot(args.readme)
+        if snapshot_path is None:
+            raise ChartError("README does not declare an AX-only direct snapshot")
+        snapshot = load_ax_direct_snapshot(snapshot_path)
+        readme_slugs = readme_model_slugs(args.readme)
+        llama_rows = load_llama_rows_from_readme(args.readme)
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        mismatches = []
+        for spec in CHARTS:
+            rows = (
+                load_retained_mlx_lm_rows(args.readme, readme_slugs)
+                + ax_direct_snapshot_chart_rows(snapshot, spec.metric)
+                + llama_rows
+            )
+            output_path = args.output_dir / chart_output_name(spec)
+            content = render_family_chart(spec, collect_family_values(rows, spec))
+            if not write_chart(output_path, content, args.check):
+                mismatches.append(output_path)
+        if mismatches:
+            print("AX-only direct snapshot charts are stale:", file=sys.stderr)
+            for path in mismatches:
+                print(f"  {path}", file=sys.stderr)
+            return 1
+        print(
+            "AX-only direct snapshot charts are "
+            f"{'up to date' if args.check else 'rendered'}"
+        )
+        return 0
 
     readme_slugs = readme_model_slugs(args.readme)
     results_dir = args.results_dir or infer_results_dir_from_readme(args.readme)
@@ -2876,11 +3134,23 @@ def main() -> int:
     ):
         mismatches.append(embeddinggemma_scale_output_path)
 
+    ax_direct_snapshot = None
+    ax_direct_snapshot_path = find_ax_direct_snapshot(args.readme)
+    if ax_direct_snapshot_path is not None:
+        ax_direct_snapshot = load_ax_direct_snapshot(ax_direct_snapshot_path)
+
     for spec in CHARTS:
         if args.results_dir:
             benchmark_rows = load_rows(results_dir, readme_slugs, required=True)
         else:
-            benchmark_rows = load_composite_rows(args.readme, spec.metric, readme_slugs)
+            if ax_direct_snapshot is None:
+                benchmark_rows = load_composite_rows(
+                    args.readme, spec.metric, readme_slugs
+                )
+            else:
+                benchmark_rows = load_retained_mlx_lm_rows(
+                    args.readme, readme_slugs
+                ) + ax_direct_snapshot_chart_rows(ax_direct_snapshot, spec.metric)
         rows = benchmark_rows + llama_rows
         engine_groups = collect_family_values(rows, spec)
         output_path = args.output_dir / chart_output_name(spec)

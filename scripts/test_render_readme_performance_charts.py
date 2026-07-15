@@ -75,8 +75,91 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             "rows": rows,
         }
 
-    def test_family_aggregate_charts_are_unpublished(self) -> None:
-        self.assertEqual(charts.CHARTS, ())
+    def test_family_boxplots_cover_all_direct_metrics(self) -> None:
+        self.assertEqual(len(charts.CHARTS), 6)
+        self.assertEqual(
+            {(chart.family, chart.metric) for chart in charts.CHARTS},
+            {
+                ("gemma4", "decode"),
+                ("gemma4", "prefill"),
+                ("gemma4", "ttft"),
+                ("qwen", "decode"),
+                ("qwen", "prefill"),
+                ("qwen", "ttft"),
+            },
+        )
+
+    def test_ax_direct_snapshot_charts_are_complete_and_ax_only(self) -> None:
+        snapshot_path = (
+            charts.REPO_ROOT
+            / "benchmarks/results/inference/ax-direct/2026-07-14-v6.9.0-ax-direct-only/sweep_results.json"
+        )
+        snapshot = charts.load_ax_direct_snapshot(snapshot_path)
+
+        self.assertEqual(snapshot["engine_version"], "6.9.0")
+        self.assertEqual(len(snapshot["rows"]), 12)
+        chart_rows = charts.ax_direct_snapshot_chart_rows(snapshot, "decode")
+        self.assertEqual(len(chart_rows), 36)
+        self.assertEqual(
+            chart_rows[0]["decode_tok_s"]["median"], 231.821482969271
+        )
+        self.assertTrue(
+            all(row["engine"] == "ax_engine_mlx" for row in chart_rows)
+        )
+
+        readme = charts.REPO_ROOT / "README.md"
+        retained_mlx_rows = charts.load_retained_mlx_lm_rows(
+            readme, charts.readme_model_slugs(readme)
+        )
+        self.assertTrue(all(row["engine"] == "mlx_lm" for row in retained_mlx_rows))
+        gemma_decode_spec = next(
+            spec
+            for spec in charts.CHARTS
+            if spec.family == "gemma4" and spec.metric == "decode"
+        )
+        boxplot = charts.render_family_chart(
+            gemma_decode_spec,
+            charts.collect_family_values(
+                retained_mlx_rows
+                + chart_rows
+                + charts.load_llama_rows_from_readme(readme),
+                gemma_decode_spec,
+            ),
+        )
+        self.assertIn("AX Engine v6.9.0", boxplot)
+        self.assertIn("retained mlx-lm 0.31.3", boxplot)
+        self.assertIn("cross-run distribution", boxplot)
+
+        readme_text = (charts.REPO_ROOT / "README.md").read_text()
+        for row in snapshot["rows"]:
+            values = [
+                row["metrics"][metric][prompt_tokens]
+                for metric in ("decode_tok_s", "prefill_tok_s", "ttft_ms")
+                for prompt_tokens in (128, 512, 2048)
+            ]
+            model_label, quant_label = row["label"].rsplit(" ", 1)
+            table_row = "| {} | {} |".format(
+                ("Gemma 4 " if row["family"] == "gemma" else "Qwen 3.6 ")
+                + model_label,
+                quant_label,
+            )
+            table_row += "".join(f" {value:,.1f} |" for value in values)
+            self.assertIn(table_row, readme_text)
+
+    def test_ax_direct_snapshot_marker_is_separate_from_legacy_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            snapshot_path = root / "snapshot.json"
+            snapshot_path.write_text("{}\n")
+            readme = root / "README.md"
+            readme.write_text(
+                "<!-- readme-ax-direct-snapshot: snapshot.json -->\n"
+                "<!-- readme-performance-artifacts: reference=legacy/ -->\n"
+            )
+
+            self.assertEqual(
+                charts.find_ax_direct_snapshot(readme), snapshot_path.resolve()
+            )
 
     def test_gemma4_12b_decode_uses_llama_matched_depth(self) -> None:
         row = {

@@ -502,7 +502,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 ["direct-generation:current-head-claim-boundary"],
             )
 
-    def test_direct_generation_claim_boundary_rejects_retired_chart(self) -> None:
+    def test_direct_generation_claim_boundary_rejects_unqualified_boxplot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             readme = Path(tmp) / "README.md"
             readme.write_text(
@@ -512,11 +512,29 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                checker.ArtifactCheckError, "retired direct-mode aggregate charts"
+                checker.ArtifactCheckError, "require an explicit cross-run boundary"
             ):
                 checker.validate_readme_direct_generation_claims(
                     readme_path=readme
                 )
+
+    def test_direct_generation_claim_boundary_accepts_qualified_boxplot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "README.md"
+            readme.write_text(
+                "### Session Mode: Direct Generation\n\n"
+                "No current-head, matrix-wide direct peer comparison is published.\n"
+                "These are cross-run distribution diagnostics, not exact per-model deltas or a\n"
+                "same-session peer benchmark; the exact AX values are in the table below.\n"
+                "![](docs/assets/perf-qwen-prefill-box-whisker.svg)\n"
+            )
+
+            self.assertEqual(
+                checker.validate_readme_direct_generation_claims(
+                    readme_path=readme
+                ),
+                ["direct-generation:current-head-claim-boundary"],
+            )
 
     def test_direct_generation_claim_boundary_rejects_matrix_wide_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
