@@ -113,9 +113,52 @@ fn grouping_collapses_variants_into_families() {
 fn quant_and_family_parsing() {
     assert_eq!(quant_bits("mlx-community/gemma-4-12B-it-4bit"), Some(4));
     assert_eq!(quant_bits("mlx-community/Qwen3.6-27B-8bit"), Some(8));
+    assert_eq!(
+        quant_bits("mlx-community/gpt-oss-20b-MXFP4-Q4"),
+        Some(4)
+    );
+    assert_eq!(
+        quant_bits("mlx-community/gpt-oss-120b-MXFP4-Q4"),
+        Some(4)
+    );
     assert_eq!(family_key("gemma4-e2b-8bit"), "gemma4-e2b");
     assert_eq!(family_key("glm4.7-flash-4bit"), "glm4.7-flash");
     assert_eq!(family_key("qwen3.6-35b"), "qwen3.6-35b");
+    assert_eq!(family_key("gpt-oss-20b"), "gpt-oss-20b");
+}
+
+#[test]
+fn secondary_and_gpt_oss_profiles_are_downloadable() {
+    let families = build_families();
+    for key in [
+        "qwen3.5-9b",
+        "glm4.7-flash",
+        "llama3.1-8b",
+        "llama3.3-70b",
+        "llama4-scout",
+        "mistral-small",
+        "ministral-8b",
+        "devstral-small",
+        "gpt-oss-20b",
+        "gpt-oss-120b",
+    ] {
+        let family = families
+            .iter()
+            .find(|f| f.key == key)
+            .unwrap_or_else(|| panic!("missing TUI family {key}"));
+        assert!(
+            !family.variants.is_empty(),
+            "{key} must expose at least one downloadable variant"
+        );
+        assert!(
+            family.variants.iter().all(|v| v.profile.downloadable),
+            "{key} variants must be downloadable"
+        );
+    }
+    let gpt20 = families.iter().find(|f| f.key == "gpt-oss-20b").unwrap();
+    assert!(!gpt20.is_primary());
+    assert_eq!(gpt20.variants[0].precision(), "MXFP4-Q4");
+    assert!(gpt20.variants[0].profile.approx_size_bytes.is_some());
 }
 
 #[test]

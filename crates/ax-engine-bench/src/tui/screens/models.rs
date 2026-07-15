@@ -207,8 +207,19 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, f)| {
-                f.key.to_ascii_lowercase().contains(&needle)
+                if f.key.to_ascii_lowercase().contains(&needle)
                     || f.display_name().to_ascii_lowercase().contains(&needle)
+                {
+                    return true;
+                }
+                // Match aliases / repo ids so "/gpt" and "/llama" find secondary stacks.
+                f.variants.iter().any(|v| {
+                    v.profile.repo_id.to_ascii_lowercase().contains(&needle)
+                        || v.profile
+                            .aliases
+                            .iter()
+                            .any(|alias| alias.to_ascii_lowercase().contains(&needle))
+                })
             })
             .map(|(i, _)| i)
             .collect()
@@ -429,6 +440,11 @@ impl App {
                 Span::raw("  "),
                 Span::styled(format!("{} · ", family.key), theme::label()),
                 Span::styled(compact_quant_summary(family), theme::body_dim()),
+                if family.is_primary() {
+                    Span::styled(" · primary", theme::body_dim())
+                } else {
+                    Span::styled(" · preview direct", theme::label())
+                },
                 if family.has_mtp() {
                     Span::styled(
                         format!("  {} speed-up", theme::icon::SPEED),
@@ -562,8 +578,13 @@ impl App {
                 } else {
                     Span::raw("")
                 };
+                let tier = if family.is_primary() {
+                    Span::raw("")
+                } else {
+                    Span::styled(" preview", theme::label())
+                };
                 let name = family.display_name();
-                let name_w = 14usize;
+                let name_w = 16usize;
                 let name_cell = if name.chars().count() > name_w {
                     name.chars()
                         .take(name_w.saturating_sub(1))
@@ -572,7 +593,7 @@ impl App {
                 } else {
                     format!("{name:<name_w$}")
                 };
-                // Compact quant: "4–8b" when multi, else single.
+                // Compact quant: "4–8b" when multi, else single / MXFP4.
                 let quant = compact_quant_summary(family);
                 ListItem::new(Line::from(vec![
                     Span::styled(
@@ -581,9 +602,10 @@ impl App {
                             .fg(theme::TEXT)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(format!(" {quant:<8}"), theme::body_dim()),
+                    Span::styled(format!(" {quant:<9}"), theme::body_dim()),
                     status,
                     mtp,
+                    tier,
                 ]))
             })
             .collect();
@@ -935,6 +957,13 @@ impl App {
 
 /// Compact quant range for dense family rows (`4–8b` / `6b`).
 fn compact_quant_summary(family: &crate::tui::catalog::Family) -> String {
+    let all_mxfp4 = family
+        .variants
+        .iter()
+        .all(|v| v.profile.repo_id.to_ascii_lowercase().contains("mxfp4"));
+    if all_mxfp4 && !family.variants.is_empty() {
+        return "MXFP4".into();
+    }
     let bits: Vec<u32> = family.variants.iter().filter_map(|v| v.bits).collect();
     match bits.as_slice() {
         [] => "--".into(),

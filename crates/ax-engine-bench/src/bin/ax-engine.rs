@@ -151,12 +151,26 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "glm-4.7-flash-4bit",
             "glm-4-7-flash-4bit",
         ],
-        downloadable: false,
-        approx_size_bytes: None,
+        downloadable: true,
+        approx_size_bytes: Some(16_872_850_407),
+    },
+    ModelProfile {
+        label: "qwen3.5-9b",
+        preset: Some("qwen3.5-9b"),
+        repo_id: "mlx-community/Qwen3.5-9B-MLX-4bit",
+        aliases: &[
+            "qwen3.5-9b",
+            "qwen35-9b",
+            "qwen3-5-9b",
+            "qwen3.5-9b-4bit",
+            "qwen3-5-9b-mlx-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(5_977_074_591),
     },
     ModelProfile {
         label: "qwen3.6-27b",
-        preset: None,
+        preset: Some("qwen3.6-27b"),
         repo_id: "mlx-community/Qwen3.6-27B-4bit",
         aliases: &[
             "qwen3.6-27b",
@@ -205,6 +219,119 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         ],
         downloadable: true,
         approx_size_bytes: Some(20_429_169_263),
+    },
+    // --- Secondary: research / enterprise Llama ---
+    ModelProfile {
+        label: "llama3.1-8b",
+        preset: Some("llama3.1-8b"),
+        repo_id: "mlx-community/Llama-3.1-8B-Instruct-4bit",
+        aliases: &[
+            "llama3.1-8b",
+            "llama31-8b",
+            "llama-3.1-8b",
+            "llama3.1-8b-4bit",
+            "llama-3.1-8b-instruct-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(4_534_824_337),
+    },
+    ModelProfile {
+        label: "llama3.3-70b",
+        preset: Some("llama3.3-70b"),
+        repo_id: "mlx-community/Llama-3.3-70B-Instruct-4bit",
+        aliases: &[
+            "llama3.3-70b",
+            "llama33-70b",
+            "llama-3.3-70b",
+            "llama3.3-70b-4bit",
+            "llama-3.3-70b-instruct-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(39_706_010_909),
+    },
+    ModelProfile {
+        label: "llama4-scout",
+        preset: Some("llama4-scout"),
+        repo_id: "mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit",
+        aliases: &[
+            "llama4-scout",
+            "llama-4-scout",
+            "llama4-scout-4bit",
+            "llama-4-scout-17b-16e-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(61_143_665_814),
+    },
+    // --- Secondary: European market Mistral ---
+    ModelProfile {
+        label: "mistral-small",
+        preset: Some("mistral-small"),
+        repo_id: "mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit",
+        aliases: &[
+            "mistral-small",
+            "mistral-small-24b",
+            "mistral-small-4bit",
+            "mistral-small-24b-4bit",
+            "mistral-small-3.1",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(14_119_058_051),
+    },
+    ModelProfile {
+        label: "ministral-8b",
+        preset: Some("ministral-8b"),
+        repo_id: "mlx-community/Ministral-8B-Instruct-2410-4bit",
+        aliases: &[
+            "ministral-8b",
+            "ministral",
+            "ministral-8b-4bit",
+            "ministral-8b-instruct-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(4_543_802_547),
+    },
+    ModelProfile {
+        label: "devstral-small",
+        preset: Some("devstral-small"),
+        repo_id: "mlx-community/Devstral-Small-2505-4bit",
+        aliases: &[
+            "devstral-small",
+            "devstral",
+            "devstral-small-4bit",
+            "devstral-small-2505-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(13_277_563_657),
+    },
+    // --- Secondary: open reasoner GPT-OSS (MXFP4 experts) ---
+    ModelProfile {
+        label: "gpt-oss-20b",
+        preset: Some("gpt-oss-20b"),
+        repo_id: "mlx-community/gpt-oss-20b-MXFP4-Q4",
+        aliases: &[
+            "gpt-oss-20b",
+            "gptoss-20b",
+            "gpt-oss-20b-4bit",
+            "gpt-oss-20b-mxfp4",
+            "gpt-oss-20b-mxfp4-q4",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(11_206_563_096),
+    },
+    ModelProfile {
+        label: "gpt-oss-120b",
+        preset: Some("gpt-oss-120b"),
+        repo_id: "mlx-community/gpt-oss-120b-MXFP4-Q4",
+        aliases: &[
+            "gpt-oss-120b",
+            "gptoss-120b",
+            "gpt-oss-120b-4bit",
+            "gpt-oss-120b-mxfp4",
+            "gpt-oss-120b-mxfp4-q4",
+        ],
+        downloadable: true,
+        // Prefer 128 GB+ hosts; experts stay MXFP4-packed at runtime.
+        approx_size_bytes: Some(62_358_100_309),
     },
 ];
 
@@ -2312,16 +2439,21 @@ fn download_options_payload() -> Value {
         }).collect::<Vec<_>>(),
         "examples": [
             "ax-engine download qwen36-35b",
-            "ax-engine download qwen36-27b-8bit",
             "ax-engine download gemma4-12b",
-            "ax-engine download gemma4-e2b-6bit",
+            "ax-engine download llama3.3-70b",
+            "ax-engine download mistral-small",
+            "ax-engine download gpt-oss-20b",
             "ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json",
         ],
     })
 }
 
 fn format_download_options() -> String {
-    let mut lines = vec!["Available Qwen3.6 and Gemma 4 MLX download targets:".to_string()];
+    let mut lines = vec![
+        "Available direct-mode MLX download targets".to_string(),
+        "(primary: Gemma 4 / Qwen 3.x / GLM; secondary: Llama, Mistral, GPT-OSS):"
+            .to_string(),
+    ];
     for profile in MODEL_PROFILES.iter().filter(|profile| profile.downloadable) {
         let aliases = profile.aliases.join(", ");
         lines.push(format!(
@@ -2331,9 +2463,10 @@ fn format_download_options() -> String {
     }
     lines.push("Examples:".into());
     lines.push("  ax-engine download qwen36-35b".into());
-    lines.push("  ax-engine download qwen36-27b-8bit".into());
     lines.push("  ax-engine download gemma4-12b".into());
-    lines.push("  ax-engine download gemma4-e2b-6bit".into());
+    lines.push("  ax-engine download llama3.3-70b".into());
+    lines.push("  ax-engine download mistral-small".into());
+    lines.push("  ax-engine download gpt-oss-20b".into());
     lines.push("  ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json".into());
     lines.join("\n")
 }

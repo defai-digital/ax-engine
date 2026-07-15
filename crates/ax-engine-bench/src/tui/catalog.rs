@@ -16,6 +16,13 @@ pub(super) struct Variant {
 
 impl Variant {
     pub fn precision(&self) -> String {
+        let lower = self.profile.repo_id.to_ascii_lowercase();
+        if lower.contains("mxfp4") {
+            if lower.contains("q4") || lower.contains("-q4") {
+                return "MXFP4-Q4".into();
+            }
+            return "MXFP4".into();
+        }
         self.bits
             .map(|b| format!("{b}-bit"))
             .unwrap_or_else(|| self.profile.label.to_string())
@@ -57,9 +64,20 @@ impl Family {
         family_display_name(&self.key)
     }
 
+    /// Primary productivity stack vs secondary preview families.
+    pub fn is_primary(&self) -> bool {
+        is_primary_family_key(&self.key)
+    }
+
     pub fn installed_count(&self) -> usize {
         self.variants.iter().filter(|v| v.installed).count()
     }
+}
+
+/// Primary catalog families (deepest performance + product focus).
+pub(super) fn is_primary_family_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    k.starts_with("gemma") || k.starts_with("qwen") || k.starts_with("glm")
 }
 
 /// Friendly display name for a catalog family key.
@@ -70,8 +88,17 @@ pub(super) fn family_display_name(key: &str) -> String {
         "gemma4-26b" => "Gemma 4 26B".into(),
         "gemma4-31b" => "Gemma 4 31B".into(),
         "glm4.7-flash" => "GLM 4.7 Flash".into(),
+        "qwen3.5-9b" => "Qwen 3.5 9B".into(),
         "qwen3.6-27b" => "Qwen 3.6 27B".into(),
         "qwen3.6-35b" => "Qwen 3.6 35B".into(),
+        "llama3.1-8b" => "Llama 3.1 8B".into(),
+        "llama3.3-70b" => "Llama 3.3 70B".into(),
+        "llama4-scout" => "Llama 4 Scout".into(),
+        "mistral-small" => "Mistral Small".into(),
+        "ministral-8b" => "Ministral 8B".into(),
+        "devstral-small" => "Devstral Small".into(),
+        "gpt-oss-20b" => "GPT-OSS 20B".into(),
+        "gpt-oss-120b" => "GPT-OSS 120B".into(),
         other => {
             // Fallback: turn `foo-bar` into title-ish text without inventing facts.
             other
@@ -92,8 +119,25 @@ pub(super) fn family_display_name(key: &str) -> String {
 }
 
 /// Quantization bit-width parsed from a repo id (e.g. `...-4bit` -> 4).
+///
+/// Also maps GPT-OSS product tags (`MXFP4-Q4`, bare `MXFP4`) to 4-bit so the
+/// wizard can sort and badge those variants.
 pub(super) fn quant_bits(repo_id: &str) -> Option<u32> {
     let lower = repo_id.to_ascii_lowercase();
+    if lower.contains("mxfp4") {
+        if let Some(idx) = lower.rfind('q') {
+            let digits: String = lower[idx + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if let Ok(bits) = digits.parse::<u32>()
+                && bits > 0
+            {
+                return Some(bits);
+            }
+        }
+        return Some(4);
+    }
     let idx = lower.find("bit")?;
     let digits: String = lower[..idx]
         .chars()
