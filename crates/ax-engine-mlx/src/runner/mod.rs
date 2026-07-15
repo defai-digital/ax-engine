@@ -17,8 +17,10 @@ use mlx_sys::{
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
-    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
-    NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
+    DiffusionScheduleUpdate, EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary,
+    MultimodalPrefillAdapter, NativeModelArtifacts, NativeModelBindingSummary,
+    NativeModelManifest, NativeTensorRole, ROUTE_DECISION_AX_MLX_GENERATION_KIND,
+    ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
     ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
@@ -28,8 +30,9 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
-    ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, RequestExecutionUpdate, RequestId,
-    RequestMultimodalInputs, RunnerInput, RunnerOutput, StopReason, upsert_route_decision,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, ROUTE_DECISION_AX_MLX_LAYER_FORWARD_ROUTE,
+    RequestExecutionUpdate, RequestId, RequestMultimodalInputs, RunnerInput, RunnerOutput,
+    StopReason, upsert_route_decision,
 };
 
 use crate::batched_decode_certification::load_batched_decode_certification;
@@ -2916,6 +2919,11 @@ struct RequestState {
     /// DiffusionGemma generates `canvas_size` tokens per block; the runner
     /// drains them one at a time through the standard decode path.
     diffusion_block_queue: VecDeque<u32>,
+    /// Schedule feedback for the engine after the latest monoblock generate.
+    pending_diffusion_schedule: Option<DiffusionScheduleUpdate>,
+    /// In-progress multi-step denoise workspace (Phase B). Present only when
+    /// `AX_DIFFUSION_STEPS_PER_ENGINE_STEP` is set and a block is mid-denoise.
+    diffusion_workspace: Option<crate::diffusion::DiffusionBlockWorkspace>,
     /// Request-local DiffusionGemma embedding table reused across generated
     /// blocks for self-conditioning.
     diffusion_embed_table: Option<MlxArray>,
@@ -3053,6 +3061,8 @@ impl RequestState {
             rotating_sliding_latch: None,
             bonus_queue: VecDeque::new(),
             diffusion_block_queue: VecDeque::new(),
+            pending_diffusion_schedule: None,
+            diffusion_workspace: None,
             diffusion_embed_table: None,
             next_model_last_token: None,
             pending_direct: None,
@@ -3812,7 +3822,8 @@ impl MlxRunner {
         let batched_decode_certification = load_batched_decode_certification(artifacts);
         let batched_decode_capabilities = BatchedDecodeCapabilities::from_loaded_model(
             has_mtp,
-            cfg.diffusion.is_some(),
+            // Prefer GenerationKind (ADR-038); diffusion config remains a fallback.
+            cfg.is_block_diffusion(),
             &kv_layer_windows,
             &weights.layers,
             batched_decode_certification,
@@ -4047,6 +4058,7 @@ impl MlxRunner {
                 output_tokens,
                 stop_reason,
                 error: None,
+                diffusion_schedule: None,
             });
         }
         updates
@@ -4100,6 +4112,7 @@ impl MlxRunner {
                 output_tokens: sampled.collect(),
                 stop_reason,
                 error: None,
+                diffusion_schedule: None,
             });
         }
         updates
@@ -4220,6 +4233,31 @@ impl ExecutionRunner for MlxRunner {
         let mut decode_profile = DecodeProfileSnapshot::default();
         let mut kv_cache = KvCacheTelemetry::default();
         let mut prefix_cache = MlxPrefixCacheTelemetry::default();
+
+        // ADR-038: emit generation kind + layer-forward route on every step so
+        // benchmarks and serving telemetry do not infer paradigm from family
+        // strings alone.
+        upsert_route_decision(
+            &mut route_metadata.crossover_decisions,
+            ROUTE_DECISION_AX_MLX_GENERATION_KIND,
+            self.cfg.generation_kind.telemetry_code(),
+        );
+        if let Some(route) = ax_engine_core::resolve_layer_forward_route(&self.cfg.model_family) {
+            upsert_route_decision(
+                &mut route_metadata.crossover_decisions,
+                ROUTE_DECISION_AX_MLX_LAYER_FORWARD_ROUTE,
+                route.telemetry_code(),
+            );
+        }
+        // Prefer scheduler-planned work unit (ADR-038); fall back to local plan.
+        if let Some(first) = input.execution_batch.items.first() {
+            let work_unit = first.planned_work_unit;
+            upsert_route_decision(
+                &mut route_metadata.crossover_decisions,
+                ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
+                work_unit.telemetry_code(),
+            );
+        }
 
         // ── Batched dense-decode interception (AX_MLX_BATCHED_DECODE, default
         // off). Eligible greedy decode items run through one shared batched
@@ -5335,6 +5373,7 @@ impl MlxRunner {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: Some("empty token slice".into()),
+                    diffusion_schedule: None,
                 },
                 ngram_acceleration: NgramAccelerationTelemetry::default(),
                 mtp_telemetry: MtpTelemetry::default(),
@@ -5365,6 +5404,21 @@ impl MlxRunner {
             .and_then(|inputs| inputs.gemma4_unified.as_ref())
             .filter(|inputs| !inputs.is_empty());
         let has_gemma4_unified_multimodal_prefill = is_prefill && gemma4_unified_inputs.is_some();
+        // ADR-038 Phase 4: multimodal is a prefill adapter into the same
+        // generation strategy — never a parallel generation engine.
+        if let Some(inputs) = multimodal_inputs {
+            let adapter =
+                MultimodalPrefillAdapter::from_request_inputs(inputs, self.cfg.generation_kind);
+            debug_assert!(
+                !adapter.is_separate_generation_engine(),
+                "multimodal must not invent a separate generation engine"
+            );
+            debug_assert_eq!(
+                adapter.feeds_generation, self.cfg.generation_kind,
+                "multimodal adapter must feed the model generation kind"
+            );
+            let _ = adapter.requires_prefill_projection;
+        }
         let mut gemma4_unified_multimodal_telemetry = Gemma4UnifiedMultimodalTelemetry::default();
         if has_gemma4_unified_multimodal_prefill && let Some(inputs) = gemma4_unified_inputs {
             gemma4_unified_multimodal_telemetry.record_prefill(inputs, self.has_mtp());
@@ -5806,6 +5860,10 @@ impl MlxRunner {
         let kv_usage = state
             .cache
             .usage_snapshot_with_layer_windows(&self.kv_layer_windows);
+        // Capture schedule feedback only after a monoblock generate.
+        // Drain-only steps must not overwrite denoise_steps with 0.
+        let diffusion_schedule = state.pending_diffusion_schedule.take();
+
         if stop_reason.is_none() {
             let mut states = self.states.lock();
             states.insert(item.request_id, state);
@@ -5818,16 +5876,32 @@ impl MlxRunner {
 
         let mut sampled_tokens = sampled_tokens.into_iter();
         let output_token = sampled_tokens.next();
-        let output_tokens = sampled_tokens.collect();
+        let output_tokens: Vec<u32> = sampled_tokens.collect();
+        // Mid-denoise schedule-only progress executes zero visible tokens.
+        let tokens_executed = if output_token.is_none()
+            && output_tokens.is_empty()
+            && matches!(
+                diffusion_schedule,
+                Some(DiffusionScheduleUpdate {
+                    commit_ready: false,
+                    block_committed: false,
+                    ..
+                })
+            ) {
+            0
+        } else {
+            item.scheduled_token_count
+        };
 
         MlxItemRun {
             update: RequestExecutionUpdate {
                 request_id: item.request_id,
-                tokens_executed: item.scheduled_token_count,
+                tokens_executed,
                 output_token,
                 output_tokens,
                 stop_reason,
                 error: None,
+                diffusion_schedule,
             },
             ngram_acceleration,
             mtp_telemetry,
@@ -6703,33 +6777,125 @@ impl MlxRunner {
             return vec![tok];
         }
 
-        // Diffusion path: when the diffusion queue is exhausted, generate a
-        // new block via bidirectional denoising + causal commit. This replaces
-        // the standard AR decode step for DiffusionGemma models.
+        // Diffusion path: when the diffusion queue is exhausted, denoise a
+        // new block (monoblock by default, or budgeted multi-step when
+        // AX_DIFFUSION_STEPS_PER_ENGINE_STEP is set).
         if let Some(diff_cfg) = self.cfg.diffusion.as_ref() {
             let token_offset = state.cache.seq_len();
             let remaining_output_budget = options
                 .request_context
                 .map(|ctx| ctx.max_output_tokens.saturating_sub(ctx.generated_len));
-            let result = crate::diffusion::generate_diffusion_block(
+            let commit_policy = crate::diffusion::DiffusionCommitPolicy {
+                truncation_terminal_ids: &self.terminal_token_ids,
+                request_terminal_ids: options.terminal_token_ids,
+                remaining_output_budget,
+            };
+            // Unset budget → monoblock (historical default).
+            let step_budget =
+                crate::fastpath::diffusion_steps_per_engine_step().unwrap_or(usize::MAX);
+
+            if step_budget == usize::MAX && state.diffusion_workspace.is_none() {
+                let result = crate::diffusion::generate_diffusion_block(
+                    &self.cfg,
+                    diff_cfg,
+                    &self.weights,
+                    &mut state.cache,
+                    &mut state.rng,
+                    token_offset,
+                    &mut state.diffusion_embed_table,
+                    commit_policy,
+                );
+                state.decode_telemetry.record_diffusion_block(&result);
+                state.pending_diffusion_schedule = Some(DiffusionScheduleUpdate {
+                    denoise_steps_in_block: result.denoise_steps,
+                    commit_ready: false,
+                    block_committed: true,
+                });
+                let mut queue: VecDeque<u32> = result.tokens.into();
+                if let Some(eos_pos) = queue
+                    .iter()
+                    .position(|&tok| self.terminal_token_ids.contains(&tok))
+                {
+                    queue.truncate(eos_pos + 1);
+                }
+                let tok = queue.pop_front().unwrap_or(0);
+                state.diffusion_block_queue = queue;
+                return vec![tok];
+            }
+
+            // Budgeted multi-step denoise (Phase B).
+            if state.diffusion_workspace.is_none() {
+                state.diffusion_workspace = Some(crate::diffusion::open_diffusion_block(
+                    &self.cfg,
+                    diff_cfg,
+                    &self.weights,
+                    &mut state.rng,
+                    token_offset,
+                    &mut state.diffusion_embed_table,
+                ));
+            }
+            let progress = match state.diffusion_workspace.as_mut() {
+                Some(ws) => crate::diffusion::advance_diffusion_workspace(
+                    ws,
+                    &self.cfg,
+                    &self.weights,
+                    &state.cache,
+                    &mut state.rng,
+                    &state.diffusion_embed_table,
+                    step_budget,
+                ),
+                None => {
+                    // Defensive: fall back to monoblock if open failed unexpectedly.
+                    let result = crate::diffusion::generate_diffusion_block(
+                        &self.cfg,
+                        diff_cfg,
+                        &self.weights,
+                        &mut state.cache,
+                        &mut state.rng,
+                        token_offset,
+                        &mut state.diffusion_embed_table,
+                        commit_policy,
+                    );
+                    state.decode_telemetry.record_diffusion_block(&result);
+                    state.pending_diffusion_schedule = Some(DiffusionScheduleUpdate {
+                        denoise_steps_in_block: result.denoise_steps,
+                        commit_ready: false,
+                        block_committed: true,
+                    });
+                    let mut queue: VecDeque<u32> = result.tokens.into();
+                    if let Some(eos_pos) = queue
+                        .iter()
+                        .position(|&tok| self.terminal_token_ids.contains(&tok))
+                    {
+                        queue.truncate(eos_pos + 1);
+                    }
+                    let tok = queue.pop_front().unwrap_or(0);
+                    state.diffusion_block_queue = queue;
+                    return vec![tok];
+                }
+            };
+            if !progress.commit_ready {
+                // Mid-denoise: no visible token yet; schedule DenoiseStep again.
+                state.pending_diffusion_schedule = Some(progress.schedule_update());
+                return Vec::new();
+            }
+            let Some(ws) = state.diffusion_workspace.take() else {
+                return Vec::new();
+            };
+            let result = crate::diffusion::commit_diffusion_workspace(
+                ws,
                 &self.cfg,
-                diff_cfg,
                 &self.weights,
                 &mut state.cache,
-                &mut state.rng,
-                token_offset,
-                &mut state.diffusion_embed_table,
-                crate::diffusion::DiffusionCommitPolicy {
-                    truncation_terminal_ids: &self.terminal_token_ids,
-                    request_terminal_ids: options.terminal_token_ids,
-                    remaining_output_budget,
-                },
+                commit_policy,
             );
             state.decode_telemetry.record_diffusion_block(&result);
+            state.pending_diffusion_schedule = Some(DiffusionScheduleUpdate {
+                denoise_steps_in_block: result.denoise_steps,
+                commit_ready: false,
+                block_committed: true,
+            });
             let mut queue: VecDeque<u32> = result.tokens.into();
-            // EOS early termination (dInfer evidence: 15–40% gain). If the
-            // committed block contains an EOS token, truncate the queue at
-            // that position so we never generate a follow-on block.
             if let Some(eos_pos) = queue
                 .iter()
                 .position(|&tok| self.terminal_token_ids.contains(&tok))
@@ -7153,38 +7319,30 @@ impl MlxRunner {
         .0;
         let confidence_mode = gemma4_assistant_mtp_confidence_mode_from_env();
 
+        // Open once-validated draft session and freeze shared target K/V once
+        // for the multi-depth loop (family/projection checks + peek amortize).
+        let Ok(mut session) = crate::model::Gemma4AssistantDraftSession::open(
+            &runtime.cfg,
+            &runtime.weights,
+            &self.cfg,
+            &self.weights,
+            runtime.target_shared_layers,
+        ) else {
+            return (vec![], vec![], vec![]);
+        };
+        if session.bind_target_cache(&state.cache).is_err() {
+            return (vec![], vec![], vec![]);
+        }
+
         // Ungated (gate disabled, gate <= 0): a single sampled draft carrying a
         // log-prob + distribution so rejection-sampling acceptance can engage.
         // Recurrent multi-depth drafting is the gated greedy path below; the
         // sampled path stays depth-1 (per-depth sampled log-probs are out of scope).
         if first_gate <= 0.0 {
             let bf16_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
-            // Try compiled closure path first; fall back to imperative.
-            let forward_result = crate::model::gemma4_assistant_forward_one_compiled(
-                &runtime.cfg,
-                &runtime.weights,
-                &self.cfg,
-                &self.weights,
-                &state.cache,
-                runtime.target_shared_layers,
-                last_token,
-                &bf16_hidden,
-                base_position,
-            )
-            .unwrap_or_else(|| {
-                crate::model::gemma4_assistant_forward_one(
-                    &runtime.cfg,
-                    &runtime.weights,
-                    &self.cfg,
-                    &self.weights,
-                    &state.cache,
-                    runtime.target_shared_layers,
-                    last_token,
-                    &bf16_hidden,
-                    base_position,
-                )
-            });
-            let Ok((logits, _projected_hidden)) = forward_result else {
+            let Ok((logits, _projected_hidden)) =
+                session.forward_one(last_token, &bf16_hidden, base_position)
+            else {
                 return (vec![], vec![], vec![]);
             };
             eval(&[&logits]);
@@ -7204,18 +7362,8 @@ impl MlxRunner {
         // Gated greedy recurrent drafting (the default). Each position d feeds the
         // assistant's `post_projection` "backbone hidden" estimate of position d
         // back in as the next step's hidden — the same signal the production verify
-        // forward provides at depth 0 — and advances the RoPE position by one. The
-        // assistant attends the target's frozen KV (it has no k/v of its own); the
-        // drafted token's signal flows through the residual, which the depth-2
-        // sweep confirmed is enough to hold ~97-100% accept on the 2nd token.
-        //
-        // A position is proposed only when its T=1.0 argmax confidence clears the
-        // gate — 0.85 on the first token, tight 0.999 on deeper positions (a wrong
-        // deep draft costs a full target recompute, so the deep gate stays tight).
-        // A miss stops drafting. Suppression is correctness-preserving: a short or
-        // empty draft just verifies fewer speculative positions, never changing the
-        // committed token. Greedy drafts carry no log-prob, so acceptance falls to
-        // argmax-match (the Gemma default acceptance mode).
+        // forward provides at depth 0 — and advances the RoPE position by one.
+        // Confidence gates stop drafting early (correctness-preserving).
         let deep_gate =
             resolve_gemma4_assistant_mtp_deep_gate(speculation_profile, Some(sampling.temperature))
                 .0;
@@ -7223,38 +7371,16 @@ impl MlxRunner {
         let mut cur_token = last_token;
         let mut cur_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
         for d in 0..max_depth {
-            // Try compiled closure path first; fall back to imperative.
-            let forward_result = crate::model::gemma4_assistant_forward_one_compiled(
-                &runtime.cfg,
-                &runtime.weights,
-                &self.cfg,
-                &self.weights,
-                &state.cache,
-                runtime.target_shared_layers,
-                cur_token,
-                &cur_hidden,
-                base_position + d,
-            )
-            .unwrap_or_else(|| {
-                crate::model::gemma4_assistant_forward_one(
-                    &runtime.cfg,
-                    &runtime.weights,
-                    &self.cfg,
-                    &self.weights,
-                    &state.cache,
-                    runtime.target_shared_layers,
-                    cur_token,
-                    &cur_hidden,
-                    base_position + d,
-                )
-            });
-            let Ok((logits, projected_hidden)) = forward_result else {
+            let Ok((logits, projected_hidden)) =
+                session.forward_one(cur_token, &cur_hidden, base_position + d)
+            else {
                 break;
             };
             let (token, confidence) =
                 argmax_with_softmax_confidence_for_logits(&logits, confidence_mode);
-            let gate = if d == 0 { first_gate } else { deep_gate };
-            if confidence < gate {
+            if !crate::model::gemma4_assistant_draft_position_accepted(
+                d, confidence, first_gate, deep_gate,
+            ) {
                 break;
             }
             drafts.push(token);
@@ -10176,6 +10302,7 @@ fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemR
             output_tokens: Vec::new(),
             stop_reason: None,
             error: Some(error.into()),
+            diffusion_schedule: None,
         },
         ngram_acceleration: NgramAccelerationTelemetry::default(),
         mtp_telemetry: MtpTelemetry::default(),
@@ -10966,7 +11093,14 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
     {
         validate_gemma4_interleaved_attention(manifest)?;
     }
-    if manifest.model_family == "diffusion_gemma" {
+    // Prefer generation kind (ADR-038) over family-string-only gating; keep the
+    // family label as a belt-and-suspenders for older manifests without a
+    // filled diffusion config block.
+    if matches!(
+        manifest.generation_kind(),
+        ax_engine_core::GenerationKind::BlockDiffusion
+    ) || manifest.model_family == "diffusion_gemma"
+    {
         validate_diffusion_gemma_manifest(manifest)?;
     }
     Ok(())
@@ -12990,6 +13124,7 @@ mod tests {
         let item = ax_engine_core::ExecutionItem {
             request_id: RequestId(21),
             mode: ExecutionMode::Prefill,
+            planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
             input_token_slice: vec![5, 6],
             reused_prefix_token_slice: vec![1, 2, 3, 4],
             position_range: PositionRange {
@@ -13024,6 +13159,7 @@ mod tests {
         let mut item = ax_engine_core::ExecutionItem {
             request_id: RequestId(22),
             mode: ExecutionMode::Prefill,
+            planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
             input_token_slice: vec![5, 6],
             reused_prefix_token_slice: vec![1, 2, 3, 4],
             position_range: PositionRange {
@@ -13277,6 +13413,7 @@ mod tests {
         let item = ax_engine_core::ExecutionItem {
             request_id: RequestId(10),
             mode: ExecutionMode::Prefill,
+            planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
             input_token_slice: vec![0; 2048],
             reused_prefix_token_slice: Vec::new(),
             position_range: PositionRange {

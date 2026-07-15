@@ -870,39 +870,52 @@ env_flag!(
 // per process and cached via OnceLock.
 
 env_flag!(
-    /// `AX_MLX_GEMMA4_ASSISTANT_COMPILE` — wrap the Gemma4 assistant MTP
-    /// forward in an `MlxClosure` compiled via `mlx_compile`.
+    /// `AX_MLX_GEMMA4_ASSISTANT_COMPILE` — reserved for pure-graph assistant
+    /// MTP compile (Phase B).
     ///
     /// **Default: OFF** (opt-in via `AX_MLX_GEMMA4_ASSISTANT_COMPILE=1`).
-    /// The assistant attends the target's frozen KV cache for each draft
-    /// depth; the compiled graph fuses the ~100+ per-step MLX dispatches
-    /// (embed, pre-projection, N assistant layers with target SDPA, final
-    /// norm, lm_head, post-projection) into a single compiled graph.
-    /// Falls back to the imperative `gemma4_assistant_forward_one` path
-    /// when disabled or compilation fails.
+    ///
+    /// History: a Phase-4 scaffold wrapped the imperative assistant forward
+    /// in an uncompiled `MlxClosure` that re-synced scalars every depth and
+    /// could only add overhead. That wrapper is removed; when this flag is
+    /// set the runner still runs the real forward path until a pure
+    /// `mlx_compile` design (target KV + dynamic RoPE as array inputs) lands
+    /// with same-artifact A/B evidence for default-on promotion.
     gemma4_assistant_compile_enabled,
     "AX_MLX_GEMMA4_ASSISTANT_COMPILE"
 );
 
 env_flag!(
-    /// `AX_DIFFUSION_EMBEDDING_CACHE` — cache per-layer embedding inputs
-    /// across denoise steps when token IDs are unchanged. Uses a
-    /// GPU-side sum fingerprint to detect changes (2 dispatches + 1
-    /// eval) and skips 46 embedding dispatches on cache hit. Default
-    /// OFF; opt-in for benchmarking.
+    /// `AX_DIFFUSION_NO_EMBEDDING_CACHE` — opt-out of per-layer embedding
+    /// input caching on the imperative denoise fallback. Default: cache is
+    /// **ON** for non-full-pipeline paths (fingerprint skip of ~46 embed
+    /// dispatches when tokens are unchanged). Full-pipeline compile does
+    /// not use this cache (`mlx_compile` purity).
+    diffusion_no_embedding_cache,
+    "AX_DIFFUSION_NO_EMBEDDING_CACHE"
+);
+
+env_flag!(
+    /// `AX_DIFFUSION_NO_KV_CONCAT_BUFFER` — opt-out of pre-allocated KV
+    /// concatenation buffers on the imperative denoise fallback. Default:
+    /// buffer path is **ON** for non-full-pipeline paths (`slice_update` +
+    /// `contiguous`/`eval`, bit-matched to re-concatenate). Full-pipeline
+    /// compile does not use these buffers (`mlx_compile` purity).
+    diffusion_no_kv_concat_buffer,
+    "AX_DIFFUSION_NO_KV_CONCAT_BUFFER"
+);
+
+// Legacy opt-in names kept so older bench scripts still force-enable (no-ops
+// when the new defaults already enable the path). Prefer the `NO_*` kill
+// switches for new work.
+env_flag!(
+    /// Legacy: `AX_DIFFUSION_EMBEDDING_CACHE=1` force-enable (redundant with default ON).
     diffusion_embedding_cache_enabled,
     "AX_DIFFUSION_EMBEDDING_CACHE"
 );
 
 env_flag!(
-    /// `AX_DIFFUSION_KV_CONCAT_BUFFER` — pre-allocate KV concatenation
-    /// buffers on the first denoise step and update the canvas slice via
-    /// `slice_update` on subsequent steps, avoiding re-`concatenate`-ing the
-    /// prompt prefix. **Known issue:** this `slice_update` path is not
-    /// bit-equivalent to the canonical `concatenate` path (≈237/256 token
-    /// divergence on a 512-token block, perturbing convergence) and shows no
-    /// throughput gain in a bit-exact configuration. Default OFF; opt-in only
-    /// for benchmarking a future bit-exact reimplementation.
+    /// Legacy: `AX_DIFFUSION_KV_CONCAT_BUFFER=1` force-enable (redundant with default ON).
     diffusion_kv_concat_buffer_enabled,
     "AX_DIFFUSION_KV_CONCAT_BUFFER"
 );
@@ -993,6 +1006,14 @@ pub fn diffusion_entropy_plateau_delta() -> Option<f32> {
 pub fn diffusion_max_steps() -> Option<usize> {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_MAX_STEPS"))
+}
+
+/// Diffusion: max denoise steps to run per engine decode call when multi-step
+/// scheduling is enabled. `None` / unset means monoblock (run until
+/// convergence or `max_denoise_steps` inside one call).
+pub fn diffusion_steps_per_engine_step() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_STEPS_PER_ENGINE_STEP"))
 }
 
 /// Diffusion: steps between convergence checks. Defaults to 1 (check every

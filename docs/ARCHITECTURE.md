@@ -115,6 +115,27 @@ certified only for dense, full-attention Qwen3; additional model families need
 equivalence, KV/preemption, and server-path performance evidence before their
 certification is promoted.
 
+## Architecture Composition And Generation Strategies (ADR-038)
+
+Portable structural views live in `ax-engine-core` and are derived from
+`NativeModelManifest` without a second on-disk schema:
+
+- `ArchitectureSpec` / `StructuralCapabilities` — layer attention/FFN/cache kinds
+- `GenerationKind` — autoregressive, block diffusion, or encoder embed
+- `WorkUnitKind` on each `ExecutionItem.planned_work_unit` — prefill chunk,
+  token decode, denoise step, block commit, or embed forward
+- `ARCHITECTURE_REGISTRY` / `LayerForwardRoute` — static convert/default route
+  and layer-forward dispatch (prefer over open family-string allowlists)
+- `MultimodalPrefillAdapter` — vision/audio feed the same generation strategy
+
+Native sessions bind `EngineCore::set_generation_kind` from the manifest so the
+scheduler plans `DenoiseStep` for DiffusionGemma after prefill. Runners emit
+`ax_mlx_generation_kind`, `ax_mlx_generation_work_unit`, and
+`ax_mlx_layer_forward_route` on step telemetry. Diffusion monoblock generation
+still runs denoise+commit inside one MLX block; schedule progress fields and
+`DiffusionScheduleUpdate` exist so multi-step denoise/commit planning can
+extend without another schema break.
+
 ### `ax-engine-bench` and `ax-engine-py`
 
 Tooling and binding crates can use convenience dependencies when they help with

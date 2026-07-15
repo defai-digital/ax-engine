@@ -138,6 +138,14 @@ Qwen 3 without MTP, diffusion, sliding attention, MoE, MLA, layer gating, or KV
 compression is structurally supported, but it is not numerically certified:
 real-weight sequential-oracle probes diverge for some prompt lengths because
 MLX batched and single-row numerical paths can select different greedy tokens.
+Gemma 4 interleaved SWA is intentionally **not** that dense pilot; a separate
+`gemma_swa_decode_structural_rejections` helper tracks a future SWA-aware pilot
+(dense interleaved SWA only — MoE and per-layer gating still block). Assistant
+MTP multi-depth freezes shared sliding/full target K/V (and any rotating ring
+layout) once per draft attempt via `Gemma4AssistantDraftSession::bind_target_cache`,
+so SWA ring masks stay consistent across depth steps without re-peeking.
+Gemma 4 26B dual-path MoE fuses dense+expert residual with the shared post-norm
+via `combine_gemma4_dual_path_outputs` when expert post-norm is absent.
 Production routing therefore fails closed even when `AX_MLX_BATCHED_DECODE=1`.
 At model load, the runner looks for `batched-decode-certification.json` beside
 `model-manifest.json`. Evidence only certifies when it matches the
@@ -254,7 +262,7 @@ Interpretation rule:
 
 - Weight loader: reads `NativeTensorSpec` offsets from safetensors → `MlxArray`
 - Quantized weight binding: Q4_K_M → `mlx_quantized_matmul`
-- Model graph: Qwen3 dense (GQA + SwiGLU), Qwen3.5 MoE (linear attention + MoE FFN + attn_output_gate), Gemma4 (per-layer embeddings, per-layer input gating, sliding-window + full attention, KV sharing, logit softcapping, sorted SwitchGLU expert gather for large MoE prefill batches)
+- Model graph: Qwen3 dense (GQA + SwiGLU), Qwen3.5 MoE (linear attention + MoE FFN + attn_output_gate), Gemma4 (per-layer embeddings, per-layer input gating, sliding-window + full attention, KV sharing, logit softcapping, sorted SwitchGLU expert gather for large MoE prefill batches; assistant-MTP multi-depth draft via `Gemma4AssistantDraftSession` with once-per-attempt frozen shared target K/V, `rope_dynamic` Q offset, + confidence gates; `AX_MLX_GEMMA4_ASSISTANT_COMPILE` still opt-in pending pure-graph MlxClosure + A/B)
 - Chunked KV cache with slice_update growth and O(1) n-gram branch rollback
 - N-gram acceleration with EMA gating
 - Chunked prefill loop

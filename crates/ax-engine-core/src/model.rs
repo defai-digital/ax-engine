@@ -736,6 +736,18 @@ pub struct NativeModelArtifacts {
     manifest: NativeModelManifest,
 }
 
+impl NativeModelManifest {
+    /// Structural architecture view (ADR-038). Derived; not a second on-disk format.
+    pub fn architecture_spec(&self) -> crate::architecture::ArchitectureSpec {
+        crate::architecture::ArchitectureSpec::from_manifest(self)
+    }
+
+    /// Generation paradigm derived from this manifest (ADR-038).
+    pub fn generation_kind(&self) -> crate::generation::GenerationKind {
+        crate::generation::GenerationKind::from_manifest(self)
+    }
+}
+
 impl NativeModelArtifacts {
     /// Build artifacts directly from a pre-parsed manifest and root directory.
     /// Used by the GGUF loader to bypass the JSON manifest file.

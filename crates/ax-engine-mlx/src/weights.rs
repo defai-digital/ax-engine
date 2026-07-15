@@ -632,8 +632,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         };
         let router_scale =
             try_take_plain(specs, &mut name_map, NativeTensorRole::FfnGateInpScale, idx)?;
-        let router_combined_scale = if artifacts.manifest().model_family == "gemma4"
-            || artifacts.manifest().model_family == "diffusion_gemma"
+        // Gemma4 MoE router scale applies to the Gemma4 backbone including
+        // DiffusionGemma (same architecture, BlockDiffusion generation — ADR-038).
+        let router_combined_scale = if matches!(
+            artifacts.manifest().model_family.as_str(),
+            "gemma4" | "gemma4_assistant" | "diffusion_gemma"
+        ) || artifacts.manifest().generation_kind()
+            == ax_engine_core::GenerationKind::BlockDiffusion
         {
             router_scale
                 .as_ref()

@@ -105,6 +105,9 @@ fn build_mlx_core(
     let mut core =
         EngineCore::with_runtime_components(config.kv_config, runner, DeterministicSampler);
     core.set_prefix_reuse_enabled(native_prefix_reuse_enabled());
+    // ADR-038: bind generation strategy so the scheduler plans DenoiseStep for
+    // diffusion models (and PrefillChunk / TokenDecode for AR) per request.
+    core.set_generation_kind(artifacts.manifest().generation_kind());
     Ok(core)
 }
 

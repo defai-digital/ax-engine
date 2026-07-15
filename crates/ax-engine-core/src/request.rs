@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use crate::execution_plan::ExecutionPlanBinding;
 use crate::gemma4_unified::Gemma4UnifiedRuntimeInputs;
+use crate::generation::GenerationKind;
 use crate::ids::{ModelId, RequestId, SequenceNo};
 use crate::kv::BlockTable;
 use crate::sampling::{SamplingParams, StopReason};
@@ -234,6 +235,14 @@ pub struct RequestRecord {
     pub terminal_stop_reason: Option<StopReason>,
     pub last_error: Option<String>,
     pub metrics_snapshot: Option<String>,
+    /// Generation paradigm for strategy-aware scheduling (ADR-038).
+    pub generation_kind: GenerationKind,
+    /// Diffusion schedule progress (ADR-038 multi-step boundary).
+    pub diffusion_denoise_steps_in_block: u32,
+    /// Runner signals the canvas is ready for causal commit.
+    pub diffusion_commit_ready: bool,
+    /// Current diffusion block has been committed (next unit starts denoise).
+    pub diffusion_block_committed: bool,
 }
 
 impl RequestRecord {
@@ -258,7 +267,28 @@ impl RequestRecord {
             terminal_stop_reason: None,
             last_error: None,
             metrics_snapshot: None,
+            generation_kind: GenerationKind::Autoregressive,
+            diffusion_denoise_steps_in_block: 0,
+            diffusion_commit_ready: false,
+            diffusion_block_committed: false,
         }
+    }
+
+    /// Bind the generation strategy for this request (from the loaded model).
+    pub fn set_generation_kind(&mut self, generation_kind: GenerationKind) {
+        self.generation_kind = generation_kind;
+    }
+
+    /// Update diffusion schedule progress used by the strategy planner.
+    pub fn set_diffusion_schedule_progress(
+        &mut self,
+        denoise_steps_in_block: u32,
+        commit_ready: bool,
+        block_committed: bool,
+    ) {
+        self.diffusion_denoise_steps_in_block = denoise_steps_in_block;
+        self.diffusion_commit_ready = commit_ready;
+        self.diffusion_block_committed = block_committed;
     }
 
     pub fn snapshot(&self) -> RequestSnapshot {
@@ -280,6 +310,10 @@ impl RequestRecord {
             route_metadata_hint: self.route_metadata_hint.clone(),
             terminal_stop_reason: self.terminal_stop_reason,
             last_error: self.last_error.clone(),
+            generation_kind: self.generation_kind,
+            diffusion_denoise_steps_in_block: self.diffusion_denoise_steps_in_block,
+            diffusion_commit_ready: self.diffusion_commit_ready,
+            diffusion_block_committed: self.diffusion_block_committed,
         }
     }
 
@@ -430,6 +464,14 @@ pub struct RequestSnapshot {
     pub route_metadata_hint: RouteMetadata,
     pub terminal_stop_reason: Option<StopReason>,
     pub last_error: Option<String>,
+    /// Generation paradigm used to plan work units (ADR-038).
+    pub generation_kind: GenerationKind,
+    /// Denoise steps completed in the current diffusion block (0 if N/A).
+    pub diffusion_denoise_steps_in_block: u32,
+    /// Canvas ready for causal commit (diffusion multi-step boundary).
+    pub diffusion_commit_ready: bool,
+    /// Last diffusion block was committed; next unit restarts denoise.
+    pub diffusion_block_committed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]

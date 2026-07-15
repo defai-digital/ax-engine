@@ -1,4 +1,5 @@
 use super::*;
+use crate::WorkUnitKind;
 use crate::ids::{BlockId, CacheGroupId, RequestId, StepId};
 use crate::kv::BlockTableView;
 use crate::scheduler::{ExecutionBatch, ExecutionMode, PositionRange};
@@ -792,6 +793,7 @@ fn prefix_attention_group_predicate_partitions_disabled_batch_shape_before_retry
                 ExecutionItem {
                     request_id: RequestId(31),
                     mode: ExecutionMode::Prefill,
+                    planned_work_unit: WorkUnitKind::PrefillChunk,
                     input_token_slice: vec![1, 2],
                     reused_prefix_token_slice: Vec::new(),
                     position_range: PositionRange {
@@ -806,6 +808,7 @@ fn prefix_attention_group_predicate_partitions_disabled_batch_shape_before_retry
                 ExecutionItem {
                     request_id: RequestId(33),
                     mode: ExecutionMode::Prefill,
+                    planned_work_unit: WorkUnitKind::PrefillChunk,
                     input_token_slice: vec![3, 4],
                     reused_prefix_token_slice: Vec::new(),
                     position_range: PositionRange {
@@ -5153,6 +5156,7 @@ fn copied_prefix_blocks_persist_into_layer_cache_for_future_native_decode() {
             items: vec![ExecutionItem {
                 request_id: RequestId(29),
                 mode: ExecutionMode::Decode,
+                planned_work_unit: WorkUnitKind::TokenDecode,
                 input_token_slice: vec![5],
                 reused_prefix_token_slice: Vec::new(),
                 position_range: PositionRange {
@@ -8880,6 +8884,7 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
                 items: vec![ExecutionItem {
                     request_id,
                     mode: ExecutionMode::Prefill,
+                    planned_work_unit: WorkUnitKind::PrefillChunk,
                     input_token_slice: prompt_tokens.clone(),
                     reused_prefix_token_slice: Vec::new(),
                     position_range: PositionRange {
@@ -8981,6 +8986,7 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
                 items: vec![ExecutionItem {
                     request_id,
                     mode: ExecutionMode::Decode,
+                    planned_work_unit: WorkUnitKind::TokenDecode,
                     input_token_slice: vec![bridge_token],
                     reused_prefix_token_slice: {
                         let mut warmup_tokens = prompt_tokens.clone();
@@ -9291,6 +9297,7 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                 items: vec![ExecutionItem {
                     request_id,
                     mode: ExecutionMode::Prefill,
+                    planned_work_unit: WorkUnitKind::PrefillChunk,
                     input_token_slice: prompt_tokens.clone(),
                     reused_prefix_token_slice: Vec::new(),
                     position_range: PositionRange {
@@ -9389,6 +9396,7 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                     items: vec![ExecutionItem {
                         request_id,
                         mode: ExecutionMode::Decode,
+                        planned_work_unit: WorkUnitKind::TokenDecode,
                         input_token_slice: vec![
                             *generated_tokens
                                 .last()

@@ -3241,6 +3241,7 @@ fn failed_runner_output_from_input(
                 output_tokens: Vec::new(),
                 stop_reason: Some(StopReason::Error),
                 error: Some(error_message.clone()),
+                diffusion_schedule: None,
             })
             .collect(),
         logits_handles: Vec::new(),

@@ -162,6 +162,7 @@ fn item(req: u64, mode: ExecutionMode, tokens: Vec<u32>, start: usize) -> Execut
     ExecutionItem {
         request_id: RequestId(req),
         mode,
+        planned_work_unit: ax_engine_core::work_unit_for_execution_mode(mode),
         input_token_slice: tokens,
         reused_prefix_token_slice: Vec::new(),
         position_range: PositionRange {

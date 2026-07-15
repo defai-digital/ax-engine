@@ -24,42 +24,53 @@
 //! ## Performance optimizations
 //!
 //! The default decode path is the **full-pipeline compiled closure** (see
-//! below). It supersedes the forward-only compiled closure and *bypasses* the
-//! per-layer embedding cache and KV concatenation buffer (it passes `None` for
-//! both), so those two only apply to the non-compiled imperative fallback.
+//! below). Mutable secondary opts (embedding cache, KV concat buffer) stay
+//! **outside** `mlx_compile` graphs: compile traces a pure graph and must not
+//! depend on step-varying control flow or external buffer mutation (same
+//! constraint as the MTP compiled head). Those opts therefore apply on the
+//! imperative / forward-only fallback, where they are **auto-enabled** when
+//! the full pipeline is disabled.
 //!
 //! - **Conditional causal commit skip** (default ON, opt-out:
 //!   `AX_DIFFUSION_NO_SKIP_COMMIT=1`): when the denoise loop converges with at
-//!   least 99% acceptance, the causal commit pass is skipped — the canvas
-//!   tokens are emitted directly, saving ~40 ms. Active in the default path.
+//!   least 99% acceptance, the causal commit pass is skipped when the block
+//!   terminates the request — saving ~40 ms of causal commit weight traffic.
 //!
 //! - **Compiled forward closure** (default ON when the full pipeline is off,
 //!   opt-out: `AX_DIFFUSION_NO_COMPILED_FORWARD=1`): wraps the bidirectional
 //!   forward in an `MlxClosure`, collapsing ~250 per-step C-API calls into one
 //!   dispatched graph. Self-conditioning flows in as an explicit input.
 //!
-//! - **Per-layer embedding cache** (default OFF, opt-in:
-//!   `AX_DIFFUSION_EMBEDDING_CACHE=1`): caches `compute_per_layer_inputs_arr`
-//!   across denoise steps, reusing it when a token fingerprint is unchanged.
-//!   Output-neutral but only reachable on the imperative fallback, so it is
-//!   off by default.
+//! - **Per-layer embedding cache** (auto-ON when full pipeline is off; force
+//!   via `AX_DIFFUSION_EMBEDDING_CACHE=1`): caches
+//!   `compute_per_layer_inputs_arr` across denoise steps when a token
+//!   fingerprint is unchanged. Output-neutral; not used inside full-pipeline
+//!   compile (purity).
 //!
-//! - **KV concatenation buffer** (default OFF, opt-in:
+//! - **KV concatenation buffer** (auto-ON when full pipeline is off; force via
 //!   `AX_DIFFUSION_KV_CONCAT_BUFFER=1`): pre-allocates per-layer KV buffers and
-//!   updates the canvas slice via `slice_update` instead of re-`concatenate`-ing
-//!   the prompt prefix each step. **Known issue:** the `slice_update` path is
-//!   *not* bit-equivalent to the canonical `concatenate` path — on a 512-token
-//!   block it diverges in ~237/256 committed tokens, which perturbs convergence
-//!   (15 vs 17 denoise steps) and can introduce artifacts. It yields no
-//!   throughput benefit in any bit-exact configuration, so it is gated off by
-//!   default pending a bit-exact reimplementation.
+//!   updates the canvas slice via `slice_update` + `contiguous`/`eval` so the
+//!   buffer path matches re-`concatenate` bit-for-bit across steps. Not used
+//!   inside full-pipeline compile (purity).
+//!
+//! - **Resumable denoise workspace** (Phase B): `open` / `advance` / `commit`
+//!   split monoblock generation so a step budget
+//!   (`AX_DIFFUSION_STEPS_PER_ENGINE_STEP`) can drive partial DenoiseStep
+//!   progress. Default (unset) remains monoblock denoise+commit in one call.
+//!
+//! - **Stage profile** (Phase C, opt-in `AX_DIFFUSION_PROFILE=1`): accumulates
+//!   forward vs sample vs commit wall time for denoise observability.
+//!
+//! - **Random-token host buffer reuse** (Phase C): renoise samples reuse a
+//!   pre-sized `Vec<u32>` on the workspace instead of allocating every step.
 //!
 //! ## Full-pipeline compiled forward
 //!
 //! The full-pipeline closure compiles the entire denoise step (forward, softmax,
 //! entropy, sampling, and acceptance) into a single MLX graph, collapsing ~280
 //! per-step dispatches into one. **Default ON**; opt-out via
-//! `AX_DIFFUSION_NO_FULL_PIPELINE=1` (falls back to the compiled/imperative path).
+//! `AX_DIFFUSION_NO_FULL_PIPELINE=1` (falls back to the compiled/imperative path
+//! with embed cache + KV buffer auto-enabled).
 //!
 //! The closure accepts four inputs:
 //!   - `[0]` token_ids: `[canvas_size]` u32
@@ -76,6 +87,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+use ax_engine_core::DiffusionScheduleUpdate;
 
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, arange, argmax, argsort_axis, astype,
@@ -312,40 +325,40 @@ fn denoise_step(
     kv_buffers: Option<&mut Vec<KVConcatBuffer>>,
     full_pipeline: Option<&MlxClosure>,
     embed_cache: Option<&mut EmbeddingCache>,
+    random_token_scratch: &mut Vec<u32>,
+    zero_sc_signal: Option<&MlxArray>,
 ) {
     let temperature = temperature_at_step(step, diff_cfg);
     let is_check_step = step.is_multiple_of(diff_cfg.convergence_check_interval);
+    let forward_started = Instant::now();
 
     // When the full-pipeline compiled closure is available, it fuses
     // forward + softmax + entropy + sampling + acceptance into a single
     // graph dispatch. Falls back to the imperative path on thread mismatch.
     if let Some(pipeline) = full_pipeline {
-        // Build the self-conditioning input: either the previous step's
-        // embed or a zero placeholder (gated MLP maps zero → zero).
-        let zero_signal = if diff_cfg.self_conditioning && canvas.prev_self_cond_embed.is_none() {
-            Some(mlx_sys::zeros(
+        // Prefer workspace-reused zero placeholder; allocate only as last resort.
+        let owned_zero;
+        let sc_input: &MlxArray = if let Some(prev) = canvas.prev_self_cond_embed.as_ref() {
+            prev
+        } else if let Some(z) = zero_sc_signal {
+            z
+        } else if diff_cfg.self_conditioning {
+            owned_zero = mlx_sys::zeros(
                 &[1, canvas.canvas_size as i32, cfg.hidden_size as i32],
                 MlxDtype::Bfloat16,
                 None,
-            ))
+            );
+            &owned_zero
         } else {
-            None
+            &canvas.tokens_gpu
         };
-        let sc_input: &MlxArray = canvas
-            .prev_self_cond_embed
-            .as_ref()
-            .or(zero_signal.as_ref())
-            .unwrap_or(&canvas.tokens_gpu);
 
-        // Generate random tokens on host for renoising rejected positions.
-        let random_tokens: Vec<u32> = (0..canvas.canvas_size)
-            .map(|_| (rng.next_u64() % cfg.vocab_size as u64) as u32)
-            .collect();
-        let random_tokens_gpu = MlxArray::from_raw_data(
-            random_tokens.as_ptr() as *const u8,
-            std::mem::size_of_val(&random_tokens[..]),
-            &[canvas.canvas_size as i32],
-            MlxDtype::Uint32,
+        // Reuse host scratch for renoise random tokens (Phase C hot-path).
+        let random_tokens_gpu = random_tokens_gpu_from_scratch(
+            random_token_scratch,
+            canvas.canvas_size,
+            cfg.vocab_size,
+            rng,
         );
 
         let temp_arr = MlxArray::from_f32(temperature);
@@ -435,6 +448,7 @@ fn denoise_step(
                         None,
                     ));
                 }
+                record_denoise_stage_forward_us(elapsed_us(forward_started));
                 return;
             }
             Err(_) => { /* fall through to imperative path */ }
@@ -444,22 +458,21 @@ fn denoise_step(
     // Imperative path: forward + manual post-processing.
     // Also used as fallback when compiled closures fail.
     let logits = if let Some(compiled) = compiled_forward {
-        // Build the self-conditioning input: either the previous step's
-        // embed or a zero placeholder (gated MLP maps zero → zero).
-        let zero_signal = if diff_cfg.self_conditioning && canvas.prev_self_cond_embed.is_none() {
-            Some(mlx_sys::zeros(
+        let owned_zero;
+        let sc_input: &MlxArray = if let Some(prev) = canvas.prev_self_cond_embed.as_ref() {
+            prev
+        } else if let Some(z) = zero_sc_signal {
+            z
+        } else if diff_cfg.self_conditioning {
+            owned_zero = mlx_sys::zeros(
                 &[1, canvas.canvas_size as i32, cfg.hidden_size as i32],
                 MlxDtype::Bfloat16,
                 None,
-            ))
+            );
+            &owned_zero
         } else {
-            None
+            &canvas.tokens_gpu
         };
-        let sc_input: &MlxArray = canvas
-            .prev_self_cond_embed
-            .as_ref()
-            .or(zero_signal.as_ref())
-            .unwrap_or(&canvas.tokens_gpu);
         match compiled.try_apply(&[&canvas.tokens_gpu, sc_input]) {
             Ok(mut outputs) => outputs.swap_remove(0),
             Err(_) => forward_bidirectional(BidirectionalForward {
@@ -558,14 +571,13 @@ fn denoise_step(
         }
     }
 
-    let random_tokens: Vec<u32> = (0..canvas.canvas_size)
-        .map(|_| (rng.next_u64() % cfg.vocab_size as u64) as u32)
-        .collect();
-    let random_tokens_gpu = MlxArray::from_raw_data(
-        random_tokens.as_ptr() as *const u8,
-        std::mem::size_of_val(&random_tokens[..]),
-        &[canvas.canvas_size as i32],
-        MlxDtype::Uint32,
+    record_denoise_stage_forward_us(elapsed_us(forward_started));
+    let sample_started = Instant::now();
+    let random_tokens_gpu = random_tokens_gpu_from_scratch(
+        random_token_scratch,
+        canvas.canvas_size,
+        cfg.vocab_size,
+        rng,
     );
 
     // Token update: accepted low-entropy positions adopt the denoiser draft;
@@ -678,6 +690,80 @@ fn denoise_step(
             None,
         ));
     }
+    record_denoise_stage_sample_us(elapsed_us(sample_started));
+}
+
+/// Fill `scratch` with `n` random vocab ids and upload as a GPU `[n]` u32 array.
+///
+/// Reuses the host vector capacity across denoise steps (Phase C hot-path).
+pub(crate) fn random_tokens_gpu_from_scratch(
+    scratch: &mut Vec<u32>,
+    n: usize,
+    vocab_size: usize,
+    rng: &mut Xorshift64,
+) -> MlxArray {
+    scratch.clear();
+    scratch.reserve(n);
+    let vocab = vocab_size.max(1) as u64;
+    for _ in 0..n {
+        scratch.push((rng.next_u64() % vocab) as u32);
+    }
+    MlxArray::from_raw_data(
+        scratch.as_ptr() as *const u8,
+        std::mem::size_of_val(scratch.as_slice()),
+        &[n as i32],
+        MlxDtype::Uint32,
+    )
+}
+
+// ── Denoise stage profile (Phase C, opt-in AX_DIFFUSION_PROFILE) ───────────
+
+static DENOISE_STAGE_FORWARD_US: AtomicU64 = AtomicU64::new(0);
+static DENOISE_STAGE_SAMPLE_US: AtomicU64 = AtomicU64::new(0);
+static DENOISE_STAGE_COMMIT_US: AtomicU64 = AtomicU64::new(0);
+static DENOISE_STAGE_STEPS: AtomicU64 = AtomicU64::new(0);
+
+fn record_denoise_stage_forward_us(us: u32) {
+    if !fastpath::diffusion_profile_enabled() {
+        return;
+    }
+    DENOISE_STAGE_FORWARD_US.fetch_add(u64::from(us), Ordering::Relaxed);
+    DENOISE_STAGE_STEPS.fetch_add(1, Ordering::Relaxed);
+}
+
+fn record_denoise_stage_sample_us(us: u32) {
+    if !fastpath::diffusion_profile_enabled() {
+        return;
+    }
+    DENOISE_STAGE_SAMPLE_US.fetch_add(u64::from(us), Ordering::Relaxed);
+}
+
+fn record_denoise_stage_commit_us(us: u32) {
+    if !fastpath::diffusion_profile_enabled() {
+        return;
+    }
+    DENOISE_STAGE_COMMIT_US.fetch_add(u64::from(us), Ordering::Relaxed);
+}
+
+/// Snapshot of cumulative denoise stage timers (microseconds).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct DenoiseStageProfile {
+    pub forward_us: u64,
+    pub sample_us: u64,
+    pub commit_us: u64,
+    pub steps: u64,
+}
+
+/// Read and zero denoise stage profile counters (test / tooling).
+#[allow(dead_code)]
+pub fn take_denoise_stage_profile() -> DenoiseStageProfile {
+    DenoiseStageProfile {
+        forward_us: DENOISE_STAGE_FORWARD_US.swap(0, Ordering::Relaxed),
+        sample_us: DENOISE_STAGE_SAMPLE_US.swap(0, Ordering::Relaxed),
+        commit_us: DENOISE_STAGE_COMMIT_US.swap(0, Ordering::Relaxed),
+        steps: DENOISE_STAGE_STEPS.swap(0, Ordering::Relaxed),
+    }
 }
 
 // Pre-compute the full embedding table once for reuse across all denoise steps.
@@ -756,76 +842,162 @@ impl DiffusionCommitPolicy<'_> {
     }
 }
 
-/// Generate one diffusion block: denoise → commit.
+/// Clamp how many denoise steps to run in one engine/call budget.
 ///
-/// The prompt is assumed to be already prefilled into the cache.
-/// Returns telemetry along with the committed tokens.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn generate_diffusion_block(
+/// Pure control helper used by the resumable workspace and unit-tested
+/// without a loaded model.
+pub(crate) fn clamp_denoise_step_budget(
+    steps_this_call: usize,
+    max_denoise_steps: usize,
+    steps_already_done: u32,
+) -> usize {
+    let remaining = max_denoise_steps.saturating_sub(steps_already_done as usize);
+    if steps_this_call == usize::MAX {
+        remaining
+    } else {
+        steps_this_call.min(remaining)
+    }
+}
+
+/// Build schedule feedback for the engine from workspace progress.
+pub(crate) fn schedule_update_from_progress(
+    denoise_steps_in_block: u32,
+    commit_ready: bool,
+    block_committed: bool,
+) -> DiffusionScheduleUpdate {
+    DiffusionScheduleUpdate {
+        denoise_steps_in_block,
+        commit_ready,
+        block_committed,
+    }
+}
+
+/// Resumable denoise state for one diffusion block (Phase B).
+///
+/// Holds canvas + counters across engine steps when
+/// `AX_DIFFUSION_STEPS_PER_ENGINE_STEP` is set. Compiled pipelines are rebuilt
+/// each `advance` call so raw pointer captures stay valid for the call scope.
+pub(crate) struct DiffusionBlockWorkspace {
+    canvas: DiffusionCanvas,
+    effective_cfg: DiffusionConfig,
+    steps_executed: u32,
+    denoise_wall_us: u32,
+    token_offset: usize,
+    /// Pre-sized host buffer for renoise random tokens (Phase C hot-path).
+    random_token_scratch: Vec<u32>,
+    /// Reused zero self-conditioning placeholder for step 0 / missing prior.
+    zero_sc_signal: Option<MlxArray>,
+    full_pipeline_used: bool,
+    kv_buffer_used: bool,
+    block_start: Instant,
+}
+
+/// Progress after one `advance_diffusion_workspace` call.
+///
+/// Extra fields beyond schedule feedback are retained for telemetry and
+/// unit tests even when the runner only consumes `commit_ready` /
+/// `steps_total`.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct DiffusionAdvanceProgress {
+    pub steps_this_call: u32,
+    pub steps_total: u32,
+    pub converged: bool,
+    /// True when denoise is finished and the block may be committed.
+    pub commit_ready: bool,
+    pub acceptance_rate: f32,
+    pub min_entropy: f32,
+    pub min_acceptance_rate: f32,
+    pub last_signals: ConvergenceSignals,
+}
+
+impl DiffusionAdvanceProgress {
+    pub fn schedule_update(self) -> DiffusionScheduleUpdate {
+        schedule_update_from_progress(self.steps_total, self.commit_ready, false)
+    }
+}
+
+/// Open a new diffusion block workspace (canvas initialized, zero steps).
+pub(crate) fn open_diffusion_block(
     cfg: &ModelConfig,
     diff_cfg: &DiffusionConfig,
     weights: &ModelWeights,
-    cache: &mut MlxKVCache,
     rng: &mut Xorshift64,
     token_offset: usize,
     embed_table_cache: &mut Option<MlxArray>,
-    commit_policy: DiffusionCommitPolicy<'_>,
-) -> DiffusionBlockResult {
-    let block_start = Instant::now();
-    let mut effective_diff_cfg = diff_cfg.clone();
-    if effective_diff_cfg.self_conditioning && weights.diffusion_self_conditioning.is_none() {
-        effective_diff_cfg.self_conditioning = false;
+) -> DiffusionBlockWorkspace {
+    let mut effective_cfg = diff_cfg.clone();
+    if effective_cfg.self_conditioning && weights.diffusion_self_conditioning.is_none() {
+        effective_cfg.self_conditioning = false;
     }
-    let diff_cfg = &effective_diff_cfg;
-    let mut canvas = init_canvas(diff_cfg.canvas_size, cfg.vocab_size, rng);
-
-    if diff_cfg.self_conditioning && embed_table_cache.is_none() {
+    if effective_cfg.self_conditioning && embed_table_cache.is_none() {
         *embed_table_cache = Some(compute_embed_table(weights, cfg));
     }
+    let canvas = init_canvas(effective_cfg.canvas_size, cfg.vocab_size, rng);
+    let canvas_size = canvas.canvas_size;
+    DiffusionBlockWorkspace {
+        canvas,
+        effective_cfg,
+        steps_executed: 0,
+        denoise_wall_us: 0,
+        token_offset,
+        random_token_scratch: Vec::with_capacity(canvas_size),
+        zero_sc_signal: None,
+        full_pipeline_used: false,
+        kv_buffer_used: false,
+        block_start: Instant::now(),
+    }
+}
+
+/// Run up to `max_steps_this_call` denoise steps on an open workspace.
+///
+/// When `max_steps_this_call` is `usize::MAX`, runs until convergence or
+/// `max_denoise_steps` (monoblock denoise phase).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn advance_diffusion_workspace(
+    ws: &mut DiffusionBlockWorkspace,
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &MlxKVCache,
+    rng: &mut Xorshift64,
+    embed_table_cache: &Option<MlxArray>,
+    max_steps_this_call: usize,
+) -> DiffusionAdvanceProgress {
+    let diff_cfg = &ws.effective_cfg;
+    let budget = clamp_denoise_step_budget(
+        max_steps_this_call,
+        diff_cfg.max_denoise_steps,
+        ws.steps_executed,
+    );
+    if budget == 0 || ws.canvas.converged {
+        let commit_ready =
+            ws.canvas.converged || ws.steps_executed as usize >= diff_cfg.max_denoise_steps;
+        return DiffusionAdvanceProgress {
+            steps_this_call: 0,
+            steps_total: ws.steps_executed,
+            converged: ws.canvas.converged,
+            commit_ready,
+            acceptance_rate: ws.canvas.acceptance_rate,
+            min_entropy: ws.canvas.min_entropy,
+            min_acceptance_rate: ws.canvas.min_acceptance_rate,
+            last_signals: ws.canvas.last_signals,
+        };
+    }
+
     let embed_table = if diff_cfg.self_conditioning {
         embed_table_cache.as_ref()
     } else {
         None
     };
 
-    // KV concatenation buffers: opt-in (default OFF). The `slice_update` reuse
-    // path is not bit-equivalent to the canonical `concatenate` path — it
-    // diverges in ~237/256 committed tokens on a 512-token block and perturbs
-    // convergence — and it yields no throughput benefit in a bit-exact
-    // configuration, so the default (and the imperative fallback) use the
-    // canonical concatenate path. Opt-in via `AX_DIFFUSION_KV_CONCAT_BUFFER=1`
-    // for benchmarking a future bit-exact reimplementation. Note: the default
-    // full-pipeline path bypasses this entirely (passes `kv_buffers: None`).
-    let use_kv_buffers = fastpath::diffusion_kv_concat_buffer_enabled();
-    let mut kv_buffers: Option<Vec<KVConcatBuffer>> = if use_kv_buffers {
-        Some(Vec::new())
-    } else {
-        None
-    };
-
-    // Per-layer embedding cache: opt-in (default OFF). Output-neutral, but only
-    // reachable on the imperative fallback (the default full-pipeline path
-    // passes `embed_cache: None`), so it is off by default. Opt-in via
-    // `AX_DIFFUSION_EMBEDDING_CACHE=1`.
-    let use_embed_cache = fastpath::diffusion_embedding_cache_enabled();
-    let mut embed_cache: Option<EmbeddingCache> = if use_embed_cache {
-        Some(EmbeddingCache::new())
-    } else {
-        None
-    };
-
-    // Full-pipeline compiled closure: fuses forward + softmax + entropy +
-    // sampling + acceptance into one compiled graph (~280 dispatches → 1).
-    // Default ON; opt-out via `AX_DIFFUSION_NO_FULL_PIPELINE=1`.
-    // Falls back to the forward-only closure when disabled.
-    //
-    // Inputs:  [tokens_gpu, self_cond_embed, temperature, random_tokens]
-    // Outputs: [new_tokens, argmax_1d, accept_mask_1d, entropy, prob]
-    let full_pipeline: Option<MlxClosure> = if !fastpath::diffusion_no_full_pipeline() {
+    // Build compiled pipelines for this advance call (pointer lifetime = call).
+    let full_pipeline_requested = !fastpath::diffusion_no_full_pipeline();
+    let token_offset = ws.token_offset;
+    let full_pipeline: Option<MlxClosure> = if full_pipeline_requested {
         let cfg_addr = cfg as *const ModelConfig as usize;
         let weights_addr = weights as *const ModelWeights as usize;
         let cache_addr = cache as *const MlxKVCache as usize;
-        let canvas_size = canvas.canvas_size;
+        let canvas_size = ws.canvas.canvas_size;
         let has_self_cond = diff_cfg.self_conditioning;
         let sampler = diff_cfg.sampler;
         let entropy_bound = diff_cfg.entropy_bound;
@@ -833,9 +1005,11 @@ pub(crate) fn generate_diffusion_block(
 
         // SAFETY: The closure captures raw pointers to `cfg`, `weights`, and `cache`
         // because `MlxClosure::new_dyn()` requires `'static` captures. The referenced
-        // objects are stack-local to `generate_diffusion_block` and outlive the closure's
-        // execution — the closure is invoked synchronously within this function and
-        // never stored or leaked beyond this scope.
+        // objects outlive this advance call — the closure is invoked synchronously
+        // and never stored beyond this scope.
+        //
+        // Embed cache / KV buffers are intentionally *not* threaded into the
+        // compiled graph: mlx_compile requires a pure traced function.
         let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
             let token_ids = inputs.get(0);
             let self_cond_signal = inputs.get(1);
@@ -851,7 +1025,6 @@ pub(crate) fn generate_diffusion_block(
                 None
             };
 
-            // 1. Forward pass → logits [1, canvas_size, vocab_size]
             let logits = forward_bidirectional(BidirectionalForward {
                 cfg: cfg_ref,
                 weights: weights_ref,
@@ -863,15 +1036,11 @@ pub(crate) fn generate_diffusion_block(
                 kv_buffers: None,
             });
 
-            // 2. Temperature scale + softmax → prob
             let scaled = divide(&logits, &temperature, None);
             let prob = softmax(&scaled, -1, None);
-
-            // 3. Argmax → [1, canvas_size] → [canvas_size]
             let argmax_2d = argmax(&prob, None);
             let argmax_1d = reshape(&argmax_2d, &[canvas_size as i32], None);
 
-            // 4. Sampler-dependent acceptance mask + entropy
             let (accept_mask_1d, entropy) = match sampler {
                 crate::model::DiffusionSampler::EntropyBound => {
                     let eps = MlxArray::from_f32(1e-10);
@@ -898,7 +1067,6 @@ pub(crate) fn generate_diffusion_block(
                     let threshold = MlxArray::from_f32(confidence_threshold);
                     let accept_mask = greater_equal(&peak_2d, &threshold, None);
                     let mask_1d = reshape(&accept_mask, &[canvas_size as i32], None);
-                    // Always compute entropy for convergence detection.
                     let eps = MlxArray::from_f32(1e-10);
                     let log_prob = log(&add(&prob, &eps, None), None);
                     let p_log_p = multiply(&prob, &log_prob, None);
@@ -907,9 +1075,7 @@ pub(crate) fn generate_diffusion_block(
                 }
             };
 
-            // 5. Token update: accepted → argmax, rejected → random
             let new_tokens = where_cond(&accept_mask_1d, &argmax_1d, &random_tokens, None);
-
             vec![new_tokens, argmax_1d, accept_mask_1d, entropy, prob]
         });
         closure.compile(false).ok()
@@ -917,33 +1083,24 @@ pub(crate) fn generate_diffusion_block(
         None
     };
 
-    // Compiled forward: enabled by default. Wraps the bidirectional forward
-    // pass in an `MlxClosure` compiled via `mlx_compile`, collapsing ~250
-    // per-step MLX C-API calls into a single dispatched graph.
-    //
-    // The closure accepts two inputs:
-    //   [0] token_ids:  [canvas_size] u32
-    //   [1] self_cond:  [1, canvas_size, hidden_size] bf16  (zeros on step 0)
-    //
-    // The self-conditioning signal is passed as an explicit input rather than
-    // a captured variable, so the compiled graph works with the dynamic
-    // per-step signal. On step 0 (no prior prediction), a zero tensor flows
-    // through the gated MLP producing zero output — identical to no signal.
-    //
-    // Opt-out via `AX_DIFFUSION_NO_COMPILED_FORWARD=1`.
+    let mut kv_buffers: Option<Vec<KVConcatBuffer>> = if fastpath::diffusion_no_kv_concat_buffer() {
+        None
+    } else {
+        Some(Vec::new())
+    };
+    let mut embed_cache: Option<EmbeddingCache> = if fastpath::diffusion_no_embedding_cache() {
+        None
+    } else {
+        Some(EmbeddingCache::new())
+    };
+
     let compiled_forward: Option<MlxClosure> = if full_pipeline.is_some() {
         None
     } else if !fastpath::diffusion_no_compiled_forward() {
         let cfg_addr = cfg as *const ModelConfig as usize;
         let weights_addr = weights as *const ModelWeights as usize;
         let cache_addr = cache as *const MlxKVCache as usize;
-        let embed_table_addr = embed_table.map(|e| e as *const MlxArray as usize);
         let has_self_cond = diff_cfg.self_conditioning;
-        // SAFETY: The closure captures raw pointers to `cfg`, `weights`, and `cache`
-        // because `MlxClosure::new_dyn()` requires `'static` captures. The referenced
-        // objects are stack-local to `generate_diffusion_block` and outlive the closure's
-        // execution — the closure is invoked synchronously within this function and
-        // never stored or leaked beyond this scope.
         let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
             let token_ids = inputs.get(0);
             let self_cond_signal = inputs.get(1);
@@ -955,7 +1112,6 @@ pub(crate) fn generate_diffusion_block(
             } else {
                 None
             };
-            let _ = embed_table_addr;
             let logits = forward_bidirectional(BidirectionalForward {
                 cfg: cfg_ref,
                 weights: weights_ref,
@@ -973,15 +1129,32 @@ pub(crate) fn generate_diffusion_block(
         None
     };
 
+    if full_pipeline.is_some() {
+        ws.full_pipeline_used = true;
+    }
+    if full_pipeline.is_none() && kv_buffers.is_some() {
+        ws.kv_buffer_used = true;
+    }
+
+    // Ensure zero self-cond placeholder exists when needed (reused across steps).
+    if diff_cfg.self_conditioning && ws.zero_sc_signal.is_none() {
+        ws.zero_sc_signal = Some(mlx_sys::zeros(
+            &[1, ws.canvas.canvas_size as i32, cfg.hidden_size as i32],
+            MlxDtype::Bfloat16,
+            None,
+        ));
+    }
+
     let denoise_start = Instant::now();
-    let mut steps_executed = 0_u32;
-    for step in 0..diff_cfg.max_denoise_steps {
+    let mut steps_this_call = 0_u32;
+    for _ in 0..budget {
+        let step = ws.steps_executed as usize;
         denoise_step(
             cfg,
             diff_cfg,
             weights,
             cache,
-            &mut canvas,
+            &mut ws.canvas,
             rng,
             step,
             token_offset,
@@ -990,14 +1163,41 @@ pub(crate) fn generate_diffusion_block(
             kv_buffers.as_mut(),
             full_pipeline.as_ref(),
             embed_cache.as_mut(),
+            &mut ws.random_token_scratch,
+            ws.zero_sc_signal.as_ref(),
         );
-        steps_executed += 1;
-        if canvas.converged {
+        ws.steps_executed = ws.steps_executed.saturating_add(1);
+        steps_this_call = steps_this_call.saturating_add(1);
+        if ws.canvas.converged {
             break;
         }
     }
-    let denoise_wall_us = elapsed_us(denoise_start);
+    let denoise_elapsed = elapsed_us(denoise_start);
+    ws.denoise_wall_us = ws.denoise_wall_us.saturating_add(denoise_elapsed);
 
+    let commit_ready =
+        ws.canvas.converged || ws.steps_executed as usize >= diff_cfg.max_denoise_steps;
+    DiffusionAdvanceProgress {
+        steps_this_call,
+        steps_total: ws.steps_executed,
+        converged: ws.canvas.converged,
+        commit_ready,
+        acceptance_rate: ws.canvas.acceptance_rate,
+        min_entropy: ws.canvas.min_entropy,
+        min_acceptance_rate: ws.canvas.min_acceptance_rate,
+        last_signals: ws.canvas.last_signals,
+    }
+}
+
+/// Commit a finished denoise workspace into tokens + KV (or skip commit).
+pub(crate) fn commit_diffusion_workspace(
+    ws: DiffusionBlockWorkspace,
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    commit_policy: DiffusionCommitPolicy<'_>,
+) -> DiffusionBlockResult {
+    let commit_start = Instant::now();
     // Conditional commit skip: when the denoise loop converged with
     // near-perfect acceptance, the canvas tokens are already the model's
     // output — the causal commit pass (~40 ms) is redundant *for tokens*.
@@ -1009,43 +1209,78 @@ pub(crate) fn generate_diffusion_block(
     // (EOS in the served tokens, or the remaining output budget is exhausted);
     // otherwise the next block would be generated with no memory of this one,
     // at the same absolute positions.
-    let commit_skip_eligible =
-        !fastpath::diffusion_no_skip_commit() && canvas.converged && canvas.acceptance_rate >= 0.99;
+    let commit_skip_eligible = !fastpath::diffusion_no_skip_commit()
+        && ws.canvas.converged
+        && ws.canvas.acceptance_rate >= 0.99;
 
     let (tokens, commit_wall_us, commit_skipped) = if commit_skip_eligible {
-        let output_tokens = canvas.argmax_canvas.as_ref().unwrap_or(&canvas.tokens_gpu);
+        let output_tokens = ws
+            .canvas
+            .argmax_canvas
+            .as_ref()
+            .unwrap_or(&ws.canvas.tokens_gpu);
         eval(&[output_tokens]);
         let tokens: Vec<u32> = output_tokens.data_u32().to_vec();
         if commit_policy.block_terminates_request(&tokens) {
             (tokens, 0, true)
         } else {
             let start = Instant::now();
-            let tokens = commit_block(cfg, weights, cache, &canvas, token_offset);
+            let tokens = commit_block(cfg, weights, cache, &ws.canvas, ws.token_offset);
             (tokens, elapsed_us(start), false)
         }
     } else {
         let start = Instant::now();
-        let tokens = commit_block(cfg, weights, cache, &canvas, token_offset);
+        let tokens = commit_block(cfg, weights, cache, &ws.canvas, ws.token_offset);
         (tokens, elapsed_us(start), false)
     };
-    let block_wall_us = elapsed_us(block_start);
+    record_denoise_stage_commit_us(elapsed_us(commit_start));
+    let block_wall_us = elapsed_us(ws.block_start);
 
     DiffusionBlockResult {
         tokens,
-        denoise_steps: steps_executed,
-        converged: canvas.converged,
-        converged_strict: canvas.last_signals.strict,
-        converged_acceptance: canvas.last_signals.acceptance,
-        converged_plateau: canvas.last_signals.plateau,
-        min_entropy: canvas.min_entropy,
-        min_acceptance_rate: canvas.min_acceptance_rate,
-        denoise_wall_us,
+        denoise_steps: ws.steps_executed,
+        converged: ws.canvas.converged,
+        converged_strict: ws.canvas.last_signals.strict,
+        converged_acceptance: ws.canvas.last_signals.acceptance,
+        converged_plateau: ws.canvas.last_signals.plateau,
+        min_entropy: ws.canvas.min_entropy,
+        min_acceptance_rate: ws.canvas.min_acceptance_rate,
+        denoise_wall_us: ws.denoise_wall_us,
         commit_wall_us,
         block_wall_us,
         commit_skipped,
-        full_pipeline_used: full_pipeline.is_some(),
-        kv_buffer_used: kv_buffers.is_some(),
+        full_pipeline_used: ws.full_pipeline_used,
+        kv_buffer_used: ws.kv_buffer_used,
     }
+}
+
+/// Generate one diffusion block: denoise → commit (monoblock default).
+///
+/// The prompt is assumed to be already prefilled into the cache.
+/// Returns telemetry along with the committed tokens.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_diffusion_block(
+    cfg: &ModelConfig,
+    diff_cfg: &DiffusionConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    rng: &mut Xorshift64,
+    token_offset: usize,
+    embed_table_cache: &mut Option<MlxArray>,
+    commit_policy: DiffusionCommitPolicy<'_>,
+) -> DiffusionBlockResult {
+    let mut ws = open_diffusion_block(cfg, diff_cfg, weights, rng, token_offset, embed_table_cache);
+    // Monoblock: run until converge or max_denoise_steps.
+    let _ = advance_diffusion_workspace(
+        &mut ws,
+        cfg,
+        weights,
+        cache,
+        rng,
+        embed_table_cache,
+        usize::MAX,
+    );
+    commit_diffusion_workspace(ws, cfg, weights, cache, commit_policy)
 }
 
 fn elapsed_us(started: Instant) -> u32 {
@@ -1739,5 +1974,272 @@ mod tests {
         assert!(!result2.commit_skipped);
         assert!(!result2.full_pipeline_used);
         assert!(!result2.kv_buffer_used);
+    }
+
+    // ── Phase B: step budget + schedule progress ─────────────────────
+
+    #[test]
+    fn clamp_denoise_step_budget_limits_remaining() {
+        assert_eq!(clamp_denoise_step_budget(4, 48, 0), 4);
+        assert_eq!(clamp_denoise_step_budget(4, 48, 46), 2);
+        assert_eq!(clamp_denoise_step_budget(4, 48, 48), 0);
+        assert_eq!(clamp_denoise_step_budget(usize::MAX, 48, 10), 38);
+        assert_eq!(clamp_denoise_step_budget(0, 48, 0), 0);
+    }
+
+    #[test]
+    fn schedule_update_from_progress_maps_fields() {
+        let mid = schedule_update_from_progress(5, false, false);
+        assert_eq!(mid.denoise_steps_in_block, 5);
+        assert!(!mid.commit_ready);
+        assert!(!mid.block_committed);
+
+        let ready = schedule_update_from_progress(12, true, false);
+        assert!(ready.commit_ready);
+        assert!(!ready.block_committed);
+
+        let done = schedule_update_from_progress(12, false, true);
+        assert!(done.block_committed);
+        assert!(!done.commit_ready);
+    }
+
+    #[test]
+    fn advance_progress_schedule_update_is_not_committed() {
+        let progress = DiffusionAdvanceProgress {
+            steps_this_call: 2,
+            steps_total: 6,
+            converged: false,
+            commit_ready: false,
+            acceptance_rate: 0.5,
+            min_entropy: 1.0,
+            min_acceptance_rate: 0.4,
+            last_signals: ConvergenceSignals::default(),
+        };
+        let update = progress.schedule_update();
+        assert_eq!(update.denoise_steps_in_block, 6);
+        assert!(!update.commit_ready);
+        assert!(!update.block_committed);
+
+        let ready = DiffusionAdvanceProgress {
+            commit_ready: true,
+            ..progress
+        };
+        let update_ready = ready.schedule_update();
+        assert!(update_ready.commit_ready);
+        assert!(!update_ready.block_committed);
+    }
+
+    fn tiny_diffusion_cfg(canvas: usize, max_steps: usize) -> (ModelConfig, DiffusionConfig) {
+        let model = ModelConfig {
+            compile_cache_identity: 42,
+            rope_mscale: 1.0,
+            model_family: "diffusion_gemma".to_string(),
+            layer_count: 0,
+            hidden_size: 8,
+            intermediate_size: 16,
+            n_heads: 2,
+            n_kv_heads: 1,
+            head_dim: 4,
+            vocab_size: 16,
+            rope_theta: 10_000.0,
+            rope_dims: 4,
+            attn_output_gate: false,
+            query_scale: 1.0,
+            final_logit_softcapping: None,
+            moe_expert_count: 0,
+            moe_experts_per_token: 0,
+            moe_expert_intermediate_size: 0,
+            layer_configs: Vec::new(),
+            global_sliding_window: None,
+            gemma4_moe_router: false,
+            uses_geglu: false,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
+            hidden_size_per_layer_input: 0,
+            linear_attention: None,
+            mla_attention: None,
+            glm_router: None,
+            rms_norm_eps: 1e-6,
+            rope_freqs: None,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: 8192.0,
+            attn_temperature_scale: 0.1,
+            intermediate_size_mlp: 0,
+            moe_layer_freq: 1,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 0,
+            moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 1.0,
+            moe_n_group: 1,
+            moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
+            diffusion: None,
+            gpt_oss_uses_mxfp4_experts: false,
+            generation_kind: ax_engine_core::GenerationKind::BlockDiffusion,
+        };
+        let mut diff = default_diff_cfg();
+        diff.canvas_size = canvas;
+        diff.max_denoise_steps = max_steps;
+        diff.self_conditioning = false;
+        diff.convergence_check_interval = 1;
+        // Force max steps so multi-budget path reaches commit_ready without
+        // relying on model quality for convergence.
+        diff.entropy_threshold = -1.0;
+        diff.acceptance_rate_threshold = -1.0;
+        diff.entropy_plateau_delta = -1.0;
+        (model, diff)
+    }
+
+    fn tiny_diffusion_weights(hidden: usize, vocab: usize) -> ModelWeights {
+        use crate::weights::QuantizedWeight;
+        use mlx_sys::zeros;
+        ModelWeights {
+            token_embedding: QuantizedWeight::new(
+                zeros(&[vocab as i32, hidden as i32], MlxDtype::Float32, None),
+                None,
+                None,
+            ),
+            final_norm: zeros(&[hidden as i32], MlxDtype::Float32, None),
+            lm_head: QuantizedWeight::new(
+                zeros(&[vocab as i32, hidden as i32], MlxDtype::Float32, None),
+                None,
+                None,
+            ),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
+        }
+    }
+
+    /// Drive the real open/advance/commit surface across partial step budgets.
+    #[test]
+    fn open_advance_commit_across_partial_step_budgets() {
+        let (cfg, diff_cfg) = tiny_diffusion_cfg(4, 3);
+        let weights = tiny_diffusion_weights(cfg.hidden_size, cfg.vocab_size);
+        let mut cache = MlxKVCache::new(0);
+        let mut rng = Xorshift64::new(11);
+        let mut embed_table: Option<MlxArray> = None;
+
+        let mut ws = open_diffusion_block(
+            &cfg,
+            &diff_cfg,
+            &weights,
+            &mut rng,
+            /*token_offset*/ 0,
+            &mut embed_table,
+        );
+        assert_eq!(ws.steps_executed, 0);
+
+        let p1 =
+            advance_diffusion_workspace(&mut ws, &cfg, &weights, &cache, &mut rng, &embed_table, 1);
+        assert_eq!(p1.steps_this_call, 1);
+        assert_eq!(p1.steps_total, 1);
+        assert!(!p1.commit_ready);
+        let sched1 = p1.schedule_update();
+        assert_eq!(sched1.denoise_steps_in_block, 1);
+        assert!(!sched1.commit_ready);
+        assert!(!sched1.block_committed);
+
+        let p2 =
+            advance_diffusion_workspace(&mut ws, &cfg, &weights, &cache, &mut rng, &embed_table, 1);
+        assert_eq!(p2.steps_this_call, 1);
+        assert_eq!(p2.steps_total, 2);
+        assert!(!p2.commit_ready);
+
+        let p3 =
+            advance_diffusion_workspace(&mut ws, &cfg, &weights, &cache, &mut rng, &embed_table, 1);
+        assert_eq!(p3.steps_this_call, 1);
+        assert_eq!(p3.steps_total, 3);
+        assert!(
+            p3.commit_ready,
+            "max_denoise_steps=3 must make commit_ready after three advances"
+        );
+
+        let result = commit_diffusion_workspace(
+            ws,
+            &cfg,
+            &weights,
+            &mut cache,
+            DiffusionCommitPolicy {
+                truncation_terminal_ids: &[],
+                request_terminal_ids: &[],
+                remaining_output_budget: Some(4),
+            },
+        );
+        assert_eq!(result.denoise_steps, 3);
+        assert_eq!(result.tokens.len(), 4);
+    }
+
+    // ── Phase C: random scratch reuse + stage profile ────────────────
+
+    #[test]
+    fn random_tokens_gpu_from_scratch_reuses_capacity() {
+        let mut rng = Xorshift64::new(7);
+        let mut scratch = Vec::new();
+        let a = random_tokens_gpu_from_scratch(&mut scratch, 16, 1000, &mut rng);
+        eval(&[&a]);
+        assert_eq!(a.shape(), vec![16]);
+        assert_eq!(scratch.len(), 16);
+        let cap_after_first = scratch.capacity();
+        assert!(cap_after_first >= 16);
+
+        let b = random_tokens_gpu_from_scratch(&mut scratch, 16, 1000, &mut rng);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![16]);
+        assert_eq!(scratch.len(), 16);
+        // Capacity must not shrink; reuse is the hot-path contract.
+        assert!(
+            scratch.capacity() >= cap_after_first,
+            "scratch capacity regressed: before={cap_after_first} after={}",
+            scratch.capacity()
+        );
+        // Values must be in-vocab.
+        for &tok in &scratch {
+            assert!(tok < 1000, "token {tok} out of vocab");
+        }
+    }
+
+    #[test]
+    fn denoise_stage_profile_take_zeros_counters() {
+        // Force-write via the same atomics the production recorders use.
+        DENOISE_STAGE_FORWARD_US.store(11, Ordering::Relaxed);
+        DENOISE_STAGE_SAMPLE_US.store(22, Ordering::Relaxed);
+        DENOISE_STAGE_COMMIT_US.store(33, Ordering::Relaxed);
+        DENOISE_STAGE_STEPS.store(2, Ordering::Relaxed);
+        let snap = take_denoise_stage_profile();
+        assert_eq!(
+            snap,
+            DenoiseStageProfile {
+                forward_us: 11,
+                sample_us: 22,
+                commit_us: 33,
+                steps: 2,
+            }
+        );
+        let empty = take_denoise_stage_profile();
+        assert_eq!(empty, DenoiseStageProfile::default());
+    }
+
+    #[test]
+    fn record_denoise_stage_is_noop_without_profile_env() {
+        // Without AX_DIFFUSION_PROFILE, recorders must not accumulate.
+        let _ = take_denoise_stage_profile();
+        record_denoise_stage_forward_us(100);
+        record_denoise_stage_sample_us(100);
+        record_denoise_stage_commit_us(100);
+        let snap = take_denoise_stage_profile();
+        assert_eq!(snap, DenoiseStageProfile::default());
     }
 }

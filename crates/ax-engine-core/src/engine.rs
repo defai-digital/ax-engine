@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::execution_plan::{DeterministicExecutionPlanResolver, ExecutionPlanResolver};
+use crate::generation::GenerationKind;
 use crate::ids::{CacheGroupId, RequestId, StepId};
 use crate::kv::{
     AllocationStatus, FreeResult, KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
@@ -90,6 +91,8 @@ pub struct EngineCore {
     multi_prefill_fair: bool,
     max_prefill_tokens_per_request_per_step: u32,
     max_inflight_prefill_requests: u32,
+    /// Default generation paradigm applied to new submissions (ADR-038).
+    generation_kind: GenerationKind,
     next_step_id: u64,
     // Per-step scratch buffers — cleared and reused each step to avoid heap churn.
     scratch_seen_request_ids: HashSet<RequestId>,
@@ -166,6 +169,7 @@ impl EngineCore {
             multi_prefill_fair: false,
             max_prefill_tokens_per_request_per_step: 0,
             max_inflight_prefill_requests: 0,
+            generation_kind: GenerationKind::Autoregressive,
             next_step_id: 0,
             scratch_seen_request_ids: HashSet::with_capacity(32),
             scratch_update_index: HashMap::with_capacity(32),
@@ -204,6 +208,15 @@ impl EngineCore {
         self.multi_prefill_fair = fair;
         self.max_prefill_tokens_per_request_per_step = max_tokens_per_request_per_step;
         self.max_inflight_prefill_requests = max_inflight_prefill_requests;
+    }
+
+    /// Set the generation paradigm applied to newly submitted requests (ADR-038).
+    pub fn set_generation_kind(&mut self, generation_kind: GenerationKind) {
+        self.generation_kind = generation_kind;
+    }
+
+    pub fn generation_kind(&self) -> GenerationKind {
+        self.generation_kind
     }
 
     pub fn last_metal_dispatch(&self) -> Option<crate::metal::MetalDispatchTrace> {
@@ -252,7 +265,12 @@ impl EngineCore {
         let request_id = submission.request_id;
         self.kv_manager
             .register_request(request_id, submission.input_tokens.clone())?;
-        if let Err(error) = self.request_manager.submit(submission) {
+        // Bind generation kind atomically with insert (ADR-038) so a failed
+        // post-submit set cannot leave a request with the wrong strategy.
+        if let Err(error) = self
+            .request_manager
+            .submit_with_generation_kind(submission, self.generation_kind)
+        {
             let _ = self.kv_manager.free(request_id);
             return Err(error.into());
         }
@@ -955,6 +973,11 @@ impl EngineCore {
                 continue;
             }
 
+            // Budgeted diffusion denoise mid-block: no sampleable token yet.
+            if update.is_diffusion_schedule_progress_only() {
+                continue;
+            }
+
             let logits = self
                 .scratch_logits_index
                 .get(&request_id)
@@ -1081,6 +1104,7 @@ impl EngineCore {
             if update.error.is_none()
                 && !matches!(update.stop_reason, Some(crate::sampling::StopReason::Error))
                 && update.tokens_executed != item.scheduled_token_count
+                && !(update.is_diffusion_schedule_progress_only() && update.tokens_executed == 0)
             {
                 return Err(EngineCoreError::RunnerContractViolation {
                     step_id: execution_batch.step_id,
@@ -1191,10 +1215,13 @@ impl EngineCore {
                 });
             }
             if !failed && decode_result_sources == 0 {
-                return Err(EngineCoreError::RunnerContractViolation {
-                    step_id: execution_batch.step_id,
-                    message: "decode update must provide logits payload, logits handle, or output token",
-                });
+                // Allow schedule-only mid-denoise progress (no visible token yet).
+                if !update.is_diffusion_schedule_progress_only() {
+                    return Err(EngineCoreError::RunnerContractViolation {
+                        step_id: execution_batch.step_id,
+                        message: "decode update must provide logits payload, logits handle, or output token",
+                    });
+                }
             }
             if decode_result_sources > 1 {
                 return Err(EngineCoreError::RunnerContractViolation {
@@ -1575,6 +1602,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect::<Vec<_>>();
             let logits_outputs = input
@@ -1619,6 +1647,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect::<Vec<_>>();
             let decode_request_id = input
@@ -1696,6 +1725,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: Some(crate::sampling::StopReason::Error),
                     error: Some("simulated batch failure".into()),
+                    diffusion_schedule: None,
                 })
                 .collect();
 
@@ -1730,6 +1760,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect();
 
@@ -1764,6 +1795,7 @@ mod tests {
                     output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect();
 
@@ -1803,6 +1835,7 @@ mod tests {
                         .then_some(self.stop_reason)
                         .flatten(),
                     error: None,
+                    diffusion_schedule: None,
                 })
                 .collect();
 
@@ -1820,6 +1853,93 @@ mod tests {
             }
         }
     }
+
+    /// Simulates budgeted diffusion: first decode steps are schedule-only
+    /// (no token), then a final decode emits a token + block_committed.
+    #[derive(Debug)]
+    struct DiffusionScheduleProgressRunner {
+        mid_denoise_steps: std::sync::atomic::AtomicU32,
+        mid_denoise_before_token: u32,
+    }
+
+    impl DiffusionScheduleProgressRunner {
+        fn new(mid_denoise_before_token: u32) -> Self {
+            Self {
+                mid_denoise_steps: std::sync::atomic::AtomicU32::new(0),
+                mid_denoise_before_token,
+            }
+        }
+    }
+
+    impl ExecutionRunner for DiffusionScheduleProgressRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            use crate::runner::DiffusionScheduleUpdate;
+            use std::sync::atomic::Ordering;
+
+            let request_updates = input
+                .execution_batch
+                .items
+                .iter()
+                .map(|item| {
+                    if item.mode == ExecutionMode::Prefill {
+                        return crate::runner::RequestExecutionUpdate {
+                            request_id: item.request_id,
+                            tokens_executed: item.scheduled_token_count,
+                            output_token: None,
+                            output_tokens: Vec::new(),
+                            stop_reason: None,
+                            error: None,
+                            diffusion_schedule: None,
+                        };
+                    }
+                    let n = self.mid_denoise_steps.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n <= self.mid_denoise_before_token {
+                        crate::runner::RequestExecutionUpdate {
+                            request_id: item.request_id,
+                            tokens_executed: 0,
+                            output_token: None,
+                            output_tokens: Vec::new(),
+                            stop_reason: None,
+                            error: None,
+                            diffusion_schedule: Some(DiffusionScheduleUpdate {
+                                denoise_steps_in_block: n,
+                                commit_ready: false,
+                                block_committed: false,
+                            }),
+                        }
+                    } else {
+                        crate::runner::RequestExecutionUpdate {
+                            request_id: item.request_id,
+                            tokens_executed: item.scheduled_token_count,
+                            output_token: Some(77),
+                            output_tokens: Vec::new(),
+                            stop_reason: None,
+                            error: None,
+                            diffusion_schedule: Some(DiffusionScheduleUpdate {
+                                denoise_steps_in_block: n,
+                                commit_ready: false,
+                                block_committed: true,
+                            }),
+                        }
+                    }
+                })
+                .collect();
+
+            RunnerOutput {
+                step_id: input.execution_batch.step_id,
+                request_updates,
+                logits_handles: Vec::new(),
+                logits_outputs: Vec::new(),
+                kv_write_summary: crate::runner::KvWriteSummary {
+                    tokens_written: input.execution_batch.total_scheduled_tokens,
+                    blocks_touched: input.block_tables.len() as u32,
+                },
+                route_metadata: input.execution_batch.route_metadata.clone(),
+                execution_status: crate::runner::ExecutionStatus::Success,
+            }
+        }
+    }
+
     use crate::request::RequestState;
     use crate::sampling::SamplingParams;
 
@@ -2092,6 +2212,45 @@ mod tests {
             message,
             "runner omitted update for one or more scheduled requests"
         );
+    }
+
+    #[test]
+    fn step_accepts_diffusion_schedule_only_mid_denoise_without_output_token() {
+        // Two mid-denoise decode steps (no token), then one commit decode (token).
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+            DiffusionScheduleProgressRunner::new(2),
+            PanicSampler,
+        );
+        engine.set_generation_kind(crate::GenerationKind::BlockDiffusion);
+        engine.submit(make_submission(42, 1, 2)).unwrap();
+
+        // Prefill prompt (4 tokens) — schedule-only not involved.
+        let prefill = engine.step(4, true).unwrap();
+        assert!(prefill.runner_output.is_some());
+
+        // First mid-denoise: must not RunnerContractViolation.
+        let mid1 = engine.step(1, true).unwrap();
+        assert!(mid1.runner_output.is_some());
+        let snap = engine.request_manager().snapshot(RequestId(42)).unwrap();
+        assert_eq!(snap.diffusion_denoise_steps_in_block, 1);
+        assert!(!snap.diffusion_commit_ready);
+        assert!(!snap.diffusion_block_committed);
+        assert!(snap.generated_tokens.is_empty());
+
+        // Second mid-denoise.
+        let mid2 = engine.step(1, true).unwrap();
+        assert!(mid2.runner_output.is_some());
+        let snap = engine.request_manager().snapshot(RequestId(42)).unwrap();
+        assert_eq!(snap.diffusion_denoise_steps_in_block, 2);
+        assert!(snap.generated_tokens.is_empty());
+
+        // Commit decode emits a token (PanicSampler must not run — runner token).
+        let done = engine.step(1, true).unwrap();
+        assert!(done.runner_output.is_some());
+        let snap = engine.request_manager().snapshot(RequestId(42)).unwrap();
+        assert!(snap.diffusion_block_committed);
+        assert_eq!(snap.generated_tokens, vec![77]);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::WorkUnitKind;
 use crate::ids::{BlockId, CacheGroupId, RequestId, StepId};
 use crate::kv::BlockTableView;
 use crate::runner::{ResolvedBlockTable, RunnerInput, RunnerRequestContext};
@@ -17,6 +18,7 @@ pub(super) fn sample_runner_input() -> RunnerInput {
                 ExecutionItem {
                     request_id: RequestId(7),
                     mode: ExecutionMode::Prefill,
+                    planned_work_unit: WorkUnitKind::PrefillChunk,
                     input_token_slice: vec![1, 2, 3],
                     reused_prefix_token_slice: Vec::new(),
                     position_range: PositionRange {
@@ -31,6 +33,7 @@ pub(super) fn sample_runner_input() -> RunnerInput {
                 ExecutionItem {
                     request_id: RequestId(9),
                     mode: ExecutionMode::Decode,
+                    planned_work_unit: WorkUnitKind::TokenDecode,
                     input_token_slice: vec![4],
                     reused_prefix_token_slice: Vec::new(),
                     position_range: PositionRange {
@@ -121,6 +124,7 @@ pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
                 ExecutionItem {
                     request_id: RequestId(9),
                     mode: ExecutionMode::Decode,
+                    planned_work_unit: WorkUnitKind::TokenDecode,
                     input_token_slice: vec![4],
                     reused_prefix_token_slice: Vec::new(),
                     position_range: PositionRange {
@@ -135,6 +139,7 @@ pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
                 ExecutionItem {
                     request_id: RequestId(11),
                     mode: ExecutionMode::Decode,
+                    planned_work_unit: WorkUnitKind::TokenDecode,
                     input_token_slice: vec![8],
                     reused_prefix_token_slice: Vec::new(),
                     position_range: PositionRange {
@@ -224,6 +229,7 @@ pub(super) fn sample_prefill_only_runner_input() -> RunnerInput {
             items: vec![ExecutionItem {
                 request_id: RequestId(17),
                 mode: ExecutionMode::Prefill,
+                planned_work_unit: WorkUnitKind::PrefillChunk,
                 input_token_slice: vec![1, 2, 3, 4],
                 reused_prefix_token_slice: Vec::new(),
                 position_range: PositionRange {
@@ -284,6 +290,7 @@ pub(super) fn sample_decode_continuation_runner_input() -> RunnerInput {
             items: vec![ExecutionItem {
                 request_id: RequestId(17),
                 mode: ExecutionMode::Decode,
+                planned_work_unit: WorkUnitKind::TokenDecode,
                 input_token_slice: vec![4],
                 reused_prefix_token_slice: Vec::new(),
                 position_range: PositionRange {

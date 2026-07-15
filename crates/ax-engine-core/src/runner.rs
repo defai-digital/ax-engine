@@ -86,6 +86,14 @@ pub enum ExecutionStatus {
     Failed,
 }
 
+/// Optional diffusion schedule feedback from the runner (ADR-038).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DiffusionScheduleUpdate {
+    pub denoise_steps_in_block: u32,
+    pub commit_ready: bool,
+    pub block_committed: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestExecutionUpdate {
     pub request_id: RequestId,
@@ -94,12 +102,30 @@ pub struct RequestExecutionUpdate {
     pub output_tokens: Vec<u32>,
     pub stop_reason: Option<StopReason>,
     pub error: Option<String>,
+    /// When set, the engine updates request diffusion progress for the next plan.
+    pub diffusion_schedule: Option<DiffusionScheduleUpdate>,
 }
 
 impl RequestExecutionUpdate {
     #[inline]
     pub fn has_output_tokens(&self) -> bool {
         self.output_token.is_some() || !self.output_tokens.is_empty()
+    }
+
+    /// Mid-block diffusion denoise progress: schedule feedback only, no visible
+    /// token yet. Decode contract allows this without logits/output tokens.
+    #[inline]
+    pub fn is_diffusion_schedule_progress_only(&self) -> bool {
+        matches!(
+            self.diffusion_schedule,
+            Some(DiffusionScheduleUpdate {
+                commit_ready: false,
+                block_committed: false,
+                ..
+            })
+        ) && !self.has_output_tokens()
+            && self.error.is_none()
+            && self.stop_reason.is_none()
     }
 }
 
@@ -340,6 +366,7 @@ pub(crate) fn successful_runner_output_from_input(input: &RunnerInput) -> Runner
             output_tokens: Vec::new(),
             stop_reason: None,
             error: None,
+            diffusion_schedule: None,
         });
     }
 
@@ -380,6 +407,7 @@ fn forward_route_metadata(execution_batch: &ExecutionBatch) -> RouteMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WorkUnitKind;
     use crate::ids::RequestId;
     use crate::kv::BlockTableView;
     use crate::scheduler::{
@@ -408,6 +436,7 @@ mod tests {
                     ExecutionItem {
                         request_id: RequestId(1),
                         mode: ExecutionMode::Prefill,
+                        planned_work_unit: WorkUnitKind::PrefillChunk,
                         input_token_slice: vec![1, 2, 3],
                         reused_prefix_token_slice: Vec::new(),
                         position_range: PositionRange {
@@ -422,6 +451,7 @@ mod tests {
                     ExecutionItem {
                         request_id: RequestId(2),
                         mode: ExecutionMode::Decode,
+                        planned_work_unit: WorkUnitKind::TokenDecode,
                         input_token_slice: vec![10],
                         reused_prefix_token_slice: Vec::new(),
                         position_range: PositionRange {
@@ -517,6 +547,7 @@ mod tests {
                     ExecutionItem {
                         request_id: RequestId(1),
                         mode: ExecutionMode::Prefill,
+                        planned_work_unit: WorkUnitKind::PrefillChunk,
                         input_token_slice: vec![1],
                         reused_prefix_token_slice: Vec::new(),
                         position_range: PositionRange {
@@ -531,6 +562,7 @@ mod tests {
                     ExecutionItem {
                         request_id: RequestId(2),
                         mode: ExecutionMode::Prefill,
+                        planned_work_unit: WorkUnitKind::PrefillChunk,
                         input_token_slice: vec![2],
                         reused_prefix_token_slice: Vec::new(),
                         position_range: PositionRange {
@@ -586,6 +618,7 @@ mod tests {
                 items: vec![ExecutionItem {
                     request_id: RequestId(1),
                     mode: ExecutionMode::Prefill,
+                    planned_work_unit: WorkUnitKind::PrefillChunk,
                     input_token_slice: vec![1, 2],
                     reused_prefix_token_slice: Vec::new(),
                     position_range: PositionRange {

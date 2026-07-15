@@ -55,6 +55,15 @@ impl RequestManager {
         &mut self,
         submission: RequestSubmission,
     ) -> Result<RequestId, RequestManagerError> {
+        self.submit_with_generation_kind(submission, crate::GenerationKind::Autoregressive)
+    }
+
+    /// Submit a request and bind its generation strategy in one step (ADR-038).
+    pub fn submit_with_generation_kind(
+        &mut self,
+        submission: RequestSubmission,
+        generation_kind: crate::GenerationKind,
+    ) -> Result<RequestId, RequestManagerError> {
         let request_id = submission.request_id;
 
         if self.records.contains_key(&request_id)
@@ -63,7 +72,8 @@ impl RequestManager {
             return Err(RequestManagerError::DuplicateRequest(request_id));
         }
 
-        let record = RequestRecord::new(submission, BlockTable::empty(self.cache_group_id));
+        let mut record = RequestRecord::new(submission, BlockTable::empty(self.cache_group_id));
+        record.set_generation_kind(generation_kind);
         self.records.insert(request_id, record);
         self.snapshot_order_dirty = true;
         Ok(request_id)
@@ -122,6 +132,40 @@ impl RequestManager {
             .get_mut(&request_id)
             .ok_or(RequestManagerError::UnknownRequest(request_id))?;
         record.block_table = block_table;
+        Ok(())
+    }
+
+    /// Bind the generation paradigm for strategy-aware scheduling (ADR-038).
+    pub fn set_generation_kind(
+        &mut self,
+        request_id: RequestId,
+        generation_kind: crate::GenerationKind,
+    ) -> Result<(), RequestManagerError> {
+        let record = self
+            .records
+            .get_mut(&request_id)
+            .ok_or(RequestManagerError::UnknownRequest(request_id))?;
+        record.set_generation_kind(generation_kind);
+        Ok(())
+    }
+
+    /// Update diffusion schedule progress for multi-step strategy planning.
+    pub fn set_diffusion_schedule_progress(
+        &mut self,
+        request_id: RequestId,
+        denoise_steps_in_block: u32,
+        commit_ready: bool,
+        block_committed: bool,
+    ) -> Result<(), RequestManagerError> {
+        let record = self
+            .records
+            .get_mut(&request_id)
+            .ok_or(RequestManagerError::UnknownRequest(request_id))?;
+        record.set_diffusion_schedule_progress(
+            denoise_steps_in_block,
+            commit_ready,
+            block_committed,
+        );
         Ok(())
     }
 
@@ -483,6 +527,14 @@ impl RequestManager {
                     Some(StopReason::EosToken | StopReason::MaxOutputTokens)
                 );
 
+            if let Some(diff) = update.diffusion_schedule {
+                record.set_diffusion_schedule_progress(
+                    diff.denoise_steps_in_block,
+                    diff.commit_ready,
+                    diff.block_committed,
+                );
+            }
+
             if record.cancel_requested {
                 record.resolve_running_step(true).map_err(|source| {
                     RequestManagerError::InvalidStateTransition {
@@ -645,6 +697,7 @@ mod tests {
     use crate::ids::{ModelId, SequenceNo, StepId};
     use crate::runner::{ExecutionStatus, KvWriteSummary};
     use crate::sampling::SamplingParams;
+    use crate::scheduler::RouteMetadata;
 
     fn make_submission(
         request_id: u64,
@@ -853,6 +906,192 @@ mod tests {
     }
 
     #[test]
+    fn submit_with_generation_kind_binds_atomically() {
+        use crate::GenerationKind;
+
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        manager
+            .submit_with_generation_kind(
+                make_submission(1, 1, "diffusion_gemma"),
+                GenerationKind::BlockDiffusion,
+            )
+            .unwrap();
+
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.generation_kind, GenerationKind::BlockDiffusion);
+        assert_eq!(
+            crate::plan_work_unit_for_snapshot(&snapshot),
+            crate::WorkUnitKind::PrefillChunk
+        );
+    }
+
+    #[test]
+    fn applies_diffusion_schedule_only_progress_with_zero_tokens_executed() {
+        use crate::GenerationKind;
+        use crate::runner::DiffusionScheduleUpdate;
+
+        // Mid-denoise path: no sampled tokens, tokens_executed=0, schedule only.
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        manager
+            .submit_with_generation_kind(
+                make_submission(1, 1, "diffusion_gemma"),
+                GenerationKind::BlockDiffusion,
+            )
+            .unwrap();
+        manager.admit_waiting().unwrap();
+        manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(1),
+                selected_requests: vec![RequestId(1)],
+                deferred_requests: vec![],
+                memory_blocked_requests: vec![],
+                execution_batch: None,
+            })
+            .unwrap();
+
+        // Complete prefill first so subsequent update is pure decode progress.
+        let prompt_len = manager.snapshot(RequestId(1)).unwrap().prompt_len;
+        manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(1),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: prompt_len,
+                        output_token: None,
+                        output_tokens: Vec::new(),
+                        stop_reason: None,
+                        error: None,
+                        diffusion_schedule: None,
+                    }],
+                    logits_handles: vec![],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: prompt_len,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: RouteMetadata::empty(),
+                    execution_status: crate::runner::ExecutionStatus::Success,
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+        manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(2),
+                selected_requests: vec![RequestId(1)],
+                deferred_requests: vec![],
+                memory_blocked_requests: vec![],
+                execution_batch: None,
+            })
+            .unwrap();
+
+        manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(2),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 0,
+                        output_token: None,
+                        output_tokens: Vec::new(),
+                        stop_reason: None,
+                        error: None,
+                        diffusion_schedule: Some(DiffusionScheduleUpdate {
+                            denoise_steps_in_block: 2,
+                            commit_ready: false,
+                            block_committed: false,
+                        }),
+                    }],
+                    logits_handles: vec![],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 0,
+                        blocks_touched: 0,
+                    },
+                    route_metadata: RouteMetadata::empty(),
+                    execution_status: crate::runner::ExecutionStatus::Success,
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.diffusion_denoise_steps_in_block, 2);
+        assert!(!snapshot.diffusion_commit_ready);
+        assert!(!snapshot.diffusion_block_committed);
+        assert!(snapshot.generated_tokens.is_empty());
+        assert_eq!(snapshot.state, crate::request::RequestState::Runnable);
+    }
+
+    #[test]
+    fn applies_diffusion_schedule_update_from_runner() {
+        use crate::GenerationKind;
+        use crate::runner::DiffusionScheduleUpdate;
+
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        manager
+            .submit_with_generation_kind(
+                make_submission(1, 1, "diffusion_gemma"),
+                GenerationKind::BlockDiffusion,
+            )
+            .unwrap();
+        manager.admit_waiting().unwrap();
+        manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(1),
+                selected_requests: vec![RequestId(1)],
+                deferred_requests: vec![],
+                memory_blocked_requests: vec![],
+                execution_batch: None,
+            })
+            .unwrap();
+
+        manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(1),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 3,
+                        output_token: None,
+                        output_tokens: Vec::new(),
+                        stop_reason: None,
+                        error: None,
+                        diffusion_schedule: Some(DiffusionScheduleUpdate {
+                            denoise_steps_in_block: 12,
+                            commit_ready: false,
+                            block_committed: true,
+                        }),
+                    }],
+                    logits_handles: vec![],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 3,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: RouteMetadata::empty(),
+                    execution_status: crate::runner::ExecutionStatus::Success,
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.generation_kind, GenerationKind::BlockDiffusion);
+        assert_eq!(snapshot.diffusion_denoise_steps_in_block, 12);
+        assert!(!snapshot.diffusion_commit_ready);
+        assert!(snapshot.diffusion_block_committed);
+        assert_eq!(
+            crate::plan_work_unit_for_snapshot(&snapshot),
+            crate::WorkUnitKind::DenoiseStep
+        );
+    }
+
+    #[test]
     fn applies_prefill_runner_output_and_returns_request_to_runnable() {
         let mut manager = RequestManager::new(CacheGroupId(7));
 
@@ -879,6 +1118,7 @@ mod tests {
                         output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![],
                     logits_outputs: vec![],
@@ -924,6 +1164,7 @@ mod tests {
                         output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![RequestId(1)],
                     logits_outputs: vec![],
@@ -975,6 +1216,7 @@ mod tests {
                         output_tokens: vec![100, 101],
                         stop_reason: None,
                         error: None,
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![],
                     logits_outputs: vec![],
@@ -1040,6 +1282,7 @@ mod tests {
                         output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![RequestId(1)],
                     logits_outputs: vec![],
@@ -1193,6 +1436,7 @@ mod tests {
                         output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![RequestId(1)],
                     logits_outputs: vec![],
@@ -1319,6 +1563,7 @@ mod tests {
                         output_tokens: Vec::new(),
                         stop_reason: None,
                         error: Some("simulated runner failure".into()),
+                        diffusion_schedule: None,
                     }],
                     logits_handles: vec![],
                     logits_outputs: vec![],
