@@ -3779,6 +3779,57 @@ mod tests {
         ));
     }
 
+    /// Regression for the shared-pool sizing hazard: `FaBlockPool` capacity is
+    /// one budget shared by every pure-FA layer in the cache (PR4 scope), not
+    /// a per-layer slab. A layer that exhausts the shared pool must demote to
+    /// contiguous storage on its own without disturbing sibling layers that
+    /// already hold private blocks from the same pool.
+    #[test]
+    fn fa_paged_pool_shared_across_layers_demotes_independently() {
+        let config = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 3, // 12 tokens shared across both layers
+        };
+        let mut cache = MlxKVCache::new_with_fa_block_pool(2, config);
+
+        // Layer 0 claims 2 of the 3 blocks (8 tokens), leaving 1 block free.
+        let k0 = fa_token_values(8, 1, 4, 1.0);
+        let v0 = fa_token_values(8, 1, 4, 2.0);
+        let _ = cache.append(0, k0, v0);
+
+        // Layer 1 needs 2 blocks (8 tokens) but only 1 remains in the shared
+        // pool: this must demote layer 1, not corrupt or evict layer 0.
+        let k1 = fa_token_values(8, 1, 4, 10.0);
+        let v1 = fa_token_values(8, 1, 4, 20.0);
+        let (out_k1, out_v1) = cache.append(1, k1, v1);
+        cache.advance(8);
+        eval(&[&out_k1, &out_v1]);
+
+        let usage = cache.usage_snapshot();
+        assert_eq!(
+            usage.paged_pool_exhaustion_fallbacks, 1,
+            "layer 1 must demote exactly once when the shared pool runs out"
+        );
+        assert!(
+            matches!(cache.layers[0], Some(FaLayerStorage::Paged(_))),
+            "layer 0 must remain paged; it did not exhaust the pool"
+        );
+        assert!(
+            matches!(cache.layers[1], Some(FaLayerStorage::Contiguous(_))),
+            "layer 1 must demote to contiguous once its own append exhausts the shared pool"
+        );
+
+        // Layer 0's data must be intact after layer 1's demotion freed blocks
+        // from the same shared pool.
+        let (layer0_k, layer0_v) = cache.peek_layer_full_kv(0).expect("layer 0 still resident");
+        eval(&[&layer0_k, &layer0_v]);
+        let expected_k = fa_token_values(8, 1, 4, 1.0);
+        let expected_v = fa_token_values(8, 1, 4, 2.0);
+        eval(&[&expected_k, &expected_v]);
+        assert_eq!(layer0_k.data_f32(), expected_k.data_f32());
+        assert_eq!(layer0_v.data_f32(), expected_v.data_f32());
+    }
+
     #[test]
     fn fa_paged_clone_diverges_without_double_free() {
         let config = FaBlockPoolConfig {
