@@ -3567,11 +3567,13 @@ impl MlxRunner {
         if !explicit_max_blocks {
             config.max_blocks = total_blocks.max(1);
         }
-        // An operator-set override is a hard memory cap, not just a seed for
-        // the initial size: exhaustion must fail the request instead of
+        // max_blocks is always a real memory budget here — either the
+        // operator's explicit override, or KvManager.total_blocks (itself an
+        // operator-configured session capacity, not an arbitrary scaffold
+        // default). Either way exhaustion must fail the request instead of
         // demoting to unbounded contiguous growth (see kv_cache.rs
         // append_paged_fa / MlxRunner::run_item).
-        config.hard_cap = explicit_max_blocks;
+        config.hard_cap = true;
     }
 
     /// Build with every cross-session share available: an optional prefix

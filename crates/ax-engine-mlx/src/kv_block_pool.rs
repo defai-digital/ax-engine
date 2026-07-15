@@ -38,18 +38,21 @@ pub fn fa_kv_block_pool_enabled() -> bool {
 ///
 /// `block_size_tokens` matches the usual `KvManager` block size (16).
 /// `max_blocks` defaults to 8192 (131072 tokens) and can be overridden with
-/// `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` — an explicit override also sets
-/// `hard_cap` so exhaustion fails the request instead of demoting to
-/// unbounded contiguous growth (see `FaBlockPoolConfig::hard_cap`).
+/// `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`; either way `max_blocks` is a real
+/// memory budget (this fallback or, once `MlxRunner::align_fa_block_pool_to_kv`
+/// runs, `KvManager.total_blocks`), so exhaustion always fails the request
+/// instead of demoting to unbounded contiguous growth (see
+/// `FaBlockPoolConfig::hard_cap`).
 pub fn default_fa_block_pool_config() -> FaBlockPoolConfig {
-    let explicit_max_blocks = std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS")
+    let max_blocks = std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
-        .filter(|n| *n > 0);
+        .filter(|n| *n > 0)
+        .unwrap_or(8192);
     FaBlockPoolConfig {
         block_size_tokens: 16,
-        max_blocks: explicit_max_blocks.unwrap_or(8192),
-        hard_cap: explicit_max_blocks.is_some(),
+        max_blocks,
+        hard_cap: true,
     }
 }
 
@@ -61,11 +64,16 @@ pub struct PhysicalBlockId(pub u32);
 pub struct FaBlockPoolConfig {
     pub block_size_tokens: u32,
     pub max_blocks: u32,
-    /// When true, `max_blocks` is an operator-set hard memory cap
-    /// (`AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`): exhaustion fails the request
-    /// instead of demoting to unbounded contiguous growth. Default false
-    /// (the auto-aligned-to-`KvManager.total_blocks` scaffold behavior stays
-    /// fail-soft).
+    /// When true, `max_blocks` is treated as a real memory budget:
+    /// exhaustion fails the request instead of demoting to unbounded
+    /// contiguous growth. Both production config paths
+    /// (`default_fa_block_pool_config`, `MlxRunner::align_fa_block_pool_to_kv`)
+    /// always set this — `max_blocks` is either the operator's explicit
+    /// `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` or `KvManager.total_blocks`, and
+    /// exceeding either is a real capacity problem, not just an
+    /// under-sized scaffold default. `false` is reachable only via a
+    /// directly-constructed `FaBlockPoolConfig` (tests exercise the
+    /// fail-soft demotion path this way).
     pub hard_cap: bool,
 }
 
@@ -208,6 +216,17 @@ impl FaBlockPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_fa_block_pool_config_is_always_hard_cap() {
+        // Regardless of whether AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS is set,
+        // max_blocks here is a real memory budget (this fallback, later
+        // corrected to KvManager.total_blocks by
+        // MlxRunner::align_fa_block_pool_to_kv) — exhaustion must fail the
+        // request rather than silently demote to unbounded contiguous
+        // growth.
+        assert!(default_fa_block_pool_config().hard_cap);
+    }
 
     fn pool(max_blocks: u32) -> FaBlockPool {
         FaBlockPool::new(FaBlockPoolConfig {
