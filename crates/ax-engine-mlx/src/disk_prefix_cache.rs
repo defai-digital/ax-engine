@@ -358,7 +358,11 @@ fn estimate_us(bytes: u64, bytes_per_us: f64) -> u64 {
         return u64::MAX;
     }
     let us = bytes as f64 / bytes_per_us;
-    if us >= u64::MAX as f64 { u64::MAX } else { us as u64 }
+    if us >= u64::MAX as f64 {
+        u64::MAX
+    } else {
+        us as u64
+    }
 }
 
 /// Errors from [`DiskPrefixCache::insert`] and similar mutating calls.
@@ -791,7 +795,9 @@ impl DiskPrefixCache {
         if file.read_exact(&mut embedded_key).is_err() {
             return Err(ReadEntryError::Invalid);
         }
-        timings.read_wall_us = timings.read_wall_us.saturating_add(elapsed_us(read_started));
+        timings.read_wall_us = timings
+            .read_wall_us
+            .saturating_add(elapsed_us(read_started));
         timings.bytes_read = timings.bytes_read.saturating_add(key_len as u64);
         if embedded_key != expected_key {
             return Err(ReadEntryError::Invalid);
@@ -812,7 +818,9 @@ impl DiskPrefixCache {
             if file.read_exact(&mut payload[filled..end]).is_err() {
                 return Err(ReadEntryError::Invalid);
             }
-            timings.read_wall_us = timings.read_wall_us.saturating_add(elapsed_us(read_started));
+            timings.read_wall_us = timings
+                .read_wall_us
+                .saturating_add(elapsed_us(read_started));
             let checksum_started = std::time::Instant::now();
             hasher.update(&payload[filled..end]);
             timings.checksum_wall_us = timings
@@ -1264,8 +1272,15 @@ mod tests {
     fn insert_then_get_roundtrip() {
         let dir = unique_tempdir("roundtrip");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_bytes =
-            test_key("model-a", "policy-a", "layout-a", 16, 4, 0xdead_beef, &[11, 22, 33, 44]);
+        let key_bytes = test_key(
+            "model-a",
+            "policy-a",
+            "layout-a",
+            16,
+            4,
+            0xdead_beef,
+            &[11, 22, 33, 44],
+        );
         let payload = b"PAYLOAD-FOR-CACHE".to_vec();
         cache
             .insert(&key_bytes, &payload_only(&payload))
@@ -1284,8 +1299,15 @@ mod tests {
         let dir = unique_tempdir("stale-tmp-sweep");
         // First open seeds the directory with one live entry.
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_bytes =
-            test_key("model-a", "policy-a", "layout-a", 16, 4, 0xdead_beef, &[11, 22, 33, 44]);
+        let key_bytes = test_key(
+            "model-a",
+            "policy-a",
+            "layout-a",
+            16,
+            4,
+            0xdead_beef,
+            &[11, 22, 33, 44],
+        );
         cache
             .insert(&key_bytes, &payload_only(b"PAYLOAD"))
             .expect("insert");
@@ -1327,8 +1349,15 @@ mod tests {
     fn get_miss_returns_none() {
         let dir = unique_tempdir("miss");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_bytes =
-            test_key("model-b", "policy-b", "layout-b", 16, 4, 0xfeed_face, &[11, 22, 33, 44]);
+        let key_bytes = test_key(
+            "model-b",
+            "policy-b",
+            "layout-b",
+            16,
+            4,
+            0xfeed_face,
+            &[11, 22, 33, 44],
+        );
         assert!(cache.get(&key_bytes).expect("get").is_none());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1337,8 +1366,24 @@ mod tests {
     fn key_mismatch_returns_miss() {
         let dir = unique_tempdir("collision");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_a = test_key("model-c", "policy-c", "layout-c", 16, 4, 1, &[11, 22, 33, 44]);
-        let key_b = test_key("model-c", "policy-c", "layout-c", 16, 4, 2, &[11, 22, 33, 44]);
+        let key_a = test_key(
+            "model-c",
+            "policy-c",
+            "layout-c",
+            16,
+            4,
+            1,
+            &[11, 22, 33, 44],
+        );
+        let key_b = test_key(
+            "model-c",
+            "policy-c",
+            "layout-c",
+            16,
+            4,
+            2,
+            &[11, 22, 33, 44],
+        );
         cache
             .insert(&key_a, &payload_only(b"payload-a"))
             .expect("insert");
@@ -1361,7 +1406,15 @@ mod tests {
     fn corrupt_payload_returns_miss() {
         let dir = unique_tempdir("corrupt");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_bytes = test_key("model-d", "policy-d", "layout-d", 16, 4, 9, &[11, 22, 33, 44]);
+        let key_bytes = test_key(
+            "model-d",
+            "policy-d",
+            "layout-d",
+            16,
+            4,
+            9,
+            &[11, 22, 33, 44],
+        );
         cache
             .insert(&key_bytes, &payload_only(b"payload-correct"))
             .expect("insert");
@@ -1380,8 +1433,15 @@ mod tests {
     fn contains_returns_true_after_insert() {
         let dir = unique_tempdir("contains-hit");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_bytes =
-            test_key("model-c1", "policy-c1", "layout-c1", 16, 4, 0xc04e_7415, &[11, 22, 33, 44]);
+        let key_bytes = test_key(
+            "model-c1",
+            "policy-c1",
+            "layout-c1",
+            16,
+            4,
+            0xc04e_7415,
+            &[11, 22, 33, 44],
+        );
         assert!(!cache.contains(&key_bytes), "before insert: must not exist");
         cache
             .insert(&key_bytes, &payload_only(b"payload-x"))
@@ -1399,8 +1459,15 @@ mod tests {
         // still returns true, while get returns None.
         let dir = unique_tempdir("contains-corrupt");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_bytes =
-            test_key("model-c2", "policy-c2", "layout-c2", 16, 4, 0xc0c0_dead, &[11, 22, 33, 44]);
+        let key_bytes = test_key(
+            "model-c2",
+            "policy-c2",
+            "layout-c2",
+            16,
+            4,
+            0xc0c0_dead,
+            &[11, 22, 33, 44],
+        );
         cache
             .insert(&key_bytes, &payload_only(b"payload-valid"))
             .expect("insert");
@@ -1429,8 +1496,8 @@ mod tests {
         let policy = DiskPrefixCachePolicy {
             max_bytes: u64::MAX,
             max_entries: 2,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
 
         let key_a = test_key("m", "p", "l", 16, 4, 0xa1, &[11, 22, 33, 44]);
@@ -1475,8 +1542,8 @@ mod tests {
         let policy = DiskPrefixCachePolicy {
             max_bytes: per_file + (per_file / 4), // ~1.25 × single file
             max_entries: usize::MAX,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
 
         let key_a = test_key("m", "p", "l", 16, 4, 0xa1, &[11, 22, 33, 44]);
@@ -1509,8 +1576,8 @@ mod tests {
         let policy = DiskPrefixCachePolicy {
             max_bytes: u64::MAX,
             max_entries: 1,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
         fs::write(dir.join("NOTES.md"), b"hello").expect("write junk");
 
@@ -1535,8 +1602,8 @@ mod tests {
         let policy = DiskPrefixCachePolicy {
             max_bytes: u64::MAX,
             max_entries: 1,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
         let key = test_key("m", "p", "l", 16, 4, 0x10cc, &[11, 22, 33, 44]);
 
@@ -1580,8 +1647,8 @@ mod tests {
         let tight = DiskPrefixCachePolicy {
             max_bytes: u64::MAX,
             max_entries: 1,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = DiskPrefixCache::with_policy(&dir, tight).expect("reopen");
 
         let remaining: Vec<_> = fs::read_dir(&dir)
@@ -1665,8 +1732,8 @@ mod tests {
         let policy = DiskPrefixCachePolicy {
             max_bytes: u64::MAX,
             max_entries: 8,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = Arc::new(DiskPrefixCache::with_policy(&dir, policy).expect("open"));
 
         let threads_per_role = 4;
@@ -1786,7 +1853,15 @@ mod tests {
         // The .tmp.* file should not survive a successful insert.
         let dir = unique_tempdir("atomic");
         let cache = DiskPrefixCache::open(&dir).expect("open");
-        let key_bytes = test_key("model-e", "policy-e", "layout-e", 16, 4, 42, &[11, 22, 33, 44]);
+        let key_bytes = test_key(
+            "model-e",
+            "policy-e",
+            "layout-e",
+            16,
+            4,
+            42,
+            &[11, 22, 33, 44],
+        );
         cache
             .insert(&key_bytes, &payload_only(b"payload-e"))
             .expect("insert");
@@ -1943,7 +2018,15 @@ mod tests {
         // Simulate two independent sessions sharing the same cache directory.
         // Session 1 writes; session 2 opens the same dir and reads.
         let dir = unique_tempdir("cross-session");
-        let key_bytes = test_key("model-x", "policy-x", "layout-x", 16, 4, 0xcafe, &[11, 22, 33, 44]);
+        let key_bytes = test_key(
+            "model-x",
+            "policy-x",
+            "layout-x",
+            16,
+            4,
+            0xcafe,
+            &[11, 22, 33, 44],
+        );
         let payload = b"session-1-payload".to_vec();
         let entry = DiskPrefixCacheEntry {
             payload: payload.clone(),
@@ -1977,8 +2060,8 @@ mod tests {
         let policy = DiskPrefixCachePolicy {
             max_bytes: 1024 * 1024, // 1 MiB budget
             max_entries: usize::MAX,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
 
         // 256 KiB payload — should fit within 1 MiB budget
@@ -2010,8 +2093,8 @@ mod tests {
         let policy = DiskPrefixCachePolicy {
             max_bytes: budget,
             max_entries: usize::MAX,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
 
         let key1 = test_key("m", "p", "l", 16, 4, 0xaa, &[11, 22, 33, 44]);
@@ -2049,8 +2132,8 @@ mod tests {
         let tight = DiskPrefixCachePolicy {
             max_bytes: u64::MAX,
             max_entries: 2,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = DiskPrefixCache::with_policy(&dir, tight).expect("reopen tight");
 
         // Entries 0-2 must be evicted; 3-4 must survive.
@@ -2121,8 +2204,8 @@ mod tests {
         let policy = DiskPrefixCachePolicy {
             max_bytes: u64::MAX,
             max_entries: 2,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
         let key_a = test_key("m", "p", "l", 16, 4, 0xa, &[11, 22, 33, 44]);
         let key_b = test_key("m", "p", "l", 16, 4, 0xb, &[11, 22, 33, 44]);
@@ -2149,8 +2232,8 @@ mod tests {
         let policy = DiskPrefixCachePolicy {
             max_bytes: 1024,
             max_entries: usize::MAX,
-..DiskPrefixCachePolicy::default()
-};
+            ..DiskPrefixCachePolicy::default()
+        };
         let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
         let key_small = test_key("m", "p", "l", 16, 4, 1, &[11, 22, 33, 44]);
         cache
@@ -2372,7 +2455,9 @@ mod tests {
             ..policy
         };
         assert_eq!(
-            disabled.evaluate_admission(4096, 1024, Some(1), Some(throughput)).0,
+            disabled
+                .evaluate_admission(4096, 1024, Some(1), Some(throughput))
+                .0,
             DiskAdmissionReason::Disabled
         );
 
@@ -2394,26 +2479,28 @@ mod tests {
         );
 
         assert_eq!(
-            policy.evaluate_admission(100, 1024, Some(1), Some(throughput)).0,
+            policy
+                .evaluate_admission(100, 1024, Some(1), Some(throughput))
+                .0,
             DiskAdmissionReason::PrefixTooShort
         );
         assert_eq!(
-            policy.evaluate_admission(4096, 1024, None, Some(throughput)).0,
+            policy
+                .evaluate_admission(4096, 1024, None, Some(throughput))
+                .0,
             DiskAdmissionReason::NoCostModel
         );
         assert_eq!(
-            policy.evaluate_admission(4096, 1024, Some(1_000_000), None).0,
+            policy
+                .evaluate_admission(4096, 1024, Some(1_000_000), None)
+                .0,
             DiskAdmissionReason::NoCostModel
         );
 
         // 1 MiB entry: restore ≈ 5.2 ms, write ≈ 10.5 ms. A 10 s cold
         // prefill clears write + min_savings comfortably.
-        let (reason, estimate) = policy.evaluate_admission(
-            4096,
-            1024 * 1024,
-            Some(10_000_000),
-            Some(throughput),
-        );
+        let (reason, estimate) =
+            policy.evaluate_admission(4096, 1024 * 1024, Some(10_000_000), Some(throughput));
         assert_eq!(reason, DiskAdmissionReason::AdmittedPositiveValue);
         assert!(estimate.restore_us > 0 && estimate.write_us > 0);
 

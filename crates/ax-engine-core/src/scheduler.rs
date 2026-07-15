@@ -447,9 +447,8 @@ impl Scheduler {
             if mode == ExecutionMode::Prefill && admitted_prefill_requests >= prefill_request_cap {
                 token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
-                fair_telemetry.deferred_by_admission = fair_telemetry
-                    .deferred_by_admission
-                    .saturating_add(1);
+                fair_telemetry.deferred_by_admission =
+                    fair_telemetry.deferred_by_admission.saturating_add(1);
                 continue;
             }
 
@@ -462,7 +461,9 @@ impl Scheduler {
                 (ExecutionMode::Prefill, Some(prefill_budget)) => {
                     remaining_budget.min(prefill_budget)
                 }
-                (ExecutionMode::Prefill, None) if fair_active && !snapshot.has_multimodal_inputs => {
+                (ExecutionMode::Prefill, None)
+                    if fair_active && !snapshot.has_multimodal_inputs =>
+                {
                     // Text-only fair cap. Multimodal remains full-or-defer via
                     // build_execution_item atomicity (no partial multimodal).
                     remaining_budget.min(fair_chunk)
@@ -866,12 +867,7 @@ mod tests {
         let scheduler = Scheduler::new();
         let mut snapshot = make_snapshot(1, 1, "diffusion_gemma", &[1, 2, 3, 4], 4, &[], 256);
         snapshot.generation_kind = GenerationKind::BlockDiffusion;
-        let plan = scheduler.plan(&SchedulerInput::new(
-            StepId(1),
-            vec![snapshot],
-            None,
-            32,
-        ));
+        let plan = scheduler.plan(&SchedulerInput::new(StepId(1), vec![snapshot], None, 32));
         let batch = plan.execution_batch.expect("batch");
         assert_eq!(batch.items.len(), 1);
         assert_eq!(batch.items[0].mode, ExecutionMode::Decode);
@@ -899,12 +895,7 @@ mod tests {
         let scheduler = Scheduler::new();
         let mut snapshot = make_snapshot(1, 1, "diffusion_gemma", &[1, 2, 3, 4], 0, &[], 256);
         snapshot.generation_kind = GenerationKind::BlockDiffusion;
-        let plan = scheduler.plan(&SchedulerInput::new(
-            StepId(3),
-            vec![snapshot],
-            None,
-            32,
-        ));
+        let plan = scheduler.plan(&SchedulerInput::new(StepId(3), vec![snapshot], None, 32));
         let batch = plan.execution_batch.expect("batch");
         assert_eq!(batch.items[0].planned_work_unit, WorkUnitKind::PrefillChunk);
         assert!(
@@ -1557,12 +1548,8 @@ mod tests {
         let mut snapshot = make_snapshot(1, 1, "qwen3", &[10, 11, 12], 0, &[], 16);
         snapshot.execution_plan_ref = Some("phase1.qwen3.dense_prefill".into());
 
-        let schedule_plan = scheduler.plan(&SchedulerInput::new(
-            StepId(13),
-            vec![snapshot],
-            None,
-            8,
-        ));
+        let schedule_plan =
+            scheduler.plan(&SchedulerInput::new(StepId(13), vec![snapshot], None, 8));
 
         let execution_batch = schedule_plan
             .execution_batch
@@ -1640,12 +1627,7 @@ mod tests {
     #[test]
     fn returns_empty_plan_when_no_runnable_requests() {
         let scheduler = Scheduler::new();
-        let schedule_plan = scheduler.plan(&SchedulerInput::new(
-            StepId(23),
-            vec![],
-            None,
-            16,
-        ));
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(StepId(23), vec![], None, 16));
 
         assert!(schedule_plan.selected_requests.is_empty());
         assert!(schedule_plan.deferred_requests.is_empty());
@@ -1684,8 +1666,11 @@ mod tests {
             assert_eq!(item.scheduled_token_count, 16);
         }
         assert_eq!(batch.total_scheduled_tokens, 48);
-        let decisions: std::collections::BTreeMap<_, _> =
-            batch.route_metadata.crossover_decisions.into_iter().collect();
+        let decisions: std::collections::BTreeMap<_, _> = batch
+            .route_metadata
+            .crossover_decisions
+            .into_iter()
+            .collect();
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED),
             Some(&1)
@@ -1720,15 +1705,17 @@ mod tests {
         assert_eq!(schedule_plan.selected_requests, vec![RequestId(1)]);
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(2)]);
         let batch = schedule_plan.execution_batch.expect("batch");
-        let decisions: std::collections::BTreeMap<_, _> =
-            batch.route_metadata.crossover_decisions.into_iter().collect();
+        let decisions: std::collections::BTreeMap<_, _> = batch
+            .route_metadata
+            .crossover_decisions
+            .into_iter()
+            .collect();
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMISSION_CAP),
             Some(&1)
         );
         assert_eq!(
-            decisions
-                .get(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_DEFERRED_BY_ADMISSION),
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_DEFERRED_BY_ADMISSION),
             Some(&1)
         );
     }
@@ -1758,8 +1745,11 @@ mod tests {
         assert_eq!(batch.total_scheduled_tokens, 1);
         assert_eq!(batch.items.len(), 1);
         assert_eq!(batch.items[0].request_id, RequestId(1));
-        let decisions: std::collections::BTreeMap<_, _> =
-            batch.route_metadata.crossover_decisions.into_iter().collect();
+        let decisions: std::collections::BTreeMap<_, _> = batch
+            .route_metadata
+            .crossover_decisions
+            .into_iter()
+            .collect();
         assert!(
             !decisions.contains_key(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED),
             "fair telemetry must not engage under pressure"
@@ -1792,9 +1782,7 @@ mod tests {
         // remaining_budget for multimodal (not fair-capped), so it takes 8.
         // Then text gets fair-capped 4.
         assert!(
-            schedule_plan
-                .selected_requests
-                .contains(&RequestId(1)),
+            schedule_plan.selected_requests.contains(&RequestId(1)),
             "multimodal with enough residual budget must schedule atomically"
         );
         let batch = schedule_plan.execution_batch.expect("batch");

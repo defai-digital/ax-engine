@@ -299,8 +299,8 @@ impl PostRestartCacheSafety {
             self.baseline_block_size_tokens,
             self.baseline_token_count,
             self.baseline_token_hash,
-                &tokens_for(self.baseline_token_count),
-            );
+            &tokens_for(self.baseline_token_count),
+        );
         cache
             .insert(
                 &corrupt_key,
@@ -334,8 +334,8 @@ impl PostRestartCacheSafety {
             self.baseline_block_size_tokens,
             self.baseline_token_count,
             self.baseline_token_hash,
-                &tokens_for(self.baseline_token_count),
-            );
+            &tokens_for(self.baseline_token_count),
+        );
         let truncated_path = cache.path_for(&truncated_key);
         std::fs::write(&truncated_path, b"AX").map_err(|e| format!("write truncated stub: {e}"))?;
         if cache

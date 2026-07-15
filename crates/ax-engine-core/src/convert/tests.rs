@@ -269,17 +269,11 @@ fn gpt_oss_tensor_map_matches_openai_and_mlx_community_keys() {
 
     // openai/gpt-oss native MXFP4 fused experts + sinks.
     assert_eq!(
-        match_tensor(
-            "model.layers.0.mlp.experts.gate_up_proj_blocks",
-            &family,
-        ),
+        match_tensor("model.layers.0.mlp.experts.gate_up_proj_blocks", &family,),
         Some((NativeTensorRole::FfnGateUpExpsMxfp4Blocks, Some(0)))
     );
     assert_eq!(
-        match_tensor(
-            "model.layers.0.mlp.experts.gate_up_proj_scales",
-            &family,
-        ),
+        match_tensor("model.layers.0.mlp.experts.gate_up_proj_scales", &family,),
         Some((NativeTensorRole::FfnGateUpExpsMxfp4Scales, Some(0)))
     );
     assert_eq!(

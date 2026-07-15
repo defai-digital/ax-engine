@@ -18,15 +18,14 @@ use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
     DiffusionScheduleUpdate, EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary,
-    MultimodalPrefillAdapter, NativeModelArtifacts, NativeModelBindingSummary,
-    NativeModelManifest, NativeTensorRole, ROUTE_DECISION_AX_MLX_GENERATION_KIND,
-    ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
-    ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
-    ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
-    ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB, ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS,
-    ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS, ROUTE_DECISION_AX_MLX_KV_ROTATED_RING_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_ROTATING_RING_SLACK,
+    MultimodalPrefillAdapter, NativeModelArtifacts, NativeModelBindingSummary, NativeModelManifest,
+    NativeTensorRole, ROUTE_DECISION_AX_MLX_GENERATION_KIND,
+    ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT, ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB,
+    ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS, ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB,
+    ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS, ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB,
+    ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS, ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS,
+    ROUTE_DECISION_AX_MLX_KV_ROTATED_RING_LAYERS, ROUTE_DECISION_AX_MLX_KV_ROTATING_RING_SLACK,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
@@ -6194,8 +6193,7 @@ impl MlxRunner {
         } else {
             Vec::new()
         };
-        let probed_tokens =
-            Self::discard_probe_shorter_than_scheduler_claim(probed_tokens, item);
+        let probed_tokens = Self::discard_probe_shorter_than_scheduler_claim(probed_tokens, item);
         let reused_tokens: &[u32] = if !probed_tokens.is_empty() {
             &probed_tokens
         } else {
@@ -13215,8 +13213,7 @@ mod tests {
     fn discard_probe_shorter_than_scheduler_claim_is_noop_on_already_empty_probe() {
         let item = scheduler_claim_item(vec![1, 2, 3, 4]);
 
-        let result =
-            MlxRunner::discard_probe_shorter_than_scheduler_claim(Vec::new(), &item);
+        let result = MlxRunner::discard_probe_shorter_than_scheduler_claim(Vec::new(), &item);
 
         assert!(result.is_empty());
     }

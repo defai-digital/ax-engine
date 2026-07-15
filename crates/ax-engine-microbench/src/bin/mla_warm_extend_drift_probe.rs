@@ -311,7 +311,8 @@ fn main() -> ExitCode {
     if cold_cache.seq_len() != seq_len {
         eprintln!(
             "error: cold cache seq_len {} != expected {}",
-            cold_cache.seq_len(), seq_len
+            cold_cache.seq_len(),
+            seq_len
         );
         return ExitCode::from(1);
     }
@@ -329,7 +330,8 @@ fn main() -> ExitCode {
     if warm_cache.seq_len() != seq_len {
         eprintln!(
             "error: warm cache seq_len {} != expected {}",
-            warm_cache.seq_len(), seq_len
+            warm_cache.seq_len(),
+            seq_len
         );
         return ExitCode::from(1);
     }

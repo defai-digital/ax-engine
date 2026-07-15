@@ -312,9 +312,11 @@ impl EngineCore {
         );
 
         let request_snapshots = self.request_manager.snapshots();
-        let schedule_plan = self
-            .scheduler
-            .plan(&self.scheduler_input(step_id, request_snapshots, global_token_budget));
+        let schedule_plan = self.scheduler.plan(&self.scheduler_input(
+            step_id,
+            request_snapshots,
+            global_token_budget,
+        ));
         trace!(
             scheduled_requests = schedule_plan.selected_requests.len(),
             deferred_requests = schedule_plan.deferred_requests.len(),
@@ -753,17 +755,14 @@ impl EngineCore {
 
         self.refresh_execution_plan_refs()?;
 
-        Ok((
-            prefix_reuse,
-            {
-                let request_snapshots = self.request_manager.snapshots();
-                self.scheduler.plan(&self.scheduler_input(
-                    schedule_plan.step_id,
-                    request_snapshots,
-                    global_token_budget,
-                ))
-            },
-        ))
+        Ok((prefix_reuse, {
+            let request_snapshots = self.request_manager.snapshots();
+            self.scheduler.plan(&self.scheduler_input(
+                schedule_plan.step_id,
+                request_snapshots,
+                global_token_budget,
+            ))
+        }))
     }
 
     fn scheduler_input(

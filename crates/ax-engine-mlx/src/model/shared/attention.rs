@@ -1,6 +1,5 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, concatenate, contiguous,
-    eval,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, concatenate, contiguous, eval,
     qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
     scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
     slice_update, transpose,

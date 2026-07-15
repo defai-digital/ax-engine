@@ -387,8 +387,7 @@ impl DiskPrefixCacheWriter {
                         job.producer_serialize_us,
                     ) {
                         Ok(outcome) => {
-                            worker_cost_model
-                                .record_write(bytes, elapsed_wall_us(write_started));
+                            worker_cost_model.record_write(bytes, elapsed_wall_us(write_started));
                             worker_evictions
                                 .fetch_add(outcome.evictions, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -466,7 +465,10 @@ impl Drop for DiskPrefixCacheWriter {
             return;
         };
         let deadline = std::time::Instant::now() + self.shutdown_drain;
-        while !self.worker_finished.load(std::sync::atomic::Ordering::Acquire) {
+        while !self
+            .worker_finished
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             if std::time::Instant::now() >= deadline {
                 tracing::warn!(
                     target: "ax_engine_mlx::prefix_cache",
@@ -738,7 +740,9 @@ impl MlxPrefixCacheTelemetry {
         if other.restore_source_code != 0 {
             self.restore_source_code = other.restore_source_code;
         }
-        self.disk_read_wall_us = self.disk_read_wall_us.saturating_add(other.disk_read_wall_us);
+        self.disk_read_wall_us = self
+            .disk_read_wall_us
+            .saturating_add(other.disk_read_wall_us);
         self.disk_checksum_wall_us = self
             .disk_checksum_wall_us
             .saturating_add(other.disk_checksum_wall_us);
@@ -944,14 +948,14 @@ impl MlxPrefixCacheTelemetry {
         self.disk_deserialize_wall_us = self
             .disk_deserialize_wall_us
             .saturating_add(saturating_u32(deserialize_wall_us as usize));
-        self.disk_restore_total_wall_us = self.disk_restore_total_wall_us.saturating_add(
-            saturating_u32(
-                (timings
-                    .read_wall_us
-                    .saturating_add(timings.checksum_wall_us)
-                    .saturating_add(deserialize_wall_us)) as usize,
-            ),
-        );
+        self.disk_restore_total_wall_us =
+            self.disk_restore_total_wall_us
+                .saturating_add(saturating_u32(
+                    (timings
+                        .read_wall_us
+                        .saturating_add(timings.checksum_wall_us)
+                        .saturating_add(deserialize_wall_us)) as usize,
+                ));
         self.disk_bytes_read_kib = self
             .disk_bytes_read_kib
             .saturating_add(kib_ceil(timings.bytes_read));
@@ -1045,12 +1049,9 @@ mod tests {
         assert!(snapshot.restore_bytes_per_us > 0.0);
 
         // The seeded model unlocks adaptive admission (no NoCostModel).
-        let (reason, _) = disk.policy().evaluate_admission(
-            4096,
-            1024,
-            Some(60_000_000),
-            Some(snapshot),
-        );
+        let (reason, _) =
+            disk.policy()
+                .evaluate_admission(4096, 1024, Some(60_000_000), Some(snapshot));
         assert!(
             matches!(
                 reason,

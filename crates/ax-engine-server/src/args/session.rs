@@ -1,6 +1,6 @@
 use ax_engine_sdk::{
-    DelegatedHttpTimeouts, EngineSessionConfig, PreviewBackendRequest,
-    PreviewSessionConfigRequest, SupportTier,
+    DelegatedHttpTimeouts, EngineSessionConfig, PreviewBackendRequest, PreviewSessionConfigRequest,
+    SupportTier,
 };
 use std::env;
 use std::path::PathBuf;
@@ -10,8 +10,8 @@ use super::artifacts::{
 };
 use super::presets::PresetDefinition;
 use super::{
-    DEFAULT_MODEL_ID, MODEL_ARTIFACTS_ENV, ModelArtifactResolution, PreviewSupportTier,
-    ServerArgs, ServerPreset,
+    DEFAULT_MODEL_ID, MODEL_ARTIFACTS_ENV, ModelArtifactResolution, PreviewSupportTier, ServerArgs,
+    ServerPreset,
 };
 
 impl PreviewSupportTier {

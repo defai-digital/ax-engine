@@ -99,6 +99,6 @@
 <rect x="210" y="624.0" width="192.0" height="10" rx="2" fill="#c084fc"/>
 <text x="304.4" y="619.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">17.9</text>
 <text x="407.0" y="632.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">38.5</text>
-<text x="72" y="734.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Runtime: AX Engine v6.8.2 (2026-07-13); MLX 0.32.0 / mlx-lm 0.31.3.</text>
+<text x="72" y="734.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Runtime: AX Engine v6.8.2 (2026-07-13).</text>
 <text x="72" y="750.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: benchmarks/results/speculative/mtp-6bit/2026-07-13-exact-mtp-sampled-flappy-clean / summary.json. Pure MTP; no MTP+n-gram stacking.</text>
 </svg>

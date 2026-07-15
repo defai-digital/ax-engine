@@ -284,7 +284,6 @@ pub fn gelu_approx_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> 
     multiply(&gelu_approx(gate, s), x, s)
 }
 
-
 /// OpenAI GPT-OSS / llama.cpp `SWIGLU_OAI` expert activation.
 ///
 /// Matches mlx-lm `gpt_oss.swiglu` and ggml `ggml_swiglu_oai`:
@@ -3566,7 +3565,14 @@ mod gather_qmm_mxfp4_tests {
             MlxDtype::Float32,
         );
         let w = astype(&w, MlxDtype::Bfloat16, None);
-        let parts = quantize(&w, Some(32), Some(4), MlxQuantizationMode::Mxfp4, None, None);
+        let parts = quantize(
+            &w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
         assert_eq!(parts.len(), 2, "mxfp4 quant returns [packed, scales]");
         let packed = &parts[0];
         let scales = &parts[1];

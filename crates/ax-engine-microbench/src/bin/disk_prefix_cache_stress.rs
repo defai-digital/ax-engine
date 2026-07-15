@@ -4,7 +4,8 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_mlx::disk_prefix_cache::{
-    DiskPrefixCache, DiskPrefixCacheEntry, DiskPrefixCachePolicy, canonical_key_bytes, DiskPrefixKeyFields,
+    DiskPrefixCache, DiskPrefixCacheEntry, DiskPrefixCachePolicy, DiskPrefixKeyFields,
+    canonical_key_bytes,
 };
 use serde_json::json;
 
@@ -148,8 +149,8 @@ fn run_concurrent_stress(
     let policy = DiskPrefixCachePolicy {
         max_bytes: u64::MAX,
         max_entries: workers * iterations + overlap_keys + 16,
-..DiskPrefixCachePolicy::default()
-};
+        ..DiskPrefixCachePolicy::default()
+    };
     DiskPrefixCache::with_policy(cache_dir, policy).map_err(|e| e.to_string())?;
 
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -214,8 +215,8 @@ fn run_worker(args: &[String]) -> Result<(), String> {
         DiskPrefixCachePolicy {
             max_bytes: u64::MAX,
             max_entries: usize::MAX,
-..DiskPrefixCachePolicy::default()
-},
+            ..DiskPrefixCachePolicy::default()
+        },
     )
     .map_err(|e| e.to_string())?;
 
@@ -276,8 +277,8 @@ fn run_eviction_pressure(
     let policy = DiskPrefixCachePolicy {
         max_bytes: u64::MAX,
         max_entries: 2,
-..DiskPrefixCachePolicy::default()
-};
+        ..DiskPrefixCachePolicy::default()
+    };
     let cache = DiskPrefixCache::with_policy(cache_dir, policy).map_err(|e| e.to_string())?;
     let mut total_evictions = 0u64;
     let inserted = 5usize;
