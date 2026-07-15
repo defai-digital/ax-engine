@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cluster: lan_cluster,
             instance_id: discovery_instance_id,
         })
-        .map_err(|message| std::io::Error::other(message))?;
+        .map_err(std::io::Error::other)?;
         if !tracing_enabled {
             eprintln!(
                 "ax-engine-server LAN mDNS advertise on {}:{} (_ax-engine._tcp)",

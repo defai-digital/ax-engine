@@ -610,6 +610,14 @@ pub struct MlxPrefixCacheStore {
     pub(crate) disk_prefix_writer: Option<Arc<DiskPrefixCacheWriter>>,
 }
 
+/// Owned pieces of an [`MlxPrefixCacheStore`]: in-memory L1 cache, optional
+/// durable L2 disk cache, and the optional L2 background writer.
+pub(crate) type PrefixCacheStoreParts = (
+    Arc<Mutex<MlxPrefixCache>>,
+    Option<Arc<crate::disk_prefix_cache::DiskPrefixCache>>,
+    Option<Arc<DiskPrefixCacheWriter>>,
+);
+
 impl fmt::Debug for MlxPrefixCacheStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MlxPrefixCacheStore")
@@ -638,13 +646,7 @@ impl MlxPrefixCacheStore {
         }
     }
 
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        Arc<Mutex<MlxPrefixCache>>,
-        Option<Arc<crate::disk_prefix_cache::DiskPrefixCache>>,
-        Option<Arc<DiskPrefixCacheWriter>>,
-    ) {
+    pub(crate) fn into_parts(self) -> PrefixCacheStoreParts {
         (
             self.prefix_cache,
             self.disk_prefix_cache,

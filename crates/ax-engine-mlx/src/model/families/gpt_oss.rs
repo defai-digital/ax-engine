@@ -189,7 +189,7 @@ fn gpt_oss_moe_experts_forward(
     // mlx-lm SwitchGLU: x = expand_dims(x, (-2, -3))
     let x_exp = expand_dims_axes(x, &[-2, -3], None);
     let batch = x.shape()[0];
-    let seq_len = x.shape()[1] as i32;
+    let seq_len = x.shape()[1];
     let top_k = top_k_indices.shape().last().copied().unwrap_or(0);
 
     // x_up = up_proj(x, indices); x_gate = gate_proj(x, indices)

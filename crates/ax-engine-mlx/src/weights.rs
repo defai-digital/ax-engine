@@ -3580,7 +3580,7 @@ fn slice_even_odd_last_axis(x: &MlxArray, even: bool) -> MlxArray {
     let n = shape[last];
     let start = if even { 0 } else { 1 };
     let mut starts = vec![0i32; ndim];
-    let mut stops: Vec<i32> = shape.iter().copied().collect();
+    let mut stops: Vec<i32> = shape.to_vec();
     let mut strides = vec![1i32; ndim];
     starts[last] = start;
     stops[last] = n;
@@ -3633,7 +3633,7 @@ fn slice_even_odd_out_rows(x: &MlxArray, even: bool) -> MlxArray {
     let out = shape[out_axis];
     let start = if even { 0 } else { 1 };
     let mut starts = vec![0i32; ndim];
-    let mut stops: Vec<i32> = shape.iter().copied().collect();
+    let mut stops: Vec<i32> = shape.to_vec();
     let mut strides = vec![1i32; ndim];
     starts[out_axis] = start;
     stops[out_axis] = out;

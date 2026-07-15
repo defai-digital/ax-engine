@@ -4071,13 +4071,13 @@ mod tests {
             .collect();
         let q = reshape(
             &MlxArray::from_f32_slice(&q_data),
-            &[1, n_heads as i32, seq as i32, head_dim as i32],
+            &[1, n_heads, seq, head_dim],
             None,
         );
         let offset = 7usize;
         let static_r = mlx_sys::rope(
             &q,
-            head_dim as i32,
+            head_dim,
             false,
             Some(10_000.0),
             1.0,
@@ -4087,7 +4087,7 @@ mod tests {
         );
         let dyn_r = rope_dynamic(
             &q,
-            head_dim as i32,
+            head_dim,
             false,
             Some(10_000.0),
             1.0,

@@ -81,6 +81,7 @@ pub(crate) fn build_llama3_rope_freqs(
 ///
 /// Defaults match openai/gpt-oss (`beta_fast=32`, `beta_slow=1`, `mscale=1`,
 /// `mscale_all_dim=0`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_yarn_rope_freqs(
     dims: usize,
     theta: f32,
