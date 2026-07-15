@@ -65,6 +65,12 @@ BOOLEAN_PROVENANCE_ENV_FLAGS = {
 # Kept in sync with `profile_kv_long_context_evidence.py` so JSON
 # artifacts from both harnesses are easy to diff.
 TELEMETRY_KEYS = [
+    # Prefill chunk selection (cold vs warm-extend trail)
+    "ax_mlx_prefill_chunk_selected",
+    "ax_mlx_prefill_chunk_mode",
+    # PR4 paged FA materialize cost (zero on contiguous default path)
+    "ax_mlx_paged_kv_materialize_us",
+    "ax_mlx_paged_kv_pool_exhaustion_fallbacks",
     # KV capacity / usage
     "ax_mlx_kv_capacity_tokens",
     "ax_mlx_kv_capacity_kib",

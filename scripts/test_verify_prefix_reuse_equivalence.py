@@ -32,6 +32,40 @@ sys.modules[MODULE_SPEC.name] = verify_prefix
 MODULE_SPEC.loader.exec_module(verify_prefix)
 
 
+class PrefixReuseEquivalencePadHelpersTests(unittest.TestCase):
+    def test_pad_tokens_to_block_size_right_pads_with_tail_repeat(self) -> None:
+        self.assertEqual(
+            verify_prefix.pad_tokens_to_block_size([1, 2, 3], 4),
+            [1, 2, 3, 1],
+        )
+        self.assertEqual(verify_prefix.pad_tokens_to_block_size([1, 2, 3, 4], 4), [1, 2, 3, 4])
+        self.assertEqual(verify_prefix.pad_tokens_to_block_size([9], None), [9])
+
+    def test_warm_extend_pair_keeps_base_as_exact_prefix(self) -> None:
+        class FakeTok:
+            def encode(self, text: str):
+                class Out:
+                    def __init__(self, ids):
+                        self.ids = ids
+
+                # Distinct vocab ids so independent encode(base+suffix) would differ.
+                if text == "BASE":
+                    return Out([10, 11, 12])
+                if text == " SUFFIX":
+                    return Out([20, 21])
+                if text == "BASE SUFFIX":
+                    # Simulates a tokenizer that would not preserve the padded base.
+                    return Out([10, 11, 12, 99, 20, 21])
+                raise AssertionError(f"unexpected text {text!r}")
+
+        base, extended = verify_prefix.build_warm_extend_token_pair(
+            FakeTok(), "BASE", " SUFFIX", pad_to_block_size=4
+        )
+        self.assertEqual(base, [10, 11, 12, 10])
+        self.assertEqual(extended[: len(base)], base)
+        self.assertEqual(len(extended) % 4, 0)
+
+
 class PrefixReuseEquivalenceProvenanceTests(unittest.TestCase):
     def test_truthy_env_parser_matches_fastpath_contract(self) -> None:
         for value in ["1", "true", "TRUE", " yes "]:

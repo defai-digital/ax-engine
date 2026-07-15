@@ -602,9 +602,11 @@ introduces an FA-only private block path:
 |---|---|
 | Pure allocator (`FaBlockPool` in `kv_block_pool.rs`) | Implemented |
 | Env opt-in `AX_MLX_FA_KV_BLOCK_POOL` | Present (**default OFF**) |
-| Optional `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` | Default `8192` (131072 tokens at block size 16) |
-| Integration into `MlxKVCache` pure-FA append/trim | Implemented when flag/constructor enables a private pool |
-| SDPA / peek / serialize materialize dense K/V | Implemented (concat/gather into contiguous views) |
+| Optional `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` | Overrides session `total_blocks` when set |
+| Session geometry align | `MlxRunner::align_fa_block_pool_to_kv(block_size, total_blocks)` from session bring-up |
+| Integration into `MlxKVCache` pure-FA append/trim | Implemented when flag enables a private pool |
+| SDPA / peek / serialize materialize dense K/V | Implemented (concat/gather); `ax_mlx_paged_kv_materialize_us` |
+| Pool exhaustion | Fail-soft demote to contiguous (`ax_mlx_paged_kv_pool_exhaustion_fallbacks`); no process abort |
 | Sliding / rotating / MLA / linear layers | Stay contiguous even when the flag is on |
 | Cross-request sharing / MLA pairs | Out of scope until PR5+ |
 

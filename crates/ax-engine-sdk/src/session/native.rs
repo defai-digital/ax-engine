@@ -90,7 +90,7 @@ fn build_mlx_core(
         .map(|n| n.max(1))
         .unwrap_or(DEFAULT_PREFILL_CHUNK);
 
-    let runner = MlxRunner::from_artifacts_with_runtime_shares(
+    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
         &artifacts,
         prefill_chunk,
         config.mlx_disable_ngram_acceleration,
@@ -101,6 +101,12 @@ fn build_mlx_core(
     .map_err(|e| {
         EngineSessionError::MetalRuntime(ax_engine_core::MetalRuntimeError::Generic(e.to_string()))
     })?;
+    // Couple PR4 FA private pool capacity to the session logical block table
+    // when the opt-in flag is engaged (default remains OFF / contiguous).
+    runner.align_fa_block_pool_to_kv(
+        config.kv_config.block_size_tokens,
+        config.kv_config.total_blocks,
+    );
 
     let mut core =
         EngineCore::with_runtime_components(config.kv_config, runner, DeterministicSampler);

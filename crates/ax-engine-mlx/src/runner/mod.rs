@@ -51,6 +51,9 @@ use crate::generate::{
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
     decode_step, start_direct_pipeline,
 };
+use crate::kv_block_pool::{
+    FaBlockPoolConfig, default_fa_block_pool_config, fa_kv_block_pool_enabled,
+};
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
     DecodeProfileSnapshot, DenseFfnFastpathSnapshot, Gemma4MoeProfileSnapshot,
@@ -1526,6 +1529,10 @@ struct DecodeTelemetry {
     diffusion_commit_skipped: u32,
     diffusion_full_pipeline_used: u32,
     diffusion_kv_buffer_used: u32,
+    /// Last prefill chunk size selected for this request (tokens).
+    prefill_chunk_selected: u32,
+    /// 0 = cold (`seq_len == 0`), 1 = warm-extend (`seq_len > 0`).
+    prefill_chunk_mode: u32,
 }
 
 impl Default for DecodeTelemetry {
@@ -1577,6 +1584,8 @@ impl Default for DecodeTelemetry {
             diffusion_commit_skipped: 0,
             diffusion_full_pipeline_used: 0,
             diffusion_kv_buffer_used: 0,
+            prefill_chunk_selected: 0,
+            prefill_chunk_mode: 0,
         }
     }
 }
@@ -1585,6 +1594,11 @@ impl DecodeTelemetry {
     fn record_prefill(&mut self, wall_us: u32) {
         self.prefill_steps = self.prefill_steps.saturating_add(1);
         self.prefill_wall_us = self.prefill_wall_us.saturating_add(wall_us);
+    }
+
+    fn record_prefill_chunk_selection(&mut self, chunk: usize, warm_extend: bool) {
+        self.prefill_chunk_selected = saturating_u32(chunk);
+        self.prefill_chunk_mode = u32::from(warm_extend);
     }
 
     fn record_prefill_breakdown(
@@ -1860,6 +1874,11 @@ impl DecodeTelemetry {
         self.diffusion_kv_buffer_used = self
             .diffusion_kv_buffer_used
             .saturating_add(other.diffusion_kv_buffer_used);
+        // Last-writer wins for chunk selection (most recent prefill on the request).
+        if other.prefill_steps > 0 {
+            self.prefill_chunk_selected = other.prefill_chunk_selected;
+            self.prefill_chunk_mode = other.prefill_chunk_mode;
+        }
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -1878,6 +1897,8 @@ impl DecodeTelemetry {
                 "ax_mlx_prefill_generation_state_wall_us",
                 self.prefill_generation_state_wall_us,
             ),
+            ("ax_mlx_prefill_chunk_selected", self.prefill_chunk_selected),
+            ("ax_mlx_prefill_chunk_mode", self.prefill_chunk_mode),
             ("ax_mlx_decode_steps", self.decode_steps),
             ("ax_mlx_decode_wall_us", self.decode_wall_us),
             ("ax_mlx_direct_bootstrap_steps", self.direct_bootstrap_steps),
@@ -2746,6 +2767,8 @@ struct KvCacheTelemetry {
     linear_state_layers: u64,
     linear_state_bytes: u64,
     growth_count: u64,
+    paged_materialize_us: u64,
+    paged_pool_exhaustion_fallbacks: u64,
 }
 
 impl KvCacheTelemetry {
@@ -2787,6 +2810,12 @@ impl KvCacheTelemetry {
             .linear_state_bytes
             .saturating_add(usage.linear_state_bytes);
         self.growth_count = self.growth_count.saturating_add(usage.growth_count);
+        self.paged_materialize_us = self
+            .paged_materialize_us
+            .saturating_add(usage.paged_materialize_us);
+        self.paged_pool_exhaustion_fallbacks = self
+            .paged_pool_exhaustion_fallbacks
+            .saturating_add(usage.paged_pool_exhaustion_fallbacks);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -2854,6 +2883,14 @@ impl KvCacheTelemetry {
             (
                 ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
                 saturating_u32_from_u64(self.growth_count),
+            ),
+            (
+                "ax_mlx_paged_kv_materialize_us",
+                saturating_u32_from_u64(self.paged_materialize_us),
+            ),
+            (
+                "ax_mlx_paged_kv_pool_exhaustion_fallbacks",
+                saturating_u32_from_u64(self.paged_pool_exhaustion_fallbacks),
             ),
         ];
 
@@ -3042,9 +3079,13 @@ enum NgramRequestDisableReason {
 }
 
 impl RequestState {
-    fn new(num_layers: usize, seed: u64) -> Self {
+    fn new(num_layers: usize, seed: u64, fa_block_pool_config: Option<FaBlockPoolConfig>) -> Self {
+        let cache = match fa_block_pool_config {
+            Some(config) => MlxKVCache::new_with_fa_block_pool(num_layers, config),
+            None => MlxKVCache::new_contiguous(num_layers),
+        };
         Self {
-            cache: MlxKVCache::new(num_layers),
+            cache,
             prompt_prefix_tokens: Vec::new(),
             generated_tokens: Vec::new(),
             cached_prefill_output_token: None,
@@ -3231,6 +3272,10 @@ pub struct MlxRunner {
     /// experiments — that dual path can re-open warm_extend token drift.
     /// Non-MLA models keep the caller-supplied larger chunk here.
     cold_prefill_chunk: usize,
+    /// When set, new requests build a private FA block-pool `MlxKVCache`.
+    /// Geometry is aligned to session `KvManager` via
+    /// [`Self::align_fa_block_pool_to_kv`] after construction.
+    fa_block_pool_config: Option<FaBlockPoolConfig>,
     kv_layer_windows: Vec<Option<usize>>,
     binding_summary: NativeModelBindingSummary,
     terminal_token_ids: Vec<u32>,
@@ -3503,6 +3548,22 @@ impl MlxRunner {
 
     fn gemma4_assistant_mtp_status(&self) -> &Gemma4AssistantMtpStatus {
         &self.gemma4_assistant_mtp_status
+    }
+
+    /// Align the FA private block-pool geometry to the session `KvManager`.
+    ///
+    /// No-op when `AX_MLX_FA_KV_BLOCK_POOL` is off. When the flag is on, sets
+    /// `block_size_tokens` / `max_blocks` so private FA capacity matches logical
+    /// block accounting. Env `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` still wins
+    /// when set (explicit operator override).
+    pub fn align_fa_block_pool_to_kv(&mut self, block_size_tokens: u32, total_blocks: u32) {
+        let Some(config) = self.fa_block_pool_config.as_mut() else {
+            return;
+        };
+        config.block_size_tokens = block_size_tokens.max(1);
+        if std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS").is_err() {
+            config.max_blocks = total_blocks.max(1);
+        }
     }
 
     /// Build with every cross-session share available: an optional prefix
@@ -3867,12 +3928,18 @@ impl MlxRunner {
             .filter(|&c| c >= 1)
             .unwrap_or(8);
         let batched_session = Mutex::new(BatchedDecodeSession::new(cfg.layer_count, batched_cap));
+        let fa_block_pool_config = if fa_kv_block_pool_enabled() {
+            Some(default_fa_block_pool_config())
+        } else {
+            None
+        };
         Ok(Self {
             cfg,
             cfg_arc,
             weights,
             prefill_chunk,
             cold_prefill_chunk,
+            fa_block_pool_config,
             kv_layer_windows,
             binding_summary,
             terminal_token_ids,
@@ -5473,6 +5540,7 @@ impl MlxRunner {
                 RequestState::new(
                     self.cfg.layer_count,
                     ctx.map(|c| c.seed).unwrap_or(item.request_id.0),
+                    self.fa_block_pool_config,
                 )
             })
         };
@@ -5617,6 +5685,10 @@ impl MlxRunner {
                     } else {
                         self.prefill_chunk
                     };
+                    state.decode_telemetry.record_prefill_chunk_selection(
+                        prefill_chunk_for_request,
+                        state.cache.seq_len() > 0,
+                    );
                     // Linear-attention conv/recurrent state cannot be trimmed
                     // at snapshot-store time, so an unaligned prompt can only
                     // get a prefix snapshot if the cache is captured
@@ -11912,10 +11984,10 @@ mod tests {
         // While A is extracted, B's slot is accessible without contention.
         let state_a = states
             .remove(&a)
-            .unwrap_or_else(|| RequestState::new(2, a.0));
+            .unwrap_or_else(|| RequestState::new(2, a.0, None));
         let state_b = states
             .remove(&b)
-            .unwrap_or_else(|| RequestState::new(2, b.0));
+            .unwrap_or_else(|| RequestState::new(2, b.0, None));
 
         // GPU work would run here with state_a / state_b outside the map.
         // Verify B can be reinserted independently of A.
@@ -11931,7 +12003,7 @@ mod tests {
     fn completed_request_state_is_not_reinserted() {
         let mut states: HashMap<RequestId, RequestState> = HashMap::new();
         let id = RequestId(42);
-        states.insert(id, RequestState::new(2, id.0));
+        states.insert(id, RequestState::new(2, id.0, None));
 
         // Extract and simulate a completed request (stop_reason.is_some()).
         // The state should not be reinserted, mirroring the run_item control flow.
@@ -13338,7 +13410,7 @@ mod tests {
             prefix_tokens_reused: 4,
             prefix_blocks_reused: 1,
         };
-        let state = RequestState::new(2, 21);
+        let state = RequestState::new(2, 21, None);
         let telemetry = MlxPrefixCacheTelemetry {
             misses: 1,
             warmup_tokens: 4,
@@ -13373,7 +13445,7 @@ mod tests {
             prefix_tokens_reused: 4,
             prefix_blocks_reused: 1,
         };
-        let state = RequestState::new(2, 22);
+        let state = RequestState::new(2, 22, None);
         let hit_telemetry = MlxPrefixCacheTelemetry {
             hits: 1,
             reused_tokens: 4,
@@ -13411,7 +13483,7 @@ mod tests {
 
     #[test]
     fn prefill_clears_bonus_and_last_token() {
-        let mut state = RequestState::new(2, 0);
+        let mut state = RequestState::new(2, 0, None);
         state.bonus_queue.push_back(99);
         state.bonus_queue.push_back(100);
         state.next_model_last_token = Some(5);
@@ -13447,7 +13519,7 @@ mod tests {
 
     #[test]
     fn generation_ngram_seed_uses_reconstructed_prompt_after_prefix_warmup() {
-        let mut warm = RequestState::new(2, 11);
+        let mut warm = RequestState::new(2, 11, None);
         warm.prompt_prefix_tokens = vec![10, 11, 12, 13, 10, 11, 12];
 
         seed_generation_ngram_from_prompt(&mut warm, false);
@@ -13458,7 +13530,7 @@ mod tests {
             "warm prefix+suffix prefill must seed n-grams from the reconstructed full prompt",
         );
 
-        let mut suffix_only = RequestState::new(2, 12);
+        let mut suffix_only = RequestState::new(2, 12, None);
         suffix_only.prompt_prefix_tokens = vec![10, 11, 12];
         seed_generation_ngram_from_prompt(&mut suffix_only, false);
 
@@ -13470,7 +13542,7 @@ mod tests {
 
     #[test]
     fn generation_ngram_seed_includes_prefill_output_token() {
-        let mut state = RequestState::new(2, 13);
+        let mut state = RequestState::new(2, 13, None);
         state.prompt_prefix_tokens = vec![1, 2, 3, 1, 2, 3];
 
         seed_generation_ngram_from_prompt(&mut state, false);
@@ -13491,7 +13563,7 @@ mod tests {
     #[test]
     fn generation_ngram_seed_extends_window_for_repeating_prompts() {
         let block: Vec<u32> = (1..=70).collect();
-        let mut state = RequestState::new(2, 14);
+        let mut state = RequestState::new(2, 14, None);
         state.prompt_prefix_tokens.extend_from_slice(&block);
         state.prompt_prefix_tokens.extend_from_slice(&block);
         state.prompt_prefix_tokens.extend_from_slice(&block);
@@ -13507,7 +13579,7 @@ mod tests {
 
     #[test]
     fn generation_ngram_seed_keeps_random_prompts_on_short_tail() {
-        let mut state = RequestState::new(2, 15);
+        let mut state = RequestState::new(2, 15, None);
         state.prompt_prefix_tokens = (1..=210).collect();
         state
             .prompt_prefix_tokens
@@ -13523,7 +13595,7 @@ mod tests {
 
     #[test]
     fn ngram_decode_result_keeps_correction_token_in_output_queue() {
-        let mut state = RequestState::new(2, 7);
+        let mut state = RequestState::new(2, 7, None);
 
         let output = apply_decode_result(&mut state, &[11, 12], &[]);
 
@@ -13538,7 +13610,7 @@ mod tests {
 
     #[test]
     fn ngram_decode_result_queues_full_accept_tail_and_bonus() {
-        let mut state = RequestState::new(2, 8);
+        let mut state = RequestState::new(2, 8, None);
 
         let output = apply_decode_result(&mut state, &[21, 22, 23, 24], &[]);
 
@@ -13597,7 +13669,7 @@ mod tests {
 
     #[test]
     fn ngram_decode_result_truncates_bonus_queue_at_eos() {
-        let mut state = RequestState::new(2, 9);
+        let mut state = RequestState::new(2, 9, None);
 
         let output = apply_decode_result(&mut state, &[31, 32, 151645, 33], &[151645]);
 
@@ -15707,7 +15779,7 @@ mod tests {
 
     #[test]
     fn linear_attention_direct_fallback_reenables_when_output_builds_draft() {
-        let mut state = RequestState::new(1, 7);
+        let mut state = RequestState::new(1, 7, None);
         state.ngram_acceleration_disabled_for_request = true;
         state.ngram_request_disable_reason = NgramRequestDisableReason::LinearNoDraft;
         state.linear_ngram_no_draft_streak = LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD;
@@ -15762,7 +15834,7 @@ mod tests {
 
     #[test]
     fn linear_attention_reenable_keeps_short_output_disable_closed() {
-        let mut state = RequestState::new(1, 7);
+        let mut state = RequestState::new(1, 7, None);
         state.ngram_acceleration_disabled_for_request = true;
         state.ngram_request_disable_reason = NgramRequestDisableReason::ShortOutputBudget;
         state
@@ -15784,7 +15856,7 @@ mod tests {
 
     #[test]
     fn linear_attention_initial_no_draft_stays_on_direct_fallback() {
-        let mut state = RequestState::new(1, 7);
+        let mut state = RequestState::new(1, 7, None);
         state.ngram_acceleration_disabled_for_request = true;
         state.ngram_request_disable_reason = NgramRequestDisableReason::LinearInitialNoDraft;
         state
@@ -16057,7 +16129,7 @@ mod tests {
 
     #[test]
     fn linear_attention_reenable_requires_greedy_exact_decode() {
-        let mut state = RequestState::new(1, 7);
+        let mut state = RequestState::new(1, 7, None);
         state.ngram_acceleration_disabled_for_request = true;
         state.ngram_request_disable_reason = NgramRequestDisableReason::LinearNoDraft;
         state
@@ -17253,7 +17325,7 @@ mod tests {
 
     #[test]
     fn request_state_starts_with_mtp_bypass_disabled() {
-        let state = RequestState::new(1, 7);
+        let state = RequestState::new(1, 7, None);
         assert!(
             !state.mtp_bypassed,
             "MTP bypass must start disabled so MTP is attempted on every request"

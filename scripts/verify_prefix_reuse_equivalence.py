@@ -161,6 +161,45 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def pad_tokens_to_block_size(
+    tokens: list[int], block_size: int | None
+) -> list[int]:
+    """Right-pad `tokens` to a multiple of `block_size` by repeating the tail."""
+    if block_size is None or block_size <= 0:
+        return list(tokens)
+    if not tokens:
+        return []
+    remainder = len(tokens) % block_size
+    if remainder == 0:
+        return list(tokens)
+    need = block_size - remainder
+    padding = (tokens * ((need // len(tokens)) + 1))[:need]
+    return list(tokens) + padding
+
+
+def build_warm_extend_token_pair(
+    tokenizer,
+    base_text: str,
+    extend_suffix: str,
+    pad_to_block_size: int | None,
+) -> tuple[list[int], list[int]]:
+    """Build (base, extended) token lists with base as an exact prefix.
+
+    Independently padding `encode(base)` and `encode(base+suffix)` breaks
+    prefix equality (padding + possible BPE merge across the join). The
+    warm_extend physical-hit path requires the stored base snapshot to be a
+    block-aligned exact prefix of the extended request.
+    """
+    base_tokens = pad_tokens_to_block_size(
+        tokenizer.encode(base_text).ids, pad_to_block_size
+    )
+    suffix_tokens = tokenizer.encode(extend_suffix).ids
+    extended_tokens = pad_tokens_to_block_size(
+        base_tokens + suffix_tokens, pad_to_block_size
+    )
+    return base_tokens, extended_tokens
+
+
 def load_corpus(args: argparse.Namespace) -> list[dict]:
     if args.corpus is None:
         return DEFAULT_CORPUS
@@ -285,16 +324,7 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
         return s
 
     def pad_to_block(tokens: list[int]) -> list[int]:
-        if args.pad_to_block_size is None or args.pad_to_block_size <= 0:
-            return tokens
-        remainder = len(tokens) % args.pad_to_block_size
-        if remainder == 0:
-            return tokens
-        need = args.pad_to_block_size - remainder
-        if not tokens:
-            return tokens
-        padding = (tokens * ((need // len(tokens)) + 1))[:need]
-        return tokens + padding
+        return pad_tokens_to_block_size(tokens, args.pad_to_block_size)
 
     per_prompt = []
     total_pass = 0
@@ -338,15 +368,30 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
         # first to populate cache, then P+suffix is run. The warm-extend call
         # SHOULD hit the snapshot for P and only need to prefill the suffix.
         # Both produce output that must be token-exact equal.
+        #
+        # Token construction keeps base_tokens as an *exact prefix* of
+        # extended_tokens (pad base, then append suffix tokens, then pad the
+        # whole). Independently padding encode(base) and encode(base+suffix)
+        # is wrong: padding and BPE merges break prefix equality so the
+        # physical cache cannot hit even when the text shares a head.
         print("running warm_extend mode (two Sessions per prompt)")
         for item in corpus:
             prompt_id = item["id"]
             base_text = item["text"]
             extended_text = base_text + args.extend_suffix
-            base_tokens = pad_to_block(tokenizer.encode(base_text).ids)
-            extended_tokens = pad_to_block(tokenizer.encode(extended_text).ids)
+            base_tokens, extended_tokens = build_warm_extend_token_pair(
+                tokenizer,
+                base_text,
+                args.extend_suffix,
+                args.pad_to_block_size,
+            )
             if not extended_tokens:
                 raise SystemExit(f"prompt '{prompt_id}' extended-tokenized to empty")
+            if extended_tokens[: len(base_tokens)] != base_tokens:
+                raise SystemExit(
+                    f"prompt '{prompt_id}': base_tokens is not a prefix of "
+                    "extended_tokens (warm_extend harness invariant)"
+                )
             print(f"  {prompt_id}: cold(extended) ... ", end="", flush=True)
             session_a = new_session()
             cold = run_generate(

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use mlx_sys::{MlxArray, MlxDtype, concatenate, contiguous, eval, slice, slice_update, zeros};
 
 use crate::kv_block_pool::{
@@ -187,6 +189,12 @@ pub struct MlxKVCacheUsage {
     pub linear_state_layers: usize,
     pub linear_state_bytes: u64,
     pub growth_count: u64,
+    /// Cumulative microseconds spent materializing dense FA views from private
+    /// paged blocks (PR4). Zero when the contiguous path is used.
+    pub paged_materialize_us: u64,
+    /// Times a paged FA append fell back to contiguous growth because the
+    /// private block pool was exhausted (fail-soft for production safety).
+    pub paged_pool_exhaustion_fallbacks: u64,
 }
 
 #[derive(Clone)]
@@ -622,6 +630,10 @@ pub struct MlxKVCache {
     /// Private FA block pool when paged mode is active (flag or explicit
     /// constructor). `None` keeps the historical contiguous path.
     fa_pool: Option<FaBlockPool>,
+    /// Cumulative µs spent in paged FA materialize (SDPA / serialize views).
+    paged_materialize_us: u64,
+    /// Count of paged→contiguous failovers when the private pool is exhausted.
+    paged_pool_exhaustion_fallbacks: u64,
 }
 
 /// Ring geometry a forward presents to SDPA for a sliding-window layer when
@@ -687,6 +699,8 @@ impl Clone for MlxKVCache {
             use_rotating_sliding_decode: self.use_rotating_sliding_decode,
             rotating_slack: self.rotating_slack,
             fa_pool,
+            paged_materialize_us: self.paged_materialize_us,
+            paged_pool_exhaustion_fallbacks: self.paged_pool_exhaustion_fallbacks,
         }
     }
 }
@@ -737,6 +751,8 @@ impl MlxKVCache {
             use_rotating_sliding_decode: false,
             rotating_slack: 0,
             fa_pool: None,
+            paged_materialize_us: 0,
+            paged_pool_exhaustion_fallbacks: 0,
         }
     }
 
@@ -756,7 +772,33 @@ impl MlxKVCache {
             use_rotating_sliding_decode: false,
             rotating_slack: 0,
             fa_pool: Some(fa_pool),
+            paged_materialize_us: 0,
+            paged_pool_exhaustion_fallbacks: 0,
         }
+    }
+
+    /// Align the private FA pool to the session `KvManager` geometry.
+    ///
+    /// Call after construction when the session knows `block_size_tokens` and
+    /// `total_blocks`. No-op when the contiguous path is active. Replaces the
+    /// pool only when empty (no live allocations).
+    pub fn align_fa_block_pool_to_kv(
+        &mut self,
+        block_size_tokens: u32,
+        max_blocks: u32,
+    ) -> Result<(), FaBlockPoolError> {
+        let Some(pool) = self.fa_pool.as_ref() else {
+            return Ok(());
+        };
+        if pool.allocated_blocks() != 0 {
+            return Ok(());
+        }
+        let config = FaBlockPoolConfig {
+            block_size_tokens: block_size_tokens.max(1),
+            max_blocks: max_blocks.max(1),
+        };
+        self.fa_pool = Some(FaBlockPool::new(config)?);
+        Ok(())
     }
 
     /// Whether this cache owns a private FA block pool (paged pure-FA path).
@@ -1096,6 +1138,9 @@ impl MlxKVCache {
                         Self::serialize_tensor_logical(&mut out, &lkv.v, logical_tokens);
                     }
                     FaLayerStorage::Paged(paged) => {
+                        // serialize is rare vs decode; time is not accumulated
+                        // into `paged_materialize_us` (that field tracks live
+                        // SDPA materialize on the append path).
                         let (k, v) = paged.materialize(0, self.seq_len);
                         Self::serialize_tensor_logical(&mut out, &k, logical_tokens);
                         Self::serialize_tensor_logical(&mut out, &v, logical_tokens);
@@ -1500,7 +1545,7 @@ impl MlxKVCache {
             }));
         }
 
-        {
+        let need_demote = {
             let pool = self
                 .fa_pool
                 .as_mut()
@@ -1526,12 +1571,24 @@ impl MlxKVCache {
                 paged.dtype, append.dtype,
                 "paged FA append cannot change dtype for an existing layer"
             );
-            paged
-                .ensure_capacity(pool, write_end, &mut self.growth_count)
-                .unwrap_or_else(|err| {
-                    panic!("FA block pool exhausted on layer {layer}: {err}");
-                });
-            paged.write_tokens(write_start, &new_k, &new_v);
+            match paged.ensure_capacity(pool, write_end, &mut self.growth_count) {
+                Ok(()) => {
+                    paged.write_tokens(write_start, &new_k, &new_v);
+                    false
+                }
+                Err(FaBlockPoolError::Exhausted { .. }) => true,
+                Err(err) => panic!("FA block pool error on layer {layer}: {err}"),
+            }
+        };
+
+        if need_demote {
+            // Fail-soft: materialize existing private blocks into contiguous
+            // storage and finish this append on the historical growth path so
+            // serving does not abort when the private pool is exhausted.
+            self.paged_pool_exhaustion_fallbacks =
+                self.paged_pool_exhaustion_fallbacks.saturating_add(1);
+            self.demote_paged_layer_to_contiguous(layer, write_start);
+            return self.append_with_retained_window(layer, new_k, new_v, None);
         }
 
         let paged = match self.layers[layer]
@@ -1541,10 +1598,71 @@ impl MlxKVCache {
             FaLayerStorage::Paged(p) => p,
             FaLayerStorage::Contiguous(_) => unreachable!("paged path"),
         };
+        let started = Instant::now();
         let (k_view, v_view) = paged.materialize(0, write_end);
+        self.paged_materialize_us = self
+            .paged_materialize_us
+            .saturating_add(started.elapsed().as_micros() as u64);
         paged.last_k_view = Some(k_view.clone());
         paged.last_v_view = Some(v_view.clone());
         (k_view, v_view)
+    }
+
+    /// Convert a paged FA layer into contiguous storage up to `logical_len`
+    /// tokens and free its private blocks. Used on pool exhaustion.
+    fn demote_paged_layer_to_contiguous(&mut self, layer: usize, logical_len: usize) {
+        let Some(FaLayerStorage::Paged(paged)) = self.layers.get_mut(layer).and_then(Option::take)
+        else {
+            return;
+        };
+        let started = Instant::now();
+        let (k_view, v_view) = if logical_len == 0 {
+            let shape = [1i32, paged.n_kv_heads, 0, paged.head_dim];
+            (
+                zeros(&shape, paged.dtype, None),
+                zeros(&shape, paged.dtype, None),
+            )
+        } else {
+            paged.materialize(0, logical_len)
+        };
+        self.paged_materialize_us = self
+            .paged_materialize_us
+            .saturating_add(started.elapsed().as_micros() as u64);
+        if let Some(pool) = self.fa_pool.as_mut() {
+            let _ = pool.free(&paged.block_ids);
+        }
+        let capacity = if logical_len == 0 {
+            0
+        } else {
+            chunk_ceiling(logical_len)
+        };
+        let (k, v) = if logical_len == 0 || capacity == logical_len {
+            (k_view, v_view)
+        } else {
+            let buf_shape = [1i32, paged.n_kv_heads, capacity as i32, paged.head_dim];
+            let k_buf = zeros(&buf_shape, paged.dtype, None);
+            let v_buf = zeros(&buf_shape, paged.dtype, None);
+            let start = [0i32, 0, 0, 0];
+            let stop = [1i32, paged.n_kv_heads, logical_len as i32, paged.head_dim];
+            let strides = [1i32, 1, 1, 1];
+            (
+                slice_update(&k_buf, &k_view, &start, &stop, &strides, None),
+                slice_update(&v_buf, &v_view, &start, &stop, &strides, None),
+            )
+        };
+        if let Some(slot) = self.layers.get_mut(layer) {
+            *slot = Some(FaLayerStorage::Contiguous(LayerKV {
+                k,
+                v,
+                last_k_view: None,
+                last_v_view: None,
+                n_kv_heads: paged.n_kv_heads,
+                head_dim: paged.head_dim,
+                capacity,
+                rotating_window: None,
+                dtype: paged.dtype,
+            }));
+        }
     }
 
     fn append_rotating_retained_window(
@@ -1973,6 +2091,8 @@ impl MlxKVCache {
             logical_tokens: self.seq_len,
             growth_count: self.growth_count,
             rotating_ring_slack: self.rotating_slack,
+            paged_materialize_us: self.paged_materialize_us,
+            paged_pool_exhaustion_fallbacks: self.paged_pool_exhaustion_fallbacks,
             ..MlxKVCacheUsage::default()
         };
 
@@ -3629,10 +3749,10 @@ mod tests {
     }
 
     #[test]
-    fn fa_paged_pool_exhaustion_is_fail_closed() {
+    fn fa_paged_pool_exhaustion_demotes_to_contiguous() {
         let config = FaBlockPoolConfig {
             block_size_tokens: 4,
-            max_blocks: 2, // only 8 tokens of capacity
+            max_blocks: 2, // only 8 tokens of private capacity
         };
         let mut cache = MlxKVCache::new_with_fa_block_pool(1, config);
         let k = fa_token_values(8, 1, 4, 1.0);
@@ -3643,13 +3763,20 @@ mod tests {
 
         let k2 = fa_token_values(1, 1, 4, 3.0);
         let v2 = fa_token_values(1, 1, 4, 4.0);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = cache.append(0, k2, v2);
-        }));
-        assert!(
-            result.is_err(),
-            "append beyond max_blocks must fail closed (panic) rather than grow unbounded"
+        let (out_k, _) = cache.append(0, k2, v2);
+        cache.advance(1);
+        eval(&[&out_k]);
+        assert_eq!(out_k.shape()[2], 9);
+        let usage = cache.usage_snapshot();
+        assert_eq!(
+            usage.paged_pool_exhaustion_fallbacks, 1,
+            "pool exhaustion must demote rather than panic"
         );
+        // Layer is now contiguous; further appends stay contiguous.
+        assert!(matches!(
+            cache.layers[0],
+            Some(FaLayerStorage::Contiguous(_))
+        ));
     }
 
     #[test]
