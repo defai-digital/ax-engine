@@ -3223,12 +3223,13 @@ pub struct MlxRunner {
     /// MLA models force this to `MLA_DEFAULT_PREFILL_CHUNK` (16) so the
     /// SDPA shape sequence matches the cold-of-full equivalence path.
     prefill_chunk: usize,
-    /// Chunk size used for cold prefill (no prefix-cache restore). For MLA
-    /// models this preserves the caller-supplied larger chunk (e.g. 2048
-    /// via `--prefill-step-size`), avoiding the 5–6× prefill throughput
-    /// regression that the chunk-16 alignment imposes when warm-extend is
-    /// not actually engaged for the request. Set equal to `prefill_chunk`
-    /// for non-MLA models.
+    /// Chunk size used for cold prefill (no prefix-cache restore).
+    ///
+    /// For MLA, defaults to the same value as `prefill_chunk` (R2: one shape
+    /// trail for store producers and cold baselines). Opt into a larger cold
+    /// chunk with `AX_MLX_MLA_COLD_PREFILL_CHUNK` only for throughput
+    /// experiments — that dual path can re-open warm_extend token drift.
+    /// Non-MLA models keep the caller-supplied larger chunk here.
     cold_prefill_chunk: usize,
     kv_layer_windows: Vec<Option<usize>>,
     binding_summary: NativeModelBindingSummary,
@@ -3709,17 +3710,15 @@ impl MlxRunner {
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
         let affine_quant_telemetry = AffineQuantBitsTelemetry::from_specs(artifacts.tensor_specs());
 
-        // MLA models default to a smaller `prefill_chunk` for warm-extend
-        // (snapshot restore + suffix) so chunked_prefill produces the same
-        // SDPA Q/K shape sequence as the cold-of-full path. Cold prefill
-        // without any prefix-cache restore keeps the caller's larger chunk
-        // (`cold_prefill_chunk`) because chunk-16 alignment serves no
-        // correctness purpose when no snapshot is being compared against,
-        // and the 5–6× per-prefill dispatch overhead on MLA was hurting
-        // the GLM-4.7-Flash README throughput claim. Override either with
-        // `AX_MLX_MLA_PREFILL_CHUNK=N` (applies to warm-extend) or by
-        // setting the caller's prefill chunk explicitly; non-MLA tiers
-        // ignore the MLA-specific resolution.
+        // MLA models default to a small `prefill_chunk` for warm-extend
+        // (snapshot restore + suffix). Evidence (GLM-4.7-Flash warm_extend
+        // p2_medium_explain idx=13) shows dual-path cold-large / warm-16
+        // re-opens token drift when a real snapshot hit occurs, so cold
+        // prefill defaults to the **same** chunk (R2). Operators may opt
+        // into large cold via `AX_MLX_MLA_COLD_PREFILL_CHUNK=N` for
+        // throughput experiments only. Override warm-extend with
+        // `AX_MLX_MLA_PREFILL_CHUNK=N`. Non-MLA tiers ignore MLA resolution
+        // and keep the caller-supplied cold chunk.
         //
         // Linear-attention tiers (Qwen3.5 9B, Qwen3-Next family — Qwen 3.6
         // and Qwen Coder Next) clamp prefill chunks to the medium GatedDelta
@@ -3742,12 +3741,21 @@ impl MlxRunner {
                 None => chunk.max(1),
             }
         };
-        let cold_prefill_chunk = clamp_to_linear_cap(prefill_chunk);
+        let has_mla = cfg.mla_attention.is_some();
+        let requested_prefill_chunk = prefill_chunk;
         let prefill_chunk = clamp_to_linear_cap(crate::fastpath::resolve_prefill_chunk(
-            cfg.mla_attention.is_some(),
-            prefill_chunk,
+            has_mla,
+            requested_prefill_chunk,
             crate::fastpath::mla_prefill_chunk_override(),
         ));
+        let cold_prefill_chunk = if has_mla {
+            clamp_to_linear_cap(crate::fastpath::resolve_mla_cold_prefill_chunk(
+                prefill_chunk,
+                crate::fastpath::mla_cold_prefill_chunk_override(),
+            ))
+        } else {
+            clamp_to_linear_cap(requested_prefill_chunk)
+        };
 
         // JIT warm-up: trigger Metal shader compilation for both decode and prefill paths.
         // EmbeddingGemma is an embedding-only encoder with no generation (decode/
@@ -6258,16 +6266,16 @@ impl MlxRunner {
         // because the post-restore chunked_prefill drifted fp-wise from a
         // cold full prefill (p2_medium_explain idx=13 divergence on
         // GLM-4.7-Flash). Evidence points to shape-dependent SDPA kernel
-        // selection in MLX: a single large cold chunk and the smaller chunks
-        // of a warm-extend can dispatch different kernels. The fix is
-        // upstream of this branch: MLA models now default to a small
-        // chunked_prefill chunk size (see `MLA_DEFAULT_PREFILL_CHUNK`) that
-        // makes cold and warm produce the same SDPA shape sequence at the
-        // same absolute positions. The canonical default-path equivalence
-        // harness now passes 5/5 with a real prefix-cache hit. The
-        // kill-switch env
-        // `AX_DISABLE_MLA_PREFIX_RESTORE=1` re-engages the historical gate
-        // if a future workload exposes a residual drift vector.
+        // selection in MLX: a large cold chunk and smaller warm-extend
+        // chunks can dispatch different kernels at the same absolute
+        // positions. The fix is upstream of this branch:
+        //   - warm-extend chunk = `MLA_DEFAULT_PREFILL_CHUNK` (16)
+        //   - cold production defaults to the same trail (R2; see
+        //     `resolve_mla_cold_prefill_chunk`) so store producers match
+        //     the cold baseline under warm_extend.
+        // The kill-switch env `AX_DISABLE_MLA_PREFIX_RESTORE=1` re-engages
+        // the historical gate if a future workload exposes a residual
+        // drift vector.
         let mla_extend_unsafe = self.cfg.mla_attention.is_some()
             && item.mode == ExecutionMode::Prefill
             && crate::fastpath::mla_prefix_restore_disabled();
@@ -6682,15 +6690,14 @@ impl MlxRunner {
         //   - Linear: `trim_to` does not roll back conv/recurrent state, so a
         //     snapshot is only sound when the trim is a no-op — the prompt must
         //     be exactly block-aligned and only the full-prompt snapshot may be
-        //     stored.
-        //   - MLA: trim_to itself is sound for MLA buffers, but the warmup
-        //     re-prefill path has observed fp-drift on this architecture
-        //     (slice 6 baseline harness: GLM-4.7 warm_repeat 3/5 PASS through
-        //     warmup), so routing through the bit-exact snapshot path for
-        //     aligned prompts both delivers TTFT speedup AND sidesteps that
-        //     pre-existing warmup correctness issue for the same-prompt case.
-        //     Keep MLA exact-alignment-only until a partial-prefix restore is
-        //     validated on that architecture.
+        //     stored (or a mid-prefill linear boundary capture).
+        //   - MLA: `trim_to` is sound for latent/k_pe buffers. Store the
+        //     largest block-aligned prefix even when the live prompt is
+        //     unaligned so multi-turn sessions can keep hitting after the
+        //     first turn (historical exact-alignment-only blocked every
+        //     store with `blocked_trim_failure` once chat length left a
+        //     block boundary). Warm-extend after that partial store relies
+        //     on the R2 same-shape-trail cold/warm chunks.
         //   - Sliding-window: KV storage is append-only until a rotating
         //     backing store engages, so trimming to any block-aligned prefix
         //     is as sound as for standard FA on the default (non-rotating)
@@ -6707,13 +6714,12 @@ impl MlxRunner {
         let sliding_window = self.kv_layer_windows.iter().any(Option::is_some);
         let mla_attention = self.cfg.mla_attention.is_some();
         let alignment_restricted = linear_attention || sliding_window || mla_attention;
-        let exact_alignment_required = linear_attention || mla_attention;
+        let exact_alignment_required = linear_attention;
         if exact_alignment_required && full_block_tokens != available_tokens {
             // Unaligned linear prompts can still store the snapshot captured
             // mid-prefill at the largest block-aligned boundary (see
             // `linear_boundary_capture_head_len`); the capture's cache state
-            // is exact at that boundary, so no trim is needed. MLA stays
-            // exact-alignment-only.
+            // is exact at that boundary, so no trim is needed.
             if let Some((boundary_len, boundary_cache)) = linear_boundary_snapshot
                 && linear_attention
                 && *boundary_len == full_block_tokens

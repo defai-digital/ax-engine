@@ -391,11 +391,21 @@ Two store-side constraints apply to all non-FA architectures:
 **MLA warm_extend is default-on.** Historical fp drift on MLA + Prefill came
 from shape-dependent SDPA kernel selection: a large cold chunk and smaller
 warm-extend chunks could diverge at the same absolute positions. The fix is
-dual-path chunking:
+**matched-trail chunking (R2)**:
 
-- cold prefill (`seq_len == 0`) may use a larger caller-supplied chunk;
 - warm-extend after a restore uses `MLA_DEFAULT_PREFILL_CHUNK` (16, aligned
-  to the prefix-cache block size) via `fastpath::resolve_prefill_chunk`.
+  to the prefix-cache block size) via `fastpath::resolve_prefill_chunk`;
+- cold prefill defaults to the **same** chunk so store producers and cold
+  baselines share one SDPA shape trail (see
+  `fastpath::resolve_mla_cold_prefill_chunk`);
+- optional `AX_MLX_MLA_COLD_PREFILL_CHUNK=N` re-enables a larger cold chunk
+  for throughput experiments only — it can re-open warm_extend drift and
+  must be re-validated with `check-prefix-reuse-equivalence.sh`.
+
+MLA stores the **largest block-aligned** prefix even when the live prompt is
+unaligned (`trim_to` is sound for MLA latent/k_pe), so multi-turn sessions
+keep producing snapshots after the first turn. Linear attention still
+requires exact full-prompt alignment (or a mid-prefill boundary capture).
 
 Restore is enabled by default. The defensive kill switch
 `AX_DISABLE_MLA_PREFIX_RESTORE=1` re-engages the historical
@@ -428,7 +438,7 @@ blocked_*) tuple identifies which code path served the warm reuse:
 | `hits = 0, misses ≥ 1, warmup_tokens > 0, blocked = 0`                   | Snapshot was eligible but absent (LRU evicted or first encounter); warmup path replayed | normal in cold starts; investigate if persistent on hot prompts (cache may be undersized) |
 | `hits = 0, blocked ≥ 1, blocked_unsupported_layout ≥ 1, warmup_tokens > 0` | Snapshot path refused for this layout/mode (kill switch, unsupported architecture, or residual gate) | With default env, **not** expected on GLM MLA warm_extend; check `AX_DISABLE_MLA_PREFIX_RESTORE` and model layout support |
 | `hits = 0, blocked ≥ 1, blocked_policy_disabled ≥ 1`                     | Prefix cache disabled by size/count policy                | check policy config; either intentional or undersized cache |
-| `hits = 0, blocked ≥ 1, blocked_trim_failure ≥ 1, stores = 0`             | Linear / sliding / MLA + prompt not block-aligned; store skipped | normal — block-aligned prompts are the only safe path here |
+| `hits = 0, blocked ≥ 1, blocked_trim_failure ≥ 1, stores = 0`             | Linear (exact-align) or trim refused (e.g. rotated ring); store skipped | Linear: pad/align prompts or use boundary capture. MLA should store largest aligned prefix — investigate if this fires often on GLM multi-turn |
 | `hits = 0, misses = 0, warmup_tokens = 0, blocked = 0`                   | KvManager did not signal a logical prefix hit — engine had no matched prefix to forward to the runner | check `prefix_reused_blocks` (engine-level) — likely first encounter, or prompt is shorter than `block_size_tokens` (16) |
 
 `prefix_cache_path` in route metadata mirrors the same outcome with a

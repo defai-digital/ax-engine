@@ -798,6 +798,30 @@ pub fn resolve_prefill_chunk(
     resolved.max(1)
 }
 
+/// Optional large cold-prefill chunk for MLA (`AX_MLX_MLA_COLD_PREFILL_CHUNK`).
+///
+/// Default is unset: MLA cold prefill matches the warm-extend chunk (R2) so
+/// snapshot producers and cold full-prefix runs share one SDPA shape trail.
+/// Setting this opt-in restores the historical dual-path cold throughput
+/// experiment and can re-open warm_extend token drift — use only with the
+/// equivalence harness.
+pub fn mla_cold_prefill_chunk_override() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_positive_usize_env("AX_MLX_MLA_COLD_PREFILL_CHUNK"))
+}
+
+/// Resolve MLA cold-prefill chunk size.
+///
+/// - Default (R2): same as warm-extend `warm_prefill_chunk` so store + cold
+///   baselines stay token-exact under warm_extend.
+/// - Opt-in large cold: `AX_MLX_MLA_COLD_PREFILL_CHUNK=N` (throughput only).
+pub fn resolve_mla_cold_prefill_chunk(
+    warm_prefill_chunk: usize,
+    cold_override: Option<usize>,
+) -> usize {
+    cold_override.unwrap_or(warm_prefill_chunk).max(1)
+}
+
 /// Token count for constructor JIT warm-up. Non-MLA models keep the historical
 /// small warm-up prompt. MLA models warm at least one full effective chunk so
 /// the compiled prefill graph matches the default chunk-aligned runtime path.
@@ -855,10 +879,11 @@ env_flag!(
     /// shape-dependent SDPA kernel selection in MLX, where cold and warm
     /// paths dispatched different chunk shapes. Aligning the MLA prefill
     /// chunk size to the prefix-cache block size (default 16; see
-    /// `MLA_DEFAULT_PREFILL_CHUNK`) makes the canonical default-path
-    /// warm_extend harness pass 5/5 with a real prefix-cache hit. This flag
-    /// exists as a fail-closed escape hatch if a future workload exposes a
-    /// drift vector the chunk-alignment fix does not cover.
+    /// `MLA_DEFAULT_PREFILL_CHUNK`) **and** matching cold production to that
+    /// same chunk (R2; see `resolve_mla_cold_prefill_chunk`) is required for
+    /// warm_extend token-exact parity when a real snapshot hit occurs.
+    /// This flag exists as a fail-closed escape hatch if a future workload
+    /// exposes a residual drift vector those chunk-alignment rules miss.
     mla_prefix_restore_disabled,
     "AX_DISABLE_MLA_PREFIX_RESTORE"
 );
@@ -1529,6 +1554,19 @@ mod tests {
     fn resolve_prefill_chunk_clamps_zero_for_all_models() {
         assert_eq!(resolve_prefill_chunk(false, 0, None), 1);
         assert_eq!(resolve_prefill_chunk(true, 0, Some(0)), 1);
+    }
+
+    #[test]
+    fn resolve_mla_cold_prefill_chunk_defaults_to_warm_trail() {
+        assert_eq!(
+            resolve_mla_cold_prefill_chunk(MLA_DEFAULT_PREFILL_CHUNK, None),
+            MLA_DEFAULT_PREFILL_CHUNK
+        );
+    }
+
+    #[test]
+    fn resolve_mla_cold_prefill_chunk_allows_throughput_override() {
+        assert_eq!(resolve_mla_cold_prefill_chunk(16, Some(2048)), 2048);
     }
 
     #[test]
