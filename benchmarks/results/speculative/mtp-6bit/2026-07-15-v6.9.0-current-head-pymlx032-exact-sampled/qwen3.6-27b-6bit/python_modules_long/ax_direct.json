@@ -1,0 +1,83 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1",
+  "model_repo_id": "ax-local/mlx-community--Qwen3.6-27B-6bit-MTP",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1",
+  "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/speculative/mtp-6bit/2026-07-15-v6.9.0-current-head-pymlx032-exact-sampled/qwen3.6-27b-6bit/python_modules_long/ax_direct.json",
+  "benchmark_window": {
+    "started_at": "2026-07-15T19:15:01-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.576,
+        "five_minutes": 1.541,
+        "fifteen_minutes": 1.596
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t100%; finishing charge; (no estimate) present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 88060,
+          "state": "S",
+          "cpu_percent": 2.2,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 88078,
+          "state": "S",
+          "cpu_percent": 1.3,
+          "command": "Code Helper (Plugin)"
+        },
+        {
+          "pid": 49899,
+          "state": "S+",
+          "cpu_percent": 1.3,
+          "command": "curl"
+        },
+        {
+          "pid": 582,
+          "state": "Ss",
+          "cpu_percent": 1.0,
+          "command": "opendirectoryd"
+        },
+        {
+          "pid": 98893,
+          "state": "S",
+          "cpu_percent": 0.8,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 608,
+          "state": "Ss",
+          "cpu_percent": 0.7,
+          "command": "notifyd"
+        },
+        {
+          "pid": 707,
+          "state": "Ss",
+          "cpu_percent": 0.6,
+          "command": "findmybeaconingd"
+        },
+        {
+          "pid": 88077,
+          "state": "S",
+          "cpu_percent": 0.6,
+          "command": "Code Helper"
+        }
+      ]
+    }
+  }
+}
