@@ -1286,6 +1286,10 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
         &mut self,
         target_cache: &MlxKVCache,
     ) -> Result<(), Gemma4AssistantForwardError> {
+        // Clear any prior freeze *before* attempting the new one so a failed
+        // re-bind fails closed (`has_frozen_target_kv() == false`) instead of
+        // silently keeping a stale snapshot from an earlier successful bind.
+        self.frozen_target_kv = None;
         self.frozen_target_kv = Some(Gemma4AssistantFrozenTargetKv::freeze_from_cache(
             target_cache,
             self.target_shared_layers,
@@ -4179,6 +4183,71 @@ mod tests {
         cache.append(0, k2, v2);
         session.bind_target_cache(&cache).expect("re-bind");
         assert!(session.has_frozen_target_kv());
+    }
+
+    #[test]
+    fn gemma4_assistant_draft_session_rebind_failure_clears_stale_freeze() {
+        let assistant_cfg = ModelConfig {
+            model_family: "gemma4_assistant".into(),
+            ..cfg(false)
+        };
+        let target_cfg = ModelConfig {
+            model_family: "gemma4".into(),
+            ..cfg(false)
+        };
+        let weights = ModelWeights {
+            token_embedding: dense_weight(&[32, 16]),
+            final_norm: zeros(&[16], MlxDtype::Float32, None),
+            lm_head: dense_weight(&[32, 16]),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: Some(dense_weight(&[16, 32])),
+            assistant_post_projection: Some(dense_weight(&[16, 16])),
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
+        };
+        let shared = Gemma4AssistantSharedKvLayers {
+            sliding_attention_layer: Some(0),
+            full_attention_layer: Some(0),
+        };
+        let mut session = Gemma4AssistantDraftSession::open(
+            &assistant_cfg,
+            &weights,
+            &target_cfg,
+            &weights,
+            shared,
+        )
+        .expect("open");
+
+        // First bind succeeds and freezes a real snapshot.
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 1, 4, 4], MlxDtype::Float32, None);
+        let v = zeros(&[1, 1, 4, 4], MlxDtype::Float32, None);
+        cache.append(0, k, v);
+        session.bind_target_cache(&cache).expect("bind");
+        assert!(session.has_frozen_target_kv());
+
+        // A second bind attempt that fails must clear the stale freeze rather
+        // than silently keeping the first one — otherwise forward_one() would
+        // attend over a snapshot the caller believes was replaced/invalidated.
+        let empty = MlxKVCache::new(1);
+        assert!(matches!(
+            session.bind_target_cache(&empty),
+            Err(Gemma4AssistantForwardError::MissingSharedKvCache)
+        ));
+        assert!(!session.has_frozen_target_kv());
+        assert!(matches!(
+            session.forward_one(1, &zeros(&[1, 1, 16], MlxDtype::Bfloat16, None), 0),
+            Err(Gemma4AssistantForwardError::UnboundTargetKv)
+        ));
     }
 
     #[test]
