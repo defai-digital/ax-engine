@@ -3822,8 +3822,23 @@ impl MlxRunner {
         let batched_decode_certification = load_batched_decode_certification(artifacts);
         let batched_decode_capabilities = BatchedDecodeCapabilities::from_loaded_model(
             has_mtp,
-            // Prefer GenerationKind (ADR-038); diffusion config remains a fallback.
-            cfg.is_block_diffusion(),
+            // Intentionally `diffusion.is_some()`, not the broader
+            // `cfg.is_block_diffusion()`: this gates whether the model's
+            // *actual* decode dispatch runs the diffusion denoise path,
+            // which is itself driven solely by `cfg.diffusion` (see
+            // `run_item`'s decode-mode dispatch and the prefill/decode
+            // token-suppression checks a few hundred lines below, which
+            // also key on `diffusion.is_some()`). `is_block_diffusion()` is
+            // a superset (`generation_kind == BlockDiffusion ||
+            // diffusion.is_some()`) — a `diffusion_gemma`-family manifest
+            // with an explicit `canvas_size: Some(0)` resolves
+            // `generation_kind` to `BlockDiffusion` (family-name fallback in
+            // `is_block_diffusion_manifest`) while `DiffusionConfig::from_manifest`
+            // deliberately treats `canvas_size: Some(0)` as disabled
+            // diffusion (see its doc comment). Such a model actually runs
+            // as plain autoregressive; using the broader check here would
+            // needlessly disable batched-decode eligibility for it.
+            cfg.diffusion.is_some(),
             &kv_layer_windows,
             &weights.layers,
             batched_decode_certification,
@@ -5717,6 +5732,25 @@ impl MlxRunner {
                     }
                     let prefix_cache_started = Instant::now();
                     let linear_boundary_snapshot = state.prefill_boundary_snapshot.take();
+                    // Admission's cold_prefill_us must reflect the cost of
+                    // cold-prefilling the *whole* persisted prefix, not just
+                    // this scheduler step's own increment: a prompt longer
+                    // than one prefill chunk runs this block across several
+                    // steps, and `elapsed_us(prefill_started)` alone only
+                    // covers the latest chunk. `decode_telemetry.prefill_wall_us`
+                    // already accumulates prior steps' prefill time for this
+                    // request (its own `record_prefill` call for *this* step
+                    // runs after this point, so it must be added in here).
+                    // This still understates the true cost when part of the
+                    // prefix was hydrated from an L1/L2 restore rather than
+                    // cold-computed by this request — that portion's original
+                    // compute cost isn't tracked forward through the restore
+                    // path, so warm-extend requests conservatively bias
+                    // toward under-admission rather than over-admission.
+                    let cold_prefill_us = state
+                        .decode_telemetry
+                        .prefill_wall_us
+                        .saturating_add(elapsed_us(prefill_started));
                     prefix_cache.merge_from(
                         self.store_prompt_prefix_snapshots(
                             model_id,
@@ -5726,7 +5760,7 @@ impl MlxRunner {
                             prefill_completes_prompt
                                 .then_some(tok)
                                 .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
-                            u64::from(elapsed_us(prefill_started)),
+                            u64::from(cold_prefill_us),
                         ),
                     );
                     let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
@@ -6062,10 +6096,15 @@ impl MlxRunner {
         block_size_tokens: u32,
         input: &[u32],
     ) -> Option<Vec<u32>> {
-        let cache = self.prefix_cache.lock();
+        // Re-acquire the L1 lock per candidate rather than holding it for
+        // the whole walk: a long prompt with no L1 hit at any block-aligned
+        // length can probe many candidates, each with an `fs::stat` disk
+        // check — holding the mutex across all of them would serialize
+        // every other concurrent request's L1 access behind that I/O for
+        // no correctness reason.
         Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
             let key = self.prefix_cache_key(model_id, block_size_tokens, prefix);
-            if cache.contains_exact_tokens(&key, prefix) {
+            if self.prefix_cache.lock().contains_exact_tokens(&key, prefix) {
                 return true;
             }
             if let Some(disk) = self.disk_prefix_cache.as_ref()
@@ -6076,6 +6115,43 @@ impl MlxRunner {
             }
             false
         })
+    }
+
+    /// Discard a probed prefix that is shorter than a *non-empty* scheduler
+    /// claim (`item.reused_prefix_token_slice`).
+    ///
+    /// The scheduler sizes `token_ids` (and every downstream RoPE position
+    /// for this item) assuming exactly `reused_prefix_token_slice.len()`
+    /// tokens precede them. Restoring a probed prefix shorter than that claim
+    /// would silently drop the shortfall tokens from the model's context and
+    /// compute `token_ids` at positions shifted earlier by the gap — a real,
+    /// silent correctness bug, reachable whenever the scheduler's cumulative
+    /// multi-turn block tracking claims more reuse than the runner's own
+    /// snapshot map ever stored (see the divergence documented on
+    /// `restore_reused_prefix_state`).
+    ///
+    /// Discarding here routes the caller through the exact-match lookup on
+    /// the *full* claimed slice instead, which correctly misses (the probe
+    /// already proved that length isn't resident) and falls to the miss
+    /// path's `full_prefill_recompute_tokens_for_warmup_fallback`, which
+    /// performs a full, correctly-positioned recompute of the entire prefix.
+    ///
+    /// When `reused_prefix_token_slice` is empty, `probe_upper_bound` fell
+    /// back to `input_token_slice`, so any probed length is a pure bonus
+    /// beyond the scheduler's expectation of zero reuse — never discarded
+    /// here; the existing `probe_over_claim` slicing in the caller already
+    /// handles trimming that case safely.
+    fn discard_probe_shorter_than_scheduler_claim(
+        probed_tokens: Vec<u32>,
+        item: &ax_engine_core::ExecutionItem,
+    ) -> Vec<u32> {
+        if !item.reused_prefix_token_slice.is_empty()
+            && probed_tokens.len() < item.reused_prefix_token_slice.len()
+        {
+            Vec::new()
+        } else {
+            probed_tokens
+        }
     }
 
     fn restore_reused_prefix_state(
@@ -6118,6 +6194,8 @@ impl MlxRunner {
         } else {
             Vec::new()
         };
+        let probed_tokens =
+            Self::discard_probe_shorter_than_scheduler_claim(probed_tokens, item);
         let reused_tokens: &[u32] = if !probed_tokens.is_empty() {
             &probed_tokens
         } else {
@@ -6479,17 +6557,25 @@ impl MlxRunner {
             .disk_prefix_cache
             .as_ref()
             .and_then(|_| self.disk_prefix_key_bytes(&key, tokens));
-        {
+        // Drop the L1 lock before the disk `contains()` stat: holding a
+        // mutex across filesystem I/O serializes every other concurrent
+        // request's L1 cache access behind the syscall for no correctness
+        // reason (matches the pattern in `store_prompt_prefix_snapshots`).
+        let l1_superseding = {
             let cache = self.prefix_cache.lock();
-            if cache.contains_superseding_snapshot(&key, tokens, None) {
-                let disk_store_needed = match (self.disk_prefix_cache.as_ref(), &disk_key_bytes) {
-                    (Some(disk), Some(key_bytes)) => !disk.contains(key_bytes),
-                    _ => false,
-                };
-                if !disk_store_needed {
-                    telemetry.record_stats(cache.stats());
-                    return telemetry;
-                }
+            let superseding = cache.contains_superseding_snapshot(&key, tokens, None);
+            if superseding {
+                telemetry.record_stats(cache.stats());
+            }
+            superseding
+        };
+        if l1_superseding {
+            let disk_store_needed = match (self.disk_prefix_cache.as_ref(), &disk_key_bytes) {
+                (Some(disk), Some(key_bytes)) => !disk.contains(key_bytes),
+                _ => false,
+            };
+            if !disk_store_needed {
+                return telemetry;
             }
         }
         let serialize_started = Instant::now();
@@ -13055,6 +13141,84 @@ mod tests {
             vec![8, 4],
             "probe must keep searching after a longer non-exact entry"
         );
+    }
+
+    fn scheduler_claim_item(reused_prefix_token_slice: Vec<u32>) -> ax_engine_core::ExecutionItem {
+        ax_engine_core::ExecutionItem {
+            request_id: RequestId(99),
+            mode: ExecutionMode::Prefill,
+            planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
+            input_token_slice: vec![9, 10],
+            reused_prefix_token_slice,
+            position_range: PositionRange {
+                start: 8,
+                end_exclusive: 10,
+            },
+            scheduled_token_count: 2,
+            block_table_ref: RequestId(99),
+            prefix_tokens_reused: 8,
+            prefix_blocks_reused: 2,
+        }
+    }
+
+    #[test]
+    fn discard_probe_shorter_than_scheduler_claim_rejects_partial_restore() {
+        // Regression test: the scheduler's cumulative multi-turn block
+        // tracking (ax-engine-core) claimed an 8-token reusable prefix, but
+        // the runner-side snapshot map only ever stored a 4-token
+        // block-aligned prefix of it (e.g. the original turn-1 prompt).
+        // Restoring the shorter 4-token probe result directly would leave
+        // `token_ids` (planned by the scheduler for absolute positions
+        // 8..10) computed on top of a 4-token cache instead — silently
+        // dropping tokens 4..8 and shifting every later RoPE position.
+        // The probe result must be discarded so the caller falls through to
+        // a full, correctly-positioned recompute instead.
+        let item = scheduler_claim_item(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let probed = vec![1, 2, 3, 4];
+
+        let result = MlxRunner::discard_probe_shorter_than_scheduler_claim(probed, &item);
+
+        assert!(
+            result.is_empty(),
+            "a probe shorter than a non-empty scheduler claim must be discarded"
+        );
+    }
+
+    #[test]
+    fn discard_probe_shorter_than_scheduler_claim_keeps_full_length_match() {
+        // A probe that found exactly the scheduler's claimed length is a
+        // genuine full restore — must not be discarded.
+        let item = scheduler_claim_item(vec![1, 2, 3, 4]);
+        let probed = vec![1, 2, 3, 4];
+
+        let result = MlxRunner::discard_probe_shorter_than_scheduler_claim(probed.clone(), &item);
+
+        assert_eq!(result, probed);
+    }
+
+    #[test]
+    fn discard_probe_shorter_than_scheduler_claim_keeps_bonus_when_claim_is_empty() {
+        // When the scheduler claims zero reuse, `probe_upper_bound` falls
+        // back to `input_token_slice`, so any probed length is a pure bonus
+        // beyond the scheduler's (zero) expectation — the existing
+        // `probe_over_claim` slicing at the call site handles trimming
+        // `token_ids` for this case. Must never be discarded here.
+        let item = scheduler_claim_item(Vec::new());
+        let probed = vec![1, 2, 3, 4, 5, 6];
+
+        let result = MlxRunner::discard_probe_shorter_than_scheduler_claim(probed.clone(), &item);
+
+        assert_eq!(result, probed);
+    }
+
+    #[test]
+    fn discard_probe_shorter_than_scheduler_claim_is_noop_on_already_empty_probe() {
+        let item = scheduler_claim_item(vec![1, 2, 3, 4]);
+
+        let result =
+            MlxRunner::discard_probe_shorter_than_scheduler_claim(Vec::new(), &item);
+
+        assert!(result.is_empty());
     }
 
     #[test]

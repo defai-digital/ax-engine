@@ -128,7 +128,7 @@ impl BatchedDecodeCapabilities {
         }
         // Structural gates via ADR-038 StructuralCapabilities (not family names).
         // Order matches the historical runner contract so route telemetry stays stable:
-        // mtp → structural(diffusion first) → kv_compression → cert → remaining structure.
+        // mtp → structural(diffusion first) → cert → remaining structure.
         // Attention *kind* is independent of whether Q/K/V/O projections are
         // complete — incomplete projections are a separate rejection
         // (`missing_attention_projection`). Gating has_full_attention on
@@ -149,7 +149,7 @@ impl BatchedDecodeCapabilities {
         };
         let structural_reasons = structural.dense_batched_decode_structural_rejections();
         // Emit diffusion first (legacy position), then defer other structural
-        // reasons until after kv_compression and certification for telemetry stability.
+        // reasons until after certification for telemetry stability.
         if structural_reasons.contains(&"diffusion") {
             reasons.push("diffusion");
         }
