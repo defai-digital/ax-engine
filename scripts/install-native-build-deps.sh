@@ -27,3 +27,21 @@ if ! python3 -m pip install --upgrade mlx; then
     # (PEP 668) and rejects plain pip installs.
     python3 -m pip install --upgrade --break-system-packages mlx
 fi
+
+# Export resolved MLX dirs so cargo/maturin steps can find headers/lib even
+# when a later step activates a fresh venv without reinstalling mlx. Prefer
+# an already-set MLX_LIB_DIR (CI/local override) over the just-installed path.
+MLX_PIP_DIR="$(python3 -c 'import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]))')"
+if [[ ! -f "$MLX_PIP_DIR/lib/libmlx.dylib" ]]; then
+    echo "error: pip-installed mlx has no lib/libmlx.dylib at $MLX_PIP_DIR" >&2
+    exit 1
+fi
+export MLX_LIB_DIR="${MLX_LIB_DIR:-$MLX_PIP_DIR/lib}"
+export MLX_INCLUDE_DIR="${MLX_INCLUDE_DIR:-$MLX_PIP_DIR/include}"
+echo "Using MLX_LIB_DIR=$MLX_LIB_DIR"
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+    {
+        echo "MLX_LIB_DIR=$MLX_LIB_DIR"
+        echo "MLX_INCLUDE_DIR=$MLX_INCLUDE_DIR"
+    } >>"$GITHUB_ENV"
+fi

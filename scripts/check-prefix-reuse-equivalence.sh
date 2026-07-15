@@ -62,7 +62,9 @@ trap 'ax_run_cleanup "$?" cleanup' EXIT
 source "$VENV_DIR/bin/activate"
 
 python -m pip install --quiet --upgrade pip
-python -m pip install --quiet "maturin>=1.7,<2" tokenizers
+# mlx must be in this venv: mlx-sys/build.rs resolves headers/lib from the
+# active Python (install-native-build-deps only targets the host interpreter).
+python -m pip install --quiet "maturin>=1.7,<2" tokenizers mlx
 
 cd "$ROOT_DIR"
 

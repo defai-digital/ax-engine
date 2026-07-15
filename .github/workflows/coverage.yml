@@ -55,7 +55,9 @@ jobs:
           python -m venv .venv-coverage
           source .venv-coverage/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install "maturin>=1.7,<2" coverage
+          # mlx must be in this venv: mlx-sys/build.rs resolves headers/lib
+          # from the active Python (not the host used by install-native-build-deps).
+          python -m pip install "maturin>=1.7,<2" coverage mlx
           python -m maturin develop --quiet
           AX_ENGINE_RUN_INSTALLED_TESTS=1 python -m coverage run -m unittest discover -s python/tests -v
           python -m coverage xml -o target/coverage/python-coverage.xml

@@ -133,6 +133,10 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         # NAX kernels (see the helper script's comment).
         self.assertNotIn("brew install mlx", helper)
         self.assertIn("pip install --upgrade mlx", helper)
+        # Subsequent cargo/maturin steps (including fresh-venv maturin develop)
+        # must see the resolved paths; CI does this via GITHUB_ENV.
+        self.assertIn("MLX_LIB_DIR=", helper)
+        self.assertIn("GITHUB_ENV", helper)
 
         workflow_texts = {
             path.name: path.read_text()
@@ -149,6 +153,25 @@ class CiWorkflowPolicyTests(unittest.TestCase):
             self.assertIn(
                 "bash scripts/install-native-build-deps.sh",
                 workflow_texts[workflow],
+            )
+
+        # Fresh venvs used for maturin develop must install mlx themselves;
+        # install-native-build-deps only targets the host interpreter, and
+        # mlx-sys/build.rs prefers the active Python's mlx package.
+        coverage = workflow_texts["coverage.yml"]
+        self.assertIn("maturin>=1.7,<2", coverage)
+        self.assertRegex(coverage, r'pip install .*mlx')
+
+        for path in (
+            ROOT / "scripts" / "check-python-preview.sh",
+            ROOT / "scripts" / "check-prefix-reuse-equivalence.sh",
+        ):
+            text = path.read_text()
+            self.assertIn("maturin develop", text)
+            self.assertRegex(
+                text,
+                r'pip install .*mlx',
+                f"{path.name} must pip-install mlx into its maturin venv",
             )
 
 
