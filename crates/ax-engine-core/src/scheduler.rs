@@ -390,34 +390,19 @@ impl Scheduler {
         // when there is no KV memory pressure. Under pressure the existing
         // one-token / defer policy remains the sole prefill throttle.
         let fair_active = input.multi_prefill_fair && pressure_prefill_budget.is_none();
-        let fair_chunk = if fair_active {
-            fair_prefill_chunk_tokens(
-                input.max_prefill_tokens_per_request_per_step,
-                input.block_size_tokens,
-            )
-        } else {
-            0
-        };
         let mut admitted_prefill_requests: u32 = 0;
-        let prefill_request_cap = if fair_active {
-            fair_prefill_admission_cap(
-                input.max_inflight_prefill_requests,
-                fair_chunk,
-                input.block_size_tokens,
-                input.available_kv_blocks,
-            )
-        } else {
-            u32::MAX
-        };
+        // fair_chunk / prefill_request_cap are sized lazily, right before the
+        // first prefill candidate is considered, from whatever budget is left
+        // once decode-priority candidates have already been served (see the
+        // loop below) — not the full step budget — so a single competing
+        // prefill isn't throttled to the block-size floor just because
+        // decode hasn't run yet.
+        let mut fair_chunk: u32 = 0;
+        let mut prefill_request_cap: u32 = u32::MAX;
+        let mut fair_admission_initialized = false;
         let mut fair_telemetry = FairMultiPrefillTelemetry::default();
         if fair_active {
             fair_telemetry.enabled = 1;
-            fair_telemetry.fair_chunk_tokens = fair_chunk;
-            fair_telemetry.admission_cap = if prefill_request_cap == u32::MAX {
-                0
-            } else {
-                prefill_request_cap
-            };
         }
 
         for snapshot in runnable {
@@ -441,12 +426,43 @@ impl Scheduler {
             )
         });
 
+        // Splittable-text prefill candidates share the fair chunk; multimodal
+        // prefills stay atomic and are excluded from the fair-N denominator.
+        let candidate_prefill_count = candidates
+            .iter()
+            .filter(|(snapshot, mode)| {
+                *mode == ExecutionMode::Prefill && !snapshot.has_multimodal_inputs
+            })
+            .count() as u32;
+
         for (snapshot, mode) in candidates {
             let requested_tokens = schedulable_token_count(&snapshot, mode);
             if remaining_budget == 0 {
                 token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
                 continue;
+            }
+
+            if fair_active && !fair_admission_initialized && mode == ExecutionMode::Prefill {
+                fair_admission_initialized = true;
+                fair_chunk = fair_prefill_chunk_tokens(
+                    input.max_prefill_tokens_per_request_per_step,
+                    input.block_size_tokens,
+                    remaining_budget,
+                    candidate_prefill_count,
+                );
+                prefill_request_cap = fair_prefill_admission_cap(
+                    input.max_inflight_prefill_requests,
+                    fair_chunk,
+                    input.block_size_tokens,
+                    input.available_kv_blocks,
+                );
+                fair_telemetry.fair_chunk_tokens = fair_chunk;
+                fair_telemetry.admission_cap = if prefill_request_cap == u32::MAX {
+                    0
+                } else {
+                    prefill_request_cap
+                };
             }
 
             if mode == ExecutionMode::Prefill && admitted_prefill_requests >= prefill_request_cap {
@@ -689,18 +705,31 @@ fn prefill_budget_for_memory_pressure(memory_pressure: Option<&str>) -> Option<u
     }
 }
 
-/// Fair prefill chunk: explicit per-request cap, else block_size_tokens, floor 1.
-fn fair_prefill_chunk_tokens(max_tokens_per_request: u32, block_size_tokens: u32) -> u32 {
-    let floor = block_size_tokens.max(1);
-    if max_tokens_per_request == 0 {
-        floor
-    } else {
-        max_tokens_per_request.max(1)
+/// Fair prefill chunk: explicit per-request cap; else
+/// `max(block_size_tokens, residual_budget / candidate_prefill_count)` so a
+/// single competing prefill gets close to the full residual budget and many
+/// competitors divide it evenly, instead of always collapsing to the
+/// block-size floor.
+fn fair_prefill_chunk_tokens(
+    max_tokens_per_request: u32,
+    block_size_tokens: u32,
+    residual_budget: u32,
+    candidate_prefill_count: u32,
+) -> u32 {
+    if max_tokens_per_request != 0 {
+        return max_tokens_per_request;
     }
+    let floor = block_size_tokens.max(1);
+    let share = residual_budget / candidate_prefill_count.max(1);
+    floor.max(share)
 }
 
 /// Admit min(configured max, free-block headroom). `0` configured max → unlimited
 /// by count (still headroom-limited). Headroom uses ceil(fair_chunk / block_size).
+/// Nonzero headroom too small for one full fair chunk still admits a single
+/// greedy prefill so fair mode cannot stall all prefill progress while free
+/// blocks exist (design doc §B.2 item 8); only `available_kv_blocks == 0`
+/// defers entirely to the existing allocate / blocked-on-memory path.
 fn fair_prefill_admission_cap(
     max_inflight_prefill_requests: u32,
     fair_chunk: u32,
@@ -710,6 +739,11 @@ fn fair_prefill_admission_cap(
     let block_size = block_size_tokens.max(1);
     let blocks_per = fair_chunk.div_ceil(block_size).max(1);
     let headroom_cap = available_kv_blocks / blocks_per;
+    let headroom_cap = if headroom_cap == 0 && available_kv_blocks > 0 {
+        1
+    } else {
+        headroom_cap
+    };
     if max_inflight_prefill_requests == 0 {
         headroom_cap
     } else {
@@ -1797,5 +1831,94 @@ mod tests {
             .find(|item| item.request_id == RequestId(1))
             .expect("multimodal item");
         assert_eq!(mm.scheduled_token_count, 8);
+    }
+
+    #[test]
+    fn fair_multi_prefill_auto_chunk_scales_with_residual_budget_and_candidates() {
+        let scheduler = Scheduler::new();
+        let mut input = SchedulerInput::new(
+            StepId(34),
+            vec![make_snapshot(1, 1, "qwen3", &[10; 100], 0, &[], 16)],
+            None,
+            2048,
+        );
+        input.multi_prefill_fair = true;
+        // 0 = auto: fair_chunk must scale with residual_budget / candidate
+        // count, not collapse to the block_size_tokens floor when there is
+        // no real contention (regression for a bug where a lone prefill was
+        // throttled to 16 tokens/step even under a 2048-token budget with no
+        // competing prefills).
+        input.max_prefill_tokens_per_request_per_step = 0;
+        input.max_inflight_prefill_requests = 0;
+        input.block_size_tokens = 16;
+        input.available_kv_blocks = 1024;
+        input.total_kv_blocks = 1024;
+
+        let schedule_plan = scheduler.plan(&input);
+        let batch = schedule_plan.execution_batch.expect("batch");
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(
+            batch.items[0].scheduled_token_count, 100,
+            "lone prefill under auto fair-chunk should get the full prompt in \
+             one step, not be throttled to the block-size floor"
+        );
+    }
+
+    #[test]
+    fn fair_multi_prefill_admits_one_greedy_prefill_when_headroom_below_one_chunk() {
+        let scheduler = Scheduler::new();
+        let mut input = SchedulerInput::new(
+            StepId(35),
+            vec![make_snapshot(1, 1, "qwen3", &[10; 300], 0, &[], 16)],
+            None,
+            1024,
+        );
+        input.multi_prefill_fair = true;
+        input.max_prefill_tokens_per_request_per_step = 256;
+        input.max_inflight_prefill_requests = 0;
+        input.block_size_tokens = 16;
+        // blocks_per = ceil(256/16) = 16; available=5 < 16 rounds headroom
+        // down to 0 under naive division. Nonzero headroom must still admit
+        // one greedy prefill instead of stalling all prefill progress
+        // (regression for a liveness bug where fair mode could defer every
+        // prefill candidate forever despite free blocks and residual budget
+        // existing).
+        input.available_kv_blocks = 5;
+        input.total_kv_blocks = 64;
+
+        let schedule_plan = scheduler.plan(&input);
+        assert_eq!(
+            schedule_plan.selected_requests,
+            vec![RequestId(1)],
+            "one free-but-tight-headroom prefill must still make progress"
+        );
+        let batch = schedule_plan.execution_batch.expect("batch");
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(batch.items[0].scheduled_token_count, 256);
+    }
+
+    #[test]
+    fn fair_multi_prefill_defers_when_available_blocks_are_exactly_zero() {
+        let scheduler = Scheduler::new();
+        let mut input = SchedulerInput::new(
+            StepId(36),
+            vec![make_snapshot(1, 1, "qwen3", &[10; 300], 0, &[], 16)],
+            None,
+            1024,
+        );
+        input.multi_prefill_fair = true;
+        input.max_prefill_tokens_per_request_per_step = 256;
+        input.max_inflight_prefill_requests = 0;
+        input.block_size_tokens = 16;
+        // True exhaustion (0 free blocks) must still defer — the greedy
+        // fallback only rescues nonzero-but-too-small headroom, not genuine
+        // exhaustion (design doc §B.2: "if available_kv_blocks == 0 ...
+        // still defer").
+        input.available_kv_blocks = 0;
+        input.total_kv_blocks = 64;
+
+        let schedule_plan = scheduler.plan(&input);
+        assert!(schedule_plan.selected_requests.is_empty());
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
     }
 }

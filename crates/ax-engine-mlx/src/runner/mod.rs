@@ -6517,12 +6517,32 @@ impl MlxRunner {
         } else {
             Vec::new()
         };
+        // Entry-point matrix (docs/designs/kv-weak-surfaces-2026-07-14.md
+        // Track A): callers only reach this function with an empty cache
+        // (`state.cache.seq_len() == 0`), so it must resolve through the
+        // same shared cold/warm selection as every other prefill entry
+        // point instead of hardcoding the warm chunk — that divergence is
+        // exactly the class of bug that caused the historical MLA
+        // warm-extend drift.
+        let (prefill_chunk_for_request, prefill_chunk_mode) =
+            crate::fastpath::select_prefill_chunk_for_request(
+                state.cache.seq_len(),
+                self.cold_prefill_chunk,
+                self.prefill_chunk,
+            );
+        state.decode_telemetry.record_prefill_chunk_selection(
+            prefill_chunk_for_request,
+            matches!(
+                prefill_chunk_mode,
+                crate::fastpath::PrefillChunkMode::WarmExtend
+            ),
+        );
         let prefill_output_token = chunked_prefill_with_sampling_buffers(
             &self.cfg,
             &self.weights,
             tokens,
             &mut state.cache,
-            self.prefill_chunk,
+            prefill_chunk_for_request,
             MlxSamplingRequest::new(
                 if capture_prefill_output {
                     sampling
