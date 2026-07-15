@@ -4831,7 +4831,7 @@ mod tests {
             panic!("expected invalid manifest error");
         };
         assert!(
-            message.contains("declares affine quantization"),
+            message.contains("declares quantization"),
             "unexpected error: {message}"
         );
 

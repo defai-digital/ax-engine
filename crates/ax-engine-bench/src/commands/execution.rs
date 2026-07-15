@@ -776,6 +776,7 @@ pub(crate) fn session_config_from_runtime(
         // crates/ax-engine-bench/src/inference_args.rs::BENCH_DEFAULT_MLX_PREFILL_CHUNK
         // for the rationale.
         mlx_prefill_chunk: Some(crate::inference_args::BENCH_DEFAULT_MLX_PREFILL_CHUNK),
+        ..ResolvedSessionConfigRequest::default()
     })
 }
 

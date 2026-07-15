@@ -101,6 +101,7 @@ impl Session {
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
             mlx_prefill_chunk: None,
+            ..PreviewSessionConfigRequest::default()
         })
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
         // Model load + JIT warmup can take tens of seconds for large models;

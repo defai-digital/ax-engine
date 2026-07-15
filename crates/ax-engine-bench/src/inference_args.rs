@@ -294,6 +294,7 @@ pub(crate) fn build_inference_session(args: &InferenceArgs) -> Result<EngineSess
             mlx_mtp_disable_ngram_stacking: disable_mtp_ngram_stacking,
             mlx_speculation_profile: None,
             mlx_prefill_chunk: args.mlx_prefill_chunk,
+            ..ax_engine_sdk::PreviewSessionConfigRequest::default()
         })
         .map_err(|error| CliError::Usage(format!("invalid inference configuration: {error}")))?;
 

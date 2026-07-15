@@ -60,6 +60,7 @@ fn main() {
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
+        ..PreviewSessionConfigRequest::default()
     })
     .expect("config");
 
