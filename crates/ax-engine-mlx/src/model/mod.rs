@@ -161,7 +161,6 @@ impl LazySingleTokenMode {
 #[cfg(test)]
 use crate::attention_mask::create_causal_mask;
 #[cfg(test)]
-#[cfg(test)]
 use ax_engine_core::NativeModelManifest;
 #[cfg(test)]
 use mlx_sys::expand_dims_axes;
