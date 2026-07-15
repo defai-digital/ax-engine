@@ -5680,14 +5680,18 @@ impl MlxRunner {
                     // path) or start from an empty KV cache (cold → caller's
                     // larger chunk for prefill throughput). For MLA models the
                     // two values differ; for non-MLA models they're identical.
-                    let prefill_chunk_for_request = if state.cache.seq_len() == 0 {
-                        self.cold_prefill_chunk
-                    } else {
-                        self.prefill_chunk
-                    };
+                    let (prefill_chunk_for_request, prefill_chunk_mode) =
+                        crate::fastpath::select_prefill_chunk_for_request(
+                            state.cache.seq_len(),
+                            self.cold_prefill_chunk,
+                            self.prefill_chunk,
+                        );
                     state.decode_telemetry.record_prefill_chunk_selection(
                         prefill_chunk_for_request,
-                        state.cache.seq_len() > 0,
+                        matches!(
+                            prefill_chunk_mode,
+                            crate::fastpath::PrefillChunkMode::WarmExtend
+                        ),
                     );
                     // Linear-attention conv/recurrent state cannot be trimmed
                     // at snapshot-store time, so an unaligned prompt can only
@@ -5742,6 +5746,20 @@ impl MlxRunner {
                             state.cache.reset();
                             state.prompt_prefix_tokens.clear();
                             effective_prefill_token_count = token_ids.len();
+                            // After reset, entry-point matrix requires the cold trail.
+                            let (recompute_chunk, recompute_mode) =
+                                crate::fastpath::select_prefill_chunk_for_request(
+                                    state.cache.seq_len(),
+                                    self.cold_prefill_chunk,
+                                    self.prefill_chunk,
+                                );
+                            state.decode_telemetry.record_prefill_chunk_selection(
+                                recompute_chunk,
+                                matches!(
+                                    recompute_mode,
+                                    crate::fastpath::PrefillChunkMode::WarmExtend
+                                ),
+                            );
                             let recompute_history = state.repetition_history(token_ids, sampling);
                             if self.weights.mtp.is_some() && prefill_completes_prompt {
                                 let (tok, hidden, history_tokens) =
@@ -5750,7 +5768,7 @@ impl MlxRunner {
                                         &self.weights,
                                         token_ids,
                                         &mut state.cache,
-                                        self.cold_prefill_chunk,
+                                        recompute_chunk,
                                         MlxSamplingRequest::new(sampling, &recompute_history),
                                         &mut state.rng,
                                         &mut state.sampling_probs_buf,
@@ -5766,7 +5784,7 @@ impl MlxRunner {
                                     &self.weights,
                                     token_ids,
                                     &mut state.cache,
-                                    self.cold_prefill_chunk,
+                                    recompute_chunk,
                                     MlxSamplingRequest::new(sampling, &recompute_history),
                                     &mut state.rng,
                                     &mut state.sampling_probs_buf,

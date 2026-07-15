@@ -51,6 +51,16 @@ pub struct EngineSessionConfig {
     /// long-prompt comparisons. MLA models clamp through their own
     /// prefix-restore chunk policy.
     pub mlx_prefill_chunk: Option<usize>,
+    /// Fair multi-prefill progress (design Track B / PR3). Default **OFF**.
+    /// When true, text prefills are interleave-capped under residual budget.
+    /// Does **not** enable GPU continuous batching or claim `partial_overlap`.
+    pub multi_prefill_fair: bool,
+    /// Per-request text prefill cap when fair mode is on. `0` means use
+    /// `block_size_tokens` (see `EngineCore::set_multi_prefill_fair`).
+    pub max_prefill_tokens_per_request_per_step: u32,
+    /// Max concurrent text prefills admitted per step when fair mode is on.
+    /// `0` means unlimited (subject to free-block headroom).
+    pub max_inflight_prefill_requests: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,6 +87,10 @@ pub struct PreviewSessionConfigRequest {
     /// `--prefill-step-size` mlx_lm and mlx-swift-lm receive so the three
     /// runtimes are compared on identical chunk geometry at long prompts.
     pub mlx_prefill_chunk: Option<usize>,
+    /// Fair multi-prefill progress (default OFF). See `EngineSessionConfig`.
+    pub multi_prefill_fair: bool,
+    pub max_prefill_tokens_per_request_per_step: u32,
+    pub max_inflight_prefill_requests: u32,
 }
 
 impl Default for PreviewSessionConfigRequest {
@@ -94,6 +108,9 @@ impl Default for PreviewSessionConfigRequest {
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
             mlx_prefill_chunk: None,
+            multi_prefill_fair: false,
+            max_prefill_tokens_per_request_per_step: 0,
+            max_inflight_prefill_requests: 0,
         }
     }
 }
@@ -117,6 +134,9 @@ pub struct ResolvedSessionConfigRequest {
     pub mlx_mtp_disable_ngram_stacking: bool,
     pub mlx_speculation_profile: Option<String>,
     pub mlx_prefill_chunk: Option<usize>,
+    pub multi_prefill_fair: bool,
+    pub max_prefill_tokens_per_request_per_step: u32,
+    pub max_inflight_prefill_requests: u32,
 }
 
 impl Default for ResolvedSessionConfigRequest {
@@ -140,6 +160,10 @@ impl Default for ResolvedSessionConfigRequest {
             mlx_mtp_disable_ngram_stacking: default.mlx_mtp_disable_ngram_stacking,
             mlx_speculation_profile: default.mlx_speculation_profile.clone(),
             mlx_prefill_chunk: default.mlx_prefill_chunk,
+            multi_prefill_fair: default.multi_prefill_fair,
+            max_prefill_tokens_per_request_per_step: default
+                .max_prefill_tokens_per_request_per_step,
+            max_inflight_prefill_requests: default.max_inflight_prefill_requests,
         }
     }
 }
@@ -176,6 +200,9 @@ impl Default for EngineSessionConfig {
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
             mlx_prefill_chunk: None,
+            multi_prefill_fair: false,
+            max_prefill_tokens_per_request_per_step: 0,
+            max_inflight_prefill_requests: 0,
         }
     }
 }
@@ -211,6 +238,22 @@ impl EngineSessionConfig {
     /// MTP.
     pub fn with_mtp_ngram_stacking(mut self) -> Self {
         self.mlx_mtp_disable_ngram_stacking = false;
+        self
+    }
+
+    /// Opt into fair multi-prefill progress under residual budget (default OFF).
+    ///
+    /// `max_tokens_per_request_per_step == 0` uses `block_size_tokens`.
+    /// `max_inflight_prefill_requests == 0` means unlimited (subject to free-block
+    /// headroom). Multimodal prefills remain atomic.
+    pub fn with_multi_prefill_fair(
+        mut self,
+        max_tokens_per_request_per_step: u32,
+        max_inflight_prefill_requests: u32,
+    ) -> Self {
+        self.multi_prefill_fair = true;
+        self.max_prefill_tokens_per_request_per_step = max_tokens_per_request_per_step;
+        self.max_inflight_prefill_requests = max_inflight_prefill_requests;
         self
     }
 
@@ -266,6 +309,10 @@ impl EngineSessionConfig {
             mlx_mtp_disable_ngram_stacking: request.mlx_mtp_disable_ngram_stacking,
             mlx_speculation_profile: request.mlx_speculation_profile,
             mlx_prefill_chunk: request.mlx_prefill_chunk,
+            multi_prefill_fair: request.multi_prefill_fair,
+            max_prefill_tokens_per_request_per_step: request
+                .max_prefill_tokens_per_request_per_step,
+            max_inflight_prefill_requests: request.max_inflight_prefill_requests,
         })
     }
 
@@ -306,6 +353,10 @@ impl EngineSessionConfig {
             mlx_mtp_disable_ngram_stacking: request.mlx_mtp_disable_ngram_stacking,
             mlx_speculation_profile: request.mlx_speculation_profile,
             mlx_prefill_chunk: request.mlx_prefill_chunk,
+            multi_prefill_fair: request.multi_prefill_fair,
+            max_prefill_tokens_per_request_per_step: request
+                .max_prefill_tokens_per_request_per_step,
+            max_inflight_prefill_requests: request.max_inflight_prefill_requests,
         }
     }
 

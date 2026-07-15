@@ -88,6 +88,17 @@ Engine plumbing: `EngineCore::set_multi_prefill_fair` → every `plan()` call
 site refreshes `block_size_tokens` / `available_kv_blocks` / `total_kv_blocks`
 from `KvManager`.
 
+**Session / server surface (default OFF):**
+
+| Knob | Session config | Server CLI |
+|---|---|---|
+| Enable fair multi-prefill | `multi_prefill_fair` / `with_multi_prefill_fair(...)` | `--multi-prefill-fair` |
+| Per-request text cap | `max_prefill_tokens_per_request_per_step` (`0` → block size) | `--max-prefill-tokens-per-request-per-step` |
+| In-flight admission | `max_inflight_prefill_requests` (`0` → unlimited + headroom) | `--max-inflight-prefill-requests` |
+
+Fair mode raises concurrent live KV; keep it opt-in until I-1 + pressure
+evidence is attached for the target workload.
+
 Telemetry (on `RouteMetadata.crossover_decisions` when fair is active):
 
 | Key | Meaning |

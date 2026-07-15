@@ -23,6 +23,15 @@ fn native_prefix_reuse_enabled() -> bool {
         .is_some_and(prefix_reuse_disabled_value)
 }
 
+/// Apply session-level scheduler policy knobs onto a freshly built core.
+fn apply_scheduler_policy(core: &mut EngineCore, config: &EngineSessionConfig) {
+    core.set_multi_prefill_fair(
+        config.multi_prefill_fair,
+        config.max_prefill_tokens_per_request_per_step,
+        config.max_inflight_prefill_requests,
+    );
+}
+
 #[cfg(feature = "mlx-native")]
 pub(super) fn build_native_core(
     config: &EngineSessionConfig,
@@ -35,7 +44,9 @@ pub(super) fn build_native_core(
     config: &EngineSessionConfig,
 ) -> Result<EngineCore, EngineSessionError> {
     if !config.resolved_backend.selected_backend.is_mlx() {
-        return Ok(EngineCore::with_kv_config(config.kv_config));
+        let mut core = EngineCore::with_kv_config(config.kv_config);
+        apply_scheduler_policy(&mut core, config);
+        return Ok(core);
     }
 
     Err(EngineSessionError::MlxRuntimeUnavailable)
@@ -52,7 +63,9 @@ pub(super) fn build_native_core_with_mlx_shares(
     }
 
     if !config.resolved_backend.selected_backend.is_mlx() {
-        return Ok(EngineCore::with_kv_config(config.kv_config));
+        let mut core = EngineCore::with_kv_config(config.kv_config);
+        apply_scheduler_policy(&mut core, config);
+        return Ok(core);
     }
 
     Err(EngineSessionError::MlxRuntimeUnavailable)
@@ -111,6 +124,7 @@ fn build_mlx_core(
     let mut core =
         EngineCore::with_runtime_components(config.kv_config, runner, DeterministicSampler);
     core.set_prefix_reuse_enabled(native_prefix_reuse_enabled());
+    apply_scheduler_policy(&mut core, config);
     // ADR-038: bind generation strategy so the scheduler plans DenoiseStep for
     // diffusion models (and PrefillChunk / TokenDecode for AR) per request.
     core.set_generation_kind(artifacts.manifest().generation_kind());

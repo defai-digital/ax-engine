@@ -73,6 +73,9 @@ fn base_args() -> ServerArgs {
         mlx_mtp_disable_ngram_stacking: false,
         speculation_profile: None,
         prefill_chunk: None,
+        multi_prefill_fair: false,
+        max_prefill_tokens_per_request_per_step: 0,
+        max_inflight_prefill_requests: 0,
         grpc_bind_address: None,
         max_concurrent_requests: None,
         max_request_body_bytes: None,
@@ -108,6 +111,15 @@ fn assert_configs_match(actual: &EngineSessionConfig, expected: &EngineSessionCo
     assert_eq!(
         actual.mlx_mtp_disable_ngram_stacking,
         expected.mlx_mtp_disable_ngram_stacking
+    );
+    assert_eq!(actual.multi_prefill_fair, expected.multi_prefill_fair);
+    assert_eq!(
+        actual.max_prefill_tokens_per_request_per_step,
+        expected.max_prefill_tokens_per_request_per_step
+    );
+    assert_eq!(
+        actual.max_inflight_prefill_requests,
+        expected.max_inflight_prefill_requests
     );
 }
 
@@ -178,6 +190,9 @@ fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
+        multi_prefill_fair: false,
+        max_prefill_tokens_per_request_per_step: 0,
+        max_inflight_prefill_requests: 0,
         backend_request: PreviewBackendRequest {
             support_tier: SupportTier::MlxPreview,
             llama_cli_path: PathBuf::from("llama-cli"),
@@ -220,6 +235,9 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
+        multi_prefill_fair: false,
+        max_prefill_tokens_per_request_per_step: 0,
+        max_inflight_prefill_requests: 0,
         backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
             PathBuf::from("llama-cli"),
             None,
@@ -316,6 +334,9 @@ fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
+        multi_prefill_fair: false,
+        max_prefill_tokens_per_request_per_step: 0,
+        max_inflight_prefill_requests: 0,
         backend_request: PreviewBackendRequest {
             support_tier: SupportTier::MlxLmDelegated,
             mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),

@@ -822,6 +822,33 @@ pub fn resolve_mla_cold_prefill_chunk(
     cold_override.unwrap_or(warm_prefill_chunk).max(1)
 }
 
+/// Whether a prefill is cold (empty cache) or warm-extend (non-empty cache).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum PrefillChunkMode {
+    /// `seq_len == 0` — produce into an empty cache (store producer / cold baseline).
+    Cold = 0,
+    /// `seq_len > 0` — extend after restore or partial prefill.
+    WarmExtend = 1,
+}
+
+/// Select the prefill chunk for a request from cache occupancy.
+///
+/// Entry-point contract (design Track A / PR2 matrix): every path that runs
+/// chunked prefill must use this rule so cold and warm trails cannot silently
+/// swap fields. Returns `(chunk_tokens, mode)`.
+pub fn select_prefill_chunk_for_request(
+    seq_len: usize,
+    cold_prefill_chunk: usize,
+    warm_prefill_chunk: usize,
+) -> (usize, PrefillChunkMode) {
+    if seq_len == 0 {
+        (cold_prefill_chunk.max(1), PrefillChunkMode::Cold)
+    } else {
+        (warm_prefill_chunk.max(1), PrefillChunkMode::WarmExtend)
+    }
+}
+
 /// Token count for constructor JIT warm-up. Non-MLA models keep the historical
 /// small warm-up prompt. MLA models warm at least one full effective chunk so
 /// the compiled prefill graph matches the default chunk-aligned runtime path.
@@ -1567,6 +1594,44 @@ mod tests {
     #[test]
     fn resolve_mla_cold_prefill_chunk_allows_throughput_override() {
         assert_eq!(resolve_mla_cold_prefill_chunk(16, Some(2048)), 2048);
+    }
+
+    #[test]
+    fn select_prefill_chunk_for_request_matrix_cold_vs_warm() {
+        // Empty cache always uses cold field (even if larger than warm).
+        assert_eq!(
+            select_prefill_chunk_for_request(0, 2048, 16),
+            (2048, PrefillChunkMode::Cold)
+        );
+        // Restored / partial cache always uses warm field.
+        assert_eq!(
+            select_prefill_chunk_for_request(1, 2048, 16),
+            (16, PrefillChunkMode::WarmExtend)
+        );
+        assert_eq!(
+            select_prefill_chunk_for_request(128, 16, 16),
+            (16, PrefillChunkMode::WarmExtend)
+        );
+        // R2 default: both fields equal → mode still distinguishes occupancy.
+        assert_eq!(
+            select_prefill_chunk_for_request(0, 16, 16),
+            (16, PrefillChunkMode::Cold)
+        );
+        // Zero chunks clamp to 1 so the loop cannot stall.
+        assert_eq!(
+            select_prefill_chunk_for_request(0, 0, 0),
+            (1, PrefillChunkMode::Cold)
+        );
+    }
+
+    #[test]
+    fn select_prefill_chunk_recompute_after_reset_is_cold() {
+        // After cache.reset() / failed restore, seq_len is 0 → cold trail.
+        let after_reset_seq = 0usize;
+        assert_eq!(
+            select_prefill_chunk_for_request(after_reset_seq, 16, 16).1,
+            PrefillChunkMode::Cold
+        );
     }
 
     #[test]

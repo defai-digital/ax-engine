@@ -170,6 +170,22 @@ pub struct ServerArgs {
     #[arg(long = "prefill-chunk")]
     pub prefill_chunk: Option<usize>,
 
+    /// Opt into fair multi-prefill progress under residual budget (default OFF).
+    /// Improves progress fairness among concurrent text prefills; does **not**
+    /// enable GPU continuous batching or claim wall-clock overlap.
+    #[arg(long = "multi-prefill-fair", default_value_t = false)]
+    pub multi_prefill_fair: bool,
+
+    /// Per-request text prefill token cap when `--multi-prefill-fair` is set.
+    /// `0` (default) uses the session `block_size_tokens`.
+    #[arg(long = "max-prefill-tokens-per-request-per-step", default_value_t = 0)]
+    pub max_prefill_tokens_per_request_per_step: u32,
+
+    /// Max concurrent text prefills per step when fair mode is on.
+    /// `0` (default) means unlimited (still subject to free-block headroom).
+    #[arg(long = "max-inflight-prefill-requests", default_value_t = 0)]
+    pub max_inflight_prefill_requests: u32,
+
     /// When set, also bind a tonic gRPC server at this address. Omit to run
     /// HTTP only. Format `host:port`, e.g. `127.0.0.1:50051`.
     #[arg(long = "grpc-bind-address")]
