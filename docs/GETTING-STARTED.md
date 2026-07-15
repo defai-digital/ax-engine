@@ -81,6 +81,12 @@ Use Homebrew when you specifically want package-manager-owned macOS arm64 CLI
 binaries on `PATH`. The pip wheel is still the preferred install path for most
 users.
 
+> [!WARNING]
+> The Homebrew path currently runs on Homebrew's `mlx` build, which compiles
+> without NAX acceleration on macOS 26.x hosts (~3-4x slower prefill; see the
+> callout under [Source](#source)). Until that formula chain is fixed, prefer
+> the pip wheel wherever prefill performance matters.
+
 ```bash
 brew info defai-digital/ax-engine/ax-engine
 brew install defai-digital/ax-engine/ax-engine
@@ -107,10 +113,12 @@ brew install mlx
 brew reinstall defai-digital/ax-engine/ax-engine
 ```
 
+This repairs the linkage — the Homebrew-distributed binaries link
+`/opt/homebrew/opt/mlx` and cannot use a pip-installed `mlx` — but the
+resulting install still carries the NAX performance caveat above.
+
 The GitHub release archive is the Homebrew formula payload, not a standalone
-installer with bundled dynamic libraries. Prefer pip for normal deployment, or
-Homebrew when you want `mlx` installed, upgraded, and linked by the package
-manager.
+installer with bundled dynamic libraries. Prefer pip for normal deployment.
 
 #### Gatekeeper warning on older releases
 

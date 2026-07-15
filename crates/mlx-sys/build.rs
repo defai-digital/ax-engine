@@ -80,7 +80,8 @@ fn find_mlx_dirs() -> MlxDirs {
         panic!(
             "No usable MLX installation found: checked MLX_LIB_DIR, the active \
              Python's mlx package, `brew --prefix mlx`, and {prefix}. Install \
-             MLX (`brew install mlx` or `pip install mlx`) or point \
+             MLX with `pip install mlx` (preferred — Homebrew's formula builds \
+             without NAX acceleration on macOS 26.x hosts) or point \
              MLX_LIB_DIR/MLX_INCLUDE_DIR at an MLX build."
         );
     }

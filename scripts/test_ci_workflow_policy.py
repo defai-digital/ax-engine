@@ -127,7 +127,12 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         helper = NATIVE_DEPS_SCRIPT.read_text()
 
         self.assertIn("brew untap --force aws/tap azure/bicep", helper)
-        self.assertIn("brew install mlx protobuf", helper)
+        self.assertIn("brew install protobuf", helper)
+        # MLX must come from pip, not Homebrew: the brew formula's deployment
+        # target truncates to 26.0 on macOS 26.x, silently compiling out the
+        # NAX kernels (see the helper script's comment).
+        self.assertNotIn("brew install mlx", helper)
+        self.assertIn("pip install --upgrade mlx", helper)
 
         workflow_texts = {
             path.name: path.read_text()
@@ -136,7 +141,7 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         direct_install_workflows = [
             name
             for name, text in workflow_texts.items()
-            if "brew install mlx protobuf" in text
+            if "brew install mlx" in text or "brew install protobuf" in text
         ]
         self.assertEqual([], direct_install_workflows)
 
