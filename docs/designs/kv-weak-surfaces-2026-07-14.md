@@ -5,7 +5,7 @@
 | **Title** | Strengthen AX Engine KV cache weak surfaces (MLA uniformity, concurrent prefill, paged physical layout) |
 | **Author** | _TBD_ |
 | **Date** | 2026-07-14 |
-| **Status** | Approved (design review consensus); PR1+PR3 partially implemented |
+| **Status** | Approved (design review consensus); PR1+PR3 partially implemented; PR4 FA pool wired into `MlxKVCache` (flag default OFF) |
 | **Related docs** | `docs/KV-CACHE.md`, `docs/SCHEDULER.md`, `docs/LONG-CONTEXT.md`, `docs/SERVING-INVARIANTS.md`, `docs/ROADMAP.md` |
 | **Primary crates** | `ax-engine-core`, `ax-engine-mlx`, `ax-engine-sdk`, `ax-engine-bench` |
 

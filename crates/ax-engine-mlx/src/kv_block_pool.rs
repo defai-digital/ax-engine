@@ -1,26 +1,28 @@
-//! FA-only private physical KV block pool (scaffold).
+//! FA-only private physical KV block pool.
 //!
 //! Design: `docs/designs/kv-weak-surfaces-2026-07-14.md` Track C / PR4.
 //!
-//! This module is a **pure logical allocator** for fixed-size token blocks.
-//! It does not yet own Metal buffers or integrate into [`crate::kv_cache::MlxKVCache`].
-//! When `AX_MLX_FA_KV_BLOCK_POOL=1`, callers may opt into the pool API; the default
-//! production path remains contiguous per-request `MlxKVCache` buffers.
+//! This module is the **logical allocator** for fixed-size token blocks. Live
+//! FA storage and SDPA materialization live in [`crate::kv_cache::MlxKVCache`]
+//! when `AX_MLX_FA_KV_BLOCK_POOL=1` (default OFF). With the flag off, production
+//! keeps contiguous per-request buffers.
 //!
 //! Scope (PR4):
 //! - private (non-shared) full-attention blocks only
 //! - fail-closed exhaustion
 //! - `max_blocks` is expected to match `KvManagerConfig.total_blocks`
+//! - FA append/trim/materialize wired behind the flag (see `MlxKVCache`)
 //!
 //! Non-goals (PR5+):
 //! - cross-request block sharing / CoW
 //! - MLA latent/k_pe paired blocks
-//! - SDPA-facing materialize into live decode (measured later)
+//! - session-global Metal slab sharing
 
 use std::collections::VecDeque;
 use std::sync::OnceLock;
 
-/// Opt-in flag for FA private block-pool scaffolding. Default: OFF.
+/// Opt-in flag for FA private block-pool path in [`crate::kv_cache::MlxKVCache`].
+/// Default: OFF.
 pub fn fa_kv_block_pool_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
@@ -28,6 +30,23 @@ pub fn fa_kv_block_pool_enabled() -> bool {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
     })
+}
+
+/// Default private-pool geometry when the env flag is on.
+///
+/// `block_size_tokens` matches the usual `KvManager` block size (16).
+/// `max_blocks` defaults to 8192 (131072 tokens) and can be overridden with
+/// `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`.
+pub fn default_fa_block_pool_config() -> FaBlockPoolConfig {
+    let max_blocks = std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(8192);
+    FaBlockPoolConfig {
+        block_size_tokens: 16,
+        max_blocks,
+    }
 }
 
 /// Logical physical-block identifier (pool-local, not a GPU pointer).

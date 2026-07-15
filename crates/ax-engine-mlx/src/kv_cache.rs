@@ -1,4 +1,9 @@
-use mlx_sys::{MlxArray, MlxDtype, contiguous, eval, slice, slice_update, zeros};
+use mlx_sys::{MlxArray, MlxDtype, concatenate, contiguous, eval, slice, slice_update, zeros};
+
+use crate::kv_block_pool::{
+    FaBlockPool, FaBlockPoolConfig, FaBlockPoolError, PhysicalBlockId,
+    default_fa_block_pool_config, fa_kv_block_pool_enabled,
+};
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
 /// the logical sequence length exceeds capacity, so the number of grow operations
@@ -204,6 +209,254 @@ struct LayerKV {
     dtype: MlxDtype,
 }
 
+/// Private FA block list for one layer (PR4 paged path).
+///
+/// Each block is a full `[1, n_kv_heads, block_size, head_dim]` slab. Logical
+/// tokens fill blocks left-to-right; SDPA consumers materialize a dense
+/// `[1, n_kv_heads, T, head_dim]` view via [`PagedFaLayer::materialize`].
+#[derive(Clone)]
+struct PagedFaLayer {
+    n_kv_heads: i32,
+    head_dim: i32,
+    dtype: MlxDtype,
+    block_size: usize,
+    block_ids: Vec<PhysicalBlockId>,
+    k_blocks: Vec<MlxArray>,
+    v_blocks: Vec<MlxArray>,
+    last_k_view: Option<MlxArray>,
+    last_v_view: Option<MlxArray>,
+}
+
+impl PagedFaLayer {
+    fn capacity_tokens(&self) -> usize {
+        self.block_ids.len().saturating_mul(self.block_size)
+    }
+
+    fn clear_views(&mut self) {
+        self.last_k_view = None;
+        self.last_v_view = None;
+    }
+
+    fn materialize(&self, token_start: usize, token_end: usize) -> (MlxArray, MlxArray) {
+        assert!(
+            token_end >= token_start,
+            "paged materialize requires token_end >= token_start"
+        );
+        if token_end == token_start {
+            let shape = [1i32, self.n_kv_heads, 0, self.head_dim];
+            return (
+                zeros(&shape, self.dtype, None),
+                zeros(&shape, self.dtype, None),
+            );
+        }
+        assert!(
+            token_end <= self.capacity_tokens(),
+            "paged materialize past capacity: end={token_end} cap={}",
+            self.capacity_tokens()
+        );
+
+        let mut k_pieces: Vec<MlxArray> = Vec::new();
+        let mut v_pieces: Vec<MlxArray> = Vec::new();
+        let mut t = token_start;
+        while t < token_end {
+            let block_idx = t / self.block_size;
+            let offset = t % self.block_size;
+            let take = (token_end - t).min(self.block_size - offset);
+            let start = [0i32, 0, offset as i32, 0];
+            let stop = [1i32, self.n_kv_heads, (offset + take) as i32, self.head_dim];
+            let strides = [1i32, 1, 1, 1];
+            k_pieces.push(slice(
+                &self.k_blocks[block_idx],
+                &start,
+                &stop,
+                &strides,
+                None,
+            ));
+            v_pieces.push(slice(
+                &self.v_blocks[block_idx],
+                &start,
+                &stop,
+                &strides,
+                None,
+            ));
+            t += take;
+        }
+        if k_pieces.len() == 1 {
+            return (k_pieces.remove(0), v_pieces.remove(0));
+        }
+        let k_refs: Vec<&MlxArray> = k_pieces.iter().collect();
+        let v_refs: Vec<&MlxArray> = v_pieces.iter().collect();
+        (concatenate(&k_refs, 2, None), concatenate(&v_refs, 2, None))
+    }
+
+    /// Clone block tensors into a fresh pool (private PR4: new physical IDs).
+    fn clone_into_pool(&self, pool: &mut FaBlockPool) -> Result<Self, FaBlockPoolError> {
+        let n = self.block_ids.len() as u32;
+        let ids = pool.allocate(n)?;
+        Ok(Self {
+            n_kv_heads: self.n_kv_heads,
+            head_dim: self.head_dim,
+            dtype: self.dtype,
+            block_size: self.block_size,
+            block_ids: ids,
+            k_blocks: self.k_blocks.clone(),
+            v_blocks: self.v_blocks.clone(),
+            last_k_view: self.last_k_view.clone(),
+            last_v_view: self.last_v_view.clone(),
+        })
+    }
+
+    fn ensure_capacity(
+        &mut self,
+        pool: &mut FaBlockPool,
+        tokens: usize,
+        growth_count: &mut u64,
+    ) -> Result<(), FaBlockPoolError> {
+        let needed = if tokens == 0 {
+            0
+        } else {
+            tokens.div_ceil(self.block_size)
+        };
+        while self.block_ids.len() < needed {
+            let ids = pool.allocate(1)?;
+            let shape = [1i32, self.n_kv_heads, self.block_size as i32, self.head_dim];
+            self.block_ids.push(ids[0]);
+            self.k_blocks.push(zeros(&shape, self.dtype, None));
+            self.v_blocks.push(zeros(&shape, self.dtype, None));
+            *growth_count = growth_count.saturating_add(1);
+            self.clear_views();
+        }
+        Ok(())
+    }
+
+    fn free_blocks_beyond(&mut self, pool: &mut FaBlockPool, keep_tokens: usize) {
+        let keep_blocks = if keep_tokens == 0 {
+            0
+        } else {
+            keep_tokens.div_ceil(self.block_size)
+        };
+        if self.block_ids.len() <= keep_blocks {
+            return;
+        }
+        let free_ids: Vec<PhysicalBlockId> = self.block_ids.drain(keep_blocks..).collect();
+        self.k_blocks.truncate(keep_blocks);
+        self.v_blocks.truncate(keep_blocks);
+        // Best-effort free; a double-free would be a pool bug.
+        let _ = pool.free(&free_ids);
+        self.clear_views();
+    }
+
+    fn write_tokens(&mut self, write_start: usize, new_k: &MlxArray, new_v: &MlxArray) {
+        let new_tokens = new_k.shape()[2] as usize;
+        let write_end = write_start + new_tokens;
+        assert!(
+            write_end <= self.capacity_tokens(),
+            "paged write past capacity"
+        );
+        let mut src = 0usize;
+        let mut t = write_start;
+        while t < write_end {
+            let block_idx = t / self.block_size;
+            let offset = t % self.block_size;
+            let take = (write_end - t).min(self.block_size - offset);
+            let src_start = [0i32, 0, src as i32, 0];
+            let src_stop = [1i32, self.n_kv_heads, (src + take) as i32, self.head_dim];
+            let strides = [1i32, 1, 1, 1];
+            let k_seg = slice(new_k, &src_start, &src_stop, &strides, None);
+            let v_seg = slice(new_v, &src_start, &src_stop, &strides, None);
+            let dst_start = [0i32, 0, offset as i32, 0];
+            let dst_stop = [1i32, self.n_kv_heads, (offset + take) as i32, self.head_dim];
+            self.k_blocks[block_idx] = slice_update(
+                &self.k_blocks[block_idx],
+                &k_seg,
+                &dst_start,
+                &dst_stop,
+                &strides,
+                None,
+            );
+            self.v_blocks[block_idx] = slice_update(
+                &self.v_blocks[block_idx],
+                &v_seg,
+                &dst_start,
+                &dst_stop,
+                &strides,
+                None,
+            );
+            src += take;
+            t += take;
+        }
+        self.clear_views();
+    }
+}
+
+/// FA layer storage: contiguous production path or private paged blocks.
+#[derive(Clone)]
+enum FaLayerStorage {
+    Contiguous(LayerKV),
+    Paged(PagedFaLayer),
+}
+
+impl FaLayerStorage {
+    fn rotating_window(&self) -> Option<usize> {
+        match self {
+            Self::Contiguous(lkv) => lkv.rotating_window,
+            Self::Paged(_) => None,
+        }
+    }
+
+    fn n_kv_heads(&self) -> i32 {
+        match self {
+            Self::Contiguous(lkv) => lkv.n_kv_heads,
+            Self::Paged(p) => p.n_kv_heads,
+        }
+    }
+
+    fn head_dim(&self) -> i32 {
+        match self {
+            Self::Contiguous(lkv) => lkv.head_dim,
+            Self::Paged(p) => p.head_dim,
+        }
+    }
+
+    fn dtype(&self) -> MlxDtype {
+        match self {
+            Self::Contiguous(lkv) => lkv.dtype,
+            Self::Paged(p) => p.dtype,
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        match self {
+            Self::Contiguous(lkv) => lkv.capacity,
+            Self::Paged(p) => p.capacity_tokens(),
+        }
+    }
+
+    fn clear_views(&mut self) {
+        match self {
+            Self::Contiguous(lkv) => {
+                lkv.last_k_view = None;
+                lkv.last_v_view = None;
+            }
+            Self::Paged(p) => p.clear_views(),
+        }
+    }
+
+    fn as_contiguous_mut(&mut self) -> Option<&mut LayerKV> {
+        match self {
+            Self::Contiguous(lkv) => Some(lkv),
+            Self::Paged(_) => None,
+        }
+    }
+
+    fn as_contiguous(&self) -> Option<&LayerKV> {
+        match self {
+            Self::Contiguous(lkv) => Some(lkv),
+            Self::Paged(_) => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct GlmMlaLayerCache {
     /// `[1, 1, capacity, kv_lora_rank]`, matching mlx-lm's latent KV cache.
@@ -343,7 +596,7 @@ pub struct GlmMlaLayerStateView<'a> {
 /// the backing buffer but are beyond the logical boundary, so SDPA never sees them.
 /// The next `append` overwrites from `prefix_len`, restoring correctness.
 pub struct MlxKVCache {
-    layers: Vec<Option<LayerKV>>,
+    layers: Vec<Option<FaLayerStorage>>,
     glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
     linear_layers: Vec<LinearLayerState>,
     /// Current logical sequence length (token count cached). Private so
@@ -366,6 +619,9 @@ pub struct MlxKVCache {
     /// ([`SlidingRingLayout`]), and `trim_to` accepts rollbacks up to
     /// `slack` tokens deep.
     rotating_slack: usize,
+    /// Private FA block pool when paged mode is active (flag or explicit
+    /// constructor). `None` keeps the historical contiguous path.
+    fa_pool: Option<FaBlockPool>,
 }
 
 /// Ring geometry a forward presents to SDPA for a sliding-window layer when
@@ -396,8 +652,33 @@ impl SlidingRingLayout {
 
 impl Clone for MlxKVCache {
     fn clone(&self) -> Self {
+        // Paged layers hold private physical IDs: re-allocate into a fresh
+        // pool so free/trim on either side cannot double-free.
+        let mut fa_pool = self.fa_pool.as_ref().map(|pool| {
+            FaBlockPool::new(pool.config()).expect("clone reuses a validated pool config")
+        });
+        let layers = self
+            .layers
+            .iter()
+            .map(|entry| match entry {
+                None => None,
+                Some(FaLayerStorage::Contiguous(lkv)) => {
+                    Some(FaLayerStorage::Contiguous(lkv.clone()))
+                }
+                Some(FaLayerStorage::Paged(paged)) => {
+                    let pool = fa_pool
+                        .as_mut()
+                        .expect("paged FA layer requires an FA block pool");
+                    Some(FaLayerStorage::Paged(
+                        paged
+                            .clone_into_pool(pool)
+                            .expect("clone must fit in a same-sized FA block pool"),
+                    ))
+                }
+            })
+            .collect();
         Self {
-            layers: self.layers.clone(),
+            layers,
             glm_mla_layers: self.glm_mla_layers.clone(),
             linear_layers: self.linear_layers.clone(),
             seq_len: self.seq_len,
@@ -405,6 +686,7 @@ impl Clone for MlxKVCache {
             growth_count: self.growth_count,
             use_rotating_sliding_decode: self.use_rotating_sliding_decode,
             rotating_slack: self.rotating_slack,
+            fa_pool,
         }
     }
 }
@@ -433,6 +715,16 @@ impl MlxKVCache {
     const TENSOR_ABSENT_TAG: u8 = 0;
 
     pub fn new(num_layers: usize) -> Self {
+        if fa_kv_block_pool_enabled() {
+            Self::new_with_fa_block_pool(num_layers, default_fa_block_pool_config())
+        } else {
+            Self::new_contiguous(num_layers)
+        }
+    }
+
+    /// Contiguous FA path (historical default). Used when the block-pool flag
+    /// is off and by deserialize (wire format is always dense).
+    pub fn new_contiguous(num_layers: usize) -> Self {
         Self {
             layers: (0..num_layers).map(|_| None).collect(),
             glm_mla_layers: (0..num_layers).map(|_| None).collect(),
@@ -444,7 +736,37 @@ impl MlxKVCache {
             growth_count: 0,
             use_rotating_sliding_decode: false,
             rotating_slack: 0,
+            fa_pool: None,
         }
+    }
+
+    /// FA private block-pool path (PR4). Pure FA appends use paged storage and
+    /// materialize dense K/V for SDPA; sliding/rotating layers stay contiguous.
+    pub fn new_with_fa_block_pool(num_layers: usize, config: FaBlockPoolConfig) -> Self {
+        let fa_pool = FaBlockPool::new(config).expect("FA block pool config must be non-zero");
+        Self {
+            layers: (0..num_layers).map(|_| None).collect(),
+            glm_mla_layers: (0..num_layers).map(|_| None).collect(),
+            linear_layers: (0..num_layers)
+                .map(|_| LinearLayerState::default())
+                .collect(),
+            seq_len: 0,
+            rope_offset: 0,
+            growth_count: 0,
+            use_rotating_sliding_decode: false,
+            rotating_slack: 0,
+            fa_pool: Some(fa_pool),
+        }
+    }
+
+    /// Whether this cache owns a private FA block pool (paged pure-FA path).
+    pub fn fa_block_pool_enabled(&self) -> bool {
+        self.fa_pool.is_some()
+    }
+
+    /// Blocks available in the private FA pool, if paged mode is active.
+    pub fn fa_block_pool_available(&self) -> Option<u32> {
+        self.fa_pool.as_ref().map(FaBlockPool::available_blocks)
     }
 
     /// Current logical sequence length (token count cached).
@@ -760,16 +1082,25 @@ impl MlxKVCache {
                 // layer's buffer is slot-ordered, and restoring it as
                 // ordered storage would make the first post-restore append
                 // treat ring slots as a token-ordered prefix.
-                out.extend_from_slice(&(fa.rotating_window.unwrap_or(0) as u64).to_le_bytes());
-                // Rotating-window layers store slots, not token order — the
-                // full buffer is the logical state and must not be trimmed.
-                let logical_tokens = if fa.rotating_window.is_none() {
+                // Paged FA always serializes as dense contiguous (no I-2 bump).
+                let rotating_window = fa.rotating_window();
+                out.extend_from_slice(&(rotating_window.unwrap_or(0) as u64).to_le_bytes());
+                let logical_tokens = if rotating_window.is_none() {
                     Some(self.seq_len)
                 } else {
                     None
                 };
-                Self::serialize_tensor_logical(&mut out, &fa.k, logical_tokens);
-                Self::serialize_tensor_logical(&mut out, &fa.v, logical_tokens);
+                match fa {
+                    FaLayerStorage::Contiguous(lkv) => {
+                        Self::serialize_tensor_logical(&mut out, &lkv.k, logical_tokens);
+                        Self::serialize_tensor_logical(&mut out, &lkv.v, logical_tokens);
+                    }
+                    FaLayerStorage::Paged(paged) => {
+                        let (k, v) = paged.materialize(0, self.seq_len);
+                        Self::serialize_tensor_logical(&mut out, &k, logical_tokens);
+                        Self::serialize_tensor_logical(&mut out, &v, logical_tokens);
+                    }
+                }
             } else if let Some(mla) = &self.glm_mla_layers[idx] {
                 out.push(Self::LAYER_KIND_MLA);
                 out.extend_from_slice(&[0u8; 7]);
@@ -834,7 +1165,9 @@ impl MlxKVCache {
         let layer_count = read_u32_from(reader)? as usize;
         let _reserved = read_u32_from(reader)?;
 
-        let mut cache = Self::new(layer_count);
+        // Wire format is always dense contiguous; do not inherit env-flag
+        // paged mode into restored snapshots (I-2 payload is contiguous).
+        let mut cache = Self::new_contiguous(layer_count);
         cache.seq_len = seq_len;
         cache.growth_count = growth_count;
         cache.rope_offset = rope_offset;
@@ -872,7 +1205,7 @@ impl MlxKVCache {
                     } else if seq_len > capacity {
                         return Err(MlxKVCacheSerializeError::BadShape(shape.len()));
                     }
-                    cache.layers[idx] = Some(LayerKV {
+                    cache.layers[idx] = Some(FaLayerStorage::Contiguous(LayerKV {
                         last_k_view: None,
                         last_v_view: None,
                         n_kv_heads: shape[1],
@@ -882,7 +1215,7 @@ impl MlxKVCache {
                         dtype: k_arr.dtype(),
                         k: k_arr,
                         v: v_arr,
-                    });
+                    }));
                 }
                 k if k == Self::LAYER_KIND_MLA => {
                     let kv_latent = Self::read_tensor_from_reader(reader)?;
@@ -971,6 +1304,15 @@ impl MlxKVCache {
             return self.append_rotating_retained_window(layer, new_k, new_v, ring);
         }
 
+        // Pure-FA paged path: only for empty or already-paged layers when a
+        // private pool is present. Sliding retained windows stay contiguous.
+        let use_paged = self.fa_pool.is_some()
+            && window.is_none()
+            && matches!(self.layers[layer], None | Some(FaLayerStorage::Paged(_)));
+        if use_paged {
+            return self.append_paged_fa(layer, new_k, new_v, write_start, write_end, append);
+        }
+
         let entry = &mut self.layers[layer];
         match entry {
             None => {
@@ -1008,7 +1350,7 @@ impl MlxKVCache {
                         (new_k.clone(), new_v.clone())
                     };
                     self.growth_count = self.growth_count.saturating_add(1);
-                    *entry = Some(LayerKV {
+                    *entry = Some(FaLayerStorage::Contiguous(LayerKV {
                         k: new_k,
                         v: new_v,
                         last_k_view: Some(k_view.clone()),
@@ -1018,7 +1360,7 @@ impl MlxKVCache {
                         capacity,
                         rotating_window: None,
                         dtype,
-                    });
+                    }));
                     return (k_view, v_view);
                 }
                 let buf_shape = [1i32, n_kv_heads, capacity as i32, head_dim];
@@ -1030,7 +1372,7 @@ impl MlxKVCache {
                 let k_out = slice_update(&k_buf, &new_k, &start, &stop, &strides, None);
                 let v_out = slice_update(&v_buf, &new_v, &start, &stop, &strides, None);
                 self.growth_count = self.growth_count.saturating_add(1);
-                *entry = Some(LayerKV {
+                *entry = Some(FaLayerStorage::Contiguous(LayerKV {
                     k: k_out,
                     v: v_out,
                     last_k_view: None,
@@ -1040,9 +1382,12 @@ impl MlxKVCache {
                     capacity,
                     rotating_window: None,
                     dtype,
-                });
+                }));
             }
-            Some(lkv) => {
+            Some(FaLayerStorage::Paged(_)) => {
+                unreachable!("paged FA layers must use append_paged_fa");
+            }
+            Some(FaLayerStorage::Contiguous(lkv)) => {
                 // A rotated ring stores slots, not token order; writing at
                 // logical positions (or growing, which copies slots as an
                 // ordered prefix) would silently corrupt it. Ring-eligible
@@ -1094,7 +1439,10 @@ impl MlxKVCache {
             }
         }
 
-        let lkv = self.layers[layer].as_mut().unwrap();
+        let lkv = self.layers[layer]
+            .as_mut()
+            .and_then(FaLayerStorage::as_contiguous_mut)
+            .expect("contiguous FA append path");
         let view_start = window
             .filter(|window| *window > 0)
             .map(|window| write_end.saturating_sub(window))
@@ -1122,6 +1470,83 @@ impl MlxKVCache {
         (k_view, v_view)
     }
 
+    fn append_paged_fa(
+        &mut self,
+        layer: usize,
+        new_k: MlxArray,
+        new_v: MlxArray,
+        write_start: usize,
+        write_end: usize,
+        append: AppendShape,
+    ) -> (MlxArray, MlxArray) {
+        let block_size = self
+            .fa_pool
+            .as_ref()
+            .expect("paged append requires FA block pool")
+            .config()
+            .block_size_tokens as usize;
+
+        if self.layers[layer].is_none() {
+            self.layers[layer] = Some(FaLayerStorage::Paged(PagedFaLayer {
+                n_kv_heads: append.n_kv_heads,
+                head_dim: append.head_dim,
+                dtype: append.dtype,
+                block_size,
+                block_ids: Vec::new(),
+                k_blocks: Vec::new(),
+                v_blocks: Vec::new(),
+                last_k_view: None,
+                last_v_view: None,
+            }));
+        }
+
+        {
+            let pool = self
+                .fa_pool
+                .as_mut()
+                .expect("paged append requires FA block pool");
+            let paged = match self.layers[layer]
+                .as_mut()
+                .expect("paged layer just created")
+            {
+                FaLayerStorage::Paged(p) => p,
+                FaLayerStorage::Contiguous(_) => {
+                    panic!("append_paged_fa on contiguous layer {layer}")
+                }
+            };
+            assert_eq!(
+                paged.n_kv_heads, append.n_kv_heads,
+                "paged FA append cannot change n_kv_heads for an existing layer"
+            );
+            assert_eq!(
+                paged.head_dim, append.head_dim,
+                "paged FA append cannot change head_dim for an existing layer"
+            );
+            assert_eq!(
+                paged.dtype, append.dtype,
+                "paged FA append cannot change dtype for an existing layer"
+            );
+            paged
+                .ensure_capacity(pool, write_end, &mut self.growth_count)
+                .unwrap_or_else(|err| {
+                    panic!("FA block pool exhausted on layer {layer}: {err}");
+                });
+            paged.write_tokens(write_start, &new_k, &new_v);
+        }
+
+        let paged = match self.layers[layer]
+            .as_mut()
+            .expect("paged layer after write")
+        {
+            FaLayerStorage::Paged(p) => p,
+            FaLayerStorage::Contiguous(_) => unreachable!("paged path"),
+        };
+        let (k_view, v_view) = paged.materialize(0, write_end);
+        paged.last_k_view = Some(k_view.clone());
+        paged.last_v_view = Some(v_view.clone());
+        (k_view, v_view)
+    }
+
     fn append_rotating_retained_window(
         &mut self,
         layer: usize,
@@ -1137,7 +1562,11 @@ impl MlxKVCache {
         let new_tokens = new_k.shape()[2] as usize;
         let lkv = self.layers[layer]
             .as_mut()
-            .expect("rotating sliding decode requires an existing prefill cache");
+            .and_then(FaLayerStorage::as_contiguous_mut)
+            .expect(
+                "rotating sliding decode requires an existing contiguous prefill cache \
+                 (paged pure-FA layers are not ring-converted in PR4)",
+            );
         if lkv.rotating_window != Some(window) || lkv.capacity != capacity {
             // Conversion reads the source at logical token indices, which is
             // only meaningful for ordered storage. An already-rotated layer
@@ -1381,9 +1810,11 @@ impl MlxKVCache {
             // (`capacity == window`) therefore refuse every real trim, and
             // bounded rings refuse trims deeper than their slack.
             let rollback = self.seq_len - prefix_len;
-            if self.layers.iter().flatten().any(|lkv| {
-                lkv.rotating_window
-                    .is_some_and(|window| rollback > lkv.capacity.saturating_sub(window))
+            if self.layers.iter().flatten().any(|fa| {
+                fa.as_contiguous().is_some_and(|lkv| {
+                    lkv.rotating_window
+                        .is_some_and(|window| rollback > lkv.capacity.saturating_sub(window))
+                })
             }) {
                 return false;
             }
@@ -1396,9 +1827,17 @@ impl MlxKVCache {
             // including the rejected draft positions.  Drop them so any
             // consumer between this trim and the next append re-slices from
             // the logical boundary instead of attending over trimmed tokens.
-            for lkv in self.layers.iter_mut().flatten() {
-                lkv.last_k_view = None;
-                lkv.last_v_view = None;
+            // Paged layers also free fully-empty trailing blocks back to the
+            // private pool (fail-closed capacity bookkeeping).
+            for fa in self.layers.iter_mut().flatten() {
+                fa.clear_views();
+            }
+            if let Some(pool) = self.fa_pool.as_mut() {
+                for fa in self.layers.iter_mut().flatten() {
+                    if let FaLayerStorage::Paged(paged) = fa {
+                        paged.free_blocks_beyond(pool, self.seq_len);
+                    }
+                }
             }
         }
         valid
@@ -1413,17 +1852,22 @@ impl MlxKVCache {
     /// lazy KV would enter the trace as an un-passed constant and abort eval
     /// with "Attempting to eval an array without a primitive").
     pub fn logical_layer_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
-        let lkv = self.layers.get(layer)?.as_ref()?;
-        debug_assert!(
-            lkv.rotating_window.is_none(),
-            "logical_layer_kv reads a [0, seq_len) prefix slice, which is meaningless \
-             on a rotated ring (MTP draft seeding never coexists with rotation)"
-        );
-        let end = self.seq_len as i32;
-        let stop = [1, lkv.n_kv_heads, end, lkv.head_dim];
-        let k = slice(&lkv.k, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
-        let v = slice(&lkv.v, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
-        Some((k, v))
+        let fa = self.layers.get(layer)?.as_ref()?;
+        match fa {
+            FaLayerStorage::Contiguous(lkv) => {
+                debug_assert!(
+                    lkv.rotating_window.is_none(),
+                    "logical_layer_kv reads a [0, seq_len) prefix slice, which is meaningless \
+                     on a rotated ring (MTP draft seeding never coexists with rotation)"
+                );
+                let end = self.seq_len as i32;
+                let stop = [1, lkv.n_kv_heads, end, lkv.head_dim];
+                let k = slice(&lkv.k, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
+                let v = slice(&lkv.v, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
+                Some((k, v))
+            }
+            FaLayerStorage::Paged(paged) => Some(paged.materialize(0, self.seq_len)),
+        }
     }
 
     /// Commit a pure compiled MTP draft closure's threaded K/V back into the
@@ -1441,7 +1885,7 @@ impl MlxKVCache {
         let length = shape[2] as usize;
         let head_dim = shape[3];
         let dtype = k.dtype();
-        self.layers[layer] = Some(LayerKV {
+        self.layers[layer] = Some(FaLayerStorage::Contiguous(LayerKV {
             last_k_view: Some(k.clone()),
             last_v_view: Some(v.clone()),
             k,
@@ -1451,7 +1895,7 @@ impl MlxKVCache {
             capacity: length,
             rotating_window: None,
             dtype,
-        });
+        }));
         self.seq_len = seq_len;
     }
 
@@ -1467,9 +1911,21 @@ impl MlxKVCache {
     /// Mirrors mlx_lm's `mx.eval(y, cache)` pattern.
     pub fn collect_eval_refs(&self) -> Vec<&MlxArray> {
         let mut refs = Vec::with_capacity(self.layers.len() * 4 + self.glm_mla_layers.len() * 2);
-        for lkv in self.layers.iter().flatten() {
-            refs.push(&lkv.k);
-            refs.push(&lkv.v);
+        for fa in self.layers.iter().flatten() {
+            match fa {
+                FaLayerStorage::Contiguous(lkv) => {
+                    refs.push(&lkv.k);
+                    refs.push(&lkv.v);
+                }
+                FaLayerStorage::Paged(paged) => {
+                    for k in &paged.k_blocks {
+                        refs.push(k);
+                    }
+                    for v in &paged.v_blocks {
+                        refs.push(v);
+                    }
+                }
+            }
         }
         for glm_mla in self.glm_mla_layers.iter().flatten() {
             refs.push(&glm_mla.kv_latent);
@@ -1520,32 +1976,33 @@ impl MlxKVCache {
             ..MlxKVCacheUsage::default()
         };
 
-        for (layer_idx, lkv) in self.layers.iter().enumerate() {
-            let Some(lkv) = lkv else {
+        for (layer_idx, fa) in self.layers.iter().enumerate() {
+            let Some(fa) = fa else {
                 continue;
             };
-            if lkv.rotating_window.is_some() {
+            if fa.rotating_window().is_some() {
                 usage.rotated_ring_layers = usage.rotated_ring_layers.saturating_add(1);
             }
-            let elements_per_token = (lkv.n_kv_heads as u64).saturating_mul(lkv.head_dim as u64);
-            let bytes_per_element = lkv.dtype.size_bytes() as u64;
+            let elements_per_token = (fa.n_kv_heads() as u64).saturating_mul(fa.head_dim() as u64);
+            let bytes_per_element = fa.dtype().size_bytes() as u64;
             let bytes_per_token = elements_per_token
                 .saturating_mul(bytes_per_element)
                 .saturating_mul(2);
+            let capacity = fa.capacity();
 
             usage.full_attention_layers = usage.full_attention_layers.saturating_add(1);
-            usage.capacity_tokens = usage.capacity_tokens.saturating_add(lkv.capacity);
+            usage.capacity_tokens = usage.capacity_tokens.saturating_add(capacity);
             usage.logical_bytes = usage
                 .logical_bytes
                 .saturating_add(bytes_per_token.saturating_mul(self.seq_len as u64));
             usage.capacity_bytes = usage
                 .capacity_bytes
-                .saturating_add(bytes_per_token.saturating_mul(lkv.capacity as u64));
+                .saturating_add(bytes_per_token.saturating_mul(capacity as u64));
 
             if let Some(window) = layer_windows.get(layer_idx).copied().flatten() {
                 let retained_tokens = self.seq_len.min(window);
-                let retained_capacity = chunk_ceiling(retained_tokens).min(lkv.capacity);
-                let reclaimable_tokens = lkv.capacity.saturating_sub(retained_capacity);
+                let retained_capacity = chunk_ceiling(retained_tokens).min(capacity);
+                let reclaimable_tokens = capacity.saturating_sub(retained_capacity);
                 usage.sliding_window_layers = usage.sliding_window_layers.saturating_add(1);
                 usage.sliding_window_retained_tokens = usage
                     .sliding_window_retained_tokens
@@ -1628,39 +2085,46 @@ impl MlxKVCache {
     /// `new_tokens` is retained for the panic check that validates the source layer
     /// was updated in the current forward pass.
     pub fn peek_source_kv(&self, source_layer: usize, new_tokens: usize) -> (MlxArray, MlxArray) {
-        let lkv = self.layers[source_layer]
+        let fa = self.layers[source_layer]
             .as_ref()
             .expect("KV-shared source layer has no cached KV — source layer must appear earlier");
-        if lkv.rotating_window.is_some() {
-            // Rotated ring: the backing store IS the full ring view (the
-            // storing layer's append returned exactly this), and the ordered
-            // `[0, seq_len)` fallback below would slice past the ring's
-            // capacity. Consumers mask via the hoisted ring validity mask.
-            return (lkv.k.clone(), lkv.v.clone());
-        }
-        let (k_view, v_view) = match (&lkv.last_k_view, &lkv.last_v_view) {
-            (Some(k), Some(v)) => (k.clone(), v.clone()),
-            _ => {
-                // Fallback: create fresh views (e.g., first append in a grow-then-slice sequence).
-                let end = (self.seq_len + new_tokens) as i32;
-                let k = slice(
-                    &lkv.k,
-                    &[0, 0, 0, 0],
-                    &[1, lkv.n_kv_heads, end, lkv.head_dim],
-                    &[1, 1, 1, 1],
-                    None,
-                );
-                let v = slice(
-                    &lkv.v,
-                    &[0, 0, 0, 0],
-                    &[1, lkv.n_kv_heads, end, lkv.head_dim],
-                    &[1, 1, 1, 1],
-                    None,
-                );
-                (k, v)
+        match fa {
+            FaLayerStorage::Contiguous(lkv) => {
+                if lkv.rotating_window.is_some() {
+                    // Rotated ring: the backing store IS the full ring view (the
+                    // storing layer's append returned exactly this), and the ordered
+                    // `[0, seq_len)` fallback below would slice past the ring's
+                    // capacity. Consumers mask via the hoisted ring validity mask.
+                    return (lkv.k.clone(), lkv.v.clone());
+                }
+                match (&lkv.last_k_view, &lkv.last_v_view) {
+                    (Some(k), Some(v)) => (k.clone(), v.clone()),
+                    _ => {
+                        // Fallback: create fresh views (e.g., first append in a grow-then-slice sequence).
+                        let end = (self.seq_len + new_tokens) as i32;
+                        let k = slice(
+                            &lkv.k,
+                            &[0, 0, 0, 0],
+                            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+                            &[1, 1, 1, 1],
+                            None,
+                        );
+                        let v = slice(
+                            &lkv.v,
+                            &[0, 0, 0, 0],
+                            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+                            &[1, 1, 1, 1],
+                            None,
+                        );
+                        (k, v)
+                    }
+                }
             }
-        };
-        (k_view, v_view)
+            FaLayerStorage::Paged(paged) => match (&paged.last_k_view, &paged.last_v_view) {
+                (Some(k), Some(v)) => (k.clone(), v.clone()),
+                _ => paged.materialize(0, self.seq_len + new_tokens),
+            },
+        }
     }
 
     /// Read K/V already stored for `layer` without mutating cache state.
@@ -1669,37 +2133,45 @@ impl MlxKVCache {
     /// from a separate assistant forward pass. Unlike `peek_source_kv`, this does
     /// not assert that the layer was written during the current forward call.
     pub fn peek_layer_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
-        let lkv = self.layers.get(layer)?.as_ref()?;
-        if lkv.rotating_window.is_some() {
-            // Rotated ring: return the full ring — valid at any time,
-            // including right after a `trim_to` rollback cleared the cached
-            // views (when the ordered `[0, seq_len)` fallback below would
-            // slice past the ring's capacity). Consumers must apply the
-            // slot-validity mask derived from [`Self::layer_sliding_ring`].
-            return Some((lkv.k.clone(), lkv.v.clone()));
-        }
-        let (k_view, v_view) = match (&lkv.last_k_view, &lkv.last_v_view) {
-            (Some(k), Some(v)) => (k.clone(), v.clone()),
-            _ => {
-                let end = self.seq_len as i32;
-                let k = slice(
-                    &lkv.k,
-                    &[0, 0, 0, 0],
-                    &[1, lkv.n_kv_heads, end, lkv.head_dim],
-                    &[1, 1, 1, 1],
-                    None,
-                );
-                let v = slice(
-                    &lkv.v,
-                    &[0, 0, 0, 0],
-                    &[1, lkv.n_kv_heads, end, lkv.head_dim],
-                    &[1, 1, 1, 1],
-                    None,
-                );
-                (k, v)
+        let fa = self.layers.get(layer)?.as_ref()?;
+        match fa {
+            FaLayerStorage::Contiguous(lkv) => {
+                if lkv.rotating_window.is_some() {
+                    // Rotated ring: return the full ring — valid at any time,
+                    // including right after a `trim_to` rollback cleared the cached
+                    // views (when the ordered `[0, seq_len)` fallback below would
+                    // slice past the ring's capacity). Consumers must apply the
+                    // slot-validity mask derived from [`Self::layer_sliding_ring`].
+                    return Some((lkv.k.clone(), lkv.v.clone()));
+                }
+                let (k_view, v_view) = match (&lkv.last_k_view, &lkv.last_v_view) {
+                    (Some(k), Some(v)) => (k.clone(), v.clone()),
+                    _ => {
+                        let end = self.seq_len as i32;
+                        let k = slice(
+                            &lkv.k,
+                            &[0, 0, 0, 0],
+                            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+                            &[1, 1, 1, 1],
+                            None,
+                        );
+                        let v = slice(
+                            &lkv.v,
+                            &[0, 0, 0, 0],
+                            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+                            &[1, 1, 1, 1],
+                            None,
+                        );
+                        (k, v)
+                    }
+                };
+                Some((k_view, v_view))
             }
-        };
-        Some((k_view, v_view))
+            FaLayerStorage::Paged(paged) => match (&paged.last_k_view, &paged.last_v_view) {
+                (Some(k), Some(v)) => Some((k.clone(), v.clone())),
+                _ => Some(paged.materialize(0, self.seq_len)),
+            },
+        }
     }
 
     /// The current ring geometry of `layer` if it has converted to a
@@ -1713,7 +2185,7 @@ impl MlxKVCache {
     /// resident-token index decodes below `seq_len - window` under the
     /// post-trim end).
     pub fn layer_sliding_ring(&self, layer: usize) -> Option<SlidingRingLayout> {
-        let lkv = self.layers.get(layer)?.as_ref()?;
+        let lkv = self.layers.get(layer)?.as_ref()?.as_contiguous()?;
         let window = lkv.rotating_window?;
         Some(SlidingRingLayout {
             window,
@@ -1729,23 +2201,28 @@ impl MlxKVCache {
     /// committed prompt prefix, so its bidirectional mask must match exactly
     /// `self.seq_len` cached keys.
     pub fn peek_layer_full_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
-        let lkv = self.layers.get(layer)?.as_ref()?;
-        let end = self.seq_len as i32;
-        let k = slice(
-            &lkv.k,
-            &[0, 0, 0, 0],
-            &[1, lkv.n_kv_heads, end, lkv.head_dim],
-            &[1, 1, 1, 1],
-            None,
-        );
-        let v = slice(
-            &lkv.v,
-            &[0, 0, 0, 0],
-            &[1, lkv.n_kv_heads, end, lkv.head_dim],
-            &[1, 1, 1, 1],
-            None,
-        );
-        Some((k, v))
+        let fa = self.layers.get(layer)?.as_ref()?;
+        match fa {
+            FaLayerStorage::Contiguous(lkv) => {
+                let end = self.seq_len as i32;
+                let k = slice(
+                    &lkv.k,
+                    &[0, 0, 0, 0],
+                    &[1, lkv.n_kv_heads, end, lkv.head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let v = slice(
+                    &lkv.v,
+                    &[0, 0, 0, 0],
+                    &[1, lkv.n_kv_heads, end, lkv.head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                Some((k, v))
+            }
+            FaLayerStorage::Paged(paged) => Some(paged.materialize(0, self.seq_len)),
+        }
     }
 
     /// Replace the backing K/V arrays for a layer.
@@ -1755,18 +2232,52 @@ impl MlxKVCache {
     /// this replaces the full backing buffer rather than writing new tokens
     /// to the existing one. The `seq_len` is not incremented; callers must
     /// manage `seq_len` separately.
+    ///
+    /// On the paged FA path this forces the layer back to contiguous storage
+    /// (compiled decode returns dense K/V).
     pub fn replace_layer_kv(&mut self, layer: usize, new_k: MlxArray, new_v: MlxArray) {
-        let Some(Some(lkv)) = self.layers.get_mut(layer) else {
+        let shape = new_k.shape();
+        if shape.len() != 4 {
             return;
-        };
-        lkv.k = new_k;
-        lkv.v = new_v;
-        lkv.last_k_view = None;
-        lkv.last_v_view = None;
+        }
+        let n_kv_heads = shape[1];
+        let capacity = shape[2] as usize;
+        let head_dim = shape[3];
+        let dtype = new_k.dtype();
+        // If this layer was paged, free its blocks before replacing.
+        let previous = self.layers.get_mut(layer).and_then(Option::take);
+        if let Some(FaLayerStorage::Paged(paged)) = previous
+            && let Some(pool) = self.fa_pool.as_mut()
+        {
+            let _ = pool.free(&paged.block_ids);
+        }
+        if let Some(slot) = self.layers.get_mut(layer) {
+            *slot = Some(FaLayerStorage::Contiguous(LayerKV {
+                k: new_k,
+                v: new_v,
+                last_k_view: None,
+                last_v_view: None,
+                n_kv_heads,
+                head_dim,
+                capacity,
+                rotating_window: None,
+                dtype,
+            }));
+        }
     }
 
     /// Reset cache entirely (e.g., between requests).
     pub fn reset(&mut self) {
+        if let Some(pool) = self.fa_pool.as_mut() {
+            for entry in self.layers.iter_mut().flatten() {
+                if let FaLayerStorage::Paged(paged) = entry {
+                    let _ = pool.free(&paged.block_ids);
+                    paged.block_ids.clear();
+                    paged.k_blocks.clear();
+                    paged.v_blocks.clear();
+                }
+            }
+        }
         for entry in &mut self.layers {
             *entry = None;
         }
@@ -1786,6 +2297,13 @@ impl MlxKVCache {
 mod tests {
     use super::*;
     use mlx_sys::astype;
+
+    fn contiguous_layer(cache: &MlxKVCache, layer: usize) -> &LayerKV {
+        cache.layers[layer]
+            .as_ref()
+            .and_then(FaLayerStorage::as_contiguous)
+            .expect("contiguous FA layer")
+    }
 
     #[test]
     fn linear_state_is_eval_tracked_and_reset() {
@@ -2164,7 +2682,7 @@ mod tests {
         let next_v = zeros(&[1, 1, 1, 8], MlxDtype::Bfloat16, None);
         let (decode_k, decode_v) = cache.append_with_retained_window(0, next_k, next_v, Some(4));
 
-        let lkv = cache.layers[0].as_ref().expect("layer cache");
+        let lkv = contiguous_layer(&cache, 0);
         assert_eq!(lkv.capacity, 4);
         assert_eq!(lkv.rotating_window, Some(4));
         assert_eq!(decode_k.shape(), vec![1, 1, 4, 8]);
@@ -2255,7 +2773,7 @@ mod tests {
         let (ck, _) = cache.append_with_retained_window(0, k, v, Some(4));
         cache.seq_len = 7;
 
-        let lkv = cache.layers[0].as_ref().expect("layer exists");
+        let lkv = contiguous_layer(&cache, 0);
         assert_eq!(lkv.rotating_window, Some(4));
         assert_eq!(lkv.capacity, 7);
         assert_eq!(ck.shape(), vec![1, 1, 7, HD as i32]);
@@ -2274,7 +2792,7 @@ mod tests {
             cache.append_with_retained_window(0, k, v, Some(4));
             cache.seq_len = t + 1;
         }
-        let lkv = cache.layers[0].as_ref().expect("layer exists");
+        let lkv = contiguous_layer(&cache, 0);
         assert_eq!(
             token_row_values(&lkv.k, HD),
             vec![8.0, 9.0, 3.0, 4.0, 5.0, 6.0, 7.0]
@@ -2307,7 +2825,7 @@ mod tests {
         let v = tokens_f32(&[60.0, 70.0], HD);
         cache.append_with_retained_window(0, k, v, Some(4));
         cache.seq_len = 7;
-        let lkv = cache.layers[0].as_ref().expect("layer exists");
+        let lkv = contiguous_layer(&cache, 0);
         assert_eq!(
             token_row_values(&lkv.k, HD),
             vec![0.0, 2.0, 3.0, 4.0, 5.0, 60.0, 70.0]
@@ -2449,7 +2967,7 @@ mod tests {
             let k = tokens_f32(&step.values, HD);
             let v = tokens_f32(&step.values, HD);
             plain_cache.append_with_retained_window(0, k, v, None);
-            let plain = plain_cache.layers[0].as_ref().expect("layer exists");
+            let plain = contiguous_layer(&plain_cache, 0);
             let write_end = (write_start + seq) as i32;
             let ones = [1i32, 1, 1, 1];
             let ordered_k = slice(
@@ -2525,8 +3043,12 @@ mod tests {
     }
 
     fn host_f32(arr: &MlxArray) -> Vec<f32> {
-        eval(&[arr]);
-        arr.data_f32().to_vec()
+        // Materialize a tight C-contiguous buffer first: `data_f32` on a
+        // lazy slice of an over-allocated KV buffer can otherwise surface
+        // capacity padding and break token-exact comparisons.
+        let tight = contiguous(arr, None);
+        eval(&[&tight]);
+        tight.data_f32().to_vec()
     }
 
     #[test]
@@ -2555,7 +3077,7 @@ mod tests {
         let v0 = build_fa_array_f32(seq_len, 2, 8);
         let k1 = build_fa_array_f32(seq_len, 4, 16);
         let v1 = build_fa_array_f32(seq_len, 4, 16);
-        cache.layers[0] = Some(LayerKV {
+        cache.layers[0] = Some(FaLayerStorage::Contiguous(LayerKV {
             last_k_view: None,
             last_v_view: None,
             n_kv_heads: 2,
@@ -2565,8 +3087,8 @@ mod tests {
             dtype: MlxDtype::Float32,
             k: k0,
             v: v0,
-        });
-        cache.layers[1] = Some(LayerKV {
+        }));
+        cache.layers[1] = Some(FaLayerStorage::Contiguous(LayerKV {
             last_k_view: None,
             last_v_view: None,
             n_kv_heads: 4,
@@ -2576,7 +3098,7 @@ mod tests {
             dtype: MlxDtype::Float32,
             k: k1,
             v: v1,
-        });
+        }));
         cache.seq_len = seq_len;
         cache.growth_count = 7;
 
@@ -2586,8 +3108,8 @@ mod tests {
         assert_eq!(restored.seq_len, seq_len);
         assert_eq!(restored.growth_count, 7);
         for layer in 0..2 {
-            let orig = cache.layers[layer].as_ref().unwrap();
-            let back = restored.layers[layer].as_ref().expect("layer present");
+            let orig = contiguous_layer(&cache, layer);
+            let back = contiguous_layer(&restored, layer);
             assert_eq!(back.n_kv_heads, orig.n_kv_heads);
             assert_eq!(back.head_dim, orig.head_dim);
             assert_eq!(back.capacity, orig.capacity);
@@ -2831,7 +3353,7 @@ mod tests {
             ),
             None,
         ));
-        cache.layers[0] = Some(LayerKV {
+        cache.layers[0] = Some(FaLayerStorage::Contiguous(LayerKV {
             last_k_view: None,
             last_v_view: None,
             n_kv_heads,
@@ -2841,13 +3363,13 @@ mod tests {
             dtype: MlxDtype::Float32,
             k,
             v,
-        });
+        }));
         cache.seq_len = seq_len;
 
         let trimmed_bytes = cache.serialize_to_bytes();
         let restored = MlxKVCache::try_deserialize_from_bytes(&trimmed_bytes).expect("round-trip");
         assert_eq!(restored.seq_len, seq_len);
-        let restored_layer = restored.layers[0].as_ref().expect("layer restored");
+        let restored_layer = contiguous_layer(&restored, 0);
         assert_eq!(
             restored_layer.capacity, seq_len,
             "restored capacity must equal the logical length, not the source capacity"
@@ -2904,12 +3426,12 @@ mod tests {
             cache.append_with_retained_window(0, k, v, Some(4));
             cache.seq_len = t + 1;
         }
-        let expected_slots = token_row_values(&cache.layers[0].as_ref().unwrap().k, HD);
+        let expected_slots = token_row_values(&contiguous_layer(&cache, 0).k, HD);
         assert_eq!(expected_slots, vec![8.0, 9.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
 
         let restored = MlxKVCache::try_deserialize_from_bytes(&cache.serialize_to_bytes())
             .expect("round-trip");
-        let lkv = restored.layers[0].as_ref().expect("layer restored");
+        let lkv = contiguous_layer(&restored, 0);
         assert_eq!(lkv.rotating_window, Some(4), "ring window must survive");
         assert_eq!(lkv.capacity, 7, "ring capacity must survive");
         assert_eq!(restored.rotating_sliding_slack(), 3, "slack re-latched");
@@ -2926,7 +3448,7 @@ mod tests {
         let v = tokens_f32(&[10.0], HD);
         restored.append_with_retained_window(0, k, v, Some(4));
         restored.seq_len = 10;
-        let lkv = restored.layers[0].as_ref().unwrap();
+        let lkv = contiguous_layer(&restored, 0);
         assert_eq!(lkv.capacity, 7, "restored ring must not regrow");
         assert_eq!(
             token_row_values(&lkv.k, HD),
@@ -2981,7 +3503,7 @@ mod tests {
             let mut cache = MlxKVCache::new(1);
             let k = build_fa_array_f32(seq_len, n_kv_heads, head_dim);
             let v = build_fa_array_f32(seq_len, n_kv_heads, head_dim);
-            cache.layers[0] = Some(LayerKV {
+            cache.layers[0] = Some(FaLayerStorage::Contiguous(LayerKV {
                 last_k_view: None,
                 last_v_view: None,
                 n_kv_heads,
@@ -2991,12 +3513,12 @@ mod tests {
                 dtype: MlxDtype::Float32,
                 k,
                 v,
-            });
+            }));
             cache.seq_len = seq_len;
             cache
         };
-        let expected_k = host_f32(&original.layers[0].as_ref().unwrap().k);
-        let expected_v = host_f32(&original.layers[0].as_ref().unwrap().v);
+        let expected_k = host_f32(&contiguous_layer(&original, 0).k);
+        let expected_v = host_f32(&contiguous_layer(&original, 0).v);
 
         let restored = {
             let bytes = original.serialize_to_bytes();
@@ -3007,9 +3529,154 @@ mod tests {
         // Read the restored tensors AFTER the input buffer has been
         // dropped. If `read_tensor` had borrowed the slice, this would
         // be UB; the managed-data + heap-owned pattern keeps it sound.
-        let restored_k = host_f32(&restored.layers[0].as_ref().unwrap().k);
-        let restored_v = host_f32(&restored.layers[0].as_ref().unwrap().v);
+        let restored_k = host_f32(&contiguous_layer(&restored, 0).k);
+        let restored_v = host_f32(&contiguous_layer(&restored, 0).v);
         assert_eq!(restored_k, expected_k);
         assert_eq!(restored_v, expected_v);
+    }
+
+    // ── PR4 FA block-pool path: token-exact oracle vs contiguous ──
+
+    fn fa_token_values(seq_len: usize, n_kv_heads: i32, head_dim: i32, base: f32) -> MlxArray {
+        let total = (n_kv_heads as usize) * seq_len * (head_dim as usize);
+        let data: Vec<f32> = (0..total).map(|i| base + (i as f32) * 0.01).collect();
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[1, n_kv_heads, seq_len as i32, head_dim],
+            MlxDtype::Float32,
+        )
+    }
+
+    #[test]
+    fn fa_paged_append_trim_oracle_matches_contiguous() {
+        // block_size=4 so multi-block growth + partial last block exercise
+        // materialize and free_blocks_beyond.
+        let config = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 32,
+        };
+        let mut paged = MlxKVCache::new_with_fa_block_pool(1, config);
+        let mut contig = MlxKVCache::new_contiguous(1);
+        assert!(paged.fa_block_pool_enabled());
+        assert!(!contig.fa_block_pool_enabled());
+
+        let steps: &[(usize, f32)] = &[(3, 1.0), (5, 2.0), (1, 3.0), (6, 4.0)];
+        let n_kv_heads = 2i32;
+        let head_dim = 4i32;
+        let mut seq = 0usize;
+        for &(n, base) in steps {
+            let k = fa_token_values(n, n_kv_heads, head_dim, base);
+            let v = fa_token_values(n, n_kv_heads, head_dim, base + 0.5);
+            let (pk, pv) = paged.append(0, k.clone(), v.clone());
+            let (ck, cv) = contig.append(0, k, v);
+            seq += n;
+            paged.advance(n);
+            contig.advance(n);
+            eval(&[&pk, &pv, &ck, &cv]);
+            assert_eq!(
+                host_f32(&pk),
+                host_f32(&ck),
+                "K mismatch after append to {seq}"
+            );
+            assert_eq!(
+                host_f32(&pv),
+                host_f32(&cv),
+                "V mismatch after append to {seq}"
+            );
+            assert_eq!(pk.shape(), ck.shape());
+        }
+
+        // Trim into the middle of a block; trailing full blocks free.
+        assert!(paged.trim_to(7));
+        assert!(contig.trim_to(7));
+        let (pk, pv) = paged.logical_layer_kv(0).expect("paged layer");
+        let (ck, cv) = contig.logical_layer_kv(0).expect("contig layer");
+        eval(&[&pk, &pv, &ck, &cv]);
+        assert_eq!(host_f32(&pk), host_f32(&ck), "K mismatch after trim_to(7)");
+        assert_eq!(host_f32(&pv), host_f32(&cv), "V mismatch after trim_to(7)");
+
+        // Re-append after trim overwrites the trimmed region.
+        let k = fa_token_values(3, n_kv_heads, head_dim, 9.0);
+        let v = fa_token_values(3, n_kv_heads, head_dim, 9.5);
+        let (pk, pv) = paged.append(0, k.clone(), v.clone());
+        let (ck, cv) = contig.append(0, k, v);
+        paged.advance(3);
+        contig.advance(3);
+        eval(&[&pk, &pv, &ck, &cv]);
+        assert_eq!(host_f32(&pk), host_f32(&ck), "K mismatch after re-append");
+        assert_eq!(host_f32(&pv), host_f32(&cv), "V mismatch after re-append");
+
+        // Serialize materializes dense; round-trip matches contiguous values.
+        let paged_bytes = paged.serialize_to_bytes();
+        let contig_bytes = contig.serialize_to_bytes();
+        // Growth counts may differ (block vs chunk grow), so compare tensors
+        // rather than full wire equality.
+        let p_restored =
+            MlxKVCache::try_deserialize_from_bytes(&paged_bytes).expect("paged serialize");
+        let c_restored =
+            MlxKVCache::try_deserialize_from_bytes(&contig_bytes).expect("contig serialize");
+        assert_eq!(p_restored.seq_len(), c_restored.seq_len());
+        assert_eq!(
+            host_f32(&contiguous_layer(&p_restored, 0).k),
+            host_f32(&contiguous_layer(&c_restored, 0).k)
+        );
+        assert_eq!(
+            host_f32(&contiguous_layer(&p_restored, 0).v),
+            host_f32(&contiguous_layer(&c_restored, 0).v)
+        );
+        assert!(!p_restored.fa_block_pool_enabled());
+    }
+
+    #[test]
+    fn fa_paged_pool_exhaustion_is_fail_closed() {
+        let config = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 2, // only 8 tokens of capacity
+        };
+        let mut cache = MlxKVCache::new_with_fa_block_pool(1, config);
+        let k = fa_token_values(8, 1, 4, 1.0);
+        let v = fa_token_values(8, 1, 4, 2.0);
+        let _ = cache.append(0, k, v);
+        cache.advance(8);
+        assert_eq!(cache.fa_block_pool_available(), Some(0));
+
+        let k2 = fa_token_values(1, 1, 4, 3.0);
+        let v2 = fa_token_values(1, 1, 4, 4.0);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cache.append(0, k2, v2);
+        }));
+        assert!(
+            result.is_err(),
+            "append beyond max_blocks must fail closed (panic) rather than grow unbounded"
+        );
+    }
+
+    #[test]
+    fn fa_paged_clone_diverges_without_double_free() {
+        let config = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 16,
+        };
+        let mut a = MlxKVCache::new_with_fa_block_pool(1, config);
+        let k = fa_token_values(5, 1, 4, 1.0);
+        let v = fa_token_values(5, 1, 4, 2.0);
+        let _ = a.append(0, k, v);
+        a.advance(5);
+        let b = a.clone();
+        assert!(a.trim_to(2));
+        // Clone must still hold its private blocks after source trim frees IDs.
+        let (bk, _) = b.logical_layer_kv(0).expect("clone layer");
+        eval(&[&bk]);
+        assert_eq!(bk.shape()[2], 5);
+        let k2 = fa_token_values(1, 1, 4, 9.0);
+        let v2 = fa_token_values(1, 1, 4, 9.5);
+        let (ak, _) = a.append(0, k2, v2);
+        a.advance(1);
+        eval(&[&ak]);
+        assert_eq!(ak.shape()[2], 3);
+        // Drop both; free lists must not double-free (pool drop is fine).
+        drop(a);
+        drop(b);
     }
 }

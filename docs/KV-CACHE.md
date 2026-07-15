@@ -582,22 +582,31 @@ per-request block-table allocation details.
 
 ---
 
-## FA Physical Block Pool Scaffold (PR4, default OFF)
+## FA Physical Block Pool (PR4, default OFF)
 
 Track C of
 [`docs/designs/kv-weak-surfaces-2026-07-14.md`](designs/kv-weak-surfaces-2026-07-14.md)
-introduces an FA-only private block allocator in
-`crates/ax-engine-mlx/src/kv_block_pool.rs`.
+introduces an FA-only private block path:
 
 | Item | Status |
 |---|---|
-| Pure allocator (`allocate` / `free`, fail-closed exhaustion) | Implemented |
-| Env opt-in `AX_MLX_FA_KV_BLOCK_POOL` | Present (default OFF); **not** yet wired into live decode |
-| Integration into `MlxKVCache` / SDPA materialize | Not yet — contiguous per-request buffers remain the production path |
+| Pure allocator (`FaBlockPool` in `kv_block_pool.rs`) | Implemented |
+| Env opt-in `AX_MLX_FA_KV_BLOCK_POOL` | Present (**default OFF**) |
+| Optional `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` | Default `8192` (131072 tokens at block size 16) |
+| Integration into `MlxKVCache` pure-FA append/trim | Implemented when flag/constructor enables a private pool |
+| SDPA / peek / serialize materialize dense K/V | Implemented (concat/gather into contiguous views) |
+| Sliding / rotating / MLA / linear layers | Stay contiguous even when the flag is on |
 | Cross-request sharing / MLA pairs | Out of scope until PR5+ |
 
-Do **not** claim memory savings or paged-attention performance from this
-scaffold alone.
+With the flag off (production default), all FA layers keep the historical
+contiguous per-request buffers. With the flag on, pure-FA layers store private
+fixed-size blocks and materialize dense `[1, n_kv_heads, T, head_dim]` views for
+SDPA; disk serialize still emits contiguous tensors (no I-2 format bump).
+
+Do **not** claim memory savings or paged-attention performance from this path
+alone — materialize cost may regress decode until sharing or native block kernels
+land. Token-exact oracle tests under `kv_cache::tests` compare paged vs
+contiguous append/trim/serialize.
 
 ## Key Invariants
 
