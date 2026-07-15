@@ -1,5 +1,12 @@
 # FAQ
 
+Common questions about hardware, model choice, runtime paths, and performance
+boundaries.
+
+**Related:** [Getting Started](GETTING-STARTED.md) ·
+[Supported Models](SUPPORTED-MODELS.md) ·
+[Performance Docs Map](performance/README.md) · [Docs hub](README.md)
+
 ## What hardware does AX Engine support?
 
 AX Engine targets high-memory Apple Silicon Macs running macOS 26 (Tahoe) or
@@ -98,7 +105,7 @@ Model references: [Gemma 4](https://deepmind.google/models/gemma/gemma-4/),
 
 AX Engine v6 is the current serving-oriented runtime line. The active serving
 roadmap and evidence gates live in
-[`docs/ROADMAP.md`](ROADMAP.md).
+[Roadmap](ROADMAP.md).
 
 ## Why does the repo-owned MLX runtime require M2 Max or newer?
 
@@ -142,7 +149,8 @@ Important pieces:
 - **Memory policy**: `mlx_set_wired_limit(recommendedMaxWorkingSetSize)` wires
   model weights into GPU memory at startup, reducing paging between requests.
 
-See `docs/SCHEDULER.md`, `docs/KV-CACHE.md`, and `docs/LONG-CONTEXT.md` for
+See [Scheduler](SCHEDULER.md), [KV Cache](KV-CACHE.md), and
+[Long Context](LONG-CONTEXT.md) for
 the deeper design contract.
 
 ## Why can N-gram acceleration have little or no effect?
@@ -200,9 +208,10 @@ MLX artifact and need AX-owned runtime behavior or performance evidence. Use
 adapter or external reference path; unsupported model families fail closed by
 default.
 
-If you are not sure, start with `docs/GETTING-STARTED.md` and then check
-`docs/SUPPORTED-MODELS.md` and `docs/MODEL-SUPPORT-POLICY.md` before
-interpreting benchmark numbers.
+If you are not sure, start with [Getting Started](GETTING-STARTED.md) and then
+check [Supported Models](SUPPORTED-MODELS.md) and
+[Model Support Policy](MODEL-SUPPORT-POLICY.md) before interpreting benchmark
+numbers.
 
 ## Does `mlx_lm_delegated` count as repo-owned MLX performance?
 

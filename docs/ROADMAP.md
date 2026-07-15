@@ -13,7 +13,7 @@ Active plan for remaining KV weak surfaces (MLA cold throughput recovery,
 fair multi-prefill progress, FA physical block-pool scaffold):
 [`docs/designs/kv-weak-surfaces-2026-07-14.md`](designs/kv-weak-surfaces-2026-07-14.md).
 
-The README summarizes the current product shape; this page carries active
+The root README summarizes the current product shape; this page carries active
 serving direction and evidence gates.
 
 ## Serving Runtime Tracks
@@ -40,5 +40,7 @@ checked in and labeled with the right runtime path.
 | Serving behavior | `ax.serving_benchmark.v1` artifacts with TTFT, TPOT, E2E latency, queue delay, throughput, category summaries, and SLO goodput |
 | Delegated compatibility | Explicit `mlx_lm_delegated` or `llama_cpp` route-contract artifacts, not AX-owned MLX throughput claims |
 
-See [`BENCHMARKS.md`](BENCHMARKS.md), [`PERFORMANCE.md`](PERFORMANCE.md), and
+See [`BENCHMARKS.md`](BENCHMARKS.md),
+[`PERFORMANCE-RESULTS.md`](PERFORMANCE-RESULTS.md),
+[`PERFORMANCE.md`](PERFORMANCE.md), and
 [`SERVING-BENCHMARKS.md`](SERVING-BENCHMARKS.md) for the benchmark contracts.

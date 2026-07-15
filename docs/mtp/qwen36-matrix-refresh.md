@@ -1,7 +1,7 @@
 # Qwen3.6 AX-only Multi-Suite MTP Results
 
 This page keeps the 2026-06-29 AX Engine-only Qwen3.6 pure-MTP result table
-that used to live in the README. It is an artifact archive for comparing AX
+that used to live in the root README. It is an artifact archive for comparing AX
 Engine across prompt suites, not a front-page session or cross-engine
 leaderboard. The README keeps only the current peer decode view and links here
 for regression review.

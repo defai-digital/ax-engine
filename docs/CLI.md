@@ -2,14 +2,18 @@
 
 AX Engine currently exposes four command surfaces:
 
-- `ax-engine` for common local serving workflows. It is the recommended entrypoint
-  for starting a local server and preparing supported MTP artifacts.
-- `ax-engine-server` for the backward-compatible low-level HTTP/gRPC server
-  process when callers need explicit runtime flags.
-- `ax-engine-bench` for workload contracts, readiness, bounded autotune, Metal
-  build checks, and thin direct SDK inference helpers.
-- `scripts/bench_mlx_inference_stack.py` for repo-owned MLX runtime
-  model-inference comparison against MLX-family references.
+- `ax-engine` — recommended entrypoint for local serving, downloads, and MTP
+  package prep (`serve`, `download`, `download-mtp`, `tui`, `doctor`)
+- `ax-engine-server` — low-level HTTP/gRPC server when you need explicit runtime
+  flags
+- `ax-engine-bench` — workload contracts, readiness, bounded autotune, Metal
+  build checks, and thin direct SDK inference helpers
+- `scripts/bench_mlx_inference_stack.py` — repo-owned MLX model-inference
+  comparison against MLX-family references
+
+**Related:** [Getting Started](GETTING-STARTED.md) ·
+[Supported Models](SUPPORTED-MODELS.md) · [Server](SERVER.md) ·
+[Benchmarks](BENCHMARKS.md)
 
 ## `ax-engine`
 
@@ -122,7 +126,7 @@ cargo run -p ax-engine-bench --bin ax-engine -- tui
 Embed in Markdown:
 
 ```markdown
-![AX Engine TUI](docs/assets/tui-demo.gif)
+![AX Engine TUI](assets/tui-demo.gif)
 ```
 
 `download` wraps the same workflow as `scripts/download_model.py`: download

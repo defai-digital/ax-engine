@@ -6,6 +6,10 @@ paths for migration, validation, or external reference rows. The path matters
 because it defines who runs the model graph, which API features are available,
 and what benchmark claims are allowed.
 
+**Related:** [Getting Started](GETTING-STARTED.md) · [CLI](CLI.md) ·
+[Model Support Policy](MODEL-SUPPORT-POLICY.md) · [MTP Docs](mtp/README.md) ·
+[FAQ](FAQ.md)
+
 | Path | Use it for | Who runs the model | What the result means |
 | --- | --- | --- | --- |
 | Direct support | Model families with a repo-owned `ax-engine-mlx` graph | AX Engine on MLX | AX-owned token/KV/runtime behavior; performance claims still require benchmark artifacts |
@@ -256,7 +260,7 @@ means implementing the model graph, not wiring up a generic loader.
 
 Architecture code alone is not a certified performance claim. Secondary
 families ship as **preview direct** with download aliases and chat fallbacks;
-public README tok/s tables remain focused on primary Gemma/Qwen evidence until
+public performance tok/s tables remain focused on primary Gemma/Qwen evidence until
 paired benchmark artifacts exist. Mixtral, DeepSeek full, and unlisted
 Gemma/Qwen variants stay unsupported by default. Use `mlx_lm_delegated` or
 `llama_cpp` only when the caller explicitly wants a compatibility adapter.

@@ -1,24 +1,26 @@
 # Benchmarks
 
-This page is the benchmark methodology and setup reference. It explains which
-tools to run, how tests are configured, what artifacts are produced, and how AX
-classifies evidence across repo-owned MLX, delegated `mlx_lm`, delegated
-llama.cpp, serving, and workload-contract paths.
+Benchmark methodology and setup reference: which tools to run, how tests are
+configured, what artifacts are produced, and how AX classifies evidence across
+repo-owned MLX, delegated `mlx_lm`, delegated llama.cpp, serving, and
+workload-contract paths.
 
-For the performance docs map and public claim-boundary policy, start with
-[`performance/README.md`](performance/README.md).
+| Need | Read |
+| --- | --- |
+| Claim boundaries | [Performance Docs Map](performance/README.md) |
+| Published tables and charts | [Performance Results](PERFORMANCE-RESULTS.md) |
+| Interpretation | [Performance](PERFORMANCE.md) |
+| Workload-contract design | [Benchmark Design](BENCH-DESIGN.md) |
 
 The root `README.md` keeps headline MTP takeaways only. Full session-mode
-tables and charts live in [`PERFORMANCE-RESULTS.md`](PERFORMANCE-RESULTS.md).
-Claim boundaries and interpretation live in
-[`PERFORMANCE.md`](PERFORMANCE.md). The current results snapshot is a
-provenance-tracked composite, not one same-session run: `mlx_lm` reference
-rows, AX direct overlays from the 2026-07 refreshes, the 2026-07-08 llama.cpp
+tables and charts live in [Performance Results](PERFORMANCE-RESULTS.md). The
+current results snapshot is a provenance-tracked composite, not one
+same-session run: `mlx_lm` reference rows, AX direct overlays, the llama.cpp
 Metal sweep, AX 6-bit MTP package rows, Qwen3.6 peer MTP rows, and embedding
-ingest-scale rows are each labeled by session mode in the results provenance
-text. Older result sets, including n-gram overlay runs, remain useful
-diagnostic history, but they should not be described as the current public
-results table unless that page is rolled back to those artifacts.
+ingest-scale rows are each labeled by session mode. Older result sets,
+including n-gram overlay runs, remain diagnostic history and should not be
+described as the current public results table unless that page is rolled back
+to those artifacts.
 
 A result is useful only when the workload, runtime route, reference engine,
 host, model, sampling policy, and artifact schema are explicit.
@@ -93,7 +95,7 @@ arrival testing; otherwise the harness runs closed-loop concurrency.
 The checked-in smoke corpus at `benchmarks/corpora/serving/smoke.jsonl` is a
 harness validation corpus, not a production claim. Public serving claims should
 use a larger corpus with a published prompt-mix table. See
-`docs/SERVING-BENCHMARKS.md` for the full contract and rollout plan.
+[SERVING-BENCHMARKS.md](SERVING-BENCHMARKS.md) for the full contract and rollout plan.
 
 ## MTP Matrix
 
@@ -285,7 +287,7 @@ counters. The provenance checker recalculates this classification from the raw
 counters and rejects artifacts whose flags, coverage label, or blocked-reason
 totals are inconsistent.
 
-The README performance provenance checker treats `prefix_reuse` as a public
+The performance provenance checker treats `prefix_reuse` as a public
 claim only when the artifact includes physical snapshot hit evidence. Artifacts
 classified as `none_observed`, `blocked_only`, or `miss_warmup_only` can still
 be useful diagnostics, but they do not prove a physical prefix-cache reuse
@@ -299,7 +301,7 @@ model:
 python3 scripts/check_mlx_prefill_claim_cycle.py
 ```
 
-This aggregate gate always runs the README public/narrative checker. Current
+This aggregate gate always runs the public results / narrative checker. Current
 P1 long-context, P2 concurrent-prefill, and W4 forward-profile artifacts can be
 supplied with `--prefill-scaling-artifact`, `--concurrent-prefill-artifact`,
 and `--forward-profile-artifact`; omitted boundaries are reported as skipped

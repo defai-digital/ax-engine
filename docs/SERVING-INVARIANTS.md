@@ -47,7 +47,7 @@ Any mismatch falls back to recomputation; partial trust is forbidden.
 
 FFI calls into MLX through `ax_shim` carry assumptions about which stream is active and
 which thread owns the in-flight evaluation. AX Engine documents and audits
-those assumptions in `crates/mlx-sys/src/stream.rs` and `docs/MLX-BACKEND.md`,
+those assumptions in `crates/mlx-sys/src/stream.rs` and [MLX-BACKEND.md](MLX-BACKEND.md),
 and adds regression probes for the known cross-thread `eval` /
 `clear_cache` / buffer-read failure class.
 
@@ -113,7 +113,7 @@ fields per row: `ax_decode_claim_status` (fallback / promotion state) and
 `ax_decode_claim_mode` (correctness mode). The same-policy greedy gate in
 `crates/ax-engine-bench/src/harness/ngram_claim_gate.rs` decides whether
 two paired rows can be promoted as a single greedy-exact claim — see
-`docs/NGRAM-ACCELERATION.md` for the full taxonomy.
+[NGRAM-ACCELERATION.md](NGRAM-ACCELERATION.md) for the full taxonomy.
 
 Sampling-mode rows may report throughput and acceptance telemetry, but
 **must not be labeled distribution-exact**. The promotion gate in

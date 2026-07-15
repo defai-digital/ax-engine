@@ -1,7 +1,12 @@
 # Server
 
-`ax-engine-server` is the first thin access layer built on top of
-`ax-engine-sdk`.
+`ax-engine-server` is the local HTTP access layer on top of `ax-engine-sdk`.
+For normal end-user serving, prefer `ax-engine serve …`; use
+`ax-engine-server` when you need explicit runtime flags.
+
+**Related:** [Getting Started](GETTING-STARTED.md) · [CLI](CLI.md) ·
+[API Compatibility](API-COMPATIBILITY.md) · [SDK Docs](sdk/README.md) ·
+[LAN Discovery](LAN-DISCOVERY.md)
 
 ## Current Scope
 
@@ -479,7 +484,7 @@ python -m ax_engine.openai_server \
 
 Install the optional server dependencies with `pip install 'ax-engine[openai]'`.
 
-See `docs/API-COMPATIBILITY.md` for the exact OpenAI-shaped endpoint matrix,
+See [API Compatibility](API-COMPATIBILITY.md) for the exact OpenAI-shaped endpoint matrix,
 including supported request fields, runtime paths, and non-goals such as tool
 calling.
 

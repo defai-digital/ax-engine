@@ -8,6 +8,9 @@ Rust stack. The goal is to keep the execution core lean, keep transport and
 serialization concerns at the edges, and make observability and error handling
 consistent across the workspace.
 
+**Related:** [Scheduler](SCHEDULER.md) · [KV Cache](KV-CACHE.md) ·
+[MLX Backend](MLX-BACKEND.md) · [Server](SERVER.md) · [Roadmap](ROADMAP.md)
+
 ## Current Crate Layers
 
 - `ax-engine-core`: request lifecycle, scheduler, KV cache, runner integration,

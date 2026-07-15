@@ -348,7 +348,7 @@ ground truth.
 
 ## Related artifacts
 
-- README bandwidth table and headroom note: `README.md:684-698`
+- Bandwidth table and headroom note: [Performance Results](../PERFORMANCE-RESULTS.md) (Qwen Coder Next / related diagnostic sections)
 - MoE expert forward: `crates/ax-engine-mlx/src/model/shared/mlp.rs:1493-1591`
 - Router: `crates/ax-engine-mlx/src/model/shared/mlp.rs:1127-1155`
 - Shared expert: `crates/ax-engine-mlx/src/model/shared/mlp.rs:1048-1095`

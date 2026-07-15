@@ -1,12 +1,22 @@
 # Performance Results
 
-Public result tables and charts for AX Engine. This page is the canonical home
-for session-mode evidence (MTP, direct generation, embeddings). Claim-boundary
-policy lives in [`performance/README.md`](performance/README.md); methodology
-and reproduction live in [`BENCHMARKS.md`](BENCHMARKS.md); interpretation notes
-live in [`PERFORMANCE.md`](PERFORMANCE.md).
+Canonical public **tables and charts** for AX Engine, grouped by session mode.
 
-The root [README](../README.md) keeps only headline takeaways and links here.
+| Need | Read |
+| --- | --- |
+| Claim boundaries and promotion rules | [Performance Docs Map](performance/README.md) |
+| How to interpret a row / what it does not prove | [Performance](PERFORMANCE.md) |
+| How to reproduce or classify evidence | [Benchmarks](BENCHMARKS.md) |
+| Root README peer charts (MTP + direct) | [Root README: Performance](../README.md#performance) |
+
+## On this page
+
+- [Session Mode: MTP Generation](#session-mode-mtp-generation)
+- [Session Mode: Direct Generation](#session-mode-direct-generation)
+- [Session Mode: Embeddings](#session-mode-embeddings)
+
+Do not compare rows across modes unless the text says they share a same-artifact
+denominator.
 
 > [!IMPORTANT]
 > **MLX runtime admission: verify the resolved build, not only its version.**
@@ -150,7 +160,7 @@ python3 scripts/bench_qwen36_mtp_matrix.py --execute
 For production-like AX Engine guidance, use the 6-bit lane. The 4-bit lane is
 published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
-debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
+debugging regressions, but they are not current PERFORMANCE-RESULTS / PERFORMANCE MTP evidence.
 
 #### AX Engine v6.8.2 6-bit exact sampled-MTP acceleration (2026-07-13)
 
@@ -197,7 +207,7 @@ Exactness is checked with per-mode seed reproducibility. Summary artifacts:
 
 #### Qwen3.6 MTP peer decode comparison (2026-07-09)
 
-README keeps only the decode-throughput view for the Qwen3.6 MTP peer
+This page keeps only the decode-throughput view for the Qwen3.6 MTP peer
 comparison because decode is the closest comparable metric across AX Engine,
 MTPLX, and lightning-mlx. The full benchmark page explains why prefill, TTFT,
 accept rate, seed policy, model-artifact identity, and output-degeneracy checks
@@ -256,7 +266,7 @@ For the older AX-only Qwen3.6 table across `flappy`, `long_code`, and
 `python_modules_long`, see
 [`mtp/qwen36-matrix-refresh.md`](mtp/qwen36-matrix-refresh.md). That
 table is useful for prompt-suite regression review, but it is not a separate
-README headline result.
+root-README headline result.
 
 Rapid-MLX is intentionally not promoted in this table: it starts with the
 shared Qwen3.6 artifacts but skips MTP installation for this generation flow, so
@@ -317,8 +327,8 @@ accept-rate or speedup measurements.
 
 No current-head, matrix-wide direct peer comparison is published. The recent
 prefill work produced useful targeted diagnostics, but the final clean paired
-sweep did not complete; those numbers are intentionally excluded from README
-tables and charts.
+sweep did not complete; those numbers are intentionally excluded from the public results tables
+and charts.
 
 | Evidence set | Coverage | Public interpretation |
 | --- | --- | --- |
@@ -566,7 +576,7 @@ published here.
 | 512 | 109.6 tok/s | 2,794.0 tok/s | 2,520 ms | 17 | 256 tokens |
 | 2048 | 163.5 tok/s | 3,922.3 tok/s | 2,089 ms | 11 | 256 tokens |
 
-The 2026-07-08 refresh is faster than the prior 2026-07-05 README artifact on
+The 2026-07-08 refresh is faster than the prior 2026-07-05 results artifact on
 all published DiffusionGemma metrics: first-block decode improved by
 **+7.5% / +5.1% / +16.7%** at 128 / 512 / 2048 prompt tokens, time to first
 block dropped by **7.0% / 4.8% / 11.4%**, and prefill rose by
@@ -624,12 +634,12 @@ detailed inside the archive, with generation=128 and the 2-warmup,
 <details>
 <summary>Historical row-level tables and provenance</summary>
 
-The canonical README AX source projection for this refresh is
+The canonical published AX source projection for this refresh is
 `benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-readme/`;
 its symlinks point to raw AX-only artifacts and preserve historical sources for
 rows not replaced by the 2026-07-11 sweep.
 
-The `mlx_lm` reference rows for the Gemma 4 rows shown below come from `benchmarks/results/inference/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The refreshed Gemma 4 4-bit AX direct-mode cells come from `benchmarks/results/inference/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/`, which reran AX Engine only for Gemma 4 E2B/E4B/26B/31B at 128/512/2048 prompt tokens with 5 repetitions, 1 warmup, and a 15 s cooldown. Those artifacts record benchmark build commit `d4c59ffc` and `git_tracked_dirty: false`. The Gemma 4 26B A4B 4-bit decode cells are raised by the AX-only 2026-07-07 refresh in `benchmarks/results/inference/mlx-inference/2026-07-07-gemma4-26b-4bit-ax-direct-refresh-gen128/`, a clean `ax-engine-server` build at commit `194a235a` with 2 warmups, 5 measured repetitions, generation=128, and a 15 s cooldown; README high-water merging only publishes the decode medians from that overlay because its prefill and TTFT medians do not beat the earlier 2026-07-01 record. The Gemma 4 26B A4B and 31B 6-bit rows (both the `mlx_lm` and AX cells) come from the same-session paired rerun in `benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/`, which ran `mlx_lm.benchmark` and AX Engine back-to-back per model on a clean build at commit `4c0a8358` with the same 5-repetition, 1-warmup, 15 s-cooldown contract; the earlier `mlx_lm`-only 6-bit spot rows in `benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/` are retained as historical reference. The Gemma 4 E2B/E4B 6-bit AX cells come from the ax-engine-only rerun in `benchmarks/results/inference/mlx-inference/2026-07-05-gemma4-e2b-e4b-6bit-ax-refresh-r2/`, a clean `ax-engine-server` build at commit `6f2e6cd7` with the same 5-repetition, 1-warmup, 15 s-cooldown contract; these rows are AX-only because `mlx-lm` 0.31.3 cannot strict-load either E-series 6-bit checkpoint (see the shared-KV note below), so the E2B 6-bit `mlx_lm` reference cells are retained from the 2026-05-26 refresh. The Qwen 3.6 `mlx_lm` reference rows come from `benchmarks/results/inference/mlx-inference/2026-06-26-qwen36-direct-refresh/`; the published Qwen 3.6 AX cells combine earlier high-water overlays with the AX-only 2026-07-07 refresh in `benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-qwen-publishable/`, a clean `ax-engine-server` build at commit `f73f1ac2` with 2 warmups, 5 measured repetitions, and a 15 s cooldown. The 2026-07-07 Qwen overlay contains condition-checked 4/6-bit rerun rows, but README high-water merging only publishes cells that match or improve the prior record; lower rerun cells keep the earlier faster artifact. The overlay replaces the original 35B-A3B 6-bit continuation row because its recorded load average exceeded the README publication limit. Current install docs and package metadata track v6.8.2; each benchmark artifact's `build.commit` records the exact measured build SHA. The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json` and the full llama.cpp-only rerun in `benchmarks/results/inference/llama-cpp-metal/2026-07-08-llama-cpp-only-rerun/`, which reran all 12 Gemma 4 + Qwen 3.6 rows (llama.cpp b9910, Metal, flash-attn, `-b/-ub` matched to prompt length, decode measured at matched context depth).
+The `mlx_lm` reference rows for the Gemma 4 rows shown below come from `benchmarks/results/inference/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The refreshed Gemma 4 4-bit AX direct-mode cells come from `benchmarks/results/inference/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/`, which reran AX Engine only for Gemma 4 E2B/E4B/26B/31B at 128/512/2048 prompt tokens with 5 repetitions, 1 warmup, and a 15 s cooldown. Those artifacts record benchmark build commit `d4c59ffc` and `git_tracked_dirty: false`. The Gemma 4 26B A4B 4-bit decode cells are raised by the AX-only 2026-07-07 refresh in `benchmarks/results/inference/mlx-inference/2026-07-07-gemma4-26b-4bit-ax-direct-refresh-gen128/`, a clean `ax-engine-server` build at commit `194a235a` with 2 warmups, 5 measured repetitions, generation=128, and a 15 s cooldown; publication high-water merging only publishes the decode medians from that overlay because its prefill and TTFT medians do not beat the earlier 2026-07-01 record. The Gemma 4 26B A4B and 31B 6-bit rows (both the `mlx_lm` and AX cells) come from the same-session paired rerun in `benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/`, which ran `mlx_lm.benchmark` and AX Engine back-to-back per model on a clean build at commit `4c0a8358` with the same 5-repetition, 1-warmup, 15 s-cooldown contract; the earlier `mlx_lm`-only 6-bit spot rows in `benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/` are retained as historical reference. The Gemma 4 E2B/E4B 6-bit AX cells come from the ax-engine-only rerun in `benchmarks/results/inference/mlx-inference/2026-07-05-gemma4-e2b-e4b-6bit-ax-refresh-r2/`, a clean `ax-engine-server` build at commit `6f2e6cd7` with the same 5-repetition, 1-warmup, 15 s-cooldown contract; these rows are AX-only because `mlx-lm` 0.31.3 cannot strict-load either E-series 6-bit checkpoint (see the shared-KV note below), so the E2B 6-bit `mlx_lm` reference cells are retained from the 2026-05-26 refresh. The Qwen 3.6 `mlx_lm` reference rows come from `benchmarks/results/inference/mlx-inference/2026-06-26-qwen36-direct-refresh/`; the published Qwen 3.6 AX cells combine earlier high-water overlays with the AX-only 2026-07-07 refresh in `benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-qwen-publishable/`, a clean `ax-engine-server` build at commit `f73f1ac2` with 2 warmups, 5 measured repetitions, and a 15 s cooldown. The 2026-07-07 Qwen overlay contains condition-checked 4/6-bit rerun rows, but publication high-water merging only publishes cells that match or improve the prior record; lower rerun cells keep the earlier faster artifact. The overlay replaces the original 35B-A3B 6-bit continuation row because its recorded load average exceeded the publication limit. Current install docs and package metadata track v6.9.0; each benchmark artifact's `build.commit` records the exact measured build SHA. The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json` and the full llama.cpp-only rerun in `benchmarks/results/inference/llama-cpp-metal/2026-07-08-llama-cpp-only-rerun/`, which reran all 12 Gemma 4 + Qwen 3.6 rows (llama.cpp b9910, Metal, flash-attn, `-b/-ub` matched to prompt length, decode measured at matched context depth).
 
 Gemma 4 E4B 6-bit keeps the `mlx_lm` cells blank because `mlx_lm.benchmark` cannot load `mlx-community/gemma-4-e4b-it-6bit` with `mlx-lm` 0.31.3. The checkpoint config declares 42 language layers and `num_kv_shared_layers=18`, so the upstream Gemma4 text model builds K/V projections only for layers 0..23 and treats layers 24..41 as shared-KV layers. The MLX snapshot still contains 126 per-layer K/V tensors for layers 24..41 (`k_norm`, `k_proj`, and `v_proj` quantized weights), causing strict weight loading to fail with `Received 126 parameters not in model`. Source: `benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/summary.md`. The same strict-load failure now applies to `mlx-community/gemma-4-e2b-it-6bit` on `mlx-lm` 0.31.3 (140 extra tensors for shared-KV layers 15..34), which is why the 2026-07-05 E-series 6-bit refresh is AX-only and the E2B `mlx_lm` cells remain the retained 2026-05-26 measurements.
 
@@ -777,7 +787,7 @@ Qwen 3.6 direct-mode decode verdict: AX is faster against `mlx_lm` in every refr
 ### Session Mode: Embeddings
 
 Embedding sessions use a separate pooling route from text generation. Public
-README rows focus on sustained **batched** ingest workloads, where callers
+Public results rows focus on sustained **batched** ingest workloads, where callers
 embed many chunks and the fixed per-call cost can be amortized. Treat these
 rows as embedding throughput and latency evidence, not as direct or MTP decode
 evidence.

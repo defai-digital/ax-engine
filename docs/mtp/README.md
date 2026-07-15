@@ -51,8 +51,9 @@ and MTP accept rate.
 
 This lane exists to align with peer MTP-engine benchmark publications that use
 4-bit models. It is not the recommended AX Engine deployment setting. Keep
-artifacts in clearly labeled comparison directories and keep the README or
-PERFORMANCE text explicit that 6-bit remains the recommended practical lane.
+artifacts in clearly labeled comparison directories and keep
+[Performance Results](../PERFORMANCE-RESULTS.md) / [Performance](../PERFORMANCE.md)
+explicit that 6-bit remains the recommended practical lane.
 
 ### Out Of Scope
 

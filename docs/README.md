@@ -1,53 +1,59 @@
 # AX Engine Docs
 
-This is the public documentation hub for AX Engine. The docs are organized by
-task first, then by runtime area, so readers do not have to know the repository
-layout before choosing the right page.
+Task-first documentation for AX Engine: install, serve, integrate, measure, and
+extend the Mac-first Apple Silicon inference runtime.
 
-AX Engine is direct-first. Keep the path explicit when reading, benchmarking,
-or writing claims:
+## How To Read These Docs
 
-- repo-owned MLX runtime for supported Apple Silicon model families
-- explicit delegated `mlx_lm.server` compatibility for migration and validation
-- explicit delegated `llama.cpp` compatibility for GGUF/non-MLX checks and
-  external reference rows
+| Surface | What it is | Start here if you want… |
+| --- | --- | --- |
+| Root [README](../README.md) | Short product entry point | Install, first request, headline MTP numbers |
+| This hub | Navigation by task and area | The right deep page without guessing layout |
+| [Performance Results](PERFORMANCE-RESULTS.md) | Full public tables and charts | Numbers, charts, session-mode evidence |
+| [Performance](PERFORMANCE.md) | Interpretation and claim context | What a row does *and does not* prove |
+| [Benchmarks](BENCHMARKS.md) | How to run and classify evidence | Reproduction commands and artifact contracts |
+
+AX Engine is **direct-first**. Keep the path explicit when reading or claiming:
+
+- **Repo-owned MLX runtime** — supported Apple Silicon model families AX owns
+- **Delegated `mlx_lm.server`** — explicit migration / validation only
+- **Delegated `llama.cpp`** — GGUF / non-MLX checks and external reference rows
 
 ## Start By Task
 
 | Need | Start here | Then read |
 | --- | --- | --- |
-| Install AX Engine with pip and run the first request | [Getting Started](GETTING-STARTED.md) | [CLI](CLI.md), [Server](SERVER.md) |
-| Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [CLI](CLI.md#ax-engine) |
-| Decide whether a model family should be supported | [Model Support Policy](MODEL-SUPPORT-POLICY.md) | [Supported Models](SUPPORTED-MODELS.md) |
-| Use MTP or understand 4-bit vs 6-bit MTP results | [MTP Docs](mtp/README.md) | [Qwen3.6 MTP Peer Benchmark](mtp/qwen36-peer-comparison.md), [Performance](PERFORMANCE.md#mtp-mode), [Benchmarks](BENCHMARKS.md#mtp-matrix) |
-| Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md), [Benchmarks](BENCHMARKS.md) |
-| Run or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
-| Serve OpenAI-compatible or Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md) |
-| Use a language SDK | [SDK Docs](sdk/README.md) | The SDK page for your language |
-| Debug long context, prefix reuse, or KV behavior | [Long Context](LONG-CONTEXT.md) | [KV Cache](KV-CACHE.md), [Scheduler](SCHEDULER.md) |
-| Understand crate boundaries before changing code | [Architecture](ARCHITECTURE.md) | [Scheduler](SCHEDULER.md), [KV Cache](KV-CACHE.md) |
+| Install and run the first request | [Getting Started](GETTING-STARTED.md) | [CLI](CLI.md), [Server](SERVER.md) |
+| Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [CLI](CLI.md#ax-engine), [FAQ](FAQ.md) |
+| Decide whether a family should be supported | [Model Support Policy](MODEL-SUPPORT-POLICY.md) | [Supported Models](SUPPORTED-MODELS.md) |
+| Use MTP or compare 4-bit vs 6-bit rows | [MTP Docs](mtp/README.md) | [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Benchmarks: MTP](BENCHMARKS.md#mtp-matrix) |
+| Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md) |
+| Reproduce or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
+| Serve OpenAI / Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md) |
+| Integrate from an app or agent | [SDK Docs](sdk/README.md) | [Server](SERVER.md), [Local Engine Clients](LOCAL-ENGINE-CLIENTS.md) |
+| Debug long context, prefix reuse, or KV | [Long Context](LONG-CONTEXT.md) | [KV Cache](KV-CACHE.md), [Scheduler](SCHEDULER.md) |
+| Change code safely | [Architecture](ARCHITECTURE.md) | [Scheduler](SCHEDULER.md), [KV Cache](KV-CACHE.md) |
 
 ## Recommended Paths
 
-### New User
+### New user
 
 1. [Getting Started](GETTING-STARTED.md)
 2. [Supported Models](SUPPORTED-MODELS.md)
 3. [Server](SERVER.md)
-4. [SDK Docs](sdk/README.md), if you are integrating from an application
+4. [SDK Docs](sdk/README.md) (if integrating from an application)
 
-### MTP User Or Reviewer
+### MTP user or reviewer
 
 1. [Supported Models: MTP Downloads](SUPPORTED-MODELS.md#mtp-downloads)
 2. [MTP Docs](mtp/README.md)
-3. [Performance: MTP Mode](PERFORMANCE.md#mtp-mode)
+3. [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation)
 4. [Benchmarks: MTP Matrix](BENCHMARKS.md#mtp-matrix)
 
-The practical AX Engine recommendation is the 6-bit `download-mtp` lane. The
-4-bit lane is kept as clearly labeled comparison evidence because peer MTP
-engines often publish 4-bit benchmark rows.
+Prefer the **6-bit** `download-mtp` lane for practical AX usage. Keep **4-bit**
+rows as labeled comparison evidence for peer engines that publish 4-bit results.
 
-### Benchmark Reviewer
+### Benchmark reviewer
 
 1. [Performance Docs Map](performance/README.md)
 2. [Performance Results](PERFORMANCE-RESULTS.md)
@@ -55,87 +61,70 @@ engines often publish 4-bit benchmark rows.
 4. [Benchmarks](BENCHMARKS.md)
 5. [Benchmark Design](BENCH-DESIGN.md)
 
-Use this path when deciding whether a result is current public evidence,
-diagnostic history, or out of scope for a claim.
+Use this path to decide whether a result is current public evidence, diagnostic
+history, or out of scope for a claim.
 
-### API Or SDK Integrator
+### API or SDK integrator
 
 1. [Server](SERVER.md)
 2. [API Compatibility](API-COMPATIBILITY.md)
 3. [SDK Docs](sdk/README.md)
-4. [Getting Started](GETTING-STARTED.md#installation), for install and release
-   channel details
+4. [Getting Started](GETTING-STARTED.md#installation) for install channels
 
 ## Docs By Area
 
-### Setup And Models
+### Setup and models
 
-- [Getting Started](GETTING-STARTED.md): pip-first installation, optional
-  Homebrew installs, source builds, first commands, and runtime-path choice
-- [Supported Models](SUPPORTED-MODELS.md): direct support, delegated paths,
-  aliases, `download-mtp`, and unsupported requests
-- [Model Support Policy](MODEL-SUPPORT-POLICY.md): direct-support promotion,
-  six-month activity rule, compatibility-adapter boundary, and EOL handling
-- [FAQ](FAQ.md): hardware support, model-stack guidance, runtime paths,
-  limitations, and performance-boundary questions
-- [CLI](CLI.md): `ax-engine`, `ax-engine-server`, and `ax-engine-bench`
-  command surfaces
+- [Getting Started](GETTING-STARTED.md) — pip-first install, Homebrew, source builds, first commands
+- [Supported Models](SUPPORTED-MODELS.md) — direct support, aliases, `download-mtp`, unsupported requests
+- [Model Support Policy](MODEL-SUPPORT-POLICY.md) — promotion, six-month activity rule, EOL
+- [FAQ](FAQ.md) — hardware, model stack, runtime paths, limitations
+- [CLI](CLI.md) — `ax-engine`, `ax-engine-server`, `ax-engine-bench`
 
-### Serving And SDKs
+### Serving and SDKs
 
-- [Server](SERVER.md): local HTTP server routes, streaming, auth, embeddings,
-  and backend behavior
-- [API Compatibility](API-COMPATIBILITY.md): OpenAI-compatible endpoint
-  contract and compatibility boundaries
-- [SDK Docs](sdk/README.md): Rust, Python, JavaScript/TypeScript, Go, Ruby, and
-  Mojo SDKs
+- [Server](SERVER.md) — HTTP routes, streaming, auth, embeddings, backends
+- [API Compatibility](API-COMPATIBILITY.md) — OpenAI-compatible contract and boundaries
+- [SDK Docs](sdk/README.md) — Rust, Python, JS/TS, Go, Ruby, Swift, Mojo
+- [Local Engine Clients](LOCAL-ENGINE-CLIENTS.md) — in-process vs sidecar HTTP for first-party apps
+- [LAN Discovery](LAN-DISCOVERY.md) — local network discovery notes
+- [Minisign](MINISIGN.md) — release signature verification
 
-### Performance And Benchmarks
+### Performance and benchmarks
 
-- [Performance Docs Map](performance/README.md): performance navigation,
-  public claim boundaries, and promotion rules
-- [Performance Results](PERFORMANCE-RESULTS.md): full public tables and charts
-  for MTP, direct generation, and embeddings
-- [Performance](PERFORMANCE.md): artifact summaries, MTP mode notes, and
-  interpretation
-- [Benchmarks](BENCHMARKS.md): benchmark methodology, commands, evidence
-  contracts, and reproduction details
-- [DiffusionGemma](DIFFUSIONGEMMA.md): experimental block-diffusion support,
-  first-block telemetry, and non-autoregressive benchmark boundaries
-- [Benchmark Design](BENCH-DESIGN.md): workload-contract CLI and artifact
-  design
-- [Serving Benchmarks](SERVING-BENCHMARKS.md): online serving prompt-mix,
-  concurrency, latency, throughput, and SLO-goodput evidence
-- [Long Context](LONG-CONTEXT.md): long-context evidence, prefix-reuse
-  boundaries, and current cold-prefill/concurrency limits
-- [Embedding Cold-Start](EMBEDDING_COLDSTART.md): `AX_MMAP_WEIGHTS`
-  measurement guide and default-on criteria for the mmap weight loader
-- [MTP Docs](mtp/README.md): MTP-specific navigation, validation notes, and
-  tuning reports
-- [Qwen3.6 MTP Peer Benchmark](mtp/qwen36-peer-comparison.md): full AX Engine,
-  MTPLX, and lightning-mlx peer result table with fairness limitations
-- [N-gram Acceleration](NGRAM-ACCELERATION.md): n-gram acceleration claim
-  taxonomy and evidence rules
+- [Performance Docs Map](performance/README.md) — navigation, claim boundaries, promotion rules
+- [Performance Results](PERFORMANCE-RESULTS.md) — full tables and charts (MTP, direct, embeddings)
+- [Performance](PERFORMANCE.md) — interpretation, long-context notes, MTP mode policy
+- [Benchmarks](BENCHMARKS.md) — methodology, commands, evidence classification
+- [Benchmark Design](BENCH-DESIGN.md) — workload-contract CLI and artifact design
+- [Serving Benchmarks](SERVING-BENCHMARKS.md) — online concurrency, latency, SLO goodput
+- [Serving Invariants](SERVING-INVARIANTS.md) — serving correctness invariants
+- [Long Context](LONG-CONTEXT.md) — prefix reuse, cold prefill, concurrency limits
+- [Embeddings](EMBEDDINGS.md) — embedding API, pooling, fair ingest methodology
+- [Embedding Cold-Start](EMBEDDING_COLDSTART.md) — `AX_MMAP_WEIGHTS` measurement guide
+- [MTP Docs](mtp/README.md) — MTP navigation, validation, tuning reports
+- [Qwen3.6 MTP Peer Benchmark](mtp/qwen36-peer-comparison.md) — AX / MTPLX / lightning-mlx peer table
+- [N-gram Acceleration](NGRAM-ACCELERATION.md) — n-gram claim taxonomy
+- [DiffusionGemma](DIFFUSIONGEMMA.md) — experimental block-diffusion path
 
-### Runtime Architecture
+### Runtime architecture
 
-- [Architecture](ARCHITECTURE.md): crate boundaries and dependency rules
-- [Scheduler](SCHEDULER.md): batching, routing, and execution planning
-- [KV Cache](KV-CACHE.md): logical KV ledger, MLX snapshots, disk-durable
-  prefix cache, and memory-pressure invariants
-- [KV weak-surfaces design](designs/kv-weak-surfaces-2026-07-14.md): MLA
-  claim alignment, fair multi-prefill progress, FA physical block-pool plan
-- [Roadmap](ROADMAP.md): serving runtime direction and evidence gates for
-  future claims
+- [Architecture](ARCHITECTURE.md) — crate boundaries and dependency rules
+- [Scheduler](SCHEDULER.md) — batching, routing, execution planning
+- [KV Cache](KV-CACHE.md) — logical ledger, MLX snapshots, disk prefix cache
+- [MLX Backend](MLX-BACKEND.md) — MLX runner and acceleration notes
+- [KV weak-surfaces design](designs/kv-weak-surfaces-2026-07-14.md) — MLA / multi-prefill / FA pool plan
+- [Roadmap](ROADMAP.md) — serving direction and evidence gates
 
-### Focused Reports
+### Focused reports (diagnostic / historical)
 
-Use these as historical or diagnostic context unless a current result page links
-to a fresh artifact.
+Treat these as context unless a current results page links a fresh artifact.
 
 - [MTP Draft Gate Throughput](mtp/draft-gate-throughput.md)
 - [Gemma 4 Assistant MTP Multi-Depth](mtp/gemma4-assistant-multi-depth.md)
 - [Tree Draft Phase A](mtp/tree-draft-phase-a.md)
+- [AX MTP vs Youssofal MTPLX](mtp/ax-mtp-vs-youssofal.md)
+- [Qwen3.6 AX-only multi-suite archive](mtp/qwen36-matrix-refresh.md)
 - [Performance Decode Gap](performance/decode-gap.md)
 - [Performance MoE Bandwidth Gap](performance/moe-bandwidth-gap.md)
 - [Performance MoE Fused Downprojection](performance/moe-fused-downproj.md)
@@ -144,4 +133,4 @@ to a fresh artifact.
 
 Public docs should not contain PRDs, ADRs, tech specs, implementation plans,
 internal rewrite notes, or engineering best-practice memos. Internal planning
-records live under `.internal/adr`, `.internal/prd`, and `.internal/tech-spec`.
+lives under `.internal/adr`, `.internal/prd`, and `.internal/tech-spec`.

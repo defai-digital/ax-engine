@@ -384,6 +384,6 @@ A follow-up ADR that introduces an enforce mode must:
 - specify a fallback behavior for the case where pressure flips to
   `Hard` mid-step (today the scheduler has no per-step pressure callback).
 
-See `docs/SERVING-INVARIANTS.md` for the full invariant text and
+See [SERVING-INVARIANTS.md](SERVING-INVARIANTS.md) for the full invariant text and
 `.internal/prd/engine-serving-invariants.md` §8 Phase 4 for the work
 items.

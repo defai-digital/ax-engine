@@ -32,7 +32,7 @@ true:
 - public performance claims have benchmark artifacts with route identity,
   prompt provenance, repetition policy, dirty-state provenance, and peer rows
   where applicable
-- known limitations are documented before the model appears in README tables
+- known limitations are documented before the model appears in public results tables
 
 ## Six-Month Activity Rule
 

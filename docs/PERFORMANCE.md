@@ -1,26 +1,25 @@
 # Performance
 
-This page interprets public performance evidence: claim boundaries, artifact
-summaries, and how to read session-mode results. Full tables and charts live in
-[`PERFORMANCE-RESULTS.md`](PERFORMANCE-RESULTS.md). The root
-[`README.md`](../README.md) keeps only headline takeaways and links here.
+Interpretation and claim context for public performance evidence. Full tables
+and charts live in [`PERFORMANCE-RESULTS.md`](PERFORMANCE-RESULTS.md). The root
+[`README.md`](../README.md) keeps only headline takeaways.
 
-For the public claim-boundary policy, see
-[`performance/README.md`](performance/README.md).
-
-For benchmark methodology, test setup, commands, reproduction details, and
-evidence classification, see [`BENCHMARKS.md`](BENCHMARKS.md).
+| Need | Read |
+| --- | --- |
+| Tables and charts | [Performance Results](PERFORMANCE-RESULTS.md) |
+| Claim boundaries | [Performance Docs Map](performance/README.md) |
+| Reproduction / methodology | [Benchmarks](BENCHMARKS.md) |
 
 ## Current Result Set
 
 Public results are split by session mode in
-[`PERFORMANCE-RESULTS.md`](PERFORMANCE-RESULTS.md):
+[Performance Results](PERFORMANCE-RESULTS.md):
 
 | Session mode | Current public source |
 | --- | --- |
-| MTP generation | AX 6-bit MTP package refresh from 2026-07-09 plus Qwen3.6 peer MTP decode rows refreshed or retained through 2026-07-09 |
-| Direct generation | Gemma 4 and Qwen 3.6 high-water composite from `mlx_lm` reference rows, AX direct overlays through 2026-07-07, and the 2026-07-08 llama.cpp Metal sweep |
-| Embeddings | Qwen3-Embedding and EmbeddingGemma ingest-scale rows from the 2026-07-02 artifact family |
+| MTP generation | AX 6-bit MTP package acceleration (exact sampled MTP) plus Qwen3.6 peer MTP decode rows; see [results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation) |
+| Direct generation | v6.9.0 AX-only direct snapshot plus retained peer/historical composites; see [results: Direct](PERFORMANCE-RESULTS.md#session-mode-direct-generation) |
+| Embeddings | Qwen3-Embedding paired ingest-scale and EmbeddingGemma scale rows; see [results: Embeddings](PERFORMANCE-RESULTS.md#session-mode-embeddings) |
 
 These rows are a provenance-tracked composite, not one same-session benchmark.
 Every results section labels the route, artifact family, metric, and comparison
@@ -39,7 +38,7 @@ The shared host for the current headline local benchmark rows is:
   packaging/build issue, not a universal MLX 0.32.0 result. Prefill and TTFT
   rows are comparable only when both sides resolve the same `libmlx` and pass
   the GEMM admission check. See the "MLX runtime admission" section in
-  [`docs/BENCHMARKS.md`](BENCHMARKS.md) for the microbenchmark check and the
+  [`BENCHMARKS.md`](BENCHMARKS.md) for the microbenchmark check and the
   artifact provenance fields (`host.toolchain.python_mlx`,
   `build.resolved_libmlx`).
 
@@ -50,7 +49,7 @@ Benchmark shape:
   temperature 0, median-of-measured repetitions, cooldown, AX prefix cache
   disabled for cold prefill and TTFT measurement at both the EngineCore logical
   KV layer (`AX_ENGINE_PREFIX_REUSE_DISABLED=1`) and the MLX snapshot layer,
-  and production-build server binaries. README provenance records where
+  and production-build server binaries. Results-doc provenance records where
   historical rows used 1 warmup and where newer overlays used 2 warmups.
 - MTP-generation rows use the `flappy`, `long_code`, and `python_modules_long`
   prompt suites, sampled decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`),
@@ -67,7 +66,7 @@ but they are not part of the current direct-generation headline table.
 
 ## Latest Long-Context Artifacts
 
-The public README table is intentionally short/mid-prompt evidence. The latest
+The public results tables are intentionally short/mid-prompt evidence. The latest
 checked-in heavy real-model validation is separate:
 
 | Artifact | Model | Shape | Key result | Interpretation |
@@ -78,7 +77,7 @@ checked-in heavy real-model validation is separate:
 Both artifacts use direct AX MLX policy and are not evidence for n-gram decode
 acceleration. They are included to show that review covered TTFT, prefill
 scaling, startup, queueing, memory, and concurrency boundaries beyond the
-README throughput table.
+public throughput tables.
 
 ## Latest Prefill Breakdown
 
@@ -130,7 +129,7 @@ claim, not as a general production-serving benchmark. The review covers:
 | Scope disclosure | Methodology states host, batch size, generated-token count, temperature, and `prefill_step_size` | Readers can see that current public rows are batch=1, short/mid-prompt evidence |
 
 This review intentionally rejects broader conclusions that the current table
-does not prove. The current README rows support row-by-row claims about AX
+does not prove. The current public results rows support row-by-row claims about AX
 direct throughput against named MLX references on matching Apple Silicon
 benchmark shapes; they do not say every AX policy wins every row. N-gram rows
 are separate workload-dependent acceleration evidence. Neither direct nor
@@ -140,7 +139,7 @@ parity with CUDA server systems such as vLLM or TensorRT-LLM.
 
 ## Interpretation
 
-The current README direct-generation high-water composite reports AX ahead of
+The current public direct-generation high-water composite reports AX ahead of
 `mlx_lm` on the published Gemma 4 and Qwen 3.6 direct cells that have a current
 comparable `mlx_lm` row. That does not make it a universal direct-decode claim:
 the table is a curated public snapshot for named model artifacts, prompt
@@ -160,7 +159,7 @@ decode. Current benchmark artifacts do not encode that as a claim-status
 variant; `ax_decode_claim_status` is intentionally limited to throughput and
 fallback state. Treat random-token n-gram wins as synthetic throughput rows
 unless a separate token-output validation artifact accompanies the claim. See
-[`docs/NGRAM-ACCELERATION.md` § Synthetic repeated-output loops](NGRAM-ACCELERATION.md#synthetic-repeated-output-loops)
+[[NGRAM-ACCELERATION.md](NGRAM-ACCELERATION.md) § Synthetic repeated-output loops](NGRAM-ACCELERATION.md#synthetic-repeated-output-loops)
 for the interpretation rule.
 
 The strongest user-facing case for n-gram acceleration is coding-shaped output
@@ -229,7 +228,7 @@ Rules:
 - `mtp-ngram` is out of scope for MTP publication and must not be run in the
   MTP matrix.
 - Historical MTP+n-gram artifacts remain diagnostic only. Do not use them for
-  current README/PERFORMANCE claims.
+  current public PERFORMANCE claims.
 - Do not include Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only, GGUF, or Gemma
   variants in the Qwen3.6 peer MTP benchmark matrix. Gemma stays in the
   separate AX Engine-only 6-bit MTP package view.
@@ -271,7 +270,7 @@ The recommended sequence is:
 
 | Priority | Test | Shape | Acceptance evidence |
 | --- | --- | --- | --- |
-| P0 | Public claim gate | For every README row, verify matching reference row, prompt hash, AX decode policy, route identity, and median/repetition metadata | A small script or CI check that fails closed when any public table row lacks matching artifact provenance |
+| P0 | Public claim gate | For every public results row, verify matching reference row, prompt hash, AX decode policy, route identity, and median/repetition metadata | A small script or CI check that fails closed when any public table row lacks matching artifact provenance |
 | P1 | Prefill scaling curve | Run representative Gemma, Qwen, and GLM rows at 1k, 2k, 4k, 8k, 16k, and the largest supported context on the host | `ax.mlx_prefill_scaling.v1` artifact with prefill tok/s, TTFT, peak memory, prompt hash, direct AX policy, and ratios vs `mlx_lm`; explicitly mark the context where throughput bends |
 | P1 | TTFT under long context | Use real chat-shaped prompts at 8k/16k/32k where supported, generation=1 and generation=128 | Median and p75 TTFT, first-token route telemetry, and output correctness/determinism checks |
 | P2 | Cold vs warm startup | Compare process-cold, model-warm, and benchmark-warm runs for the same model and prompt shape | `ax.mlx_startup_latency.v1` artifact with separate server-ready time, model-load time, first-request TTFT, warm TTFT, warmed decode tok/s, peak memory, prompt hash, direct AX policy, and ratios vs the benchmark-warm row |
@@ -286,7 +285,7 @@ The P0 public claim gate is executable:
 python3 scripts/check_readme_performance_artifacts.py
 ```
 
-It parses the public results document (`docs/PERFORMANCE-RESULTS.md` by
+It parses the public results document ([PERFORMANCE-RESULTS.md](PERFORMANCE-RESULTS.md) by
 default), resolves the referenced
 `benchmarks/results/inference/mlx-inference/.../` artifact directory, and fails if any
 public row lacks a matching median value, prompt-token hash, reference row,
@@ -335,7 +334,7 @@ long-context evidence includes at least two AX context points up to 8k tokens
 by default, a matching `mlx_lm` baseline for every shape, one prompt hash shared
 across engines, direct AX policy labeling, median prefill tok/s, median TTFT,
 peak memory, and fresh ratios to the baseline. This is the guardrail for future
-16k/32k/64k claims, not evidence that the current README table already covers
+16k/32k/64k claims, not evidence that the current public results tables already cover
 those contexts.
 The renderer produces the human-review table from the same validated artifact,
 including an explicit AX prefill bend marker when throughput drops below the
@@ -466,7 +465,7 @@ End-to-end API latency should be labeled separately from raw runner throughput.
 > 26B A4B 6-bit (+5.0% to +7.4%) and 31B 6-bit (+3.4% to +3.8%). The remaining
 > table records the state that motivated the optimization passes.
 
-The historical 2026-05-13 README artifact kept Gemma 4 direct decode below
+The historical 2026-05-13 results artifact kept Gemma 4 direct decode below
 `mlx_lm` on every public Gemma row, while n-gram acceleration was strongly
 positive:
 
@@ -522,7 +521,7 @@ direct-decode result.
 Qwen Coder Next uses MLX affine 4-bit globally, with 8-bit overrides for router
 and shared-expert gate tensors.
 
-Qwen 3.6 35B A3B uses the MLX-community 4-bit checkpoint in the README GGUF
+Qwen 3.6 35B A3B uses the MLX-community 4-bit checkpoint in the public GGUF
 comparison set. Qwen 3.6 27B carries the 4/5/6-bit sweep coverage.
 
 Gemma 4 26B A4B is the public Gemma 4 MoE MLX model. Its checkpoint uses affine
@@ -540,7 +539,7 @@ Gemma 4 E2B 5/6-bit checkpoints use affine quantization at their respective
 bit depths globally. These rows verify AX Engine's higher-bit quantization
 support; the 4-bit row is the primary decode performance reference.
 
-Gemma 4 E4B 4-bit benchmark rows are included in the current README refresh.
+Gemma 4 E4B 4-bit benchmark rows are included in the current public results refresh.
 The model manifest and scenario manifest remain the canonical inputs for
 rerunning that model.
 
@@ -548,4 +547,4 @@ rerunning that model.
 
 Performance tables are results. Benchmark setup, reproduction commands,
 community-run submission rules, workload-contract manifests, and
-prompt-provenance requirements live in [`docs/BENCHMARKS.md`](BENCHMARKS.md).
+prompt-provenance requirements live in [`BENCHMARKS.md`](BENCHMARKS.md).

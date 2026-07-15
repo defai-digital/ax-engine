@@ -1,9 +1,10 @@
 # Embeddings — detailed methodology and API reference
 
-This document is the deep version of the README's `### Embedding throughput`
-section. The README keeps the compact fair in-process comparison table and
-reproduction commands; everything below — apples-to-apples wording, the
-anti-pattern discussion, per-API code samples, telemetry — lives here.
+Deep methodology and API reference for embedding ingest. Published ingest-scale
+tables and charts live in
+[Performance Results: Embeddings](PERFORMANCE-RESULTS.md#session-mode-embeddings).
+This page covers apples-to-apples wording, anti-patterns, per-API samples, and
+telemetry.
 
 ## TL;DR
 
@@ -79,14 +80,14 @@ Rules for public claims:
    headline tok/s. Short-query fair rows **headline latency**
    (`median_ms_per_item`, lower is better).
 5. **Gate publication claims** with `check_embedding_publish_gate.py` before
-   README or chart updates.
+   PERFORMANCE-RESULTS or chart updates.
 
 Fixed-length and ingest-scale rows headline tok/s (and scale also reports
 chunks/s + batch p95 ms). Do not publish short-query tok/s as the primary
 public number: short text makes tok/s noisy and misrepresents query serving
 latency.
 
-Before wiring a new artifact into the README or charts, run:
+Before wiring a new artifact into PERFORMANCE-RESULTS or charts, run:
 
 ```bash
 # Paired reference delta (default)
@@ -107,7 +108,7 @@ the reference uses a pip/venv wheel — that mismatch was the root of a false
 ~3× AX-vs-mlx-lm gap. Prefer the venv/pip MLX wheel and the repo rpath wiring
 in `mlx-sys` / `ax-engine-py`.
 
-The README tables only count throughput where the caller can actually
+The public results tables only count throughput where the caller can actually
 *consume* the embedding (Python `list[float]`, NumPy ndarray, raw f32
 bytes — not a GPU-only `MlxArray`). Both backends pay the GPU→CPU
 read-back; comparisons without it under-count the cost.
@@ -333,7 +334,7 @@ content in the rendered text and keep filter-only attributes in
 Many clients (or a synchronous loop) post `{"input": [ids]}` one after
 another. Each POST round-trips through the GPU on its own. The
 microbatcher's window is exceeded between requests, so coalescing does
-not happen. Reported in the README's HTTP table for comparison; not a
+not happen. Reported in the HTTP comparison table for comparison; not a
 recommended pattern.
 
 ## Telemetry: compile-cache hit / miss
@@ -373,7 +374,7 @@ Output is bit-exact with the C loader; opt in safely.
 
 ## Reproducing every README number
 
-Use the fair in-process harness for README throughput claims:
+Use the fair in-process harness for public throughput claims:
 
 ```bash
 .venv/bin/python scripts/bench_embedding_fair.py \
@@ -403,7 +404,7 @@ For EmbeddingGemma, use the same output contract with the embeddinggemma route:
 ```
 
 Pass `--ax-only` when you want to refresh only the AX path without loading the
-reference backend; do not use that mode for README reference-comparison claims.
+reference backend; do not use that mode for public reference-comparison claims.
 
 The legacy `scripts/bench_embedding_readme.sh` still runs HTTP serving and
 cold-start paths. Use it for endpoint/cold-start evidence, not as the primary

@@ -58,7 +58,7 @@ Order is critical: `lookup_prefix` walks the live block table to check for
 concurrent sharing; running promotion after removal would miss active refs.
 
 The same `free()` primitive is used by the scheduler's preempt-and-recompute
-path (see `docs/SCHEDULER.md` § Preempt-and-recompute). Preemption frees a
+path (see [SCHEDULER.md](SCHEDULER.md) § Preempt-and-recompute). Preemption frees a
 newer in-flight prefill request to make room for an older stalled allocation;
 because `free()` promotes the freed prompt prefix into the retained cache,
 the preempted request hits its own cached prefix when it is re-admitted, so

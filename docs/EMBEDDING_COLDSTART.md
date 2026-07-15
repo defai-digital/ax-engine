@@ -116,7 +116,7 @@ runtime default):
 
 Until all five criteria are met, keep `AX_MMAP_WEIGHTS` opt-in.
 Document the feature in this page until the default-on criteria are
-met and the README gains a dedicated cold-start section.
+met and PERFORMANCE-RESULTS gains a dedicated cold-start section.
 
 The current setup intentionally leaves the C loader as the
 default to avoid an underspecified behaviour change in a Mac-first

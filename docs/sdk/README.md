@@ -27,6 +27,9 @@ Related docs:
 - [Server](../SERVER.md)
 - [OpenAI-compatible API contract](../API-COMPATIBILITY.md)
 - [CLI](../CLI.md)
+- [Embeddings](../EMBEDDINGS.md)
+- [Local Engine Clients](../LOCAL-ENGINE-CLIENTS.md)
+- [Docs hub](../README.md)
 
 ## Product integration model
 

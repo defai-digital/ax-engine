@@ -5,6 +5,9 @@ and benchmark tooling. It is not only an MLX experiment: the repo-owned MLX
 runtime is one path, and delegated compatibility paths let users keep the same
 AX surface for broader model coverage.
 
+**Related:** [Supported Models](SUPPORTED-MODELS.md) · [CLI](CLI.md) ·
+[Server](SERVER.md) · [FAQ](FAQ.md) · [Docs hub](README.md)
+
 ## What You Get
 
 - `ax-engine-server`: local HTTP server over the SDK runtime
@@ -44,7 +47,7 @@ paths validate compatibility and route behavior.
 
 ### Match this guide
 
-This guide documents the current `6.8.x` command surface. The Python wheel is
+This guide documents the current `6.9.x` command surface. The Python wheel is
 the primary deployment path for end users. Released install channels can still
 lag behind the repository, so check the version before assuming the examples
 below apply:
@@ -211,7 +214,7 @@ python -m unittest discover -s python/tests -v
 - `docs/`: public-facing documentation
 
 For the current crate layering and dependency-boundary guidance, see
-`docs/ARCHITECTURE.md`.
+[Architecture](ARCHITECTURE.md).
 
 ## Requirements
 
@@ -232,15 +235,26 @@ pretending support exists.
 
 ## Getting a Model
 
-ax-engine requires pre-sanitized MLX weights. The safest source is
+AX Engine requires pre-sanitized MLX weights. Prefer
 [mlx-community](https://huggingface.co/mlx-community) on Hugging Face — those
-checkpoints are already converted and ready to use. Raw HuggingFace checkpoints
-need `mlx_lm.convert` first.
+checkpoints are already converted. Raw Hugging Face checkpoints need
+`mlx_lm.convert` first. Full alias lists live in
+[Supported Models](SUPPORTED-MODELS.md).
 
-### Path A — mlx-community LLM (recommended)
+### Path A — CLI / TUI (recommended)
 
-`download_model()` downloads LLM weights through `mlx-lm`, resolves the MLX-LM
-cache snapshot, and auto-generates the manifest in one call:
+```text
+ax-engine tui                          # interactive: pick, download, serve, chat
+ax-engine download --list              # list aliases
+ax-engine download qwen36-35b          # download a direct alias
+ax-engine serve qwen36-35b --download --port 8080
+ax-engine download-mtp gemma-4-12b-4bit
+```
+
+### Path B — Python API
+
+`download_model()` downloads LLM weights through `mlx-lm`, resolves the cache
+snapshot, and auto-generates the manifest:
 
 ```python
 from ax_engine import download_model
@@ -248,26 +262,24 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 # Session is ready once this returns
 ```
 
-Install `mlx-lm` first, or install the current Python package with
-`python3 -m pip install "ax-engine[download]>=6.9.0,<7"`.
+Install with `python3 -m pip install "ax-engine[download]>=6.9.0,<7"`.
 
-Or via the script (also uses `mlx-lm` and generates the manifest automatically):
+Or via the script:
 
 ```text
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit
-python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json  # machine-readable summary
+python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json
 ```
 
-The model still lands in the cache layout used by `mlx-lm`/Hugging Face Hub, so
+Models land in the Hugging Face Hub cache layout shared with `mlx-lm`, so
 `ax-engine-server --resolve-model-artifacts hf-cache ...` can resolve a model
-that was downloaded outside ax-engine by `python -m mlx_lm generate ...`.
+downloaded outside AX Engine. Embedding models are not downloaded by AX Engine —
+download them manually and pass the local directory.
 
-Embedding models are not downloaded by ax-engine. Download embedding model
-artifacts manually and pass the local model directory.
+### Path C — raw Hugging Face checkpoint
 
-### Path B — raw HuggingFace checkpoint
-
-Raw checkpoints need sanitization before ax-engine can load them. Use `mlx_lm.convert`:
+Raw checkpoints need sanitization before AX Engine can load them. Use
+`mlx_lm.convert`:
 
 ```text
 pip install mlx-lm
@@ -278,9 +290,9 @@ ax-engine-server --mlx --mlx-model-artifacts-dir /path/to/dest --port 8080
 
 ### Manifest generation
 
-Both paths above require a `model-manifest.json` that ax-engine generates from the
-model directory. `download_model()` and `scripts/download_model.py` run this step
-automatically when `ax-engine-bench` or `cargo` is available. To run it manually:
+Direct MLX models need a `model-manifest.json`. `ax-engine download`,
+`download_model()`, and `scripts/download_model.py` generate it when
+`ax-engine-bench` or `cargo` is available. To run it manually:
 
 ```text
 ax-engine-bench generate-manifest /path/to/model     # installed
@@ -476,7 +488,7 @@ npm install ./sdk/javascript
 That package is intentionally thin: it targets the preview server's
 `/v1/runtime`, `/v1/generate`, `/v1/generate/stream`, `/v1/completions`,
 `/v1/chat/completions`, and `/v1/embeddings` endpoints rather than bypassing
-the SDK/server contract. See `docs/API-COMPATIBILITY.md` before assuming full
+the SDK/server contract. See [API Compatibility](API-COMPATIBILITY.md) before assuming full
 OpenAI API parity.
 
 To run a repo-owned end-to-end server smoke check instead of driving that path

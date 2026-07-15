@@ -1,8 +1,10 @@
 # Long-Context Behavior
 
-This page explains what AX Engine can and cannot claim about long-context
-inference today. It separates four surfaces that are often collapsed into one
-phrase:
+What AX Engine can and cannot claim about long-context inference today. It
+separates four surfaces that are often collapsed into one phrase:
+
+**Related:** [KV Cache](KV-CACHE.md) · [Scheduler](SCHEDULER.md) ·
+[Performance](PERFORMANCE.md) · [Serving Invariants](SERVING-INVARIANTS.md)
 
 - cold long-prompt prefill
 - long-running chat or agent sessions with repeated prefixes

@@ -362,5 +362,5 @@ timing.
 | llama.cpp delegated artifacts | Delegated route-contract and backend prompt-cache behavior | Repo-owned MLX throughput |
 | `mlx_lm_delegated` artifacts | AX surface compatibility with upstream `mlx_lm.server` | Repo-owned MLX throughput or token/KV accounting |
 
-See [`docs/BENCHMARKS.md`](BENCHMARKS.md) for operational commands and
+See [`BENCHMARKS.md`](BENCHMARKS.md) for operational commands and
 artifact capture procedures for each evidence type.
