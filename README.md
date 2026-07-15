@@ -300,9 +300,11 @@ or reproduction commands.
 > and quantized matmul alike), cutting prefill throughput and inflating TTFT for
 > every MLX-based engine; PyPI's MLX 0.32.0 wheel is not affected by that
 > packaging defect. Each comparison must use the same resolved `libmlx` on both
-> sides and pass the documented `quantized_matmul` admission check. The current
-> v6.9.0 sweep uses the known-good local MLX 0.31.2 build until an admitted 0.32
-> build is available.
+> sides and pass the documented `quantized_matmul` admission check. The
+> published v6.9.0 sweep was measured on the known-good local MLX 0.31.2 build.
+> The PyPI MLX 0.32.0 wheel (deployment target 26.2) has since passed the same
+> admission check at throughput parity with 0.31.2 (56.3 TFLOP/s qmm,
+> 2026-07-15) and is the admitted build for new benchmark sessions.
 
 **Benchmarking session baseline (14-Jul-2026):** New AX Engine benchmark rows
 use AX Engine `v6.9.0`. Direct-mode peer benchmarking is limited to the existing

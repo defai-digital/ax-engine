@@ -30,12 +30,14 @@ The shared host for the current headline local benchmark rows is:
 - Apple M5 Max
 - 128 GB memory
 - macOS 26.x
-- MLX 0.31.2 is the current admitted build for both AX Engine and the `mlx_lm`
-  reference. A Homebrew MLX 0.32.0 bottle or a source build targeting macOS
-  below 26.2 can omit M5 matrix–matrix (GEMM / quantized-matmul) acceleration;
-  this is a packaging/build issue, not a universal MLX 0.32.0 result. Prefill
-  and TTFT rows are comparable only when both sides resolve the same `libmlx`
-  and pass the GEMM admission check. See the "MLX runtime admission" section in
+- Admitted MLX builds: the local MLX 0.31.2 build (behind the published v6.9.0
+  rows) and the PyPI MLX 0.32.0 wheel, which passed the GEMM admission check at
+  throughput parity with 0.31.2 (56.3 TFLOP/s qmm M=2048, 2026-07-15). A
+  Homebrew MLX 0.32.0 bottle or a source build targeting macOS below 26.2 can
+  omit M5 matrix–matrix (GEMM / quantized-matmul) acceleration; this is a
+  packaging/build issue, not a universal MLX 0.32.0 result. Prefill and TTFT
+  rows are comparable only when both sides resolve the same `libmlx` and pass
+  the GEMM admission check. See the "MLX runtime admission" section in
   [`docs/BENCHMARKS.md`](BENCHMARKS.md) for the microbenchmark check and the
   artifact provenance fields (`host.toolchain.python_mlx`,
   `build.resolved_libmlx`).
