@@ -185,12 +185,56 @@ pub(super) fn repo_cache_dir(repo_id: &str) -> PathBuf {
 
 /// The actual on-disk snapshot directory for a downloaded repo (containing
 /// `config.json`/`*.safetensors`), not just the top-level HF cache wrapper.
-/// Picks the most recently modified snapshot when a repo has more than one
-/// cached revision. This is what the server needs for `--mlx-model-artifacts-dir`
-/// — passing the wrapper dir directly would miss the actual model files, which
-/// live one level down under `snapshots/<hash>/`.
+/// Picks the most recently modified **usable** snapshot when a repo has more
+/// than one cached revision. This is what the server needs for
+/// `--mlx-model-artifacts-dir` — passing the wrapper dir directly would miss
+/// the actual model files, which live one level down under `snapshots/<hash>/`.
 pub(super) fn repo_snapshot_dir(repo_id: &str) -> Option<PathBuf> {
-    most_recent_subdir(&repo_cache_dir(repo_id).join("snapshots"))
+    let snapshots = repo_cache_dir(repo_id).join("snapshots");
+    let mut dirs: Vec<(PathBuf, std::time::SystemTime)> = std::fs::read_dir(snapshots)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() || !artifact_dir_usable(&path) {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((path, modified))
+        })
+        .collect();
+    dirs.sort_by_key(|(_, modified)| *modified);
+    dirs.pop().map(|(path, _)| path)
+}
+
+/// True when a directory looks like a loadable AX/MLX artifact tree (not an
+/// empty or partial HF cache stub).
+pub(super) fn artifact_dir_usable(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    if dir.join("config.json").is_file() || dir.join("model-manifest.json").is_file() {
+        return true;
+    }
+    // Some incomplete snapshots only have tensors; still treat as present so
+    // the user can open the path, but prefer config/manifest when available.
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("safetensors"))
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Whether the HF hub cache for `repo_id` has a usable snapshot (not merely a
+/// wrapper directory or incomplete download stubs).
+pub(super) fn repo_is_installed(repo_id: &str) -> bool {
+    repo_snapshot_dir(repo_id).is_some()
 }
 
 /// The most recently modified immediate subdirectory of `dir`, if any.
@@ -209,12 +253,6 @@ pub(super) fn most_recent_subdir(dir: &Path) -> Option<PathBuf> {
         .collect();
     dirs.sort_by_key(|(_, modified)| *modified);
     dirs.pop().map(|(path, _)| path)
-}
-
-pub(super) fn dir_has_content(dir: &Path) -> bool {
-    std::fs::read_dir(dir)
-        .map(|mut it| it.next().is_some())
-        .unwrap_or(false)
 }
 
 /// Recursive on-disk size, following directories but not chasing symlinks twice.
@@ -242,7 +280,9 @@ pub(super) fn build_families() -> Vec<Family> {
     for profile in crate::MODEL_PROFILES.iter().filter(|p| p.downloadable) {
         let key = family_key(profile.label);
         let cache = repo_cache_dir(profile.repo_id);
-        let installed = cache.is_dir() && dir_has_content(&cache);
+        // Require a usable snapshot (config/manifest/safetensors), not merely
+        // an HF wrapper dir left by a cancelled or incomplete download.
+        let installed = repo_is_installed(profile.repo_id);
         let variant = Variant {
             profile,
             bits: quant_bits(profile.repo_id),

@@ -67,6 +67,7 @@ fn test_task(job: Option<Job>) -> DownloadTask {
         target: "gemma4-e2b".into(),
         dest: Some(PathBuf::from("/tmp/gemma4-e2b")),
         watch_dir: PathBuf::from("/tmp/gemma4-e2b"),
+        resolved_path: None,
         total_bytes: Some(3_583_088_661),
         phase: None,
         job,
@@ -284,12 +285,81 @@ fn log_parser_finds_download_output_paths() {
         Some(Path::new("/tmp/mtp"))
     );
     assert_eq!(
+        parse_output_path_from_log(&["Output dir:      /tmp/gemma-mtp".to_string()]).as_deref(),
+        Some(Path::new("/tmp/gemma-mtp"))
+    );
+    assert_eq!(
         parse_output_path_from_log(&[
             "Sidecar ready at:".to_string(),
             "  /tmp/sidecar".to_string(),
         ])
         .as_deref(),
         Some(Path::new("/tmp/sidecar"))
+    );
+    assert_eq!(
+        parse_output_path_from_log(&[
+            "Gemma 4 assistant MTP package ready at:".to_string(),
+            "  /tmp/gemma-package".to_string(),
+        ])
+        .as_deref(),
+        Some(Path::new("/tmp/gemma-package"))
+    );
+    assert_eq!(
+        parse_output_path_from_log(&[
+            "Next:".to_string(),
+            "  ax-engine serve /tmp/from-next --port 8080".to_string(),
+        ])
+        .as_deref(),
+        Some(Path::new("/tmp/from-next"))
+    );
+}
+
+#[test]
+fn artifact_dir_usable_requires_real_model_files() {
+    let root = std::env::temp_dir().join(format!(
+        "ax-tui-artifact-usable-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("mkdir root");
+
+    let empty = root.join("empty");
+    std::fs::create_dir_all(&empty).expect("mkdir");
+    assert!(!catalog::artifact_dir_usable(&empty));
+
+    let with_config = root.join("cfg");
+    std::fs::create_dir_all(&with_config).expect("mkdir");
+    std::fs::write(with_config.join("config.json"), "{}").expect("write");
+    assert!(catalog::artifact_dir_usable(&with_config));
+
+    let with_weight = root.join("wt");
+    std::fs::create_dir_all(&with_weight).expect("mkdir");
+    std::fs::write(with_weight.join("model.safetensors"), b"x").expect("write");
+    assert!(catalog::artifact_dir_usable(&with_weight));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn mtp_serve_without_package_path_fails_closed() {
+    let mut app = new_app();
+    let mut task = test_task(Some(Job::failed("ok".into())));
+    task.mode = DownloadMode::Mtp;
+    task.subcmd = "download-mtp";
+    task.dest = None;
+    task.resolved_path = None;
+    if let Some(job) = &mut task.job {
+        job.done = Some(0);
+        job.log.clear(); // no Path: / Output dir: lines
+    }
+    app.downloads.push(task);
+    app.start_server_for_download(0);
+    let job = app.server.expect("server job should be set");
+    assert_eq!(job.done, Some(-1), "must not spawn real server without path");
+    assert!(
+        job.log.iter().any(|line| line.contains("MTP package path")),
+        "error should mention MTP package path: {:?}",
+        job.log
     );
 }
 

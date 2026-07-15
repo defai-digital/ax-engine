@@ -954,14 +954,28 @@ impl App {
         if !task.is_ready() {
             return;
         }
+        // Prefer the path the download process reported. For direct HF-cache
+        // downloads, fall back to the usable snapshot dir. Never silently fall
+        // back to base-model HF resolve for MTP packages — that would serve the
+        // base weights without the MTP package.
         let artifacts_dir = task.output_path().or_else(|| {
-            if task.mode == DownloadMode::Direct && task.preset.is_none() {
+            if task.mode == DownloadMode::Direct {
                 catalog::repo_snapshot_dir(task.repo_id)
             } else {
                 None
             }
         });
+        if task.mode == DownloadMode::Mtp && artifacts_dir.is_none() {
+            self.server = Some(Job::failed(
+                "MTP package path could not be resolved from the download log; re-run download-mtp or serve the package directory directly".into(),
+            ));
+            self.server_url = None;
+            self.toast_error("could not find MTP package path to serve");
+            return;
+        }
         let label = task.label.clone();
+        // MTP packages are self-contained dirs; still pass the base preset when
+        // present so chat template / model_id hints stay available.
         self.spawn_server(task.preset, artifacts_dir, &label);
     }
 
@@ -997,6 +1011,9 @@ impl App {
             Some(dir) => {
                 cmd.arg("--mlx-model-artifacts-dir").arg(dir);
             }
+            // Direct alias installs: resolve the HF snapshot by preset when we
+            // do not yet have an explicit snapshot path (rare after a clean
+            // download; common when re-serving a known alias).
             None if preset.is_some() => {
                 cmd.arg("--resolve-model-artifacts").arg("hf-cache");
             }

@@ -216,6 +216,9 @@ pub(super) struct DownloadTask {
     pub target: String,
     pub dest: Option<PathBuf>,
     pub watch_dir: PathBuf,
+    /// Resolved serve path captured when the child finishes (Path: / Output dir: /
+    /// package-ready lines). Prefer this over re-parsing the log.
+    pub resolved_path: Option<PathBuf>,
     /// Static catalog estimate of the total download, for the gauge.
     pub total_bytes: Option<u64>,
     /// Latest phase message from `--progress-json` events (resolve, snapshot
@@ -254,6 +257,9 @@ impl DownloadTask {
     }
 
     pub fn output_path(&self) -> Option<PathBuf> {
+        if let Some(path) = &self.resolved_path {
+            return Some(path.clone());
+        }
         if let Some(dest) = &self.dest {
             return Some(dest.clone());
         }
@@ -293,6 +299,7 @@ impl DownloadTask {
         self.cancelled = false;
         self.job = None;
         self.phase = None;
+        self.resolved_path = None;
     }
 
     /// Fraction complete (0..=1) from watched bytes vs. the static total.
@@ -351,7 +358,17 @@ impl DownloadTask {
                 self.phase = Some(message);
             }
         }
-        before.is_none() && job.done == Some(0)
+        let finished_ok = before.is_none() && job.done == Some(0);
+        if finished_ok && self.resolved_path.is_none() {
+            self.resolved_path = parse_output_path_from_log(&job.log).or_else(|| {
+                if self.mode == DownloadMode::Direct {
+                    catalog::repo_snapshot_dir(self.repo_id)
+                } else {
+                    None
+                }
+            });
+        }
+        finished_ok
     }
 
     pub fn cancel(&mut self) {
@@ -365,11 +382,27 @@ impl DownloadTask {
 
 pub(super) fn parse_output_path_from_log(lines: &[String]) -> Option<PathBuf> {
     for line in lines.iter().rev() {
-        if let Some(rest) = line.strip_prefix("Path:") {
-            return Some(PathBuf::from(rest.trim()));
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Path:") {
+            let path = rest.trim();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
         }
-        if let Some(rest) = line.strip_prefix("Output dir:") {
-            return Some(PathBuf::from(rest.trim()));
+        // prepare_mtp_sidecar / prepare_gemma4 print "Output dir:   <path>".
+        if let Some(rest) = trimmed.strip_prefix("Output dir:") {
+            let path = rest.trim();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+        // "Next: ax-engine serve <path> --port …" (single-line form).
+        if let Some(idx) = trimmed.find("ax-engine serve ") {
+            let rest = trimmed[idx + "ax-engine serve ".len()..].trim();
+            let path = rest.split_whitespace().next().unwrap_or("");
+            if !path.is_empty() && path.starts_with('/') {
+                return Some(PathBuf::from(path));
+            }
         }
     }
     let mut next_is_path = false;
@@ -380,7 +413,11 @@ pub(super) fn parse_output_path_from_log(lines: &[String]) -> Option<PathBuf> {
                 return Some(PathBuf::from(value));
             }
         }
-        next_is_path = line.trim() == "Sidecar ready at:";
+        let trimmed = line.trim();
+        // Qwen sidecar: "Sidecar ready at:"; Gemma: "… package ready at:".
+        next_is_path = trimmed == "Sidecar ready at:"
+            || trimmed.ends_with("package ready at:")
+            || trimmed.ends_with("package ready at");
     }
     None
 }

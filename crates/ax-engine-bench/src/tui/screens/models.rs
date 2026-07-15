@@ -336,6 +336,7 @@ impl App {
             target: target.to_string(),
             dest,
             watch_dir,
+            resolved_path: None,
             total_bytes,
             phase: None,
             job: None,
