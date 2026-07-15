@@ -248,7 +248,7 @@ Experimental direct-support model families:
 
 | Family | Model ID | Current scope | Notes |
 | --- | --- | --- | --- |
-| DiffusionGemma | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Experimental repo-owned MLX block-diffusion path | Not part of the README performance tables; benchmark boundary is first committed 256-token diffusion block, not autoregressive TTFT/decode. See [DiffusionGemma experimental support](DIFFUSIONGEMMA.md). |
+| DiffusionGemma | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Experimental repo-owned MLX block-diffusion path | Experimental rows live under [Performance Results](PERFORMANCE-RESULTS.md#diffusiongemma); benchmark boundary is first committed 256-token diffusion block, not autoregressive TTFT/decode. See [DiffusionGemma experimental support](DIFFUSIONGEMMA.md). |
 
 All direct-support models use MLX safetensors format with the AX
 `model-manifest.json` descriptor. Adding a new direct-support architecture

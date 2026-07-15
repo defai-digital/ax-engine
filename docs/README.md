@@ -20,7 +20,7 @@ or writing claims:
 | Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [CLI](CLI.md#ax-engine) |
 | Decide whether a model family should be supported | [Model Support Policy](MODEL-SUPPORT-POLICY.md) | [Supported Models](SUPPORTED-MODELS.md) |
 | Use MTP or understand 4-bit vs 6-bit MTP results | [MTP Docs](mtp/README.md) | [Qwen3.6 MTP Peer Benchmark](mtp/qwen36-peer-comparison.md), [Performance](PERFORMANCE.md#mtp-mode), [Benchmarks](BENCHMARKS.md#mtp-matrix) |
-| Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance](PERFORMANCE.md), [Benchmarks](BENCHMARKS.md) |
+| Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md), [Benchmarks](BENCHMARKS.md) |
 | Run or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
 | Serve OpenAI-compatible or Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md) |
 | Use a language SDK | [SDK Docs](sdk/README.md) | The SDK page for your language |
@@ -50,9 +50,10 @@ engines often publish 4-bit benchmark rows.
 ### Benchmark Reviewer
 
 1. [Performance Docs Map](performance/README.md)
-2. [Performance](PERFORMANCE.md)
-3. [Benchmarks](BENCHMARKS.md)
-4. [Benchmark Design](BENCH-DESIGN.md)
+2. [Performance Results](PERFORMANCE-RESULTS.md)
+3. [Performance](PERFORMANCE.md)
+4. [Benchmarks](BENCHMARKS.md)
+5. [Benchmark Design](BENCH-DESIGN.md)
 
 Use this path when deciding whether a result is current public evidence,
 diagnostic history, or out of scope for a claim.
@@ -93,8 +94,10 @@ diagnostic history, or out of scope for a claim.
 
 - [Performance Docs Map](performance/README.md): performance navigation,
   public claim boundaries, and promotion rules
-- [Performance](PERFORMANCE.md): current public result tables, artifact
-  summaries, MTP mode, and interpretation
+- [Performance Results](PERFORMANCE-RESULTS.md): full public tables and charts
+  for MTP, direct generation, and embeddings
+- [Performance](PERFORMANCE.md): artifact summaries, MTP mode notes, and
+  interpretation
 - [Benchmarks](BENCHMARKS.md): benchmark methodology, commands, evidence
   contracts, and reproduction details
 - [DiffusionGemma](DIFFUSIONGEMMA.md): experimental block-diffusion support,

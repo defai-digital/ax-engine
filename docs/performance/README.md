@@ -8,7 +8,8 @@ note applies to the claim you are making.
 
 | Need | Read |
 | --- | --- |
-| Current public result tables and interpretation | [`../PERFORMANCE.md`](../PERFORMANCE.md) |
+| Current public result tables and charts | [`../PERFORMANCE-RESULTS.md`](../PERFORMANCE-RESULTS.md) |
+| Interpretation and claim context | [`../PERFORMANCE.md`](../PERFORMANCE.md) |
 | MTP result lanes, package validation, and 4-bit vs 6-bit guidance | [`../mtp/README.md`](../mtp/README.md) |
 | Benchmark methodology, command contracts, artifact schemas, and reproduction | [`../BENCHMARKS.md`](../BENCHMARKS.md) |
 | Benchmark-system design and workload-contract details | [`../BENCH-DESIGN.md`](../BENCH-DESIGN.md) |
@@ -47,9 +48,10 @@ claim.
 
 | Surface | Scope | Notes |
 | --- | --- | --- |
-| [`../PERFORMANCE.md`](../PERFORMANCE.md) | Current public performance report | Result tables, latest artifact summaries, interpretation, MTP mode, and reproduction notes |
+| [`../PERFORMANCE-RESULTS.md`](../PERFORMANCE-RESULTS.md) | Current public result tables and charts | MTP, direct generation, and embedding session-mode evidence |
+| [`../PERFORMANCE.md`](../PERFORMANCE.md) | Interpretation and claim context | Artifact summaries, MTP mode policy notes, and reading guide |
 | [`../mtp/README.md`](../mtp/README.md) | MTP-specific navigation | `download-mtp`, recommended 6-bit lane, 4-bit comparison lane, and MTP validation notes |
-| [`../LONG-CONTEXT.md`](../LONG-CONTEXT.md) | Long-context and prefix-reuse behavior | Separate from short/mid-prompt README result claims |
+| [`../LONG-CONTEXT.md`](../LONG-CONTEXT.md) | Long-context and prefix-reuse behavior | Separate from short/mid-prompt public result claims |
 | [`../NGRAM-ACCELERATION.md`](../NGRAM-ACCELERATION.md) | N-gram acceleration claim taxonomy | Use for n-gram correctness, promotion gates, and required artifact fields |
 | [`../mtp/draft-gate-throughput.md`](../mtp/draft-gate-throughput.md) | MTP draft confidence gate tuning | Diagnostic tuning report; not the current six-model MTP publication matrix |
 

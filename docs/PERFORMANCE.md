@@ -1,19 +1,20 @@
 # Performance
 
-This page is the public performance-results reference. It keeps claim
-boundaries, artifact summaries, and interpretation for the current public
-snapshot. The root `README.md` carries the reader-facing tables and charts for
-MTP generation, direct generation, and embeddings.
+This page interprets public performance evidence: claim boundaries, artifact
+summaries, and how to read session-mode results. Full tables and charts live in
+[`PERFORMANCE-RESULTS.md`](PERFORMANCE-RESULTS.md). The root
+[`README.md`](../README.md) keeps only headline takeaways and links here.
 
 For the public claim-boundary policy, see
 [`performance/README.md`](performance/README.md).
 
 For benchmark methodology, test setup, commands, reproduction details, and
-evidence classification, see [`docs/BENCHMARKS.md`](BENCHMARKS.md).
+evidence classification, see [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Current Result Set
 
-The current README performance section is split by session mode:
+Public results are split by session mode in
+[`PERFORMANCE-RESULTS.md`](PERFORMANCE-RESULTS.md):
 
 | Session mode | Current public source |
 | --- | --- |
@@ -22,7 +23,7 @@ The current README performance section is split by session mode:
 | Embeddings | Qwen3-Embedding and EmbeddingGemma ingest-scale rows from the 2026-07-02 artifact family |
 
 These rows are a provenance-tracked composite, not one same-session benchmark.
-Every README section labels the route, artifact family, metric, and comparison
+Every results section labels the route, artifact family, metric, and comparison
 boundary that is safe for that session mode.
 
 The shared host for the current headline local benchmark rows is:
@@ -285,7 +286,8 @@ The P0 public claim gate is executable:
 python3 scripts/check_readme_performance_artifacts.py
 ```
 
-It parses the README decode and prefill tables, resolves the referenced
+It parses the public results document (`docs/PERFORMANCE-RESULTS.md` by
+default), resolves the referenced
 `benchmarks/results/inference/mlx-inference/.../` artifact directory, and fails if any
 public row lacks a matching median value, prompt-token hash, reference row,
 decode-policy label, or repetition metadata.

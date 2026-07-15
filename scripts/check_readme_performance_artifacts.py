@@ -458,6 +458,31 @@ def parse_readme_metrics(readme_path: Path) -> list[ReadmeMetric]:
     ]
 
 
+def repo_root_for(path: Path) -> Path:
+    """Locate the workspace root for a results doc under the repo or docs/."""
+    for parent in (path if path.is_dir() else path.parent, *path.parents):
+        if (parent / "Cargo.toml").is_file() and (parent / "crates").is_dir():
+            return parent
+    return path.parent if path.is_file() else path
+
+
+def resolve_results_doc_path(results_doc: Path, path_value: str) -> Path:
+    """Resolve a marker or link path from a results doc.
+
+    Paths may be relative to the doc file (legacy root README) or to the
+    workspace root (docs/PERFORMANCE-RESULTS.md with benchmarks/... links).
+    """
+    raw = Path(path_value)
+    if raw.is_absolute():
+        return raw.resolve()
+    relative_to_doc = (results_doc.parent / path_value).resolve()
+    if relative_to_doc.exists():
+        return relative_to_doc
+    if path_value.startswith(("benchmarks/", "docs/", "assets/")):
+        return (repo_root_for(results_doc) / path_value).resolve()
+    return relative_to_doc
+
+
 def readme_performance_artifact_marker_entries(
     readme_path: Path,
 ) -> list[ArtifactMarkerEntry]:
@@ -493,7 +518,7 @@ def readme_performance_artifact_marker_entries(
         entries.append(
             ArtifactMarkerEntry(
                 kind=kind_match.group("kind"),
-                artifact_dir=(readme_path.parent / path_value).resolve(),
+                artifact_dir=resolve_results_doc_path(readme_path, path_value),
                 include_prompt_tokens=include_prompt_tokens,
             )
         )
@@ -548,7 +573,7 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
         raise ArtifactCheckError(
             "README does not name a benchmarks/results/inference/mlx-inference artifact directory"
         )
-    return [ArtifactSource((readme_path.parent / match.group(1)).resolve())]
+    return [ArtifactSource(resolve_results_doc_path(readme_path, match.group(1)))]
 
 
 def default_hot_prefix_artifact_paths(readme_path: Path) -> list[Path]:
@@ -586,7 +611,7 @@ def default_marker_artifact_paths(readme_path: Path, *, marker_name: str) -> lis
         path_value = path_value.strip()
         if not path_value:
             continue
-        paths.append((readme_path.parent / path_value).resolve())
+        paths.append(resolve_results_doc_path(readme_path, path_value))
     if not paths:
         raise ArtifactCheckError(f"{marker_name} comment has no paths")
     return paths
@@ -1058,9 +1083,12 @@ BENCHMARK_DOC_ONLY_SCRIPT_PATHS = frozenset({"scripts/bench_llama_cpp_metal_swee
 
 
 def is_benchmark_doc_only_path(path: str) -> bool:
-    if path == "README.md":
-        return True
-    if path == "pyproject.toml":
+    if path in {
+        "README.md",
+        "docs/PERFORMANCE-RESULTS.md",
+        "docs/PERFORMANCE.md",
+        "pyproject.toml",
+    }:
         return True
     if path.startswith("docs/assets/perf-") and path.endswith(".svg"):
         return True
@@ -1577,8 +1605,8 @@ def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
         raise ArtifactCheckError(
             "README MTP 6-bit section does not link a summary.json artifact"
         )
-    summary_link = Path(summary_match.group(1))
-    summary_path = readme_path.parent / summary_link
+    summary_link = Path(summary_match.group(1).removeprefix("../"))
+    summary_path = resolve_results_doc_path(readme_path, summary_match.group(1))
     summary, approximate = validate_mtp_6bit_summary_contract(
         summary_path=summary_path,
         expected_run_dir=summary_link.parent.as_posix(),
@@ -1605,7 +1633,8 @@ def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
             f"all {len(summary['rows'])} target/suite rows accelerate decode",
             "100% mtp step coverage",
             "zero direct-fallback prompts or steps",
-            "docs/assets/perf-mtp-6bit-ax-acceleration.svg",
+            # Accept either root-README or docs/PERFORMANCE-RESULTS asset paths.
+            "perf-mtp-6bit-ax-acceleration.svg",
             "`temperature=0.6`",
             "`top_p=0.95`",
             "`top_k=20`",
@@ -1669,7 +1698,7 @@ def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
         "`temperature=0.0`",
         "`top_p=1.0`",
         "`top_k=0`",
-        "docs/assets/perf-mtp-6bit-ax-approximate-diagnostic.svg",
+        "perf-mtp-6bit-ax-approximate-diagnostic.svg",
     ):
         if snippet not in normalized:
             raise ArtifactCheckError(
@@ -3414,7 +3443,15 @@ def parse_args() -> argparse.Namespace:
         description="Validate README performance table values and provenance artifacts."
     )
     parser.add_argument("--repo-root", type=Path, default=repo_root)
-    parser.add_argument("--readme", type=Path, default=repo_root / "README.md")
+    parser.add_argument(
+        "--readme",
+        type=Path,
+        default=repo_root / "docs" / "PERFORMANCE-RESULTS.md",
+        help=(
+            "Public results document with performance tables/charts "
+            "(default: docs/PERFORMANCE-RESULTS.md)."
+        ),
+    )
     parser.add_argument("--artifact-dir", type=Path)
     parser.add_argument(
         "--require-condition-metadata",

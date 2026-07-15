@@ -809,7 +809,7 @@ def main() -> None:
             "were skipped. By default, full-stack README updates fail closed."
         ),
     )
-    parser.add_argument("--readme", type=Path, default=REPO_ROOT / "README.md")
+    parser.add_argument("--readme", type=Path, default=REPO_ROOT / "docs" / "PERFORMANCE-RESULTS.md")
     parser.add_argument(
         "--dry-run",
         action="store_true",

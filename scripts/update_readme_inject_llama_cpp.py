@@ -307,7 +307,7 @@ def apply(readme_text: str, sweep_doc: dict[str, Any]) -> tuple[str, dict[str, A
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sweep", type=Path, required=True)
-    parser.add_argument("--readme", type=Path, default=Path("README.md"))
+    parser.add_argument("--readme", type=Path, default=Path("docs/PERFORMANCE-RESULTS.md"))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 

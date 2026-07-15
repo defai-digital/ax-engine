@@ -121,7 +121,8 @@ cache so recurrent state stays aligned with the logical sequence.
 N-gram acceleration throughput claims must be reproduced through
 `scripts/bench_mlx_inference_stack.py --ax-compare-policies` before they are used in
 release notes or architecture decisions. Measured results on Gemma4-e2b-it-4bit
-(Apple M5 Max, 128 GB, batch=1, 3 trials) are recorded in `README.md`:
+(Apple M5 Max, 128 GB, batch=1, 3 trials) are recorded in the performance
+docs (`docs/PERFORMANCE-RESULTS.md` / historical n-gram notes):
 1.83x mlx_lm at 128-token prompt and 1.89x at 512-token prompt.
 Any prior unattributed `~1.96x mlx_lm` rows are investigation notes only; they
 do not carry model, host, random-token prompt/decode shape, reference identity,

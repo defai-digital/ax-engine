@@ -19,7 +19,7 @@ validation, or MTP tuning reports.
 | Need | Read |
 | --- | --- |
 | Download or prepare an MTP package | [Supported Models: MTP Downloads](../SUPPORTED-MODELS.md#mtp-downloads), [CLI](../CLI.md#ax-engine) |
-| Read headline MTP result tables | [README MTP session mode](../../README.md#session-mode-mtp-generation), [Qwen3.6 MTP peer benchmark](qwen36-peer-comparison.md), [Performance: MTP Mode](../PERFORMANCE.md#mtp-mode) |
+| Read headline MTP result tables | [Performance Results: MTP](../PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Qwen3.6 MTP peer benchmark](qwen36-peer-comparison.md), [Performance: MTP Mode](../PERFORMANCE.md#mtp-mode) |
 | Reproduce or review MTP benchmarks | [Benchmarks: MTP Matrix](../BENCHMARKS.md#mtp-matrix), [Benchmark Design](../BENCH-DESIGN.md) |
 | Tune the MTP draft confidence gate | [MTP draft gate throughput](draft-gate-throughput.md) |
 | Review Gemma assistant-MTP depth work | [Gemma 4 assistant MTP multi-depth drafting](gemma4-assistant-multi-depth.md) |

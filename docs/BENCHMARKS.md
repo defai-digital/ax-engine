@@ -8,16 +8,17 @@ llama.cpp, serving, and workload-contract paths.
 For the performance docs map and public claim-boundary policy, start with
 [`performance/README.md`](performance/README.md).
 
-The root `README.md` summarizes the high-traffic MTP, direct-generation, and
-embedding rows under the **Performance** section. The full public result
-boundaries and interpretation live in `docs/PERFORMANCE.md`. The current README
-generation snapshot is a provenance-tracked composite, not one same-session run:
-`mlx_lm` reference rows, AX direct overlays from the 2026-07 refreshes, the
-2026-07-08 llama.cpp Metal sweep, AX 6-bit MTP package rows, Qwen3.6 peer MTP
-rows, and embedding ingest-scale rows are each labeled by session mode in the
-README provenance text. Older result sets, including n-gram overlay runs, remain
-useful diagnostic history, but they should not be described as the current
-public README table unless README is rolled back to those artifacts.
+The root `README.md` keeps headline MTP takeaways only. Full session-mode
+tables and charts live in [`PERFORMANCE-RESULTS.md`](PERFORMANCE-RESULTS.md).
+Claim boundaries and interpretation live in
+[`PERFORMANCE.md`](PERFORMANCE.md). The current results snapshot is a
+provenance-tracked composite, not one same-session run: `mlx_lm` reference
+rows, AX direct overlays from the 2026-07 refreshes, the 2026-07-08 llama.cpp
+Metal sweep, AX 6-bit MTP package rows, Qwen3.6 peer MTP rows, and embedding
+ingest-scale rows are each labeled by session mode in the results provenance
+text. Older result sets, including n-gram overlay runs, remain useful
+diagnostic history, but they should not be described as the current public
+results table unless that page is rolled back to those artifacts.
 
 A result is useful only when the workload, runtime route, reference engine,
 host, model, sampling policy, and artifact schema are explicit.

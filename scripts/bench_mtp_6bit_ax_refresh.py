@@ -21,7 +21,7 @@ DEFAULT_OUTPUT_BASE = (
     REPO_ROOT / "benchmarks" / "results" / "speculative" / "mtp-6bit"
 )
 DEFAULT_SUITES_DIR = REPO_ROOT / "benchmarks" / "prompts" / "mtp-suites"
-README_PATH = REPO_ROOT / "README.md"
+README_PATH = REPO_ROOT / "docs" / "PERFORMANCE-RESULTS.md"
 
 GENERATED_TOKENS = 1000
 REPETITIONS = 5
@@ -769,7 +769,7 @@ def render_readme_section(summary: dict[str, Any]) -> str:
         "steps, and zero n-gram accepted, proposed, submitted, or hit-step",
         "telemetry.",
         "",
-        f'<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine v{engine_version} 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">',
+        f'<img src="assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine v{engine_version} 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">',
         "",
         *table_lines(rows, approximate_diagnostic=False),
         "",

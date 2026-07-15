@@ -198,7 +198,7 @@ def splice_section(readme_text: str, section_md: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sweep", type=Path, required=True, help="Path to sweep_results.json")
-    parser.add_argument("--readme", type=Path, default=Path("README.md"))
+    parser.add_argument("--readme", type=Path, default=Path("docs/PERFORMANCE-RESULTS.md"))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 

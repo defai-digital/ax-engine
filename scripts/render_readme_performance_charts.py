@@ -715,7 +715,13 @@ def find_ax_direct_snapshot(readme: Path) -> Path | None:
     )
     if match is None:
         return None
-    return (readme.parent / match.group(1)).resolve()
+    path_value = match.group(1)
+    relative = (readme.parent / path_value).resolve()
+    if relative.exists():
+        return relative
+    if path_value.startswith("benchmarks/"):
+        return (REPO_ROOT / path_value).resolve()
+    return relative
 
 
 def load_ax_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
@@ -2993,7 +2999,9 @@ def main() -> int:
             "benchmarks/results/llama-cpp-metal/*/sweep_results.json directory."
         ),
     )
-    parser.add_argument("--readme", type=Path, default=Path("README.md"))
+    parser.add_argument(
+        "--readme", type=Path, default=Path("docs/PERFORMANCE-RESULTS.md")
+    )
     parser.add_argument(
         "--performance-doc",
         type=Path,

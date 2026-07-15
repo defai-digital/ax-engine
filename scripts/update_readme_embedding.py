@@ -115,7 +115,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--results-dir", required=True,
                         help="Directory containing timestamped embedding result subdirs")
-    parser.add_argument("--readme", default="README.md")
+    parser.add_argument("--readme", default="docs/PERFORMANCE-RESULTS.md")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 

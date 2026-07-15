@@ -355,7 +355,7 @@ def main():
     parser = argparse.ArgumentParser(description="Update README bench rows from JSON")
     parser.add_argument("--slug", required=True)
     parser.add_argument("--json", required=True)
-    parser.add_argument("--readme", default="README.md")
+    parser.add_argument("--readme", default="docs/PERFORMANCE-RESULTS.md")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
