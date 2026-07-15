@@ -634,6 +634,13 @@ pub struct MlxKVCache {
     paged_materialize_us: u64,
     /// Count of paged→contiguous failovers when the private pool is exhausted.
     paged_pool_exhaustion_fallbacks: u64,
+    /// Sticky: set when a `hard_cap` pool (operator-set
+    /// `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`) exhausted. The layer still
+    /// demotes to contiguous (correct data — proven token-exact by
+    /// `fa_paged_pool_exhaustion_demotion_matches_contiguous_oracle`), but
+    /// the caller must fail this request instead of returning a token
+    /// computed past the operator's memory bound.
+    hard_cap_exhausted: bool,
 }
 
 /// Ring geometry a forward presents to SDPA for a sliding-window layer when
@@ -701,6 +708,7 @@ impl Clone for MlxKVCache {
             fa_pool,
             paged_materialize_us: self.paged_materialize_us,
             paged_pool_exhaustion_fallbacks: self.paged_pool_exhaustion_fallbacks,
+            hard_cap_exhausted: self.hard_cap_exhausted,
         }
     }
 }
@@ -753,6 +761,7 @@ impl MlxKVCache {
             fa_pool: None,
             paged_materialize_us: 0,
             paged_pool_exhaustion_fallbacks: 0,
+            hard_cap_exhausted: false,
         }
     }
 
@@ -774,12 +783,21 @@ impl MlxKVCache {
             fa_pool: Some(fa_pool),
             paged_materialize_us: 0,
             paged_pool_exhaustion_fallbacks: 0,
+            hard_cap_exhausted: false,
         }
     }
 
     /// Whether this cache owns a private FA block pool (paged pure-FA path).
     pub fn fa_block_pool_enabled(&self) -> bool {
         self.fa_pool.is_some()
+    }
+
+    /// Set once a `hard_cap` pool (operator-set
+    /// `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`) has exhausted. The caller must
+    /// fail the owning request instead of treating this forward as
+    /// successful — see `MlxRunner::run_item`.
+    pub fn hard_cap_exhausted(&self) -> bool {
+        self.hard_cap_exhausted
     }
 
     /// Blocks available in the private FA pool, if paged mode is active.
@@ -1558,11 +1576,25 @@ impl MlxKVCache {
         };
 
         if need_demote {
-            // Fail-soft: materialize existing private blocks into contiguous
-            // storage and finish this append on the historical growth path so
-            // serving does not abort when the private pool is exhausted.
+            // Either way, materialize existing private blocks into
+            // contiguous storage first and finish this append on the
+            // historical growth path, so the compute graph for this forward
+            // stays well-formed and correct (proven token-exact by
+            // fa_paged_pool_exhaustion_demotion_matches_contiguous_oracle)
+            // regardless of policy. Under an explicit
+            // AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap (`hard_cap`) this also
+            // sticks hard_cap_exhausted so the caller fails the request
+            // instead of returning a token computed past the operator's
+            // memory bound; without an explicit cap this stays fail-soft.
             self.paged_pool_exhaustion_fallbacks =
                 self.paged_pool_exhaustion_fallbacks.saturating_add(1);
+            if self
+                .fa_pool
+                .as_ref()
+                .is_some_and(|pool| pool.config().hard_cap)
+            {
+                self.hard_cap_exhausted = true;
+            }
             self.demote_paged_layer_to_contiguous(layer, write_start);
             return self.append_with_retained_window(layer, new_k, new_v, None);
         }
@@ -3651,6 +3683,7 @@ mod tests {
         let config = FaBlockPoolConfig {
             block_size_tokens: 4,
             max_blocks: 32,
+            hard_cap: false,
         };
         let mut paged = MlxKVCache::new_with_fa_block_pool(1, config);
         let mut contig = MlxKVCache::new_contiguous(1);
@@ -3729,6 +3762,7 @@ mod tests {
         let config = FaBlockPoolConfig {
             block_size_tokens: 4,
             max_blocks: 2, // only 8 tokens of private capacity
+            hard_cap: false,
         };
         let mut cache = MlxKVCache::new_with_fa_block_pool(1, config);
         let k = fa_token_values(8, 1, 4, 1.0);
@@ -3765,6 +3799,7 @@ mod tests {
         let config = FaBlockPoolConfig {
             block_size_tokens: 4,
             max_blocks: 3, // 12 tokens shared across both layers
+            hard_cap: false,
         };
         let mut cache = MlxKVCache::new_with_fa_block_pool(2, config);
 
@@ -3821,6 +3856,7 @@ mod tests {
         let config = FaBlockPoolConfig {
             block_size_tokens: 4,
             max_blocks: 2, // 8 tokens of private capacity; the 2nd append exhausts it
+            hard_cap: false,
         };
         let mut paged = MlxKVCache::new_with_fa_block_pool(1, config);
         let mut contig = MlxKVCache::new_contiguous(1);
@@ -3944,10 +3980,75 @@ mod tests {
     }
 
     #[test]
+    fn fa_paged_pool_hard_cap_exhaustion_sticks_flag() {
+        // Operator-set AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS must fail closed:
+        // exhaustion under `hard_cap: true` sticks hard_cap_exhausted so the
+        // runner can fail the request, instead of silently succeeding like
+        // the default fail-soft path.
+        let config = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 2, // 8 tokens of private capacity
+            hard_cap: true,
+        };
+        let mut cache = MlxKVCache::new_with_fa_block_pool(1, config);
+        assert!(!cache.hard_cap_exhausted());
+
+        let k = fa_token_values(8, 1, 4, 1.0);
+        let v = fa_token_values(8, 1, 4, 2.0);
+        let _ = cache.append(0, k, v);
+        cache.advance(8);
+        assert!(
+            !cache.hard_cap_exhausted(),
+            "exactly filling capacity is not exhaustion"
+        );
+
+        let k2 = fa_token_values(1, 1, 4, 3.0);
+        let v2 = fa_token_values(1, 1, 4, 4.0);
+        let (out_k, _) = cache.append(0, k2, v2);
+        cache.advance(1);
+        eval(&[&out_k]);
+        assert_eq!(
+            out_k.shape()[2],
+            9,
+            "hard-cap demotion still produces a correct (if soon-to-be-\
+             discarded) forward, matching the fail-soft materialize path"
+        );
+        assert!(
+            cache.hard_cap_exhausted(),
+            "exhaustion under an explicit hard cap must stick the flag"
+        );
+        let usage = cache.usage_snapshot();
+        assert_eq!(usage.paged_pool_exhaustion_fallbacks, 1);
+    }
+
+    #[test]
+    fn fa_paged_pool_exhaustion_without_hard_cap_does_not_stick_flag() {
+        // Regression: the default (no explicit operator override) scaffold
+        // behavior must remain fail-soft and never set hard_cap_exhausted.
+        let config = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 2,
+            hard_cap: false,
+        };
+        let mut cache = MlxKVCache::new_with_fa_block_pool(1, config);
+        let k = fa_token_values(8, 1, 4, 1.0);
+        let v = fa_token_values(8, 1, 4, 2.0);
+        let _ = cache.append(0, k, v);
+        cache.advance(8);
+        let k2 = fa_token_values(1, 1, 4, 3.0);
+        let v2 = fa_token_values(1, 1, 4, 4.0);
+        let _ = cache.append(0, k2, v2);
+        cache.advance(1);
+        assert!(!cache.hard_cap_exhausted());
+        assert_eq!(cache.usage_snapshot().paged_pool_exhaustion_fallbacks, 1);
+    }
+
+    #[test]
     fn fa_paged_clone_diverges_without_double_free() {
         let config = FaBlockPoolConfig {
             block_size_tokens: 4,
             max_blocks: 16,
+            hard_cap: false,
         };
         let mut a = MlxKVCache::new_with_fa_block_pool(1, config);
         let k = fa_token_values(5, 1, 4, 1.0);

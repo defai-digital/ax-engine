@@ -602,11 +602,12 @@ introduces an FA-only private block path:
 |---|---|
 | Pure allocator (`FaBlockPool` in `kv_block_pool.rs`) | Implemented |
 | Env opt-in `AX_MLX_FA_KV_BLOCK_POOL` | Present (**default OFF**) |
-| Optional `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` | Overrides session `total_blocks` when set |
+| Optional `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` | Overrides session `total_blocks` when set; also sets `hard_cap` (see exhaustion row) |
 | Session geometry align | `MlxRunner::align_fa_block_pool_to_kv(block_size, total_blocks)` from session bring-up |
 | Integration into `MlxKVCache` pure-FA append/trim | Implemented when flag enables a private pool |
 | SDPA / peek / serialize materialize dense K/V | Implemented (concat/gather); `ax_mlx_kv_paged_materialize_us` |
-| Pool exhaustion | Fail-soft demote to contiguous (`ax_mlx_kv_paged_pool_exhaustion_fallbacks`); no process abort |
+| Pool exhaustion (no explicit `MAX_BLOCKS`, default) | Fail-soft demote to contiguous (`ax_mlx_kv_paged_pool_exhaustion_fallbacks`); no process abort |
+| Pool exhaustion (explicit `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`) | Fail-closed **at the request level**: still demotes internally first (data stays correct), then fails only that request (`MlxKVCache::hard_cap_exhausted()` → `errored_item_run` → normal terminal cleanup); not a process abort |
 | Sliding / rotating / MLA / linear layers | Stay contiguous even when the flag is on |
 | Cross-request sharing / MLA pairs | Out of scope until PR5+ |
 

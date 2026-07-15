@@ -9,7 +9,9 @@
 //!
 //! Scope (PR4):
 //! - private (non-shared) full-attention blocks only
-//! - fail-closed exhaustion
+//! - exhaustion is fail-soft (demote to contiguous) by default; fail-closed
+//!   (fail just the request) when the operator sets an explicit
+//!   `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` cap — see `FaBlockPoolConfig::hard_cap`
 //! - `max_blocks` is expected to match `KvManagerConfig.total_blocks`
 //! - FA append/trim/materialize wired behind the flag (see `MlxKVCache`)
 //!
@@ -36,16 +38,18 @@ pub fn fa_kv_block_pool_enabled() -> bool {
 ///
 /// `block_size_tokens` matches the usual `KvManager` block size (16).
 /// `max_blocks` defaults to 8192 (131072 tokens) and can be overridden with
-/// `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`.
+/// `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` — an explicit override also sets
+/// `hard_cap` so exhaustion fails the request instead of demoting to
+/// unbounded contiguous growth (see `FaBlockPoolConfig::hard_cap`).
 pub fn default_fa_block_pool_config() -> FaBlockPoolConfig {
-    let max_blocks = std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS")
+    let explicit_max_blocks = std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(8192);
+        .filter(|n| *n > 0);
     FaBlockPoolConfig {
         block_size_tokens: 16,
-        max_blocks,
+        max_blocks: explicit_max_blocks.unwrap_or(8192),
+        hard_cap: explicit_max_blocks.is_some(),
     }
 }
 
@@ -57,6 +61,12 @@ pub struct PhysicalBlockId(pub u32);
 pub struct FaBlockPoolConfig {
     pub block_size_tokens: u32,
     pub max_blocks: u32,
+    /// When true, `max_blocks` is an operator-set hard memory cap
+    /// (`AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`): exhaustion fails the request
+    /// instead of demoting to unbounded contiguous growth. Default false
+    /// (the auto-aligned-to-`KvManager.total_blocks` scaffold behavior stays
+    /// fail-soft).
+    pub hard_cap: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -203,6 +213,7 @@ mod tests {
         FaBlockPool::new(FaBlockPoolConfig {
             block_size_tokens: 16,
             max_blocks,
+            hard_cap: false,
         })
         .expect("valid config")
     }
@@ -277,6 +288,7 @@ mod tests {
             FaBlockPool::new(FaBlockPoolConfig {
                 block_size_tokens: 0,
                 max_blocks: 1,
+                hard_cap: false,
             }),
             Err(FaBlockPoolError::InvalidConfig(_))
         ));
@@ -284,6 +296,7 @@ mod tests {
             FaBlockPool::new(FaBlockPoolConfig {
                 block_size_tokens: 16,
                 max_blocks: 0,
+                hard_cap: false,
             }),
             Err(FaBlockPoolError::InvalidConfig(_))
         ));

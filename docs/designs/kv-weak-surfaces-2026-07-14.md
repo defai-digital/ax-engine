@@ -5,7 +5,7 @@
 | **Title** | Strengthen AX Engine KV cache weak surfaces (MLA uniformity, concurrent prefill, paged physical layout) |
 | **Author** | _TBD_ |
 | **Date** | 2026-07-14 |
-| **Status** | Approved; Track A R2 + hit-rate harness green; PR3 fair multi-prefill exposed on session/server (default OFF); PR4 FA private pool wired (flag OFF) with align + fail-soft exhaustion; PR5 sharing still open |
+| **Status** | Approved; Track A R2 + hit-rate harness green; PR3 fair multi-prefill exposed on session/server (default OFF); PR4 FA private pool wired (flag OFF) with align + fail-soft exhaustion by default, fail-closed-at-the-request-level under an explicit `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` cap; PR5 sharing still open |
 | **Related docs** | `docs/KV-CACHE.md`, `docs/SCHEDULER.md`, `docs/LONG-CONTEXT.md`, `docs/SERVING-INVARIANTS.md`, `docs/ROADMAP.md` |
 | **Primary crates** | `ax-engine-core`, `ax-engine-mlx`, `ax-engine-sdk`, `ax-engine-bench` |
 
@@ -712,18 +712,30 @@ RequestView (behind MlxKVCache facade when flag on, FA layers only)
   **no** init-time fail-closed check for engine/pool divergence, and no
   cross-request shared physical budget in PR4 — a real session-wide pool
   is PR5+ scope (see the risk noted in Alternatives / Track C.2 history).
-- On pool exhaustion: **fail-soft**, not fail-closed. `append_paged_fa`
-  materializes the already-written physical blocks into a fresh contiguous
-  buffer (`demote_paged_layer_to_contiguous`), frees the private blocks back
-  to the pool, and finishes the append on the historical contiguous growth
-  path instead of erroring the request or mapping to
-  `InsufficientCapacity`/`BlockedOnMemory`. No partial writes and no
-  double-free (freed blocks are exactly the demoted layer's own, already
-  copied out); `ax_mlx_kv_paged_pool_exhaustion_fallbacks` counts each
-  demotion. One consequence: `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` bounds only
-  the paged fast path, not a demoted layer's subsequent (contiguous,
-  effectively unbounded) growth — set it expecting demotion to absorb
-  overflow, not to hard-cap per-request memory.
+- On pool exhaustion, policy depends on `FaBlockPoolConfig::hard_cap`:
+  - **Auto-aligned (no explicit override, `hard_cap: false`, default):**
+    fail-soft. `append_paged_fa` materializes the already-written physical
+    blocks into a fresh contiguous buffer
+    (`demote_paged_layer_to_contiguous`), frees the private blocks back to
+    the pool, and finishes the append on the historical contiguous growth
+    path instead of erroring the request. No partial writes and no
+    double-free (freed blocks are exactly the demoted layer's own, already
+    copied out).
+  - **Explicit `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` (`hard_cap: true`):**
+    fail-closed at the request level. The layer still demotes internally
+    first (data stays correct — proven token-exact by
+    `fa_paged_pool_exhaustion_demotion_matches_contiguous_oracle` — so the
+    in-flight forward pass completes safely instead of unwinding
+    mid-computation), but `MlxKVCache::hard_cap_exhausted()` sticks and
+    `MlxRunner::run_item` turns the result into a per-request error
+    (`errored_item_run` → `RequestExecutionUpdate.error` →
+    `RequestRecord::fail` → normal terminal cleanup, releasing both the
+    logical `KvManager` blocks and the runner-side cache) instead of
+    returning the computed token. This fails only the offending request —
+    not a process abort, and not the engine-level
+    `InsufficientCapacity`/`BlockedOnMemory` admission path (that operates
+    before scheduling, not mid-forward). Every case still increments
+    `ax_mlx_kv_paged_pool_exhaustion_fallbacks`.
 
 **Attention materialization (accepted PR4 cost):**
 
@@ -828,7 +840,7 @@ materialize-on-use without behavior change when flag is off.
 | Env `AX_MLX_FA_KV_BLOCK_POOL` | Opt-in FA private pool; default OFF |
 | `MlxKVCache` | Signature-stable; internal FA storage enum `Contiguous | Paged` |
 | `serialize_to_bytes` | PR4: contiguous materialization |
-| Pool vs `KvManager.total_blocks` | Per-cache pool sized to `KvManager.total_blocks` as a ceiling (`MlxRunner::align_fa_block_pool_to_kv`; override via `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`); exhaustion → fail-soft demote to contiguous, **not** fail-closed |
+| Pool vs `KvManager.total_blocks` | Per-cache pool sized to `KvManager.total_blocks` as a ceiling (`MlxRunner::align_fa_block_pool_to_kv`); exhaustion → fail-soft demote to contiguous. With an explicit `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` override (`hard_cap: true`) → fail-closed at the request level instead (demotes internally for graph safety, then fails just that request via `errored_item_run`) |
 
 ---
 
@@ -1128,7 +1140,7 @@ Staged evidence:
 | **Title** | Scaffold FA private KV block pool behind flag with dense materialize |
 | **Files / components** | New `kv_block_pool.rs` (or similar); `kv_cache.rs` FA storage enum; env flag; oracle + exhaustion tests; `docs/KV-CACHE.md` subsection |
 | **Dependencies** | PR2 preferred (MLA contiguous path stable); not hard-blocked by PR3 |
-| **Description** | FA-only private blocks; materialize contiguous K/V for SDPA (measure cost); serialize materializes contiguous (no I-2 bump). `max_blocks` coupled to `KvManager.total_blocks` as a per-cache ceiling; exhaustion is **fail-soft** (demote to contiguous, not fail-closed). Non-FA layers unchanged. No memory-savings claim. MLA pairs out of scope. |
+| **Description** | FA-only private blocks; materialize contiguous K/V for SDPA (measure cost); serialize materializes contiguous (no I-2 bump). `max_blocks` coupled to `KvManager.total_blocks` as a per-cache ceiling; exhaustion is **fail-soft** by default (demote to contiguous), or **fail-closed at the request level** when the operator sets an explicit `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` cap. Non-FA layers unchanged. No memory-savings claim. MLA pairs out of scope. |
 | **Acceptance tests / evidence** | Token-exact FA oracle vs contiguous, including the exhaustion/demotion path itself (not just shape/counters or a sibling layer); existing suite green with flag off; optional microbench for materialize cost |
 | **Risk** | **Med** (isolated by default-off; materialize cost measured not claimed as win) |
 

@@ -3563,9 +3563,15 @@ impl MlxRunner {
             return;
         };
         config.block_size_tokens = block_size_tokens.max(1);
-        if std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS").is_err() {
+        let explicit_max_blocks = std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS").is_ok();
+        if !explicit_max_blocks {
             config.max_blocks = total_blocks.max(1);
         }
+        // An operator-set override is a hard memory cap, not just a seed for
+        // the initial size: exhaustion must fail the request instead of
+        // demoting to unbounded contiguous growth (see kv_cache.rs
+        // append_paged_fa / MlxRunner::run_item).
+        config.hard_cap = explicit_max_blocks;
     }
 
     /// Build with every cross-session share available: an optional prefix
@@ -6000,6 +6006,23 @@ impl MlxRunner {
         // Capture schedule feedback only after a monoblock generate.
         // Drain-only steps must not overwrite denoise_steps with 0.
         let diffusion_schedule = state.pending_diffusion_schedule.take();
+
+        if state.cache.hard_cap_exhausted() {
+            // Operator set AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS as a hard
+            // memory cap. append_paged_fa already demoted the offending
+            // layer to contiguous storage (correct data — proven token-exact
+            // by fa_paged_pool_exhaustion_demotion_matches_contiguous_oracle)
+            // so the forward above completed safely, but the cap's whole
+            // point is to bound memory rather than silently fall through to
+            // unbounded contiguous growth. Fail just this request instead of
+            // returning a token computed past the cap; do not re-insert
+            // state (mirrors every other terminal path below).
+            clear_cache();
+            return errored_item_run(
+                item.request_id,
+                "FA KV block pool exhausted under explicit AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap",
+            );
+        }
 
         if stop_reason.is_none() {
             let mut states = self.states.lock();
