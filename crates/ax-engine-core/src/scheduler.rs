@@ -122,8 +122,7 @@ pub const ROUTE_BARRIER_MODE_SERIAL: &str = "serial";
 pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS: &str = "ax_mlx_kv_linear_state_layers";
 pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB: &str = "ax_mlx_kv_linear_state_kib";
 pub const ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT: &str = "ax_mlx_kv_growth_count";
-pub const ROUTE_DECISION_AX_MLX_KV_PAGED_MATERIALIZE_US: &str =
-    "ax_mlx_kv_paged_materialize_us";
+pub const ROUTE_DECISION_AX_MLX_KV_PAGED_MATERIALIZE_US: &str = "ax_mlx_kv_paged_materialize_us";
 pub const ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_EXHAUSTION_FALLBACKS: &str =
     "ax_mlx_kv_paged_pool_exhaustion_fallbacks";
 pub const ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM: &str = "ax_mlx_model_mla_kv_latent_dim";

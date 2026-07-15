@@ -929,7 +929,7 @@ No new network surface. Disk cache remains local-FS, opt-in.
 | `ax_mlx_prefill_items_executed` | B | Runner prefill items |
 | `ax_mlx_paged_kv_enabled` | C | 0/1 |
 | `ax_mlx_paged_kv_blocks_used` | C | Physical blocks in use |
-| `ax_mlx_paged_kv_materialize_us` | C | Dense view build cost (PR4 measure) |
+| `ax_mlx_kv_paged_materialize_us` | C | Dense view build cost (PR4 measure; ROUTE_DECISION_AX_MLX_KV_* prefix) |
 | `ax_mlx_paged_kv_cow_copies` | C | Block-level CoW (PR5+) |
 
 Logging: `AX_KV_DIAG` for logical ledger; `tracing` under

@@ -69,8 +69,8 @@ TELEMETRY_KEYS = [
     "ax_mlx_prefill_chunk_selected",
     "ax_mlx_prefill_chunk_mode",
     # PR4 paged FA materialize cost (zero on contiguous default path)
-    "ax_mlx_paged_kv_materialize_us",
-    "ax_mlx_paged_kv_pool_exhaustion_fallbacks",
+    "ax_mlx_kv_paged_materialize_us",
+    "ax_mlx_kv_paged_pool_exhaustion_fallbacks",
     # KV capacity / usage
     "ax_mlx_kv_capacity_tokens",
     "ax_mlx_kv_capacity_kib",
