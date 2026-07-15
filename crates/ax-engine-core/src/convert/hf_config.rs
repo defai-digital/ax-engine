@@ -53,6 +53,7 @@ pub(crate) fn uses_text_config(model_type: &str) -> bool {
             | "qwen3_6"
             | "qwen3.5"
             | "qwen3.6"
+            | "mistral3"
     )
 }
 
