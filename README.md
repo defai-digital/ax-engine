@@ -608,6 +608,57 @@ tables and charts.
 | 2026-07-12 AX-only validation | Gemma 4 E2B/31B and Qwen 3.6 27B 4-bit; one warmup and three measurements | Diagnostic only; [artifacts](benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-validate/sweep_summary.md) |
 | 2026-07-11 v6.8.2 composite | Gemma 4 and Qwen 3.6, mixed historical sessions | Archived row-level evidence below; not current-head performance |
 
+#### v6.9.0 AX-only direct snapshot (2026-07-14)
+
+This complete AX-only direct sweep is published as a dated snapshot: AX Engine
+`v6.9.0`, MLX `0.31.2`, Apple M5 Max, 2 warmups, 5 measurements, and 128
+generated tokens at each prompt depth. It was measured from clean commit
+`ed483404`; it is **not** a claim about the later current `main` runtime.
+No historical `mlx_lm`, llama.cpp, or other peer value is changed; the peer
+series below are retained reference artifacts only.
+
+The restored box-and-whisker charts use this AX snapshot with retained historical
+`mlx_lm` and llama.cpp rows. They summarize the 7 peer-compatible Gemma
+model/quant rows or 4 Qwen rows across 128 / 512 / 2,048 prompt depths. They
+are cross-run distribution diagnostics, not exact per-model deltas or a
+same-session peer benchmark; the exact AX values are in the table below.
+
+**Gemma 4:**
+
+<img width="100%" src="docs/assets/perf-gemma4-decode-box-whisker.svg" alt="Gemma 4 direct decode box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+
+<img width="100%" src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Gemma 4 direct prefill box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+
+<img width="100%" src="docs/assets/perf-gemma4-ttft-box-whisker.svg" alt="Gemma 4 direct TTFT box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+
+**Qwen 3.6:**
+
+<img width="100%" src="docs/assets/perf-qwen-decode-box-whisker.svg" alt="Qwen 3.6 direct decode box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+
+<img width="100%" src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Qwen 3.6 direct prefill box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+
+<img width="100%" src="docs/assets/perf-qwen-ttft-box-whisker.svg" alt="Qwen 3.6 direct TTFT box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+
+| Model | Quant | Decode 128 | Decode 512 | Decode 2K | Prefill 128 | Prefill 512 | Prefill 2K | TTFT 128 | TTFT 512 | TTFT 2K |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Gemma 4 E2B | 4-bit | 231.8 | 227.6 | 216.9 | 2,259.7 | 7,298.5 | 16,754.1 | 56.6 | 70.2 | 122.2 |
+| Gemma 4 E2B | 6-bit | 187.8 | 181.3 | 174.5 | 1,977.1 | 6,620.4 | 15,315.0 | 64.7 | 77.3 | 133.7 |
+| Gemma 4 E4B | 4-bit | 145.2 | 142.2 | 138.8 | 1,621.7 | 4,214.2 | 7,442.3 | 78.9 | 121.5 | 275.2 |
+| Gemma 4 E4B | 6-bit | 112.1 | 110.3 | 108.1 | 1,398.7 | 3,783.8 | 6,842.4 | 91.5 | 135.3 | 299.3 |
+| Gemma 4 26B A4B | 4-bit | 145.4 | 141.4 | 135.2 | 662.5 | 1,947.0 | 3,839.8 | 193.2 | 263.0 | 533.4 |
+| Gemma 4 26B A4B | 6-bit | 113.4 | 110.9 | 107.0 | 505.5 | 1,579.5 | 3,333.2 | 253.2 | 324.2 | 614.4 |
+| Gemma 4 31B | 4-bit | 29.2 | 28.7 | 27.5 | 312.8 | 596.1 | 734.4 | 409.2 | 858.9 | 2,788.8 |
+| Gemma 4 31B | 6-bit | 20.4 | 20.0 | 18.9 | 224.8 | 479.2 | 641.8 | 569.4 | 1,068.4 | 3,191.1 |
+| Qwen 3.6 27B | 4-bit | 35.0 | 34.9 | 34.5 | 415.6 | 730.2 | 899.4 | 308.0 | 701.2 | 2,277.2 |
+| Qwen 3.6 27B | 6-bit | 25.4 | 25.4 | 25.0 | 294.1 | 595.1 | 800.0 | 435.2 | 860.4 | 2,560.1 |
+| Qwen 3.6 35B A3B | 4-bit | 155.8 | 156.5 | 153.7 | 550.8 | 1,612.3 | 3,021.3 | 232.4 | 317.6 | 677.9 |
+| Qwen 3.6 35B A3B | 6-bit | 125.9 | 124.0 | 122.6 | 413.7 | 1,326.6 | 2,672.0 | 309.4 | 385.9 | 766.5 |
+
+Decode and prefill values are tok/s; TTFT values are ms. Full raw results:
+[`sweep_results.json`](benchmarks/results/inference/ax-direct/2026-07-14-v6.9.0-ax-direct-only/sweep_results.json).
+
+<!-- readme-ax-direct-snapshot: benchmarks/results/inference/ax-direct/2026-07-14-v6.9.0-ax-direct-only/sweep_results.json -->
+
 #### Gemma 4 12B retained v6.8.2 case study
 
 Gemma 4 12B (`model_type: gemma4_unified`) is reported separately from the per-layer-embedding
@@ -838,10 +889,11 @@ leads `mlx_lm`, while prefill and runner-time TTFT are mixed and are often
 materially worse, especially for longer prompts. No matrix-wide prefill or
 TTFT lead is claimed.
 
-The previous six family box-and-whisker charts were removed. Their medians
-combined different model sizes and quantizations, which hid the row-level gaps
-and encouraged comparisons across incompatible llama.cpp and MLX prompt
-contracts. Exact historical rows and their provenance remain collapsed below.
+The six restored family box-and-whisker charts above deliberately keep the
+same mixed-size/quantization distribution shape as the earlier presentation,
+but now label the limitation directly: they compare the v6.9 AX snapshot to
+retained cross-run peer rows. Use the exact table for a model-specific reading;
+do not infer prompt-hash-parity deltas from a family-level box median.
 
 > **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are **not** prompt-hash parity with the other columns. No percentage delta is shown. MLX bit-widths are mapped to the nearest Unsloth GGUF quant (4→Q4_K_M, 6→Q6_K), with explicit UD-* Unsloth Dynamic rows only when no standard root-level K-quant is published. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
 
