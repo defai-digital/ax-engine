@@ -604,7 +604,16 @@ fn toasts_render_and_expire() {
 
 #[test]
 fn quick_start_targets_smallest_fitting_model() {
-    let app = new_app();
+    let mut app = new_app();
+    // Installed variants report real on-disk bytes from this machine's HF
+    // cache, which would make the pick depend on what the developer has
+    // downloaded; clear install state so only static catalog estimates count.
+    for family in &mut app.families {
+        for variant in &mut family.variants {
+            variant.installed = false;
+            variant.size = 0;
+        }
+    }
     let (fi, vi) = app.quick_start_target().expect("catalog is not empty");
     let family = &app.families[fi];
     assert_eq!(family.key, "gemma4-e2b");
