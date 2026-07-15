@@ -9,13 +9,17 @@ peer-backed benchmarks against `mlx-lm`, llama.cpp, MTPLX, and lightning-mlx.
 
 ## Why AX Engine
 
-- **First-class MTP** — prepare packages with one command (`ax-engine download-mtp`)
-- **Simple local serving** — install the wheel, download a model, run the printed
-  `ax-engine serve` command for OpenAI-compatible endpoints
-- **Repo-owned runtime** — direct Gemma / Qwen / GLM paths run in AX's MLX runtime
-  by default; `mlx-lm` and `llama.cpp` are explicit compatibility adapters
-- **Evidence-backed peer benchmarks** — MTP vs MTPLX / lightning-mlx; direct vs
-  mlx-lm / llama.cpp Metal, with checked-in artifacts
+- **Faster speculative decode** — one-command MTP packages
+  (`ax-engine download-mtp`) with measured speedups vs same-package direct, and
+  peer decode wins vs MTPLX and lightning-mlx on Qwen3.6
+- **Strong direct decode on Apple Silicon** — Gemma and Qwen paths compete with
+  `mlx-lm` and llama.cpp Metal on published decode charts, not a black-box
+  wrapper score
+- **You own the stack you serve** — AX runs the MLX graph, KV/runtime, and
+  OpenAI-compatible server for Gemma / Qwen / GLM; `mlx-lm` and `llama.cpp` stay
+  optional compatibility adapters
+- **Claims you can audit** — public rows ship with checked-in artifacts (route,
+  model snapshot, sampler, accept rate, provenance), not marketing-only screenshots
 
 ## Quick Start
 
