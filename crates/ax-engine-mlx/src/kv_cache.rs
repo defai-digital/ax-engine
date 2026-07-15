@@ -3830,6 +3830,143 @@ mod tests {
         assert_eq!(layer0_v.data_f32(), expected_v.data_f32());
     }
 
+    /// Token-exact oracle for the exhaustion→demotion path itself, not just
+    /// shape/counters (`fa_paged_pool_exhaustion_demotes_to_contiguous`) or a
+    /// sibling layer's untouched values
+    /// (`fa_paged_pool_shared_across_layers_demotes_independently`).
+    /// `fa_paged_append_trim_oracle_matches_contiguous`'s pool is oversized
+    /// and never demotes, so it never exercises this path either. This test
+    /// forces demotion mid-sequence and then keeps comparing the demoted
+    /// layer's own output — across further appends and a trim after
+    /// demotion — against a contiguous-only cache fed the identical logical
+    /// token sequence.
+    #[test]
+    fn fa_paged_pool_exhaustion_demotion_matches_contiguous_oracle() {
+        let config = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 2, // 8 tokens of private capacity; the 2nd append exhausts it
+        };
+        let mut paged = MlxKVCache::new_with_fa_block_pool(1, config);
+        let mut contig = MlxKVCache::new_contiguous(1);
+        let n_kv_heads = 1i32;
+        let head_dim = 4i32;
+
+        // Fills the private pool exactly; no demotion yet.
+        let steps_before_demotion: &[(usize, f32)] = &[(8, 1.0)];
+        // write_start=8 needs a 3rd block the pool doesn't have: demotes.
+        let demoting_step: (usize, f32) = (1, 3.0);
+        // Continues on the now-contiguous layer after demotion.
+        let steps_after_demotion: &[(usize, f32)] = &[(5, 5.0), (2, 7.0)];
+
+        let mut seq = 0usize;
+        for &(n, base) in steps_before_demotion {
+            let k = fa_token_values(n, n_kv_heads, head_dim, base);
+            let v = fa_token_values(n, n_kv_heads, head_dim, base + 0.5);
+            let _ = paged.append(0, k.clone(), v.clone());
+            let _ = contig.append(0, k, v);
+            paged.advance(n);
+            contig.advance(n);
+            seq += n;
+        }
+        assert_eq!(paged.fa_block_pool_available(), Some(0));
+
+        let (n, base) = demoting_step;
+        let k = fa_token_values(n, n_kv_heads, head_dim, base);
+        let v = fa_token_values(n, n_kv_heads, head_dim, base + 0.5);
+        let _ = paged.append(0, k.clone(), v.clone());
+        let _ = contig.append(0, k, v);
+        paged.advance(n);
+        contig.advance(n);
+        seq += n;
+        let usage = paged.usage_snapshot();
+        assert_eq!(
+            usage.paged_pool_exhaustion_fallbacks, 1,
+            "this step must actually trigger demotion, or the test proves nothing"
+        );
+        assert!(
+            matches!(paged.layers[0], Some(FaLayerStorage::Contiguous(_))),
+            "layer must be demoted to contiguous storage after exhaustion"
+        );
+
+        // Value-check right at the demotion boundary, before further appends
+        // can paper over a corrupted materialize.
+        {
+            let (pk, pv) = paged.logical_layer_kv(0).expect("demoted layer");
+            let (ck, cv) = contig.logical_layer_kv(0).expect("contig layer");
+            eval(&[&pk, &pv, &ck, &cv]);
+            assert_eq!(
+                host_f32(&pk),
+                host_f32(&ck),
+                "K mismatch right after demotion"
+            );
+            assert_eq!(
+                host_f32(&pv),
+                host_f32(&cv),
+                "V mismatch right after demotion"
+            );
+            assert_eq!(pk.shape(), ck.shape());
+        }
+
+        for &(n, base) in steps_after_demotion {
+            let k = fa_token_values(n, n_kv_heads, head_dim, base);
+            let v = fa_token_values(n, n_kv_heads, head_dim, base + 0.5);
+            let (pk, pv) = paged.append(0, k.clone(), v.clone());
+            let (ck, cv) = contig.append(0, k, v);
+            paged.advance(n);
+            contig.advance(n);
+            seq += n;
+            eval(&[&pk, &pv, &ck, &cv]);
+            assert_eq!(
+                host_f32(&pk),
+                host_f32(&ck),
+                "K mismatch after append to {seq}"
+            );
+            assert_eq!(
+                host_f32(&pv),
+                host_f32(&cv),
+                "V mismatch after append to {seq}"
+            );
+        }
+
+        // Trim into the post-demotion buffer; re-append across the trim
+        // boundary, mirroring the non-demoted oracle test.
+        let trim_len = seq - 4;
+        assert!(paged.trim_to(trim_len));
+        assert!(contig.trim_to(trim_len));
+        let (pk, pv) = paged.logical_layer_kv(0).expect("demoted layer");
+        let (ck, cv) = contig.logical_layer_kv(0).expect("contig layer");
+        eval(&[&pk, &pv, &ck, &cv]);
+        assert_eq!(
+            host_f32(&pk),
+            host_f32(&ck),
+            "K mismatch after trim_to({trim_len})"
+        );
+        assert_eq!(
+            host_f32(&pv),
+            host_f32(&cv),
+            "V mismatch after trim_to({trim_len})"
+        );
+
+        let k = fa_token_values(3, n_kv_heads, head_dim, 42.0);
+        let v = fa_token_values(3, n_kv_heads, head_dim, 42.5);
+        let (pk, pv) = paged.append(0, k.clone(), v.clone());
+        let (ck, cv) = contig.append(0, k, v);
+        paged.advance(3);
+        contig.advance(3);
+        eval(&[&pk, &pv, &ck, &cv]);
+        assert_eq!(
+            host_f32(&pk),
+            host_f32(&ck),
+            "K mismatch after re-append past trim"
+        );
+        assert_eq!(
+            host_f32(&pv),
+            host_f32(&cv),
+            "V mismatch after re-append past trim"
+        );
+        assert_eq!(pk.shape(), ck.shape());
+    }
+
     #[test]
     fn fa_paged_clone_diverges_without_double_free() {
         let config = FaBlockPoolConfig {
