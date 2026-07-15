@@ -438,15 +438,11 @@ def _try_generate_manifest(dest: Path, *, quiet: bool = False) -> bool:
     """Try bundled, installed, and source-checkout manifest generators. Returns True on success."""
     if (bundled := _bundled_bench_bin()) is not None:
         command = [bundled, "generate-manifest", str(dest)]
-        if quiet:
-            command.append("--json")
         if _run_manifest_command(command, quiet=quiet, label="bundled ax-engine-bench generate-manifest"):
             return True
 
     if shutil.which("ax-engine-bench"):
         command = ["ax-engine-bench", "generate-manifest", str(dest)]
-        if quiet:
-            command.append("--json")
         if _run_manifest_command(command, quiet=quiet, label="ax-engine-bench generate-manifest"):
             return True
 
@@ -498,6 +494,35 @@ def _validation_errors(dest: Path) -> list[str]:
     safetensors = list(dest.glob("*.safetensors"))
     if not safetensors:
         errors.append(f"no .safetensors files found in {dest}")
+    index_path = dest / "model.safetensors.index.json"
+    if index_path.is_file():
+        try:
+            index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            errors.append(f"unable to read safetensors index {index_path}: {error}")
+        else:
+            if not isinstance(index_payload, dict):
+                errors.append(f"invalid safetensors index {index_path}: root must be an object")
+            else:
+                weight_map = index_payload.get("weight_map", {})
+                if not isinstance(weight_map, dict):
+                    errors.append(f"invalid weight_map in safetensors index {index_path}")
+                else:
+                    expected = {
+                        filename
+                        for filename in weight_map.values()
+                        if isinstance(filename, str)
+                    }
+                    present = {path.name for path in safetensors if path.is_file()}
+                    # Some MLX community conversions retain the source checkpoint's
+                    # stale index while publishing a differently sharded artifact.
+                    # Enforce an index only when it refers to at least one local shard.
+                    if expected & present:
+                        missing = sorted(expected - present)
+                        errors.extend(
+                            f"missing safetensors shard {filename} in {dest}"
+                            for filename in missing
+                        )
     if not (dest / "config.json").exists():
         errors.append(f"config.json missing in {dest}")
     return errors

@@ -318,7 +318,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             self.assertEqual(
                 calls,
                 [
-                    ["ax-engine-bench", "generate-manifest", str(model_dir), "--json"],
+                    ["ax-engine-bench", "generate-manifest", str(model_dir)],
                     [str(local_bin), str(model_dir)],
                 ],
             )
@@ -344,7 +344,49 @@ class DownloadModelScriptTest(unittest.TestCase):
                 self.assertTrue(download_model._try_generate_manifest(model_dir, quiet=True))
 
             # The bundled binary is used; the stale PATH binary is never invoked.
-            self.assertEqual(calls, [[bundled, "generate-manifest", str(model_dir), "--json"]])
+            self.assertEqual(calls, [[bundled, "generate-manifest", str(model_dir)]])
+
+    def test_validation_rejects_missing_shards_declared_by_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text('{"model_type":"qwen3"}')
+            (model_dir / "model-00001-of-00002.safetensors").write_bytes(b"present")
+            (model_dir / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "model.layers.0.weight": "model-00001-of-00002.safetensors",
+                            "model.layers.1.weight": "model-00002-of-00002.safetensors",
+                        }
+                    }
+                )
+            )
+
+            errors = download_model._validation_errors(model_dir)
+
+            self.assertEqual(
+                errors,
+                [
+                    f"missing safetensors shard model-00002-of-00002.safetensors in {model_dir}"
+                ],
+            )
+
+    def test_validation_ignores_stale_index_for_differently_sharded_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text('{"model_type":"mistral3"}')
+            (model_dir / "model-00001-of-00003.safetensors").write_bytes(b"present")
+            (model_dir / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "model.layers.0.weight": "model-00001-of-00010.safetensors"
+                        }
+                    }
+                )
+            )
+
+            self.assertEqual(download_model._validation_errors(model_dir), [])
 
     def test_main_returns_nonzero_when_manifest_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

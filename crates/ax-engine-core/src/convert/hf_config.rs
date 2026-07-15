@@ -394,11 +394,11 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         None
     };
 
-    // GPT-OSS (and some MoE configs) expose dense `intermediate_size` for the
-    // expert FFN width rather than a separate `moe_intermediate_size`.
+    // GPT-OSS and Llama 4 expose dense `intermediate_size` for the expert FFN
+    // width rather than a separate `moe_intermediate_size`.
     let expert_intermediate_size = arch_u64(config, model_type, "moe_intermediate_size")
         .or_else(|| {
-            if is_gpt_oss {
+            if is_gpt_oss || is_llama4 {
                 arch_u64(config, model_type, "intermediate_size")
             } else {
                 None

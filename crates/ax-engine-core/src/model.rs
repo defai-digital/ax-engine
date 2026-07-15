@@ -1590,7 +1590,7 @@ fn validate_native_model_manifest(
             if has_any_shared_expert || moe_requires_shared_expert(manifest) {
                 if !matches!(
                     manifest.model_family.as_str(),
-                    "glm4_moe_lite" | "deepseek_v3"
+                    "glm4_moe_lite" | "deepseek_v3" | "llama4"
                 ) {
                     require_layer_role(
                         roles,
@@ -3240,16 +3240,8 @@ fn validate_tensor_quantization(
     if tensor.dtype != NativeTensorDataType::U32 {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
-                "tensor {} declares affine quantization but dtype is {:?}, expected u32",
+                "tensor {} declares quantization but dtype is {:?}, expected u32",
                 tensor.name, tensor.dtype
-            ),
-        });
-    }
-    if quantization.mode != "affine" {
-        return Err(NativeModelError::InvalidManifest {
-            message: format!(
-                "tensor {} quantization mode {} is unsupported",
-                tensor.name, quantization.mode
             ),
         });
     }
@@ -3258,21 +3250,42 @@ fn validate_tensor_quantization(
             message: format!("tensor {} quantization group_size must be > 0", tensor.name),
         });
     }
-    if !SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS.contains(&quantization.bits) {
-        if EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS.contains(&quantization.bits) {
-            if !allow_experimental_3bit {
-                return Err(NativeModelError::InvalidManifest {
-                    message: format!(
-                        "tensor {} quantization bits {} requires experimental gate (set {}=1)",
-                        tensor.name, quantization.bits, AX_ENGINE_3BIT_EXPERIMENTAL_ENV
-                    ),
-                });
+    match quantization.mode.as_str() {
+        "affine" => {
+            if !SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS.contains(&quantization.bits) {
+                if EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS.contains(&quantization.bits) {
+                    if !allow_experimental_3bit {
+                        return Err(NativeModelError::InvalidManifest {
+                            message: format!(
+                                "tensor {} quantization bits {} requires experimental gate (set {}=1)",
+                                tensor.name, quantization.bits, AX_ENGINE_3BIT_EXPERIMENTAL_ENV
+                            ),
+                        });
+                    }
+                } else {
+                    return Err(NativeModelError::InvalidManifest {
+                        message: format!(
+                            "tensor {} quantization bits must be one of {:?}, got {}",
+                            tensor.name, SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, quantization.bits
+                        ),
+                    });
+                }
             }
-        } else {
+        }
+        "mxfp4" if quantization.group_size == 32 && quantization.bits == 4 => {}
+        "mxfp4" => {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
-                    "tensor {} quantization bits must be one of {:?}, got {}",
-                    tensor.name, SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, quantization.bits
+                    "tensor {} MXFP4 quantization requires group_size 32 and bits 4",
+                    tensor.name
+                ),
+            });
+        }
+        _ => {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "tensor {} quantization mode {} is unsupported",
+                    tensor.name, quantization.mode
                 ),
             });
         }
@@ -4632,6 +4645,31 @@ mod tests {
     }
 
     #[test]
+    fn native_model_artifacts_validate_mxfp4_tensor_quantization() {
+        let spec = NativeTensorSpec {
+            name: "layers.0.ffn.experts.down_proj".to_string(),
+            role: NativeTensorRole::FfnDownExps,
+            layer_index: Some(0),
+            dtype: NativeTensorDataType::U32,
+            source_tensor_type: None,
+            source_quantized: true,
+            quantization: Some(NativeTensorQuantization {
+                mode: "mxfp4".to_string(),
+                group_size: 32,
+                bits: 4,
+            }),
+            quantized_source: None,
+            shape: vec![128, 2880, 360],
+            file: "model.safetensors".into(),
+            offset_bytes: 0,
+            length_bytes: 128 * 2880 * 360 * 4,
+        };
+
+        validate_tensor_quantization(&spec, false)
+            .expect("MXFP4 weights should be accepted with their fixed layout");
+    }
+
+    #[test]
     fn native_model_artifacts_reject_2bit_as_unsupported() {
         let mut manifest = packed_layer_manifest();
         let gate = manifest
@@ -4931,6 +4969,20 @@ mod tests {
 
         NativeModelArtifacts::from_dir(&dir)
             .expect("Qwen3.5 MoE should validate with switch experts and shared expert");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_llama4_shared_expert_without_gate_input() {
+        let mut manifest = switch_moe_manifest("llama4", true);
+        manifest
+            .tensors
+            .retain(|tensor| tensor.role != NativeTensorRole::FfnSharedExpertGateInp);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("Llama 4 shared experts do not provide a separate gate input");
 
         let _ = fs::remove_dir_all(dir);
     }

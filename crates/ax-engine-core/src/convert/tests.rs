@@ -263,6 +263,25 @@ fn gpt_oss_moe_config_reads_expert_geometry() {
 }
 
 #[test]
+fn llama4_moe_config_reads_nested_expert_geometry() {
+    let config = serde_json::json!({
+        "model_type": "llama4",
+        "text_config": {
+            "num_local_experts": 16,
+            "num_experts_per_tok": 1,
+            "intermediate_size": 8192,
+            "interleave_moe_layer_step": 1
+        }
+    });
+    let moe = moe_config(&config, "llama4");
+    assert_eq!(moe.expert_count, Some(16));
+    assert_eq!(moe.experts_per_token, Some(1));
+    assert_eq!(moe.expert_intermediate_size, Some(8192));
+    assert_eq!(moe.layer_freq, Some(1));
+    assert_eq!(moe.shared_expert_count, Some(1));
+}
+
+#[test]
 fn gpt_oss_tensor_map_matches_openai_and_mlx_community_keys() {
     let empty_config = serde_json::json!({});
     let family = model_family_for_type("gpt_oss", &empty_config).expect("gpt_oss");
