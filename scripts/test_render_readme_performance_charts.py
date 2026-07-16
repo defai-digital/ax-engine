@@ -107,7 +107,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             all(row["engine"] == "ax_engine_mlx" for row in chart_rows)
         )
 
-        readme = charts.REPO_ROOT / "README.md"
+        readme = charts.REPO_ROOT / "docs/PERFORMANCE-RESULTS.md"
         retained_mlx_rows = charts.load_retained_mlx_lm_rows(
             readme, charts.readme_model_slugs(readme)
         )
@@ -130,7 +130,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertIn("retained mlx-lm 0.31.3", boxplot)
         self.assertIn("cross-run distribution", boxplot)
 
-        readme_text = (charts.REPO_ROOT / "README.md").read_text()
+        readme_text = readme.read_text()
         for row in snapshot["rows"]:
             values = [
                 row["metrics"][metric][prompt_tokens]
@@ -245,13 +245,30 @@ class ReadmePerformanceChartTests(unittest.TestCase):
                 "[summary](benchmarks/results/speculative/mtp-6bit/local-run/summary.json)\n"
             )
 
-            self.assertEqual(charts.find_mtp_6bit_summary(readme), summary_path)
+            self.assertEqual(
+                charts.find_mtp_6bit_summary(readme), summary_path.resolve()
+            )
+
+        performance_results = charts.REPO_ROOT / "docs/PERFORMANCE-RESULTS.md"
+        self.assertEqual(
+            charts.find_mtp_6bit_summary(performance_results),
+            charts.REPO_ROOT
+            / "benchmarks/results/speculative/mtp-6bit/2026-07-13-exact-mtp-sampled-flappy-clean/summary.json",
+        )
 
     def test_mtp_6bit_refresh_defaults_to_speculative_results_tree(self) -> None:
         self.assertTrue(
             mtp_refresh.DEFAULT_OUTPUT_BASE.as_posix().endswith(
                 "/benchmarks/results/speculative/mtp-6bit"
             )
+        )
+
+    def test_mtp_peer_summary_resolves_from_performance_results(self) -> None:
+        performance_results = charts.REPO_ROOT / "docs/PERFORMANCE-RESULTS.md"
+        self.assertEqual(
+            charts.find_mtp_peer_summary(performance_results),
+            charts.REPO_ROOT
+            / "benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json",
         )
 
     def test_mtp_approximate_summary_must_be_non_publishable(self) -> None:
@@ -292,6 +309,18 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertIn("AX approximate MTP diagnostic", chart)
         self.assertIn("not publication eligible", chart)
         self.assertNotIn("Higher is better", chart)
+
+    def test_mtp_chart_source_label_is_repo_relative(self) -> None:
+        summary_path = (
+            charts.REPO_ROOT
+            / "benchmarks/results/speculative/mtp-6bit/2026-07-13-exact-mtp-sampled-flappy-clean/summary.json"
+        )
+        chart = charts.render_mtp_6bit_ax_acceleration_chart(
+            self.exact_mtp_chart_summary()["rows"], summary_path
+        )
+
+        self.assertIn("Source: benchmarks/results/speculative/mtp-6bit/", chart)
+        self.assertNotIn(str(charts.REPO_ROOT), chart)
 
     def test_mtp_exact_chart_requires_complete_all_winning_matrix(self) -> None:
         with tempfile.TemporaryDirectory() as root_name:

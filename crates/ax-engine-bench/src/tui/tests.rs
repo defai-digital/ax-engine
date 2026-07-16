@@ -114,14 +114,8 @@ fn grouping_collapses_variants_into_families() {
 fn quant_and_family_parsing() {
     assert_eq!(quant_bits("mlx-community/gemma-4-12B-it-4bit"), Some(4));
     assert_eq!(quant_bits("mlx-community/Qwen3.6-27B-8bit"), Some(8));
-    assert_eq!(
-        quant_bits("mlx-community/gpt-oss-20b-MXFP4-Q4"),
-        Some(4)
-    );
-    assert_eq!(
-        quant_bits("mlx-community/gpt-oss-120b-MXFP4-Q4"),
-        Some(4)
-    );
+    assert_eq!(quant_bits("mlx-community/gpt-oss-20b-MXFP4-Q4"), Some(4));
+    assert_eq!(quant_bits("mlx-community/gpt-oss-120b-MXFP4-Q4"), Some(4));
     assert_eq!(family_key("gemma4-e2b-8bit"), "gemma4-e2b");
     assert_eq!(family_key("glm4.7-flash-4bit"), "glm4.7-flash");
     assert_eq!(family_key("qwen3.6-35b"), "qwen3.6-35b");
@@ -316,10 +310,7 @@ fn log_parser_finds_download_output_paths() {
 
 #[test]
 fn artifact_dir_usable_requires_real_model_files() {
-    let root = std::env::temp_dir().join(format!(
-        "ax-tui-artifact-usable-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("ax-tui-artifact-usable-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("mkdir root");
 
@@ -355,7 +346,11 @@ fn mtp_serve_without_package_path_fails_closed() {
     app.downloads.push(task);
     app.start_server_for_download(0);
     let job = app.server.expect("server job should be set");
-    assert_eq!(job.done, Some(-1), "must not spawn real server without path");
+    assert_eq!(
+        job.done,
+        Some(-1),
+        "must not spawn real server without path"
+    );
     assert!(
         job.log.iter().any(|line| line.contains("MTP package path")),
         "error should mention MTP package path: {:?}",

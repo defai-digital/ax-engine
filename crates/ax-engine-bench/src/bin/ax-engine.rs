@@ -2451,8 +2451,7 @@ fn download_options_payload() -> Value {
 fn format_download_options() -> String {
     let mut lines = vec![
         "Available direct-mode MLX download targets".to_string(),
-        "(primary: Gemma 4 / Qwen 3.x / GLM; secondary: Llama, Mistral, GPT-OSS):"
-            .to_string(),
+        "(primary: Gemma 4 / Qwen 3.x / GLM; secondary: Llama, Mistral, GPT-OSS):".to_string(),
     ];
     for profile in MODEL_PROFILES.iter().filter(|profile| profile.downloadable) {
         let aliases = profile.aliases.join(", ");

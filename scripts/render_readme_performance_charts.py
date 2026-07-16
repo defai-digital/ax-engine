@@ -32,6 +32,14 @@ def _load_embedding_publish_gate():
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def display_source_path(path: Path) -> str:
+    """Return a portable path for a chart source label."""
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def workspace_version() -> str:
     cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
     match = re.search(
@@ -1279,7 +1287,9 @@ def find_mtp_6bit_summary(readme: Path) -> Path | None:
     )
     if match is None:
         return None
-    summary_path = readme.parent / match.group(1)
+    summary_path = readme_artifacts.resolve_results_doc_path(
+        readme, match.group(1)
+    )
     if not summary_path.exists():
         raise ChartError(f"README references missing MTP summary: {summary_path}")
     return summary_path
@@ -1555,7 +1565,7 @@ def render_mtp_6bit_ax_acceleration_chart(
 
     version = engine_version or "unrecorded"
     version_label = f"Runtime: AX Engine v{version} ({run_date})."
-    source_label = f"Source: {summary_path.parent.as_posix()} / summary.json. " + (
+    source_label = f"Source: {display_source_path(summary_path.parent)} / summary.json. " + (
         "No MTP+n-gram stacking; approximate and not publication eligible."
         if approximate_diagnostic
         else "Pure MTP; no MTP+n-gram stacking."
@@ -1640,7 +1650,9 @@ def find_mtp_peer_summary(readme: Path) -> Path | None:
     )
     if match is None:
         return None
-    summary_path = readme.parent / match.group(1)
+    summary_path = readme_artifacts.resolve_results_doc_path(
+        readme, match.group(1)
+    )
     if not summary_path.exists():
         raise ChartError(f"README references missing MTP peer summary: {summary_path}")
     return summary_path
@@ -3020,6 +3032,7 @@ def main() -> int:
         help="Render or verify only the README direct peer boxplot charts.",
     )
     args = parser.parse_args()
+    repo_root = readme_artifacts.repo_root_for(args.readme)
 
     if args.only_ax_direct_snapshot:
         snapshot_path = find_ax_direct_snapshot(args.readme)
@@ -3105,7 +3118,7 @@ def main() -> int:
 
     embedding_scale_output_path = args.output_dir / EMBEDDING_SCALE_CHART_OUTPUT
     embedding_scale_content = render_embedding_box_chart(
-        load_embedding_scale_delta_rows(args.readme.parent),
+        load_embedding_scale_delta_rows(repo_root),
         title="Qwen3 embedding ingest scale (batched)",
         subtitle=(
             "Both series are matrix-batched encode (B=8/32/64) | "
@@ -3123,7 +3136,7 @@ def main() -> int:
     embeddinggemma_scale_output_path = args.output_dir / EMBEDDINGGEMMA_SCALE_CHART_OUTPUT
     embeddinggemma_scale_content = render_embedding_box_chart(
         load_embedding_overlay_scale_delta_rows(
-            args.readme.parent,
+            repo_root,
             EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT,
             EMBEDDINGGEMMA_SCALE_AX_ARTIFACT,
         ),
@@ -3167,7 +3180,7 @@ def main() -> int:
             mismatches.append(output_path)
 
     # N-gram charts (Qwen3-4B): reads from the latest ngram-compare artifact.
-    ngram_artifact_path = find_latest_ngram_artifact(args.readme.parent)
+    ngram_artifact_path = find_latest_ngram_artifact(repo_root)
     if ngram_artifact_path is not None:
         ngram_artifact = json.loads(ngram_artifact_path.read_text())
         for out_name, renderer in [
@@ -3181,7 +3194,7 @@ def main() -> int:
                 mismatches.append(out_path)
 
     # N-gram multi-model charts: one group per model slug.
-    ngram_artifacts = find_ngram_artifacts_by_model(args.readme.parent)
+    ngram_artifacts = find_ngram_artifacts_by_model(repo_root)
     if ngram_artifacts:
         for out_name, renderer in [
             ("perf-ngram-models-toks.svg", render_ngram_models_speedup_chart),
