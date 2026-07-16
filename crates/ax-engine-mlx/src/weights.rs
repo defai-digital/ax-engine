@@ -1094,6 +1094,28 @@ fn load_gemma4_unified_vision_weights(
         return Ok(None);
     }
 
+    let mut patch_dense = take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::Gemma4UnifiedVisionPatchDense,
+        None,
+        "gemma4_unified.patch_dense",
+    )?;
+    // `take_weight` recognizes the conventional `.bias` sibling and consumes
+    // it as a dense linear bias. The unified vision path applies that bias
+    // explicitly after its patch projection, so move it back out here to
+    // avoid both a missing-role error and adding it twice in `qw`.
+    let patch_dense_bias = match patch_dense.linear_bias.take() {
+        Some(bias) => bias,
+        None => take_plain_required(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionPatchDenseBias,
+            None,
+            "gemma4_unified.patch_dense.bias",
+        )?,
+    };
+
     Ok(Some(Gemma4UnifiedVisionWeights {
         patch_ln1_weight: take_plain_required(
             specs,
@@ -1109,20 +1131,8 @@ fn load_gemma4_unified_vision_weights(
             None,
             "gemma4_unified.patch_ln1.bias",
         )?,
-        patch_dense: take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::Gemma4UnifiedVisionPatchDense,
-            None,
-            "gemma4_unified.patch_dense",
-        )?,
-        patch_dense_bias: take_plain_required(
-            specs,
-            name_map,
-            NativeTensorRole::Gemma4UnifiedVisionPatchDenseBias,
-            None,
-            "gemma4_unified.patch_dense.bias",
-        )?,
+        patch_dense,
+        patch_dense_bias,
         patch_ln2_weight: take_plain_required(
             specs,
             name_map,
@@ -3756,6 +3766,81 @@ mod tests {
             .expect_err("mixed attention families should fail");
 
         assert!(matches!(error, WeightLoadError::InvalidLayer(_)));
+    }
+
+    #[test]
+    fn gemma4_unified_vision_keeps_patch_dense_bias_outside_quantized_weight() {
+        let roles = [
+            (
+                "patch_ln1_weight",
+                NativeTensorRole::Gemma4UnifiedVisionPatchNorm1,
+            ),
+            (
+                "patch_ln1_bias",
+                NativeTensorRole::Gemma4UnifiedVisionPatchNorm1Bias,
+            ),
+            (
+                "patch_dense.weight",
+                NativeTensorRole::Gemma4UnifiedVisionPatchDense,
+            ),
+            (
+                "patch_dense.bias",
+                NativeTensorRole::Gemma4UnifiedVisionPatchDenseBias,
+            ),
+            (
+                "patch_ln2_weight",
+                NativeTensorRole::Gemma4UnifiedVisionPatchNorm2,
+            ),
+            (
+                "patch_ln2_bias",
+                NativeTensorRole::Gemma4UnifiedVisionPatchNorm2Bias,
+            ),
+            (
+                "pos_embedding",
+                NativeTensorRole::Gemma4UnifiedVisionPositionEmbedding,
+            ),
+            (
+                "pos_norm_weight",
+                NativeTensorRole::Gemma4UnifiedVisionPositionNorm,
+            ),
+            (
+                "pos_norm_bias",
+                NativeTensorRole::Gemma4UnifiedVisionPositionNormBias,
+            ),
+            (
+                "projection",
+                NativeTensorRole::Gemma4UnifiedVisionProjection,
+            ),
+        ];
+        let specs = roles
+            .iter()
+            .map(|(name, role)| NativeTensorSpec {
+                name: (*name).to_string(),
+                role: *role,
+                layer_index: None,
+                dtype: NativeTensorDataType::Bf16,
+                source_tensor_type: None,
+                source_quantized: false,
+                quantization: None,
+                quantized_source: None,
+                shape: vec![1],
+                file: PathBuf::from("model.safetensors"),
+                offset_bytes: 0,
+                length_bytes: 2,
+            })
+            .collect::<Vec<_>>();
+        let mut name_map = roles
+            .iter()
+            .map(|(name, _)| (name.to_string(), zeros(&[1], MlxDtype::Bfloat16, None)))
+            .collect::<HashMap<_, _>>();
+
+        let weights = load_gemma4_unified_vision_weights(&specs, &mut name_map)
+            .expect("vision weights should load")
+            .expect("vision roles should enable the unified vision path");
+
+        assert!(weights.patch_dense.linear_bias.is_none());
+        assert_eq!(weights.patch_dense_bias.shape(), vec![1]);
+        assert!(name_map.is_empty());
     }
 
     #[test]
