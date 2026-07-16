@@ -153,17 +153,90 @@ def infer_pooling(model_id: str, artifacts_hint: str = "") -> str:
     return "last"
 
 
+def _eos_token_string_from_config(tokenizer_path: str | Path) -> Optional[str]:
+    """Read ``eos_token`` from tokenizer_config.json next to tokenizer.json."""
+    path = Path(tokenizer_path)
+    cfg_path = path.with_name("tokenizer_config.json") if path.name == "tokenizer.json" else path / "tokenizer_config.json"
+    if not cfg_path.is_file():
+        # also try parent when path is the artifact root
+        alt = path.parent / "tokenizer_config.json"
+        cfg_path = alt if alt.is_file() else cfg_path
+    if not cfg_path.is_file():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    eos = cfg.get("eos_token")
+    if isinstance(eos, dict):
+        content = eos.get("content")
+        return str(content) if content is not None else None
+    if isinstance(eos, str) and eos:
+        return eos
+    return None
+
+
+def resolve_eos_id(tok: Any, tokenizer_path: Optional[str] = None) -> Optional[int]:
+    """Resolve EOS id matching verify_embedding_models / HF family contracts.
+
+    Bug fixed: earlier code preferred ``</s>`` (often present but wrong for Qwen
+    chat/embedding templates). Prefer ``tokenizer_config.json`` eos, then
+    ``<|im_end|>``, ``<|endoftext|>``, and only then legacy ``</s>``.
+    """
+    # transformers objects expose eos_token_id directly
+    eos_attr = getattr(tok, "eos_token_id", None)
+    if eos_attr is not None:
+        try:
+            return int(eos_attr)
+        except (TypeError, ValueError):
+            pass
+
+    candidates: list[str] = []
+    if tokenizer_path:
+        cfg_eos = _eos_token_string_from_config(tokenizer_path)
+        if cfg_eos:
+            candidates.append(cfg_eos)
+    # Qwen chat/embedding; pad-as-eot; legacy
+    for cand in ("<|im_end|>", "<|endoftext|>", "</s>", "<eos>"):
+        if cand not in candidates:
+            candidates.append(cand)
+
+    token_to_id = getattr(tok, "token_to_id", None)
+    if not callable(token_to_id):
+        convert = getattr(tok, "convert_tokens_to_ids", None)
+        if callable(convert):
+            for cand in candidates:
+                try:
+                    tid = convert(cand)
+                except Exception:
+                    continue
+                if tid is not None and int(tid) >= 0:
+                    # HF uses unk id for missing tokens sometimes
+                    unk = getattr(tok, "unk_token_id", None)
+                    if unk is not None and int(tid) == int(unk):
+                        continue
+                    return int(tid)
+        return None
+
+    for cand in candidates:
+        tid = token_to_id(cand)
+        if tid is not None:
+            return int(tid)
+    return None
+
+
 def load_tokenizer(tokenizer_path: str) -> Any:
     """Load a tokenizer from ``tokenizer.json`` (or its parent artifact dir).
 
-    Prefer the lightweight ``tokenizers`` package; fall back to
-    ``transformers.AutoTokenizer`` (same contract as verify_embedding_models).
+    Returns ``(backend, tokenizer_obj, eos_id)``. Prefer the lightweight
+    ``tokenizers`` package; fall back to ``transformers.AutoTokenizer``.
     """
     path = Path(tokenizer_path)
     try:
         from tokenizers import Tokenizer
 
-        return ("tokenizers", Tokenizer.from_file(str(path)))
+        tok = Tokenizer.from_file(str(path))
+        return ("tokenizers", tok, resolve_eos_id(tok, str(path)))
     except ImportError:
         pass
     try:
@@ -173,10 +246,8 @@ def load_tokenizer(tokenizer_path: str) -> Any:
             "embedding QA needs either the `tokenizers` or `transformers` package"
         ) from exc
     root = path.parent if path.name == "tokenizer.json" else path
-    return (
-        "transformers",
-        AutoTokenizer.from_pretrained(str(root), local_files_only=True),
-    )
+    tok = AutoTokenizer.from_pretrained(str(root), local_files_only=True)
+    return ("transformers", tok, resolve_eos_id(tok, str(path)))
 
 
 def encode_texts(
@@ -190,13 +261,17 @@ def encode_texts(
     - Qwen3-Embedding: no special tokens, append EOS if present.
     - EmbeddingGemma: add special tokens (CLS/BOS style path).
 
-    ``tokenizer`` may be a raw HF object or a ``(backend, obj)`` pair from
+    ``tokenizer`` may be a raw HF object or ``(backend, obj[, eos_id])`` from
     ``load_tokenizer``.
     """
     backend = "auto"
     tok = tokenizer
-    if isinstance(tokenizer, tuple) and len(tokenizer) == 2:
-        backend, tok = tokenizer
+    eos_id: Optional[int] = None
+    if isinstance(tokenizer, tuple):
+        if len(tokenizer) == 3:
+            backend, tok, eos_id = tokenizer
+        elif len(tokenizer) == 2:
+            backend, tok = tokenizer
 
     rows: list[list[int]] = []
     for text in texts:
@@ -206,25 +281,20 @@ def encode_texts(
                 ids = list(tok.encode(text, add_special_tokens=True))
             else:
                 ids = list(tok.encode(text, add_special_tokens=False))
-                eos_id = getattr(tok, "eos_token_id", None)
-                if eos_id is not None and (not ids or ids[-1] != int(eos_id)):
-                    ids.append(int(eos_id))
+                use_eos = eos_id if eos_id is not None else getattr(tok, "eos_token_id", None)
+                if use_eos is not None and (not ids or ids[-1] != int(use_eos)):
+                    ids.append(int(use_eos))
         else:
             # tokenizers.Tokenizer
             if model_kind == "embeddinggemma":
                 encoded = tok.encode(text, add_special_tokens=True)
+                ids = list(encoded.ids)
             else:
                 encoded = tok.encode(text, add_special_tokens=False)
-            ids = list(encoded.ids)
-            eos_id = None
-            if hasattr(tok, "token_to_id"):
-                for cand in ("</s>", "<|endoftext|>", "<eos>"):
-                    tid = tok.token_to_id(cand)
-                    if tid is not None:
-                        eos_id = tid
-                        break
-            if eos_id is not None and (not ids or ids[-1] != int(eos_id)):
-                ids.append(int(eos_id))
+                ids = list(encoded.ids)
+                use_eos = eos_id if eos_id is not None else resolve_eos_id(tok)
+                if use_eos is not None and (not ids or ids[-1] != int(use_eos)):
+                    ids.append(int(use_eos))
         if not ids:
             raise ValueError(f"empty tokenization for {text!r}")
         rows.append([int(i) for i in ids])
@@ -283,6 +353,8 @@ def _post_embeddings(
             return int(exc.code), json.loads(raw)
         except json.JSONDecodeError:
             return int(exc.code), raw
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return 0, f"connection_error: {exc}"
 
 
 def extract_vectors(body: dict[str, Any] | str) -> list[list[float]]:

@@ -31,6 +31,7 @@ from embedding_probes import (  # noqa: E402
     probe_retrieval,
     probe_semantic_order,
     rank_by_cosine,
+    resolve_eos_id,
 )
 
 
@@ -82,6 +83,39 @@ class EmbeddingInferTests(unittest.TestCase):
             default_batch_threshold("Qwen3-Embedding-8B-4bit-DWQ"), 0.996
         )
         self.assertEqual(default_batch_threshold("Qwen3-Embedding-0.6B-8bit"), 0.999)
+
+    def test_resolve_eos_prefers_im_end_over_legacy_s(self) -> None:
+        """Regression: Qwen configs use <|im_end|>; </s> must not win first."""
+
+        class FakeTok:
+            def token_to_id(self, s: str):
+                return {
+                    "</s>": 128247,
+                    "<|endoftext|>": 151643,
+                    "<|im_end|>": 151645,
+                }.get(s)
+
+        # Without config path, priority list still prefers im_end over </s>
+        self.assertEqual(resolve_eos_id(FakeTok()), 151645)
+
+    def test_resolve_eos_from_tokenizer_config(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        class FakeTok:
+            def token_to_id(self, s: str):
+                return {"<|im_end|>": 99, "</s>": 1, "<|endoftext|>": 2}.get(s)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "tokenizer.json").write_text("{}")
+            (root / "tokenizer_config.json").write_text(
+                json.dumps({"eos_token": {"content": "<|im_end|>"}})
+            )
+            self.assertEqual(
+                resolve_eos_id(FakeTok(), str(root / "tokenizer.json")), 99
+            )
 
 
 class EmbeddingProbeMockTests(unittest.TestCase):

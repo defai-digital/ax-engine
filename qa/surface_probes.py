@@ -92,6 +92,8 @@ def _post_json(
             return int(exc.code), json.loads(raw)
         except json.JSONDecodeError:
             return int(exc.code), raw
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return 0, f"connection_error: {exc}"
 
 
 def chat_completion_payload(
@@ -287,8 +289,12 @@ def probe_stream_and_nonstream(
             raw = resp.read().decode("utf-8", errors="replace")
         stream_ok = "data:" in raw and raw.strip() != ""
         stream_detail = f"sse_bytes={len(raw)}"
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+        stream_detail = f"stream_error={exc}"
+        stream_ok = False
     except Exception as exc:
         stream_detail = f"stream_error={exc}"
+        stream_ok = False
 
     elapsed = (time.monotonic() - start) * 1000
     if status_ns != 200 or content_ns is None:
