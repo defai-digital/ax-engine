@@ -87,6 +87,16 @@ run_qa_for_model() {
   local report_file="$REPORT_DIR/qa-${model_id}-${mode}-$(date +%Y%m%d-%H%M%S).html"
   local tokenizer_path="$artifacts_dir/tokenizer.json"
   echo "  Running QA tests..."
+  # Sample a stratified subset of the question bank each run (override with
+  # QA_SAMPLE / QA_SEED / QA_ALL=1). Avoids always testing the same fixed prompts.
+  local sample_args=(--sample "${QA_SAMPLE:-12}")
+  if [ -n "${QA_SEED:-}" ]; then
+    sample_args+=(--seed "$QA_SEED")
+  fi
+  if [ "${QA_ALL:-0}" = "1" ]; then
+    sample_args=(--all)
+  fi
+
   python3 "$QA_DIR/run_qa.py" \
     --base-url "http://127.0.0.1:$PORT" \
     --model "$model_id" \
@@ -95,6 +105,7 @@ run_qa_for_model() {
     --max-tokens 512 \
     --temperature 0.0 \
     --timeout "$TIMEOUT" \
+    "${sample_args[@]}" \
     --output "$report_file" \
     2>&1 | sed 's/^/  /'
 

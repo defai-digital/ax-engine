@@ -9,7 +9,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from prompts import PROMPTS, get_prompt_by_id
+from prompts import (
+    DEFAULT_SAMPLE_SIZE,
+    PROMPTS,
+    all_categories,
+    bank_size,
+    describe_bank,
+    get_prompt_by_id,
+    sample_prompts,
+)
 from client import send_request
 from checkers import run_all_checks
 from reporter import generate_html_report
@@ -51,17 +59,43 @@ def run_qa_suite(
     timeout,
     tokenizer=None,
     tokenizer_path=None,
+    sample_size=None,
+    seed=None,
+    categories=None,
+    run_all=False,
 ):
     from client import send_generate_request
 
     results = []
-    prompts_to_run = (
-        PROMPTS if not prompt_ids else [get_prompt_by_id(pid) for pid in prompt_ids]
-    )
-    prompts_to_run = [p for p in prompts_to_run if p is not None]
+    if prompt_ids:
+        prompts_to_run, seed_used = sample_prompts(
+            prompt_ids=prompt_ids,
+            seed=seed,
+        )
+    elif run_all:
+        prompts_to_run, seed_used = sample_prompts(
+            n=bank_size(),
+            seed=seed,
+            categories=categories,
+            stratified=False,
+        )
+    else:
+        n = DEFAULT_SAMPLE_SIZE if sample_size is None else sample_size
+        prompts_to_run, seed_used = sample_prompts(
+            n=n,
+            seed=seed,
+            categories=categories,
+            stratified=True,
+        )
 
     total = len(prompts_to_run) * len(modes) * len(streams)
     current = 0
+    print(
+        f"  Sample:   {len(prompts_to_run)}/{bank_size()} prompts "
+        f"(seed={seed_used}{' all' if run_all else ''})"
+    )
+    print(f"  IDs:      {', '.join(p.id for p in prompts_to_run)}")
+    print()
 
     for prompt in prompts_to_run:
         for mode in modes:
@@ -114,6 +148,7 @@ def run_qa_suite(
                 results.append(
                     {
                         "prompt_id": prompt.id,
+                        "category": prompt.category,
                         "mode": mode,
                         "stream": stream,
                         "response": resp,
@@ -121,7 +156,7 @@ def run_qa_suite(
                     }
                 )
 
-    return results
+    return results, seed_used, [p.id for p in prompts_to_run]
 
 
 def main():
@@ -167,7 +202,35 @@ def main():
         "--prompts",
         nargs="+",
         default=None,
-        help="Specific prompt IDs to run (default: all)",
+        help="Specific prompt IDs to run (overrides sampling)",
+    )
+    parser.add_argument(
+        "--sample",
+        type=int,
+        default=DEFAULT_SAMPLE_SIZE,
+        metavar="N",
+        help=(
+            f"Draw N prompts from the bank each run (default: {DEFAULT_SAMPLE_SIZE}). "
+            "Uses stratified sampling across categories."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed for sampling (default: random; print/replay this for reproducibility)",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="run_all",
+        help="Run the full question bank (no subset sampling)",
+    )
+    parser.add_argument(
+        "--categories",
+        nargs="+",
+        default=None,
+        help="Limit bank/sample to these categories",
     )
     parser.add_argument(
         "--output",
@@ -188,12 +251,23 @@ def main():
     parser.add_argument(
         "--list-prompts", action="store_true", help="List available prompts and exit"
     )
+    parser.add_argument(
+        "--list-categories",
+        action="store_true",
+        help="Show bank size and per-category counts, then exit",
+    )
     args = parser.parse_args()
 
+    if args.list_categories:
+        print(describe_bank())
+        return
+
     if args.list_prompts:
+        print(describe_bank())
+        print()
         print("Available prompts:")
         for p in PROMPTS:
-            print(f"  {p.id:25s} [{p.category:12s}] {p.description}")
+            print(f"  {p.id:32s} [{p.category:14s}] {p.description}")
         return
 
     streams = []
@@ -225,10 +299,16 @@ def main():
     print(f"  Modes:    {', '.join(args.modes)}")
     print(f"  Streams:  {streams}")
     print(f"  Version:  {tag} ({commit})")
-    print(f"  Prompts:  {len(args.prompts) if args.prompts else len(PROMPTS)}")
+    print(f"  Bank:     {bank_size()} prompts / {len(all_categories())} categories")
+    if args.prompts:
+        print(f"  Select:   explicit ids ({len(args.prompts)})")
+    elif args.run_all:
+        print("  Select:   full bank")
+    else:
+        print(f"  Select:   sample {args.sample} (stratified)")
     print()
 
-    results = run_qa_suite(
+    results, seed_used, sampled_ids = run_qa_suite(
         base_url=args.base_url,
         model_id=model_id,
         modes=args.modes,
@@ -240,6 +320,10 @@ def main():
         timeout=args.timeout,
         tokenizer=tokenizer,
         tokenizer_path=args.tokenizer if tokenizer is not None else None,
+        sample_size=args.sample,
+        seed=args.seed,
+        categories=args.categories,
+        run_all=args.run_all,
     )
 
     passed = sum(1 for r in results if r["report"].auto_pass)
@@ -249,11 +333,16 @@ def main():
         if total > 0
         else "\nNo results"
     )
+    print(f"Replay:  --seed {seed_used}" + (f" --sample {args.sample}" if not args.run_all and not args.prompts else ""))
 
     metadata = {
         "title": f"AX Engine QA Report — {tag}",
         "version": tag,
         "commit": commit,
+        "seed": seed_used,
+        "bank_size": bank_size(),
+        "sampled_ids": sampled_ids,
+        "sample_size": len(sampled_ids),
     }
     html_content = generate_html_report(results, metadata)
 

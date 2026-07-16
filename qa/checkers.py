@@ -160,6 +160,33 @@ def check_pytest_test_count(text, prompt):
     return CheckResult("pytest_test_count", passed, detail, score)
 
 
+def check_exact_answer(text, prompt):
+    """Case-insensitive substring match for closed-ended items."""
+    expected = getattr(prompt, "exact_answer", None)
+    if not expected:
+        return CheckResult("exact_answer", True, "not required", 1.0)
+    aliases = list(getattr(prompt, "exact_answer_aliases", None) or [])
+    candidates = [expected, *aliases]
+    hay = text.strip().lower()
+    for cand in candidates:
+        needle = str(cand).strip().lower()
+        if not needle:
+            continue
+        if needle in hay:
+            return CheckResult(
+                "exact_answer",
+                True,
+                f"found {cand!r}",
+                1.0,
+            )
+    return CheckResult(
+        "exact_answer",
+        False,
+        f"missing any of {candidates!r}",
+        0.0,
+    )
+
+
 def check_invoice_total(text, prompt):
     if prompt.json_expected_total is None:
         return CheckResult("invoice_total", True, "not required", 1.0)
@@ -209,6 +236,7 @@ def run_all_checks(text, prompt):
         check_garbage(text),
         check_pytest_test_count(text, prompt),
         check_invoice_total(text, prompt),
+        check_exact_answer(text, prompt),
     ]
     report = QualityReport(
         prompt_id=prompt.id,

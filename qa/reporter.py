@@ -19,6 +19,10 @@ def generate_html_report(results, metadata):
     title = metadata.get("title", "AX Engine QA Report")
     version = metadata.get("version", "unknown")
     commit = metadata.get("commit", "unknown")
+    seed = metadata.get("seed", "n/a")
+    bank_size = metadata.get("bank_size", "n/a")
+    sample_size = metadata.get("sample_size", len(results))
+    sampled_ids = metadata.get("sampled_ids") or []
 
     total = len(results)
     passed = sum(1 for r in results if r["report"].auto_pass)
@@ -31,6 +35,7 @@ def generate_html_report(results, metadata):
         resp = r["response"]
         mode = r["mode"]
         stream = r["stream"]
+        category = r.get("category", "")
         preview = _esc(rpt.output_preview[:200])
         checks_html = " | ".join(
             f"{_pass_badge(c.passed)} {_esc(c.name)}: {_esc(c.detail)}"
@@ -38,6 +43,7 @@ def generate_html_report(results, metadata):
         )
         rows.append(f"""<tr>
 <td>{_esc(r["prompt_id"])}</td>
+<td>{_esc(category)}</td>
 <td>{_esc(mode)}</td>
 <td>{"Yes" if stream else "No"}</td>
 <td>{_pass_badge(rpt.auto_pass)}</td>
@@ -75,7 +81,7 @@ details summary {{ cursor: pointer; color: #2563eb; }}
 </head>
 <body>
 <h1>{_esc(title)}</h1>
-<div class="meta">Generated: {now} | Version: {_esc(version)} | Commit: {_esc(commit)}</div>
+<div class="meta">Generated: {now} | Version: {_esc(version)} | Commit: {_esc(commit)} | Seed: {_esc(seed)} | Sample: {_esc(sample_size)} / bank {_esc(bank_size)} | IDs: {_esc(', '.join(sampled_ids) if sampled_ids else 'n/a')}</div>
 <div class="summary">
 <div class="card"><h3>Total Tests</h3><div class="value">{total}</div></div>
 <div class="card"><h3>Passed</h3><div class="value pass">{passed}</div></div>
@@ -84,7 +90,7 @@ details summary {{ cursor: pointer; color: #2563eb; }}
 </div>
 <table>
 <thead><tr>
-<th>Prompt</th><th>Mode</th><th>Stream</th><th>Result</th><th>Checks</th><th>Latency</th><th>Finish</th><th>Output</th><th>Details</th>
+<th>Prompt</th><th>Category</th><th>Mode</th><th>Stream</th><th>Result</th><th>Checks</th><th>Latency</th><th>Finish</th><th>Output</th><th>Details</th>
 </tr></thead>
 <tbody>
 {table_rows}

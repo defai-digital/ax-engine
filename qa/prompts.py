@@ -1,7 +1,20 @@
-"""Test prompt suite for AX Engine QA — covers reasoning, code, creative, instruction-following, math."""
+"""QA prompts API: dataclass, legacy PROMPTS alias, stratified sampling from the bank.
 
-from dataclasses import dataclass, field
-from typing import Optional
+Design goals
+------------
+* **Large bank, small runs**: standard public-eval *dimensions* (math, code,
+  instruction following, reasoning, knowledge, …) live in `question_bank.py`.
+  Each run samples a subset so the suite does not collapse to a fixed dozen
+  prompts that a model or pipeline can overfit.
+* **Reproducible**: sampling always records a seed; pass `--seed` to replay.
+* **Coverage**: default sampling is stratified across categories when possible.
+"""
+
+from __future__ import annotations
+
+import random
+from dataclasses import dataclass, field, replace
+from typing import Optional, Sequence
 
 
 @dataclass
@@ -17,144 +30,136 @@ class QaPrompt:
     description: str = ""
     min_test_count: int = 0
     json_expected_total: Optional[float] = None
+    # Case-insensitive substring match against the model output (after strip).
+    exact_answer: Optional[str] = None
+    # Alternative accepted answers (also case-insensitive substring).
+    exact_answer_aliases: list[str] = field(default_factory=list)
 
 
-PROMPTS: list[QaPrompt] = [
-    QaPrompt(
-        id="reasoning_logic",
-        category="reasoning",
-        system=None,
-        user="If all roses are flowers and some flowers fade quickly, can we conclude that some roses fade quickly? Explain your reasoning step by step.",
-        keywords=["rose", "flower", "fade", "conclude", "some"],
-        min_length=50,
-        description="Logical syllogism reasoning",
-    ),
-    QaPrompt(
-        id="code_python",
-        category="code",
-        system="You are a helpful coding assistant.",
-        user="Write a Python function that checks if a string is a valid email address. Include docstring and type hints.",
-        keywords=["def", "return", "str", "@"],
-        regex_patterns=[r"def\s+\w+\s*\("],
-        min_length=80,
-        description="Python email validation function",
-    ),
-    QaPrompt(
-        id="code_javascript",
-        category="code",
-        system="You are a helpful coding assistant.",
-        user="Write a JavaScript function that flattens a nested array to any depth. Use modern ES6+ syntax.",
-        keywords=["function", "return", "array", "flat"],
-        regex_patterns=[r"(function|const|=>)"],
-        min_length=60,
-        description="JavaScript array flattening",
-    ),
-    QaPrompt(
-        id="creative_story",
-        category="creative",
-        system=None,
-        user="Write a short paragraph (3-4 sentences) about a robot discovering music for the first time.",
-        keywords=["robot", "music", "sound"],
-        min_length=80,
-        max_repetition_ratio=0.15,
-        description="Creative writing — robot discovers music",
-    ),
-    QaPrompt(
-        id="instruction_format",
-        category="instruction",
-        system=None,
-        user="List exactly 5 countries in South America. Format as a numbered list. Do not add any extra text.",
-        keywords=["1.", "2.", "3.", "4.", "5."],
-        regex_patterns=[r"1\.\s+\w+", r"5\.\s+\w+"],
-        min_length=30,
-        description="Exact instruction following — numbered list",
-    ),
-    QaPrompt(
-        id="math_arithmetic",
-        category="math",
-        system=None,
-        user="A store has 47 apples. They sell 18 in the morning and 12 in the afternoon. Then they receive a delivery of 30 more. How many apples do they have now? Show your work.",
-        keywords=["47", "18", "12", "30"],
-        min_length=30,
-        description="Multi-step arithmetic word problem",
-    ),
-    QaPrompt(
-        id="summarization",
-        category="reasoning",
-        system=None,
-        user="Summarize the concept of 'machine learning' in exactly 2 sentences.",
-        keywords=["machine learning", "data", "model", "learn"],
-        min_length=40,
-        max_repetition_ratio=0.1,
-        description="Concise summarization ability",
-    ),
-    QaPrompt(
-        id="translation",
-        category="instruction",
-        system=None,
-        user="Translate the following sentence to French: 'The weather is beautiful today and I would like to go for a walk in the park.'",
-        keywords=["le", "la", "est", "aujourd"],
-        min_length=20,
-        description="English to French translation",
-    ),
-    QaPrompt(
-        id="code_sql",
-        category="code",
-        system="You are a database expert.",
-        user="Write a SQL query to find the top 3 customers by total order amount from tables 'customers' (id, name) and 'orders' (id, customer_id, amount). Use GROUP BY and ORDER BY.",
-        keywords=["SELECT", "FROM", "GROUP BY", "ORDER BY", "LIMIT"],
-        regex_patterns=[r"SELECT", r"GROUP\s+BY", r"ORDER\s+BY"],
-        min_length=50,
-        description="SQL query with aggregation and sorting",
-    ),
-    QaPrompt(
-        id="reasoning_analogy",
-        category="reasoning",
-        system=None,
-        user="Complete the analogy: Doctor is to Hospital as Teacher is to ___. Explain why.",
-        keywords=["school", "teacher", "hospital", "doctor"],
-        min_length=30,
-        description="Analogy completion with explanation",
-    ),
-    QaPrompt(
-        id="unit_test",
-        category="testing",
-        system=None,
-        user="Write three pytest tests for a function is_even(n) that returns True when n is even.",
-        keywords=["assert", "is_even"],
-        regex_patterns=[r"def test_\w+\("],
-        min_length=100,
-        min_test_count=3,
-        description="pytest test function generation — requires at least three def test_ functions",
-    ),
-    QaPrompt(
-        id="json_invoice_nested",
-        category="json",
-        system=None,
-        user=(
-            "Return only valid JSON for this invoice: invoice AX-1042, customer Mina, "
-            "currency USD, items: cable quantity 2 unit_price 4.25, dock quantity 1 unit_price 31.00. "
-            "Include invoice_id, customer, currency, items, and total."
-        ),
-        keywords=["AX-1042", "Mina"],
-        regex_patterns=[r'"invoice_id"', r'"items"'],
-        min_length=80,
-        json_expected_total=39.5,
-        description="nested JSON invoice — total must be 39.50 (2*4.25 + 1*31.00)",
-    ),
-]
+# Import bank after QaPrompt exists (question_bank imports QaPrompt from here).
+from question_bank import QUESTION_BANK, all_bank_categories, bank_size  # noqa: E402
+
+# Backward-compatible name: full bank (not the sampled run set).
+PROMPTS: list[QaPrompt] = QUESTION_BANK
+
+# Default per-run sample size — large enough for multi-category coverage,
+# small enough for interactive QA against a loaded model.
+DEFAULT_SAMPLE_SIZE = 12
 
 
 def get_prompt_by_id(prompt_id: str) -> Optional[QaPrompt]:
-    for p in PROMPTS:
+    for p in QUESTION_BANK:
         if p.id == prompt_id:
             return p
     return None
 
 
 def get_prompts_by_category(category: str) -> list[QaPrompt]:
-    return [p for p in PROMPTS if p.category == category]
+    return [p for p in QUESTION_BANK if p.category == category]
 
 
 def all_categories() -> list[str]:
-    return sorted(set(p.category for p in PROMPTS))
+    return all_bank_categories()
+
+
+def _normalize_seed(seed: Optional[int]) -> int:
+    if seed is None:
+        # 31-bit positive seed for portable logging / CLI flags.
+        return random.SystemRandom().randint(0, 2**31 - 1)
+    return int(seed) & 0x7FFFFFFF
+
+
+def sample_prompts(
+    n: int = DEFAULT_SAMPLE_SIZE,
+    seed: Optional[int] = None,
+    bank: Optional[Sequence[QaPrompt]] = None,
+    categories: Optional[Sequence[str]] = None,
+    prompt_ids: Optional[Sequence[str]] = None,
+    stratified: bool = True,
+) -> tuple[list[QaPrompt], int]:
+    """Sample prompts from the bank.
+
+    Returns
+    -------
+    (prompts, seed_used)
+        `prompts` is a new list (never mutates the bank). `seed_used` is the
+        RNG seed actually applied (generated when `seed` is None).
+
+    Selection rules
+    ---------------
+    1. If `prompt_ids` is set, return those prompts in given order (seed unused
+       for selection but still returned for logging).
+    2. Otherwise filter by `categories` if provided.
+    3. If `stratified` and n is large enough, take one random item per category
+       first, then fill remaining slots uniformly without replacement.
+    4. If n >= len(pool), return a shuffled copy of the whole pool.
+    """
+    seed_used = _normalize_seed(seed)
+    rng = random.Random(seed_used)
+
+    if prompt_ids:
+        selected: list[QaPrompt] = []
+        for pid in prompt_ids:
+            p = get_prompt_by_id(pid)
+            if p is None:
+                raise ValueError(f"unknown prompt id: {pid}")
+            selected.append(p)
+        return selected, seed_used
+
+    pool = list(bank) if bank is not None else list(QUESTION_BANK)
+    if categories:
+        wanted = {c.lower() for c in categories}
+        pool = [p for p in pool if p.category.lower() in wanted]
+    if not pool:
+        raise ValueError("empty prompt pool after filters")
+
+    n = max(1, int(n))
+    if n >= len(pool):
+        rng.shuffle(pool)
+        return pool, seed_used
+
+    if not stratified:
+        return rng.sample(pool, n), seed_used
+
+    # Stratified: one from as many categories as possible, then fill.
+    by_cat: dict[str, list[QaPrompt]] = {}
+    for p in pool:
+        by_cat.setdefault(p.category, []).append(p)
+
+    cat_order = list(by_cat.keys())
+    rng.shuffle(cat_order)
+
+    selected = []
+    selected_ids: set[str] = set()
+    for cat in cat_order:
+        if len(selected) >= n:
+            break
+        choice = rng.choice(by_cat[cat])
+        selected.append(choice)
+        selected_ids.add(choice.id)
+
+    remaining = [p for p in pool if p.id not in selected_ids]
+    rng.shuffle(remaining)
+    while len(selected) < n and remaining:
+        selected.append(remaining.pop())
+
+    rng.shuffle(selected)
+    return selected, seed_used
+
+
+def clone_prompt(prompt: QaPrompt) -> QaPrompt:
+    """Defensive copy if a caller needs to mutate a prompt instance."""
+    return replace(
+        prompt,
+        keywords=list(prompt.keywords),
+        regex_patterns=list(prompt.regex_patterns),
+        exact_answer_aliases=list(prompt.exact_answer_aliases),
+    )
+
+
+def describe_bank() -> str:
+    cats = all_categories()
+    lines = [f"question bank: {bank_size()} prompts, {len(cats)} categories"]
+    for c in cats:
+        lines.append(f"  {c:16s} {len(get_prompts_by_category(c)):3d}")
+    return "\n".join(lines)
