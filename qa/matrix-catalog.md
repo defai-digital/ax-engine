@@ -14,16 +14,48 @@ Llama 3.1/3.3/4 Scout, Mistral Small/Ministral/Devstral, GPT-OSS 20B/120B.
 ax-local assistant-MTP and Qwen fused MTP sidecars under
 `models--ax-local--*` when present in the HF hub cache.
 
+Packages must ship MTP weights (`mtp.safetensors`, `glm_mtp.safetensors`, or
+Gemma assistant MTP metadata/weights). Catalog rows that only ship a base
+package (for example `gemma-4-12B-it-4bit-ffn4` without an assistant MTP
+sidecar) are **skipped** as `not_mtp_package`.
+
 ## Runner
 
 ```bash
-cargo build -p ax-engine-server
-# inventory (example): python helpers or re-run goal inventory into $QA_SCRATCH/qa-matrix.txt
+cargo build -p ax-engine-server -p ax-engine-bench
+# inventory (example): write OK|mode|model_id|artifacts lines into $QA_SCRATCH/qa-matrix.txt
 export QA_SCRATCH=/path/to/scratch
 export QA_SAMPLE=8 QA_SEED=20260716
 python3 scripts/run_qa_matrix.py
 ```
 
-Evidence from the 2026-07-16 full matrix: **28/28 cells completed with 0 engine
-failures** (load/chat/null). Residual partial fails were model-quality on hard
-prompts (e.g. `unit_test_clamp` incomplete code), documented in run logs.
+### Mode flags (critical)
+
+| mode | server flags | intent |
+| --- | --- | --- |
+| **direct** | `--disable-ngram-acceleration` | pure direct decode |
+| **MTP** | `--mlx-mtp-disable-ngram-stacking` (and **not** `--disable-ngram-acceleration`) | pure StrictMtp path |
+
+`--disable-ngram-acceleration` sets `mtp_requested=false` in the runner and
+forces `MtpRequestRoute::DirectFallback`, which **bypasses** MTP decode. The
+matrix runner rejects MTP server commands that include that flag.
+
+### MTP path proof
+
+Before serving QA, each MTP cell runs a short `ax-engine-bench generate` probe
+and requires positive `route.crossover_decisions` telemetry, for example:
+
+- fused MTP: `ax_mtp_source_mtp_proposer_wall_us` / `ax_mtp_verify_tokens` / `ax_mtp_draft_tokens` > 0
+- Gemma assistant MTP: `ax_mlx_gemma4_assistant_mtp_enabled=1` with draft/verify activity, or `ax_mtp_verify_tokens` > 0
+
+Cells that fail this gate are classified `engine_fail` with
+`mtp_path_not_exercised`.
+
+## Evidence (2026-07-16)
+
+- **Direct**: 19 cells completed; 0 engine failures. Residual partials were
+  model-quality on hard prompts (for example `unit_test_clamp`).
+- **MTP re-run with correct flags + telemetry gate**: 8 true MTP packages
+  exercised (4 Qwen fused + 4 Gemma assistant); 0 engine failures; 1 catalog
+  row skipped as `not_mtp_package` (ffn4 base without MTP weights). Residual
+  partials again model-quality only.

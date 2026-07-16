@@ -60,6 +60,73 @@ class RunQaMatrixTests(unittest.TestCase):
             self.assertEqual(cells[0].model_id, "llama3.1-8b")
             self.assertEqual(cells[1].mode, "mtp")
 
+    def test_build_server_cmd_mtp_does_not_disable_ngram(self) -> None:
+        """Regression: --disable-ngram-acceleration sets mtp_requested=false."""
+        m = _load()
+        from pathlib import Path as P
+
+        direct = m.Cell(mode="direct", model_id="x", artifacts=P("/tmp/a"))
+        mtp = m.Cell(mode="mtp", model_id="y", artifacts=P("/tmp/b"))
+        d_cmd = m.build_server_cmd(direct, "x")
+        m_cmd = m.build_server_cmd(mtp, "mtp-y")
+        self.assertIn("--disable-ngram-acceleration", d_cmd)
+        self.assertNotIn("--disable-ngram-acceleration", m_cmd)
+        self.assertIn("--mlx-mtp-disable-ngram-stacking", m_cmd)
+
+    def test_mtp_telemetry_active_requires_positive_signal(self) -> None:
+        m = _load()
+        self.assertFalse(m.mtp_telemetry_active({}))
+        self.assertFalse(
+            m.mtp_telemetry_active(
+                {
+                    "ax_mtp_source_mtp_proposer_wall_us": 0,
+                    "ax_mtp_verify_tokens": 0,
+                    "ax_mtp_draft_tokens": 0,
+                }
+            )
+        )
+        self.assertTrue(
+            m.mtp_telemetry_active({"ax_mtp_source_mtp_proposer_wall_us": 12})
+        )
+        self.assertTrue(
+            m.mtp_telemetry_active({"ax_mtp_source_assistant_proposer_wall_us": 9})
+        )
+        self.assertTrue(m.mtp_telemetry_active({"ax_mtp_verify_tokens": 3}))
+        self.assertTrue(
+            m.mtp_telemetry_active(
+                {
+                    "ax_mlx_gemma4_assistant_mtp_enabled": 1,
+                    "ax_mlx_gemma4_assistant_mtp_draft_tokens": 4,
+                }
+            )
+        )
+
+    def test_package_looks_like_mtp_sidecar_and_assistant(self) -> None:
+        m = _load()
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plain = root / "plain"
+            plain.mkdir()
+            (plain / "config.json").write_text("{}")
+            self.assertFalse(m.package_looks_like_mtp(plain))
+
+            fused = root / "fused"
+            fused.mkdir()
+            (fused / "mtp.safetensors").write_bytes(b"x")
+            self.assertTrue(m.package_looks_like_mtp(fused))
+
+            glm = root / "glm"
+            glm.mkdir()
+            (glm / "glm_mtp.safetensors").write_bytes(b"x")
+            self.assertTrue(m.package_looks_like_mtp(glm))
+
+            asst = root / "asst"
+            asst.mkdir()
+            (asst / "ax_gemma4_assistant_mtp.json").write_text("{}")
+            self.assertTrue(m.package_looks_like_mtp(asst))
+
 
 if __name__ == "__main__":
     unittest.main()
