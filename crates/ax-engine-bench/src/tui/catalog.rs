@@ -238,6 +238,7 @@ pub(super) fn repo_is_installed(repo_id: &str) -> bool {
 }
 
 /// The most recently modified immediate subdirectory of `dir`, if any.
+#[cfg(test)]
 pub(super) fn most_recent_subdir(dir: &Path) -> Option<PathBuf> {
     let mut dirs: Vec<(PathBuf, std::time::SystemTime)> = std::fs::read_dir(dir)
         .ok()?
