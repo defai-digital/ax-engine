@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 
-use super::conversions::{sdk_stream_event_to_proto, unix_now};
+use super::conversions::{finish_reason_str, sdk_stream_event_to_proto, unix_now};
 use super::proto;
 use crate::admission::AdmissionPermit;
 use crate::app_state::{AppState, LiveState};
@@ -361,6 +361,29 @@ where
                         return Ok(());
                     }
                 }
+                // Final chunk carries finish_reason (OpenAI SSE parity).
+                let finish_reason = payload
+                    .response
+                    .finish_reason
+                    .map(finish_reason_str)
+                    .unwrap_or_default();
+                let final_chunk = proto::ChatCompletionChunk {
+                    id: format!("chatcmpl-{}", payload.response.request_id),
+                    object: "chat.completion.chunk".to_string(),
+                    created: unix_now(),
+                    model: model_id.to_string(),
+                    choices: vec![proto::ChatCompletionChunkChoice {
+                        index: 0,
+                        delta: Some(proto::ChatDelta {
+                            role: String::new(),
+                            content: String::new(),
+                        }),
+                        finish_reason,
+                    }],
+                };
+                if tx.blocking_send(Ok(final_chunk)).is_err() {
+                    return Ok(());
+                }
             }
             Ok(Some(GenerateStreamEvent::Step(payload))) => {
                 // Native token path: drop channel-framing tokens before decode
@@ -438,7 +461,28 @@ where
         match next() {
             Ok(None) => return Ok(()),
             Err(e) => return Err(session_error_status(e)),
-            Ok(Some(GenerateStreamEvent::Request(_) | GenerateStreamEvent::Response(_))) => {}
+            Ok(Some(GenerateStreamEvent::Request(_))) => {}
+            Ok(Some(GenerateStreamEvent::Response(payload))) => {
+                let finish_reason = payload
+                    .response
+                    .finish_reason
+                    .map(finish_reason_str)
+                    .unwrap_or_default();
+                let final_chunk = proto::CompletionChunk {
+                    id: format!("cmpl-{}", payload.response.request_id),
+                    object: "text_completion.chunk".to_string(),
+                    created: unix_now(),
+                    model: model_id.to_string(),
+                    choices: vec![proto::CompletionChunkChoice {
+                        index: 0,
+                        text: String::new(),
+                        finish_reason,
+                    }],
+                };
+                if tx.blocking_send(Ok(final_chunk)).is_err() {
+                    return Ok(());
+                }
+            }
             Ok(Some(GenerateStreamEvent::Step(payload))) => {
                 let Some(delta_text) = grpc_stream_delta_text(
                     &payload.delta_text,

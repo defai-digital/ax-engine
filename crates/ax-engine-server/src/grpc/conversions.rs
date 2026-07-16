@@ -26,9 +26,9 @@ pub(super) fn proto_sampling_to_sdk(s: proto::GenerateSampling) -> GenerateSampl
 pub(super) fn proto_to_generate_request(
     live: &LiveState,
     req: proto::GenerateRequest,
-) -> GenerateRequest {
+) -> Result<GenerateRequest, tonic::Status> {
     let sampling = req.sampling.map(proto_sampling_to_sdk).unwrap_or_default();
-    GenerateRequest {
+    let request = GenerateRequest {
         model_id: live.model_id.to_string(),
         input_tokens: req.input_tokens,
         input_text: if req.input_text.is_empty() {
@@ -49,7 +49,9 @@ pub(super) fn proto_to_generate_request(
         } else {
             Some(req.metadata)
         },
-    }
+    };
+    // Native MLX rejects bare input_text; tokenize like OpenAI HTTP.
+    super::requests::finalize_native_generate_request(live, request)
 }
 
 pub(super) fn sdk_response_to_proto(r: ax_engine_sdk::GenerateResponse) -> proto::GenerateResponse {
@@ -124,7 +126,7 @@ pub(super) fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-pub(super) fn finish_reason_str(fr: GenerateFinishReason) -> String {
+pub(crate) fn finish_reason_str(fr: GenerateFinishReason) -> String {
     match fr {
         GenerateFinishReason::Stop => "stop".to_string(),
         GenerateFinishReason::MaxOutputTokens => "length".to_string(),

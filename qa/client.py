@@ -261,36 +261,189 @@ def _render_with_chat_template(
     return rendered
 
 
+# Keep in lockstep with crates/ax-engine-server/src/chat.rs GPT_OSS_DEFAULT_SYSTEM.
+_GPT_OSS_DEFAULT_SYSTEM = (
+    "You are ChatGPT, a large language model trained by OpenAI.\n"
+    "Knowledge cutoff: 2024-06\n"
+    "\n"
+    "Reasoning: low\n"
+    "\n"
+    "# Valid channels: analysis, commentary, final. Channel must be included for every message."
+)
+
+
+def _is_qwen_non_thinking_only(model_id: str) -> bool:
+    """Mirror chat.rs is_qwen_non_thinking_only_model / is_qwen_coder_model."""
+    normalized = "".join(
+        ch if ch.isalnum() else "-" for ch in model_id.lower()
+    )
+    if normalized == "qwen3":
+        return True
+    return "qwen3-coder-next" in normalized or "qwen3-coder" in normalized
+
+
+def _qwen_assistant_prefill(model_id: str) -> str:
+    """Mirror chat.rs Qwen generation prompt with enable_thinking=false."""
+    if _is_qwen_non_thinking_only(model_id):
+        return "<|im_start|>assistant\n"
+    # Skip CoT so short QA answers do not burn budget on thinking tokens.
+    return "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
+def strip_gpt_oss_harmony_output(text: str) -> str:
+    """Extract user-facing text from a GPT-OSS Harmony generation.
+
+    Mirrors crates/ax-engine-server/src/chat.rs::strip_gpt_oss_harmony_output.
+    """
+    final_open = "<|channel|>final<|message|>"
+    analysis_open = "<|channel|>analysis<|message|>"
+    commentary_open = "<|channel|>commentary<|message|>"
+
+    idx = text.rfind(final_open)
+    if idx >= 0:
+        body = text[idx + len(final_open) :]
+        for marker in ("<|return|>", "<|end|>", "<|start|>"):
+            cut = body.find(marker)
+            if cut >= 0:
+                body = body[:cut]
+        return body.strip()
+
+    cleaned = text
+    for open_tag in (analysis_open, commentary_open):
+        while True:
+            start = cleaned.find(open_tag)
+            if start < 0:
+                break
+            after = start + len(open_tag)
+            rest = cleaned[after:]
+            end_rel = len(rest)
+            for marker in ("<|end|>", "<|return|>", "<|start|>"):
+                pos = rest.find(marker)
+                if pos >= 0:
+                    end_rel = min(end_rel, pos)
+            end = after + end_rel
+            if cleaned[end:].startswith("<|end|>"):
+                end += len("<|end|>")
+            elif cleaned[end:].startswith("<|return|>"):
+                end += len("<|return|>")
+            cleaned = cleaned[:start] + cleaned[end:]
+
+    for token in (
+        "<|start|>assistant",
+        "<|start|>",
+        "<|end|>",
+        "<|return|>",
+        "<|message|>",
+        "<|channel|>",
+        "<|call|>",
+        "<|endoftext|>",
+    ):
+        cleaned = cleaned.replace(token, "")
+    return cleaned.strip()
+
+
+def strip_gemma4_channel_output(text: str) -> str:
+    """Drop Gemma 4 thinking-channel framing from decoded chat text.
+
+    Mirrors the server chat path that strips ``<|channel>…<channel|>`` spans
+    (and a leading bare channel-name line such as ``thought``).
+    """
+    open_tag = "<|channel>"
+    close_tag = "<channel|>"
+    cleaned = text
+    while True:
+        start = cleaned.find(open_tag)
+        if start < 0:
+            break
+        after = start + len(open_tag)
+        close = cleaned.find(close_tag, after)
+        if close < 0:
+            cleaned = cleaned[:start]
+            break
+        cleaned = cleaned[:start] + cleaned[close + len(close_tag) :]
+
+    # Stray close: everything before the first close is channel continuation.
+    close = cleaned.find(close_tag)
+    if close >= 0 and open_tag not in cleaned[:close]:
+        cleaned = cleaned[close + len(close_tag) :]
+
+    # Drop a bare channel-name first line (e.g. "thought\n…").
+    if "\n" in cleaned:
+        first, rest = cleaned.split("\n", 1)
+        if first.strip().lower() in {"thought", "analysis", "commentary", "final"}:
+            cleaned = rest
+    return cleaned.strip()
+
+
+def strip_chat_output_text(model_id: str, text: str) -> str:
+    """Apply server-equivalent chat decode cleanup for the generate path."""
+    if not text:
+        return text
+    normalized = model_id.lower()
+    if "gpt-oss" in normalized or "gpt_oss" in normalized or "gptoss" in normalized:
+        return strip_gpt_oss_harmony_output(text)
+    if (
+        "gemma-4" in normalized
+        or "gemma4" in normalized
+        or "diffusiongemma" in normalized
+        or "diffusion-gemma" in normalized
+        or "diffusion_gemma" in normalized
+    ):
+        return strip_gemma4_channel_output(text)
+    return text
+
+
 def _render_chat_prompt(
     model_id: str, system: Optional[str], user: str, tokenizer_path: Optional[str] = None
 ) -> str:
-    """Render a chat prompt using the model's native template."""
+    """Render a chat prompt using the model's native template.
+
+    Prefer ``chat_template.jinja`` next to the tokenizer when present. Fallbacks
+    must match crates/ax-engine-server/src/chat.rs::render_prompt_internal so
+    ``/v1/generate`` QA (client-side tokenization) frames families correctly.
+    """
     rendered = _render_with_chat_template(tokenizer_path, system, user)
     if rendered is not None:
         return rendered
 
     normalized = model_id.lower()
-    parts = []
+    parts: list[str] = []
 
     if "qwen" in normalized:
         if system:
             parts.append(f"<|im_start|>system\n{system}<|im_end|>\n")
         parts.append(f"<|im_start|>user\n{user}<|im_end|>\n")
-        parts.append("<|im_start|>assistant\n")
+        parts.append(_qwen_assistant_prefill(model_id))
     elif "glm" in normalized:
         parts.append("[gMASK]<sop>")
         if system:
             parts.append(f"<|system|>{system}")
         parts.append(f"<|user|>{user}")
-        parts.append("<|assistant|>")
-    elif "gemma" in normalized:
+        # Server pre-fills empty think block before the answer.
+        parts.append("<|assistant|></think>")
+    elif (
+        "gemma-4" in normalized
+        or "gemma4" in normalized
+        or "diffusiongemma" in normalized
+        or "diffusion-gemma" in normalized
+        or "diffusion_gemma" in normalized
+    ):
+        # Gemma 4 markers are `<|turn>` / `<turn|>` (not `<|turn|>`).
+        # Server emits a real system turn when present (chat.rs).
         parts.append("<bos>")
         if system:
-            parts.append(f"<|turn|>user\n{system}\n{user}<turn|>\n")
-        else:
-            parts.append(f"<|turn|>user\n{user}<turn|>\n")
-        parts.append("<|turn|>model\n")
-    elif "llama" in normalized:
+            parts.append(f"<|turn>system\n{system}<turn|>\n")
+        parts.append(f"<|turn>user\n{user}<turn|>\n")
+        parts.append("<|turn>model\n<|channel>thought\n<channel|>")
+    elif (
+        "llama-4" in normalized
+        or "llama4" in normalized
+        or "llama_4" in normalized
+        or "llama-3" in normalized
+        or "llama3" in normalized
+        or "llama_3" in normalized
+        or "llama" in normalized
+    ):
         parts.append("<|begin_of_text|>")
         if system:
             parts.append(
@@ -298,6 +451,26 @@ def _render_chat_prompt(
             )
         parts.append(f"<|start_header_id|>user<|end_header_id|>\n\n{user}<|eot_id|>")
         parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+    elif (
+        "mistral" in normalized
+        or "ministral" in normalized
+        or "devstral" in normalized
+        or "codestral" in normalized
+    ) and "mixtral" not in normalized:
+        parts.append("<s>")
+        if system:
+            parts.append(f"[SYSTEM_PROMPT]{system}[/SYSTEM_PROMPT]")
+        parts.append(f"[INST]{user}[/INST]")
+    elif "gpt-oss" in normalized or "gpt_oss" in normalized or "gptoss" in normalized:
+        parts.append("<|start|>system<|message|>")
+        parts.append(_GPT_OSS_DEFAULT_SYSTEM)
+        parts.append("<|end|>")
+        if system:
+            parts.append("<|start|>developer<|message|># Instructions\n\n")
+            parts.append(system)
+            parts.append("<|end|>")
+        parts.append(f"<|start|>user<|message|>{user}<|end|>")
+        parts.append("<|start|>assistant<|channel|>final<|message|>")
     else:
         if system:
             parts.append(f"system: {system}\n")
@@ -308,7 +481,11 @@ def _render_chat_prompt(
 
 
 def _stream_generate_sse(
-    url: str, payload: dict, tokenizer: Any, timeout: int = 120
+    url: str,
+    payload: dict,
+    tokenizer: Any,
+    timeout: int = 120,
+    model_id: str = "",
 ) -> QaResponse:
     """Stream from /v1/generate endpoint with token-level SSE."""
     data = json.dumps(payload).encode("utf-8")
@@ -412,6 +589,7 @@ def _stream_generate_sse(
     elapsed = (time.monotonic() - start) * 1000
     output_tokens = response_tokens or all_tokens
     text = response_text if response_text is not None else tokenizer.decode(output_tokens)
+    text = strip_chat_output_text(model_id, text)
     return QaResponse(
         text=text,
         finish_reason=finish_reason,
@@ -457,7 +635,9 @@ def send_generate_request(
     }
 
     if stream:
-        return _stream_generate_sse(url, payload, tokenizer, timeout=timeout)
+        return _stream_generate_sse(
+            url, payload, tokenizer, timeout=timeout, model_id=model
+        )
 
     start = time.monotonic()
     try:
@@ -471,6 +651,7 @@ def send_generate_request(
     elapsed = (time.monotonic() - start) * 1000
     output_tokens = result.get("output_tokens", [])
     text = tokenizer.decode(output_tokens) if output_tokens else ""
+    text = strip_chat_output_text(model, text)
     return QaResponse(
         text=text,
         finish_reason=result.get("finish_reason"),

@@ -649,7 +649,7 @@ fn fit_openai_max_output_tokens_to_context(
 type NativeMlxTokenizeResult =
     Result<(Vec<u32>, Option<String>), (StatusCode, Json<ErrorResponse>)>;
 
-fn tokenize_native_mlx_text_input(
+pub(crate) fn tokenize_native_mlx_text_input(
     live: &LiveState,
     input_tokens: Vec<u32>,
     input_text: Option<String>,
@@ -820,7 +820,10 @@ fn build_openai_sampling_with_default_repetition_penalty(
     }
 }
 
-fn default_native_mlx_openai_repetition_penalty(live: &LiveState, temperature: f32) -> f32 {
+pub(crate) fn default_native_mlx_openai_repetition_penalty(
+    live: &LiveState,
+    temperature: f32,
+) -> f32 {
     if live.runtime_report.selected_backend != SelectedBackend::Mlx || temperature > 0.0 {
         return 1.0;
     }

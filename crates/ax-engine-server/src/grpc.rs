@@ -29,7 +29,10 @@ use conversions::{finish_reason_str, proto_to_generate_request, sdk_response_to_
 use proto::ax_engine_server::AxEngine;
 use requests::{
     build_chat_generate_request, build_completion_generate_request, grpc_embedding_prompt_tokens,
+    openai_error_to_status,
 };
+use crate::openai::generation::populate_native_mlx_output_text;
+use crate::openai::schema::OpenAiStreamKind;
 use streams::{
     ChatChunkStream, CompletionChunkStream, GenerateEventStream, build_grpc_stream_state,
     native_grpc_stream_tokenizer, run_blocking, spawn_grpc_chat_stream,
@@ -146,9 +149,17 @@ impl AxEngine for AxEngineGrpcService {
         request: Request<proto::GenerateRequest>,
     ) -> Result<Response<proto::GenerateResponse>, Status> {
         let live = self.state.snapshot();
-        let req = proto_to_generate_request(&live, request.into_inner());
+        let req = proto_to_generate_request(&live, request.into_inner())?;
         let request_id = self.state.allocate_request_id();
-        let response = run_grpc_generate_request(&self.state, &live, request_id, req).await?;
+        let mut response = run_grpc_generate_request(&self.state, &live, request_id, req).await?;
+        // Decode native MLX tokens so unary Generate returns text (HTTP parity).
+        populate_native_mlx_output_text(
+            &live,
+            &mut response,
+            OpenAiStreamKind::Completion,
+            false,
+        )
+        .map_err(openai_error_to_status)?;
         Ok(Response::new(sdk_response_to_proto(response)))
     }
 
@@ -161,7 +172,7 @@ impl AxEngine for AxEngineGrpcService {
         request: Request<proto::GenerateRequest>,
     ) -> Result<Response<Self::StreamGenerateStream>, Status> {
         let live = self.state.snapshot();
-        let req = proto_to_generate_request(&live, request.into_inner());
+        let req = proto_to_generate_request(&live, request.into_inner())?;
         let stream = build_grpc_stream_state(&self.state, &live, req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
         spawn_grpc_generate_stream(tx, stream).map_err(generation_service_status)?;
@@ -178,7 +189,15 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let generate_req = build_chat_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
-        let r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
+        let mut r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
+        // Native MLX leaves output_text unset; decode + strip channels like OpenAI.
+        populate_native_mlx_output_text(
+            &live,
+            &mut r,
+            OpenAiStreamKind::ChatCompletion,
+            false,
+        )
+        .map_err(openai_error_to_status)?;
         let content = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::ChatCompletionResponse {
@@ -230,9 +249,11 @@ impl AxEngine for AxEngineGrpcService {
     ) -> Result<Response<proto::CompletionResponse>, Status> {
         let live = self.state.snapshot();
         let req = request.into_inner();
-        let generate_req = build_completion_generate_request(&live, &req);
+        let generate_req = build_completion_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
-        let r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
+        let mut r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
+        populate_native_mlx_output_text(&live, &mut r, OpenAiStreamKind::Completion, false)
+            .map_err(openai_error_to_status)?;
         let text = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::CompletionResponse {
@@ -264,7 +285,7 @@ impl AxEngine for AxEngineGrpcService {
         let live = self.state.snapshot();
         let req = request.into_inner();
         let model_id = live.model_id.to_string();
-        let generate_req = build_completion_generate_request(&live, &req);
+        let generate_req = build_completion_generate_request(&live, &req)?;
         let tokenizer = native_grpc_stream_tokenizer(&live)?;
         let stream = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);

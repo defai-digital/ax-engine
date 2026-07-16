@@ -109,7 +109,15 @@ def chat_prompt_template(model_id: str) -> str:
     normalized = model_id.lower()
     if "qwen" in normalized:
         return "qwen_chatml"
-    if "llama-3" in normalized or "llama3" in normalized or "llama_3" in normalized:
+    # Llama 3.x and Llama 4 Instruct share header/eot framing (server chat.rs).
+    if (
+        "llama-4" in normalized
+        or "llama4" in normalized
+        or "llama_4" in normalized
+        or "llama-3" in normalized
+        or "llama3" in normalized
+        or "llama_3" in normalized
+    ):
         return "llama3"
     return "plain_role_prefix"
 
