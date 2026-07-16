@@ -53,16 +53,27 @@ class RunQaMatrixTests(unittest.TestCase):
                         "OK|direct|llama3.1-8b|/tmp/fake",
                         "OK|ngram|llama3.1-8b|/tmp/fake",
                         "OK|mtp|ax-local/x|/tmp/mtp",
+                        "OK|embed|qwen3-embedding|/tmp/emb",
                         "OK|bogus|x|/tmp/x",
                     ]
                 )
                 + "\n"
             )
             cells = m.load_matrix(p)
-            self.assertEqual(len(cells), 3)
+            self.assertEqual(len(cells), 4)
             self.assertEqual(cells[0].mode, "direct")
             self.assertEqual(cells[1].mode, "ngram")
             self.assertEqual(cells[2].mode, "mtp")
+            self.assertEqual(cells[3].mode, "embed")
+
+    def test_build_server_cmd_embed_disables_ngram(self) -> None:
+        m = _load()
+        from pathlib import Path as P
+
+        server = P("/tmp/ax-engine-server")
+        embed = m.Cell(mode="embed", model_id="e", artifacts=P("/tmp/e"))
+        cmd = m.build_server_cmd(embed, "e", server_bin=server, host="127.0.0.1", port=1)
+        self.assertIn("--disable-ngram-acceleration", cmd)
 
     def test_write_inventory(self) -> None:
         m = _load()

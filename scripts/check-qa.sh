@@ -27,21 +27,25 @@ echo "==> QA: py_compile harness modules"
   qa/run_qa.py \
   qa/generate_summary.py \
   qa/surface_probes.py \
+  qa/embedding_probes.py \
+  qa/embedding_bank.py \
   scripts/run_qa_matrix.py \
   scripts/test_qa_checkers.py \
   scripts/test_qa_sampling.py \
   scripts/test_run_qa_matrix.py \
-  scripts/test_qa_surface_probes.py
+  scripts/test_qa_surface_probes.py \
+  scripts/test_qa_embedding_probes.py
 
 echo "==> QA: validate question bank"
 "$PYTHON_BIN" qa/run_qa.py --validate-bank
 
-echo "==> QA: unit tests (sampling, checkers, matrix helpers, surface probes)"
+echo "==> QA: unit tests (sampling, checkers, matrix, surface, embedding)"
 "$PYTHON_BIN" -m unittest \
   scripts/test_qa_sampling.py \
   scripts/test_qa_checkers.py \
   scripts/test_run_qa_matrix.py \
   scripts/test_qa_surface_probes.py \
+  scripts/test_qa_embedding_probes.py \
   -v
 
 echo "==> QA: offline gate OK"

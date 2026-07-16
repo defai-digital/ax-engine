@@ -1,4 +1,4 @@
-# QA matrix catalog (direct + ngram + MTP)
+# QA matrix catalog (direct + ngram + MTP + embed)
 
 This documents the model matrix used for local verification. Paths are resolved
 from the active Hugging Face hub cache at runtime by `scripts/run_qa_matrix.py`
@@ -30,7 +30,28 @@ python3 scripts/run_qa_matrix.py --surface
 # or filter:
 python3 scripts/run_qa_matrix.py --modes direct ngram --surface
 python3 scripts/run_qa_matrix.py --modes mtp --surface
+# embedding packages (no chat bank; runs qa/embedding_probes.py):
+python3 scripts/run_qa_matrix.py --modes embed --embed-tier standard
 ```
+
+### Embedding cells
+
+```text
+OK|embed|qwen3-emb|/path/to/Qwen3-Embedding-…/snapshots/<sha>
+OK|embed|embeddinggemma|/path/to/embeddinggemma-…/snapshots/<sha>
+```
+
+Requires `tokenizer.json` + `config.json` under the artifacts dir.
+
+**Tiers:** `smoke` (engine health) vs `standard` (default: + STS bank, pair-classification AP, retrieval Hit@1/MRR — MTEB-shaped original fixtures).
+
+Classification:
+
+- hard fail on `api_shape` / `l2_normalized` / `batch_vs_single` / `determinism` / `empty_rejected` → `engine_fail`
+- hard fail on `sts_triple_ranking` / `pair_classification` / `retrieval` → `model_quality`
+
+Full reference-oracle cosine checks remain in `scripts/verify_embedding_models.py`.
+Full public MTEB is still external / not vendored.
 
 `qa/run_full_qa.sh` is a **thin wrapper**: it writes a direct+ngram inventory from
 a default HF-cache model list and calls `run_qa_matrix.py`.

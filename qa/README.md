@@ -1,13 +1,14 @@
 # AX Engine QA
 
 Inference quality harness against a running `ax-engine-server`. It is **not** a
-full public-benchmark replacement (MMLU / GSM8K / HumanEval / IFEval / …). It is
-a practical gate for:
+full public-benchmark replacement (MMLU / GSM8K / HumanEval / IFEval / MTEB / …).
+It is a practical gate for:
 
 - server load + chat path health
 - catastrophic garbage / repetition / encoding corruption
 - basic capability across skill dimensions
 - product-surface paths (concurrency, stream, cancel, tools, multimodal)
+- **embedding model health** (API shape, L2, batch consistency, semantic order)
 
 ## Process / CI integration
 
@@ -34,6 +35,8 @@ Model gate starts a server against `$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`, runs
 | `client.py` | OpenAI chat + `/v1/generate` clients |
 | `run_qa.py` | CLI runner (HTML + JSON reports) |
 | `surface_probes.py` | Concurrent / stream / cancel / tools / multimodal probes |
+| `embedding_probes.py` | Embedding QA tiers (smoke / standard) |
+| `embedding_bank.py` | Original STS / pair / retrieval fixtures (MTEB-shaped) |
 | `reporter.py` | Report generators |
 | `run_full_qa.sh` | Thin wrapper → unified matrix (direct + ngram inventory) |
 | `matrix-catalog.md` | Matrix inventory notes |
@@ -51,6 +54,7 @@ Inventory lines:
 OK|direct|model_id|/path/to/artifacts
 OK|ngram|model_id|/path/to/artifacts
 OK|mtp|model_id|/path/to/artifacts
+OK|embed|embedding_model_id|/path/to/artifacts
 ```
 
 ```bash
@@ -59,6 +63,9 @@ export QA_SCRATCH=/path/to/scratch
 # write inventory → $QA_SCRATCH/qa-matrix.txt
 python3 scripts/run_qa_matrix.py --surface --modes direct mtp
 
+# Embedding packages only
+python3 scripts/run_qa_matrix.py --modes embed
+
 # Convenience default HF-cache list (direct + ngram)
 bash qa/run_full_qa.sh
 # equivalent wrapper that materializes inventory and calls run_qa_matrix.py
@@ -66,13 +73,71 @@ bash qa/run_full_qa.sh
 
 Mode flags:
 
-| mode | Server flags |
-| --- | --- |
-| **direct** | `--disable-ngram-acceleration` |
-| **ngram** | default (n-gram eligible) |
-| **MTP** | `--mlx-mtp-disable-ngram-stacking` (never `--disable-ngram-acceleration`) |
+| mode | Server flags | Suite |
+| --- | --- | --- |
+| **direct** | `--disable-ngram-acceleration` | chat bank + optional surface |
+| **ngram** | default (n-gram eligible) | chat bank + optional surface |
+| **MTP** | `--mlx-mtp-disable-ngram-stacking` (never `--disable-ngram-acceleration`) | chat bank + MTP path proof |
+| **embed** | `--disable-ngram-acceleration` | `embedding_probes` only (no chat bank) |
 
 `--mode` on `run_qa.py` remains a **report label only**.
+
+## Embedding QA (market standard vs this harness)
+
+### Industry layers
+
+| Layer | Market standard | Typical metrics |
+| --- | --- | --- |
+| **1. Engine smoke** | OpenAI `/v1/embeddings` works | shape, finite, L2 |
+| **2. Consistency** | batch ≈ single; determinism | cosine ≈ 1 |
+| **3. Task micro-suite** | MTEB *task shapes* at tiny scale | STS ranking, pair accuracy, Hit@1 / MRR |
+| **4. Reference oracle** | match trusted family impl | cosine vs mlx-lm / mlx-embeddings |
+| **5. Full MTEB** | public leaderboard | dozens of datasets, nDCG@10, etc. |
+
+### AX tiers
+
+| Tier | CLI / matrix | Covers |
+| --- | --- | --- |
+| **smoke** | `--tier smoke` / `--embed-tier smoke` | layers 1–2 + 3 STS triples |
+| **standard** (default) | `--tier standard` | smoke + pair classification + retrieval Hit@1/MRR + full STS bank |
+| **oracle** | `scripts/verify_embedding_models.py` | layer 4 (optional publish gate) |
+| **MTEB** | external | layer 5 — **not** vendored here |
+
+JSON reports include `metrics` (`sts_triple_accuracy`, `pair_classification_accuracy`,
+`retrieval_hit_at_1`, `retrieval_mrr`) and `market_alignment` metadata
+(`schema_version: 2`).
+
+### Probes
+
+| Probe | Tier | Checks |
+| --- | --- | --- |
+| `api_shape` | smoke+ | HTTP 200, batch length, dim, finite |
+| `l2_normalized` | smoke+ | ‖v‖ ≈ 1 |
+| `batch_vs_single` | smoke+ | min cosine ≥ 0.999 (0.996 for Qwen 8B 4bit/DWQ) |
+| `determinism` | smoke+ | re-run cosine ≈ 1 |
+| `empty_rejected` | smoke+ | empty → 400 |
+| `sts_triple_ranking` | smoke+ | similar > unrelated |
+| `pair_classification` | standard | paraphrase accuracy @ cosine threshold |
+| `retrieval` | standard | Hit@1 + MRR on tiny corpus |
+
+Fixtures are **original** (`embedding_bank.py`) — MTEB-shaped, not MTEB data.
+
+```bash
+# Standard tier (default)
+python3 qa/embedding_probes.py \
+  --base-url http://127.0.0.1:8080 \
+  --model qwen3-embedding \
+  --tokenizer /path/to/tokenizer.json \
+  --tier standard \
+  --json-output /tmp/embed-qa.json
+
+# Matrix (README embedding models)
+# OK|embed|id|/path/to/snapshot
+python3 scripts/run_qa_matrix.py --modes embed --embed-tier standard
+
+# Family oracle (publish)
+python3 scripts/verify_embedding_models.py --model-dir /path/to/snapshot
+```
 
 ## Product-surface probes
 

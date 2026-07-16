@@ -38,7 +38,7 @@ HOST = "127.0.0.1"
 
 @dataclass
 class Cell:
-    mode: str  # direct | ngram | mtp
+    mode: str  # direct | ngram | mtp | embed
     model_id: str
     artifacts: Path
     status: str = "pending"  # ok|skip|engine_fail|model_quality|error
@@ -58,7 +58,7 @@ def load_matrix(path: Path) -> list[Cell]:
             continue
         _, mode, mid, art = parts
         mode = mode.strip().lower()
-        if mode not in ("direct", "ngram", "mtp"):
+        if mode not in ("direct", "ngram", "mtp", "embed"):
             continue
         cells.append(Cell(mode=mode, model_id=mid.strip(), artifacts=Path(art.strip())))
     return cells
@@ -176,7 +176,8 @@ def build_server_cmd(
         "--mlx-model-artifacts-dir",
         str(cell.artifacts),
     ]
-    if cell.mode == "direct":
+    if cell.mode in ("direct", "embed"):
+        # Embed models do not use decode/n-gram; keep path pure.
         cmd.append("--disable-ngram-acceleration")
     elif cell.mode == "ngram":
         # Default server path: n-gram acceleration eligible.
@@ -278,6 +279,7 @@ def run_cell(
     ready_max: int,
     run_surface: bool,
     streams: str,
+    embed_tier: str = "standard",
 ) -> Cell:
     safe = cell.model_id.replace("/", "_").replace(" ", "_")
     log_path = scratch / f"qa-{cell.mode}-{safe}.log"
@@ -299,6 +301,15 @@ def run_cell(
         cell.note = "mtp_cmd_has_disable_ngram"
         log_path.write_text(f"ENGINE_FAIL bad cmd: {cmd}\n")
         return cell
+
+    # Embedding packages must ship a tokenizer for client-side ID encoding.
+    if cell.mode == "embed":
+        tok = cell.artifacts / "tokenizer.json"
+        if not tok.is_file():
+            cell.status = "skip"
+            cell.note = "missing tokenizer.json"
+            log_path.write_text(f"SKIP {cell.note}\n")
+            return cell
 
     mtp_probe_note = ""
     mtp_decisions: dict = {}
@@ -352,7 +363,63 @@ def run_cell(
             )
             return cell
 
-        # Quick null-content smoke
+        surface_blob = ""
+        base = f"http://{host}:{port}"
+
+        # ---- Embedding cells: embedding probes only (no chat bank) ----
+        if cell.mode == "embed":
+            sys.path.insert(0, str(repo / "qa"))
+            from embedding_probes import run_embedding_probes  # noqa: WPS433
+
+            tok_path = str(cell.artifacts / "tokenizer.json")
+            embed_report = run_embedding_probes(
+                base,
+                model_id,
+                tok_path,
+                artifacts_hint=str(cell.artifacts),
+                timeout=float(timeout),
+                tier=embed_tier,
+            )
+            embed_json = scratch / f"embed-{safe}.json"
+            embed_json.write_text(json.dumps(embed_report.as_dict(), indent=2))
+            cell.pass_line = embed_report.summary_line
+            cell.surface_line = embed_report.summary_line
+            log_path.write_text(
+                f"mode=embed model={cell.model_id}\n"
+                f"artifacts={cell.artifacts}\n"
+                f"server_cmd={' '.join(cmd)}\n"
+                f"{embed_report.summary_line}\n\n"
+                f"{json.dumps(embed_report.as_dict(), indent=2)}\n\n"
+                f"--- server tail ---\n"
+                + server_log.read_text(errors="replace")[-6000:]
+            )
+            if embed_report.hard_passed:
+                cell.status = "ok"
+                cell.note = "embed_all_pass"
+            else:
+                failed = [
+                    r.name
+                    for r in embed_report.results
+                    if r.hard and not r.passed and not r.skipped
+                ]
+                # Shape/L2/batch/empty are engine; semantic can be model_quality
+                engine_names = {
+                    "api_shape",
+                    "l2_normalized",
+                    "batch_vs_single",
+                    "determinism",
+                    "empty_rejected",
+                }
+                # STS / pair / retrieval failures are model_quality by default
+                if any(n in engine_names for n in failed):
+                    cell.status = "engine_fail"
+                    cell.note = "embed_engine_fail:" + ",".join(failed)
+                else:
+                    cell.status = "model_quality"
+                    cell.note = "embed_partial:" + ",".join(failed)
+            return cell
+
+        # ---- Chat cells: null-content smoke + optional surface + bank ----
         try:
             payload = json.dumps(
                 {
@@ -363,7 +430,7 @@ def run_cell(
                 }
             ).encode()
             req = urllib.request.Request(
-                f"http://{host}:{port}/v1/chat/completions",
+                f"{base}/v1/chat/completions",
                 data=payload,
                 headers={"content-type": "application/json"},
                 method="POST",
@@ -391,13 +458,12 @@ def run_cell(
             )
             return cell
 
-        surface_blob = ""
         if run_surface:
             sys.path.insert(0, str(repo / "qa"))
             from surface_probes import run_surface_probes  # noqa: WPS433
 
             surface = run_surface_probes(
-                f"http://{host}:{port}",
+                base,
                 model_id,
                 timeout=float(timeout),
             )
@@ -421,7 +487,7 @@ def run_cell(
             sys.executable,
             str(repo / "qa/run_qa.py"),
             "--base-url",
-            f"http://{host}:{port}",
+            base,
             "--model",
             model_id,
             "--mode",
@@ -591,14 +657,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--modes",
         nargs="+",
-        choices=["direct", "ngram", "mtp"],
+        choices=["direct", "ngram", "mtp", "embed"],
         default=None,
-        help="Filter inventory to these modes",
+        help="Filter inventory to these modes (embed = embedding model QA)",
     )
     p.add_argument(
         "--surface",
         action="store_true",
         help="Run product-surface probes (concurrency/stream/cancel/tools/multimodal)",
+    )
+    p.add_argument(
+        "--embed-tier",
+        default=os.environ.get("QA_EMBED_TIER", "standard"),
+        choices=["smoke", "standard"],
+        help="Embedding QA tier: smoke (engine) or standard (+ pair/retrieval)",
     )
     p.add_argument(
         "--streams",
@@ -685,6 +757,7 @@ def main(argv: list[str] | None = None) -> int:
                 ready_max=ready_max,
                 run_surface=run_surface,
                 streams=args.streams,
+                embed_tier=args.embed_tier,
             )
         except Exception as exc:
             cell.status = "error"

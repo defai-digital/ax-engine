@@ -57,9 +57,12 @@ bash scripts/check-qa.sh
   scripts/test_qa_sampling.py \
   scripts/test_run_qa_matrix.py \
   scripts/test_qa_surface_probes.py \
+  scripts/test_qa_embedding_probes.py \
   scripts/run_qa_matrix.py \
   qa/run_qa.py \
   qa/surface_probes.py \
+  qa/embedding_probes.py \
+  qa/embedding_bank.py \
   qa/checkers.py \
   qa/prompts.py \
   qa/prompt_def.py \
@@ -213,6 +216,7 @@ bash scripts/check-qa.sh
   scripts/test_qa_sampling.py \
   scripts/test_run_qa_matrix.py \
   scripts/test_qa_surface_probes.py \
+  scripts/test_qa_embedding_probes.py \
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/test_update_readme_from_bench.py \
   scripts/test_update_readme_from_results.py \
