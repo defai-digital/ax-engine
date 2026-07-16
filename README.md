@@ -125,7 +125,7 @@ Fairness notes: [Qwen3.6 MTP peer comparison](docs/mtp/qwen36-peer-comparison.md
 | Qwen3.6 35B-A3B 6-bit | **141.2** tok/s | 119.0 tok/s | 96.3 tok/s | AX leads production-config row |
 
 **Same-package AX acceleration** (exact sampled MTP — not a peer leaderboard):
-all 15 target/suite rows speed up decode by **1.41×–2.66×** over AX direct on
+all 15 target/suite rows speed up decode by **1.40×–2.69×** over AX direct on
 the same 6-bit package, with 100% MTP step coverage.
 
 <img width="100%" src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit exact sampled-MTP acceleration vs same-package direct">

@@ -315,24 +315,24 @@ MTP_6BIT_ROW_GAP = 32.0
 MTP_6BIT_GROUP_GAP = 18.0
 MTP_6BIT_GROUP_SIZE = 3
 
-# Same-session mlx-lm + AX pair for all Qwen3 embedding sizes (v2 provenance).
+# Retained mlx-lm reference plus a fresh AX-only refresh for all Qwen3 sizes.
 EMBEDDING_SCALE_PAIRED_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/"
     "2026-07-12-145710/embedding_ingest_scale.json"
 )
-# Historical overlay paths retained for optional diagnostic reloads / tests.
+# Historical overlay path retained for optional diagnostic reloads / tests.
 EMBEDDING_SCALE_REFERENCE_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/"
     "2026-07-02-215823/embedding_ingest_scale.json"
 )
 EMBEDDING_SCALE_AX_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
-    "2026-07-06-qwen-causal-final-attn-target-refresh/"
-    "2026-07-06-230340/embedding_ingest_scale.json"
+    "2026-07-16-ax-only-full-refresh-qwen/"
+    "2026-07-16-135740/embedding_ingest_scale.json"
 )
 # Back-compat aliases used by older call sites and tests.
 EMBEDDING_SCALE_PAIRED_06_ARTIFACT = EMBEDDING_SCALE_PAIRED_ARTIFACT
-EMBEDDING_SCALE_AX_OVERLAY_ARTIFACT = EMBEDDING_SCALE_PAIRED_ARTIFACT
+EMBEDDING_SCALE_AX_OVERLAY_ARTIFACT = EMBEDDING_SCALE_AX_ARTIFACT
 EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
     "2026-07-02-embeddinggemma-paired-cooldown15-refresh/"
@@ -340,8 +340,8 @@ EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
 )
 EMBEDDINGGEMMA_SCALE_AX_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
-    "2026-07-07-embeddinggemma-ax-only-refresh/"
-    "2026-07-07-005538/embedding_ingest_scale.json"
+    "2026-07-16-ax-only-full-refresh-embeddinggemma/"
+    "2026-07-16-153523/embedding_ingest_scale.json"
 )
 EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
 EMBEDDINGGEMMA_SCALE_CHART_OUTPUT = (
@@ -2647,9 +2647,9 @@ def load_embedding_paired_scale_delta_rows(
 
 
 def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
-    # Publication chart: same-session paired mlx-lm + AX for 0.6B / 4B / 8B.
-    return load_embedding_paired_scale_delta_rows(
-        repo_root, EMBEDDING_SCALE_PAIRED_ARTIFACT
+    # Publication chart: retained mlx-lm reference plus AX-only refresh.
+    return load_embedding_overlay_scale_delta_rows(
+        repo_root, EMBEDDING_SCALE_PAIRED_ARTIFACT, EMBEDDING_SCALE_AX_ARTIFACT
     )
 
 
@@ -3125,8 +3125,8 @@ def main() -> int:
             "box=IQR | whiskers=min/max | dots=six chunk×batch shapes."
         ),
         source_label=(
-            "Source: 2026-07-12 same-session paired mlx-lm+AX "
-            "(0.6B/4B/8B, ax.embedding_ingest_scale.v2); not B=1 single-call"
+            "Sources: retained 2026-07-12 mlx-lm reference + 2026-07-16 "
+            "AX-only refresh (0.6B/4B/8B); cross-run directional view, not B=1"
         ),
         ax_label=AX_ENGINE_CHART_LABEL,
     )
@@ -3147,7 +3147,7 @@ def main() -> int:
         ),
         source_label=(
             "Sources: 2026-07-02 EmbeddingGemma paired reference + "
-            "2026-07-07 AX-only refresh"
+            "2026-07-16 AX-only refresh; cross-run directional view"
         ),
     )
     if not write_chart(
