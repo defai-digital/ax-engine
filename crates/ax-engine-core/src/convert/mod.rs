@@ -168,10 +168,12 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         rope_low_freq_factor,
         rope_high_freq_factor,
         rope_original_context_len,
+        // Llama4 iRoPE period: mlx-lm hardcodes `(layer_idx + 1) % 4 != 0` for
+        // use_rope. Do **not** reuse `interleave_moe_layer_step` (that selects MoE
+        // layers). Prefer deriving the period from the `no_rope_layers` mask when
+        // present (1 = RoPE, 0 = no-RoPE); fall back to 4.
         no_rope_layer_interval: if model_type == "llama4" {
-            arch_u64(&config, &model_type, "interleave_moe_layer_step")
-                .and_then(u64_to_u32)
-                .unwrap_or(0)
+            llama4_no_rope_layer_interval(&config, &model_type)
         } else {
             0
         },
@@ -1333,6 +1335,75 @@ fn invalid_model_contract(
         model_type: model_type.to_string(),
         message: message.into(),
     })
+}
+
+/// Llama4 iRoPE period for `no_rope_layer_interval`.
+///
+/// Runtime: no RoPE when `(layer_idx + 1) % interval == 0` (matches mlx-lm
+/// `use_rope = (layer_idx + 1) % 4 != 0`).
+///
+/// Prefer deriving the period from HF `no_rope_layers` (1 = RoPE, 0 = no-RoPE).
+/// Fall back to 4 — mlx-lm hardcodes that period and must not be confused with
+/// `interleave_moe_layer_step` (MoE interleaving).
+pub(super) fn llama4_no_rope_layer_interval(config: &serde_json::Value, model_type: &str) -> u32 {
+    let mask = config
+        .get("no_rope_layers")
+        .or_else(|| {
+            if uses_text_config(model_type) {
+                config
+                    .get("text_config")
+                    .and_then(|tc| tc.get("no_rope_layers"))
+            } else {
+                None
+            }
+        })
+        .and_then(|v| v.as_array());
+
+    if let Some(mask) = mask {
+        let flags: Vec<bool> = mask
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| n != 0).or_else(|| v.as_bool()))
+            .collect();
+        if let Some(interval) = no_rope_period_from_rope_mask(&flags) {
+            return interval;
+        }
+    }
+
+    4
+}
+
+/// Infer iRoPE period from a repeating RoPE mask (`true` = use RoPE).
+///
+/// For Scout's `[1,1,1,0]` pattern returns 4 (no-RoPE every 4th layer, 0-based
+/// indices 3, 7, 11, …).
+fn no_rope_period_from_rope_mask(flags: &[bool]) -> Option<u32> {
+    if flags.is_empty() {
+        return None;
+    }
+    let no_rope: Vec<usize> = flags
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, use_rope)| (!use_rope).then_some(idx))
+        .collect();
+    if no_rope.is_empty() {
+        // All layers use RoPE → interval 0 disables iRoPE branching.
+        return Some(0);
+    }
+    // Period is the first no-rope index + 1 when that matches the full set.
+    let period = no_rope[0] + 1;
+    if period == 0 {
+        return None;
+    }
+    let matches = no_rope.iter().all(|&idx| (idx + 1).is_multiple_of(period))
+        && (0..flags.len()).all(|idx| {
+            let expect_no_rope = (idx + 1).is_multiple_of(period);
+            flags[idx] != expect_no_rope
+        });
+    if matches {
+        u32::try_from(period).ok()
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

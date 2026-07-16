@@ -13,13 +13,21 @@ use crate::kv_cache::MlxKVCache;
 use crate::weights::LayerWeights;
 
 /// Returns true when this layer uses RoPE, false for iRoPE (no-rope) layers.
+///
+/// Matches mlx-lm Llama4: `use_rope = (layer_idx + 1) % interval != 0`.
 fn layer_uses_rope(cfg: &ModelConfig, layer_idx: usize) -> bool {
     cfg.no_rope_layer_interval == 0 || !(layer_idx + 1).is_multiple_of(cfg.no_rope_layer_interval)
 }
 
-/// Returns true when this layer is a MoE layer (same interval as no-rope).
+/// Returns true when this layer is a MoE layer.
+///
+/// Matches mlx-lm: `(layer_idx % interleave_moe_layer_step) == step - 1`.
+/// Scout uses step=1 → every layer is MoE. This is independent of iRoPE.
 fn layer_is_moe(cfg: &ModelConfig, layer_idx: usize) -> bool {
-    !layer_uses_rope(cfg, layer_idx) && cfg.moe_expert_count > 0
+    if cfg.moe_expert_count == 0 || cfg.moe_layer_freq == 0 {
+        return false;
+    }
+    (layer_idx % cfg.moe_layer_freq) == (cfg.moe_layer_freq - 1)
 }
 
 /// Full layer forward for LLaMA-4 (Scout / Maverick).
@@ -58,7 +66,7 @@ pub(crate) fn layer_forward(
         .checked_div(head_dim)
         .expect("k projection output must divide by head_dim");
 
-    // Reshape to BSHD for norm/RoPE.
+    // Reshape to BSHD then BHSD for RoPE / QK-norm / KV cache (mlx-lm layout).
     let q = reshape(
         &q_raw,
         &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
@@ -75,30 +83,21 @@ pub(crate) fn layer_forward(
         None,
     );
 
-    // 3. QK norm without weight (all rope layers, regardless of iRoPE interval config).
-    //    LLaMA4 applies no-weight RMSNorm on every rope layer.
-    let (q, k) = if use_rope {
-        (
-            rms_norm(&q, None, 1e-6, None),
-            rms_norm(&k, None, 1e-6, None),
-        )
-    } else {
-        (q, k)
-    };
-
-    // 4. Transpose to BHSD for RoPE and KV cache.
+    // 3. Transpose to BHSD before RoPE/QK-norm (mlx-lm Attention.__call__).
     let q = transpose(&q, &[0, 2, 1, 3], None);
     let k = transpose(&k, &[0, 2, 1, 3], None);
     let v = prepare_value_bhsd(v, false, kv_heads, head_dim, seq, cfg.rms_norm_eps);
 
-    // 5. RoPE (traditional=true for LLaMA4, rope layers only).
+    // 4. RoPE first (traditional=true), then no-weight QK RMSNorm on rope layers.
+    //    mlx-lm order: rope → rms_norm(weight=None). Applying norm before rope
+    //    changes the rotated subspace and destroys instruction following.
     let (rope_base, rope_freqs_ref) = cfg
         .rope_freqs
         .as_ref()
         .map(|f| (None, Some(f)))
         .unwrap_or((Some(rope_theta), None));
 
-    let q_out = if use_rope {
+    let q_rope = if use_rope {
         rope(
             &q,
             rope_dims as i32,
@@ -112,7 +111,7 @@ pub(crate) fn layer_forward(
     } else {
         q
     };
-    let k_out = if use_rope {
+    let k_rope = if use_rope {
         rope(
             &k,
             rope_dims as i32,
@@ -125,6 +124,16 @@ pub(crate) fn layer_forward(
         )
     } else {
         k
+    };
+
+    // 5. QK norm without weight only on rope layers (`use_qk_norm and use_rope`).
+    let (q_out, k_out) = if use_rope {
+        (
+            rms_norm(&q_rope, None, 1e-6, None),
+            rms_norm(&k_rope, None, 1e-6, None),
+        )
+    } else {
+        (q_rope, k_rope)
     };
 
     // 6. Temperature scaling for no-rope layers.

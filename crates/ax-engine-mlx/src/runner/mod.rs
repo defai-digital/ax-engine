@@ -11376,6 +11376,10 @@ fn is_mlx_supported_model_family(model_family: &str) -> bool {
             | "deepseek_v32"
             | "mistral3"
             | "mixtral"
+            // Secondary open reasoner (catalog + family implementation + registry).
+            | "gpt_oss"
+            // Multimodal text backbone (same Standard route as gemma4).
+            | "gemma4_unified"
     )
 }
 
@@ -11866,9 +11870,12 @@ fn validate_qwen_gated_delta_linear_attention(
 fn validate_gemma4_interleaved_attention(
     manifest: &NativeModelManifest,
 ) -> Result<(), MlxRunnerError> {
+    // Families with a runtime path for per-layer sliding/full patterns.
+    // GPT-OSS uses alternating sliding-128 / full attention (mlx-lm gpt_oss);
+    // Gemma4-class families use SWA interleaving (and optional KV sharing).
     if !matches!(
         manifest.model_family.as_str(),
-        "gemma4" | "gemma3" | "diffusion_gemma" | "embeddinggemma"
+        "gemma4" | "gemma3" | "gemma4_unified" | "diffusion_gemma" | "embeddinggemma" | "gpt_oss"
     ) {
         return Err(MlxRunnerError::UnsupportedFeature(format!(
             "interleaved sliding/full attention is not implemented for {} manifests",
@@ -16215,6 +16222,27 @@ mod tests {
     }
 
     #[test]
+    fn mlx_supported_model_family_covers_secondary_catalog_and_gpt_oss() {
+        // Recently expanded direct-mode secondary stack must clear the runner gate.
+        for family in [
+            "llama3",
+            "llama4",
+            "mistral3",
+            "mixtral",
+            "gpt_oss",
+            "gemma4_unified",
+        ] {
+            assert!(
+                is_mlx_supported_model_family(family),
+                "{family} must be accepted by the MLX runner allowlist"
+            );
+        }
+        // Assistant MTP draft artifacts are sidecars, not primary runners.
+        assert!(!is_mlx_supported_model_family("gemma4_assistant"));
+        assert!(!is_mlx_supported_model_family("gpt2"));
+    }
+
+    #[test]
     fn route_decision_upsert_replaces_existing_value_and_removes_duplicates() {
         let mut decisions = vec![
             ("other".to_string(), 7),
@@ -16803,6 +16831,27 @@ mod tests {
 
         validate_mlx_supported_manifest(&artifacts)
             .expect("Gemma4 interleaved attention is implemented in the MLX model graph");
+    }
+
+    #[test]
+    fn mlx_manifest_validation_allows_gpt_oss_interleaved_attention() {
+        // GPT-OSS alternates sliding_attention / full_attention with a fixed
+        // sliding window (mlx-lm gpt_oss). The family has a dedicated forward
+        // path and must clear the interleaved SWA gate.
+        let mut manifest = dense_manifest();
+        manifest.model_family = "gpt_oss".to_string();
+        manifest.layer_count = 4;
+        manifest.sliding_window_size = Some(128);
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ];
+
+        validate_gemma4_interleaved_attention(&manifest)
+            .expect("GPT-OSS alternating SWA/full attention is implemented");
+        assert!(is_mlx_supported_model_family("gpt_oss"));
     }
 
     #[test]

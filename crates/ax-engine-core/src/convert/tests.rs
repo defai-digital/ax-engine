@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 use super::{
     ConvertError, NativeTensorDataType, NativeTensorRole, compute_attention_value_from_key_layers,
-    convert_hf_model_dir, match_tensor, model_family_for_type, moe_config, parse_layer_types,
-    parse_rope_params, validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling,
-    with_real_model_manifest_lock, write_manifest,
+    convert_hf_model_dir, llama4_no_rope_layer_interval, match_tensor, model_family_for_type,
+    moe_config, parse_layer_types, parse_rope_params, validate_glm4_moe_lite_rope_scaling,
+    validate_qwen_rope_scaling, with_real_model_manifest_lock, write_manifest,
 };
 
 fn write_fake_safetensors(dir: &Path, filename: &str, tensors: &[(&str, &str, &[u64])]) {
@@ -279,6 +279,39 @@ fn llama4_moe_config_reads_nested_expert_geometry() {
     assert_eq!(moe.expert_intermediate_size, Some(8192));
     assert_eq!(moe.layer_freq, Some(1));
     assert_eq!(moe.shared_expert_count, Some(1));
+}
+
+#[test]
+fn llama4_no_rope_interval_from_mask_not_moe_step() {
+    // Scout-style: RoPE mask [1,1,1,0] repeating, while MoE interleave step is 1
+    // (every layer MoE). no_rope_layer_interval must be 4, not 1.
+    let config = serde_json::json!({
+        "model_type": "llama4",
+        "text_config": {
+            "hidden_size": 5120,
+            "intermediate_size": 8192,
+            "num_attention_heads": 40,
+            "num_key_value_heads": 8,
+            "num_hidden_layers": 8,
+            "vocab_size": 202048,
+            "head_dim": 128,
+            "interleave_moe_layer_step": 1,
+            "num_local_experts": 16,
+            "num_experts_per_tok": 1,
+            "no_rope_layers": [1, 1, 1, 0, 1, 1, 1, 0]
+        }
+    });
+    assert_eq!(
+        llama4_no_rope_layer_interval(&config, "llama4"),
+        4,
+        "iRoPE period must come from no_rope_layers, not interleave_moe_layer_step"
+    );
+    // Without a mask, fall back to mlx-lm's hardcoded period 4.
+    let bare = serde_json::json!({
+        "model_type": "llama4",
+        "text_config": { "interleave_moe_layer_step": 1 }
+    });
+    assert_eq!(llama4_no_rope_layer_interval(&bare, "llama4"), 4);
 }
 
 #[test]

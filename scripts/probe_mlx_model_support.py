@@ -38,6 +38,14 @@ REPO_OWNED_TYPES = {
     "gemma4_unified_text",
     "diffusion_gemma",
     "gpt_oss",
+    # Secondary direct-mode catalog (Llama / Mistral / Mixtral).
+    "llama",
+    "llama3",
+    "llama4",
+    "llama4_text",
+    "mistral",
+    "mistral3",
+    "mixtral",
 }
 
 
@@ -327,6 +335,12 @@ def _expected_ax_family(model_type: str) -> str:
         return "qwen3_next"
     if model_type == "qwen3_moe":
         return "qwen3"
+    if model_type in ("llama", "llama3"):
+        return "llama3"
+    if model_type in ("llama4", "llama4_text"):
+        return "llama4"
+    if model_type in ("mistral", "mistral3"):
+        return "mistral3"
     return model_type
 
 

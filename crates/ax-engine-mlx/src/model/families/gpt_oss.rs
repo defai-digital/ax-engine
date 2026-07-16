@@ -186,15 +186,20 @@ fn gpt_oss_moe_experts_forward(
         .as_ref()
         .expect("gpt_oss MoE requires down_exps");
 
-    // mlx-lm SwitchGLU: x = expand_dims(x, (-2, -3))
+    // mlx-lm SwitchGLU: x = expand_dims(x, (-2, -3)) → [B, S, 1, 1, H].
+    // Keep the singleton dim through gate/up/activation/down so gather_qmm
+    // sees the SwitchGLU layout. Squeezing before down would leave top_k on
+    // the input while indices still select top_k, producing [B,S,K,K,H]
+    // (double top_k) and a reshape panic.
     let x_exp = expand_dims_axes(x, &[-2, -3], None);
     let batch = x.shape()[0];
     let seq_len = x.shape()[1];
     let top_k = top_k_indices.shape().last().copied().unwrap_or(0);
 
     // x_up = up_proj(x, indices); x_gate = gate_proj(x, indices)
-    let up = squeeze_switch_singleton(&qw_gather(&x_exp, up_exps, top_k_indices, false));
-    let gate = squeeze_switch_singleton(&qw_gather(&x_exp, gate_exps, top_k_indices, false));
+    // Do not squeeze between gate/up and down — match shared moe_experts_forward.
+    let up = qw_gather(&x_exp, up_exps, top_k_indices, false);
+    let gate = qw_gather(&x_exp, gate_exps, top_k_indices, false);
 
     // activation(x_up, x_gate) → swiglu_oai(up, gate)  [mlx-lm gpt_oss.SwiGLU]
     let h = swiglu_oai(&up, &gate, None);
