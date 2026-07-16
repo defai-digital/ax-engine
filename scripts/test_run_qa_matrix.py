@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -31,16 +32,17 @@ class RunQaMatrixTests(unittest.TestCase):
             m.classify_engine_fail("", 'choices":[{"message":{"content": null}}]'),
             'content": null',
         )
+        self.assertEqual(
+            m.classify_engine_fail("", "surface_hard_fail"), "surface_hard_fail"
+        )
         self.assertIsNone(
             m.classify_engine_fail(
                 "listening", "Results: 8/8 passed (100.0%)\n[1/8] math_modulo ... PASS"
             )
         )
 
-    def test_load_matrix_parses_ok_lines(self) -> None:
+    def test_load_matrix_parses_ok_lines_and_modes(self) -> None:
         m = _load()
-        import tempfile
-
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "qa-matrix.txt"
             p.write_text(
@@ -49,27 +51,49 @@ class RunQaMatrixTests(unittest.TestCase):
                         "# comment",
                         "SKIP|direct|missing|nope",
                         "OK|direct|llama3.1-8b|/tmp/fake",
+                        "OK|ngram|llama3.1-8b|/tmp/fake",
                         "OK|mtp|ax-local/x|/tmp/mtp",
+                        "OK|bogus|x|/tmp/x",
                     ]
                 )
                 + "\n"
             )
             cells = m.load_matrix(p)
-            self.assertEqual(len(cells), 2)
+            self.assertEqual(len(cells), 3)
             self.assertEqual(cells[0].mode, "direct")
-            self.assertEqual(cells[0].model_id, "llama3.1-8b")
-            self.assertEqual(cells[1].mode, "mtp")
+            self.assertEqual(cells[1].mode, "ngram")
+            self.assertEqual(cells[2].mode, "mtp")
 
-    def test_build_server_cmd_mtp_does_not_disable_ngram(self) -> None:
-        """Regression: --disable-ngram-acceleration sets mtp_requested=false."""
+    def test_write_inventory(self) -> None:
+        m = _load()
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "inv.txt"
+            m.write_inventory(
+                p,
+                [
+                    ("direct", "m1", "/a"),
+                    ("ngram", "m1", "/a"),
+                ],
+            )
+            text = p.read_text()
+            self.assertIn("OK|direct|m1|/a", text)
+            self.assertIn("OK|ngram|m1|/a", text)
+
+    def test_build_server_cmd_modes(self) -> None:
+        """Regression: MTP must not disable ngram; direct must; ngram neither MTP flag."""
         m = _load()
         from pathlib import Path as P
 
+        server = P("/tmp/ax-engine-server")
         direct = m.Cell(mode="direct", model_id="x", artifacts=P("/tmp/a"))
+        ngram = m.Cell(mode="ngram", model_id="x", artifacts=P("/tmp/a"))
         mtp = m.Cell(mode="mtp", model_id="y", artifacts=P("/tmp/b"))
-        d_cmd = m.build_server_cmd(direct, "x")
-        m_cmd = m.build_server_cmd(mtp, "mtp-y")
+        d_cmd = m.build_server_cmd(direct, "x", server_bin=server, host="127.0.0.1", port=1)
+        n_cmd = m.build_server_cmd(ngram, "x", server_bin=server, host="127.0.0.1", port=1)
+        m_cmd = m.build_server_cmd(mtp, "mtp-y", server_bin=server, host="127.0.0.1", port=1)
         self.assertIn("--disable-ngram-acceleration", d_cmd)
+        self.assertNotIn("--disable-ngram-acceleration", n_cmd)
+        self.assertNotIn("--mlx-mtp-disable-ngram-stacking", n_cmd)
         self.assertNotIn("--disable-ngram-acceleration", m_cmd)
         self.assertIn("--mlx-mtp-disable-ngram-stacking", m_cmd)
 
@@ -103,8 +127,6 @@ class RunQaMatrixTests(unittest.TestCase):
 
     def test_package_looks_like_mtp_sidecar_and_assistant(self) -> None:
         m = _load()
-        import tempfile
-
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             plain = root / "plain"

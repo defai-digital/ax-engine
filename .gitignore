@@ -35,6 +35,13 @@ rapid-server/
 *.key
 *.p12
 
+# QA harness local run artifacts (HTML/JSON/logs). Keep source under qa/.
+qa/reports/**
+!qa/reports/.gitkeep
+qa/qa-report-*.html
+qa/qa-report-*.json
+qa/**/__pycache__/
+
 # Internal design and planning materials — not for publication
 .internal/
 ax-internal/

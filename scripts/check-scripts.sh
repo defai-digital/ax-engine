@@ -36,7 +36,9 @@ assert_exit_status 1 bash -c 'set -euo pipefail; source scripts/lib/common.sh; c
 assert_exit_status 7 bash -c 'set -euo pipefail; source scripts/lib/common.sh; cleanup(){ return 7; }; trap '\''ax_run_cleanup "$?" cleanup'\'' EXIT; true'
 assert_exit_status 1 bash -c 'set -euo pipefail; source scripts/lib/common.sh; cleanup(){ return 7; }; trap '\''ax_run_cleanup "$?" cleanup'\'' EXIT; false'
 
-bash -n scripts/*.sh scripts/lib/common.sh
+bash -n scripts/*.sh scripts/lib/common.sh scripts/check-qa.sh
+# Dedicated offline QA harness gate (bank + unit tests + py_compile).
+bash scripts/check-qa.sh
 "$PYTHON_BIN" -m py_compile \
   scripts/bench_ax_serving.py \
   scripts/test_bench_ax_serving.py \
@@ -52,6 +54,18 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/openwebui_e2e.py \
   scripts/test_openwebui_e2e.py \
   scripts/test_qa_checkers.py \
+  scripts/test_qa_sampling.py \
+  scripts/test_run_qa_matrix.py \
+  scripts/test_qa_surface_probes.py \
+  scripts/run_qa_matrix.py \
+  qa/run_qa.py \
+  qa/surface_probes.py \
+  qa/checkers.py \
+  qa/prompts.py \
+  qa/prompt_def.py \
+  qa/question_bank.py \
+  qa/reporter.py \
+  qa/client.py \
   scripts/render_ax_serving_benchmark_report.py \
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/bench_mlx_inference_stack.py \
@@ -196,6 +210,9 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_ax_serving_benchmark_artifact.py \
   scripts/test_openwebui_e2e.py \
   scripts/test_qa_checkers.py \
+  scripts/test_qa_sampling.py \
+  scripts/test_run_qa_matrix.py \
+  scripts/test_qa_surface_probes.py \
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/test_update_readme_from_bench.py \
   scripts/test_update_readme_from_results.py \

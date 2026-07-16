@@ -1,44 +1,51 @@
 #!/usr/bin/env python3
-"""Sequential direct/MTP QA matrix runner for AX Engine goal verification."""
+"""Unified sequential QA matrix runner (direct / ngram / MTP).
+
+Single orchestration entrypoint for local multi-model verification.
+``qa/run_full_qa.sh`` is a thin wrapper that materializes an inventory and
+invokes this script.
+
+Inventory lines::
+
+    OK|direct|model_id|/path/to/artifacts
+    OK|ngram|model_id|/path/to/artifacts
+    OK|mtp|model_id|/path/to/artifacts
+
+Exit codes:
+  0 — no engine failures (model_quality partials allowed by default)
+  1 — one or more engine_fail cells
+  2 — bad configuration (missing matrix / server binary)
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-SCRATCH = Path(os.environ.get("QA_SCRATCH", str(REPO / "qa/reports/matrix")))
-SERVER_BIN = Path(
-    os.environ.get(
-        "QA_SERVER_BIN",
-        str(REPO / "target/debug/ax-engine-server"),
-    )
-)
-PORT = int(os.environ.get("QA_PORT", "18440"))
-SEED = int(os.environ.get("QA_SEED", "20260716"))
-SAMPLE = int(os.environ.get("QA_SAMPLE", "8"))
-TIMEOUT = int(os.environ.get("QA_TIMEOUT", "180"))
-READY_MAX = int(os.environ.get("QA_READY_MAX", "420"))
+DEFAULT_SCRATCH = REPO / "qa" / "reports" / "matrix"
 HOST = "127.0.0.1"
 
 
 @dataclass
 class Cell:
-    mode: str  # direct | mtp
+    mode: str  # direct | ngram | mtp
     model_id: str
     artifacts: Path
     status: str = "pending"  # ok|skip|engine_fail|model_quality|error
     pass_line: str = ""
     log_path: Path | None = None
     note: str = ""
+    surface_line: str = ""
 
 
 def load_matrix(path: Path) -> list[Cell]:
@@ -50,12 +57,22 @@ def load_matrix(path: Path) -> list[Cell]:
         if len(parts) != 4:
             continue
         _, mode, mid, art = parts
-        cells.append(Cell(mode=mode, model_id=mid, artifacts=Path(art)))
+        mode = mode.strip().lower()
+        if mode not in ("direct", "ngram", "mtp"):
+            continue
+        cells.append(Cell(mode=mode, model_id=mid.strip(), artifacts=Path(art.strip())))
     return cells
 
 
-def wait_ready(timeout: int) -> bool:
-    url = f"http://{HOST}:{PORT}/v1/models"
+def write_inventory(path: Path, cells: list[tuple[str, str, str]]) -> None:
+    """Write OK|mode|model_id|artifacts lines."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"OK|{mode}|{mid}|{art}" for mode, mid, art in cells]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+
+
+def wait_ready(host: str, port: int, timeout: int) -> bool:
+    url = f"http://{host}:{port}/v1/models"
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -68,9 +85,9 @@ def wait_ready(timeout: int) -> bool:
     return False
 
 
-def kill_port() -> None:
+def kill_port(port: int) -> None:
     try:
-        out = subprocess.check_output(["lsof", "-ti", f"tcp:{PORT}"], text=True)
+        out = subprocess.check_output(["lsof", "-ti", f"tcp:{port}"], text=True)
     except subprocess.CalledProcessError:
         return
     for pid in out.split():
@@ -80,7 +97,7 @@ def kill_port() -> None:
             pass
     time.sleep(1)
     try:
-        out = subprocess.check_output(["lsof", "-ti", f"tcp:{PORT}"], text=True)
+        out = subprocess.check_output(["lsof", "-ti", f"tcp:{port}"], text=True)
     except subprocess.CalledProcessError:
         return
     for pid in out.split():
@@ -96,7 +113,7 @@ def classify_engine_fail(log_text: str, qa_text: str) -> str | None:
         "InvalidManifest",
         "is not supported by the MLX runner",
         "not implemented for",
-        "content\": null",
+        'content": null',
         "AttributeError",
         "server_died",
         "failed to load",
@@ -106,6 +123,7 @@ def classify_engine_fail(log_text: str, qa_text: str) -> str | None:
         "HTTP Error 5",
         "Connection refused",
         "mtp_path_not_exercised",
+        "surface_hard_fail",
     ]
     blob = (log_text + "\n" + qa_text).lower()
     for n in needles:
@@ -131,22 +149,25 @@ def package_looks_like_mtp(artifacts: Path) -> bool:
     return False
 
 
-def build_server_cmd(cell: Cell, model_id: str) -> list[str]:
-    """Build ax-engine-server argv for direct vs MTP verification cells.
+def build_server_cmd(
+    cell: Cell,
+    model_id: str,
+    *,
+    server_bin: Path,
+    host: str,
+    port: int,
+) -> list[str]:
+    """Build ax-engine-server argv for direct / ngram / MTP cells.
 
     Critical: MTP packages must NOT pass ``--disable-ngram-acceleration``.
-    That flag sets ``mtp_requested=false`` in the runner and forces
-    ``MtpRequestRoute::DirectFallback``, bypassing ``run_mtp_decode``.
-    Direct cells intentionally disable n-gram for pure direct decode.
-    MTP cells use pure MTP (no n-gram stacking) via
-    ``--mlx-mtp-disable-ngram-stacking``.
+    That flag sets ``mtp_requested=false`` and forces DirectFallback.
     """
     cmd = [
-        str(SERVER_BIN),
+        str(server_bin),
         "--host",
-        HOST,
+        host,
         "--port",
-        str(PORT),
+        str(port),
         "--model-id",
         model_id,
         "--support-tier",
@@ -157,17 +178,19 @@ def build_server_cmd(cell: Cell, model_id: str) -> list[str]:
     ]
     if cell.mode == "direct":
         cmd.append("--disable-ngram-acceleration")
-    else:
-        # Keep MTP speculation eligible; stack n-gram off for pure-MTP path.
+    elif cell.mode == "ngram":
+        # Default server path: n-gram acceleration eligible.
+        pass
+    elif cell.mode == "mtp":
         cmd.append("--mlx-mtp-disable-ngram-stacking")
+    else:
+        raise ValueError(f"unknown mode {cell.mode}")
     return cmd
 
 
 def mtp_telemetry_active(crossover: dict) -> bool:
-    """True when route decisions show the MTP path was eligible and exercised."""
     if not crossover:
         return False
-    # Positive draft/verify activity, or Gemma assistant MTP enabled+drafted.
     if int(crossover.get("ax_mtp_source_mtp_proposer_wall_us") or 0) > 0:
         return True
     if int(crossover.get("ax_mtp_source_assistant_proposer_wall_us") or 0) > 0:
@@ -187,12 +210,18 @@ def mtp_telemetry_active(crossover: dict) -> bool:
     return False
 
 
-def probe_mtp_route(artifacts: Path, out_json: Path) -> tuple[bool, dict, str]:
-    """Run a short ax-engine-bench generate and return (active, decisions, err)."""
-    bench = REPO / "target/debug/ax-engine-bench"
+def probe_mtp_route(
+    artifacts: Path,
+    out_json: Path,
+    *,
+    repo: Path,
+    timeout: int,
+) -> tuple[bool, dict, str]:
+    bench = repo / "target/debug/ax-engine-bench"
     if not bench.is_file():
-        return False, {}, f"missing bench binary {bench}"
-    # Deterministic short token prompt (ids are model-agnostic enough for load/decode).
+        bench = repo / "target/release/ax-engine-bench"
+    if not bench.is_file():
+        return False, {}, f"missing bench binary under {repo / 'target'}"
     tokens = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16"
     cmd = [
         str(bench),
@@ -209,10 +238,10 @@ def probe_mtp_route(artifacts: Path, out_json: Path) -> tuple[bool, dict, str]:
     try:
         proc = subprocess.run(
             cmd,
-            cwd=str(REPO),
+            cwd=str(repo),
             capture_output=True,
             text=True,
-            timeout=max(TIMEOUT * 4, 300),
+            timeout=max(timeout * 4, 300),
             env={**os.environ, "AX_NO_SPEC": "0"},
         )
     except Exception as exc:
@@ -235,10 +264,24 @@ def probe_mtp_route(artifacts: Path, out_json: Path) -> tuple[bool, dict, str]:
     return mtp_telemetry_active(decisions), decisions, ""
 
 
-def run_cell(cell: Cell) -> Cell:
+def run_cell(
+    cell: Cell,
+    *,
+    repo: Path,
+    scratch: Path,
+    server_bin: Path,
+    host: str,
+    port: int,
+    seed: int,
+    sample: int,
+    timeout: int,
+    ready_max: int,
+    run_surface: bool,
+    streams: str,
+) -> Cell:
     safe = cell.model_id.replace("/", "_").replace(" ", "_")
-    log_path = SCRATCH / f"qa-{cell.mode}-{safe}.log"
-    server_log = SCRATCH / f"server-{cell.mode}-{safe}.log"
+    log_path = scratch / f"qa-{cell.mode}-{safe}.log"
+    server_log = scratch / f"server-{cell.mode}-{safe}.log"
     cell.log_path = log_path
 
     if not (cell.artifacts / "config.json").is_file():
@@ -247,9 +290,10 @@ def run_cell(cell: Cell) -> Cell:
         log_path.write_text(f"SKIP {cell.note}\n")
         return cell
 
-    model_id = cell.model_id if cell.mode == "direct" else f"mtp-{safe}"
-    cmd = build_server_cmd(cell, model_id)
-    # Hard fail if MTP cell accidentally disables ngram (blocks StrictMtp).
+    model_id = cell.model_id if cell.mode != "mtp" else f"mtp-{safe}"
+    cmd = build_server_cmd(
+        cell, model_id, server_bin=server_bin, host=host, port=port
+    )
     if cell.mode == "mtp" and "--disable-ngram-acceleration" in cmd:
         cell.status = "engine_fail"
         cell.note = "mtp_cmd_has_disable_ngram"
@@ -258,19 +302,20 @@ def run_cell(cell: Cell) -> Cell:
 
     mtp_probe_note = ""
     mtp_decisions: dict = {}
-    # Prove MTP decode eligibility BEFORE holding a long-lived server (memory).
     if cell.mode == "mtp":
         if not package_looks_like_mtp(cell.artifacts):
             cell.status = "skip"
             cell.note = "not_mtp_package"
             log_path.write_text(
-                "SKIP not_mtp_package (no mtp.safetensors / glm_mtp / assistant MTP)\n"
+                "SKIP not_mtp_package\n"
                 f"artifacts={cell.artifacts}\n"
                 f"server_cmd={' '.join(cmd)}\n"
             )
             return cell
-        probe_json = SCRATCH / f"mtp-route-{safe}.json"
-        active, mtp_decisions, mtp_err = probe_mtp_route(cell.artifacts, probe_json)
+        probe_json = scratch / f"mtp-route-{safe}.json"
+        active, mtp_decisions, mtp_err = probe_mtp_route(
+            cell.artifacts, probe_json, repo=repo, timeout=timeout
+        )
         if not active:
             cell.status = "engine_fail"
             cell.note = "mtp_path_not_exercised"
@@ -283,17 +328,21 @@ def run_cell(cell: Cell) -> Cell:
             return cell
         mtp_probe_note = (
             f"mtp_active proposer_us={mtp_decisions.get('ax_mtp_source_mtp_proposer_wall_us')} "
-            f"verify_tokens={mtp_decisions.get('ax_mtp_verify_tokens')} "
-            f"assistant_enabled={mtp_decisions.get('ax_mlx_gemma4_assistant_mtp_enabled')} "
-            f"assistant_draft={mtp_decisions.get('ax_mlx_gemma4_assistant_mtp_draft_tokens')}"
+            f"verify_tokens={mtp_decisions.get('ax_mtp_verify_tokens')}"
         )
 
-    kill_port()
+    kill_port(port)
     with server_log.open("w") as slog:
-        proc = subprocess.Popen(cmd, stdout=slog, stderr=subprocess.STDOUT, cwd=str(REPO))
+        proc = subprocess.Popen(
+            cmd,
+            stdout=slog,
+            stderr=subprocess.STDOUT,
+            cwd=str(repo),
+            env={**os.environ, "AX_ALLOW_UNSUPPORTED_HOST": os.environ.get("AX_ALLOW_UNSUPPORTED_HOST", "1")},
+        )
 
     try:
-        if not wait_ready(READY_MAX):
+        if not wait_ready(host, port, ready_max):
             slog_text = server_log.read_text(errors="replace")
             cell.status = "engine_fail"
             cell.note = classify_engine_fail(slog_text, "") or "server_not_ready"
@@ -303,7 +352,7 @@ def run_cell(cell: Cell) -> Cell:
             )
             return cell
 
-        # Quick null-content smoke before full suite
+        # Quick null-content smoke
         try:
             payload = json.dumps(
                 {
@@ -314,12 +363,12 @@ def run_cell(cell: Cell) -> Cell:
                 }
             ).encode()
             req = urllib.request.Request(
-                f"http://{HOST}:{PORT}/v1/chat/completions",
+                f"http://{host}:{port}/v1/chat/completions",
                 data=payload,
                 headers={"content-type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = json.loads(resp.read().decode())
             content = (body.get("choices") or [{}])[0].get("message", {}).get("content")
             if content is None:
@@ -342,37 +391,66 @@ def run_cell(cell: Cell) -> Cell:
             )
             return cell
 
+        surface_blob = ""
+        if run_surface:
+            sys.path.insert(0, str(repo / "qa"))
+            from surface_probes import run_surface_probes  # noqa: WPS433
+
+            surface = run_surface_probes(
+                f"http://{host}:{port}",
+                model_id,
+                timeout=float(timeout),
+            )
+            surface_json = scratch / f"surface-{cell.mode}-{safe}.json"
+            surface_json.write_text(json.dumps(surface.as_dict(), indent=2))
+            cell.surface_line = surface.summary_line
+            surface_blob = json.dumps(surface.as_dict(), indent=2)
+            if not surface.hard_passed:
+                cell.status = "engine_fail"
+                cell.note = "surface_hard_fail"
+                log_path.write_text(
+                    f"ENGINE_FAIL surface\n{surface.summary_line}\n\n{surface_blob}\n\n"
+                    + server_log.read_text(errors="replace")[-4000:]
+                )
+                return cell
+
+        report_html = scratch / f"report-{cell.mode}-{safe}.html"
+        report_json = scratch / f"report-{cell.mode}-{safe}.json"
+        mode_label = cell.mode if cell.mode != "mtp" else "mtp"
         qa_cmd = [
             sys.executable,
-            str(REPO / "qa/run_qa.py"),
+            str(repo / "qa/run_qa.py"),
             "--base-url",
-            f"http://{HOST}:{PORT}",
+            f"http://{host}:{port}",
             "--model",
             model_id,
-            "--modes",
-            "mtp" if cell.mode == "mtp" else "direct",
+            "--mode",
+            mode_label,
             "--streams",
-            "false",
+            streams,
             "--max-tokens",
             "256",
             "--temperature",
             "0.0",
             "--timeout",
-            str(TIMEOUT),
+            str(timeout),
             "--sample",
-            str(SAMPLE),
+            str(sample),
             "--seed",
-            str(SEED),
+            str(seed),
+            "--allow-partial",
             "--output",
-            str(SCRATCH / f"report-{cell.mode}-{safe}.html"),
+            str(report_html),
+            "--json-output",
+            str(report_json),
         ]
 
         qa_proc = subprocess.run(
             qa_cmd,
-            cwd=str(REPO),
+            cwd=str(repo),
             capture_output=True,
             text=True,
-            timeout=TIMEOUT * (SAMPLE + 4),
+            timeout=timeout * (sample + 4) * (2 if streams == "both" else 1),
         )
         qa_out = (qa_proc.stdout or "") + "\n" + (qa_proc.stderr or "")
         server_tail = server_log.read_text(errors="replace")[-6000:]
@@ -381,16 +459,37 @@ def run_cell(cell: Cell) -> Cell:
         for line in qa_out.splitlines():
             if line.strip().startswith("Results:"):
                 pass_line = line.strip()
-        cell.pass_line = pass_line
 
+        x = y = None
+        if report_json.is_file():
+            try:
+                payload = json.loads(report_json.read_text())
+                totals = payload.get("totals") or {}
+                x = int(totals.get("hard_passed", 0))
+                y = int(totals.get("items", 0))
+                if y > 0:
+                    pass_line = (
+                        f"Results: {x}/{y} passed ({x / y * 100:.1f}%) [hard checks]"
+                    )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if x is None or y is None:
+            m = re.search(r"Results:\s*(\d+)/(\d+)\s*passed", pass_line)
+            if m:
+                x, y = int(m.group(1)), int(m.group(2))
+
+        cell.pass_line = pass_line
         log_path.write_text(
             f"mode={cell.mode} model={cell.model_id}\n"
             f"artifacts={cell.artifacts}\n"
             f"server_cmd={' '.join(cmd)}\n"
             f"mtp_probe={mtp_probe_note}\n"
+            f"surface={cell.surface_line}\n"
             f"qa_rc={qa_proc.returncode}\n"
+            f"json={report_json}\n"
             f"{pass_line}\n"
             f"engine_needle={engine}\n\n"
+            f"--- surface ---\n{surface_blob[:4000]}\n\n"
             f"--- qa stdout/err ---\n{qa_out}\n\n"
             f"--- server tail ---\n{server_tail}\n"
         )
@@ -398,29 +497,19 @@ def run_cell(cell: Cell) -> Cell:
         if engine:
             cell.status = "engine_fail"
             cell.note = engine
-        elif not pass_line:
+        elif x is None or y is None or y == 0:
             cell.status = "error"
-            cell.note = "no Results line"
+            cell.note = "no Results / empty JSON"
+        elif x == y:
+            cell.status = "ok"
+            cell.note = "all_pass"
         else:
-            # Extract numbers
-            # Results: X/Y passed
-            import re
-
-            m = re.search(r"Results:\s*(\d+)/(\d+)\s*passed", pass_line)
-            if not m:
-                cell.status = "error"
-                cell.note = "unparseable Results"
-            else:
-                x, y = int(m.group(1)), int(m.group(2))
-                if x == y:
-                    cell.status = "ok"
-                    cell.note = "all_pass"
-                else:
-                    cell.status = "model_quality"
-                    cell.note = f"partial {x}/{y}"
-        # Preserve MTP path evidence on successful classification notes.
+            cell.status = "model_quality"
+            cell.note = f"partial {x}/{y}"
         if mtp_probe_note and cell.status in ("ok", "model_quality"):
             cell.note = f"{cell.note}; {mtp_probe_note}"
+        if cell.surface_line and cell.status in ("ok", "model_quality"):
+            cell.note = f"{cell.note}; {cell.surface_line}"
         return cell
     finally:
         try:
@@ -432,54 +521,24 @@ def run_cell(cell: Cell) -> Cell:
                 proc.wait(timeout=5)
         except Exception:
             pass
-        kill_port()
-        time.sleep(2)
+        kill_port(port)
+        time.sleep(1)
 
 
-def ensure_scratch() -> None:
-    SCRATCH.mkdir(parents=True, exist_ok=True)
-
-
-def main() -> int:
-    ensure_scratch()
-    matrix = SCRATCH / "qa-matrix.txt"
-    if not matrix.is_file():
-        catalog = REPO / "qa" / "matrix-catalog.txt"
-        if catalog.is_file():
-            matrix = catalog
-        else:
-            print("missing matrix", matrix)
-            return 2
-    if not SERVER_BIN.is_file():
-        print("missing server", SERVER_BIN)
-        return 2
-
-    cells = load_matrix(matrix)
-    # Prefer chat LLMs: skip pure assistant-only weights that aren't packages?
-    # Keep all OK MTP cells from matrix.
-    print(f"Running {len(cells)} cells, sample={SAMPLE} seed={SEED}")
-    results: list[Cell] = []
-    for i, cell in enumerate(cells, 1):
-        print(f"\n[{i}/{len(cells)}] {cell.mode} {cell.model_id}", flush=True)
-        # Skip enormous models that are optional if we want speed? Plan says attempt all.
-        # gpt-oss-120b and llama3.3-70b may take long / OOM - still attempt.
-        try:
-            run_cell(cell)
-        except Exception as exc:
-            cell.status = "error"
-            cell.note = str(exc)
-            if cell.log_path:
-                cell.log_path.write_text(f"EXCEPTION {exc}\n")
-        print(f"  -> {cell.status} {cell.pass_line} {cell.note}", flush=True)
-        results.append(cell)
-
-    summary = SCRATCH / "qa-summary.md"
+def write_summary(
+    path: Path,
+    results: list[Cell],
+    *,
+    seed: int,
+    sample: int,
+    server_bin: Path,
+) -> list[Cell]:
     lines = [
         "# QA matrix summary",
         "",
-        f"- seed: `{SEED}`",
-        f"- sample: `{SAMPLE}`",
-        f"- server: `{SERVER_BIN}`",
+        f"- seed: `{seed}`",
+        f"- sample: `{sample}`",
+        f"- server: `{server_bin}`",
         "",
         "| mode | model_id | status | results | note | log |",
         "| --- | --- | --- | --- | --- | --- |",
@@ -490,31 +549,164 @@ def main() -> int:
             f"| {c.mode} | `{c.model_id}` | {c.status} | {c.pass_line or '-'} | {c.note} | `{logn}` |"
         )
     engine_fails = [c for c in results if c.status == "engine_fail"]
-    lines += [
-        "",
-        "## Engine failures",
-        "",
-    ]
+    lines += ["", "## Engine failures", ""]
     if not engine_fails:
         lines.append("_None_")
     else:
         for c in engine_fails:
             lines.append(f"- **{c.mode}/{c.model_id}**: `{c.note}` — see `{c.log_path}`")
-    lines += [
-        "",
-        "## Model-quality / partial",
-        "",
-    ]
+    lines += ["", "## Model-quality / partial", ""]
     mq = [c for c in results if c.status == "model_quality"]
     if not mq:
         lines.append("_None_")
     else:
         for c in mq:
             lines.append(f"- **{c.mode}/{c.model_id}**: {c.pass_line} ({c.note})")
-    summary.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n")
+    return engine_fails
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Unified AX Engine QA matrix runner")
+    p.add_argument(
+        "--matrix",
+        default=None,
+        help="Inventory file (OK|mode|model_id|artifacts). Default: $QA_SCRATCH/qa-matrix.txt",
+    )
+    p.add_argument(
+        "--scratch",
+        default=None,
+        help="Output/scratch directory (default: qa/reports/matrix or $QA_SCRATCH)",
+    )
+    p.add_argument(
+        "--server-bin",
+        default=None,
+        help="ax-engine-server binary path",
+    )
+    p.add_argument("--port", type=int, default=None)
+    p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--sample", type=int, default=None)
+    p.add_argument("--timeout", type=int, default=None)
+    p.add_argument("--ready-max", type=int, default=None)
+    p.add_argument(
+        "--modes",
+        nargs="+",
+        choices=["direct", "ngram", "mtp"],
+        default=None,
+        help="Filter inventory to these modes",
+    )
+    p.add_argument(
+        "--surface",
+        action="store_true",
+        help="Run product-surface probes (concurrency/stream/cancel/tools/multimodal)",
+    )
+    p.add_argument(
+        "--streams",
+        default="false",
+        choices=["true", "false", "both"],
+        help="Passed to run_qa.py (default: false)",
+    )
+    p.add_argument(
+        "--fail-on-model-quality",
+        action="store_true",
+        help="Exit non-zero on model_quality partials as well as engine_fail",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    scratch = Path(
+        args.scratch
+        or os.environ.get("QA_SCRATCH", str(DEFAULT_SCRATCH))
+    )
+    scratch.mkdir(parents=True, exist_ok=True)
+
+    server_bin = Path(
+        args.server_bin
+        or os.environ.get(
+            "QA_SERVER_BIN",
+            str(
+                REPO / "target/debug/ax-engine-server"
+                if (REPO / "target/debug/ax-engine-server").is_file()
+                else REPO / "target/release/ax-engine-server"
+            ),
+        )
+    )
+    port = int(args.port or os.environ.get("QA_PORT", "18440"))
+    seed = int(args.seed or os.environ.get("QA_SEED", "20260716"))
+    sample = int(args.sample or os.environ.get("QA_SAMPLE", "8"))
+    timeout = int(args.timeout or os.environ.get("QA_TIMEOUT", "180"))
+    ready_max = int(args.ready_max or os.environ.get("QA_READY_MAX", "420"))
+    run_surface = bool(args.surface or os.environ.get("QA_SURFACE", "0") == "1")
+
+    matrix = Path(args.matrix) if args.matrix else scratch / "qa-matrix.txt"
+    if not matrix.is_file():
+        catalog = REPO / "qa" / "matrix-catalog.txt"
+        if catalog.is_file():
+            matrix = catalog
+        else:
+            print("missing matrix inventory:", matrix, file=sys.stderr)
+            print(
+                "Write OK|mode|model_id|artifacts lines, or use qa/run_full_qa.sh",
+                file=sys.stderr,
+            )
+            return 2
+    if not server_bin.is_file():
+        print("missing server binary:", server_bin, file=sys.stderr)
+        return 2
+
+    cells = load_matrix(matrix)
+    if args.modes:
+        wanted = set(args.modes)
+        cells = [c for c in cells if c.mode in wanted]
+    if not cells:
+        print("no cells after filters", file=sys.stderr)
+        return 2
+
+    print(
+        f"Running {len(cells)} cells sample={sample} seed={seed} "
+        f"surface={run_surface} server={server_bin}"
+    )
+    results: list[Cell] = []
+    for i, cell in enumerate(cells, 1):
+        print(f"\n[{i}/{len(cells)}] {cell.mode} {cell.model_id}", flush=True)
+        try:
+            run_cell(
+                cell,
+                repo=REPO,
+                scratch=scratch,
+                server_bin=server_bin,
+                host=HOST,
+                port=port,
+                seed=seed,
+                sample=sample,
+                timeout=timeout,
+                ready_max=ready_max,
+                run_surface=run_surface,
+                streams=args.streams,
+            )
+        except Exception as exc:
+            cell.status = "error"
+            cell.note = str(exc)
+            if cell.log_path:
+                cell.log_path.write_text(f"EXCEPTION {exc}\n")
+        print(f"  -> {cell.status} {cell.pass_line} {cell.note}", flush=True)
+        results.append(cell)
+
+    summary = scratch / "qa-summary.md"
+    engine_fails = write_summary(
+        summary, results, seed=seed, sample=sample, server_bin=server_bin
+    )
     print("\nWrote", summary)
     print("engine_fails", len(engine_fails))
-    return 1 if engine_fails else 0
+    if engine_fails:
+        return 1
+    if args.fail_on_model_quality and any(c.status == "model_quality" for c in results):
+        return 1
+    if any(c.status == "error" for c in results):
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

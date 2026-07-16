@@ -22,6 +22,16 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("inputs.mlx_model_artifacts_dir != ''", workflow)
         self.assertIn("vars.AX_REQUIRE_MODEL_SMOKE == '1'", workflow)
 
+    def test_qa_offline_gate_is_required_in_scripts_job(self) -> None:
+        workflow = CI_WORKFLOW.read_text()
+        self.assertIn("bash scripts/check-qa.sh", workflow)
+        self.assertIn("Run QA harness offline gate", workflow)
+
+    def test_qa_model_gate_runs_when_artifacts_mounted(self) -> None:
+        workflow = CI_WORKFLOW.read_text()
+        self.assertIn("bash scripts/check-qa-model.sh", workflow)
+        self.assertIn("Run QA bank sample + surface probes against real model", workflow)
+
     def test_main_pushes_do_not_require_unmounted_model_artifacts(self) -> None:
         workflow = CI_WORKFLOW.read_text()
 

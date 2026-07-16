@@ -1,145 +1,93 @@
 #!/usr/bin/env bash
+# Thin wrapper: materialize a direct+ngram inventory and run the unified matrix.
+#
+# Preferred entrypoint for multi-model local QA is still:
+#   python3 scripts/run_qa_matrix.py --matrix … [--surface]
+#
+# This script keeps a convenient default model list for HF hub cache layouts.
+
 set -euo pipefail
 
 QA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$QA_DIR/.." && pwd)"
-SERVER_BIN="${SERVER_BIN:-$REPO_ROOT/target/release/ax-engine-server}"
+SERVER_BIN="${SERVER_BIN:-${QA_SERVER_BIN:-}}"
+if [[ -z "$SERVER_BIN" ]]; then
+  if [[ -x "$REPO_ROOT/target/release/ax-engine-server" ]]; then
+    SERVER_BIN="$REPO_ROOT/target/release/ax-engine-server"
+  else
+    SERVER_BIN="$REPO_ROOT/target/debug/ax-engine-server"
+  fi
+fi
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface/hub}"
-REPORT_DIR="${REPORT_DIR:-$QA_DIR/reports}"
-PORT="${PORT:-8080}"
-TIMEOUT="${TIMEOUT:-120}"
+REPORT_DIR="${REPORT_DIR:-${QA_SCRATCH:-$QA_DIR/reports/matrix}}"
+PORT="${PORT:-${QA_PORT:-8080}}"
+TIMEOUT="${TIMEOUT:-${QA_TIMEOUT:-120}}"
+QA_SAMPLE="${QA_SAMPLE:-12}"
+QA_SEED="${QA_SEED:-42}"
+# Product-surface probes on by default for full suite (set QA_SURFACE=0 to skip).
+QA_SURFACE="${QA_SURFACE:-1}"
+STREAMS="${QA_STREAMS:-both}"
 
 mkdir -p "$REPORT_DIR"
+INVENTORY="$REPORT_DIR/qa-matrix-full.txt"
 
-# Model configurations: preset|model_id|artifacts_dir
+# model_id|artifacts_dir  (modes expanded to direct + ngram)
 MODELS=(
-  "glm4.7-flash-4bit|glm4_moe_lite|$HF_CACHE/models--mlx-community--GLM-4.7-Flash-4bit/snapshots/1454cffb1a21737e162f508e5bc70be9def89276"
-  "gemma4-e2b|gemma4-e2b|$HF_CACHE/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd"
-  "qwen3.5-27b-4bit|qwen3.5-27b|$HF_CACHE/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282"
-  "qwen3.6-35b|qwen3.6-35b|$HF_CACHE/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46"
+  "glm4_moe_lite|$HF_CACHE/models--mlx-community--GLM-4.7-Flash-4bit/snapshots/1454cffb1a21737e162f508e5bc70be9def89276"
+  "gemma4-e2b|$HF_CACHE/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd"
+  "qwen3.5-27b|$HF_CACHE/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282"
+  "qwen3.6-35b|$HF_CACHE/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46"
 )
 
-wait_for_server() {
-  local max_wait=120
-  local waited=0
-  while ! curl -s "http://127.0.0.1:$PORT/v1/models" > /dev/null 2>&1; do
-    sleep 2
-    waited=$((waited + 2))
-    if [ "$waited" -ge "$max_wait" ]; then
-      echo "ERROR: Server did not start within ${max_wait}s"
-      return 1
-    fi
-    echo "  Waiting for server... (${waited}s)"
-  done
-  echo "  Server ready after ${waited}s"
-  return 0
-}
-
-kill_server() {
-  if [ -n "${SERVER_PID:-}" ]; then
-    kill "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-    SERVER_PID=""
-  fi
-}
-
-run_qa_for_model() {
-  local preset="$1"
-  local model_id="$2"
-  local artifacts_dir="$3"
-  local mode="$4"  # "direct" or "ngram"
-
-  local mode_flag=""
-  if [ "$mode" = "direct" ]; then
-    mode_flag="--disable-ngram-acceleration"
-  fi
-
-  echo ""
-  echo "=== $model_id | mode=$mode ==="
-  echo "  Artifacts: $artifacts_dir"
-
-  # Check artifacts exist
-  if [ ! -f "$artifacts_dir/config.json" ]; then
-    echo "  SKIP: artifacts not found at $artifacts_dir"
-    return 0
-  fi
-
-  # Start server
-  echo "  Starting server..."
-  kill_server
-  AX_ALLOW_UNSUPPORTED_HOST="${AX_ALLOW_UNSUPPORTED_HOST:-1}" "$SERVER_BIN" \
-    --port "$PORT" \
-    --model-id "$model_id" \
-    --support-tier mlx-preview \
-    --mlx-model-artifacts-dir "$artifacts_dir" \
-    --mlx \
-    $mode_flag \
-    > "$REPORT_DIR/server-${model_id}-${mode}.log" 2>&1 &
-  SERVER_PID=$!
-
-  if ! wait_for_server; then
-    echo "  FAIL: Server failed to start for $model_id ($mode)"
-    kill_server
-    return 1
-  fi
-
-  # Run QA tests
-  local report_file="$REPORT_DIR/qa-${model_id}-${mode}-$(date +%Y%m%d-%H%M%S).html"
-  local tokenizer_path="$artifacts_dir/tokenizer.json"
-  echo "  Running QA tests..."
-  # Sample a stratified subset of the question bank each run (override with
-  # QA_SAMPLE / QA_SEED / QA_ALL=1). Avoids always testing the same fixed prompts.
-  local sample_args=(--sample "${QA_SAMPLE:-12}")
-  if [ -n "${QA_SEED:-}" ]; then
-    sample_args+=(--seed "$QA_SEED")
-  fi
-  if [ "${QA_ALL:-0}" = "1" ]; then
-    sample_args=(--all)
-  fi
-
-  python3 "$QA_DIR/run_qa.py" \
-    --base-url "http://127.0.0.1:$PORT" \
-    --model "$model_id" \
-    --tokenizer "$tokenizer_path" \
-    --streams both \
-    --max-tokens 512 \
-    --temperature 0.0 \
-    --timeout "$TIMEOUT" \
-    "${sample_args[@]}" \
-    --output "$report_file" \
-    2>&1 | sed 's/^/  /'
-
-  echo "  Report: $report_file"
-
-  # Stop server
-  kill_server
-  echo "  Done: $model_id ($mode)"
-}
-
-echo "AX Engine Full QA Test Suite"
-echo "  Server: $SERVER_BIN"
-echo "  Reports: $REPORT_DIR"
-echo "  Models: ${#MODELS[@]}"
-echo ""
-
-trap kill_server EXIT
-
+: >"$INVENTORY"
 for model_config in "${MODELS[@]}"; do
-  IFS='|' read -r preset model_id artifacts_dir <<< "$model_config"
-
-  # Run direct mode
-  run_qa_for_model "$preset" "$model_id" "$artifacts_dir" "direct"
-
-  # Run n-gram mode
-  run_qa_for_model "$preset" "$model_id" "$artifacts_dir" "ngram"
+  IFS='|' read -r model_id artifacts_dir <<< "$model_config"
+  if [[ ! -f "$artifacts_dir/config.json" ]]; then
+    echo "SKIP (no artifacts): $model_id @ $artifacts_dir"
+    continue
+  fi
+  echo "OK|direct|$model_id|$artifacts_dir" >>"$INVENTORY"
+  echo "OK|ngram|$model_id|$artifacts_dir" >>"$INVENTORY"
 done
 
+if [[ ! -s "$INVENTORY" ]]; then
+  echo "ERROR: no models with artifacts found under HF cache" >&2
+  exit 2
+fi
+
+echo "AX Engine Full QA (unified matrix)"
+echo "  Server:    $SERVER_BIN"
+echo "  Inventory: $INVENTORY"
+echo "  Reports:   $REPORT_DIR"
+echo "  Sample:    $QA_SAMPLE seed=$QA_SEED surface=$QA_SURFACE streams=$STREAMS"
 echo ""
-echo "=== All QA tests complete ==="
-echo "Reports in: $REPORT_DIR"
-ls -la "$REPORT_DIR"/*.html 2>/dev/null || echo "No HTML reports generated"
+
+SURFACE_FLAG=()
+if [[ "$QA_SURFACE" == "1" ]]; then
+  SURFACE_FLAG=(--surface)
+fi
+
+export QA_SCRATCH="$REPORT_DIR"
+export QA_SERVER_BIN="$SERVER_BIN"
+export QA_PORT="$PORT"
+export QA_TIMEOUT="$TIMEOUT"
+export QA_SAMPLE
+export QA_SEED
+
+python3 "$REPO_ROOT/scripts/run_qa_matrix.py" \
+  --matrix "$INVENTORY" \
+  --scratch "$REPORT_DIR" \
+  --server-bin "$SERVER_BIN" \
+  --port "$PORT" \
+  --timeout "$TIMEOUT" \
+  --sample "$QA_SAMPLE" \
+  --seed "$QA_SEED" \
+  --streams "$STREAMS" \
+  --modes direct ngram \
+  "${SURFACE_FLAG[@]}"
 
 echo ""
-echo "=== Generating summary page ==="
-python3 "$QA_DIR/generate_summary.py" "$REPORT_DIR"
-echo "Summary: $REPORT_DIR/summary.html"
+echo "=== Generating HTML summary (if reports present) ==="
+python3 "$QA_DIR/generate_summary.py" "$REPORT_DIR" || true
+echo "Summary: $REPORT_DIR/summary.html (when HTML reports exist)"
+echo "Matrix:  $REPORT_DIR/qa-summary.md"

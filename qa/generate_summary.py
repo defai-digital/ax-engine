@@ -11,15 +11,27 @@ def parse_report_info(report_path: Path) -> dict:
     """Extract key info from report HTML."""
     content = report_path.read_text()
     
-    # Extract model name from filename
     # Format: qa-{model_id}-{mode}-{timestamp}.html
-    match = re.match(r"qa-(.+?)-(direct|ngram)-(\d{8}-\d{6})\.html", report_path.name)
+    # Modes: direct | ngram | mtp | mtp-ngram (and legacy smoke labels).
+    match = re.match(
+        r"qa-(.+?)-(direct|ngram|mtp|mtp-ngram)(?:-[\w-]+)?-(\d{8}-\d{6})\.html",
+        report_path.name,
+    )
     if not match:
-        return None
-    
-    model_id = match.group(1)
-    mode = match.group(2)
-    timestamp = match.group(3)
+        # Fallback without strict timestamp suffix (matrix / retest names).
+        match = re.match(
+            r"qa-(.+?)-(direct|ngram|mtp|mtp-ngram)",
+            report_path.name,
+        )
+        if not match:
+            return None
+        model_id = match.group(1)
+        mode = match.group(2)
+        timestamp = "00000000-000000"
+    else:
+        model_id = match.group(1)
+        mode = match.group(2)
+        timestamp = match.group(3)
     
     # Extract pass rate from HTML
     pass_rate_match = re.search(r'<div class="value [^"]*">(\d+\.?\d*)%</div>', content)
@@ -50,38 +62,48 @@ def generate_summary_html(reports: list[dict]) -> str:
     
     # Group by model. The input list is already de-duplicated to latest
     # model/mode reports, so totals reflect the current run set.
-    models = {}
+    mode_keys = ("direct", "ngram", "mtp", "mtp-ngram")
+    models: dict = {}
     for r in reports:
         mid = r["model_id"]
         if mid not in models:
-            models[mid] = {"direct": None, "ngram": None}
-        models[mid][r["mode"]] = r
-    
+            models[mid] = {k: None for k in mode_keys}
+        if r["mode"] in models[mid]:
+            models[mid][r["mode"]] = r
+
     # Build table rows
     rows = []
     for model_id in sorted(models.keys()):
         info = models[model_id]
         direct = info.get("direct")
         ngram = info.get("ngram")
-        
-        direct_link = f'<a href="{direct["filename"]}">{direct["pass_rate"]}</a>' if direct else "N/A"
-        ngram_link = f'<a href="{ngram["filename"]}">{ngram["pass_rate"]}</a>' if ngram else "N/A"
-        
-        direct_detail = f'{direct["passed"]}/{direct["total"]}' if direct else "-"
-        ngram_detail = f'{ngram["passed"]}/{ngram["total"]}' if ngram else "-"
-        
-        # Check parity
+        mtp = info.get("mtp")
+
+        def cell_link(item):
+            if not item:
+                return "N/A", "-"
+            return (
+                f'<a href="{item["filename"]}">{item["pass_rate"]}</a>',
+                f'{item["passed"]}/{item["total"]}',
+            )
+
+        direct_link, direct_detail = cell_link(direct)
+        ngram_link, ngram_detail = cell_link(ngram)
+        mtp_link, mtp_detail = cell_link(mtp)
+
         if direct and ngram:
-            parity = "✅ Identical" if direct["passed"] == ngram["passed"] else "⚠️ Differs"
+            parity = "Identical" if direct["passed"] == ngram["passed"] else "Differs"
         else:
             parity = "-"
-        
+
         rows.append(f"""<tr>
 <td><strong>{model_id}</strong></td>
 <td>{direct_link}</td>
 <td>{direct_detail}</td>
 <td>{ngram_link}</td>
 <td>{ngram_detail}</td>
+<td>{mtp_link}</td>
+<td>{mtp_detail}</td>
 <td>{parity}</td>
 </tr>""")
     
@@ -135,6 +157,8 @@ a:hover {{ text-decoration: underline; }}
 <th>Direct Detail</th>
 <th>N-gram Pass Rate</th>
 <th>N-gram Detail</th>
+<th>MTP Pass Rate</th>
+<th>MTP Detail</th>
 <th>Direct vs N-gram</th>
 </tr>
 </thead>

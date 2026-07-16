@@ -109,6 +109,11 @@ jobs:
       - name: Prepare CI log directory
         run: mkdir -p "$AX_CI_LOG_DIR"
 
+      - name: Run QA harness offline gate
+        run: |
+          set -o pipefail
+          bash scripts/check-qa.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-qa.log"
+
       - name: Run script hygiene smoke check
         run: |
           set -o pipefail
@@ -292,6 +297,12 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/check-server-preview.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-server-preview.log"
+
+      - name: Run QA bank sample + surface probes against real model
+        if: steps.mlx-artifacts.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          bash scripts/check-qa-model.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-qa-model.log"
 
       - name: Run frozen matrix benchmark smoke check
         if: steps.mlx-artifacts.outputs.available == 'true'

@@ -13,7 +13,7 @@ fixed dozen prompts and makes “memorized golden answers” less useful.
 
 from __future__ import annotations
 
-from prompts import QaPrompt
+from prompt_def import QaPrompt
 
 # ---------------------------------------------------------------------------
 # Bank — keep items independent, short, and auto-checkable where possible.
@@ -32,6 +32,7 @@ QUESTION_BANK: list[QaPrompt] = [
         ),
         keywords=["no", "rose", "flower"],
         exact_answer="no",
+        exact_match="token",
         min_length=40,
         description="Classic invalid syllogism (answer is no)",
     ),
@@ -45,6 +46,7 @@ QUESTION_BANK: list[QaPrompt] = [
         ),
         keywords=["yes", "cat", "animal"],
         exact_answer="yes",
+        exact_match="token",
         min_length=20,
         description="Valid syllogism",
     ),
@@ -67,6 +69,7 @@ QUESTION_BANK: list[QaPrompt] = [
         ),
         keywords=["rain", "flood"],
         exact_answer="a",
+        exact_match="token",
         min_length=30,
         description="Cause vs correlated event",
     ),
@@ -311,6 +314,7 @@ QUESTION_BANK: list[QaPrompt] = [
         system=None,
         user='Answer the question "Is ice usually cold?" with exactly YES or NO in uppercase only.',
         exact_answer="YES",
+        exact_match="case",
         min_length=2,
         description="Case-constrained yes/no",
     ),
@@ -898,6 +902,7 @@ QUESTION_BANK: list[QaPrompt] = [
             "Yes or no only."
         ),
         exact_answer="yes",
+        exact_match="token",
         min_length=2,
         description="Transitive relation",
     ),
@@ -932,6 +937,7 @@ QUESTION_BANK: list[QaPrompt] = [
             "Reply with only the tag name without angle brackets."
         ),
         exact_answer="a",
+        exact_match="full",
         min_length=1,
         description="HTML basics",
     ),

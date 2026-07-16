@@ -1,4 +1,4 @@
-# QA matrix catalog (direct + MTP)
+# QA matrix catalog (direct + ngram + MTP)
 
 This documents the model matrix used for local verification. Paths are resolved
 from the active Hugging Face hub cache at runtime by `scripts/run_qa_matrix.py`
@@ -19,21 +19,35 @@ Gemma assistant MTP metadata/weights). Catalog rows that only ship a base
 package (for example `gemma-4-12B-it-4bit-ffn4` without an assistant MTP
 sidecar) are **skipped** as `not_mtp_package`.
 
-## Runner
+## Unified runner
 
 ```bash
 cargo build -p ax-engine-server -p ax-engine-bench
-# inventory (example): write OK|mode|model_id|artifacts lines into $QA_SCRATCH/qa-matrix.txt
+# inventory: OK|mode|model_id|artifacts lines into $QA_SCRATCH/qa-matrix.txt
 export QA_SCRATCH=/path/to/scratch
 export QA_SAMPLE=8 QA_SEED=20260716
-python3 scripts/run_qa_matrix.py
+python3 scripts/run_qa_matrix.py --surface
+# or filter:
+python3 scripts/run_qa_matrix.py --modes direct ngram --surface
+python3 scripts/run_qa_matrix.py --modes mtp --surface
 ```
+
+`qa/run_full_qa.sh` is a **thin wrapper**: it writes a direct+ngram inventory from
+a default HF-cache model list and calls `run_qa_matrix.py`.
+
+Each cell invokes `qa/run_qa.py` with `--allow-partial` and reads the JSON
+report (`totals.hard_passed` / `totals.items`) when present. Soft keyword
+misses never force `model_quality`; only hard check failures do.
+
+With `--surface` (or `QA_SURFACE=1`), product-surface probes run before the bank
+sample; hard surface failures classify as `engine_fail` / `surface_hard_fail`.
 
 ### Mode flags (critical)
 
 | mode | server flags | intent |
 | --- | --- | --- |
 | **direct** | `--disable-ngram-acceleration` | pure direct decode |
+| **ngram** | (default; n-gram eligible) | n-gram acceleration path |
 | **MTP** | `--mlx-mtp-disable-ngram-stacking` (and **not** `--disable-ngram-acceleration`) | pure StrictMtp path |
 
 `--disable-ngram-acceleration` sets `mtp_requested=false` in the runner and
@@ -50,6 +64,13 @@ and requires positive `route.crossover_decisions` telemetry, for example:
 
 Cells that fail this gate are classified `engine_fail` with
 `mtp_path_not_exercised`.
+
+## CI wiring
+
+| Script | Role |
+| --- | --- |
+| `scripts/check-qa.sh` | Offline (always) |
+| `scripts/check-qa-model.sh` | Live model when CI mounts artifacts |
 
 ## Evidence (2026-07-16)
 
