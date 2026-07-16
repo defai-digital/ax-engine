@@ -519,9 +519,209 @@ mod tests {
     use std::sync::mpsc as std_mpsc;
     use std::time::Duration;
 
+    use ax_engine_sdk::{
+        GenerateFinishReason, GenerateResponse, GenerateStatus, GenerateStreamEvent,
+        GenerateStreamResponseEvent, GenerateStreamStepEvent, RuntimeReport, SelectedBackend,
+        SessionRequestReport, SessionRequestState, SupportTier, ResolutionPolicy,
+        CapabilityReport,
+    };
+
     use crate::admission::{AdmissionController, AdmissionError};
 
     use super::*;
+
+    fn sample_response(finish: Option<GenerateFinishReason>) -> GenerateResponse {
+        GenerateResponse {
+            request_id: 42,
+            model_id: "test-model".to_string(),
+            prompt_tokens: vec![1],
+            prompt_text: None,
+            output_tokens: vec![7, 8],
+            output_token_logprobs: Vec::new(),
+            output_text: None,
+            prompt_token_count: None,
+            output_token_count: None,
+            status: GenerateStatus::Finished,
+            finish_reason: finish,
+            step_count: 1,
+            ttft_step: Some(1),
+            route: Default::default(),
+            runtime: RuntimeReport {
+                selected_backend: SelectedBackend::Mlx,
+                support_tier: SupportTier::MlxPreview,
+                resolution_policy: ResolutionPolicy::MlxOnly,
+                capabilities: CapabilityReport::mlx_preview(),
+                fallback_reason: None,
+                host: Default::default(),
+                metal_toolchain: Default::default(),
+                mlx_runtime: None,
+                mlx_model: None,
+            },
+        }
+    }
+
+    fn step_with_delta_text(text: &str) -> GenerateStreamEvent {
+        GenerateStreamEvent::Step(GenerateStreamStepEvent {
+            request: SessionRequestReport {
+                request_id: 42,
+                model_id: "test-model".to_string(),
+                state: SessionRequestState::Running,
+                prompt_tokens: vec![1],
+                processed_prompt_tokens: 1,
+                output_tokens: Vec::new(),
+                output_token_logprobs: Vec::new(),
+                prompt_len: 1,
+                output_len: 0,
+                max_output_tokens: 16,
+                cancel_requested: false,
+                execution_plan_ref: None,
+                route: Default::default(),
+                finish_reason: None,
+                terminal_stop_reason: None,
+                last_error: None,
+            },
+            step: Default::default(),
+            delta_tokens: Vec::new(),
+            delta_token_logprobs: Vec::new(),
+            delta_text: Some(text.to_string()),
+        })
+    }
+
+    #[test]
+    fn drive_grpc_chat_events_emits_finish_reason_on_response() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut role = false;
+        let events = [
+            Ok(Some(step_with_delta_text("hi"))),
+            Ok(Some(GenerateStreamEvent::Response(
+                GenerateStreamResponseEvent {
+                    response: sample_response(Some(GenerateFinishReason::Stop)),
+                },
+            ))),
+            Ok(None),
+        ];
+        let mut iter = events.into_iter();
+        drive_grpc_chat_events(
+            "test-model",
+            &mut role,
+            &tx,
+            None,
+            None,
+            || iter.next().unwrap_or(Ok(None)),
+        )
+        .expect("drive should succeed");
+
+        let mut chunks = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            chunks.push(chunk.expect("chunk ok"));
+        }
+        assert!(
+            chunks.len() >= 2,
+            "expected content delta + final finish chunk, got {chunks:?}"
+        );
+        let final_chunk = chunks.last().expect("final");
+        assert_eq!(final_chunk.choices[0].finish_reason, "stop");
+        assert_eq!(
+            final_chunk.choices[0]
+                .delta
+                .as_ref()
+                .map(|d| d.content.as_str())
+                .unwrap_or(""),
+            ""
+        );
+        // Content delta must not carry finish_reason.
+        assert!(
+            chunks[..chunks.len() - 1]
+                .iter()
+                .all(|c| c.choices[0].finish_reason.is_empty()),
+            "only the final Response chunk should set finish_reason"
+        );
+    }
+
+    #[test]
+    fn drive_grpc_chat_events_omits_finish_chunk_without_response_event() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut role = false;
+        let events = [
+            Ok(Some(step_with_delta_text("only-step"))),
+            Ok(None), // stream ends without Response
+        ];
+        let mut iter = events.into_iter();
+        drive_grpc_chat_events(
+            "test-model",
+            &mut role,
+            &tx,
+            None,
+            None,
+            || iter.next().unwrap_or(Ok(None)),
+        )
+        .expect("drive should succeed");
+
+        let mut chunks = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            chunks.push(chunk.expect("chunk ok"));
+        }
+        assert_eq!(chunks.len(), 1, "only the step delta should be emitted");
+        assert!(
+            chunks[0].choices[0].finish_reason.is_empty(),
+            "no finish_reason without Response event"
+        );
+        assert_eq!(
+            chunks[0]
+                .choices[0]
+                .delta
+                .as_ref()
+                .map(|d| d.content.as_str()),
+            Some("only-step")
+        );
+    }
+
+    #[test]
+    fn drive_grpc_completion_events_emits_finish_reason_on_response() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let events = [
+            Ok(Some(step_with_delta_text("abc"))),
+            Ok(Some(GenerateStreamEvent::Response(
+                GenerateStreamResponseEvent {
+                    response: sample_response(Some(GenerateFinishReason::Stop)),
+                },
+            ))),
+            Ok(None),
+        ];
+        let mut iter = events.into_iter();
+        drive_grpc_completion_events("test-model", &tx, None, || {
+            iter.next().unwrap_or(Ok(None))
+        })
+        .expect("drive should succeed");
+
+        let mut chunks = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            chunks.push(chunk.expect("chunk ok"));
+        }
+        assert!(chunks.len() >= 2);
+        let final_chunk = chunks.last().expect("final");
+        assert_eq!(final_chunk.choices[0].finish_reason, "stop");
+        assert!(final_chunk.choices[0].text.is_empty());
+    }
+
+    #[test]
+    fn drive_grpc_completion_events_omits_finish_chunk_without_response_event() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let events = [Ok(Some(step_with_delta_text("xyz"))), Ok(None)];
+        let mut iter = events.into_iter();
+        drive_grpc_completion_events("test-model", &tx, None, || {
+            iter.next().unwrap_or(Ok(None))
+        })
+        .expect("drive should succeed");
+
+        let mut chunks = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            chunks.push(chunk.expect("chunk ok"));
+        }
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].choices[0].finish_reason.is_empty());
+        assert_eq!(chunks[0].choices[0].text, "xyz");
+    }
 
     #[tokio::test]
     async fn disconnected_grpc_response_keeps_admission_until_producer_exits() {
