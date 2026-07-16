@@ -181,7 +181,10 @@ def send_request(
     text = ""
     finish_reason = None
     if choices:
-        text = choices[0].get("message", {}).get("content", "")
+        message = choices[0].get("message") or {}
+        # Some backends return JSON null for empty content; normalize to "".
+        content = message.get("content")
+        text = "" if content is None else str(content)
         finish_reason = choices[0].get("finish_reason")
     usage = result.get("usage", {})
     return QaResponse(

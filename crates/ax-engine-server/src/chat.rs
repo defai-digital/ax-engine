@@ -35,9 +35,20 @@ pub(crate) enum ChatPromptTemplate {
     Glm47,
     /// Mistral Instruct / Tekken-style `[INST]` chat (Small, Ministral, Devstral).
     MistralInstruct,
+    /// OpenAI Harmony format used by GPT-OSS (`<|start|>…<|message|>…<|end|>`).
+    GptOssHarmony,
     Unsupported(ChatUnsupportedFamily),
     PlainRolePrefix,
 }
+
+/// Default system identity block for GPT-OSS Harmony (matches mlx-community templates).
+const GPT_OSS_DEFAULT_SYSTEM: &str = "\
+You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+
+Reasoning: low
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChatUnsupportedFamily {
@@ -92,9 +103,13 @@ impl ChatPromptTemplate {
             Self::MistralInstruct
         } else if normalized.contains("deepseek") {
             Self::Unsupported(ChatUnsupportedFamily::DeepSeek)
+        } else if normalized.contains("gpt-oss")
+            || normalized.contains("gpt_oss")
+            || normalized.contains("gptoss")
+        {
+            Self::GptOssHarmony
         } else {
-            // GPT-OSS and other families without a verified AX chat fixture use
-            // plain role prefixes until a native template is added.
+            // Families without a verified AX chat fixture use plain role prefixes.
             Self::PlainRolePrefix
         }
     }
@@ -252,6 +267,11 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
         ChatPromptTemplate::MistralInstruct => {
             vec!["</s>".to_string(), "[INST]".to_string()]
         }
+        // Generation ends on <|return|>; also stop if the model closes a turn
+        // with <|end|> then starts another role (hallucinated multi-turn).
+        ChatPromptTemplate::GptOssHarmony => {
+            vec!["<|return|>".to_string(), "<|end|><|start|>".to_string()]
+        }
         ChatPromptTemplate::Unsupported(_) => Vec::new(),
         ChatPromptTemplate::PlainRolePrefix => Vec::new(),
     }
@@ -318,6 +338,12 @@ fn render_prompt_internal(
         ChatPromptTemplate::Gemma4 => prompt.push_str("<bos>"),
         ChatPromptTemplate::Glm47 => prompt.push_str("[gMASK]<sop>"),
         ChatPromptTemplate::MistralInstruct => prompt.push_str("<s>"),
+        ChatPromptTemplate::GptOssHarmony => {
+            // Always emit the Harmony system header first (identity + channels).
+            prompt.push_str("<|start|>system<|message|>");
+            prompt.push_str(GPT_OSS_DEFAULT_SYSTEM);
+            prompt.push_str("<|end|>");
+        }
         ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
         ChatPromptTemplate::Unsupported(family) => {
             return Err(format!(
@@ -327,6 +353,7 @@ fn render_prompt_internal(
         }
     }
     let mut mistral_system: Option<&str> = None;
+    let mut gpt_oss_system: Option<&str> = None;
     for (role, content) in messages {
         let role = normalize_role(role)?;
         match template {
@@ -416,6 +443,44 @@ fn render_prompt_internal(
                     _ => {}
                 }
             }
+            ChatPromptTemplate::GptOssHarmony => {
+                // HF template: first system message becomes a developer
+                // instruction block; user/assistant use Harmony framing.
+                match role {
+                    "system" => {
+                        if gpt_oss_system.is_none() {
+                            gpt_oss_system = Some(content.as_str());
+                        } else {
+                            // Subsequent system lines are folded as developer append.
+                            prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
+                            prompt.push_str(content);
+                            prompt.push_str("<|end|>");
+                        }
+                    }
+                    "user" => {
+                        if let Some(system) = gpt_oss_system.take() {
+                            prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
+                            prompt.push_str(system);
+                            prompt.push_str("<|end|>");
+                        }
+                        prompt.push_str("<|start|>user<|message|>");
+                        prompt.push_str(content);
+                        prompt.push_str("<|end|>");
+                    }
+                    "assistant" => {
+                        // Prior turns drop analysis CoT; only final channel is kept.
+                        prompt.push_str("<|start|>assistant<|channel|>final<|message|>");
+                        prompt.push_str(content);
+                        prompt.push_str("<|end|>");
+                    }
+                    "tool" | "function" => {
+                        prompt.push_str("<|start|>user<|message|>");
+                        prompt.push_str(content);
+                        prompt.push_str("<|end|>");
+                    }
+                    _ => {}
+                }
+            }
             ChatPromptTemplate::PlainRolePrefix => {
                 prompt.push_str(role);
                 prompt.push_str(": ");
@@ -438,6 +503,13 @@ fn render_prompt_internal(
             prompt.push_str("[/SYSTEM_PROMPT]");
         }
     }
+    if matches!(template, ChatPromptTemplate::GptOssHarmony) {
+        if let Some(system) = gpt_oss_system {
+            prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
+            prompt.push_str(system);
+            prompt.push_str("<|end|>");
+        }
+    }
     match template {
         ChatPromptTemplate::QwenChatMl => {
             prompt.push_str(qwen_generation_prompt);
@@ -450,6 +522,11 @@ fn render_prompt_internal(
         }
         ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|></think>"),
         ChatPromptTemplate::MistralInstruct => {}
+        // Prefill final channel so short chat answers do not spend the entire
+        // budget on analysis CoT (mlx-community / Unsloth guidance for gpt-oss).
+        ChatPromptTemplate::GptOssHarmony => {
+            prompt.push_str("<|start|>assistant<|channel|>final<|message|>")
+        }
         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
         ChatPromptTemplate::Unsupported(_) => {
             unreachable!("unsupported templates are rejected before rendering")
@@ -584,6 +661,82 @@ pub(crate) fn decode_gemma4_chat_output(
 ) -> Result<String, EngineTokenizerError> {
     decode_gemma4_chat_output_with_reasoning(tokenizer, output_tokens)
         .map(|(content, _reasoning)| content)
+}
+
+/// Extract user-facing text from a GPT-OSS Harmony generation.
+///
+/// Models often emit:
+/// `…<|channel|>analysis<|message|>…thinking…<|end|>`
+/// `<|start|>assistant<|channel|>final<|message|>ANSWER<|return|>`
+///
+/// Chat completions should surface only the last `final` channel body.
+/// Falls back to stripping control tokens when no final channel is present.
+pub(crate) fn strip_gpt_oss_harmony_output(text: &str) -> String {
+    const FINAL_OPEN: &str = "<|channel|>final<|message|>";
+    const ANALYSIS_OPEN: &str = "<|channel|>analysis<|message|>";
+    const COMMENTARY_OPEN: &str = "<|channel|>commentary<|message|>";
+
+    // Prefer the last final-channel payload.
+    if let Some(idx) = text.rfind(FINAL_OPEN) {
+        let body = &text[idx + FINAL_OPEN.len()..];
+        let body = body
+            .split("<|return|>")
+            .next()
+            .unwrap_or(body)
+            .split("<|end|>")
+            .next()
+            .unwrap_or(body)
+            .split("<|start|>")
+            .next()
+            .unwrap_or(body);
+        return body.trim().to_string();
+    }
+
+    // Drop analysis / commentary channel spans if present, keep remainder.
+    let mut cleaned = text.to_string();
+    for open in [ANALYSIS_OPEN, COMMENTARY_OPEN] {
+        while let Some(start) = cleaned.find(open) {
+            let after = start + open.len();
+            let rest = &cleaned[after..];
+            let end_rel = rest
+                .find("<|end|>")
+                .or_else(|| rest.find("<|return|>"))
+                .or_else(|| rest.find("<|start|>"))
+                .unwrap_or(rest.len());
+            let end = after + end_rel;
+            let end = if cleaned[end..].starts_with("<|end|>") {
+                end + "<|end|>".len()
+            } else if cleaned[end..].starts_with("<|return|>") {
+                end + "<|return|>".len()
+            } else {
+                end
+            };
+            cleaned.replace_range(start..end, "");
+        }
+    }
+
+    for token in [
+        "<|start|>assistant",
+        "<|start|>",
+        "<|end|>",
+        "<|return|>",
+        "<|message|>",
+        "<|channel|>",
+        "<|call|>",
+        "<|endoftext|>",
+    ] {
+        cleaned = cleaned.replace(token, "");
+    }
+    cleaned.trim().to_string()
+}
+
+/// Decode GPT-OSS chat tokens and return only the final-channel user text.
+pub(crate) fn decode_gpt_oss_chat_output(
+    tokenizer: &EngineTokenizer,
+    output_tokens: &[u32],
+) -> Result<String, EngineTokenizerError> {
+    let raw = tokenizer.decode(output_tokens, false)?;
+    Ok(strip_gpt_oss_harmony_output(&raw))
 }
 
 /// Like [`decode_gemma4_chat_output`], but also returns the decoded channel
@@ -768,20 +921,49 @@ mod tests {
     }
 
     #[test]
-    fn gpt_oss_uses_plain_role_chat_fallback() {
-        // Code-first path: no Harmony fixture yet; OpenAI fallback is plain roles.
+    fn gpt_oss_uses_harmony_chat_template() {
         assert_eq!(
             ChatPromptTemplate::for_model_id("gpt-oss-20b"),
-            ChatPromptTemplate::PlainRolePrefix
+            ChatPromptTemplate::GptOssHarmony
         );
         assert_eq!(
             ChatPromptTemplate::for_model_id("gpt-oss-120b"),
-            ChatPromptTemplate::PlainRolePrefix
+            ChatPromptTemplate::GptOssHarmony
         );
         let messages = vec![("user".to_string(), "hello".to_string())];
         let prompt = render_prompt("gpt-oss-20b", &messages).expect("gpt-oss chat");
-        assert!(prompt.contains("user: hello"));
-        assert!(prompt.contains("assistant:"));
+        assert!(
+            prompt.contains("<|start|>system<|message|>"),
+            "must emit Harmony system header: {prompt}"
+        );
+        assert!(
+            prompt.contains("<|start|>user<|message|>hello<|end|>"),
+            "must frame user turn: {prompt}"
+        );
+        assert!(
+            prompt.ends_with("<|start|>assistant<|channel|>final<|message|>"),
+            "must prefill final channel for generation: {prompt}"
+        );
+        let stops = stop_sequences("gpt-oss-20b", vec![]);
+        assert!(
+            stops.iter().any(|s| s == "<|return|>"),
+            "must stop on <|return|>: {stops:?}"
+        );
+    }
+
+    #[test]
+    fn strip_gpt_oss_harmony_prefers_final_channel() {
+        let raw = concat!(
+            "<|channel|>analysis<|message|>thinking about greeting<|end|>",
+            "<|start|>assistant<|channel|>final<|message|>Hi there!<|return|>"
+        );
+        assert_eq!(strip_gpt_oss_harmony_output(raw), "Hi there!");
+    }
+
+    #[test]
+    fn strip_gpt_oss_harmony_handles_bare_final() {
+        let raw = "<|channel|>final<|message|>42<|return|>";
+        assert_eq!(strip_gpt_oss_harmony_output(raw), "42");
     }
 
     #[test]

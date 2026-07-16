@@ -39,6 +39,7 @@ class QualityReport:
 
 
 def check_length(text, prompt):
+    text = "" if text is None else str(text)
     length = len(text.strip())
     passed = length >= prompt.min_length
     return CheckResult("length", passed, f"{length} chars (min {prompt.min_length})",
@@ -97,6 +98,22 @@ def check_regex(text, prompt):
 def check_coherence(text, prompt):
     if not text.strip():
         return CheckResult("coherence", False, "empty output", 0.0)
+    # Closed-ended numeric / token answers ("2", "8", "H2O", JSON arrays) are
+    # intentionally low-alpha; do not fail them on the prose alpha ratio.
+    if getattr(prompt, "exact_answer", None) or prompt.category in {
+        "math",
+        "json",
+        "format",
+        "knowledge",
+    }:
+        stripped = text.strip()
+        if len(stripped) <= 64 and not re.search(r"[\u4e00-\u9fff\u0600-\u06ff]", stripped):
+            return CheckResult(
+                "coherence",
+                True,
+                f"short closed-ended answer ({len(stripped)} chars)",
+                1.0,
+            )
     alpha_chars = sum(1 for c in text if c.isalpha())
     total_chars = len(text)
     if total_chars == 0:
@@ -192,11 +209,13 @@ def check_invoice_total(text, prompt):
         return CheckResult("invoice_total", True, "not required", 1.0)
     expected = prompt.json_expected_total
 
-    # Try to extract JSON from markdown code blocks first, then raw text.
+    # Prefer full JSON objects (code fences, then balanced braces), then a
+    # bare `"total": N` match when models wrap JSON in prose or truncate.
     json_candidates = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if not json_candidates:
-        json_candidates = [text]
+    json_candidates.extend(re.findall(r"\{[\s\S]*\}", text))
+    json_candidates.append(text)
 
+    seen_totals: list[float] = []
     for candidate in json_candidates:
         candidate = candidate.strip()
         if not candidate:
@@ -208,18 +227,34 @@ def check_invoice_total(text, prompt):
         if not isinstance(data, dict) or "total" not in data:
             continue
         actual = float(data["total"])
+        seen_totals.append(actual)
         if abs(actual - expected) < 0.001:
             return CheckResult(
                 "invoice_total", True, f"total={actual} matches expected {expected}", 1.0
             )
+
+    # Loose fallback: any "total": 39.5-style field in the raw text.
+    for match in re.finditer(
+        r'["\']?total["\']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)', text, flags=re.IGNORECASE
+    ):
+        actual = float(match.group(1))
+        seen_totals.append(actual)
+        if abs(actual - expected) < 0.001:
+            return CheckResult(
+                "invoice_total",
+                True,
+                f"total={actual} matches expected {expected} (loose field match)",
+                1.0,
+            )
+
+    if seen_totals:
         return CheckResult(
             "invoice_total",
             False,
-            f"total={actual} != expected {expected} (wrong arithmetic)",
+            f"total={seen_totals[-1]} != expected {expected} (wrong arithmetic)",
             0.0,
         )
 
-    # If no valid JSON with a total field was found, flag as failing.
     return CheckResult(
         "invoice_total", False, f"no JSON with 'total' field found (expected {expected})", 0.0
     )

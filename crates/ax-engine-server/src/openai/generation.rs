@@ -313,13 +313,16 @@ pub(crate) fn populate_native_mlx_output_text(
     // GLM 4.x encodes tool calls with special tokens that a plain decode strips,
     // so chat output is decoded with those markers preserved for the tool-call
     // parser. GLM does not use Gemma 4 reasoning channels.
+    let chat_template = ChatPromptTemplate::for_model_id(live.model_id.as_ref());
     let is_glm_chat = matches!(kind, OpenAiStreamKind::ChatCompletion)
-        && matches!(
-            ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
-            ChatPromptTemplate::Glm47
-        );
+        && matches!(chat_template, ChatPromptTemplate::Glm47);
+    let is_gpt_oss_chat = matches!(kind, OpenAiStreamKind::ChatCompletion)
+        && matches!(chat_template, ChatPromptTemplate::GptOssHarmony);
     let (output_text, reasoning) = if is_glm_chat {
         decode_glm_chat_output(&tokenizer, &response.output_tokens).map(|content| (content, None))
+    } else if is_gpt_oss_chat {
+        crate::chat::decode_gpt_oss_chat_output(&tokenizer, &response.output_tokens)
+            .map(|content| (content, None))
     } else {
         match kind {
             OpenAiStreamKind::ChatCompletion if include_reasoning => {

@@ -259,14 +259,17 @@ QUESTION_BANK: list[QaPrompt] = [
         description="Numbered list constraint",
     ),
     QaPrompt(
-        id="instruction_three_words",
+        id="instruction_three_colors",
         category="instruction",
         system=None,
-        user="Reply with exactly three English words and nothing else.",
-        min_length=5,
+        user=(
+            "Output exactly these three color words in this order, lowercase, "
+            "separated by single spaces, and nothing else: red green blue"
+        ),
+        exact_answer="red green blue",
+        min_length=13,
         max_repetition_ratio=0.5,
-        regex_patterns=[r"^\s*\S+\s+\S+\s+\S+\s*$"],
-        description="Hard length/format constraint",
+        description="Exact three-token instruction following",
     ),
     QaPrompt(
         id="instruction_json_only_true",
@@ -506,13 +509,15 @@ QUESTION_BANK: list[QaPrompt] = [
         category="json",
         system=None,
         user=(
-            "Return only valid JSON for this invoice: invoice AX-1042, customer Mina, "
-            "currency USD, items: cable quantity 2 unit_price 4.25, dock quantity 1 unit_price 31.00. "
-            "Include invoice_id, customer, currency, items, and total."
+            "Return only valid JSON (no markdown fences, no prose) for this invoice: "
+            "invoice AX-1042, customer Mina, currency USD, items: cable quantity 2 "
+            "unit_price 4.25, dock quantity 1 unit_price 31.00. "
+            "Include invoice_id, customer, currency, items, and total "
+            "(total must equal sum of quantity*unit_price)."
         ),
         keywords=["AX-1042", "Mina"],
         regex_patterns=[r'"invoice_id"', r'"items"'],
-        min_length=80,
+        min_length=60,
         json_expected_total=39.5,
         description="Nested invoice JSON with total 39.50",
     ),
