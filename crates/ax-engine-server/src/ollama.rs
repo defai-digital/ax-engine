@@ -18,7 +18,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
-use crate::chat::{ChatPromptTemplate, Gemma4ChannelIds, strip_gemma4_channel_name_header};
+use crate::chat::ChatPromptTemplate;
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
 use crate::generation::streaming::{StreamStateSource, build_stream_state};
@@ -37,7 +37,7 @@ use crate::openai::schema::{
     OpenAiChatMessage, OpenAiCompletionHttpRequest, OpenAiPromptInput, OpenAiStopInput,
     OpenAiStreamKind, OpenAiToolCall,
 };
-use crate::openai::streaming::{Gemma4ChannelStreamFilter, IncrementalDecoder};
+use crate::openai::streaming::{ChatChannelStreamFilter, IncrementalDecoder};
 use crate::openai::validation::validate_openai_request;
 use crate::tasks::run_blocking_session_task;
 
@@ -474,11 +474,11 @@ fn drive_ollama_native_events<N>(
 ) where
     N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
-    // Chat streams strip Gemma 4 thinking-channel framing (mirrors the OpenAI
-    // SSE chat path); raw generate streams keep the verbatim decode.
+    // Chat streams strip model channel framing (Gemma 4 / GPT-OSS Harmony;
+    // mirrors the OpenAI SSE chat path); raw generate streams keep the
+    // verbatim decode.
     let mut channel_filter = match kind {
-        OllamaNativeStreamKind::Chat => Gemma4ChannelIds::from_tokenizer(&tokenizer)
-            .map(|ids| Gemma4ChannelStreamFilter::new(ids, tokenizer.token_to_id("thought"))),
+        OllamaNativeStreamKind::Chat => ChatChannelStreamFilter::from_tokenizer(&tokenizer),
         OllamaNativeStreamKind::Generate => None,
     };
     let mut decoder = IncrementalDecoder::new(tokenizer);
@@ -530,7 +530,7 @@ fn drive_ollama_native_events<N>(
                     continue;
                 }
                 if let Some(filter) = channel_filter.as_mut() {
-                    filter.kept_output = true;
+                    filter.mark_kept_output();
                 }
                 let chunk = ollama_native_delta_chunk(kind, &payload.request.model_id, delta_text);
                 if send_ollama_ndjson_line(tx, &chunk).is_err() {
@@ -541,19 +541,12 @@ fn drive_ollama_native_events<N>(
                 // The model can leave its entire answer inside an unclosed
                 // thinking channel; serve that body before the final chunk.
                 if let Some(filter) = channel_filter.as_mut()
-                    && let Some(body_tokens) = filter.take_fallback_tokens()
-                    && let Ok(body_text) = decoder.push(&body_tokens)
+                    && let Some(body_text) = filter.take_fallback_text(&mut decoder)
                 {
-                    let body_text = strip_gemma4_channel_name_header(&body_text);
-                    if !body_text.is_empty() {
-                        let chunk = ollama_native_delta_chunk(
-                            kind,
-                            &payload.response.model_id,
-                            body_text.to_string(),
-                        );
-                        if send_ollama_ndjson_line(tx, &chunk).is_err() {
-                            return;
-                        }
+                    let chunk =
+                        ollama_native_delta_chunk(kind, &payload.response.model_id, body_text);
+                    if send_ollama_ndjson_line(tx, &chunk).is_err() {
+                        return;
                     }
                 }
                 let summary = ollama_generate_response_from_generate(payload.response);

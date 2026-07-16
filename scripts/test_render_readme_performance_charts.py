@@ -253,7 +253,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertEqual(
             charts.find_mtp_6bit_summary(performance_results),
             charts.REPO_ROOT
-            / "benchmarks/results/speculative/mtp-6bit/2026-07-13-exact-mtp-sampled-flappy-clean/summary.json",
+            / "benchmarks/results/speculative/mtp-6bit/2026-07-16-v6.9.0-clean-provenance-exact-retry/summary.json",
         )
 
     def test_mtp_6bit_refresh_defaults_to_speculative_results_tree(self) -> None:

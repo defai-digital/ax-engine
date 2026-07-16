@@ -40,6 +40,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
             "schema": "ax.mtp_6bit_ax_acceleration_summary.v3",
             "publication_candidate": True,
             "claim_type": "exact_mtp_acceleration",
+            "engine_version": "6.9.0",
             "run_dir": (
                 "benchmarks/results/speculative/mtp-6bit/"
                 "2026-07-13-exact"
@@ -355,7 +356,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
 
             updated = readme.read_text()
         self.assertIn(
-            "#### AX Engine 6-bit exact sampled-MTP acceleration (2026-07-13)",
+            "#### AX Engine v6.9.0 6-bit exact sampled-MTP acceleration (2026-07-13)",
             updated,
         )
         self.assertIn("All 15 target/suite rows accelerate decode", updated)

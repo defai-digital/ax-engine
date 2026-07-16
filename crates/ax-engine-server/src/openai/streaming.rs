@@ -13,7 +13,9 @@ use tokio::sync::mpsc;
 
 use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
-use crate::chat::{Gemma4ChannelIds, strip_gemma4_channel_name_header};
+use crate::chat::{
+    Gemma4ChannelIds, GptOssHarmonyIds, strip_gemma4_channel_name_header,
+};
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::generation::streaming::{
     StreamCancelFlag, StreamEventSender, build_keep_alive_stream, build_stream_state,
@@ -116,16 +118,13 @@ fn drive_openai_stream_state<N>(
     N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
     let mut chat_role_emitted = false;
-    // Chat streams over the native token path strip Gemma 4 thinking-channel
-    // framing; raw completion streams keep the verbatim decode.
+    // Chat streams over the native token path strip model-specific channel
+    // framing (Gemma 4 thinking channels, GPT-OSS Harmony analysis/commentary);
+    // raw completion streams keep the verbatim decode.
     let mut channel_filter = match stream_kind {
-        OpenAiStreamKind::ChatCompletion => tokenizer.as_ref().and_then(|tokenizer| {
-            let ids = Gemma4ChannelIds::from_tokenizer(tokenizer)?;
-            Some(Gemma4ChannelStreamFilter::new(
-                ids,
-                tokenizer.token_to_id("thought"),
-            ))
-        }),
+        OpenAiStreamKind::ChatCompletion => tokenizer
+            .as_ref()
+            .and_then(ChatChannelStreamFilter::from_tokenizer),
         OpenAiStreamKind::Completion => None,
     };
     let mut decoder = tokenizer.map(IncrementalDecoder::new);
@@ -156,7 +155,7 @@ fn send_openai_stream_event(
     stream_kind: OpenAiStreamKind,
     chat_role_emitted: &mut bool,
     mut decoder: Option<&mut IncrementalDecoder>,
-    mut channel_filter: Option<&mut Gemma4ChannelStreamFilter>,
+    mut channel_filter: Option<&mut ChatChannelStreamFilter>,
 ) -> bool {
     match event {
         GenerateStreamEvent::Request(_) => true,
@@ -178,8 +177,8 @@ fn send_openai_stream_event(
                 send_openai_stream_chunk(tx, &chunk)
             }
             OpenAiStreamKind::ChatCompletion => {
-                // Native token path: drop Gemma 4 channel-framing tokens
-                // before decode so thinking channels never surface as content.
+                // Native token path: drop channel-framing tokens before decode
+                // so analysis/thinking channels never surface as content.
                 let filtered;
                 let delta_tokens = if payload.delta_text.is_none()
                     && let Some(filter) = channel_filter.as_mut()
@@ -201,7 +200,7 @@ fn send_openai_stream_event(
                     return true;
                 }
                 if let Some(filter) = channel_filter.as_mut() {
-                    filter.kept_output = true;
+                    filter.mark_kept_output();
                 }
                 let role = next_chat_delta_role(chat_role_emitted);
                 let chunk = chat_delta_chunk(
@@ -224,25 +223,21 @@ fn send_openai_stream_event(
             }
             OpenAiStreamKind::ChatCompletion => {
                 // The model can leave its entire answer inside an unclosed
-                // thinking channel; serve that body (minus the channel-name
-                // header) before the final chunk rather than an empty message.
+                // thinking/final channel; serve that body before the final
+                // chunk rather than an empty message.
                 if let Some(filter) = channel_filter.as_mut()
-                    && let Some(body_tokens) = filter.take_fallback_tokens()
                     && let Some(decoder) = decoder.as_mut()
-                    && let Ok(body_text) = decoder.push(&body_tokens)
+                    && let Some(body_text) = filter.take_fallback_text(decoder)
                 {
-                    let body_text = strip_gemma4_channel_name_header(&body_text);
-                    if !body_text.is_empty() {
-                        let role = next_chat_delta_role(chat_role_emitted);
-                        let chunk = chat_delta_chunk(
-                            payload.response.request_id,
-                            payload.response.model_id.clone(),
-                            role,
-                            body_text.to_string(),
-                        );
-                        if !send_openai_stream_chunk(tx, &chunk) {
-                            return false;
-                        }
+                    let role = next_chat_delta_role(chat_role_emitted);
+                    let chunk = chat_delta_chunk(
+                        payload.response.request_id,
+                        payload.response.model_id.clone(),
+                        role,
+                        body_text,
+                    );
+                    if !send_openai_stream_chunk(tx, &chunk) {
+                        return false;
                     }
                 }
                 let chunk = chat_final_chunk(
@@ -253,6 +248,74 @@ fn send_openai_stream_event(
                 send_openai_stream_chunk(tx, &chunk)
             }
         },
+    }
+}
+
+/// Unified chat stream filter for model-specific channel framing.
+///
+/// Prefer GPT-OSS Harmony markers when the tokenizer defines them; otherwise
+/// fall back to Gemma 4 channel markers. Models without either keep verbatim
+/// decode (filter is `None`).
+pub(crate) enum ChatChannelStreamFilter {
+    Gemma4(Gemma4ChannelStreamFilter),
+    GptOss(GptOssHarmonyStreamFilter),
+}
+
+impl ChatChannelStreamFilter {
+    pub(crate) fn from_tokenizer(tokenizer: &EngineTokenizer) -> Option<Self> {
+        // GPT-OSS uses `<|channel|>` (with trailing `|>`); Gemma uses
+        // `<|channel>` / `<channel|>`. The two id sets do not overlap.
+        if let Some(ids) = GptOssHarmonyIds::from_tokenizer(tokenizer) {
+            return Some(Self::GptOss(GptOssHarmonyStreamFilter::from_tokenizer(
+                ids, tokenizer,
+            )));
+        }
+        let ids = Gemma4ChannelIds::from_tokenizer(tokenizer)?;
+        Some(Self::Gemma4(Gemma4ChannelStreamFilter::new(
+            ids,
+            tokenizer.token_to_id("thought"),
+        )))
+    }
+
+    pub(crate) fn filter(&mut self, delta_tokens: &[u32]) -> Vec<u32> {
+        match self {
+            Self::Gemma4(filter) => filter.filter(delta_tokens),
+            Self::GptOss(filter) => filter.filter(delta_tokens),
+        }
+    }
+
+    pub(crate) fn mark_kept_output(&mut self) {
+        match self {
+            Self::Gemma4(filter) => filter.kept_output = true,
+            Self::GptOss(filter) => filter.kept_output = true,
+        }
+    }
+
+    pub(crate) fn take_fallback_text(
+        &mut self,
+        decoder: &mut IncrementalDecoder,
+    ) -> Option<String> {
+        match self {
+            Self::Gemma4(filter) => {
+                let body_tokens = filter.take_fallback_tokens()?;
+                let body_text = decoder.push(&body_tokens).ok()?;
+                let body_text = strip_gemma4_channel_name_header(&body_text);
+                if body_text.is_empty() {
+                    None
+                } else {
+                    Some(body_text.to_string())
+                }
+            }
+            Self::GptOss(filter) => {
+                let body_tokens = filter.take_fallback_tokens()?;
+                let body_text = decoder.push(&body_tokens).ok()?;
+                if body_text.is_empty() {
+                    None
+                } else {
+                    Some(body_text)
+                }
+            }
+        }
     }
 }
 
@@ -362,6 +425,163 @@ impl Gemma4ChannelStreamFilter {
             return None;
         }
         Some(std::mem::take(&mut self.last_channel_body))
+    }
+}
+
+/// Streaming counterpart of `strip_gpt_oss_harmony_output` / `decode_gpt_oss_chat_output`.
+///
+/// GPT-OSS chat often emits multi-channel Harmony traffic:
+/// `…<|channel|>analysis<|message|>…thinking…<|end|>`
+/// `<|start|>assistant<|channel|>final<|message|>ANSWER<|return|>`
+///
+/// Non-stream chat already strips to the last final-channel body. This filter
+/// does the same for token streams: drop control tokens, suppress analysis /
+/// commentary bodies, and pass only final-channel content. The generation
+/// prompt pre-fills the final channel, so short answers that never re-open a
+/// channel stream with zero added latency.
+pub(crate) struct GptOssHarmonyStreamFilter {
+    ids: GptOssHarmonyIds,
+    /// Single-token channel names when the tokenizer exposes them as one piece.
+    final_name: Option<u32>,
+    analysis_name: Option<u32>,
+    commentary_name: Option<u32>,
+    /// Used when channel names span multiple tokens.
+    tokenizer: Option<EngineTokenizer>,
+    state: GptOssHarmonyStreamState,
+    pub(crate) kept_output: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum GptOssHarmonyStreamState {
+    /// Emit content tokens (final channel prefilled or active).
+    Emitting,
+    /// After `<|channel|>`, collecting the channel name until `<|message|>`.
+    Header { name: Vec<u32> },
+    /// Dropping analysis / commentary body until a channel closer.
+    Suppressing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GptOssChannelKind {
+    Final,
+    Suppress,
+}
+
+impl GptOssHarmonyStreamFilter {
+    pub(crate) fn from_tokenizer(ids: GptOssHarmonyIds, tokenizer: &EngineTokenizer) -> Self {
+        Self {
+            ids,
+            final_name: tokenizer.token_to_id("final"),
+            analysis_name: tokenizer.token_to_id("analysis"),
+            commentary_name: tokenizer.token_to_id("commentary"),
+            tokenizer: Some(tokenizer.clone()),
+            state: GptOssHarmonyStreamState::Emitting,
+            kept_output: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(
+        ids: GptOssHarmonyIds,
+        final_name: Option<u32>,
+        analysis_name: Option<u32>,
+        commentary_name: Option<u32>,
+    ) -> Self {
+        Self {
+            ids,
+            final_name,
+            analysis_name,
+            commentary_name,
+            tokenizer: None,
+            state: GptOssHarmonyStreamState::Emitting,
+            kept_output: false,
+        }
+    }
+
+    fn channel_kind(&self, name_tokens: &[u32]) -> GptOssChannelKind {
+        if let [token] = name_tokens {
+            if self.final_name == Some(*token) {
+                return GptOssChannelKind::Final;
+            }
+            if self.analysis_name == Some(*token) || self.commentary_name == Some(*token) {
+                return GptOssChannelKind::Suppress;
+            }
+        }
+        if let Some(tokenizer) = &self.tokenizer {
+            let name = tokenizer
+                .decode(name_tokens, true)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            if name == "final" {
+                return GptOssChannelKind::Final;
+            }
+        }
+        // analysis, commentary, multi-token unknown, or empty → suppress
+        GptOssChannelKind::Suppress
+    }
+
+    /// Partition a delta: returns tokens to stream (final body only).
+    pub(crate) fn filter(&mut self, delta_tokens: &[u32]) -> Vec<u32> {
+        let mut kept = Vec::with_capacity(delta_tokens.len());
+        for &token in delta_tokens {
+            match self.state {
+                GptOssHarmonyStreamState::Emitting => {
+                    if token == self.ids.channel {
+                        self.state = GptOssHarmonyStreamState::Header { name: Vec::new() };
+                    } else if self.ids.is_control(token) {
+                        // Swallow Harmony control tokens; stay ready for a
+                        // subsequent channel open after end/return/start.
+                    } else {
+                        kept.push(token);
+                    }
+                }
+                GptOssHarmonyStreamState::Header { .. } => {
+                    if token == self.ids.message {
+                        let name = match std::mem::replace(
+                            &mut self.state,
+                            GptOssHarmonyStreamState::Emitting,
+                        ) {
+                            GptOssHarmonyStreamState::Header { name } => name,
+                            other => {
+                                self.state = other;
+                                continue;
+                            }
+                        };
+                        self.state = match self.channel_kind(&name) {
+                            GptOssChannelKind::Final => GptOssHarmonyStreamState::Emitting,
+                            GptOssChannelKind::Suppress => GptOssHarmonyStreamState::Suppressing,
+                        };
+                    } else if token == self.ids.channel {
+                        self.state = GptOssHarmonyStreamState::Header { name: Vec::new() };
+                    } else if !self.ids.is_control(token) {
+                        if let GptOssHarmonyStreamState::Header { name } = &mut self.state {
+                            name.push(token);
+                        }
+                    }
+                }
+                GptOssHarmonyStreamState::Suppressing => {
+                    if token == self.ids.channel {
+                        self.state = GptOssHarmonyStreamState::Header { name: Vec::new() };
+                    } else if token == self.ids.end
+                        || token == self.ids.return_tok
+                        || self.ids.start == Some(token)
+                    {
+                        // Closer for a suppressed channel; next content may be
+                        // plain final body (rare) or another channel open.
+                        self.state = GptOssHarmonyStreamState::Emitting;
+                    }
+                    // else drop analysis/commentary body tokens
+                }
+            }
+        }
+        kept
+    }
+
+    /// Final body is streamed live; no deferred channel body to serve.
+    pub(crate) fn take_fallback_tokens(&mut self) -> Option<Vec<u32>> {
+        let _ = self.kept_output;
+        None
     }
 }
 
@@ -602,6 +822,83 @@ fn send_openai_llama_cpp_chat_final_chunk(
 ) -> bool {
     let chunk = chat_final_chunk(request_id, model_id.to_string(), finish_reason);
     send_openai_stream_chunk(tx, &chunk)
+}
+
+#[cfg(test)]
+mod gpt_oss_harmony_stream_filter_tests {
+    use super::GptOssHarmonyStreamFilter;
+    use crate::chat::GptOssHarmonyIds;
+
+    /// Synthetic ids — no real GPT-OSS tokenizer required for the state machine.
+    const IDS: GptOssHarmonyIds = GptOssHarmonyIds {
+        channel: 1,
+        message: 2,
+        end: 3,
+        return_tok: 4,
+        start: Some(5),
+        call: Some(6),
+    };
+    const FINAL_NAME: u32 = 10;
+    const ANALYSIS_NAME: u32 = 11;
+
+    fn filter() -> GptOssHarmonyStreamFilter {
+        GptOssHarmonyStreamFilter::for_test(
+            IDS,
+            Some(FINAL_NAME),
+            Some(ANALYSIS_NAME),
+            Some(12),
+        )
+    }
+
+    #[test]
+    fn prefilled_final_passes_content_tokens() {
+        // No channel open: content streams immediately (generation prefill case).
+        let mut filter = filter();
+        assert_eq!(filter.filter(&[100, 101, 102]), vec![100, 101, 102]);
+        assert!(filter.take_fallback_tokens().is_none());
+    }
+
+    #[test]
+    fn suppresses_analysis_then_emits_final() {
+        let mut filter = filter();
+        let tokens = [
+            IDS.channel,
+            ANALYSIS_NAME,
+            IDS.message,
+            200,
+            201,
+            IDS.end,
+            IDS.start.unwrap(),
+            IDS.channel,
+            FINAL_NAME,
+            IDS.message,
+            300,
+            301,
+            IDS.return_tok,
+        ];
+        assert_eq!(filter.filter(&tokens), vec![300, 301]);
+    }
+
+    #[test]
+    fn drops_control_tokens_inside_final_body() {
+        let mut filter = filter();
+        assert_eq!(filter.filter(&[100, IDS.return_tok, 101]), vec![100, 101]);
+    }
+
+    #[test]
+    fn unknown_channel_is_suppressed() {
+        let mut filter = filter();
+        let tokens = [
+            IDS.channel,
+            99, // unknown name token
+            IDS.message,
+            200,
+            IDS.end,
+            300,
+        ];
+        // Unknown channel body dropped; trailing content after end is emitted.
+        assert_eq!(filter.filter(&tokens), vec![300]);
+    }
 }
 
 #[cfg(test)]

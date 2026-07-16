@@ -19,7 +19,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx
+try:
+    import httpx
+except ImportError:  # pragma: no cover - optional for offline unit tests
+    # Placeholder so unit tests can patch `rapid.httpx.stream` without installing
+    # httpx. Live runs require a real httpx install.
+    import types
+
+    httpx = types.SimpleNamespace(stream=None)  # type: ignore[assignment]
 
 DEFAULT_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
 DEFAULT_RAPID_SOURCE = Path(".internal/reference/Rapid-MLX")
@@ -553,6 +560,11 @@ def run_case(
     enable_thinking: bool = False,
     require_full_output_tokens: bool = False,
 ) -> dict[str, Any]:
+    if getattr(httpx, "stream", None) is None and not hasattr(httpx, "Client"):
+        raise RuntimeError(
+            "httpx is required to run Rapid-MLX prompt suites; install httpx in the active environment"
+        )
+
     requested_tokens = min(max_tokens, case.max_tokens)
     payload = {
         "model": handle.model,

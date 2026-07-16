@@ -12,10 +12,9 @@ use super::conversions::{sdk_stream_event_to_proto, unix_now};
 use super::proto;
 use crate::admission::AdmissionPermit;
 use crate::app_state::{AppState, LiveState};
-use crate::chat::{Gemma4ChannelIds, strip_gemma4_channel_name_header};
 use crate::generation::service::GenerationServiceError;
 use crate::generation::streaming::StreamStateSource;
-use crate::openai::streaming::{Gemma4ChannelStreamFilter, IncrementalDecoder};
+use crate::openai::streaming::{ChatChannelStreamFilter, IncrementalDecoder};
 
 pub(super) type GenerateEventStream = ReceiverStream<Result<proto::GenerateStreamEvent, Status>>;
 pub(super) type ChatChunkStream = ReceiverStream<Result<proto::ChatCompletionChunk, Status>>;
@@ -286,15 +285,12 @@ pub(super) fn spawn_grpc_chat_stream(
         stream_context,
         move |tx, next_event| {
             let mut chat_role_emitted = false;
-            // Mirror the HTTP SSE chat path: strip Gemma 4 thinking-channel
-            // framing from the native token stream before incremental decode.
-            let mut channel_filter = tokenizer.as_ref().and_then(|tokenizer| {
-                let ids = Gemma4ChannelIds::from_tokenizer(tokenizer)?;
-                Some(Gemma4ChannelStreamFilter::new(
-                    ids,
-                    tokenizer.token_to_id("thought"),
-                ))
-            });
+            // Mirror the HTTP SSE chat path: strip model channel framing
+            // (Gemma 4 / GPT-OSS Harmony) from the native token stream before
+            // incremental decode.
+            let mut channel_filter = tokenizer
+                .as_ref()
+                .and_then(ChatChannelStreamFilter::from_tokenizer);
             let mut decoder = tokenizer.map(IncrementalDecoder::new);
             let result = drive_grpc_chat_events(
                 &model_id,
@@ -336,7 +332,7 @@ fn drive_grpc_chat_events<N>(
     chat_role_emitted: &mut bool,
     tx: &mpsc::Sender<Result<proto::ChatCompletionChunk, Status>>,
     mut decoder: Option<&mut IncrementalDecoder>,
-    mut channel_filter: Option<&mut Gemma4ChannelStreamFilter>,
+    mut channel_filter: Option<&mut ChatChannelStreamFilter>,
     mut next: N,
 ) -> Result<(), Status>
 where
@@ -349,30 +345,26 @@ where
             Ok(Some(GenerateStreamEvent::Request(_))) => {}
             Ok(Some(GenerateStreamEvent::Response(payload))) => {
                 // The model can leave its entire answer inside an unclosed
-                // thinking channel; serve that body (minus the channel-name
-                // header) before the stream closes (mirrors the SSE path).
+                // thinking/final channel; serve that body before the stream
+                // closes (mirrors the SSE path).
                 if let Some(filter) = channel_filter.as_mut()
-                    && let Some(body_tokens) = filter.take_fallback_tokens()
                     && let Some(decoder) = decoder.as_mut()
-                    && let Ok(body_text) = decoder.push(&body_tokens)
+                    && let Some(body_text) = filter.take_fallback_text(decoder)
                 {
-                    let body_text = strip_gemma4_channel_name_header(&body_text);
-                    if !body_text.is_empty() {
-                        let chunk = chat_delta_chunk_proto(
-                            payload.response.request_id,
-                            model_id,
-                            next_grpc_chat_role(chat_role_emitted),
-                            body_text.to_string(),
-                        );
-                        if tx.blocking_send(Ok(chunk)).is_err() {
-                            return Ok(());
-                        }
+                    let chunk = chat_delta_chunk_proto(
+                        payload.response.request_id,
+                        model_id,
+                        next_grpc_chat_role(chat_role_emitted),
+                        body_text,
+                    );
+                    if tx.blocking_send(Ok(chunk)).is_err() {
+                        return Ok(());
                     }
                 }
             }
             Ok(Some(GenerateStreamEvent::Step(payload))) => {
-                // Native token path: drop Gemma 4 channel-framing tokens
-                // before decode so thinking channels never surface as content.
+                // Native token path: drop channel-framing tokens before decode
+                // so analysis/thinking channels never surface as content.
                 let filtered;
                 let delta_tokens = if payload.delta_text.is_none()
                     && let Some(filter) = channel_filter.as_mut()
@@ -397,7 +389,7 @@ where
                     continue;
                 }
                 if let Some(filter) = channel_filter.as_mut() {
-                    filter.kept_output = true;
+                    filter.mark_kept_output();
                 }
                 let chunk = chat_delta_chunk_proto(
                     payload.request.request_id,

@@ -17,6 +17,15 @@ const GEMMA4_TURN_TERMINATOR: &str = "<turn|>";
 const GEMMA4_CHANNEL_OPEN: &str = "<|channel>";
 const GEMMA4_CHANNEL_CLOSE: &str = "<channel|>";
 
+// GPT-OSS Harmony control tokens (OpenAI Harmony / gpt-oss chat format).
+// Distinct from Gemma 4's `<|channel>` / `<channel|>` markers.
+const GPT_OSS_CHANNEL: &str = "<|channel|>";
+const GPT_OSS_MESSAGE: &str = "<|message|>";
+const GPT_OSS_END: &str = "<|end|>";
+const GPT_OSS_RETURN: &str = "<|return|>";
+const GPT_OSS_START: &str = "<|start|>";
+const GPT_OSS_CALL: &str = "<|call|>";
+
 // Pre-fills `<think>\n\n</think>\n\n` to signal the model to skip reasoning.
 // This matches Qwen chat templates rendered with `enable_thinking=false` and
 // keeps OpenAI-compatible short responses from spending the output budget on
@@ -589,6 +598,41 @@ impl Gemma4ChannelIds {
             open: tokenizer.token_to_id(GEMMA4_CHANNEL_OPEN)?,
             close: tokenizer.token_to_id(GEMMA4_CHANNEL_CLOSE)?,
         })
+    }
+}
+
+/// Token ids of GPT-OSS Harmony control markers. `None` when the tokenizer
+/// does not define the required specials (non-GPT-OSS models), which disables
+/// Harmony stream filtering.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GptOssHarmonyIds {
+    pub(crate) channel: u32,
+    pub(crate) message: u32,
+    pub(crate) end: u32,
+    pub(crate) return_tok: u32,
+    pub(crate) start: Option<u32>,
+    pub(crate) call: Option<u32>,
+}
+
+impl GptOssHarmonyIds {
+    pub(crate) fn from_tokenizer(tokenizer: &EngineTokenizer) -> Option<Self> {
+        Some(Self {
+            channel: tokenizer.token_to_id(GPT_OSS_CHANNEL)?,
+            message: tokenizer.token_to_id(GPT_OSS_MESSAGE)?,
+            end: tokenizer.token_to_id(GPT_OSS_END)?,
+            return_tok: tokenizer.token_to_id(GPT_OSS_RETURN)?,
+            start: tokenizer.token_to_id(GPT_OSS_START),
+            call: tokenizer.token_to_id(GPT_OSS_CALL),
+        })
+    }
+
+    pub(crate) fn is_control(self, token: u32) -> bool {
+        token == self.channel
+            || token == self.message
+            || token == self.end
+            || token == self.return_tok
+            || self.start == Some(token)
+            || self.call == Some(token)
     }
 }
 
