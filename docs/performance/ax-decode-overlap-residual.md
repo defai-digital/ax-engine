@@ -119,7 +119,53 @@ so the scalar submit is not what blocks the AX pipeline. The clean-room test
 cost a 5-minute Python edit and saved an ax rebuild+A/B cycle chasing a wrong
 hypothesis.
 
-## Status: BOTH cheap hypotheses dead — track parked
+## RESOLVED (2026-07-17): it is not a sync bug — decode is host-graph-encoding-bound
+
+Continuing the clean-room discipline refuted every structural hypothesis and
+then found the real mechanism:
+
+- **mlx-sys shim async_eval is fine** — the `async-eval-overlap-probe` (mlx-sys,
+  not Python) overlaps 94–100% on 0.32.0 at raised caps, async-call <600µs.
+- **Not gather_qmm, KV-cache slice_update+SDPA, argmax-scalar submit, or custom
+  Metal kernel dispatch** — a probe reproducing each overlaps fine.
+- **The block is AT async_eval, not mid-forward** — decode-trace's forward-build
+  bucket is only 2,387µs (lazy graph construction); the cost is the 7,819µs
+  `async_eval` call itself.
+- **`async_eval` host cost scales ~linearly with graph size** — quadrupling the
+  probe's layer count (24→96) grew async-call ~400µs→~1,400µs. So the 7.8ms on
+  the real 48-layer linear-attn+MoE forward is **host-side graph encoding**, not
+  a GPU wait.
+
+**The reframe.** Per step on Qwen3-Coder-Next-4bit (0.32.0):
+
+| | µs/step |
+| --- | ---: |
+| host: forward build | 2,387 |
+| host: async_eval graph encoding | 7,819 |
+| **host total** | **~10,200** |
+| GPU compute (barrier next-complete) | 5,459 |
+
+Host (10.2 ms) **exceeds** GPU (5.5 ms), so decode is **host/graph-encoding-bound,
+not GPU-bound** — there is nothing to overlap because the host critical path is
+already longer than the GPU work. The pure-MLX repro overlaps 99% only because
+there GPU (5.6 ms) > host (0.4 ms); the real forward flips host-bound because its
+graph is larger (host↑) and MoE reads few bytes (GPU↓).
+
+**The lever, and why it is gated.** The only way to cut the 7.8ms/step encoding
+is to **encode the graph once and reuse it** — graph compilation (`mx.compile` /
+the per-layer compiled-closure path). That is the SAME lever as the MoE
+per-layer-compile track, which is **blocked on MLX's inability to
+shapeless-compile GatherQMM** (`docs/performance/moe-bandwidth-gap.md`,
+`fastpath.rs` AX_MLX_MOE_LAYER_COMPILE history). So the decode-overlap residual
+and the per-layer-compile track are ONE lever: reduce per-step host
+graph-encoding cost via compilation, gated on MLX compile support for gather
+ops. Async reordering cannot help — there is no GPU idle to fill.
+
+Ceiling: closing the host-encoding gap toward the 5.5ms GPU floor is up to ~1.85×
+decode (10.2→5.5ms) on this model, but it is gated upstream (MLX GatherQMM
+compile), which is why it is not a local quick win.
+
+## (superseded) earlier framing: BOTH cheap hypotheses dead
 
 Both concrete, cheap hypotheses are now refuted with evidence:
 KV-in-async-refs (experiment 1) and argmax-scalar-submit (experiment 2). The AX

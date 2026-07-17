@@ -27,10 +27,60 @@
 use std::hint;
 use std::time::Instant;
 
+use std::sync::OnceLock;
+
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, add, argpartition_axis, astype, async_eval, eval,
-    gather_qmm, matmul, quantize, reshape, slice_last_dim, sum_axis, tanh,
+    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, MlxQuantizationMode,
+    add, argpartition_axis, astype, async_eval, eval, gather_qmm, matmul, quantize, reshape,
+    slice_last_dim, sum_axis, tanh,
 };
+
+/// A trivial element-wise custom Metal kernel, the one op class the real AX
+/// decode forward has (~17 per step) that none of the built-in-op repros do.
+/// Tests whether custom-kernel dispatch is what defeats async_eval overlap.
+static PROBE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+const PROBE_KERNEL_SOURCE: &str = r#"
+    const uint i = thread_position_in_grid.x;
+    if (i >= SIZE) { return; }
+    out[i] = x[i];
+"#;
+
+fn probe_kernel() -> &'static MlxMetalKernel {
+    PROBE_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_async_probe_identity",
+            &["x"],
+            &["out"],
+            PROBE_KERNEL_SOURCE,
+            "#include <metal_stdlib>\nusing namespace metal;",
+            false,
+        )
+    })
+}
+
+fn apply_probe_kernel(x: &MlxArray) -> MlxArray {
+    let tpg = 256usize;
+    let grid = GQ_H.div_ceil(tpg) * tpg;
+    probe_kernel()
+        .apply_with_template(
+            &[x],
+            &[KernelOutputSpec {
+                shape: vec![1, GQ_H as i32],
+                dtype: MlxDtype::Bfloat16,
+            }],
+            &[KernelTemplateArg::Int {
+                name: "SIZE",
+                value: GQ_H as i32,
+            }],
+            (grid as i32, 1, 1),
+            (tpg as i32, 1, 1),
+            None,
+        )
+        .into_iter()
+        .next()
+        .expect("probe kernel must produce one output")
+}
 
 const N: usize = 3072;
 const WARMUP: usize = 3;
@@ -233,7 +283,12 @@ fn build_gather_chain() -> GatherChain {
 /// either constant (pre-evaluated) or derived from `x` at runtime through
 /// argpartition — the discriminator for whether runtime expert indices are
 /// what breaks async overlap.
-fn gather_step(chain: &GatherChain, x: &MlxArray, dynamic_indices: bool) -> MlxArray {
+fn gather_step(
+    chain: &GatherChain,
+    x: &MlxArray,
+    dynamic_indices: bool,
+    with_kernel: bool,
+) -> MlxArray {
     let e = GQ_EXPERTS as i32;
     let k = GQ_TOPK as i32;
     let mut x = x.clone();
@@ -262,11 +317,19 @@ fn gather_step(chain: &GatherChain, x: &MlxArray, dynamic_indices: bool) -> MlxA
         let expert_sum = sum_axis(&gathered, 0, false, None);
         let ballast = matmul(&x, &chain.dense, None);
         x = tanh(&add(&expert_sum, &ballast, None), None);
+        if with_kernel {
+            x = apply_probe_kernel(&x);
+        }
     }
     x
 }
 
-fn run_gather_pipelined(chain: &GatherChain, spin: u64, dynamic_indices: bool) -> ShapeResult {
+fn run_gather_pipelined(
+    chain: &GatherChain,
+    spin: u64,
+    dynamic_indices: bool,
+    with_kernel: bool,
+) -> ShapeResult {
     let x_host = vec![0.01f32; GQ_H];
     let x0 = MlxArray::from_raw_data(
         x_host.as_ptr() as *const u8,
@@ -279,7 +342,7 @@ fn run_gather_pipelined(chain: &GatherChain, spin: u64, dynamic_indices: bool) -
     // Shape stability guard: one step must map [1, H] -> [1, H], otherwise
     // the chain silently grows a dimension per layer and the timings are
     // meaningless (bitten twice while writing this probe).
-    let probe_step = gather_step(chain, &x0, dynamic_indices);
+    let probe_step = gather_step(chain, &x0, dynamic_indices, with_kernel);
     eval(&[&probe_step]);
     assert_eq!(
         probe_step.shape(),
@@ -287,10 +350,10 @@ fn run_gather_pipelined(chain: &GatherChain, spin: u64, dynamic_indices: bool) -
         "gather chain must preserve [1, H]"
     );
 
-    let mut pending = gather_step(chain, &x0, dynamic_indices);
+    let mut pending = gather_step(chain, &x0, dynamic_indices, with_kernel);
     async_eval(&[&pending]);
     for _ in 0..WARMUP {
-        let next = gather_step(chain, &pending, dynamic_indices);
+        let next = gather_step(chain, &pending, dynamic_indices, with_kernel);
         async_eval(&[&next]);
         eval(&[&pending]);
         pending = next;
@@ -300,7 +363,7 @@ fn run_gather_pipelined(chain: &GatherChain, spin: u64, dynamic_indices: bool) -
     let started = Instant::now();
     for _ in 0..ITERS {
         spin_us(spin);
-        let next = gather_step(chain, &pending, dynamic_indices);
+        let next = gather_step(chain, &pending, dynamic_indices, with_kernel);
         let t = Instant::now();
         async_eval(&[&next]);
         async_us += t.elapsed().as_micros();
@@ -336,6 +399,7 @@ fn main() {
         "independent",
         "gqmm_const",
         "gqmm_dyn",
+        "gqmm_kernel",
     ] {
         let mut baseline = 0.0f64;
         for (idx, &spin) in SPINS_US.iter().enumerate() {
@@ -343,8 +407,9 @@ fn main() {
                 "serial" => run_serial(&x0, &w1, &w2, spin),
                 "pipelined" => run_pipelined(&x0, &w1, &w2, spin, false),
                 "independent" => run_pipelined(&x0, &w1, &w2, spin, true),
-                "gqmm_const" => run_gather_pipelined(&chain, spin, false),
-                _ => run_gather_pipelined(&chain, spin, true),
+                "gqmm_const" => run_gather_pipelined(&chain, spin, false, false),
+                "gqmm_dyn" => run_gather_pipelined(&chain, spin, true, false),
+                _ => run_gather_pipelined(&chain, spin, false, true),
             };
             if idx == 0 {
                 baseline = r.per_iter_us;

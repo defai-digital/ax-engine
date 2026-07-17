@@ -1,0 +1,11 @@
+0
+=== 96 layers (4x): does async_call scale from the 24-layer ~400us? ===
+gqmm_const         0      21552.6         1556.6       19767.1            +0.0
+gqmm_const      2000      21597.5         1373.7       18053.8           +44.9
+gqmm_const      4000      21598.2         1409.4       16016.1           +45.7
+gqmm_const      8000      21798.8         1399.0       12234.0          +246.2
+gqmm_kernel        0      21951.1         1697.0       18890.0            +0.0
+gqmm_kernel     2000      22736.7         1801.0       18378.7          +785.5
+gqmm_kernel     4000      21897.8         1619.9       15749.5           -53.3
+gqmm_kernel     8000      22179.3         1642.9       12022.5          +228.2
+SCALE-DONE (reverted const to 24)

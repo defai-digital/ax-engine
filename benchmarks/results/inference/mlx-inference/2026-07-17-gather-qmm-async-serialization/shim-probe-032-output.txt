@@ -1,0 +1,17 @@
+    Finished `release` profile [optimized] target(s) in 16.34s
+=== shim probe on 0.32.0, RAISED caps (does mlx-sys async_eval overlap gqmm?) ===
+shape        spin_us  per_iter_us  async_call_us  eval_wait_us  delta_vs_spin0
+pipelined          0       9231.1           84.9        9139.3            +0.0
+pipelined       2000       9200.9           67.8        7127.5           -30.2
+pipelined       4000       9252.0           67.2        5178.2           +20.8
+pipelined       8000       9240.9           74.7        1159.1            +9.8
+gqmm_const         0       5522.4          393.8        5057.1            +0.0
+gqmm_const      2000       5574.2          422.2        3090.6           +51.9
+gqmm_const      4000       5510.6          423.2        1029.2           -11.8
+gqmm_const      8000       8451.0          399.7           0.0         +2928.7
+gqmm_dyn           0       6985.0          554.7        6329.3            +0.0
+gqmm_dyn        2000       7007.7          548.7        4382.0           +22.7
+gqmm_dyn        4000       6908.8          559.0        2273.1           -76.2
+gqmm_dyn        8000       8628.7          555.9           0.0         +1643.7
+interpretation: a shape overlaps host with GPU iff delta_vs_spin0 stays ~0 while spin < per_iter baseline.
+SHIMPROBE-DONE

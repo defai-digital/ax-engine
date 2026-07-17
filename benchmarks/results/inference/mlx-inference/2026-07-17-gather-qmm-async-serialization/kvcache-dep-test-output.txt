@@ -1,0 +1,12 @@
+########## LEADING SUSPECT: persistent slice_update'd KV cache dependency ##########
+=== mode=nokv (control, expect ~99% overlap) ===
+MLX 0.32.0  mode=nokv
+  spin=0     :   5926.3 us/iter
+  spin=4000us :   5941.9 us/iter (delta +15.5)
+  absorbed   :   3984.5 us of 4000 (100% overlap)
+=== mode=kv (adds the AX-like KV dependency; does overlap collapse toward ~11%?) ===
+MLX 0.32.0  mode=kv
+  spin=0     :   5903.0 us/iter
+  spin=4000us :   6016.8 us/iter (delta +113.8)
+  absorbed   :   3886.2 us of 4000 (97% overlap)
+KVDEP-DONE
