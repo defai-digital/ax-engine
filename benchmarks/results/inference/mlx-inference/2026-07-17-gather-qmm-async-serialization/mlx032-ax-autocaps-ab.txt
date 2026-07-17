@@ -1,0 +1,9 @@
+MLX 0.32.0 ax-level auto-buffer-caps A/B (Qwen3-Coder-Next-4bit, decode-trace rebuilt against 0.32.0 minos-26.2 wheel):
+=== MLX 0.32.0 ax-level auto-buffer-caps A/B (3 interleaved pairs) ===
+rep0 off: 74.84 tok/s  sum=b38361bc893c816b
+rep0 on: 97.60 tok/s  sum=b38361bc893c816b
+rep1 off: 76.82 tok/s  sum=b38361bc893c816b
+rep1 on: 96.37 tok/s  sum=b38361bc893c816b
+rep2 off: 75.43 tok/s  sum=b38361bc893c816b
+rep2 on: 96.02 tok/s  sum=b38361bc893c816b
+V032-AXAB-DONE

@@ -197,6 +197,35 @@ removed. So:
 The lesson: the clean-room repro (built to file the issue) caught an over-claim
 that the through-the-stack measurement had suggested.
 
+### Version correctness (2026-07-17): confirmed on MLX 0.32.0, the version AX ships
+
+AX Engine runs **MLX 0.32.0** (the pip wheel in the project `.venv`,
+`libmlx.dylib` minos 26.2 with the NAX GEMM/attention kernels enabled). This
+session's `cargo build` invocations, with no `.venv` active, resolved
+`mlx-sys` build.rs priority-2 to the **conda MLX 0.31.2** on PATH instead
+(minos **26.0** — the slow build where NAX kernels are silently disabled and
+prefill is ~3–4× slower). So all ax-native measurements here defaulted to
+0.31.2 until this correction.
+
+Re-verified on the correct 0.32.0 minos-26.2 wheel (decode-trace rebuilt with
+`MLX_LIB_DIR`/`MLX_INCLUDE_DIR` pointing at the 0.32.0 wheel):
+
+- Pure-MLX overlap repro: default 44% → raised-caps 94% overlap (0.31.2: 42% →
+  99%) — **the buffer-accounting behavior is identical on 0.32.0**, not fixed.
+- ax-level auto-buffer-caps A/B, Qwen3-Coder-Next-4bit, 3 interleaved pairs:
+  off median 75.4 → on median 96.4 tok/s, **ratio 1.28**, greedy checksums
+  identical (`b38361bc893c816b`) across all 6 runs.
+
+So the decode finding and the `AX_MLX_AUTO_BUFFER_CAPS` fix hold on the shipped
+version. The NAX-kernel / minos-26.2 concern is orthogonal (it affects
+**prefill** GEMM/attention, not the decode gather_qmm overlap studied here), but
+it is a real build-hygiene trap: **any prefill/TTFT number measured this session
+was on the minos-26.0 conda build and should not be trusted.** Build hygiene for
+future perf work: build ax-native against the 0.32.0 pip wheel (minos 26.2) —
+`source .venv/bin/activate; export MLX_LIB_DIR=$VIRTUAL_ENV/lib/pythonX.Y/site-packages/mlx/lib
+MLX_INCLUDE_DIR=$VIRTUAL_ENV/lib/pythonX.Y/site-packages/mlx/include` before
+`cargo build` / `maturin develop`; confirm with `vtool -show-build libmlx.dylib | grep minos`.
+
 ## Reproduction
 
 ```

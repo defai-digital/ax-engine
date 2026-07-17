@@ -106,18 +106,22 @@ print(f"  spin={SPIN_US}us : {inj:8.1f} us/iter (delta {inj-base:+.1f})")
 print(f"  absorbed   : {absorbed:8.1f} us of {SPIN_US} ({absorbed/SPIN_US*100:.0f}% overlap)")
 ```
 
-Observed (MLX 0.31.2, Apple M3 Max 128 GB):
+Observed on Apple M3 Max 128 GB, reproduced on **both** the latest release
+(0.32.0) and 0.31.2 — behavior is essentially identical, so it is not a
+regression and is not fixed on latest:
 
 ```
-MLX 0.31.2  caps(MB,ops)=('default', 'default')
-  spin=0     :   5664.2 us/iter
-  spin=4000us :   7973.0 us/iter (delta +2308.9)
-  absorbed   :   1691.1 us of 4000 (42% overlap)
+MLX 0.32.0  caps(MB,ops)=('default', 'default')
+  spin=0     :   5784.3 us/iter
+  spin=4000us :   8013.6 us/iter (delta +2229.3)
+  absorbed   :   1770.7 us of 4000 (44% overlap)
 
-MLX 0.31.2  caps(MB,ops)=('1024', '1000')
-  spin=0     :   5626.4 us/iter
-  spin=4000us :   5655.0 us/iter (delta +28.6)
-  absorbed   :   3971.4 us of 4000 (99% overlap)
+MLX 0.32.0  caps(MB,ops)=('1024', '1000')
+  spin=0     :   5636.5 us/iter
+  spin=4000us :   5864.5 us/iter (delta +228.0)
+  absorbed   :   3772.0 us of 4000 (94% overlap)
+
+MLX 0.31.2  default caps → 42% overlap ; raised caps → 99% overlap
 ```
 
 The `spin` emulates host graph-build time for the next step; if the pipeline
@@ -139,8 +143,8 @@ caps large enough to hold the expert tensor absorb 99%.
 
 ## Environment
 
-- MLX 0.31.2 (pip), Apple M3 Max, 128 GB, macOS.
-- Also observed on the same code path against Homebrew MLX 0.31.x.
+- MLX **0.32.0** (pip, latest at time of filing) and MLX 0.31.2 — reproduced
+  identically on both. Apple M3 Max, 128 GB, macOS.
 
 ## Scope note
 

@@ -1,0 +1,12 @@
+########## MLX 0.32.0 (the version AX actually uses) ##########
+=== default caps ===
+MLX 0.32.0  caps(MB,ops)=('default', 'default')
+  spin=0     :   5784.3 us/iter
+  spin=4000us :   8013.6 us/iter  (delta +2229.3)
+  absorbed   :   1770.7 us of 4000 injected (44% overlap)
+=== raised caps ===
+MLX 0.32.0  caps(MB,ops)=('1024', '1000')
+  spin=0     :   5636.5 us/iter
+  spin=4000us :   5864.5 us/iter  (delta +228.0)
+  absorbed   :   3772.0 us of 4000 injected (94% overlap)
+V032-DONE
