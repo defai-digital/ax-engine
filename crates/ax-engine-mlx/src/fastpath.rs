@@ -938,6 +938,30 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH` — fuse multi-depth Gemma
+    /// assistant drafting into a single materialize.
+    ///
+    /// **Default: OFF** (opt-in via `AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH=1`).
+    ///
+    /// Builds the full depth chain lazily (argmax token of depth `d` feeds
+    /// embedding of depth `d+1` without a host sync) and materialises all
+    /// draft tokens + GPU-exact confidences in one `eval`. Host-side
+    /// confidence gates still apply after materialisation and stop the
+    /// accepted prefix at the first miss — same correctness contract as the
+    /// per-depth sync loop. Depth-1 drafts are unchanged.
+    ///
+    /// Same-artifact A/B on gemma-4-12b-it-4bit-ffn4-assistant-mtp (depth 2,
+    /// n-gram stacking off, flappy + long_code, gen=256) was accept-neutral
+    /// but not a clear decode win: deep drafts rarely clear the 0.999 deep
+    /// gate on 12B, so the always-fused chain pays for depth-1 forwards that
+    /// the gated early-stop path already ran when the first gate passes.
+    /// Keep opt-in for workloads where deep drafts fire often (e.g. looser
+    /// deep gate probes).
+    gemma4_assistant_lazy_multi_depth_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH"
+);
+
+env_flag!(
     /// `AX_DIFFUSION_NO_EMBEDDING_CACHE` — opt-out of per-layer embedding
     /// input caching on the imperative denoise fallback. Default: cache is
     /// **ON** for non-full-pipeline paths (fingerprint skip of ~46 embed
@@ -1409,6 +1433,21 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_COMPILE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn gemma4_assistant_lazy_multi_depth_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH_ENABLED",
             "1"
         ));
     }

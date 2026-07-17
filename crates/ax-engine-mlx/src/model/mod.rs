@@ -1323,14 +1323,33 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
         last_backbone_hidden: &MlxArray,
         constant_position: usize,
     ) -> Result<(MlxArray, MlxArray), Gemma4AssistantForwardError> {
+        let token_data = [last_token];
+        let token_arr = MlxArray::from_raw_data(
+            token_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&token_data),
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+        self.forward_one_from_token_arr(&token_arr, last_backbone_hidden, constant_position)
+    }
+
+    /// Like [`Self::forward_one`], but accepts a lazy `[1]` uint32 token id
+    /// array so multi-depth drafting can chain unevaluated argmax outputs
+    /// into the next step's embedding without a host sync.
+    pub fn forward_one_from_token_arr(
+        &self,
+        last_token_ids: &MlxArray,
+        last_backbone_hidden: &MlxArray,
+        constant_position: usize,
+    ) -> Result<(MlxArray, MlxArray), Gemma4AssistantForwardError> {
         let frozen = self
             .frozen_target_kv
             .as_ref()
             .ok_or(Gemma4AssistantForwardError::UnboundTargetKv)?;
         let rope_offset = gemma4_assistant_rope_offset_array(constant_position);
 
-        let mut token_embedding = embed_tokens(
-            &[last_token],
+        let mut token_embedding = embed_tokens_arr(
+            last_token_ids,
             &self.target_weights.token_embedding,
             self.target_cfg.hidden_size,
         );

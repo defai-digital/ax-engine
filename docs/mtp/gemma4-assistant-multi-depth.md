@@ -91,6 +91,12 @@ above 0.999.
 - `AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE` — deep-position
   (2nd token+) gate (default 0.999; loosen toward 0.99 to trade accept for
   speculation on easy content).
+- `AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH` — fuse multi-depth drafting into a
+  **single materialize** (lazy argmax token chain + GPU-exact confidences).
+  **Default OFF** (opt-in `=1`). Host gates still apply after materialisation
+  (same accepted-prefix contract). Depth-1 and exact-cpu confidence mode keep
+  the per-depth path. 12B same-artifact A/B was accept-neutral but not a clear
+  decode win when deep drafts rarely clear the 0.999 deep gate.
 
 ## Reproduce
 

@@ -7621,17 +7621,51 @@ impl MlxRunner {
         let deep_gate =
             resolve_gemma4_assistant_mtp_deep_gate(speculation_profile, Some(sampling.temperature))
                 .0;
+        let cur_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
+
+        // Single-materialize multi-depth (default ON for depth > 1 + GPU-exact
+        // confidence): chain lazy argmax tokens through the depth loop and eval
+        // all tokens + confidences once. Gates still apply on the host after
+        // materialisation. Kill switch:
+        // `AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH=0`.
+        if max_depth > 1
+            && matches!(confidence_mode, Gemma4AssistantMtpConfidenceMode::GpuExact)
+            && crate::fastpath::gemma4_assistant_lazy_multi_depth_enabled()
+        {
+            return gemma4_assistant_draft_token_lazy_multi_depth(
+                &session,
+                last_token,
+                &cur_hidden,
+                base_position,
+                max_depth,
+                first_gate,
+                deep_gate,
+            );
+        }
+
         let mut drafts: Vec<u32> = Vec::with_capacity(max_depth);
         let mut cur_token = last_token;
-        let mut cur_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
+        let mut cur_hidden = cur_hidden;
         for d in 0..max_depth {
             let Ok((logits, projected_hidden)) =
                 session.forward_one(cur_token, &cur_hidden, base_position + d)
             else {
                 break;
             };
-            let (token, confidence) =
-                argmax_with_softmax_confidence_for_logits(&logits, confidence_mode);
+            // Fuse post_projection into the conf materialize so depth-d's
+            // backbone estimate is ready for depth d+1 without a second wave.
+            let (token, confidence) = match confidence_mode {
+                Gemma4AssistantMtpConfidenceMode::ExactCpu => {
+                    eval(&[&logits, &projected_hidden]);
+                    argmax_with_softmax_confidence_for_logits(&logits, confidence_mode)
+                }
+                Gemma4AssistantMtpConfidenceMode::GpuExact => {
+                    argmax_with_softmax_confidence_gpu_exact_and_arrays(
+                        &logits,
+                        &[&projected_hidden],
+                    )
+                }
+            };
             if !crate::model::gemma4_assistant_draft_position_accepted(
                 d, confidence, first_gate, deep_gate,
             ) {
@@ -10394,6 +10428,15 @@ fn argmax_with_softmax_confidence_for_logits(
 }
 
 fn argmax_with_softmax_confidence_gpu_exact(logits: &MlxArray) -> (u32, f32) {
+    argmax_with_softmax_confidence_gpu_exact_and_arrays(logits, &[])
+}
+
+/// GPU-exact argmax + softmax confidence, materialising `extra` arrays in the
+/// same `eval` (e.g. assistant `post_projection` backbone for the next depth).
+fn argmax_with_softmax_confidence_gpu_exact_and_arrays(
+    logits: &MlxArray,
+    extra: &[&MlxArray],
+) -> (u32, f32) {
     let shape = logits.shape();
     let Some(vocab) = shape.last().copied() else {
         return (0, 0.0);
@@ -10406,10 +10449,94 @@ fn argmax_with_softmax_confidence_gpu_exact(logits: &MlxArray) -> (u32, f32) {
     let token_arr = argmax(&logits_2d, None);
     let probs = softmax(&logits_2d, -1, None);
     let prob_arr = take(&probs, &token_arr, 1, None);
-    eval(&[&token_arr, &prob_arr]);
+    let mut refs: Vec<&MlxArray> = Vec::with_capacity(2 + extra.len());
+    refs.push(&token_arr);
+    refs.push(&prob_arr);
+    refs.extend_from_slice(extra);
+    eval(&refs);
     let token = token_arr.data_u32().first().copied().unwrap_or(0);
     let confidence = prob_arr.data_f32().first().copied().unwrap_or(0.0);
     (token, confidence)
+}
+
+/// Lazy multi-depth Gemma assistant draft: build the full depth chain without
+/// per-depth GPU sync, materialise once, then apply host confidence gates.
+///
+/// Mirrors the Qwen MTP fused lazy draft pattern. Always computes up to
+/// `max_depth` forwards (no early host abort mid-chain); the returned prefix
+/// still stops at the first gate miss, so committed drafts match the
+/// per-depth path's correctness contract.
+fn gemma4_assistant_draft_token_lazy_multi_depth(
+    session: &crate::model::Gemma4AssistantDraftSession<'_>,
+    last_token: u32,
+    last_backbone_hidden: &MlxArray,
+    base_position: usize,
+    max_depth: usize,
+    first_gate: f32,
+    deep_gate: f32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>) {
+    let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut lazy_confs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+
+    let first_token_data = [last_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        std::mem::size_of_val(&first_token_data),
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+    let mut cur_hidden = last_backbone_hidden.clone();
+
+    for d in 0..max_depth {
+        let Ok((logits, projected_hidden)) =
+            session.forward_one_from_token_arr(&prev_token_arr, &cur_hidden, base_position + d)
+        else {
+            break;
+        };
+        let shape = logits.shape();
+        let Some(vocab) = shape.last().copied() else {
+            break;
+        };
+        if vocab <= 0 || shape.iter().copied().product::<i32>() != vocab {
+            break;
+        }
+        let logits_2d = reshape(&logits, &[1, vocab], None);
+        let lazy_tok = argmax(&logits_2d, None);
+        let probs = softmax(&logits_2d, -1, None);
+        let lazy_conf = take(&probs, &lazy_tok, 1, None);
+        lazy_tokens.push(lazy_tok.clone());
+        lazy_confs.push(lazy_conf);
+        prev_token_arr = lazy_tok;
+        cur_hidden = astype(&projected_hidden, MlxDtype::Bfloat16, None);
+    }
+
+    if lazy_tokens.is_empty() {
+        return (vec![], vec![], vec![]);
+    }
+
+    // Single batch eval: all depth tokens + confidences (and chained
+    // post_projection work already in the token/conf graph).
+    let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(lazy_tokens.len() * 2);
+    for t in &lazy_tokens {
+        all_refs.push(t);
+    }
+    for c in &lazy_confs {
+        all_refs.push(c);
+    }
+    eval(&all_refs);
+
+    let mut drafts: Vec<u32> = Vec::with_capacity(lazy_tokens.len());
+    for d in 0..lazy_tokens.len() {
+        let token = lazy_tokens[d].data_u32().first().copied().unwrap_or(0);
+        let confidence = lazy_confs[d].data_f32().first().copied().unwrap_or(0.0);
+        if !crate::model::gemma4_assistant_draft_position_accepted(
+            d, confidence, first_gate, deep_gate,
+        ) {
+            break;
+        }
+        drafts.push(token);
+    }
+    (drafts, vec![], vec![])
 }
 
 /// Top token of a logit row plus its `softmax` probability at temperature 1.0 —
