@@ -133,7 +133,64 @@ pub(crate) fn status_to_result(operation: &str, rc: libc::c_int) -> Result<(), S
     }
 }
 
+thread_local! {
+    /// Depth of Rust closure bodies currently executing under an MLX
+    /// closure trampoline on this thread (compile tracing re-enters).
+    static CLOSURE_BODY_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// RAII marker for "this thread is inside an MLX closure body".
+///
+/// While active, `panic_on_status` switches from panicking to
+/// poison-propagation: the release profile builds with `panic = "abort"`,
+/// so a panic raised inside the closure trampoline can never be caught —
+/// any transient MLX error during compile tracing would kill the whole
+/// process (the failure mode that forced `AX_MLX_MOE_LAYER_COMPILE` back
+/// to opt-in). Instead the failing op leaves its error in the thread-local
+/// slot and returns a null-handle array; downstream shim calls reject the
+/// null handle cleanly ("expected a non-empty ..."), and the compiled-
+/// closure caller's post-apply slot drain (`try_apply_with_abort_safety`)
+/// turns the whole apply into a graceful per-layer fallback.
+pub struct ClosureBodyGuard(());
+
+impl ClosureBodyGuard {
+    pub fn enter() -> Self {
+        CLOSURE_BODY_DEPTH.with(|d| d.set(d.get().saturating_add(1)));
+        ClosureBodyGuard(())
+    }
+}
+
+impl Drop for ClosureBodyGuard {
+    fn drop(&mut self) {
+        CLOSURE_BODY_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+pub(crate) fn in_closure_body() -> bool {
+    CLOSURE_BODY_DEPTH.with(|d| d.get() > 0)
+}
+
+/// Ensure the error slot is non-empty after an in-body op failure, without
+/// overwriting a richer message the C++ handler already recorded.
+fn ensure_error_slot(operation: &str) {
+    LAST_ERROR.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(format!(
+                "{operation} failed inside a compiled-closure body (poison mode)"
+            ));
+        }
+    });
+}
+
 pub(crate) fn panic_on_status(operation: &str, rc: libc::c_int) {
+    if rc == 0 {
+        return;
+    }
+    if in_closure_body() {
+        ensure_error_slot(operation);
+        return;
+    }
     if let Err(message) = status_to_result(operation, rc) {
         panic!("{message}");
     }

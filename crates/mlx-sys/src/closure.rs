@@ -139,10 +139,24 @@ unsafe extern "C" fn closure_trampoline(
     let body: &mut Box<DynClosureBody> = unsafe { &mut *(payload as *mut Box<DynClosureBody>) };
 
     let inputs_wrapped = MlxVectorArray::from_borrowed(inputs);
+    // Poison-propagation scope: while the guard is live, op-status failures
+    // inside the body record the error and return null-handle arrays instead
+    // of panicking — a panic here is fatal under `panic = "abort"` because
+    // the `catch_unwind` below never gets to run (see `ClosureBodyGuard`).
+    // The guard is dropped before returning so ordinary callers keep the
+    // fail-fast panic contract.
+    let body_guard = crate::error::ClosureBodyGuard::enter();
     let outputs = match catch_unwind(AssertUnwindSafe(|| body(&inputs_wrapped))) {
         Ok(outputs) => outputs,
         Err(_) => return 1,
     };
+    drop(body_guard);
+    // A poisoned body produces at least one null-handle output; reject the
+    // apply here so MLX sees a clean closure failure instead of tracing a
+    // graph with dangling inputs.
+    if outputs.iter().any(|arr| arr.inner.ctx.is_null()) {
+        return 1;
+    }
 
     let out_vec = MlxVectorArray::new();
     for arr in &outputs {
@@ -389,6 +403,39 @@ mod tests {
         eval(&[&raw_out[0], &comp_out[0]]);
         assert_eq!(raw_out[0].data_f32().to_vec(), vec![3.0, 6.0, 9.0]);
         assert_eq!(comp_out[0].data_f32().to_vec(), vec![3.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn closure_body_op_failure_poisons_instead_of_unwinding() {
+        use std::sync::atomic::AtomicBool;
+
+        // Reaching the line AFTER the failing op is the proof: before the
+        // poison-mode fix, `panic_on_status` unwound at the bad reshape and
+        // this flag was never set (fatal under the release `panic="abort"`
+        // profile, where the trampoline's catch_unwind cannot run).
+        let reached_after_failure = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&reached_after_failure);
+        let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+            let x = inputs.get(0);
+            // 3 elements cannot reshape to 999: records an MLX error and, in
+            // poison mode, yields a null-handle array instead of panicking.
+            let bad = crate::ops::reshape(&x, &[999], None);
+            flag.store(true, Ordering::SeqCst);
+            vec![bad]
+        });
+        let x = const_f32_1d(&[1.0, 2.0, 3.0]);
+        let _ = crate::error::take_last_error();
+        let result = closure.try_apply(&[&x]);
+        assert!(
+            result.is_err(),
+            "a poisoned body must fail the apply gracefully"
+        );
+        assert!(
+            reached_after_failure.load(Ordering::SeqCst),
+            "in-body op failure must poison-and-continue, not unwind"
+        );
+        // Leave no stale error for later tests on this thread.
+        let _ = crate::error::take_last_error();
     }
 
     #[test]
