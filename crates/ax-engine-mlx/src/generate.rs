@@ -183,6 +183,40 @@ pub(crate) fn direct_pipeline_stage_profile_enabled() -> bool {
 /// refs lets MLX's lazy graph prune the final logits path for long prompt
 /// chunks. Non-greedy sampling keeps the historical full-logits path until the
 /// sampling contract is audited.
+/// GPU-first sampled-token selection shared by the chunked-prefill variants:
+/// exact GPU top-k sampling, then the GPU top-p candidate path, then the exact
+/// CPU categorical fallback with reusable buffers. `before_cpu_fallback` runs
+/// only when both GPU paths decline, and must materialise whatever the caller
+/// needs evaluated before `logits.data_f32()` is read on the CPU.
+#[allow(clippy::too_many_arguments)]
+fn sample_prefill_token_gpu_first(
+    logits: &MlxArray,
+    sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
+    rng: &mut Xorshift64,
+    before_cpu_fallback: impl FnOnce(),
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> u32 {
+    if let Some(tok) = sample_categorical_with_topk_gpu(logits, sampling, repetition_tokens, rng)
+        .or_else(|| sample_categorical_with_topp_gpu(logits, sampling, repetition_tokens, rng))
+    {
+        return tok;
+    }
+    before_cpu_fallback();
+    let logits_data = logits.data_f32();
+    sample_categorical_into(
+        logits_data,
+        sampling,
+        repetition_tokens,
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+    )
+}
+
 pub fn chunked_prefill(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -286,34 +320,16 @@ pub fn chunked_prefill_with_sampling_buffers(
 
         if offset == total {
             let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
-                if let Some(tok) = sample_categorical_with_topk_gpu(
+                sample_prefill_token_gpu_first(
                     &logits,
                     sampling,
                     sampling_request.repetition_tokens,
                     rng,
+                    || eval_with_kv_refs(&logits, cache),
+                    sampling_probs_buf,
+                    sampling_logits_buf,
+                    sampling_candidates_buf,
                 )
-                .or_else(|| {
-                    sample_categorical_with_topp_gpu(
-                        &logits,
-                        sampling,
-                        sampling_request.repetition_tokens,
-                        rng,
-                    )
-                }) {
-                    tok
-                } else {
-                    eval_with_kv_refs(&logits, cache);
-                    let logits_data = logits.data_f32();
-                    sample_categorical_into(
-                        logits_data,
-                        sampling,
-                        sampling_request.repetition_tokens,
-                        rng,
-                        sampling_probs_buf,
-                        sampling_logits_buf,
-                        sampling_candidates_buf,
-                    )
-                }
             } else {
                 // GPU argmax over [vocab] logits -> token ID.
                 let token_arr = argmax(&logits, None);
@@ -369,34 +385,16 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
     cache.advance(prompt_tokens.len());
 
     let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
-        if let Some(tok) = sample_categorical_with_topk_gpu(
+        sample_prefill_token_gpu_first(
             &logits,
             sampling,
             sampling_request.repetition_tokens,
             rng,
+            || eval_with_kv_refs(&logits, cache),
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
         )
-        .or_else(|| {
-            sample_categorical_with_topp_gpu(
-                &logits,
-                sampling,
-                sampling_request.repetition_tokens,
-                rng,
-            )
-        }) {
-            tok
-        } else {
-            eval_with_kv_refs(&logits, cache);
-            let logits_data = logits.data_f32();
-            sample_categorical_into(
-                logits_data,
-                sampling,
-                sampling_request.repetition_tokens,
-                rng,
-                sampling_probs_buf,
-                sampling_logits_buf,
-                sampling_candidates_buf,
-            )
-        }
     } else {
         let token_arr = argmax(&logits, None);
         eval_with_kv_refs(&token_arr, cache);
@@ -522,34 +520,16 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
         };
         let tok = if sampling.temperature > 0.0 {
             eval_with_kv_refs(&logits_row, cache);
-            if let Some(tok) = sample_categorical_with_topk_gpu(
+            sample_prefill_token_gpu_first(
                 &logits_row,
                 sampling,
                 sampling_request.repetition_tokens,
                 rng,
+                || eval(&[&logits_row, &final_hidden]),
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
             )
-            .or_else(|| {
-                sample_categorical_with_topp_gpu(
-                    &logits_row,
-                    sampling,
-                    sampling_request.repetition_tokens,
-                    rng,
-                )
-            }) {
-                tok
-            } else {
-                eval(&[&logits_row, &final_hidden]);
-                let logits_data = logits_row.data_f32();
-                sample_categorical_into(
-                    logits_data,
-                    sampling,
-                    sampling_request.repetition_tokens,
-                    rng,
-                    sampling_probs_buf,
-                    sampling_logits_buf,
-                    sampling_candidates_buf,
-                )
-            }
         } else {
             let token_arr = argmax(&logits_row, None);
             eval_kv_refs(cache);
@@ -584,34 +564,16 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
 
             let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
                 eval_with_kv_refs(&last_logits, cache);
-                if let Some(tok) = sample_categorical_with_topk_gpu(
+                sample_prefill_token_gpu_first(
                     &last_logits,
                     sampling,
                     sampling_request.repetition_tokens,
                     rng,
+                    || eval(&[&last_logits]),
+                    sampling_probs_buf,
+                    sampling_logits_buf,
+                    sampling_candidates_buf,
                 )
-                .or_else(|| {
-                    sample_categorical_with_topp_gpu(
-                        &last_logits,
-                        sampling,
-                        sampling_request.repetition_tokens,
-                        rng,
-                    )
-                }) {
-                    tok
-                } else {
-                    eval(&[&last_logits]);
-                    let logits_data = last_logits.data_f32();
-                    sample_categorical_into(
-                        logits_data,
-                        sampling,
-                        sampling_request.repetition_tokens,
-                        rng,
-                        sampling_probs_buf,
-                        sampling_logits_buf,
-                        sampling_candidates_buf,
-                    )
-                }
             } else {
                 let token_arr = argmax(&last_logits, None);
                 eval_with_kv_refs(&token_arr, cache);
