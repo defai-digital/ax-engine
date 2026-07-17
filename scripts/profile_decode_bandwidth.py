@@ -377,10 +377,27 @@ def run_profile(args: argparse.Namespace) -> dict:
         raise SystemExit("Non-positive decode wall time. Aborting.")
 
     # Recover the true forward-pass count from the engine's route metadata.
-    # Speculative decoding emits multiple accepted tokens per forward pass; the
-    # `ax_mlx_bonus_tokens` counter records the speculation amplification.
+    # Prefer the per-regime step counters: each single-decode, n-gram-verify,
+    # or MTP-verify step runs exactly one backbone forward pass. Fall back to
+    # `tokens - ax_mlx_bonus_tokens` only when no step counters are present —
+    # the n-gram stacking path accepts bonus tokens without incrementing
+    # `ax_mlx_bonus_tokens` (observed 2026-07-17: 51 n-gram steps emitted 256
+    # tokens with bonus_tokens=0), which silently inflated forward_pass_count
+    # and the top-level utilization ratio.
     bonus_tokens = int(crossover_decisions.get("ax_mlx_bonus_tokens", 0))
-    forward_pass_count = max(1, decode_tokens_observed - bonus_tokens)
+    regime_step_sum = int(crossover_decisions.get("ax_mlx_single_decode_steps", 0)) + int(
+        crossover_decisions.get("ax_mlx_ngram_decode_steps", 0)
+    )
+    # StrictMtp packages route verify steps outside the single/ngram counters
+    # and `ax_mtp_decode_steps` undercounts (utility-baseline windows run
+    # verify forwards it does not count), so forward-pass-derived metrics are
+    # approximate for MTP runs; the artifact carries a warning below.
+    mtp_steps = int(crossover_decisions.get("ax_mtp_decode_steps", 0))
+    if regime_step_sum > 0:
+        forward_pass_count = regime_step_sum
+    else:
+        forward_pass_count = max(1, decode_tokens_observed - bonus_tokens)
+    forward_pass_count_approximate = regime_step_sum == 0 and mtp_steps > 0
 
     # Decompose the forward-pass population by regime. Single-decode steps run
     # one forward pass without speculation-verification overhead; n-gram steps
@@ -479,6 +496,7 @@ def run_profile(args: argparse.Namespace) -> dict:
             "decode_tokens_observed": decode_tokens_observed,
             "speculation_bonus_tokens": bonus_tokens,
             "forward_pass_count": forward_pass_count,
+            "forward_pass_count_approximate": forward_pass_count_approximate,
             "decode_wall_time_s": round(decode_wall_s, 6),
             "decode_tok_s": round(decode_tokens_observed / decode_wall_s, 3),
             "forward_pass_per_s": round(forward_pass_per_s, 3),
