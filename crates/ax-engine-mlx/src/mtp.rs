@@ -945,7 +945,6 @@ pub fn mtp_draft_tokens(
     )
 }
 
-
 /// Like [`mtp_draft_tokens`] but with an explicit draft-confidence gate instead
 /// of the process-global `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE` env value.
 ///

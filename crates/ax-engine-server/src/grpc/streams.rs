@@ -520,10 +520,10 @@ mod tests {
     use std::time::Duration;
 
     use ax_engine_sdk::{
-        GenerateFinishReason, GenerateResponse, GenerateStatus, GenerateStreamEvent,
-        GenerateStreamResponseEvent, GenerateStreamStepEvent, RuntimeReport, SelectedBackend,
-        SessionRequestReport, SessionRequestState, SupportTier, ResolutionPolicy,
-        CapabilityReport,
+        CapabilityReport, GenerateFinishReason, GenerateResponse, GenerateStatus,
+        GenerateStreamEvent, GenerateStreamResponseEvent, GenerateStreamStepEvent,
+        ResolutionPolicy, RuntimeReport, SelectedBackend, SessionRequestReport,
+        SessionRequestState, SupportTier,
     };
 
     use crate::admission::{AdmissionController, AdmissionError};
@@ -601,14 +601,9 @@ mod tests {
             Ok(None),
         ];
         let mut iter = events.into_iter();
-        drive_grpc_chat_events(
-            "test-model",
-            &mut role,
-            &tx,
-            None,
-            None,
-            || iter.next().unwrap_or(Ok(None)),
-        )
+        drive_grpc_chat_events("test-model", &mut role, &tx, None, None, || {
+            iter.next().unwrap_or(Ok(None))
+        })
         .expect("drive should succeed");
 
         let mut chunks = Vec::new();
@@ -647,14 +642,9 @@ mod tests {
             Ok(None), // stream ends without Response
         ];
         let mut iter = events.into_iter();
-        drive_grpc_chat_events(
-            "test-model",
-            &mut role,
-            &tx,
-            None,
-            None,
-            || iter.next().unwrap_or(Ok(None)),
-        )
+        drive_grpc_chat_events("test-model", &mut role, &tx, None, None, || {
+            iter.next().unwrap_or(Ok(None))
+        })
         .expect("drive should succeed");
 
         let mut chunks = Vec::new();
@@ -667,8 +657,7 @@ mod tests {
             "no finish_reason without Response event"
         );
         assert_eq!(
-            chunks[0]
-                .choices[0]
+            chunks[0].choices[0]
                 .delta
                 .as_ref()
                 .map(|d| d.content.as_str()),
@@ -689,10 +678,8 @@ mod tests {
             Ok(None),
         ];
         let mut iter = events.into_iter();
-        drive_grpc_completion_events("test-model", &tx, None, || {
-            iter.next().unwrap_or(Ok(None))
-        })
-        .expect("drive should succeed");
+        drive_grpc_completion_events("test-model", &tx, None, || iter.next().unwrap_or(Ok(None)))
+            .expect("drive should succeed");
 
         let mut chunks = Vec::new();
         while let Ok(chunk) = rx.try_recv() {
@@ -709,10 +696,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let events = [Ok(Some(step_with_delta_text("xyz"))), Ok(None)];
         let mut iter = events.into_iter();
-        drive_grpc_completion_events("test-model", &tx, None, || {
-            iter.next().unwrap_or(Ok(None))
-        })
-        .expect("drive should succeed");
+        drive_grpc_completion_events("test-model", &tx, None, || iter.next().unwrap_or(Ok(None)))
+            .expect("drive should succeed");
 
         let mut chunks = Vec::new();
         while let Ok(chunk) = rx.try_recv() {

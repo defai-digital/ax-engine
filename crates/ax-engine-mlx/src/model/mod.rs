@@ -6543,19 +6543,22 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod embed_bucket_tests {
     use super::{
-        embed_bucket_pad_acceptable, embed_length_affinity_groups, embed_length_bucket,
-        DEFAULT_EMBED_MAX_LEN_BUCKETS,
+        DEFAULT_EMBED_MAX_LEN_BUCKETS, embed_bucket_pad_acceptable, embed_length_affinity_groups,
+        embed_length_bucket,
     };
 
     #[test]
     fn default_buckets_are_finer_at_short_lengths() {
         assert!(DEFAULT_EMBED_MAX_LEN_BUCKETS.contains(&8));
         assert!(DEFAULT_EMBED_MAX_LEN_BUCKETS.contains(&16));
-        assert!(DEFAULT_EMBED_MAX_LEN_BUCKETS.windows(2).all(|w| w[0] < w[1]));
+        assert!(
+            DEFAULT_EMBED_MAX_LEN_BUCKETS
+                .windows(2)
+                .all(|w| w[0] < w[1])
+        );
     }
 
     #[test]
@@ -6613,7 +6616,10 @@ mod embed_bucket_tests {
             // 20 with cheap pad should snap into the default table.
             let b = embed_length_bucket(20);
             assert!(
-                b >= 20 && DEFAULT_EMBED_MAX_LEN_BUCKETS.iter().any(|&e| e == b || b == 20),
+                b >= 20
+                    && DEFAULT_EMBED_MAX_LEN_BUCKETS
+                        .iter()
+                        .any(|&e| e == b || b == 20),
                 "default buckets must be active when env unset, got {b}"
             );
             // Coarse over-pad still rejected (8→32 not acceptable).

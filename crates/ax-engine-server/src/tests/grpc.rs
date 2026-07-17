@@ -1,11 +1,11 @@
-use ax_engine_sdk::{
-    EngineTokenizer, GenerateFinishReason, GenerateResponse, GenerateStatus, SelectedBackend,
-};
 use crate::grpc::AxEngineGrpcService;
 use crate::grpc::proto;
 use crate::grpc::proto::ax_engine_server::AxEngine;
 use crate::openai::generation::populate_native_mlx_output_text;
 use crate::openai::schema::OpenAiStreamKind;
+use ax_engine_sdk::{
+    EngineTokenizer, GenerateFinishReason, GenerateResponse, GenerateStatus, SelectedBackend,
+};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -133,13 +133,8 @@ async fn populate_native_mlx_output_text_sets_decoded_content_for_unary_contract
 
     // Already-populated responses must not be overwritten.
     response.output_text = Some("keep-me".to_string());
-    populate_native_mlx_output_text(
-        &live,
-        &mut response,
-        OpenAiStreamKind::Completion,
-        false,
-    )
-    .expect("second populate is a no-op when text is set");
+    populate_native_mlx_output_text(&live, &mut response, OpenAiStreamKind::Completion, false)
+        .expect("second populate is a no-op when text is set");
     assert_eq!(response.output_text.as_deref(), Some("keep-me"));
 
     std::fs::remove_dir_all(artifact_dir).expect("cleanup artifact dir");

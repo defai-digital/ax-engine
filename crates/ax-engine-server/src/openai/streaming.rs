@@ -13,9 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
-use crate::chat::{
-    Gemma4ChannelIds, GptOssHarmonyIds, strip_gemma4_channel_name_header,
-};
+use crate::chat::{Gemma4ChannelIds, GptOssHarmonyIds, strip_gemma4_channel_name_header};
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::generation::streaming::{
     StreamCancelFlag, StreamEventSender, build_keep_alive_stream, build_stream_state,
@@ -842,12 +840,7 @@ mod gpt_oss_harmony_stream_filter_tests {
     const ANALYSIS_NAME: u32 = 11;
 
     fn filter() -> GptOssHarmonyStreamFilter {
-        GptOssHarmonyStreamFilter::for_test(
-            IDS,
-            Some(FINAL_NAME),
-            Some(ANALYSIS_NAME),
-            Some(12),
-        )
+        GptOssHarmonyStreamFilter::for_test(IDS, Some(FINAL_NAME), Some(ANALYSIS_NAME), Some(12))
     }
 
     #[test]

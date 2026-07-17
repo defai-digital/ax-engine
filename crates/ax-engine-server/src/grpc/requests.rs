@@ -48,12 +48,9 @@ pub(super) fn finalize_native_generate_request(
     live: &LiveState,
     mut request: GenerateRequest,
 ) -> Result<GenerateRequest, Status> {
-    let (input_tokens, input_text) = tokenize_native_mlx_text_input(
-        live,
-        request.input_tokens,
-        request.input_text,
-    )
-    .map_err(openai_error_to_status)?;
+    let (input_tokens, input_text) =
+        tokenize_native_mlx_text_input(live, request.input_tokens, request.input_text)
+            .map_err(openai_error_to_status)?;
     request.input_tokens = input_tokens;
     request.input_text = input_text;
     Ok(request)
@@ -273,11 +270,7 @@ mod tests {
         let artifact_dir =
             std::env::temp_dir().join(format!("ax-engine-grpc-mlx-tokenize-{unique}"));
         fs::create_dir_all(&artifact_dir).expect("artifact dir should create");
-        fs::write(
-            artifact_dir.join("config.json"),
-            r#"{"eos_token_id":2}"#,
-        )
-        .expect("config");
+        fs::write(artifact_dir.join("config.json"), r#"{"eos_token_id":2}"#).expect("config");
         fs::write(
             artifact_dir.join("tokenizer.json"),
             r#"{
@@ -349,14 +342,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time should be valid")
             .as_nanos();
-        let artifact_dir = std::env::temp_dir()
-            .join(format!("ax-engine-grpc-mlx-completion-tokenize-{unique}"));
+        let artifact_dir =
+            std::env::temp_dir().join(format!("ax-engine-grpc-mlx-completion-tokenize-{unique}"));
         fs::create_dir_all(&artifact_dir).expect("artifact dir should create");
-        fs::write(
-            artifact_dir.join("config.json"),
-            r#"{"eos_token_id":2}"#,
-        )
-        .expect("config");
+        fs::write(artifact_dir.join("config.json"), r#"{"eos_token_id":2}"#).expect("config");
         fs::write(
             artifact_dir.join("tokenizer.json"),
             r#"{

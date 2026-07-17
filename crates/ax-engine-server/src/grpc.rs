@@ -25,14 +25,14 @@ pub mod proto {
 }
 
 use crate::admission::AdmissionError;
+use crate::openai::generation::populate_native_mlx_output_text;
+use crate::openai::schema::OpenAiStreamKind;
 use conversions::{finish_reason_str, proto_to_generate_request, sdk_response_to_proto, unix_now};
 use proto::ax_engine_server::AxEngine;
 use requests::{
     build_chat_generate_request, build_completion_generate_request, grpc_embedding_prompt_tokens,
     openai_error_to_status,
 };
-use crate::openai::generation::populate_native_mlx_output_text;
-use crate::openai::schema::OpenAiStreamKind;
 use streams::{
     ChatChunkStream, CompletionChunkStream, GenerateEventStream, build_grpc_stream_state,
     native_grpc_stream_tokenizer, run_blocking, spawn_grpc_chat_stream,
@@ -153,13 +153,8 @@ impl AxEngine for AxEngineGrpcService {
         let request_id = self.state.allocate_request_id();
         let mut response = run_grpc_generate_request(&self.state, &live, request_id, req).await?;
         // Decode native MLX tokens so unary Generate returns text (HTTP parity).
-        populate_native_mlx_output_text(
-            &live,
-            &mut response,
-            OpenAiStreamKind::Completion,
-            false,
-        )
-        .map_err(openai_error_to_status)?;
+        populate_native_mlx_output_text(&live, &mut response, OpenAiStreamKind::Completion, false)
+            .map_err(openai_error_to_status)?;
         Ok(Response::new(sdk_response_to_proto(response)))
     }
 
@@ -191,13 +186,8 @@ impl AxEngine for AxEngineGrpcService {
         let request_id = self.state.allocate_request_id();
         let mut r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
         // Native MLX leaves output_text unset; decode + strip channels like OpenAI.
-        populate_native_mlx_output_text(
-            &live,
-            &mut r,
-            OpenAiStreamKind::ChatCompletion,
-            false,
-        )
-        .map_err(openai_error_to_status)?;
+        populate_native_mlx_output_text(&live, &mut r, OpenAiStreamKind::ChatCompletion, false)
+            .map_err(openai_error_to_status)?;
         let content = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::ChatCompletionResponse {

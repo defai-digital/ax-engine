@@ -121,9 +121,8 @@ fn parse_f32_env(name: &str, default: f32, lo: f32, hi: f32) -> f32 {
 
 fn gate_min() -> f32 {
     static CACHED: OnceLock<f32> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        parse_f32_env("AX_MLX_MTP_ADAPTIVE_GATE_MIN", DEFAULT_GATE_MIN, 0.5, 0.99)
-    })
+    *CACHED
+        .get_or_init(|| parse_f32_env("AX_MLX_MTP_ADAPTIVE_GATE_MIN", DEFAULT_GATE_MIN, 0.5, 0.99))
 }
 
 fn gate_max() -> f32 {
@@ -147,12 +146,7 @@ fn residual_window_from_env() -> u32 {
 /// PROVISIONAL prior bins — replace via `AX_MLX_MTP_ADAPTIVE_GATE_PRIOR_BINS`
 /// after PR0 calibration (`thr:prior,...` descending thresholds).
 pub fn default_provisional_bins() -> &'static [(f32, f32)] {
-    &[
-        (0.95, 0.90),
-        (0.90, 0.88),
-        (0.85, 0.85),
-        (0.00, 0.80),
-    ]
+    &[(0.95, 0.90), (0.90, 0.88), (0.85, 0.85), (0.00, 0.80)]
 }
 
 fn bins_from_env() -> Vec<(f32, f32)> {
@@ -197,7 +191,10 @@ fn ewma(prev: f32, samples: u32, obs: f32, alpha: f32) -> (f32, u32) {
     if samples == 0 {
         (obs, 1)
     } else {
-        ((1.0 - alpha) * prev + alpha * obs, samples.saturating_add(1))
+        (
+            (1.0 - alpha) * prev + alpha * obs,
+            samples.saturating_add(1),
+        )
     }
 }
 
@@ -397,7 +394,10 @@ mod tests {
             auto_optimistic_active: false,
         };
         let g = observe_step(&mut st, sig, &cfg);
-        assert!((g - 0.80).abs() < 1e-5, "low conf → long_code prior 0.80, got {g}");
+        assert!(
+            (g - 0.80).abs() < 1e-5,
+            "low conf → long_code prior 0.80, got {g}"
+        );
         assert_eq!(st.head_conf_samples, 1);
     }
 
@@ -484,8 +484,20 @@ mod tests {
     #[test]
     fn adaptive_eligible_only_low_t_auto() {
         assert!(adaptive_eligible(true, SpeculationProfile::Auto, Some(0.0)));
-        assert!(!adaptive_eligible(true, SpeculationProfile::Auto, Some(0.6)));
-        assert!(!adaptive_eligible(true, SpeculationProfile::Coding, Some(0.0)));
-        assert!(!adaptive_eligible(false, SpeculationProfile::Auto, Some(0.0)));
+        assert!(!adaptive_eligible(
+            true,
+            SpeculationProfile::Auto,
+            Some(0.6)
+        ));
+        assert!(!adaptive_eligible(
+            true,
+            SpeculationProfile::Coding,
+            Some(0.0)
+        ));
+        assert!(!adaptive_eligible(
+            false,
+            SpeculationProfile::Auto,
+            Some(0.0)
+        ));
     }
 }
