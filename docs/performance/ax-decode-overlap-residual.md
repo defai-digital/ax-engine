@@ -70,12 +70,42 @@ does not here.
   the skeleton spec, now shown to be **ax-side-addressable**, not upstream-gated
   as previously (wrongly) concluded.
 
-## Suggested first experiment (parity-gated, low commitment)
+## Experiment 1 — KV-in-async-refs: REFUTED (2026-07-17)
 
-Add the KV-cache arrays to the `async_eval` refs (undo the `≈85µs/layer`
-optimization) and re-measure overlap + decode. If overlap jumps toward the
-pure-MLX 94%, the KV-not-in-refs decision was starving the GPU and the ~85µs/
-layer cost is dwarfed by the overlap win. If it does not move, the blocker is
-the argmax-reduction submit and the next experiment is submitting the pre-argmax
-logits (or the KV refs) instead. Each is a one-line change, parity-checked
-against CN + Llama, A/B'd on 0.32.0.
+Added the KV-cache arrays to the `async_eval` submit (env-gated,
+`AX_MLX_DIRECT_ASYNC_KV_REFS`), rebuilt against 0.32.0, A/B'd on
+Qwen3-Coder-Next-4bit:
+
+| | async_eval submit | decode (sleep 0) | decode (sleep 4 ms) | parity |
+| --- | ---: | ---: | ---: | --- |
+| off | 7,725 µs | 99.0 tok/s | 74.4 | `296c5760a58d6aa2` |
+| on (KV refs) | 7,863 µs | 97.6 tok/s | 74.0 | identical |
+
+**No effect.** The submit still blocks at ~7.8 ms, overlap is unchanged (a 4 ms
+injection still degrades both to ~74 tok/s), decode is flat-to-slightly-worse.
+So the KV-not-in-refs decision is **not** what starves the pipeline — the
+`≈85µs/layer` comment's premise is fine, and the blocker is elsewhere. The
+env flag was reverted (do-nothing branch in the hottest path); the negative
+result stands on its own.
+
+## Remaining hypotheses (deeper, each a rebuild)
+
+1. **Argmax-scalar submit.** `async_eval(&[&next_token_arr])` submits a scalar
+   (`argmax` of `[1, vocab]`). Submitting a scalar may force MLX to schedule the
+   whole reduction chain synchronously, where the pure-MLX repro (which submits
+   a `[1, H]` tensor) does not. Test: submit the pre-argmax logits (or the last
+   hidden) and read the token from the materialized logits, comparing overlap.
+2. **MLX async_eval scheduler semantics for single-outstanding graphs.** The
+   pure-MLX repro keeps exactly one async in flight and consumes it immediately;
+   AX does too, but the real forward's graph is far larger. Whether MLX's
+   `async_eval` returns before launch depends on internal scheduler state that
+   may differ for a 48-layer quantized graph vs the 24-layer repro. Test:
+   instrument `mlx_async_eval` return timing vs graph size directly.
+
+## Status
+
+Lever identified and sized (~2.4 ms/step serial host build, ~15–20% ceiling,
+ax-side). Cheapest fix (experiment 1) refuted with evidence. The remaining path
+is a genuine MLX-scheduler investigation on the hottest decode path — real work,
+throughput-gated, best started fresh with hypothesis 1 (submit logits not the
+argmax scalar). Not a one-liner; a natural checkpoint.
