@@ -1,0 +1,9 @@
+=== TRUE amortization: chained matmuls, single eval (0.32.0) ===
+MLX 0.32.0  CHAINED 100 matmuls [B,4096]x[4096,4096] 4-bit, single eval
+batch  wall_us/eval  us_per_row  scaling(true amortization)
+    1       2689.9      2689.9   1.00x
+    2       3318.0      1659.0   1.62x
+    4       4492.1      1123.0   2.40x
+    8       7995.7       999.5   2.69x
+   16      11997.6       749.9   3.59x
+CHAIN-DONE

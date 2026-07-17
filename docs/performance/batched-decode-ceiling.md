@@ -46,10 +46,27 @@ barely amortizes. Far from the ×2–4 premise.
   back — the same wall as MoE per-layer compile). But disabling it
   (`AX_MLX_DENSE_FFN_COMPILE=0 AX_MLX_DENSE_SWIGLU_PACKED_METAL=0`) gives
   **identical 1.24×** — the fallback is clean, not the cap.
-- **Not the matmul.** Raw `mx.quantized_matmul` amortizes well and it is not a
-  shape issue: `[B,4096]×[4096,14336]` 4-bit gives **5.1×** at batch=8, and the
-  decode-shaped `[B,1,4096]` gives **5.0×** — 2D and 3D identical. The hardware
-  and MLX deliver ~5× on the FFN matmul; the forward nets 1.24×.
+- **The matmul ceiling is ~2.7×, not ~5× (earlier number was an artifact).**
+  A per-call `mx.eval` around each matmul gives 5×, but that is amortizing the
+  fixed submit overhead, not the weight read. Chaining 100 matmuls into one
+  graph and evaluating once (the real forward's structure — one eval per step)
+  gives the true weight-read amortization: **2.69× at batch=8** (1.62× @2,
+  2.40× @4, 3.59× @16). It is not a shape issue — decode-shaped `[B,1,H]`
+  matches 2D. So Apple Silicon 4-bit quantized matmul amortizes ~2.7× at
+  batch=8 (compute-limited past that), and the forward nets 1.24× — still
+  ~2× below the real matmul ceiling.
+- **Not the attention/KV path (leading suspect REFUTED).** Sweeping the prefill
+  length changes the per-request KV size 32× but barely moves scaling: seq=8 →
+  1.24×, seq=256 → 1.20× at batch=8. If attention/KV were the non-amortizing
+  cost it would degrade sharply with seq; it does not. The non-amortizing
+  component is **seq-independent**.
+- **What it is: a large seq-independent structural cost in the batched forward.**
+  Solving the two-regime model (matmuls amortize 2.69×, the rest scales ~8×)
+  against the measured b1/b8 step times puts ~69% of the batch=1 step in a
+  non-matmul, seq-independent, batch-linear cost — far too large to be
+  elementwise norms/RoPE. Pinpointing it requires stage-instrumenting the
+  batched forward (`decode_batched_forward` / `layer_forward_batched`), the
+  Phase 3.3 first move.
 
 ## Conclusion: viable, but the first work is fixing DENSE amortization
 
@@ -62,14 +79,18 @@ own KV cache; batched SDPA reads B caches and runs B attentions with no
 cross-batch weight to amortize), plus possible structural overhead in
 `layer_forward_batched`; confirming it needs stage-timing the batched step.
 
-**Revised Phase 3 plan:**
-1. **3.2 — profile the dense batched step** (stage timing: projections vs
-   attention vs FFN vs KV/mask) to find the non-amortizing component. Cheap,
-   decisive.
-2. **3.3 — fix dense batched amortization** toward the ~5× matmul ceiling.
-   Parity-gated. This is the real first increment; MoE extension is premature
-   until dense batching actually pays.
-3. **3.4+ — extend to MoE / linear-attention** only after dense delivers.
+**Revised Phase 3 plan (updated after 3.2):**
+- **Realistic ceiling: ~2.7× aggregate at batch=8** (the true matmul
+  amortization on this hardware), i.e. ~53→~143 agg tok/s on Llama-8B, not the
+  naive ×8. Meaningful for concurrent serving; zero for single-request.
+- **3.2 DONE:** attention/KV ruled out (seq-independent); the gap is a large
+  seq-independent structural cost in the batched forward, ~2× recoverable
+  (1.24×→2.69×).
+- **3.3 — stage-instrument `decode_batched_forward` / `layer_forward_batched`**
+  (matmuls vs attention vs elementwise vs KV/mask/lm_head, batch 1 vs 8) to
+  name the seq-independent non-amortizing stage, then fix it. Parity-gated.
+- **3.4+ — extend to MoE / linear-attention** only after dense delivers toward
+  the 2.7× ceiling.
 
 This inverts the naive plan (extend to Coder-Next first): the measurement shows
 the supported dense path itself only returns 1.24×, so that is where Phase 3
