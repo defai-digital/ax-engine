@@ -88,16 +88,34 @@ Cap sweep on Coder-Next: 256 MB → 88.5, 512 → 91.7, 1024 → 92.8,
 - The Tier 2A "deep expert-block fusion" justification weakens further: part
   of the price it was meant to attack disappears with a config change.
 
-## Recommended next steps
+## Update (same day): engine-level default SHIPPED (`AX_MLX_AUTO_BUFFER_CAPS`, default ON)
 
-1. **Engine-level default (needs interleaved A/B evidence per repo gate):**
-   set the caps at runner init when the loaded model's largest quantized
-   tensor exceeds the MLX default cap — e.g.
-   `MLX_MAX_MB_PER_BUFFER = clamp(largest_expert_tensor_mb, 512, 1024)`,
-   before MLX device init, opt-out via env. Gate on: interleaved A/B ≥1.01
-   on ≥2 MoE checkpoints, no dense/linear regression, greedy parity, and a
-   peak-memory check (bigger command buffers change allocator watermark
-   timing).
+`load_weights` now counts manifest tensors above 48 MB (the MLX default cap
+band); at ≥16 such tensors — dense checkpoints carry ~2 (embedding +
+lm_head), MoE expert stacks push 90–150 — it raises the caps to
+1024 MB / 1000 ops via `mlx_sys::set_metal_buffer_caps_env` before the first
+GPU op. User-set `MLX_MAX_*_PER_BUFFER` always wins; kill switch
+`AX_MLX_AUTO_BUFFER_CAPS=0`. Decision is once-per-process (MLX reads the
+variables a single time at Metal device init).
+
+**Interleaved A/B (5 reps × 256 steps targets, 3 reps control, rep-level
+interleave across models, M3 Max,
+`benchmarks/results/inference/mlx-inference/2026-07-17-auto-buffer-caps-ab/`):**
+
+| model | off median | on median | ratio | parity |
+| --- | ---: | ---: | ---: | --- |
+| Qwen3-Coder-Next-4bit | 75.72 tok/s | 94.52 | **1.248** | identical |
+| Qwen3.6-35B-A3B-4bit | 104.65 | 116.61 | **1.114** | identical |
+| Gemma-4-26B-A4B-4bit | 95.53 | 95.36 | 0.998 (neutral) | identical |
+| Llama-3.1-8B-4bit (control) | 50.44 | 49.81 | 0.988 (neutral band) | identical |
+
+Gemma's earlier single-run −7% was thermal noise, as suspected: the
+interleaved pairs put it at 0.998. The predicate still covers Gemma
+(91 big tensors) — measured harmless there, strongly positive on the
+Qwen3-Next family. Note the absolute numbers ran under heavy sustained
+thermal load; the pairwise ratios are the reliable signal.
+
+## Remaining next steps
 2. **Upstream report to ml-explore/mlx** (draft below) — the honest fix is
    gather-aware accounting: count `gather_qmm`/`gather_mm` index-selected
    bytes (top_k/E of the tensor), not the full weight, toward

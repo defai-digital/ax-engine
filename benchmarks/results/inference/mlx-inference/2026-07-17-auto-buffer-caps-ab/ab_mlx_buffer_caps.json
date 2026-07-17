@@ -1,0 +1,92 @@
+{
+  "flag": "AX_MLX_AUTO_BUFFER_CAPS",
+  "steps": 256,
+  "min_ratio": 1.01,
+  "control_tolerance": 0.98,
+  "models": {
+    "coder-next-4bit": {
+      "role": "target",
+      "off_tok_s": [
+        76.66,
+        71.06,
+        75.63,
+        78.68,
+        78.51
+      ],
+      "on_tok_s": [
+        94.55,
+        70.09,
+        95.7,
+        97.12,
+        96.06
+      ],
+      "off_median": 76.66,
+      "on_median": 95.7,
+      "ratio": 1.2484,
+      "parity": true
+    },
+    "qwen36-35b-a3b-4bit": {
+      "role": "target",
+      "off_tok_s": [
+        76.76,
+        104.54,
+        105.93,
+        67.96,
+        104.36
+      ],
+      "on_tok_s": [
+        78.74,
+        116.1,
+        116.77,
+        68.17,
+        116.46
+      ],
+      "off_median": 104.36,
+      "on_median": 116.1,
+      "ratio": 1.1125,
+      "parity": true
+    },
+    "gemma4-26b-a4b-4bit": {
+      "role": "target",
+      "off_tok_s": [
+        95.59,
+        94.56,
+        95.7,
+        95.13,
+        96.49
+      ],
+      "on_tok_s": [
+        94.52,
+        95.78,
+        95.87,
+        96.11,
+        38.82
+      ],
+      "off_median": 95.59,
+      "on_median": 95.78,
+      "ratio": 1.002,
+      "parity": true
+    },
+    "llama31-8b-4bit": {
+      "role": "control",
+      "off_tok_s": [
+        33.36,
+        56.36,
+        48.02
+      ],
+      "on_tok_s": [
+        56.76,
+        54.24,
+        55.76
+      ],
+      "off_median": 48.02,
+      "on_median": 55.76,
+      "ratio": 1.1612,
+      "parity": true
+    }
+  },
+  "failures": [
+    "gemma4-26b-a4b-4bit: ratio 1.0020 < gate 1.01"
+  ],
+  "verdict": "not_promoted"
+}

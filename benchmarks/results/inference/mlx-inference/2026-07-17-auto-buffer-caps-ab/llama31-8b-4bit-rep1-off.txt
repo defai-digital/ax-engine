@@ -1,0 +1,24 @@
+loading /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2
+prefill 128 tokens → 228510 µs
+
+steady-state (256 steps after 8 warmup):
+  total wall               17742.4 µs/tok
+  forward                    722.6 µs/tok
+    layer_loop (64×)           0.0 µs/tok  (  0.0% of forward, ~0.0 µs/layer)
+    head (norm+lm_head)        0.0 µs/tok  (  0.0% of forward)
+    residual (embed+...)     722.6 µs/tok  (100.0% of forward)
+  argmax                       3.5 µs/tok
+  async_eval (submit)      16995.0 µs/tok
+  pending eval (gpu wait)     15.7 µs/tok
+  pending read                 0.8 µs/tok
+
+per-layer ops/tok (FFI dispatch count from mlx_sys::op_count):
+
+linear-attention direct C++ counters:
+  inputs:     attempts=0 hits=0 fallbacks=0 profile_blocked=0
+  post-input: attempts=0 hits=0 fallbacks=0 profile_blocked=0
+
+moe router fused: attempts=0 hits=0 fallbacks=0
+token stream: n=265 fnv1a64=b1dc62f1cadb51c2
+
+decode tok/s = 56.36
