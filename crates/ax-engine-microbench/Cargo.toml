@@ -49,3 +49,7 @@ path = "src/bin/moe_fused_gather_qmm_probe.rs"
 [[bin]]
 name = "diffusion-microbench"
 path = "src/bin/diffusion_microbench.rs"
+
+[[bin]]
+name = "async-eval-overlap-probe"
+path = "src/bin/async_eval_overlap_probe.rs"
