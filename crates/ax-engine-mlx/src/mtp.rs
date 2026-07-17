@@ -81,6 +81,10 @@ pub fn mtp_draft_min_confidence_from_env() -> f32 {
 /// `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE` parsed to `Some(value)` only when set and
 /// valid; `None` when unset, so speculation-profile resolution can supply a
 /// preset instead.
+pub fn mtp_draft_min_confidence_env_value() -> Option<f32> {
+    mtp_draft_min_confidence_explicit()
+}
+
 fn mtp_draft_min_confidence_explicit() -> Option<f32> {
     static CACHED: OnceLock<Option<f32>> = OnceLock::new();
     *CACHED.get_or_init(|| {
@@ -923,6 +927,9 @@ pub fn mtp_draft_tokens(
     max_depth_cap: Option<usize>,
     rng: &mut Xorshift64,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    // Prefer temperature-aware resolution when available via process profile.
+    // Callers with request temperature should use `mtp_draft_tokens_gated` +
+    // `mtp_adaptive_gate::resolve_mtp_gate_from_env`.
     mtp_draft_tokens_gated(
         weights,
         cfg,
@@ -931,15 +938,13 @@ pub fn mtp_draft_tokens(
         cache,
         max_depth_cap,
         rng,
-        // Speculation-profile resolution (ADR-022): explicit env > profile > 0.90
-        // default. Temperature is unavailable at this wrapper, so `auto` keeps the
-        // validated default; explicit profiles still apply.
         resolve_mtp_draft_min_confidence(
             crate::speculation_profile::speculation_profile_from_env(),
             None,
         ),
     )
 }
+
 
 /// Like [`mtp_draft_tokens`] but with an explicit draft-confidence gate instead
 /// of the process-global `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE` env value.
@@ -1126,7 +1131,13 @@ pub fn mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    let (draft, log_probs, distributions, tail_added, top2_margins) = mtp_draft_tokens(
+    // Use the same process-resolved gate as pure MTP; runner may prefer
+    // mtp_draft_tokens_gated after a custom forced-prefix path in future.
+    let min_confidence = resolve_mtp_draft_min_confidence(
+        crate::speculation_profile::speculation_profile_from_env(),
+        None,
+    );
+    let (draft, log_probs, distributions, tail_added, top2_margins) = mtp_draft_tokens_gated(
         weights,
         cfg,
         &prev_hidden,
@@ -1134,6 +1145,7 @@ pub fn mtp_draft_tokens_after_forced_prefix(
         cache,
         Some(max_tail_depth),
         rng,
+        min_confidence,
     );
 
     (
@@ -1633,7 +1645,11 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    let (draft, log_probs, distributions, tail_added, top2_margins) = glm_mtp_draft_tokens(
+    let min_confidence = resolve_mtp_draft_min_confidence(
+        crate::speculation_profile::speculation_profile_from_env(),
+        None,
+    );
+    let (draft, log_probs, distributions, tail_added, top2_margins) = glm_mtp_draft_tokens_gated(
         weights,
         cfg,
         &prev_hidden,
@@ -1641,6 +1657,7 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
         cache,
         Some(max_tail_depth),
         rng,
+        min_confidence,
     );
 
     (

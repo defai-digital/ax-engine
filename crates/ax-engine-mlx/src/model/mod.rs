@@ -2653,10 +2653,52 @@ pub(crate) fn build_embedding_batch_hidden_pub(
     batch_token_ids: &[Vec<u32>],
 ) -> (MlxArray, usize, usize, Vec<usize>) {
     let actual_lens: Vec<usize> = batch_token_ids.iter().map(Vec::len).collect();
-    let max_len = actual_lens.iter().copied().max().unwrap_or(0);
+    let raw_max = actual_lens.iter().copied().max().unwrap_or(0);
+    // Optional compile-key / pad snap (default OFF). See design
+    // mtp-embed-perf-sprint: AX_EMBED_MAX_LEN_BUCKETS.
+    let max_len = embed_length_bucket(raw_max);
     let batch = batch_token_ids.len();
     let hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
     (hidden, batch, max_len, actual_lens)
+}
+
+/// Snap embedding batch `max_len` up to a discrete bucket when enabled.
+/// Default OFF (`AX_EMBED_MAX_LEN_BUCKETS` unset).
+pub(crate) fn embed_length_bucket(max_len: usize) -> usize {
+    use std::sync::OnceLock;
+    static BUCKETS: OnceLock<Option<Vec<usize>>> = OnceLock::new();
+    let buckets = BUCKETS.get_or_init(|| {
+        let Ok(raw) = std::env::var("AX_EMBED_MAX_LEN_BUCKETS") else {
+            return None;
+        };
+        let t = raw.trim().to_ascii_lowercase();
+        if t.is_empty() || matches!(t.as_str(), "0" | "false" | "off" | "no") {
+            return None;
+        }
+        if matches!(t.as_str(), "1" | "true" | "on" | "yes" | "default") {
+            return Some(vec![32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]);
+        }
+        let mut buckets: Vec<usize> = t
+            .split(',')
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .collect();
+        if buckets.is_empty() {
+            return None;
+        }
+        buckets.sort_unstable();
+        buckets.dedup();
+        Some(buckets)
+    });
+    let Some(buckets) = buckets.as_ref() else {
+        return max_len;
+    };
+    for &b in buckets {
+        if max_len <= b {
+            return b;
+        }
+    }
+    max_len
 }
 
 /// Single-token forward pass accepting a lazy token `MlxArray`.
@@ -6389,5 +6431,18 @@ mod tests {
             last_row,
             "u32::MAX must clamp to the last valid row"
         );
+    }
+}
+
+
+#[cfg(test)]
+mod embed_bucket_tests {
+    use super::embed_length_bucket;
+
+    #[test]
+    fn embed_length_bucket_off_is_identity() {
+        // Default: env unset → no snap.
+        assert_eq!(embed_length_bucket(17), 17);
+        assert_eq!(embed_length_bucket(0), 0);
     }
 }

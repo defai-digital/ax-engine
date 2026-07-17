@@ -17,6 +17,7 @@ pub mod kv_cache;
 pub mod linear_attention_ops;
 pub mod model;
 pub mod mtp;
+pub mod mtp_adaptive_gate;
 pub mod ngram_accel;
 pub mod per_layer_compile;
 pub mod runner;

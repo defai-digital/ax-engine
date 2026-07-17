@@ -66,8 +66,13 @@ use crate::model::{
     take_moe_profile_snapshot, take_prefill_profile_snapshot,
 };
 use crate::mtp::{
-    glm_mtp_draft_tokens, glm_mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens,
+    glm_mtp_draft_tokens_after_forced_prefix, glm_mtp_draft_tokens_gated,
     mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens_gated,
+};
+use crate::mtp_adaptive_gate::{
+    AdaptiveStepSignals, MtpAdaptiveGateState, adaptive_gate_enabled_from_env,
+    maybe_init_state as mtp_adaptive_maybe_init, next_gate_config_from_env, observe_step,
+    resolve_mtp_gate_from_env,
 };
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
@@ -1414,6 +1419,10 @@ impl MtpTelemetry {
         decisions.upsert_route_decision(
             "ax_mtp_mtp_only_accept_rate_ewma_samples",
             self.mtp_only_accept_rate_ewma_samples,
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_adaptive_gate_enabled",
+            u32::from(adaptive_gate_enabled_from_env()),
         );
         // ADR-019: emit draft mode and hurt gate mode for A/B audit.
         decisions.upsert_route_decision(
@@ -3051,6 +3060,13 @@ struct RequestState {
     /// p_target/p_draft rejection sampling may not be the argmax token),
     /// so the EWMA shifts metric upon activation.
     auto_optimistic_active: bool,
+    /// Online adaptive MTP draft gate state (default OFF / low-T auto only).
+    /// See `docs/designs/mtp-embed-perf-sprint-2026-07-16.md`.
+    mtp_adaptive_gate: Option<MtpAdaptiveGateState>,
+    /// Last resolved draft gate ×1000 for route telemetry.
+    mtp_draft_gate_x1000: u32,
+    /// ResolutionSource route code for last draft gate.
+    mtp_draft_gate_source: u32,
     /// Post-norm hidden rows from the final prefill chunk.
     /// Set by `chunked_prefill_with_mtp_history` and consumed by
     /// `initialize_generation_state` to prime the MTP head's KV cache with
@@ -3133,6 +3149,9 @@ impl RequestState {
             mtp_consecutive_misses: 0,
             mtp_bypassed: false,
             auto_optimistic_active: false,
+            mtp_adaptive_gate: None,
+            mtp_draft_gate_x1000: 0,
+            mtp_draft_gate_source: 0,
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
             ngram_in_think: false,
@@ -3426,6 +3445,9 @@ static EMBED_GPU_NORMALIZE: LazyLock<bool> = LazyLock::new(|| {
 /// benchmarking against the imperative forward path.
 static EMBED_NO_COMPILE: LazyLock<bool> =
     LazyLock::new(|| std::env::var("AX_EMBED_NO_COMPILE").is_ok());
+
+
+
 
 /// Global compiled-closure cache counters.
 static COMPILE_CACHE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -5629,7 +5651,7 @@ impl MlxRunner {
                         .decode_telemetry
                         .record_prefill(elapsed_us(prefill_started));
                     let generation_state_started = Instant::now();
-                    self.initialize_generation_state(&mut state, max_output, Some(tok), is_greedy);
+                    self.initialize_generation_state(&mut state, max_output, Some(tok), is_greedy, sampling.temperature);
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
                     state.decode_telemetry.record_prefill_breakdown(
@@ -5890,6 +5912,7 @@ impl MlxRunner {
                             max_output,
                             Some(tok),
                             is_greedy,
+                            sampling.temperature,
                         );
                         prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     }
@@ -5937,6 +5960,7 @@ impl MlxRunner {
                             max_output,
                             Some(tok),
                             is_greedy,
+                            sampling.temperature,
                         );
                         vec![tok]
                     } else {
@@ -7744,29 +7768,23 @@ impl MlxRunner {
             // Draft new MTP tokens from skip hidden.
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
             let mtp_draft_started = Instant::now();
-            let (draft, log_probs, _dist, added, _m) =
-                if let Some(min_confidence) = mtp_optimistic_draft_min_confidence_override() {
-                    mtp_draft_tokens_gated(
-                        &self.weights,
-                        &self.cfg,
-                        &sh,
-                        primary_tok,
-                        cache,
-                        Some(state.mtp_adaptive_max_depth),
-                        &mut state.rng,
-                        min_confidence,
-                    )
-                } else {
-                    mtp_draft_tokens(
-                        &self.weights,
-                        &self.cfg,
-                        &sh,
-                        primary_tok,
-                        cache,
-                        Some(state.mtp_adaptive_max_depth),
-                        &mut state.rng,
-                    )
-                };
+            let (gate, src) = resolve_mtp_gate_from_env(
+                Some(sampling.temperature),
+                state.mtp_adaptive_gate.as_ref(),
+                mtp_optimistic_draft_min_confidence_override(),
+            );
+            state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
+            state.mtp_draft_gate_source = src.route_code();
+            let (draft, log_probs, _dist, added, _m) = mtp_draft_tokens_gated(
+                &self.weights,
+                &self.cfg,
+                &sh,
+                primary_tok,
+                cache,
+                Some(state.mtp_adaptive_max_depth),
+                &mut state.rng,
+                gate,
+            );
             mtp_timings.mtp_draft_wall_us = mtp_timings
                 .mtp_draft_wall_us
                 .saturating_add(elapsed_us(mtp_draft_started));
@@ -8475,6 +8493,44 @@ impl MlxRunner {
             state.mtp_consecutive_misses = 0;
         }
 
+        // Adaptive draft gate observe (default OFF; low-T auto only when allocated).
+        if let Some(ref mut adaptive) = state.mtp_adaptive_gate {
+            let mean_conf = if pending.is_empty() {
+                0.0
+            } else {
+                // Approximate pre-gate confidence from pending log-probs when present.
+                let confs: Vec<f32> = state
+                    .mtp_pending_draft_log_probs
+                    .iter()
+                    .take(pending.len())
+                    .map(|lp| lp.exp().clamp(0.0, 1.0))
+                    .collect();
+                if confs.is_empty() {
+                    0.9
+                } else {
+                    confs.iter().sum::<f32>() / confs.len() as f32
+                }
+            };
+            let recomputed = false; // detailed recompute flag is path-local; residual OFF by default
+            let cfg = next_gate_config_from_env();
+            let _ = observe_step(
+                adaptive,
+                AdaptiveStepSignals {
+                    pre_gate_mean_conf: mean_conf,
+                    gated_draft_len: pending.len(),
+                    recomputed,
+                    mtp_only_accept_rate_ewma: state.mtp_telemetry.mtp_only_accept_rate_ewma,
+                    mtp_only_accept_rate_ewma_samples: state
+                        .mtp_telemetry
+                        .mtp_only_accept_rate_ewma_samples,
+                    mtp_bypassed: state.mtp_bypassed,
+                    adaptive_depth: state.mtp_adaptive_max_depth,
+                    auto_optimistic_active: state.auto_optimistic_active,
+                },
+                &cfg,
+            );
+        }
+
         // Per-request MTP bypass: once MTP-only acceptance EWMA has enough
         // samples and falls below the threshold, disable MTP for the remainder
         // of this request.  The direct single-token decode path is cheaper
@@ -8797,11 +8853,14 @@ impl MlxRunner {
                     // MTP head forward path (RoPE managed internally via cache.seq_len()).
                     let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
                     let mtp_draft_started = Instant::now();
-                    let (draft, log_probs, distributions, added, _top2_margins) = if let Some(
-                        min_confidence,
-                    ) =
-                        mtp_optimistic_draft_min_confidence_override()
-                    {
+                    let (gate, src) = resolve_mtp_gate_from_env(
+                        Some(sampling.temperature),
+                        state.mtp_adaptive_gate.as_ref(),
+                        mtp_optimistic_draft_min_confidence_override(),
+                    );
+                    state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
+                    state.mtp_draft_gate_source = src.route_code();
+                    let (draft, log_probs, distributions, added, _top2_margins) =
                         mtp_draft_tokens_gated(
                             &self.weights,
                             &self.cfg,
@@ -8810,19 +8869,8 @@ impl MlxRunner {
                             cache,
                             Some(state.mtp_adaptive_max_depth),
                             &mut state.rng,
-                            min_confidence,
-                        )
-                    } else {
-                        mtp_draft_tokens(
-                            &self.weights,
-                            &self.cfg,
-                            &draft_hidden,
-                            tail_tok,
-                            cache,
-                            Some(state.mtp_adaptive_max_depth),
-                            &mut state.rng,
-                        )
-                    };
+                            gate,
+                        );
                     mtp_timings.mtp_draft_wall_us = mtp_timings
                         .mtp_draft_wall_us
                         .saturating_add(elapsed_us(mtp_draft_started));
@@ -8834,8 +8882,15 @@ impl MlxRunner {
                     // GLM MTP head forward path (GLM MLA attention, shared_head logits).
                     let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
                     let mtp_draft_started = Instant::now();
+                    let (gate, src) = resolve_mtp_gate_from_env(
+                        Some(sampling.temperature),
+                        state.mtp_adaptive_gate.as_ref(),
+                        mtp_optimistic_draft_min_confidence_override(),
+                    );
+                    state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
+                    state.mtp_draft_gate_source = src.route_code();
                     let (draft, log_probs, distributions, added, _top2_margins) =
-                        glm_mtp_draft_tokens(
+                        glm_mtp_draft_tokens_gated(
                             &self.weights,
                             &self.cfg,
                             &draft_hidden,
@@ -8843,6 +8898,7 @@ impl MlxRunner {
                             cache,
                             Some(state.mtp_adaptive_max_depth),
                             &mut state.rng,
+                            gate,
                         );
                     mtp_timings.mtp_draft_wall_us = mtp_timings
                         .mtp_draft_wall_us
@@ -8911,12 +8967,14 @@ impl MlxRunner {
         result
     }
 
+
     fn initialize_generation_state(
         &self,
         state: &mut RequestState,
         max_output: u32,
         prefill_output_token: Option<u32>,
         is_greedy: bool,
+        temperature: f32,
     ) {
         // When MTP is active, use a wider prompt window (NGRAM_MTP_PROMPT_FEED_MAX)
         // so real-code bigrams are seeded before the first decode step. Without
@@ -8969,6 +9027,15 @@ impl MlxRunner {
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
         state.mtp_bypassed = false;
+        // Adaptive gate: allocate only for low-T auto when flag is on (A.0b).
+        let _ = is_greedy;
+        state.mtp_adaptive_gate = mtp_adaptive_maybe_init(
+            adaptive_gate_enabled_from_env(),
+            speculation_profile_from_env(),
+            Some(temperature),
+        );
+        state.mtp_draft_gate_x1000 = 0;
+        state.mtp_draft_gate_source = 0;
         state.ngram_self_tune = NgramSelfTuneState::default();
         state.mtp_ngram_utility_hysteresis_remaining = 0;
         if let Some(ref mut c) = state.mtp_cache {

@@ -54,12 +54,16 @@ pub enum SpeculationProfile {
 /// How the resolved value was chosen, for route telemetry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResolutionSource {
-    /// An explicit per-knob env var was set and won.
-    Explicit,
-    /// The selected profile preset supplied the value.
-    Profile,
     /// Neither applied; the built-in default was used.
     Default,
+    /// The selected profile preset supplied the value.
+    Profile,
+    /// An explicit per-knob env var was set and won.
+    Explicit,
+    /// Online adaptive MTP draft gate (low-T `auto` only).
+    Adaptive,
+    /// Optimistic draft-min-confidence override (often 0.0).
+    Optimistic,
 }
 
 impl ResolutionSource {
@@ -68,6 +72,8 @@ impl ResolutionSource {
             Self::Default => 0,
             Self::Profile => 1,
             Self::Explicit => 2,
+            Self::Adaptive => 3,
+            Self::Optimistic => 4,
         }
     }
 }
@@ -121,7 +127,7 @@ impl SpeculationProfile {
 
     /// True when `auto` should treat this temperature as diversity-sensitive.
     /// `None` (temperature unknown at the call site) is treated as low.
-    fn is_diversity_temperature(temperature: Option<f32>) -> bool {
+    pub(crate) fn is_diversity_temperature(temperature: Option<f32>) -> bool {
         matches!(temperature, Some(t) if t.is_finite() && t >= AUTO_DIVERSITY_TEMPERATURE)
     }
 
