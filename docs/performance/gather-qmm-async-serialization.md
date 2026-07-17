@@ -141,6 +141,41 @@ thermal load; the pairwise ratios are the reliable signal.
 > weights at their selected size, or exempt repeated read-only buffers
 > already resident in the same command buffer sequence.
 
+## Update (2026-07-17): the caps win is submit-efficiency, NOT restored overlap
+
+A follow-up host-sleep injection sweep on Qwen3-Coder-Next-4bit with the fix
+default-on re-reads *why* the caps help, and finds real residual headroom:
+
+| config | sleep 0 total | sleep 4000 total | Δ for 4ms injected | absorbed | async_eval (GPU) @ sleep 0 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| caps ON (default) | 10,554 µs/tok | 13,822 | +3,268 | **732 µs (18%)** | 7,913 µs |
+| caps OFF | 13,422 | 18,179 | +4,756 | 0 (DVFS penalty) | 11,015 µs |
+
+Reading:
+
+- **The +27% (74.5 → 94.75 tok/s) came from cheaper GPU submission, not from
+  overlap.** Raising the cap collapses per-layer command-buffer splits, so the
+  `async_eval` (GPU submit) bucket drops 11,015 → 7,913 µs/tok. That is the
+  whole win.
+- **Host/GPU overlap is still largely broken.** A 4 ms host injection sits under
+  a ~7.9 ms GPU step, so an ideal double buffer would absorb nearly all of it;
+  the pipeline absorbs only 0.7 ms (18%). ~2.6 ms/step of host graph build is
+  still serial with GPU execution even with caps raised — the "zero-bubble"
+  residual (skeleton plan I7) is real, worth up to ~2.6 ms of a 10.5 ms step
+  (~20–25%) if a working double buffer hid it.
+- **The residual is upstream-shaped.** The current ordering already builds
+  step N+1 before waiting on N (`generate.rs::advance_direct_pipeline_with_timings`);
+  that it still does not overlap means `mlx_async_eval` is not keeping the GPU
+  busy across the host-build window under the shim — the same async-semantics
+  surface as the buffer-accounting issue. This strengthens the case for the
+  upstream MLX report (draft above): the ask should cover async_eval actually
+  launching work, not only gather-aware byte accounting. A local double-buffer
+  reorder cannot manufacture overlap MLX's scheduler does not provide, so I7 is
+  gated on the upstream behavior, not on a runner-side change.
+
+Artifacts: `.../scratchpad/i7-residual/` reproduction logs (caps on/off ×
+sleep 0/4000).
+
 ## Reproduction
 
 ```
