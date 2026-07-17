@@ -42,6 +42,12 @@ Two findings:
    a 1-deep async queue that waits before enqueue) is NOT identified here —
    that is follow-up work, and it is exactly the "zero-bubble" gap vLLM closed
    in its 2026 scheduler work.
+   **Update (same day):** root cause identified — `gather_qmm`'s full-tensor
+   byte accounting forces per-layer command-buffer splits and scheduler
+   backpressure on MoE models only; dense and linear-attention models overlap
+   fine (this section's Coder-Next sweeps are the MoE case). See
+   [`gather-qmm-async-serialization.md`](gather-qmm-async-serialization.md):
+   raising `MLX_MAX_MB_PER_BUFFER` restores overlap, +14–25% MoE decode.
 2. **Idle host gaps additionally slow the GPU (DVFS).** Δtotal runs 1.6–2.0×
    the injected delay even for the zero-power sleep injector, and the
    `async_eval` (GPU) bucket itself inflates with idle time (15.9 → 28.7 ms at

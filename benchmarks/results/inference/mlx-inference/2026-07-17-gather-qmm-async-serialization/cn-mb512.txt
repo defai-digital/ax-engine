@@ -1,0 +1,24 @@
+loading /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-Next-4bit/snapshots/7b9321eabb85ce79625cac3f61ea691e4ea984b5
+prefill 128 tokens → 597671 µs
+
+steady-state (128 steps after 8 warmup):
+  total wall               10900.9 µs/tok
+  forward                   2548.8 µs/tok
+    layer_loop (64×)           0.0 µs/tok  (  0.0% of forward, ~0.0 µs/layer)
+    head (norm+lm_head)        0.0 µs/tok  (  0.0% of forward)
+    residual (embed+...)    2548.8 µs/tok  (100.0% of forward)
+  argmax                       1.5 µs/tok
+  async_eval (submit)       8335.9 µs/tok
+  pending eval (gpu wait)      9.7 µs/tok
+  pending read                 0.2 µs/tok
+
+per-layer ops/tok (FFI dispatch count from mlx_sys::op_count):
+
+linear-attention direct C++ counters:
+  inputs:     attempts=5004 hits=5004 fallbacks=0 profile_blocked=0
+  post-input: attempts=36 hits=36 fallbacks=0 profile_blocked=0
+
+moe router fused: attempts=0 hits=0 fallbacks=0
+token stream: n=137 fnv1a64=c32de64a2b64a348
+
+decode tok/s = 91.74
