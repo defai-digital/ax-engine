@@ -570,32 +570,34 @@ env_flag!(
     "AX_MLX_MOE_PROFILE"
 );
 
-env_flag_default_on!(
+env_flag!(
     /// `AX_MLX_MOE_LAYER_COMPILE` — enable per-layer compiled MoE decode
     /// closure.
     ///
-    /// **Default: ON** (kill-switch via `AX_MLX_MOE_LAYER_COMPILE=0`).
+    /// **Default: OFF** (opt-in via `AX_MLX_MOE_LAYER_COMPILE=1`).
     /// Each MoE layer's decode forward path is wrapped in an `MlxClosure`
-    /// compiled via `mlx_compile` with `shapeless=true`. The compiled
-    /// closure is cached per `(model_identity, layer_index, thread_id)` and
-    /// reused across decode steps, collapsing ~10 per-layer MLX dispatches
-    /// into a single compiled graph. Only engages for `seq == 1` (decode).
-    /// Falls back to the uncompiled path on compilation or apply failure,
-    /// permanently per layer.
+    /// compiled via `mlx_compile` with `shapeless=true`. Only engages for
+    /// `seq == 1` (decode). Falls back to the uncompiled path on
+    /// compilation or apply failure, permanently per layer.
     ///
-    /// History: default-on, reverted to opt-in on 2026-06-19 (`19120c10`)
-    /// after crashes in long-running processes — a Rust panic raised by an
-    /// op-status failure inside the closure body unwound across the C++
-    /// trampoline, which is fatal under the release `panic = "abort"`
-    /// profile (`catch_unwind` never runs). That abort vector is now closed
-    /// by construction: closure bodies run in poison-propagation mode
-    /// (`mlx_sys::error::ClosureBodyGuard`) — an in-body op failure records
-    /// the error, yields a null-handle array, fails the apply cleanly, and
-    /// the layer falls back to the imperative path. Re-promoted default-on
-    /// 2026-07-17: 5-rep interleaved A/B on Qwen3-Coder-Next-4bit decode
-    /// ratio 1.016 (on wins every pair, greedy checksums identical), 12k-step
-    /// soak crossing the recompile-refresh threshold plus a 5k-step Gemma
-    /// dual-path soak, both clean.
+    /// History. Default-on originally; reverted 2026-06-19 (`19120c10`)
+    /// after long-running-process crashes. The real abort vector — a Rust
+    /// panic from an in-body op-status failure unwinding across the C++
+    /// trampoline, fatal under the release `panic = "abort"` profile — is
+    /// now closed by construction (poison propagation,
+    /// `mlx_sys::error::ClosureBodyGuard`), so opting in is safe: failures
+    /// degrade to per-layer imperative fallbacks. Briefly re-promoted
+    /// default-on on 2026-07-17, then reverted the same day when the
+    /// review found the promotion evidence invalid: on gather-routed MoE
+    /// (Qwen3-Next class) MLX cannot shapeless-compile the closure at all
+    /// ("[Primitive::output_shapes] GatherQMM cannot infer output shapes"
+    /// — every layer falls back permanently, one warn each), so the
+    /// measured +1.6% was pair noise on a path that never engaged; on
+    /// Gemma-4-26B-A4B the dual-path closure does engage and measured a
+    /// neutral 1.003 (3 interleaved pairs, parity clean). No family shows
+    /// a ≥1.01 win, so per ADR-003 D5 the flag stays opt-in. Upstream
+    /// follow-up candidate: GatherQMM `output_shapes` support in MLX
+    /// compile would make this promotable on MoE.
     moe_layer_compile_enabled,
     "AX_MLX_MOE_LAYER_COMPILE"
 );

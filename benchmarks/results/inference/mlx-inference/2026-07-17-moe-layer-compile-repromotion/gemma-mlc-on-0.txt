@@ -1,0 +1,54 @@
+loading /Users/akiralam/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit/snapshots/695690b33533b1f8b0395c1d6b4f00dc411353ef
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.
+prefill 128 tokens → 170281 µs
+
+steady-state (256 steps after 8 warmup):
+  total wall               10623.5 µs/tok
+  forward                   1517.7 µs/tok
+    layer_loop (64×)           0.0 µs/tok  (  0.0% of forward, ~0.0 µs/layer)
+    head (norm+lm_head)        0.0 µs/tok  (  0.0% of forward)
+    residual (embed+...)    1517.7 µs/tok  (100.0% of forward)
+  argmax                       1.9 µs/tok
+  async_eval (submit)       9089.5 µs/tok
+  pending eval (gpu wait)      9.9 µs/tok
+  pending read                 0.1 µs/tok
+
+per-layer ops/tok (FFI dispatch count from mlx_sys::op_count):
+
+linear-attention direct C++ counters:
+  inputs:     attempts=0 hits=0 fallbacks=0 profile_blocked=0
+  post-input: attempts=0 hits=0 fallbacks=0 profile_blocked=0
+
+moe router fused: attempts=0 hits=0 fallbacks=0
+token stream: n=265 fnv1a64=635c9a0027250c72
+
+decode tok/s = 94.13
