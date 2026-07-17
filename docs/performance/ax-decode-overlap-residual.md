@@ -102,10 +102,39 @@ result stands on its own.
    may differ for a 48-layer quantized graph vs the 24-layer repro. Test:
    instrument `mlx_async_eval` return timing vs graph size directly.
 
-## Status
+## Experiment 2 — argmax-scalar submit: REFUTED (clean-room, 2026-07-17)
 
-Lever identified and sized (~2.4 ms/step serial host build, ~15–20% ceiling,
-ax-side). Cheapest fix (experiment 1) refuted with evidence. The remaining path
-is a genuine MLX-scheduler investigation on the hottest decode path — real work,
-throughput-gated, best started fresh with hypothesis 1 (submit logits not the
-argmax scalar). Not a one-liner; a natural checkpoint.
+Before touching the ax hot path, tested hypothesis 1 in the minimal MLX repro
+(`mlx_scalar_submit_test.py`): same 24-layer gather_qmm chain, but async_eval
+handed an `argmax(h @ vocab)` **scalar** (the AX pattern) vs the `[1, H]`
+**tensor**, both at raised caps on 0.32.0:
+
+| submit | overlap (4 ms injection absorbed) |
+| --- | ---: |
+| tensor (control) | 102% |
+| **argmax scalar (AX pattern)** | **99%** |
+
+**Refuted.** Submitting a scalar overlaps just as well as a tensor in pure MLX,
+so the scalar submit is not what blocks the AX pipeline. The clean-room test
+cost a 5-minute Python edit and saved an ax rebuild+A/B cycle chasing a wrong
+hypothesis.
+
+## Status: BOTH cheap hypotheses dead — track parked
+
+Both concrete, cheap hypotheses are now refuted with evidence:
+KV-in-async-refs (experiment 1) and argmax-scalar-submit (experiment 2). The AX
+async_eval blocking (~7.8 ms submit, ~11% overlap) **does not reproduce in the
+minimal MLX repro**, which overlaps 99–102% with the same scalar-submit + raised
+caps. So the blocker is AX-forward-specific — the leading remaining suspect is
+the KV-cache mutable-state dependency chain (`slice_update` into persistent
+cache arrays every step, which the stateless repro has no analogue for), not
+anything in the submit shape.
+
+Finding it requires **instrumenting the real AX forward** (bisect which stage —
+attention/SDPA, router argpartition, KV writes — makes async_eval block), an
+open-ended investigation on the hottest path, not a quick experiment. Given the
++28% already banked (auto-buffer-caps) and that the two cheap levers are
+exhausted, this track is **parked at a natural boundary**: the remaining ~15–20%
+is real but now behind open-ended ax-forward work. Recommendation is to weigh
+that against Phase 3 batched decode (×2–4 ceiling, needs concurrency-priority
+sign-off) rather than continue speculative hot-path spelunking here.

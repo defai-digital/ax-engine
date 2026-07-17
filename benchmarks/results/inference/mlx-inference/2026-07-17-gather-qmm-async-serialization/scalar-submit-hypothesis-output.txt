@@ -1,0 +1,12 @@
+########## HYPOTHESIS TEST: scalar vs tensor submit, MLX 0.32.0, raised caps ##########
+=== submit=tensor (control; expect ~94% like before) ===
+MLX 0.32.0  submit=tensor
+  spin=0     :   5795.4 us/iter
+  spin=4000us :   5720.2 us/iter (delta -75.1)
+  absorbed   :   4075.1 us of 4000 (102% overlap)
+=== submit=scalar (the AX pattern; does overlap collapse?) ===
+MLX 0.32.0  submit=scalar
+  spin=0     :   6312.9 us/iter
+  spin=4000us :   6358.2 us/iter (delta +45.3)
+  absorbed   :   3954.7 us of 4000 (99% overlap)
+HYPO-DONE
