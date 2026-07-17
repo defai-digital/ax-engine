@@ -26,6 +26,21 @@ use ax_engine_mlx::{
 };
 use mlx_sys::clear_cache;
 
+/// Busy-spin for `dur_us` microseconds of host wall time. Diagnostic-only:
+/// emulates extra host graph-build cost per decode step so the overlap
+/// between host build and in-flight GPU work can be measured empirically —
+/// if the pipeline overlaps, total wall stays flat until the injected spin
+/// exceeds the GPU-side headroom (`AX_DECODE_TRACE_HOST_SPIN_US`).
+fn spin_host_us(dur_us: u64) {
+    if dur_us == 0 {
+        return;
+    }
+    let start = Instant::now();
+    while (start.elapsed().as_micros() as u64) < dur_us {
+        std::hint::spin_loop();
+    }
+}
+
 fn main() {
     let mut args = env::args().skip(1);
     let model_dir = args
@@ -36,6 +51,18 @@ fn main() {
         .map(|s| s.parse().expect("steps must be a positive integer"))
         .unwrap_or(64);
     let warmup_steps: usize = 8;
+    let host_spin_us: u64 = env::var("AX_DECODE_TRACE_HOST_SPIN_US")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    // Sleep variant of the injection: `thread::sleep` draws no package power,
+    // so it separates true host/GPU serialization (total grows 1:1 with the
+    // injected delay) from busy-spin power coupling (GPU clocks drop under a
+    // spinning P-core, inflating the GPU bucket beyond the injected delay).
+    let host_sleep_us: u64 = env::var("AX_DECODE_TRACE_HOST_SLEEP_US")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
 
     println!("loading {model_dir}");
     let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
@@ -91,6 +118,10 @@ fn main() {
     let mut full_layer_count_sum = 0u64;
     let bench_start = Instant::now();
     for _ in 0..decode_steps {
+        spin_host_us(host_spin_us);
+        if host_sleep_us > 0 {
+            std::thread::sleep(std::time::Duration::from_micros(host_sleep_us));
+        }
         let advanced = advance_direct_pipeline_with_timings(&cfg, &weights, &pending, &mut cache);
         linear_layer_ops_sum =
             linear_layer_ops_sum.saturating_add(advanced.timings.linear_attention_layer_ops);
@@ -123,6 +154,12 @@ fn main() {
     let residual_avg = forward_avg - layer_loop_avg - head_avg;
 
     println!();
+    if host_spin_us > 0 {
+        println!("host spin injected: {host_spin_us} µs/step (AX_DECODE_TRACE_HOST_SPIN_US)");
+    }
+    if host_sleep_us > 0 {
+        println!("host sleep injected: {host_sleep_us} µs/step (AX_DECODE_TRACE_HOST_SLEEP_US)");
+    }
     println!("steady-state ({decode_steps} steps after {warmup_steps} warmup):");
     println!(
         "  total wall              {:>8.1} µs/tok",
