@@ -1,0 +1,184 @@
+{
+  "flag": "AX_MLX_MOE_ROUTER_FUSED_METAL",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-Next-4bit/snapshots/7b9321eabb85ce79625cac3f61ea691e4ea984b5",
+  "steps": 256,
+  "reps": 5,
+  "min_ratio": 1.01,
+  "parity_trace": {
+    "steps": 24,
+    "indices_match": false,
+    "checksum_match": false,
+    "baseline": {
+      "trace_file": "benchmarks/results/inference/mlx-inference/2026-07-16-qwen3-coder-next-router-fused-ab/router-trace-baseline.txt",
+      "checksum": "7ffd2ebd5a25080e",
+      "router_attempts": "0",
+      "router_hits": "0",
+      "router_fallbacks": "0"
+    },
+    "fused": {
+      "trace_file": "benchmarks/results/inference/mlx-inference/2026-07-16-qwen3-coder-next-router-fused-ab/router-trace-fused.txt",
+      "checksum": "6aee1b73cdd1dd41",
+      "router_attempts": "1632",
+      "router_hits": "1632",
+      "router_fallbacks": "0"
+    }
+  },
+  "runs": [
+    {
+      "fused": false,
+      "steps": 256,
+      "tok_s": 70.59,
+      "token_count": 265,
+      "token_fnv1a64": "76e6b9ca24155fd9",
+      "router_attempts": 0,
+      "router_hits": 0,
+      "router_fallbacks": 0,
+      "wall_s": 62.1,
+      "rep": 0,
+      "log": "run-rep0-baseline.txt"
+    },
+    {
+      "fused": true,
+      "steps": 256,
+      "tok_s": 69.36,
+      "token_count": 265,
+      "token_fnv1a64": "50f53eb8cad2f7d7",
+      "router_attempts": 12768,
+      "router_hits": 12768,
+      "router_fallbacks": 0,
+      "wall_s": 62.5,
+      "rep": 0,
+      "log": "run-rep0-fused.txt"
+    },
+    {
+      "fused": false,
+      "steps": 256,
+      "tok_s": 70.33,
+      "token_count": 265,
+      "token_fnv1a64": "76e6b9ca24155fd9",
+      "router_attempts": 0,
+      "router_hits": 0,
+      "router_fallbacks": 0,
+      "wall_s": 62.1,
+      "rep": 1,
+      "log": "run-rep1-baseline.txt"
+    },
+    {
+      "fused": true,
+      "steps": 256,
+      "tok_s": 69.11,
+      "token_count": 265,
+      "token_fnv1a64": "50f53eb8cad2f7d7",
+      "router_attempts": 12768,
+      "router_hits": 12768,
+      "router_fallbacks": 0,
+      "wall_s": 62.3,
+      "rep": 1,
+      "log": "run-rep1-fused.txt"
+    },
+    {
+      "fused": false,
+      "steps": 256,
+      "tok_s": 70.22,
+      "token_count": 265,
+      "token_fnv1a64": "76e6b9ca24155fd9",
+      "router_attempts": 0,
+      "router_hits": 0,
+      "router_fallbacks": 0,
+      "wall_s": 64.5,
+      "rep": 2,
+      "log": "run-rep2-baseline.txt"
+    },
+    {
+      "fused": true,
+      "steps": 256,
+      "tok_s": 70.26,
+      "token_count": 265,
+      "token_fnv1a64": "50f53eb8cad2f7d7",
+      "router_attempts": 12768,
+      "router_hits": 12768,
+      "router_fallbacks": 0,
+      "wall_s": 64.1,
+      "rep": 2,
+      "log": "run-rep2-fused.txt"
+    },
+    {
+      "fused": false,
+      "steps": 256,
+      "tok_s": 69.47,
+      "token_count": 265,
+      "token_fnv1a64": "76e6b9ca24155fd9",
+      "router_attempts": 0,
+      "router_hits": 0,
+      "router_fallbacks": 0,
+      "wall_s": 62.2,
+      "rep": 3,
+      "log": "run-rep3-baseline.txt"
+    },
+    {
+      "fused": true,
+      "steps": 256,
+      "tok_s": 69.86,
+      "token_count": 265,
+      "token_fnv1a64": "50f53eb8cad2f7d7",
+      "router_attempts": 12768,
+      "router_hits": 12768,
+      "router_fallbacks": 0,
+      "wall_s": 62.1,
+      "rep": 3,
+      "log": "run-rep3-fused.txt"
+    },
+    {
+      "fused": false,
+      "steps": 256,
+      "tok_s": 69.79,
+      "token_count": 265,
+      "token_fnv1a64": "76e6b9ca24155fd9",
+      "router_attempts": 0,
+      "router_hits": 0,
+      "router_fallbacks": 0,
+      "wall_s": 64.1,
+      "rep": 4,
+      "log": "run-rep4-baseline.txt"
+    },
+    {
+      "fused": true,
+      "steps": 256,
+      "tok_s": 70.18,
+      "token_count": 265,
+      "token_fnv1a64": "50f53eb8cad2f7d7",
+      "router_attempts": 12768,
+      "router_hits": 12768,
+      "router_fallbacks": 0,
+      "wall_s": 62.1,
+      "rep": 4,
+      "log": "run-rep4-fused.txt"
+    }
+  ],
+  "summary": {
+    "baseline_tok_s": [
+      70.59,
+      70.33,
+      70.22,
+      69.47,
+      69.79
+    ],
+    "fused_tok_s": [
+      69.36,
+      69.11,
+      70.26,
+      69.86,
+      70.18
+    ],
+    "baseline_median_tok_s": 70.22,
+    "fused_median_tok_s": 69.86,
+    "decode_ratio": 0.9949
+  },
+  "failures": [
+    "parity: router top-k index traces differ",
+    "parity: token checksums differ in trace runs",
+    "parity: timed-run checksums diverge: ['50f53eb8cad2f7d7', '76e6b9ca24155fd9']",
+    "throughput: ratio 0.9949 < gate 1.01"
+  ],
+  "verdict": "not_promoted"
+}

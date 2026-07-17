@@ -655,6 +655,18 @@ env_flag!(
     /// chain (argpartition + take_along_axis + softmax + renormalize) is
     /// collapsed into a single Metal kernel dispatch. Decode-only (seq==1).
     /// Falls back to the MLX op path when ineligible.
+    ///
+    /// **Not promoted (2026-07-16 A/B, Qwen3-Coder-Next-4bit,
+    /// `scripts/ab_moe_router_fused.py`, 5×256-step interleaved reps):**
+    /// route reach was 100% (attempts=hits=12768/run, zero fallbacks) but
+    /// decode was 0.9949x baseline (median 69.86 vs 70.22 tok/s) and greedy
+    /// parity is broken: the kernel returns f32 softmax weights while the
+    /// fallback's subset-softmax stays bf16, perturbing every MoE layer
+    /// output; top-k boundary selections flip from the first decode
+    /// forward's layer 1 and the token stream diverges deterministically.
+    /// Per the fused-downproj precedent, "more accurate but different" is
+    /// not shippable. Raw artifacts:
+    /// `benchmarks/results/inference/mlx-inference/2026-07-16-qwen3-coder-next-router-fused-ab/`.
     moe_router_fused_metal_enabled,
     "AX_MLX_MOE_ROUTER_FUSED_METAL"
 );

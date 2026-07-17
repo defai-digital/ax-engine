@@ -346,6 +346,57 @@ the ~40-point gap estimate. The derived number is internally consistent
 with the dense-model comparison, but a counter-based reading is the
 ground truth.
 
+## Update (2026-07-16): code state corrections and the Tier 1C verdict
+
+Several statements above are stale against HEAD; corrected here rather than
+rewriting history:
+
+- **Tier 3A is no longer dormant.** `per_layer_compile.rs` was rewritten into
+  five compile entry points. Dense-FFN decode compile
+  (`AX_MLX_DENSE_FFN_COMPILE`) and per-shape prefill compile
+  (`AX_MLX_DENSE_FFN_COMPILE_PREFILL`) are **default-ON in production**
+  (`mlp.rs` packed-FFN dispatch). The MoE and Gemma4 dual-path variants are
+  wired (`families/standard.rs`, `families/qwen3_linear.rs`) but reverted to
+  opt-in (`AX_MLX_MOE_LAYER_COMPILE`, default OFF) after compiled-closure
+  crashes tied to MLX's thread-local stream registry under `panic = "abort"`.
+  The blocker list above (QuantizedWeight cloning) was solved by passing all
+  weight tensors as explicit closure inputs; the remaining blocker is the
+  stream-registry crash root cause, not graph capture.
+- **Tier 1B is no longer dense-only.** The MoE expert path routes activation
+  through `ax_moe_fused_activation_unsort_v4` (default ON, decode-only),
+  which also folds the expert unsort.
+- **Tier 1C shipped as an opt-in kernel and is now conclusively
+  NOT PROMOTED.** `ax_qwen3_moe_router_fused_v2` collapses the post-matmul
+  router chain into one dispatch behind `AX_MLX_MOE_ROUTER_FUSED_METAL`
+  (default OFF). The 2026-07-16 A/B on Qwen3-Coder-Next-4bit
+  (`scripts/ab_moe_router_fused.py`, 5 interleaved reps × 256 decode steps,
+  10 s cooldowns) measured:
+  - **Route reach:** 100% — attempts=hits=12768 per fused run (48 layers ×
+    266 forwards), zero fallbacks, via the new
+    `MoeRouterFusedSnapshot` counters printed by `decode-trace`.
+  - **Throughput:** decode ratio **0.9949** (fused median 69.86 tok/s vs
+    baseline 70.22) — below the ≥1.01 promotion gate even before parity.
+  - **Greedy parity: broken, deterministically.** Both configs are
+    self-deterministic across reps (stable FNV-1a token checksums) but
+    diverge from each other. Root cause: the fused kernel returns **f32**
+    softmax weights while the fallback's subset-softmax stays **bf16**, so
+    every MoE layer's weighted sum rounds differently; the resulting hidden
+    perturbation flips top-10 boundary selections from the first decode
+    forward's layer 1 onward (1557/1679 set-normalized router-trace lines
+    differ). Same failure class as the fused-downproj report: "more
+    accurate but different" is not shippable at temperature 0.
+  - Raw artifacts:
+    `benchmarks/results/inference/mlx-inference/2026-07-16-qwen3-coder-next-router-fused-ab/`
+    (JSON summary, per-run logs, gzipped per-call router index traces).
+
+  A shippable v3 would need to (a) emit weights bit-identical to the bf16
+  subset-softmax fallback and (b) reproduce `argpartition`'s tie-break —
+  and would still start from a ≤1.0 throughput baseline at this model
+  shape. This line is closed unless a future MoE profile shows the router
+  as a dominant dispatch cost at a different expert count/top-k shape.
+  Diagnostics for any rerun are permanent: fused-router reach counters,
+  the decode-trace token checksum, and the A/B harness script.
+
 ## Related artifacts
 
 - Bandwidth table and headroom note: [Performance Results](../PERFORMANCE-RESULTS.md) (Qwen Coder Next / related diagnostic sections)

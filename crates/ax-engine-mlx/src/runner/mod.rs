@@ -3446,9 +3446,6 @@ static EMBED_GPU_NORMALIZE: LazyLock<bool> = LazyLock::new(|| {
 static EMBED_NO_COMPILE: LazyLock<bool> =
     LazyLock::new(|| std::env::var("AX_EMBED_NO_COMPILE").is_ok());
 
-
-
-
 /// Global compiled-closure cache counters.
 static COMPILE_CACHE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static COMPILE_CACHE_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -5628,7 +5625,13 @@ impl MlxRunner {
                         .decode_telemetry
                         .record_prefill(elapsed_us(prefill_started));
                     let generation_state_started = Instant::now();
-                    self.initialize_generation_state(&mut state, max_output, Some(tok), is_greedy, sampling.temperature);
+                    self.initialize_generation_state(
+                        &mut state,
+                        max_output,
+                        Some(tok),
+                        is_greedy,
+                        sampling.temperature,
+                    );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
                     state.decode_telemetry.record_prefill_breakdown(
@@ -7623,11 +7626,12 @@ impl MlxRunner {
                 .0;
         let cur_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
 
-        // Single-materialize multi-depth (default ON for depth > 1 + GPU-exact
-        // confidence): chain lazy argmax tokens through the depth loop and eval
-        // all tokens + confidences once. Gates still apply on the host after
-        // materialisation. Kill switch:
-        // `AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH=0`.
+        // Single-materialize multi-depth (opt-in via
+        // `AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH=1`; default OFF — the
+        // 12B same-artifact A/B was accept-neutral but not a decode win, see
+        // `fastpath.rs`): chain lazy argmax tokens through the depth loop and
+        // eval all tokens + confidences once. Gates still apply on the host
+        // after materialisation.
         if max_depth > 1
             && matches!(confidence_mode, Gemma4AssistantMtpConfidenceMode::GpuExact)
             && crate::fastpath::gemma4_assistant_lazy_multi_depth_enabled()
@@ -7840,8 +7844,7 @@ impl MlxRunner {
                 .saturating_add(elapsed_us(assistant_draft_started));
             state.mtp_pending_draft_log_probs = log_probs;
             state.mtp_pending_draft_distributions = distributions;
-            state.mtp_pending_draft_sources =
-                vec![MtpDraftSource::Gemma4Assistant; draft.len()];
+            state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; draft.len()];
             pending = draft;
             Some(primary_tok)
         } else {
@@ -9018,7 +9021,6 @@ impl MlxRunner {
 
         result
     }
-
 
     fn initialize_generation_state(
         &self,
