@@ -1,0 +1,11 @@
+=== default caps ===
+MLX 0.31.2  caps(MB,ops)=('default', 'default')
+  spin=0     :   5664.2 us/iter
+  spin=4000us :   7973.0 us/iter  (delta +2308.9)
+  absorbed   :   1691.1 us of 4000 injected (42% overlap)
+=== raised caps ===
+MLX 0.31.2  caps(MB,ops)=('1024', '1000')
+  spin=0     :   5626.4 us/iter
+  spin=4000us :   5655.0 us/iter  (delta +28.6)
+  absorbed   :   3971.4 us of 4000 injected (99% overlap)
+REPRO-DONE

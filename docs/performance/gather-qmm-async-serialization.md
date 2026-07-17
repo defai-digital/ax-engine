@@ -163,18 +163,39 @@ Reading:
   still serial with GPU execution even with caps raised — the "zero-bubble"
   residual (skeleton plan I7) is real, worth up to ~2.6 ms of a 10.5 ms step
   (~20–25%) if a working double buffer hid it.
-- **The residual is upstream-shaped.** The current ordering already builds
-  step N+1 before waiting on N (`generate.rs::advance_direct_pipeline_with_timings`);
-  that it still does not overlap means `mlx_async_eval` is not keeping the GPU
-  busy across the host-build window under the shim — the same async-semantics
-  surface as the buffer-accounting issue. This strengthens the case for the
-  upstream MLX report (draft above): the ask should cover async_eval actually
-  launching work, not only gather-aware byte accounting. A local double-buffer
-  reorder cannot manufacture overlap MLX's scheduler does not provide, so I7 is
-  gated on the upstream behavior, not on a runner-side change.
-
 Artifacts: `.../scratchpad/i7-residual/` reproduction logs (caps on/off ×
 sleep 0/4000).
+
+### Correction (2026-07-17, same day): a clean-room MLX repro overturns the
+### "async_eval is broken" read — the cap fix DOES restore overlap
+
+The paragraph originally here claimed the residual was upstream `async_eval`
+launch semantics. A **pure-MLX repro with no ax-engine** (a 24-layer batch=1
+`gather_qmm` + dense chain, host-sleep injected between build(N+1) and eval(N),
+`scratchpad/mlx_overlap_repro.py`) disproves that:
+
+| MLX 0.31.2, M3 Max | absorbed of 4 ms injection |
+| --- | ---: |
+| default caps | 1.69 ms (**42% overlap**) |
+| `MLX_MAX_MB_PER_BUFFER=1024 MLX_MAX_OPS_PER_BUFFER=1000` | 3.97 ms (**99% overlap**) |
+
+Raising the cap restores overlap to 99% *in isolation* — `mlx_async_eval`
+launches work and runs fully ahead once per-layer command-buffer splits are
+removed. So:
+
+- The buffer-accounting mechanism is real and the cap fix genuinely restores
+  overlap; there is no `async_eval` launch defect.
+- The ax-engine decode-trace's 18% residual (above) is therefore **ax-side**,
+  not upstream: the real forward carries host work the minimal repro omits
+  (attention, dynamic-index router/argpartition, per-layer norms, lm_head,
+  KV-cache writes). Chasing it is a separate ax-side profiling task, not an
+  MLX issue.
+- The upstream report is scoped to **gather-aware buffer accounting only**
+  (see the finalized issue, `docs/performance/mlx-upstream-issue-gather-qmm-buffer-accounting.md`);
+  the earlier "async_eval launch semantics" ask is withdrawn.
+
+The lesson: the clean-room repro (built to file the issue) caught an over-claim
+that the through-the-stack measurement had suggested.
 
 ## Reproduction
 
