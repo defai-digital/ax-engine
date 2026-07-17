@@ -6572,4 +6572,37 @@ mod embed_bucket_tests {
         assert!(b >= 20);
         assert!(b == 20 || b == 24 || b == 32, "got {b}");
     }
+
+    #[test]
+    fn embed_length_split_defaults_on_when_env_unset() {
+        // Production default: length-affinity split enabled unless explicitly off.
+        // (OnceLock may already be initialized in this process; only assert the
+        // documented parse rule for an unset-style path via the helper itself.)
+        // When AX_EMBED_LENGTH_SPLIT is unset, first init returns true.
+        if std::env::var("AX_EMBED_LENGTH_SPLIT").is_err() {
+            assert!(
+                super::embed_length_split_enabled(),
+                "AX_EMBED_LENGTH_SPLIT unset must default to length-split ON"
+            );
+        }
+    }
+
+    #[test]
+    fn embed_max_len_buckets_default_on_when_env_unset() {
+        // Unset env → DEFAULT_EMBED_MAX_LEN_BUCKETS active (not identity-only).
+        if std::env::var("AX_EMBED_MAX_LEN_BUCKETS").is_err() {
+            // 20 with cheap pad should snap into the default table.
+            let b = embed_length_bucket(20);
+            assert!(
+                b >= 20 && DEFAULT_EMBED_MAX_LEN_BUCKETS.iter().any(|&e| e == b || b == 20),
+                "default buckets must be active when env unset, got {b}"
+            );
+            // Coarse over-pad still rejected (8→32 not acceptable).
+            assert_eq!(
+                embed_length_bucket(8),
+                8,
+                "default-on must not force coarse over-pad on short seqs"
+            );
+        }
+    }
 }

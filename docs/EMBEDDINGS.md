@@ -362,24 +362,27 @@ cache sizes stable. Diagnostic for fragmentation: cache size grows
 unboundedly with a low hit rate. Mitigations: bucket batches by length
 client-side; round `target_positions` to a small set.
 
-### Server-side length affinity + max_len buckets (default ON)
+### Server-side length affinity + max_len buckets (**production default ON**)
 
-Multi-row `embed_batch_flat` / HTTP multi-input batches:
+These are the **default embedding path settings** with no env vars required.
+Multi-row `embed_batch_flat` / HTTP multi-input batches always:
 
-1. **Length-affinity split** (default ON) groups similar-length rows so
-   right-pad waste stays bounded, then restores caller order.
-2. **Calibrated max_len buckets** (default ON) snap pad width / compile
-   keys with a conservative pad budget (`≤ max(16, 25% of max_len)`).
+1. **Length-affinity split** — groups similar-length rows so right-pad waste
+   stays bounded, then restores caller order.
+2. **Calibrated max_len buckets** — snap pad width / compile keys with a
+   conservative pad budget (`≤ max(16, 25% of max_len)` so short queries are
+   not over-padded).
 
-Kill switches (process env, restart required):
+Optional kill switches (process env, restart required) only if you need the
+legacy single-pad path for A/B:
 
-| Env | Default | Off |
+| Env | Production default | Legacy off |
 | --- | --- | --- |
-| `AX_EMBED_LENGTH_SPLIT` | on | `off` / `0` / `false` |
-| `AX_EMBED_MAX_LEN_BUCKETS` | calibrated edges | `off` / `0` / `false` |
+| `AX_EMBED_LENGTH_SPLIT` | **on** (unset) | `off` / `0` / `false` |
+| `AX_EMBED_MAX_LEN_BUCKETS` | **calibrated edges** (unset) | `off` / `0` / `false` |
 
 MTP adaptive draft gate remains **default OFF**
-(`AX_MLX_MTP_ADAPTIVE_GATE=1` to experiment). See
+(`AX_MLX_MTP_ADAPTIVE_GATE=1` only to experiment). See
 `docs/designs/mtp-embed-perf-sprint-2026-07-16.md`.
 
 ## Cold start — `AX_MMAP_WEIGHTS`
