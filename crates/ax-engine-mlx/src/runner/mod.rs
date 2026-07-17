@@ -4622,36 +4622,17 @@ impl MlxRunner {
         final_by_max_output: bool,
         feed_ngram: bool,
     ) -> u32 {
-        let tok = match direct_pipeline_action(state.pending_direct.is_some(), final_by_max_output)
-        {
-            DirectPipelineAction::FinishPending => match state.pending_direct.take() {
-                Some(pending) => self.run_direct_pipeline_finish_pending(state, pending),
-                None => {
-                    tracing::error!(
-                        "direct pipeline state machine invariant violated: \
-                             FinishPending called without pending_direct; \
-                             falling back to bootstrap"
-                    );
-                    self.run_direct_pipeline_bootstrap(state, last_token)
-                }
-            },
-            DirectPipelineAction::ContinuePending => match state.pending_direct.take() {
-                Some(bootstrap_token) => self.run_direct_pipeline_once(state, bootstrap_token),
-                None => {
-                    tracing::error!(
-                        "direct pipeline state machine invariant violated: \
-                             ContinuePending called without pending_direct; \
-                             re-bootstrapping from last_token"
-                    );
-                    self.run_direct_pipeline_bootstrap(state, last_token)
-                }
-            },
-            DirectPipelineAction::BootstrapFinal => {
+        let tok = match next_direct_pipeline_step(&mut state.pending_direct, final_by_max_output) {
+            DirectPipelineStep::FinishPending(pending) => {
+                self.run_direct_pipeline_finish_pending(state, pending)
+            }
+            DirectPipelineStep::ContinuePending(bootstrap_token) => {
+                self.run_direct_pipeline_once(state, bootstrap_token)
+            }
+            DirectPipelineStep::BootstrapFinal => {
                 self.run_direct_pipeline_bootstrap_final(state, last_token)
             }
-            DirectPipelineAction::Bootstrap => {
-                self.run_direct_pipeline_bootstrap(state, last_token)
-            }
+            DirectPipelineStep::Bootstrap => self.run_direct_pipeline_bootstrap(state, last_token),
         };
         if feed_ngram {
             state.ngram.feed(&[tok]);
@@ -12518,24 +12499,42 @@ mod tests {
 
     #[test]
     fn request_fallback_direct_pipeline_reuses_pending_step() {
-        assert_eq!(
-            direct_pipeline_action(false, false),
-            DirectPipelineAction::Bootstrap,
+        // No pending, not final: bootstrap and leave the slot untouched.
+        let mut slot = None;
+        assert!(
+            matches!(
+                next_direct_pipeline_step(&mut slot, false),
+                DirectPipelineStep::Bootstrap
+            ),
             "first fallback direct step must bootstrap the pipeline"
         );
-        assert_eq!(
-            direct_pipeline_action(true, false),
-            DirectPipelineAction::ContinuePending,
+        // Pending present, not final: continue and hand the array over (slot
+        // emptied so the same token can never be finished twice).
+        let mut slot = Some(MlxArray::from_f32_slice(&[1.0]));
+        assert!(
+            matches!(
+                next_direct_pipeline_step(&mut slot, false),
+                DirectPipelineStep::ContinuePending(_)
+            ),
             "later fallback direct steps must continue the pending lazy token"
         );
-        assert_eq!(
-            direct_pipeline_action(true, true),
-            DirectPipelineAction::FinishPending,
+        assert!(slot.is_none(), "the pending slot must be consumed");
+        // Pending present, final: finish without submitting lookahead.
+        let mut slot = Some(MlxArray::from_f32_slice(&[1.0]));
+        assert!(
+            matches!(
+                next_direct_pipeline_step(&mut slot, true),
+                DirectPipelineStep::FinishPending(_)
+            ),
             "final fallback direct step must not submit unused lookahead work"
         );
-        assert_eq!(
-            direct_pipeline_action(false, true),
-            DirectPipelineAction::BootstrapFinal,
+        // No pending, final: single-token materialise, no token kept.
+        let mut slot = None;
+        assert!(
+            matches!(
+                next_direct_pipeline_step(&mut slot, true),
+                DirectPipelineStep::BootstrapFinal
+            ),
             "single-token final fallback must materialise without keeping a pending token"
         );
         assert!(

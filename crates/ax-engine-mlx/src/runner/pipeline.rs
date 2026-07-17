@@ -6,26 +6,34 @@ pub(crate) fn direct_pipeline_clear_cache_due(emitted_tokens: u32, cadence: u32)
         && (emitted_tokens == 1 || emitted_tokens.saturating_sub(1).is_multiple_of(cadence))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DirectPipelineAction {
-    FinishPending,
-    ContinuePending,
+/// The direct-pipeline dispatch, but carrying the pending array in the two
+/// variants that need it, so the caller destructures infallibly instead of
+/// re-reading the `Option` and defending against an unrepresentable
+/// `action == FinishPending && pending == None` state.
+///
+/// Consumes the pending slot (via `Option::take`) exactly once, in lockstep
+/// with the action choice — the same `(has_pending, final_by_max_output)`
+/// truth table as [`direct_pipeline_action`], so behavior is identical to the
+/// prior `action + match take()` pair on the happy path; the difference is
+/// that the former `None`-arm `tracing::error!` fallbacks can no longer be
+/// reached. (Decode-skeleton unification I1,
+/// `.internal/specs/TECH-SPEC-DECODE-SKELETON-UNIFICATION.md`.)
+pub(crate) enum DirectPipelineStep {
+    FinishPending(MlxArray),
+    ContinuePending(MlxArray),
     BootstrapFinal,
     Bootstrap,
 }
 
-pub(crate) fn direct_pipeline_action(
-    has_pending_direct: bool,
+pub(crate) fn next_direct_pipeline_step(
+    pending_direct: &mut Option<MlxArray>,
     final_by_max_output: bool,
-) -> DirectPipelineAction {
-    if final_by_max_output && has_pending_direct {
-        DirectPipelineAction::FinishPending
-    } else if has_pending_direct {
-        DirectPipelineAction::ContinuePending
-    } else if final_by_max_output {
-        DirectPipelineAction::BootstrapFinal
-    } else {
-        DirectPipelineAction::Bootstrap
+) -> DirectPipelineStep {
+    match (pending_direct.take(), final_by_max_output) {
+        (Some(pending), true) => DirectPipelineStep::FinishPending(pending),
+        (Some(pending), false) => DirectPipelineStep::ContinuePending(pending),
+        (None, true) => DirectPipelineStep::BootstrapFinal,
+        (None, false) => DirectPipelineStep::Bootstrap,
     }
 }
 
