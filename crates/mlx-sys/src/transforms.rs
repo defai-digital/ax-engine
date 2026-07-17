@@ -23,8 +23,20 @@ fn make_vector_array(arrays: &[&MlxArray]) -> ffi::mlx_vector_array {
 /// the default behaviour was to `exit(-1)` the whole process, so this is
 /// strictly more diagnosable; callers with a fallback path should use
 /// [`try_eval`].
+///
+/// Inside an MLX closure body (compile tracing) the panic is downgraded to
+/// poison propagation, mirroring `panic_on_status`: a panic here would
+/// unwind across the C++ trampoline, which aborts the process under the
+/// release `panic = "abort"` profile. The failure is restored into the
+/// thread-local error slot so the compiled-closure caller's post-apply drain
+/// turns it into a per-layer fallback (reachable e.g. when
+/// `AX_MLX_DECODE_PROFILE=1` forces stage evals inside a compiled body).
 pub fn eval(arrays: &[&MlxArray]) {
     if let Err(message) = try_eval(arrays) {
+        if crate::error::in_closure_body() {
+            crate::error::poison_slot(message);
+            return;
+        }
         panic!("{message}");
     }
 }

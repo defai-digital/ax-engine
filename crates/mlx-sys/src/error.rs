@@ -94,6 +94,14 @@ pub(crate) fn ensure_error_handler() {
 /// worth the thread-local clear. Hot per-op paths use [`ensure_error_handler`].
 pub(crate) fn prepare_error_capture() {
     install_recoverable_error_handler();
+    // Inside an MLX closure body, preserve the slot: poison-propagation
+    // relies on an earlier in-body failure staying observable for the
+    // caller's post-apply drain, and any coarse call site that lands here
+    // mid-body (stream-cache init, eval entry, nested vector building)
+    // would otherwise silently eat it.
+    if in_closure_body() {
+        return;
+    }
     let _ = take_last_error();
 }
 
@@ -168,6 +176,13 @@ impl Drop for ClosureBodyGuard {
 
 pub(crate) fn in_closure_body() -> bool {
     CLOSURE_BODY_DEPTH.with(|d| d.get() > 0)
+}
+
+/// Put a specific failure message into the slot from poison-mode code paths
+/// that already drained it (e.g. `eval` restoring the `try_eval` error so the
+/// compiled-closure caller's post-apply drain still observes the failure).
+pub(crate) fn poison_slot(message: String) {
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(message));
 }
 
 /// Ensure the error slot is non-empty after an in-body op failure, without

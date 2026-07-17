@@ -89,7 +89,12 @@ impl MlxVectorArray {
     pub fn get(&self, idx: usize) -> MlxArray {
         let mut raw = null_ffi_array();
         unsafe {
-            prepare_error_capture();
+            // ensure (not prepare): clearing the slot here would wipe, on
+            // every element of a successful `try_apply` extraction, the very
+            // lazy-error signal that `try_apply_with_abort_safety`'s
+            // post-apply drain exists to observe — the poison left by an
+            // in-body op failure whose outputs still validated.
+            ensure_error_handler();
             let rc = ffi::mlx_vector_array_get(&mut raw, self.inner, idx);
             panic_on_status("mlx_vector_array_get", rc);
         }
@@ -403,6 +408,40 @@ mod tests {
         eval(&[&raw_out[0], &comp_out[0]]);
         assert_eq!(raw_out[0].data_f32().to_vec(), vec![3.0, 6.0, 9.0]);
         assert_eq!(comp_out[0].data_f32().to_vec(), vec![3.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn closure_body_eval_failure_poisons_instead_of_unwinding() {
+        use std::sync::atomic::AtomicBool;
+
+        // `eval` panics directly (not via panic_on_status), so it needs its
+        // own poison-mode downgrade: reaching the line after a failing
+        // in-body eval proves the panic was suppressed.
+        let reached_after_eval = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&reached_after_eval);
+        let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+            let x = inputs.get(0);
+            // Null-handle array: eval rejects it ("expected a non-empty ...").
+            let null_arr = MlxArray::empty();
+            eval(&[&null_arr]);
+            flag.store(true, Ordering::SeqCst);
+            vec![add(&x, &x, None)]
+        });
+        let x = const_f32_1d(&[1.0, 2.0]);
+        let _ = crate::error::take_last_error();
+        let result = closure.try_apply(&[&x]);
+        assert!(
+            reached_after_eval.load(Ordering::SeqCst),
+            "in-body eval failure must poison-and-continue, not unwind"
+        );
+        // The apply itself may fail (poisoned slot / trampoline) or succeed
+        // with the slot set; either way the failure must be observable and
+        // the process must survive. Drain whatever is left for later tests.
+        let slot = crate::error::take_last_error();
+        assert!(
+            result.is_err() || slot.is_some(),
+            "a poisoned eval must surface through the apply error or the slot"
+        );
     }
 
     #[test]
