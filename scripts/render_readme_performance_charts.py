@@ -327,8 +327,8 @@ EMBEDDING_SCALE_REFERENCE_ARTIFACT = Path(
 )
 EMBEDDING_SCALE_AX_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
-    "2026-07-16-ax-only-post-eos-fix-qwen/"
-    "2026-07-16-202145/embedding_ingest_scale.json"
+    "2026-07-17-ax-only-length-affinity-refresh-qwen/"
+    "2026-07-17-013116/embedding_ingest_scale.json"
 )
 # Back-compat aliases used by older call sites and tests.
 EMBEDDING_SCALE_PAIRED_06_ARTIFACT = EMBEDDING_SCALE_PAIRED_ARTIFACT
@@ -340,8 +340,8 @@ EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
 )
 EMBEDDINGGEMMA_SCALE_AX_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
-    "2026-07-16-ax-only-post-eos-fix-embeddinggemma/"
-    "2026-07-16-214949/embedding_ingest_scale.json"
+    "2026-07-17-ax-only-length-affinity-refresh-embeddinggemma/"
+    "2026-07-17-025900/embedding_ingest_scale.json"
 )
 EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
 EMBEDDINGGEMMA_SCALE_CHART_OUTPUT = (
@@ -3125,8 +3125,8 @@ def main() -> int:
             "box=IQR | whiskers=min/max | dots=six chunk×batch shapes."
         ),
         source_label=(
-            "Sources: retained 2026-07-12 mlx-lm reference + 2026-07-16 "
-            "post-EOS-fix AX-only refresh (0.6B/4B/8B); cross-run directional view, not B=1"
+            "Sources: retained 2026-07-12 mlx-lm reference + 2026-07-17 "
+            "current-main AX-only refresh (0.6B/4B/8B); cross-run directional view, not B=1"
         ),
         ax_label=AX_ENGINE_CHART_LABEL,
     )
@@ -3147,7 +3147,7 @@ def main() -> int:
         ),
         source_label=(
             "Sources: 2026-07-02 EmbeddingGemma paired reference + "
-            "2026-07-16 fresh AX-only refresh; cross-run directional view"
+            "2026-07-17 current-main AX-only refresh; cross-run directional view"
         ),
     )
     if not write_chart(

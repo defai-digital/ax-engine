@@ -155,10 +155,11 @@ distribution view, not a same-session peer matrix). Exact AX numbers:
 
 ### Embeddings: Qwen3-Embedding ingest scale
 
-Fresh AX-only Qwen3-Embedding 0.6B / 4B / 8B results (2026-07-16 post-EOS
-fix) are overlaid with retained 2026-07-12 `mlx-lm` medians. This is a
-cross-run directional view, not a paired engine-to-engine delta. Full rows and
-methodology: [Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
+Fresh AX-only Qwen3-Embedding 0.6B / 4B / 8B results (2026-07-17 current-main
+refresh) are overlaid with retained 2026-07-12 `mlx-lm` medians. This is a
+cross-run directional view, not a paired engine-to-engine delta. The uniform
+ingest corpus does not isolate the default-on mixed-length batching path. Full
+rows and methodology: [Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
 
 <img width="100%" src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Qwen3-Embedding batched ingest scale: retained mlx-lm reference and fresh AX Engine throughput across 0.6B, 4B, and 8B models">
 
