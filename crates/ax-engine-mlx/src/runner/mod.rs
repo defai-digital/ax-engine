@@ -1598,8 +1598,7 @@ impl MlxRunner {
             let Some(pending) = state.pending_direct.take() else {
                 continue;
             };
-            eval(&[&pending]);
-            let token = pending.first_u32_unchecked();
+            let (token, _, _) = finish_pending_token(&pending);
             let (sampled, stop_reason) =
                 truncate_sampled_tokens_for_stop(vec![token], generated_len, max_output, terminal);
             if stop_reason.is_none() {
@@ -4670,12 +4669,7 @@ impl MlxRunner {
         pending: MlxArray,
     ) -> u32 {
         let branch_started = Instant::now();
-        let pending_eval_started = Instant::now();
-        eval(&[&pending]);
-        let pending_eval_wall_us = elapsed_us(pending_eval_started);
-        let pending_read_started = Instant::now();
-        let tok = pending.first_u32_unchecked();
-        let pending_read_wall_us = elapsed_us(pending_read_started);
+        let (tok, pending_eval_wall_us, pending_read_wall_us) = finish_pending_token(&pending);
         state
             .decode_telemetry
             .record_direct_pipeline(elapsed_us(branch_started));

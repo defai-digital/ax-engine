@@ -37,6 +37,25 @@ pub(crate) fn next_direct_pipeline_step(
     }
 }
 
+/// The direct-pipeline materialization point: block on the pending lazy token,
+/// then read its scalar value off the GPU. Returns
+/// `(token, eval_wall_us, read_wall_us)` so timing-sensitive callers can
+/// record the split and timing-agnostic ones (the batched drain) can ignore
+/// it.
+///
+/// This is the single barrier+readback the decode-skeleton plan centralizes
+/// (I2); the zero-bubble reorder (I7) hooks exactly here once, instead of at
+/// each open-coded `eval(&[&pending]) + first_u32_unchecked()` pair.
+pub(crate) fn finish_pending_token(pending: &MlxArray) -> (u32, u32, u32) {
+    let eval_started = Instant::now();
+    eval(&[pending]);
+    let eval_wall_us = elapsed_us(eval_started);
+    let read_started = Instant::now();
+    let tok = pending.first_u32_unchecked();
+    let read_wall_us = elapsed_us(read_started);
+    (tok, eval_wall_us, read_wall_us)
+}
+
 pub(crate) fn should_drain_pending_direct_before_ngram(
     is_greedy: bool,
     has_pending_direct: bool,
