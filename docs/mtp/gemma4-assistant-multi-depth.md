@@ -125,3 +125,24 @@ Note: the `bench_gemma4_assistant_mtp.py` harness passes `--ax-mtp-max-depth` an
 does not forward `AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH` through its inner
 subprocess, so use the direct `ax-engine-bench generate` form above to A/B the
 assistant depth.
+
+## Conditional-fusion residual: evaluated and closed (2026-07-17)
+
+The remaining idea after `AX_MLX_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF`
+(default ON) and the opt-in lazy chain was a gate-history-driven hybrid:
+predict per step whether the deep draft will fire and pick the fused or
+gated path accordingly. Closed without building it:
+
+- The high-value half already ships: `DEEP_NEEDS_FIRST_CONF` skips the
+  deep forward whenever conf0 cannot clear the 0.999 deep gate — the
+  wasted-forward side of the trade is gone by default.
+- The fused chain's own same-artifact 12B A/B was accept-neutral with no
+  decode win (see the `AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH` flag
+  doc), so the two paths the predictor would arbitrate between are
+  within noise of each other at measured deep-fire rates.
+- The predictor's ceiling is one saved assistant confidence sync (a few
+  ms) in the deep-fire subset of 40–60 ms decode steps — ≤~1% end to
+  end, under the ≥1.01 promotion bar before misprediction costs.
+
+Both flags stay as shipped: `DEEP_NEEDS_FIRST_CONF` default ON,
+`LAZY_MULTI_DEPTH` opt-in for workloads where deep drafts fire often.
