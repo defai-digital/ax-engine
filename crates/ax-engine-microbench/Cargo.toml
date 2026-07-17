@@ -53,3 +53,7 @@ path = "src/bin/diffusion_microbench.rs"
 [[bin]]
 name = "async-eval-overlap-probe"
 path = "src/bin/async_eval_overlap_probe.rs"
+
+[[bin]]
+name = "batched-decode-ceiling-probe"
+path = "src/bin/batched_decode_ceiling_probe.rs"

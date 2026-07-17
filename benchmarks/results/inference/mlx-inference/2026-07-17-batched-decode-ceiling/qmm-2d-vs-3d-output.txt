@@ -1,0 +1,14 @@
+=== 2D vs 3D[B,1,H] quantized_matmul amortization (0.32.0) ===
+
+2D [B, H] (raw)
+batch  wall_us  scaling
+    1    267.6   1.00x
+    4    310.0   3.45x
+    8    419.5   5.10x
+
+3D [B, 1, H] (forward decode shape)
+batch  wall_us  scaling
+    1    264.7   1.00x
+    4    314.3   3.37x
+    8    423.9   5.00x
+QMM3D-DONE

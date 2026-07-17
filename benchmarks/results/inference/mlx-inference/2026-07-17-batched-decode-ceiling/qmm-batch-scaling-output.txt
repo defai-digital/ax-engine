@@ -1,0 +1,9 @@
+=== raw quantized_matmul batch scaling (0.32.0) ===
+MLX 0.32.0  quantized_matmul [B,4096] x [4096,14336] (4-bit)
+batch  wall_us/step  agg_rows/s  scaling
+    1        242.7        4121   1.00x
+    2        267.6        7474   1.81x
+    4        318.4       12561   3.05x
+    8        459.9       17396   4.22x
+   16        585.8       27314   6.63x
+QMM-DONE
