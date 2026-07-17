@@ -16,7 +16,8 @@ use super::super::config::{GlmRouterConfig, ModelConfig};
 use super::super::profile::{
     DecodeProfileStage, MoeProfileStage, decode_profile_enabled, forward_profile_eval_elapsed,
     moe_profile_enabled, prefill_profile_enabled, record_moe_profile_layer,
-    record_moe_profile_stage, record_moe_profile_total,
+    record_moe_profile_stage, record_moe_profile_total, record_moe_router_fused_attempt,
+    record_moe_router_fused_fallback, record_moe_router_fused_hit,
     record_qwen_dense_ffn_gate_up_matvec_metal_attempt,
     record_qwen_dense_ffn_gate_up_matvec_metal_fallback,
     record_qwen_dense_ffn_gate_up_matvec_metal_hit, saturating_profile_us,
@@ -2118,7 +2119,15 @@ fn moe_router_fused_metal(
         return None;
     }
 
-    let (indices, weights) = moe_router_fused_metal_apply(logits_f32, num_experts, top_k)?;
+    // Decode-shaped and eligible: from here on, the call either hits the
+    // fused kernel or is a real fallback worth counting as route evidence.
+    record_moe_router_fused_attempt();
+
+    let Some((indices, weights)) = moe_router_fused_metal_apply(logits_f32, num_experts, top_k)
+    else {
+        record_moe_router_fused_fallback();
+        return None;
+    };
 
     let validated = *MOE_ROUTER_FUSED_KERNEL_VALIDATED.get_or_init(|| {
         match mlx_sys::transforms::try_eval(&[&indices, &weights]) {
@@ -2133,8 +2142,10 @@ fn moe_router_fused_metal(
         }
     });
     if !validated {
+        record_moe_router_fused_fallback();
         return None;
     }
+    record_moe_router_fused_hit();
     Some((indices, weights))
 }
 

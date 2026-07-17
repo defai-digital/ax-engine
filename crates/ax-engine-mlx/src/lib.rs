@@ -29,8 +29,9 @@ pub mod weights;
 pub mod diagnostics {
     pub use crate::model::profile::{
         EmbedProfileSnapshot, LinearAttentionProfileSnapshot, MoeProfileSnapshot,
-        take_embed_profile_snapshot, take_linear_attention_profile_snapshot,
-        take_moe_profile_snapshot,
+        MoeRouterFusedSnapshot, take_embed_profile_snapshot,
+        take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
+        take_moe_router_fused_snapshot,
     };
 }
 

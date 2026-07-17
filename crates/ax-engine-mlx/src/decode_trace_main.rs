@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::{
-    diagnostics::take_linear_attention_profile_snapshot,
+    diagnostics::{take_linear_attention_profile_snapshot, take_moe_router_fused_snapshot},
     generate::{
         DEFAULT_PREFILL_CHUNK, advance_direct_pipeline_with_timings, chunked_prefill,
         start_direct_pipeline,
@@ -61,12 +61,25 @@ fn main() {
     let prefill_us = prefill_start.elapsed().as_micros();
     println!("prefill {} tokens → {} µs", prompt.len(), prefill_us);
 
+    // FNV-1a over the full decoded token stream (bootstrap + warmup + timed).
+    // Deterministic for greedy decode, so two runs of the same checkpoint must
+    // print the same hash — the cross-process parity check for fastpath A/Bs.
+    let mut token_hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut token_count: u64 = 0;
+    let mut hash_token = |tok: u32| {
+        token_hash ^= u64::from(tok);
+        token_hash = token_hash.wrapping_mul(0x0000_0100_0000_01b3);
+        token_count += 1;
+    };
+    hash_token(bootstrap_tok);
+
     let mut pending = start_direct_pipeline(&cfg, &weights, bootstrap_tok, &mut cache);
 
     // Warmup: drain JIT / kernel-cache cost so the reported numbers reflect
     // steady-state direct-pipeline cost.
     for _ in 0..warmup_steps {
         let advanced = advance_direct_pipeline_with_timings(&cfg, &weights, &pending, &mut cache);
+        hash_token(advanced.token);
         pending = advanced.next_pending;
     }
 
@@ -88,6 +101,7 @@ fn main() {
         full_layer_count_sum =
             full_layer_count_sum.saturating_add(advanced.timings.full_attention_layer_count as u64);
         tok = advanced.token;
+        hash_token(tok);
         pending = advanced.next_pending;
         sums[0] = sums[0].saturating_add(advanced.timings.forward_wall_us as u64);
         sums[1] = sums[1].saturating_add(advanced.timings.forward_layer_loop_wall_us as u64);
@@ -170,6 +184,13 @@ fn main() {
         linear_profile.direct_cpp_post_input_fallbacks,
         linear_profile.direct_cpp_post_input_profile_blocked
     );
+    let router_fused = take_moe_router_fused_snapshot();
+    println!();
+    println!(
+        "moe router fused: attempts={} hits={} fallbacks={}",
+        router_fused.attempts, router_fused.hits, router_fused.fallbacks
+    );
+    println!("token stream: n={token_count} fnv1a64={token_hash:016x}");
     println!();
     println!(
         "decode tok/s = {:.2}",

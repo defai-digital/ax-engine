@@ -53,6 +53,19 @@ pub struct DenseFfnFastpathSnapshot {
     pub qwen_gate_up_matvec_metal_fallbacks: u32,
 }
 
+/// Route-reach counters for the fused MoE router Metal kernel
+/// (`AX_MLX_MOE_ROUTER_FUSED_METAL`). `attempts` counts decode-shaped router
+/// calls that passed the eligibility gates; `hits` counts fused dispatches
+/// that produced output; `fallbacks` counts dispatch or one-time validation
+/// failures that fell back to the MLX op path. Promotion evidence requires
+/// `attempts == hits` with zero fallbacks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MoeRouterFusedSnapshot {
+    pub attempts: u32,
+    pub hits: u32,
+    pub fallbacks: u32,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PrefillProfileSnapshot {
     pub enabled: u32,
@@ -238,6 +251,7 @@ pub(crate) enum DecodeProfileStage {
 static GEMMA4_MOE_PROFILE: OnceLock<Mutex<Gemma4MoeProfileSnapshot>> = OnceLock::new();
 static LINEAR_ATTENTION_PROFILE: OnceLock<Mutex<LinearAttentionProfileSnapshot>> = OnceLock::new();
 static DENSE_FFN_FASTPATH_PROFILE: OnceLock<Mutex<DenseFfnFastpathSnapshot>> = OnceLock::new();
+static MOE_ROUTER_FUSED_PROFILE: OnceLock<Mutex<MoeRouterFusedSnapshot>> = OnceLock::new();
 static PREFILL_PROFILE: OnceLock<Mutex<PrefillProfileSnapshot>> = OnceLock::new();
 static DECODE_PROFILE: OnceLock<Mutex<DecodeProfileSnapshot>> = OnceLock::new();
 static MOE_PROFILE: OnceLock<Mutex<MoeProfileSnapshot>> = OnceLock::new();
@@ -289,6 +303,10 @@ fn linear_attention_profile() -> &'static Mutex<LinearAttentionProfileSnapshot> 
 
 fn dense_ffn_fastpath_profile() -> &'static Mutex<DenseFfnFastpathSnapshot> {
     DENSE_FFN_FASTPATH_PROFILE.get_or_init(|| Mutex::new(DenseFfnFastpathSnapshot::default()))
+}
+
+fn moe_router_fused_profile() -> &'static Mutex<MoeRouterFusedSnapshot> {
+    MOE_ROUTER_FUSED_PROFILE.get_or_init(|| Mutex::new(MoeRouterFusedSnapshot::default()))
 }
 
 fn prefill_profile() -> &'static Mutex<PrefillProfileSnapshot> {
@@ -427,6 +445,21 @@ pub(crate) fn record_qwen_dense_ffn_gate_up_matvec_metal_fallback() {
     profile.qwen_gate_up_matvec_metal_fallbacks = profile
         .qwen_gate_up_matvec_metal_fallbacks
         .saturating_add(1);
+}
+
+pub(crate) fn record_moe_router_fused_attempt() {
+    let mut profile = moe_router_fused_profile().lock().unwrap();
+    profile.attempts = profile.attempts.saturating_add(1);
+}
+
+pub(crate) fn record_moe_router_fused_hit() {
+    let mut profile = moe_router_fused_profile().lock().unwrap();
+    profile.hits = profile.hits.saturating_add(1);
+}
+
+pub(crate) fn record_moe_router_fused_fallback() {
+    let mut profile = moe_router_fused_profile().lock().unwrap();
+    profile.fallbacks = profile.fallbacks.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_profile_stage(
@@ -635,6 +668,13 @@ pub fn take_linear_attention_profile_snapshot() -> LinearAttentionProfileSnapsho
     let mut profile = linear_attention_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = LinearAttentionProfileSnapshot::default();
+    snapshot
+}
+
+pub fn take_moe_router_fused_snapshot() -> MoeRouterFusedSnapshot {
+    let mut profile = moe_router_fused_profile().lock().unwrap();
+    let snapshot = *profile;
+    *profile = MoeRouterFusedSnapshot::default();
     snapshot
 }
 
