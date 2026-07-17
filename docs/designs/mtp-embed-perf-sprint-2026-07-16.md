@@ -5,7 +5,7 @@
 | **Title** | MTP adaptive draft confidence gate + embedding length-aware batching |
 | **Author** | _TBD_ |
 | **Date** | 2026-07-16 |
-| **Status** | Approved (rev 3) — Phase 0 + adaptive OFF + embed buckets OFF landed |
+| **Status** | Approved (rev 3) — MTP adaptive OFF; embed length-split + calibrated buckets **default ON** (A/B +43% mixed-batch tok/s, 2026-07-17) |
 | **Related docs** | `docs/mtp/draft-gate-throughput.md`, `docs/mtp/tree-draft-phase-a.md`, `docs/EMBEDDINGS.md`, `docs/ROADMAP.md` (Speculative decoding software tuning), `docs/designs/kv-weak-surfaces-2026-07-14.md` |
 | **Primary crates** | `ax-engine-mlx`, `ax-engine-server`, `ax-engine-sdk` (telemetry surface only) |
 

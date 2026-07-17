@@ -2662,43 +2662,133 @@ pub(crate) fn build_embedding_batch_hidden_pub(
     (hidden, batch, max_len, actual_lens)
 }
 
+/// Calibrated default max_len edges (finer at short lengths).
+/// Coarser 32/64/128-only edges over-padded short batches in A/B
+/// (`scripts/ab_mtp_embed_perf.py`, 2026-07-17).
+pub(crate) const DEFAULT_EMBED_MAX_LEN_BUCKETS: &[usize] = &[
+    8, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144,
+    8192,
+];
+
 /// Snap embedding batch `max_len` up to a discrete bucket when enabled.
-/// Default OFF (`AX_EMBED_MAX_LEN_BUCKETS` unset).
+///
+/// **Default ON** after length-affinity splits land. Disable with
+/// `AX_EMBED_MAX_LEN_BUCKETS=off`. Custom list: `AX_EMBED_MAX_LEN_BUCKETS=16,32,64,...`.
+///
+/// Conservative pad: if the snap would add more than `max(16, max_len/4)` pad
+/// tokens, keep exact `max_len` (avoids short-query regression from coarse edges).
 pub(crate) fn embed_length_bucket(max_len: usize) -> usize {
     use std::sync::OnceLock;
     static BUCKETS: OnceLock<Option<Vec<usize>>> = OnceLock::new();
     let buckets = BUCKETS.get_or_init(|| {
-        let Ok(raw) = std::env::var("AX_EMBED_MAX_LEN_BUCKETS") else {
-            return None;
-        };
-        let t = raw.trim().to_ascii_lowercase();
-        if t.is_empty() || matches!(t.as_str(), "0" | "false" | "off" | "no") {
-            return None;
+        match std::env::var("AX_EMBED_MAX_LEN_BUCKETS") {
+            Err(_) => Some(DEFAULT_EMBED_MAX_LEN_BUCKETS.to_vec()), // default ON
+            Ok(raw) => {
+                let t = raw.trim().to_ascii_lowercase();
+                if t.is_empty() || matches!(t.as_str(), "0" | "false" | "off" | "no") {
+                    return None;
+                }
+                if matches!(t.as_str(), "1" | "true" | "on" | "yes" | "default") {
+                    return Some(DEFAULT_EMBED_MAX_LEN_BUCKETS.to_vec());
+                }
+                let mut buckets: Vec<usize> = t
+                    .split(',')
+                    .filter_map(|s| s.trim().parse::<usize>().ok())
+                    .filter(|v| *v > 0)
+                    .collect();
+                if buckets.is_empty() {
+                    return None;
+                }
+                buckets.sort_unstable();
+                buckets.dedup();
+                Some(buckets)
+            }
         }
-        if matches!(t.as_str(), "1" | "true" | "on" | "yes" | "default") {
-            return Some(vec![32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]);
-        }
-        let mut buckets: Vec<usize> = t
-            .split(',')
-            .filter_map(|s| s.trim().parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .collect();
-        if buckets.is_empty() {
-            return None;
-        }
-        buckets.sort_unstable();
-        buckets.dedup();
-        Some(buckets)
     });
     let Some(buckets) = buckets.as_ref() else {
         return max_len;
     };
-    for &b in buckets {
-        if max_len <= b {
-            return b;
+    let Some(&bucket) = buckets.iter().find(|&&b| max_len <= b) else {
+        return max_len;
+    };
+    if embed_bucket_pad_acceptable(max_len, bucket) {
+        bucket
+    } else {
+        max_len
+    }
+}
+
+/// True when padding `max_len` up to `bucket` is cheap enough for default-on.
+pub(crate) fn embed_bucket_pad_acceptable(max_len: usize, bucket: usize) -> bool {
+    if bucket <= max_len {
+        return true;
+    }
+    let pad = bucket - max_len;
+    let rel_ok = max_len > 0 && pad * 4 <= max_len; // ≤25% pad
+    let abs_ok = pad <= 16;
+    rel_ok || abs_ok
+}
+
+/// Length-affinity clustering: group batch indices so pad waste stays bounded.
+///
+/// Rows are sorted by length; a new group starts when adding the next length
+/// would exceed `max_abs_spread` absolute tokens or `max_ratio` (max/min).
+/// Used by `embed_batch_flat` before pad + optional bucket snap.
+pub(crate) fn embed_length_affinity_groups(
+    lens: &[usize],
+    max_ratio: f64,
+    max_abs_spread: usize,
+) -> Vec<Vec<usize>> {
+    if lens.is_empty() {
+        return Vec::new();
+    }
+    let mut order: Vec<usize> = (0..lens.len()).collect();
+    order.sort_by_key(|&i| lens[i]);
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut cur: Vec<usize> = Vec::new();
+    let mut cur_min = 0usize;
+    let mut cur_max = 0usize;
+    for i in order {
+        let l = lens[i];
+        if cur.is_empty() {
+            cur.push(i);
+            cur_min = l;
+            cur_max = l;
+            continue;
+        }
+        let new_max = cur_max.max(l);
+        let new_min = cur_min.min(l);
+        let abs_exceed = new_max > new_min.saturating_add(max_abs_spread);
+        let ratio_exceed = new_min > 0 && (new_max as f64 / new_min as f64) > max_ratio;
+        if abs_exceed || ratio_exceed {
+            groups.push(std::mem::take(&mut cur));
+            cur.push(i);
+            cur_min = l;
+            cur_max = l;
+        } else {
+            cur.push(i);
+            cur_min = new_min;
+            cur_max = new_max;
         }
     }
-    max_len
+    if !cur.is_empty() {
+        groups.push(cur);
+    }
+    groups
+}
+
+/// Whether multi-row embed batches should be split by length affinity.
+/// **Default ON.** Disable with `AX_EMBED_LENGTH_SPLIT=off`.
+pub(crate) fn embed_length_split_enabled() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| match std::env::var("AX_EMBED_LENGTH_SPLIT") {
+        Err(_) => true, // default ON with calibrated buckets
+        Ok(raw) => {
+            let t = raw.trim().to_ascii_lowercase();
+            !matches!(t.as_str(), "0" | "false" | "off" | "no")
+        }
+    })
 }
 
 /// Single-token forward pass accepting a lazy token `MlxArray`.
@@ -6437,12 +6527,49 @@ mod tests {
 
 #[cfg(test)]
 mod embed_bucket_tests {
-    use super::embed_length_bucket;
+    use super::{
+        embed_bucket_pad_acceptable, embed_length_affinity_groups, embed_length_bucket,
+        DEFAULT_EMBED_MAX_LEN_BUCKETS,
+    };
 
     #[test]
-    fn embed_length_bucket_off_is_identity() {
-        // Default: env unset → no snap.
-        assert_eq!(embed_length_bucket(17), 17);
-        assert_eq!(embed_length_bucket(0), 0);
+    fn default_buckets_are_finer_at_short_lengths() {
+        assert!(DEFAULT_EMBED_MAX_LEN_BUCKETS.contains(&8));
+        assert!(DEFAULT_EMBED_MAX_LEN_BUCKETS.contains(&16));
+        assert!(DEFAULT_EMBED_MAX_LEN_BUCKETS.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn pad_acceptable_allows_small_absolute_or_relative() {
+        assert!(embed_bucket_pad_acceptable(100, 112)); // 12 pad, abs ok
+        assert!(embed_bucket_pad_acceptable(100, 125)); // 25% ok
+        assert!(!embed_bucket_pad_acceptable(8, 32)); // 24 pad > 16 and > 25%
+        assert!(embed_bucket_pad_acceptable(20, 32)); // 12 pad abs ok
+    }
+
+    #[test]
+    fn length_affinity_groups_split_short_from_long() {
+        let lens = [5usize, 200, 6, 210];
+        let groups = embed_length_affinity_groups(&lens, 1.5, 32);
+        assert!(groups.len() >= 2, "expected split, got {groups:?}");
+        // All indices covered exactly once.
+        let mut flat: Vec<usize> = groups.into_iter().flatten().collect();
+        flat.sort_unstable();
+        assert_eq!(flat, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn length_affinity_keeps_similar_lengths_together() {
+        let lens = [10usize, 12, 11];
+        let groups = embed_length_affinity_groups(&lens, 1.5, 32);
+        assert_eq!(groups.len(), 1);
+    }
+
+    #[test]
+    fn embed_length_bucket_default_snaps_when_pad_cheap() {
+        // Default is ON when env unset; 20→24 or 32 if pad acceptable.
+        let b = embed_length_bucket(20);
+        assert!(b >= 20);
+        assert!(b == 20 || b == 24 || b == 32, "got {b}");
     }
 }

@@ -4672,74 +4672,11 @@ impl ExecutionRunner for MlxRunner {
         pooling: EmbeddingPooling,
         normalize: bool,
     ) -> Result<Vec<Vec<f32>>, &'static str> {
-        if batch.is_empty() {
-            return Ok(vec![]);
-        }
-        for ids in batch {
-            if ids.is_empty() {
-                return Err("token_ids must not be empty");
-            }
-        }
-        let pooling = effective_embedding_pooling(&self.cfg.model_family, pooling);
-        // For Last/Cls: compute per-sequence extraction positions before the
-        // forward pass so the model can extract them before the final norm,
-        // avoiding norming the full [B, max_seq, H] padded tensor.
-        let target_positions: Option<Vec<usize>> = match pooling {
-            EmbeddingPooling::Last => Some(batch.iter().map(|ids| ids.len() - 1).collect()),
-            EmbeddingPooling::Cls => Some(vec![0; batch.len()]),
-            EmbeddingPooling::Mean => None,
-        };
-        if self.cfg.model_family == "embeddinggemma"
-            && pooling == EmbeddingPooling::Mean
-            && let Some(pooled) = self.embedding_gemma_batch_pooled_compiled_forward(batch)
-        {
-            let (flat, hidden_size) = post_pool_to_flat(&pooled, normalize);
-            let data: &[f32] = &flat;
-            let vecs = (0..batch.len())
-                .map(|i| data[i * hidden_size..(i + 1) * hidden_size].to_vec())
-                .collect();
-            return Ok(vecs);
-        }
-        let encode_started = Instant::now();
-        let (hidden, actual_lens, dense_head_fused) =
-            self.embedding_batch_forward(batch, target_positions.as_deref());
-        let encode_us = elapsed_us(encode_started);
-
-        // Last/Cls: hidden is [B, H] (already extracted).
-        // Mean:     hidden is [B, max_seq, H]; pool across sequence here.
-        let pool_started = Instant::now();
-        let batch_size = batch.len() as i32;
-
-        let pooled = match pooling {
-            EmbeddingPooling::Mean => bf16_mean_pool(&hidden, &actual_lens, batch_size),
-            EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
-        };
-        // Compiled path fuses Dense head; imperative fallback needs it here.
-        let pooled = if dense_head_fused {
-            pooled
-        } else {
-            crate::model::apply_embedding_dense_head(&self.weights, &pooled)
-        };
-        let pool_us = elapsed_us(pool_started);
-
-        let post_started = Instant::now();
-        let (flat, hidden_size) = post_pool_to_flat(&pooled, normalize);
-        let post_us = elapsed_us(post_started);
-
-        tracing::debug!(
-            batch_size = batch.len(),
-            encode_us,
-            pool_us,
-            post_us,
-            "embed_batch stage timing"
-        );
-
-        // Re-establish original Vec<Vec<f32>> output shape.
-        let data: &[f32] = &flat;
-        let vecs = (0..batch.len())
-            .map(|i| data[i * hidden_size..(i + 1) * hidden_size].to_vec())
-            .collect();
-        Ok(vecs)
+        // Prefer flat path (includes length-affinity split + buckets).
+        let matrix = self.embed_batch_flat(batch, pooling, normalize)?;
+        Ok((0..matrix.batch_size)
+            .map(|i| matrix.row(i).to_vec())
+            .collect())
     }
 
     fn embed_batch_flat(
@@ -4760,6 +4697,47 @@ impl ExecutionRunner for MlxRunner {
                 return Err("token_ids must not be empty");
             }
         }
+        // Length-affinity split (default ON): process similar-length rows together
+        // so right-pad waste stays bounded, then reassemble original order.
+        if crate::model::embed_length_split_enabled() && batch.len() > 1 {
+            let lens: Vec<usize> = batch.iter().map(Vec::len).collect();
+            let groups = crate::model::embed_length_affinity_groups(&lens, 1.5, 32);
+            if groups.len() > 1 {
+                let mut row_data: Vec<Option<Vec<f32>>> = (0..batch.len()).map(|_| None).collect();
+                let mut hidden_size = 0usize;
+                for group in groups {
+                    let sub: Vec<Vec<u32>> = group.iter().map(|&i| batch[i].clone()).collect();
+                    let mat = self.embed_batch_flat_contiguous(&sub, pooling, normalize)?;
+                    hidden_size = mat.hidden_size;
+                    for (j, &orig) in group.iter().enumerate() {
+                        row_data[orig] = Some(mat.row(j).to_vec());
+                    }
+                }
+                let mut data = Vec::with_capacity(batch.len() * hidden_size);
+                for row in row_data {
+                    let row = row.ok_or("embedding length-split output missing")?;
+                    data.extend_from_slice(&row);
+                }
+                return Ok(ax_engine_core::EmbeddingMatrix {
+                    data,
+                    batch_size: batch.len(),
+                    hidden_size,
+                });
+            }
+        }
+        self.embed_batch_flat_contiguous(batch, pooling, normalize)
+    }
+}
+
+impl MlxRunner {
+    /// Single pad/compile-key embed for one length-homogeneous (or unsplit) batch.
+    /// Kept off the `ExecutionRunner` trait so length-split can call it without recursion.
+    fn embed_batch_flat_contiguous(
+        &self,
+        batch: &[Vec<u32>],
+        pooling: EmbeddingPooling,
+        normalize: bool,
+    ) -> Result<ax_engine_core::EmbeddingMatrix, &'static str> {
         let pooling = effective_embedding_pooling(&self.cfg.model_family, pooling);
         let target_positions: Option<Vec<usize>> = match pooling {
             EmbeddingPooling::Last => Some(batch.iter().map(|ids| ids.len() - 1).collect()),
@@ -4784,7 +4762,6 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Mean => bf16_mean_pool(&hidden, &actual_lens, batch_size),
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
-        // Compiled path fuses Dense head; imperative fallback needs it here.
         let pooled = if dense_head_fused {
             pooled
         } else {
