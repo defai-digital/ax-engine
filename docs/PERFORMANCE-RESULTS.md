@@ -803,7 +803,7 @@ sustained-ingest claim.
 
 #### Qwen3-Embedding ingest scale
 
-The current Qwen3 AX-only refresh covers 0.6B / 4B / 8B (2026-07-16). It is
+The current post-EOS-fix Qwen3 AX-only refresh covers 0.6B / 4B / 8B (2026-07-16). It is
 shown beside the retained 2026-07-12 `mlx-lm` medians as a **cross-run
 directional view**, not a same-session paired result. The current AX artifact
 passes `ax_absolute_trend`, but its runtime check reports a Homebrew `libmlx`
@@ -821,7 +821,7 @@ larger batches increase per-flush latency even when throughput (tok/s) is
 steady.
 
 Fresh AX-only artifact:
-`benchmarks/results/embedding/embedding-scale/2026-07-16-ax-only-full-refresh-qwen/2026-07-16-135740/`.
+`benchmarks/results/embedding/embedding-scale/2026-07-16-ax-only-post-eos-fix-qwen/2026-07-16-202145/`.
 
 The chart overlays all **18 batched shapes** (3 models × 2 chunk lengths × 3
 batch sizes), grouped 0.6B → 4B → 8B (`mlx-lm` yellow retained reference, AX
@@ -832,24 +832,24 @@ model; both series are batched encode, but their cross-run gap is directional.
 
 | Model | Workload | Batch | Batches/trial | Retained mlx-lm tok/s | Fresh AX-only tok/s | Directional vs retained | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 48,901.2 | 48,592.3 | −0.6% | 189.8 | 41.9 |
-|  |  | 32 | 16 | 49,988.0 | 49,711.9 | −0.6% | 194.2 | 172.7 |
-|  |  | 64 | 8 | 49,878.6 | 49,492.4 | −0.8% | 193.3 | 355.2 |
-|  | 512 x 512-token chunks | 8 | 64 | 48,920.9 | 48,083.5 | −1.7% | 93.9 | 87.4 |
-|  |  | 32 | 16 | 49,090.2 | 48,499.4 | −1.2% | 94.7 | 352.5 |
-|  |  | 64 | 8 | 48,650.8 | 48,352.7 | −0.6% | 94.4 | 710.6 |
-| Qwen3-Embedding 4B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 6,591.1 | 6,671.1 | +1.2% | 26.1 | 321.8 |
-|  |  | 32 | 16 | 6,463.0 | 6,610.5 | +2.3% | 25.8 | 1,299.0 |
-|  |  | 64 | 8 | 6,471.9 | 6,582.3 | +1.7% | 25.7 | 2,609.5 |
-|  | 512 x 512-token chunks | 8 | 64 | 6,416.5 | 6,446.1 | +0.5% | 12.6 | 654.6 |
-|  |  | 32 | 16 | 6,138.0 | 6,345.6 | +3.4% | 12.4 | 2,659.9 |
-|  |  | 64 | 8 | 6,307.6 | 6,364.4 | +0.9% | 12.4 | 5,296.4 |
-| Qwen3-Embedding 8B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 3,379.7 | 3,537.6 | +4.7% | 13.8 | 597.7 |
-|  |  | 32 | 16 | 3,266.7 | 3,460.1 | +5.9% | 13.5 | 2,446.3 |
-|  |  | 64 | 8 | 3,359.3 | 3,468.2 | +3.2% | 13.5 | 4,870.6 |
-|  | 512 x 512-token chunks | 8 | 64 | 3,327.1 | 3,419.3 | +2.8% | 6.7 | 1,213.2 |
-|  |  | 32 | 16 | 3,260.3 | 3,404.1 | +4.4% | 6.6 | 4,895.9 |
-|  |  | 64 | 8 | 3,333.9 | 3,421.6 | +2.6% | 6.7 | 9,762.5 |
+| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 48,901.2 | 48,465.6 | −0.9% | 189.3 | 42.0 |
+|  |  | 32 | 16 | 49,988.0 | 49,657.5 | −0.7% | 194.0 | 172.7 |
+|  |  | 64 | 8 | 49,878.6 | 49,529.8 | −0.7% | 193.5 | 352.7 |
+|  | 512 x 512-token chunks | 8 | 64 | 48,920.9 | 47,805.5 | −2.3% | 93.4 | 88.5 |
+|  |  | 32 | 16 | 49,090.2 | 48,265.2 | −1.7% | 94.3 | 356.1 |
+|  |  | 64 | 8 | 48,650.8 | 47,876.1 | −1.6% | 93.5 | 712.1 |
+| Qwen3-Embedding 4B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 6,591.1 | 6,626.1 | +0.5% | 25.9 | 324.5 |
+|  |  | 32 | 16 | 6,463.0 | 6,582.6 | +1.9% | 25.7 | 1,304.8 |
+|  |  | 64 | 8 | 6,471.9 | 6,560.5 | +1.4% | 25.6 | 2,614.0 |
+|  | 512 x 512-token chunks | 8 | 64 | 6,416.5 | 6,416.6 | +0.0% | 12.5 | 658.2 |
+|  |  | 32 | 16 | 6,138.0 | 6,326.5 | +3.1% | 12.4 | 2,667.5 |
+|  |  | 64 | 8 | 6,307.6 | 6,320.2 | +0.2% | 12.3 | 5,400.0 |
+| Qwen3-Embedding 8B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 3,379.7 | 3,521.0 | +4.2% | 13.8 | 600.6 |
+|  |  | 32 | 16 | 3,266.7 | 3,442.8 | +5.4% | 13.4 | 2,457.2 |
+|  |  | 64 | 8 | 3,359.3 | 3,452.1 | +2.8% | 13.5 | 4,899.8 |
+|  | 512 x 512-token chunks | 8 | 64 | 3,327.1 | 3,410.1 | +2.5% | 6.7 | 1,263.6 |
+|  |  | 32 | 16 | 3,260.3 | 3,351.0 | +2.8% | 6.5 | 5,059.7 |
+|  |  | 64 | 8 | 3,333.9 | 3,359.1 | +0.8% | 6.6 | 10,072.3 |
 
 #### EmbeddingGemma ingest scale
 
@@ -870,22 +870,22 @@ cross-run directional overlays.
 
 | Model | Workload | Batch | Batches/trial | Retained `mlx-embeddings` tok/s | Fresh AX-only tok/s | Directional vs retained | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| EmbeddingGemma 300M 8-bit | 512 x 256-token chunks | 8 | 64 | 129,909.0 | 139,406.8 | +7.3% | 544.6 | 14.5 |
-|  |  | 32 | 16 | 148,284.8 | 155,946.1 | +5.2% | 609.2 | 61.6 |
-|  |  | 64 | 8 | 149,976.1 | 155,791.9 | +3.9% | 608.6 | 131.7 |
-|  | 512 x 512-token chunks | 8 | 64 | 127,604.8 | 140,787.0 | +10.3% | 275.0 | 28.5 |
-|  |  | 32 | 16 | 140,105.8 | 147,916.9 | +5.6% | 288.9 | 121.9 |
-|  |  | 64 | 8 | 132,121.8 | 139,730.3 | +5.8% | 272.9 | 262.6 |
+| EmbeddingGemma 300M 8-bit | 512 x 256-token chunks | 8 | 64 | 129,909.0 | 139,063.5 | +7.0% | 543.2 | 14.6 |
+|  |  | 32 | 16 | 148,284.8 | 157,588.2 | +6.3% | 615.6 | 59.1 |
+|  |  | 64 | 8 | 149,976.1 | 157,558.0 | +5.1% | 615.5 | 126.4 |
+|  | 512 x 512-token chunks | 8 | 64 | 127,604.8 | 141,305.0 | +10.7% | 276.0 | 28.5 |
+|  |  | 32 | 16 | 140,105.8 | 148,361.9 | +5.9% | 289.8 | 120.0 |
+|  |  | 64 | 8 | 132,121.8 | 140,032.1 | +6.0% | 273.5 | 259.4 |
 
 Sources:
 Qwen3 0.6B / 4B / 8B reference rows come from the retained paired artifact
 `benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/2026-07-12-145710/`;
 fresh AX-only rows come from
-`benchmarks/results/embedding/embedding-scale/2026-07-16-ax-only-full-refresh-qwen/2026-07-16-135740/`.
+`benchmarks/results/embedding/embedding-scale/2026-07-16-ax-only-post-eos-fix-qwen/2026-07-16-202145/`.
 EmbeddingGemma reference rows come from
 `benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`
 and fresh AX-only rows from
-`benchmarks/results/embedding/embedding-scale/2026-07-16-ax-only-full-refresh-embeddinggemma/2026-07-16-153523/`.
+`benchmarks/results/embedding/embedding-scale/2026-07-16-ax-only-post-eos-fix-embeddinggemma/2026-07-16-214949/`.
 Both fresh AX artifacts pass `ax_absolute_trend`; the reported Homebrew-link
 warning makes their retained-reference differences directional only. All scale
 runs use Hugging Face snapshot paths, median tok/s, batch sizes 8/32/64, 512

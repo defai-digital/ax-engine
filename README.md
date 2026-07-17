@@ -92,7 +92,7 @@ or either with embeddings.
 | --- | --- | --- |
 | **MTP generation** | AX Engine · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | MTP decode tok/s |
 | **Direct generation** | AX Engine · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | Decode / prefill / TTFT |
-| Embeddings | AX · mlx-lm / mlx-embeddings | Ingest tok/s — see [full results](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings) |
+| Embeddings | AX · mlx-lm / mlx-embeddings | Ingest tok/s — Qwen3 chart below; see [full results](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings) |
 
 **Host:** Apple M5 Max · 128 GB · macOS 26.x · AX Engine **v6.9.0** ·
 `mlx-lm` **0.31.3** · `llama.cpp` **b9910** / ggml **0.15.3** · MTPLX **2.0.1**.
@@ -152,6 +152,15 @@ distribution view, not a same-session peer matrix). Exact AX numbers:
 <img width="100%" src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Qwen 3.6 direct prefill: AX Engine vs mlx-lm vs llama.cpp">
 
 <img width="100%" src="docs/assets/perf-qwen-ttft-box-whisker.svg" alt="Qwen 3.6 direct TTFT: AX Engine vs mlx-lm vs llama.cpp">
+
+### Embeddings: Qwen3-Embedding ingest scale
+
+Fresh AX-only Qwen3-Embedding 0.6B / 4B / 8B results (2026-07-16 post-EOS
+fix) are overlaid with retained 2026-07-12 `mlx-lm` medians. This is a
+cross-run directional view, not a paired engine-to-engine delta. Full rows and
+methodology: [Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
+
+<img width="100%" src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Qwen3-Embedding batched ingest scale: retained mlx-lm reference and fresh AX Engine throughput across 0.6B, 4B, and 8B models">
 
 **How to read these charts**
 
