@@ -646,6 +646,29 @@ env_flag_default_on!(
 /// so short-prompt microbenches avoid compile tax.
 pub const DENSE_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 256;
 
+env_flag_default_on!(
+    /// `AX_MLX_AUTO_BUFFER_CAPS` — auto-raise MLX Metal command-buffer caps
+    /// for many-large-tensor (MoE-class) checkpoints.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_AUTO_BUFFER_CAPS=0`).
+    ///
+    /// MLX splits a Metal command buffer once accumulated input bytes exceed
+    /// `MLX_MAX_MB_PER_BUFFER` (default 40–50 MB), counting each expert
+    /// stack at its full size; on MoE checkpoints every layer splits and the
+    /// scheduler backpressure turns `async_eval` into a barrier (zero
+    /// host/GPU overlap). When the loaded checkpoint has at least
+    /// [`crate::weights::BUFFER_CAP_MIN_BIG_TENSORS`] tensors above the MLX
+    /// default cap and the user has not set the MLX variables themselves,
+    /// the loader raises them to 1024 MB / 1000 ops before the first GPU op.
+    /// Greedy token streams are bit-identical; measured on M3 Max:
+    /// Qwen3-Coder-Next-4bit +22–25%, Qwen3.6-35B-A3B-4bit +14.5% (A/B/A).
+    /// Dense checkpoints (≤2 big tensors) never trigger the predicate.
+    /// Evidence: `docs/performance/gather-qmm-async-serialization.md` and
+    /// the interleaved A/B artifact recorded alongside it.
+    auto_buffer_caps_enabled,
+    "AX_MLX_AUTO_BUFFER_CAPS"
+);
+
 env_flag!(
     /// `AX_MLX_MOE_ROUTER_FUSED_METAL` — enable fused MoE router Metal
     /// kernel for decode.

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use mlx_sys::{
     MlxArray, MlxDtype, MlxQuantizationMode, add, astype, concatenate, contiguous, dequantize,
@@ -363,7 +364,52 @@ impl QuantizedWeight {
     }
 }
 
+/// Tensors above this size bust MLX's default per-command-buffer byte cap
+/// (40–50 MB depending on GPU architecture) on their own.
+const BUFFER_CAP_BIG_TENSOR_BYTES: u64 = 48 * 1024 * 1024;
+/// Minimum count of cap-busting tensors before the checkpoint is treated as
+/// MoE-class for buffer-cap purposes. Dense checkpoints carry ~2 (embedding
+/// + lm_head); MoE expert stacks push this to ~90–150.
+pub const BUFFER_CAP_MIN_BIG_TENSORS: usize = 16;
+const BUFFER_CAP_TARGET_MB: u32 = 1024;
+const BUFFER_CAP_TARGET_OPS: u32 = 1000;
+
+/// Auto-raise MLX's Metal command-buffer caps for MoE-class checkpoints so
+/// `async_eval` keeps overlapping host graph build with GPU execution
+/// (`docs/performance/gather-qmm-async-serialization.md`). Decides once per
+/// process — MLX reads the variables a single time at Metal device init, so
+/// later loads could not change the outcome anyway.
+fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
+    static DECIDED: OnceLock<()> = OnceLock::new();
+    DECIDED.get_or_init(|| {
+        if !crate::fastpath::auto_buffer_caps_enabled() {
+            return;
+        }
+        let big_tensors = artifacts
+            .tensor_specs()
+            .iter()
+            .filter(|spec| spec.length_bytes > BUFFER_CAP_BIG_TENSOR_BYTES)
+            .count();
+        if big_tensors < BUFFER_CAP_MIN_BIG_TENSORS {
+            return;
+        }
+        let (mb_applied, ops_applied) =
+            mlx_sys::set_metal_buffer_caps_env(BUFFER_CAP_TARGET_MB, BUFFER_CAP_TARGET_OPS);
+        tracing::info!(
+            target = "ax_engine_mlx",
+            big_tensors,
+            mb_applied,
+            ops_applied,
+            target_mb = BUFFER_CAP_TARGET_MB,
+            target_ops = BUFFER_CAP_TARGET_OPS,
+            "auto-raised MLX Metal command-buffer caps for MoE-class checkpoint \
+             (AX_MLX_AUTO_BUFFER_CAPS=0 to disable; pre-set MLX_MAX_*_PER_BUFFER wins)"
+        );
+    });
+}
+
 pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, WeightLoadError> {
+    maybe_raise_metal_buffer_caps(artifacts);
     let root = artifacts.root_dir().to_path_buf();
     // AX_MMAP_WEIGHTS=1 uses the memory-mapped safetensors path. No bytes
     // are read into a heap buffer up front; pages are pulled in by the

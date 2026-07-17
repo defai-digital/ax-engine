@@ -79,5 +79,5 @@ pub use stream::MlxStream;
 pub use transforms::{
     async_eval, clear_cache, enable_compile, eval, eval_first_u32, get_cache_memory,
     get_peak_memory, gpu_device_architecture, max_recommended_working_set_size, reset_peak_memory,
-    set_cache_limit, set_memory_limit, set_wired_limit, try_eval,
+    set_cache_limit, set_memory_limit, set_metal_buffer_caps_env, set_wired_limit, try_eval,
 };

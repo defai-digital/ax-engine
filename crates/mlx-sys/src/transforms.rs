@@ -235,6 +235,40 @@ pub fn gpu_device_architecture() -> Result<String, String> {
     }
 }
 
+/// Best-effort raise of MLX's Metal command-buffer split thresholds via the
+/// `MLX_MAX_MB_PER_BUFFER` / `MLX_MAX_OPS_PER_BUFFER` environment variables.
+///
+/// MLX's Metal encoder commits (splits) a command buffer once the
+/// accumulated input bytes exceed `MLX_MAX_MB_PER_BUFFER` (default 40–50 MB
+/// by GPU architecture), counting every newly-seen input at its FULL
+/// `data_size()`. Checkpoints with many large weight tensors per step
+/// (MoE expert stacks) therefore split on every layer, and the resulting
+/// task count trips `eval_impl`'s scheduler backpressure, turning
+/// `async_eval` into a de-facto barrier — see
+/// `docs/performance/gather-qmm-async-serialization.md`.
+///
+/// MLX reads these variables once at Metal device initialization, so this
+/// must run before the first GPU operation in the process; afterwards it is
+/// a silent no-op (safe, just ineffective). Values already present in the
+/// environment are treated as an explicit user override and left untouched.
+/// Returns `(mb_applied, ops_applied)`.
+pub fn set_metal_buffer_caps_env(max_mb: u32, max_ops: u32) -> (bool, bool) {
+    let mut applied = (false, false);
+    if std::env::var_os("MLX_MAX_MB_PER_BUFFER").is_none() {
+        // SAFETY: called during single-threaded model/runner initialization,
+        // before decode worker threads that could read the environment
+        // concurrently are spawned.
+        unsafe { std::env::set_var("MLX_MAX_MB_PER_BUFFER", max_mb.to_string()) };
+        applied.0 = true;
+    }
+    if std::env::var_os("MLX_MAX_OPS_PER_BUFFER").is_none() {
+        // SAFETY: as above.
+        unsafe { std::env::set_var("MLX_MAX_OPS_PER_BUFFER", max_ops.to_string()) };
+        applied.1 = true;
+    }
+    applied
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
