@@ -570,22 +570,32 @@ env_flag!(
     "AX_MLX_MOE_PROFILE"
 );
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_MOE_LAYER_COMPILE` — enable per-layer compiled MoE decode
     /// closure.
     ///
-    /// **Default: OFF** (opt-in via `AX_MLX_MOE_LAYER_COMPILE=1`).
+    /// **Default: ON** (kill-switch via `AX_MLX_MOE_LAYER_COMPILE=0`).
     /// Each MoE layer's decode forward path is wrapped in an `MlxClosure`
     /// compiled via `mlx_compile` with `shapeless=true`. The compiled
-    /// closure is cached per `(layer_index, thread_id)` and reused across
-    /// decode steps, collapsing ~10 per-layer MLX dispatches into a single
-    /// compiled graph. Only engages for `seq == 1` (decode). Falls back to
-    /// the uncompiled path on compilation failure.
+    /// closure is cached per `(model_identity, layer_index, thread_id)` and
+    /// reused across decode steps, collapsing ~10 per-layer MLX dispatches
+    /// into a single compiled graph. Only engages for `seq == 1` (decode).
+    /// Falls back to the uncompiled path on compilation or apply failure,
+    /// permanently per layer.
     ///
-    /// Previously default-on; reverted to opt-in because the compiled MoE
-    /// closure can crash in long-running processes when MLX's thread-local
-    /// stream registry becomes invalid. `catch_unwind` does not protect
-    /// against Rust panics under `panic = "abort"` (release profile).
+    /// History: default-on, reverted to opt-in on 2026-06-19 (`19120c10`)
+    /// after crashes in long-running processes — a Rust panic raised by an
+    /// op-status failure inside the closure body unwound across the C++
+    /// trampoline, which is fatal under the release `panic = "abort"`
+    /// profile (`catch_unwind` never runs). That abort vector is now closed
+    /// by construction: closure bodies run in poison-propagation mode
+    /// (`mlx_sys::error::ClosureBodyGuard`) — an in-body op failure records
+    /// the error, yields a null-handle array, fails the apply cleanly, and
+    /// the layer falls back to the imperative path. Re-promoted default-on
+    /// 2026-07-17: 5-rep interleaved A/B on Qwen3-Coder-Next-4bit decode
+    /// ratio 1.016 (on wins every pair, greedy checksums identical), 12k-step
+    /// soak crossing the recompile-refresh threshold plus a 5k-step Gemma
+    /// dual-path soak, both clean.
     moe_layer_compile_enabled,
     "AX_MLX_MOE_LAYER_COMPILE"
 );

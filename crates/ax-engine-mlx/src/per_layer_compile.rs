@@ -147,11 +147,12 @@ static LAYER_GEMMA4_DUAL_PATH_CACHE: OnceLock<
 /// are constant per model; the only varying dimension (seq) is always 1 in
 /// decode.
 ///
-/// Gated by `AX_MLX_MOE_LAYER_COMPILE` (**default OFF** — see `fastpath.rs`:
-/// previously default-on, reverted to opt-in because the compiled MoE closure
-/// can crash long-running processes when MLX's thread-local stream registry
-/// becomes invalid under `panic = "abort"`). Returns `None` when the flag is
-/// off, compilation fails, or the closure cannot be applied.
+/// Gated by `AX_MLX_MOE_LAYER_COMPILE` (**default ON**, kill-switch `=0` —
+/// see `fastpath.rs` for the 2026-06 revert history and the 2026-07-17
+/// re-promotion: closure bodies now run in poison-propagation mode, so an
+/// in-body op failure degrades to a per-layer fallback instead of aborting
+/// the process). Returns `None` when the flag is off, compilation fails, or
+/// the closure cannot be applied.
 pub fn apply_layer_moe_decode(
     model_identity: u64,
     layer_index: usize,
