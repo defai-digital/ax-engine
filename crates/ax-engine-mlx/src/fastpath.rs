@@ -961,6 +961,25 @@ env_flag!(
     "AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF` — only spend a second
+    /// (deep) assistant forward when the first draft token's confidence
+    /// already clears the deep gate.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF=0`).
+    ///
+    /// Mirrors vLLM Gemma 4 MTP practice of starting with a small
+    /// `num_speculative_tokens` and dynamic speculation depth: if the
+    /// assistant is not already extremely confident on position 0 (the same
+    /// bar required to keep a deep draft), a frozen-KV recurrent step is
+    /// unlikely to clear the deep gate, so the extra forward is pure waste.
+    /// Accept rate is unchanged when deep drafts were never kept; when they
+    /// fire, conf0 is typically already above the deep bar.
+    gemma4_assistant_deep_needs_first_conf_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF"
+);
+
 env_flag!(
     /// `AX_DIFFUSION_NO_EMBEDDING_CACHE` — opt-out of per-layer embedding
     /// input caching on the imperative denoise fallback. Default: cache is
@@ -1448,6 +1467,21 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn gemma4_assistant_deep_needs_first_conf_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF_ENABLED",
             "1"
         ));
     }

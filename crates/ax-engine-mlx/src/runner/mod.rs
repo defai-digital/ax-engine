@@ -7646,6 +7646,8 @@ impl MlxRunner {
         let mut drafts: Vec<u32> = Vec::with_capacity(max_depth);
         let mut cur_token = last_token;
         let mut cur_hidden = cur_hidden;
+        let deep_needs_first_conf =
+            crate::fastpath::gemma4_assistant_deep_needs_first_conf_enabled();
         for d in 0..max_depth {
             let Ok((logits, projected_hidden)) =
                 session.forward_one(cur_token, &cur_hidden, base_position + d)
@@ -7672,6 +7674,11 @@ impl MlxRunner {
                 break;
             }
             drafts.push(token);
+            // vLLM-aligned dynamic depth: do not pay for a deep forward unless
+            // conf0 already clears the deep gate (same bar deep drafts need).
+            if d == 0 && deep_needs_first_conf && confidence < deep_gate {
+                break;
+            }
             cur_token = token;
             cur_hidden = astype(&projected_hidden, MlxDtype::Bfloat16, None);
         }
@@ -7751,17 +7758,22 @@ impl MlxRunner {
         // (otherwise we need to verify the pending draft first).
         let skip_logits = state.mtp_skip_logits.take();
         let skip_hidden = state.mtp_skip_hidden.take();
-        let can_skip = skip_logits.is_some()
+        let can_skip_qwen = skip_logits.is_some()
             && skip_hidden.is_some()
             && pending.is_empty()
             && self.weights.mtp.is_some()
+            && self.mtp_skip_state;
+        let can_skip_gemma = skip_logits.is_some()
+            && skip_hidden.is_some()
+            && pending.is_empty()
+            && self.gemma4_assistant_mtp.is_some()
             && self.mtp_skip_state;
 
         // When skip-state is usable, sample primary + draft new MTP tokens from
         // the saved logits/hidden.  The new drafts are written into `pending`,
         // `mtp_pending_draft_log_probs`, and `mtp_pending_draft_sources` so the
         // existing verify/accept pipeline operates on them unchanged.
-        let primary_tok_from_skip: Option<u32> = if can_skip {
+        let primary_tok_from_skip: Option<u32> = if can_skip_qwen {
             let sl = skip_logits.unwrap();
             let sh = skip_hidden.unwrap();
             // Sample primary token from skip logits (shape [1, vocab]).
@@ -7804,6 +7816,32 @@ impl MlxRunner {
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp; draft.len()];
             // Override pending so the verify/accept pipeline sees the new drafts.
+            pending = draft;
+            Some(primary_tok)
+        } else if can_skip_gemma {
+            let sl = skip_logits.unwrap();
+            let sh = skip_hidden.unwrap();
+            let primary_tok = sample_logit_row(
+                &sl,
+                0,
+                0,
+                vocab,
+                sampling,
+                &mut state.rng,
+                &mut state.sampling_probs_buf,
+                &mut state.sampling_logits_buf,
+                &mut state.sampling_candidates_buf,
+            );
+            let assistant_draft_started = Instant::now();
+            let (draft, log_probs, distributions) =
+                self.gemma4_assistant_draft_token(state, primary_tok, &sh, sampling);
+            mtp_timings.assistant_draft_wall_us = mtp_timings
+                .assistant_draft_wall_us
+                .saturating_add(elapsed_us(assistant_draft_started));
+            state.mtp_pending_draft_log_probs = log_probs;
+            state.mtp_pending_draft_distributions = distributions;
+            state.mtp_pending_draft_sources =
+                vec![MtpDraftSource::Gemma4Assistant; draft.len()];
             pending = draft;
             Some(primary_tok)
         } else {
@@ -8942,10 +8980,13 @@ impl MlxRunner {
             // Capture skip-state only when the next step will have no pending draft,
             // making `can_skip` true.  When pending is non-empty (the common case)
             // async_eval + slice work here is never consumed — so skip it entirely.
-            if self.mtp_skip_state
-                && (self.weights.mtp.is_some() || self.weights.glm_mtp.is_some())
+            // Includes Gemma 4 assistant MTP (vLLM/Lightning always-advance pattern).
+            let can_capture_skip = self.mtp_skip_state
                 && state.mtp_pending_draft.is_empty()
-            {
+                && (self.weights.mtp.is_some()
+                    || self.weights.glm_mtp.is_some()
+                    || self.gemma4_assistant_mtp.is_some());
+            if can_capture_skip {
                 let sl = if logits_all.shape().len() == 1 {
                     logits_all.clone()
                 } else {
@@ -9503,6 +9544,10 @@ fn mtp_next_adaptive_depth(
 fn mtp_initial_adaptive_depth(model_family: &str, head_max_depth: usize) -> usize {
     match model_family {
         "qwen3_next" | "qwen3_5" => 2.min(head_max_depth),
+        // vLLM Gemma 4 MTP docs recommend starting with
+        // `num_speculative_tokens: 1`; adaptive depth can still grow to the
+        // runtime ceiling (default 2) after full accepts.
+        "gemma4" => 1.min(head_max_depth),
         _ => head_max_depth,
     }
 }

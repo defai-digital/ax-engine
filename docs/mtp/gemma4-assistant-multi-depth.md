@@ -97,6 +97,12 @@ above 0.999.
   (same accepted-prefix contract). Depth-1 and exact-cpu confidence mode keep
   the per-depth path. 12B same-artifact A/B was accept-neutral but not a clear
   decode win when deep drafts rarely clear the 0.999 deep gate.
+- `AX_MLX_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF` — only run a second (deep)
+  assistant forward when the first draft token's confidence already clears the
+  deep gate. **Default ON** (kill-switch `=0`). Aligns with vLLM Gemma 4 MTP
+  guidance (`num_speculative_tokens: 1` as the starting point) and dynamic
+  speculation: if conf0 is below the deep bar, conf1 almost never clears it
+  either, so the extra forward is wasted draft work.
 
 ## Reproduce
 
