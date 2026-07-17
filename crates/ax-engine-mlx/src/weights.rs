@@ -379,7 +379,12 @@ const BUFFER_CAP_TARGET_OPS: u32 = 1000;
 /// (`docs/performance/gather-qmm-async-serialization.md`). Decides once per
 /// process — MLX reads the variables a single time at Metal device init, so
 /// later loads could not change the outcome anyway.
-fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
+///
+/// Must run before the process's first MLX call. `MlxRunner::from_artifacts_inner`
+/// calls this ahead of its `set_wired_limit` (which constructs the Metal
+/// device); the `load_weights` call covers direct consumers (decode-trace,
+/// probes, bench paths) that never build a runner.
+pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
     static DECIDED: OnceLock<()> = OnceLock::new();
     DECIDED.get_or_init(|| {
         if !crate::fastpath::auto_buffer_caps_enabled() {

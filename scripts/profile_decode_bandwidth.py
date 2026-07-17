@@ -35,7 +35,9 @@ Artifact schema: ax.bw_profile.v1
       "measurements": {
         "decode_tokens_observed": int,
         "speculation_bonus_tokens": int,        # from ax_mlx_bonus_tokens route key
-        "forward_pass_count": int,              # tokens_observed - bonus_tokens
+        "forward_pass_count": int,              # regime step counters; falls back
+                                                # to tokens_observed - bonus_tokens
+        "forward_pass_count_approximate": bool, # true for StrictMtp packages
         "decode_wall_time_s": float,
         "decode_tok_s": float,                  # tokens / wall (user-observed rate)
         "forward_pass_per_s": float,            # forward_passes / wall (kernel rate)

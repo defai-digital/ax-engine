@@ -3696,6 +3696,14 @@ impl MlxRunner {
         // the runner.
         let disable_ngram_acceleration =
             disable_ngram_acceleration || crate::fastpath::ngram_acceleration_disabled();
+        // Decide the MLX Metal buffer caps BEFORE the first MLX call below:
+        // `set_wired_limit` (and the device-info query feeding it) constructs
+        // the Metal device, which is when MLX reads MLX_MAX_*_PER_BUFFER once.
+        // Deciding inside `load_weights` alone was too late on this path and
+        // silently disabled the MoE auto-caps for every runner-based consumer
+        // (server, SDK, Python) while decode-trace — which calls
+        // `load_weights` directly — still got them.
+        crate::weights::maybe_raise_metal_buffer_caps(artifacts);
         // Enable MLX compute-graph compilation globally.
         // This caches and reuses compiled Metal shaders across calls with the same
         // graph structure — the equivalent of mlx_lm's per-step mx.compile() JIT.
