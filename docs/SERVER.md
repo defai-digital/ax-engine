@@ -208,9 +208,12 @@ than silently dropped.
   arrays), `properties`, `required`, `additionalProperties` (boolean),
   `items`, `enum`, `const`, numeric bounds
   (`minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`), and
-  string/array length bounds; schemas using any other keyword are rejected
-  up front with `400 unsupported_json_schema` naming the keyword — never
-  silently ignored. Like `json_object`, this is post-hoc validation, not
+  string/array length bounds. Request admission is fail-closed: any keyword
+  outside that subset, and any supported keyword whose value cannot be
+  enforced (for example a string `minimum`, a non-array `required`, a
+  draft-04 boolean `exclusiveMinimum`, or a non-string `type`), is rejected
+  up front with `400 unsupported_json_schema` — never silently ignored or
+  partially validated. Like `json_object`, this is post-hoc validation, not
   constrained decoding: output is checked, not guaranteed.
 - **`stop`** (completions and chat, all backends): client stop sequences are
   honored everywhere. Delegated backends forward them upstream; the native

@@ -179,7 +179,9 @@ let response = stream.into_response()?;
 `GenerateStream<'_>` borrows the session. A `Request` event fires once at the
 start. `Step` events fire once per engine step, carrying `delta_tokens` and
 optional `delta_text`. A `Response` event fires when the request terminates
-with the full `GenerateResponse`.
+with the full `GenerateResponse`. Dropping the stream (or stopping after a
+stream error) cancels any still-live native MLX request so it does not keep
+co-decoding or holding KV alongside later work on the same session.
 
 ### Lifecycle API (concurrent requests, MLX only)
 

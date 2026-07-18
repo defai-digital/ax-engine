@@ -33,9 +33,10 @@ and this project adheres to Semantic Versioning.
   alongside the default `model_id` in multi-model serving.
 - `response_format: json_schema` (non-streaming): OpenAI request shape
   accepted; output validated server-side against a documented schema subset
-  (`502 invalid_output` on mismatch); schemas using unsupported keywords are
-  rejected up front with `400 unsupported_json_schema` rather than silently
-  partially validated. Post-hoc validation, not constrained decoding.
+  (`502 invalid_output` on mismatch); unsupported keywords and unenforceable
+  keyword values are rejected up front with `400 unsupported_json_schema`
+  rather than silently partially validated. Post-hoc validation, not
+  constrained decoding.
 - Streaming reasoning: native Qwen ChatML and Gemma 4 chat streams emit
   incremental `delta.reasoning_content` when the `reasoning` opt-in is set
   (previously rejected for all streaming requests).
@@ -81,6 +82,21 @@ and this project adheres to Semantic Versioning.
   fragment per completed call with stream-wide 0-based `index`,
   `finish_reason:"tool_calls"`) instead of buffering the entire generation
   into a single chunk. GLM 4.x / GPT-OSS keep the buffered fallback.
+
+### Fixed
+
+- `response_format: json_schema` fail-closed on unenforceable *values* of
+  supported keywords (for example string `minimum`, non-array `required`,
+  draft-04 boolean `exclusiveMinimum`, non-string `type`), not only on
+  unknown keywords — previously those schemas were accepted and the broken
+  constraints were silently skipped (`400 unsupported_json_schema`).
+- Native MLX streams cancel in-flight work when abandoned: Rust
+  `GenerateStream` Drop / iterator error, and Python `stream_generate`
+  iterator drop / mid-stream error, so a discarded stream cannot keep
+  co-decoding or holding KV with later session calls.
+- OpenAI native SSE detokenize failures stop the stream after the error and
+  `[DONE]` frames (no further content or second terminal after a failed
+  decode).
 
 ## [6.8.2] - 2026-07-09
 
