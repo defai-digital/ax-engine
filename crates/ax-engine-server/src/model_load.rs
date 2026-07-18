@@ -506,8 +506,6 @@ struct ManifestKvGeometry {
     /// `attention_head_dim`.
     #[serde(default)]
     global_head_dim: Option<u32>,
-    #[serde(default)]
-    sliding_window_size: Option<u32>,
     /// Per-layer annotations ("sliding_attention" / "full_attention");
     /// empty for homogeneous models.
     #[serde(default)]
@@ -586,12 +584,12 @@ fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) -> O
         }
         let layer_type = geometry.layer_types.get(layer_idx as usize);
         if layer_type.is_some_and(|kind| kind == "sliding_attention") {
-            // Sliding layers are ring-bounded to the window, not the pool.
-            let tokens = match geometry.sliding_window_size {
-                Some(window) if window > 0 => pool_tokens.min(u64::from(window)),
-                _ => pool_tokens,
-            };
-            total = total.saturating_add(tokens.saturating_mul(sliding_bytes_per_token));
+            // Sliding rings bound KV per REQUEST, not per pool: many
+            // concurrent ≤window-length requests each own window-sized
+            // rings, and their sum legally reaches the pool. Admission
+            // charges the pool-wide worst case, so sliding differs from
+            // full attention only in head dim.
+            total = total.saturating_add(pool_tokens.saturating_mul(sliding_bytes_per_token));
         } else {
             total = total.saturating_add(pool_tokens.saturating_mul(full_bytes_per_token));
         }
@@ -1209,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn kv_pool_bytes_bounds_sliding_layers_and_skips_shared() {
+    fn kv_pool_bytes_charges_sliding_layers_at_pool_and_skips_shared() {
         let geometry = kv_geometry(serde_json::json!({
             "layer_count": 6, "attention_head_dim": 128, "kv_head_count": 2,
             "global_head_dim": 256, "sliding_window_size": 512,
@@ -1222,10 +1220,12 @@ mod tests {
         let pool = 16384u64;
         let sliding_per_token = 2 * 128 * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
         let full_per_token = 2 * 256 * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
-        // Layers 0, 1, 4 slide at the 512-token ring; layer 3 shares layer
-        // 0's KV and charges nothing; layers 2 and 5 are full attention at
-        // the pool, using the ISWA global head dim.
-        let expected = 3 * 512 * sliding_per_token + 2 * pool * full_per_token;
+        // Layers 0, 1, 4 are sliding: rings bound KV per request, so the
+        // pool-wide worst case (many concurrent ≤window requests) is the
+        // pool at the sliding head dim — the window never caps admission.
+        // Layer 3 shares layer 0's KV and charges nothing; layers 2 and 5
+        // are full attention at the pool, using the ISWA global head dim.
+        let expected = 3 * pool * sliding_per_token + 2 * pool * full_per_token;
         assert_eq!(estimated_kv_pool_bytes(&geometry, pool), Some(expected));
     }
 
@@ -1283,8 +1283,9 @@ mod tests {
         }));
         assert_eq!(estimated_kv_pool_bytes(&unresolved_hybrid, 1000), None);
 
-        // A sliding annotation without a window is charged at the pool
-        // (conservative), not skipped.
+        // A sliding annotation charges the pool at the sliding head dim
+        // whether or not the manifest carries a window (rings are a
+        // per-request bound, so the window never lowers admission).
         let sliding_without_window = kv_geometry(serde_json::json!({
             "layer_count": 1, "attention_head_dim": 128, "kv_head_count": 2,
             "layer_types": ["sliding_attention"]
