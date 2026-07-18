@@ -14,7 +14,7 @@ use super::metrics::{
 use super::screens::chat::{
     ChatMessage, ReplyStats, SseEvent, count_visual_lines, parse_sse_line, split_thinking,
 };
-use super::{App, Modal, Screen, WizardStage};
+use super::{App, Modal, Screen, ServeFocus, WizardStage};
 
 use std::path::{Path, PathBuf};
 use std::process;
@@ -23,7 +23,7 @@ use std::time::Duration;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 fn new_app() -> App {
     App::with_hardware(HardwareInfo::for_tests())
@@ -58,7 +58,11 @@ fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
 
 /// Render the app to an off-screen buffer and flatten it to text.
 fn render(app: &App) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    render_sized(app, 120, 40)
+}
+
+fn render_sized(app: &App, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
     terminal
         .backend()
@@ -575,6 +579,25 @@ fn tab_bar_focus_works_even_when_chat_is_typing() {
 }
 
 #[test]
+fn esc_walks_back_through_screen_history() {
+    let mut app = new_app();
+    // Home → Models → Downloads pushes a real history stack.
+    app.on_key(key(KeyCode::Char('2')));
+    assert_eq!(app.screen, Screen::Models);
+    app.on_key(key(KeyCode::Char('3')));
+    assert_eq!(app.screen, Screen::Downloads);
+    // First Esc pops to Models, second all the way to Home — a single
+    // previous-screen slot used to lose the middle stop.
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Models);
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Home);
+    // Nothing left on the stack: Esc stays on Home.
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Home);
+}
+
+#[test]
 fn serve_while_running_surfaces_toast_instead_of_silent_no_op() {
     let mut app = new_app();
     app.server = Some(Job::running_with_log(vec![]));
@@ -654,7 +677,10 @@ fn chat_hint_screen_never_traps() {
         Screen::Serve,
         "back one level restores prior screen"
     );
-    // Stack is empty after the pop; further Esc lands on Home.
+    // The stack still remembers the original Chat visit; one more Esc pops
+    // there, and only with the stack empty does Esc fall back to Home.
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Chat);
     app.on_key(key(KeyCode::Esc));
     assert_eq!(app.screen, Screen::Home);
 }
@@ -666,6 +692,16 @@ fn help_closes_on_any_key() {
     assert!(app.show_help);
     app.on_key(key(KeyCode::Down));
     assert!(!app.show_help, "any key closes help");
+}
+
+#[test]
+fn tiny_terminal_gets_resize_hint_instead_of_broken_layout() {
+    let app = new_app();
+    let text = render_sized(&app, 50, 10);
+    assert!(text.contains("terminal too small"), "got: {text}");
+    // Back at a normal size the regular chrome renders again.
+    let text = render(&app);
+    assert!(text.contains("Home"));
 }
 
 #[test]
@@ -752,6 +788,84 @@ fn toasts_render_and_expire() {
     app.toasts[0].at = std::time::Instant::now() - std::time::Duration::from_secs(10);
     super::widgets::expire_toasts(&mut app.toasts);
     assert!(app.toasts.is_empty());
+}
+
+#[test]
+fn b_key_activates_banner_only_where_rendered() {
+    // Home with a ready server: b runs the banner action -> Chat.
+    let mut app = new_app();
+    app.server_ready = true;
+    app.on_key(key(KeyCode::Char('b')));
+    assert_eq!(app.screen, Screen::Chat);
+
+    // Models renders no journey banner: b falls through to the wizard and
+    // must not navigate.
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.server_ready = true;
+    app.on_key(key(KeyCode::Char('b')));
+    assert_eq!(app.screen, Screen::Models);
+    assert_eq!(app.stage, WizardStage::Families);
+}
+
+#[test]
+fn tab_bar_fallthrough_unfocuses_without_double_action() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.stage = WizardStage::Precision;
+    // Make the row deletable so a leaked `x` would open the delete modal.
+    app.families[app.family_idx].variants[app.precision_idx].installed = true;
+    app.focus_tab_bar();
+    assert!(app.focus_tabs);
+    app.on_key(key(KeyCode::Char('x')));
+    assert!(!app.focus_tabs, "any other key leaves the bar");
+    assert!(
+        app.modal.is_none(),
+        "x is consumed by the bar, not also opening the delete modal"
+    );
+}
+
+#[test]
+fn mouse_events_are_swallowed_while_help_is_open() {
+    let mut app = new_app();
+    let _ = render(&app); // records tab hit rects
+    let hits = app.tab_hits.take();
+    let models_rect = hits[1].0;
+    app.tab_hits.set(hits);
+    app.show_help = true;
+    // Left-click closes help but must not leak through to the tab bar.
+    app.on_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        models_rect.x + 1,
+        models_rect.y,
+    ));
+    assert!(!app.show_help, "left-click closes help");
+    assert_eq!(app.screen, Screen::Home, "click must not switch screens");
+    // Scrolls are swallowed entirely: help stays open, selection unmoved.
+    app.show_help = true;
+    app.on_mouse(mouse(MouseEventKind::ScrollDown, 0, 0));
+    assert!(app.show_help, "scroll does not close help");
+    assert_eq!(app.home_idx, 0, "scroll must not reach the screen below");
+}
+
+#[test]
+fn all_screens_render_on_tiny_geometry() {
+    for (w, h) in [(40u16, 10u16), (24, 8), (0, 0)] {
+        for screen in [
+            Screen::Home,
+            Screen::Models,
+            Screen::Downloads,
+            Screen::Serve,
+            Screen::Chat,
+        ] {
+            let mut app = new_app();
+            app.screen = screen;
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|frame| app.draw(frame))
+                .unwrap_or_else(|err| panic!("{screen:?} at {w}x{h}: {err}"));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -952,6 +1066,34 @@ fn filter_narrows_family_list_and_drill_in_maps_back() {
 }
 
 #[test]
+fn filter_mode_arrows_move_selection_without_leaving_filter() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.filtering = true;
+    assert_eq!(app.family_idx, 0);
+    app.on_key(key(KeyCode::Down));
+    assert!(app.filtering, "Down stays in filter mode");
+    assert_eq!(app.family_idx, 1);
+    app.on_key(key(KeyCode::Up));
+    assert!(app.filtering, "Up stays in filter mode");
+    assert_eq!(app.family_idx, 0);
+}
+
+#[test]
+fn paste_in_filter_mode_appends_and_clamps_selection() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.filtering = true;
+    app.family_idx = family_index(&app, "gemma4-12b");
+    app.on_paste("gemma4-e2b");
+    assert_eq!(app.filter, "gemma4-e2b");
+    assert_eq!(
+        app.families[app.family_idx].key, "gemma4-e2b",
+        "selection snaps back into the filtered set"
+    );
+}
+
+#[test]
 fn mtp_badge_is_magenta_not_yellow() {
     // Leave the default selection (family_idx 0) alone: the selected row's
     // own highlight style overrides span colors, so check the *other* MTP
@@ -1079,6 +1221,41 @@ fn click_on_precision_row_selects_and_advances() {
 }
 
 #[test]
+fn modal_click_outside_dismisses_and_chips_act() {
+    let mut app = new_app();
+    app.server = Some(Job::running_with_log(vec![]));
+    app.server_url = Some("http://127.0.0.1:8080".into());
+    app.modal = Some(Modal::StopServer);
+    let _ = render(&app); // draw once so chip hit-rects get recorded
+    // Click far outside the centered popup → dismisses like Esc.
+    app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+    assert!(app.modal.is_none(), "click outside dismisses the modal");
+    assert!(app.server_running(), "dismissal must not stop the server");
+    // Reopen and click the confirm chip → same as pressing Enter.
+    app.modal = Some(Modal::StopServer);
+    let _ = render(&app);
+    let confirm = app
+        .modal_hits
+        .get()
+        .confirm
+        .expect("stop modal has a confirm chip");
+    app.on_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        confirm.x + 1,
+        confirm.y,
+    ));
+    assert!(app.modal.is_none());
+    assert!(
+        app.toasts.iter().any(|t| t.text.contains("server stopped")),
+        "confirm chip triggers the modal action: {:?}",
+        app.toasts
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn delete_modal_requires_typed_word() {
     let mut app = new_app();
     app.modal = Some(Modal::DeleteModel {
@@ -1118,6 +1295,28 @@ fn delete_modal_n_dismisses_only_when_nothing_typed() {
     app.on_key(key(KeyCode::Char('d')));
     app.on_key(key(KeyCode::Char('n')));
     assert!(matches!(&app.modal, Some(Modal::DeleteModel { typed, .. }) if typed == "dn"));
+}
+
+#[test]
+fn delete_modal_h_dismisses_only_when_nothing_typed() {
+    let mut app = new_app();
+    app.modal = Some(Modal::DeleteModel {
+        family_idx: 0,
+        variant_idx: 0,
+        typed: String::new(),
+    });
+    // h (vim-left) dismisses like Esc/n while the confirm string is empty.
+    app.on_key(key(KeyCode::Char('h')));
+    assert!(app.modal.is_none());
+    // Once typing has started, h joins the confirm word instead.
+    app.modal = Some(Modal::DeleteModel {
+        family_idx: 0,
+        variant_idx: 0,
+        typed: String::new(),
+    });
+    app.on_key(key(KeyCode::Char('x')));
+    app.on_key(key(KeyCode::Char('h')));
+    assert!(matches!(&app.modal, Some(Modal::DeleteModel { typed, .. }) if typed == "xh"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1165,6 +1364,63 @@ fn cancel_running_download_asks_first() {
     app.on_key(key(KeyCode::Char('n')));
     assert!(app.modal.is_none());
     assert!(app.downloads[0].is_running());
+}
+
+#[test]
+fn cancelled_running_download_shows_cancelled_not_failed_code() {
+    let mut app = new_app();
+    app.screen = Screen::Downloads;
+    app.downloads
+        .push(test_task(Some(Job::running_with_log(vec![]))));
+    app.on_key(key(KeyCode::Char('x')));
+    app.on_key(key(KeyCode::Char('y')));
+    let task = &app.downloads[0];
+    assert!(task.cancelled);
+    assert_eq!(task.status_label(), "cancelled");
+    assert!(!task.is_failed(), "user-cancelled is not a failure");
+    let text = render(&app);
+    assert!(text.contains("cancelled"), "queue row shows cancelled");
+    assert!(
+        !text.contains("failed (-130)"),
+        "killed-by-user must not surface as failed (-130)"
+    );
+}
+
+#[test]
+fn download_failure_edge_toasts_retry_hint() {
+    let mut app = new_app();
+    app.screen = Screen::Downloads;
+    // A real child that exits non-zero at once produces the None → Some
+    // failure edge inside App::tick without any mocking.
+    let job = Job::spawn(process::Command::new("false"), None).expect("spawn false");
+    app.downloads.push(test_task(Some(job)));
+    for _ in 0..200 {
+        app.tick();
+        if app.downloads[0]
+            .job
+            .as_ref()
+            .is_some_and(|j| j.done.is_some())
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        app.downloads[0].is_failed(),
+        "child exit marks the task failed"
+    );
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.level == super::widgets::ToastLevel::Error
+                && t.text.contains("failed")
+                && t.text.contains("retry")),
+        "expected the retry-hint error toast: {:?}",
+        app.toasts
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1286,6 +1542,110 @@ fn stopping_server_asks_first() {
     app.screen = Screen::Serve;
     app.on_key(key(KeyCode::Char('x')));
     assert!(matches!(app.modal, Some(Modal::StopServer)));
+}
+
+#[test]
+fn server_dying_before_ready_toasts_error() {
+    let mut app = new_app();
+    // A server job that dies before printing a bind line: tick must surface
+    // an error toast (the ready->stopped crash path warns separately).
+    app.server = Some(Job::spawn(process::Command::new("false"), None).expect("spawn false"));
+    app.server_url = Some("http://127.0.0.1:8080".into());
+    assert!(app.server_running());
+    assert!(!app.server_ready);
+    for _ in 0..200 {
+        app.tick();
+        if !app.server_running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!app.server_running(), "child exit ends the running state");
+    assert!(!app.server_ready);
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.level == super::widgets::ToastLevel::Error
+                && t.text.contains("server failed to start")),
+        "expected a failed-to-start error toast: {:?}",
+        app.toasts
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn serve_footer_shows_field_editing_hints() {
+    let mut app = new_app();
+    app.screen = Screen::Serve;
+    for focus in [ServeFocus::Host, ServeFocus::Port] {
+        app.serve_focus = focus;
+        let text = render(&app);
+        assert!(
+            text.contains("type to edit"),
+            "field focus advertises typing: {text:.200}"
+        );
+        assert!(
+            !text.contains("Enter start"),
+            "list-mode hints must not show while editing a field"
+        );
+    }
+}
+
+#[test]
+fn serve_fields_support_caret_editing() {
+    let mut app = new_app();
+    app.screen = Screen::Serve;
+    app.serve_focus = ServeFocus::Host;
+    app.host_cursor = app.host.chars().count();
+    // Insert at the caret, not blindly at the end.
+    app.on_key(key(KeyCode::Left));
+    app.on_key(key(KeyCode::Left));
+    app.on_key(key(KeyCode::Char('X')));
+    assert_eq!(app.host, "127.0.0X.1");
+    // Backspace removes before the caret, Delete removes at it.
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(app.host, "127.0.0.1");
+    app.on_key(key(KeyCode::Home));
+    app.on_key(key(KeyCode::Delete));
+    assert_eq!(app.host, "27.0.0.1");
+    app.on_key(key(KeyCode::End));
+    app.on_key(key(KeyCode::Char('9')));
+    assert_eq!(app.host, "27.0.0.19");
+    // Tab moves Host → Port with the caret at the end of the port field.
+    app.on_key(key(KeyCode::Tab));
+    assert!(matches!(app.serve_focus, ServeFocus::Port));
+    assert_eq!(app.port_cursor, app.port.chars().count());
+}
+
+#[test]
+fn serve_paste_inserts_at_caret_and_strips_controls() {
+    let mut app = new_app();
+    app.screen = Screen::Serve;
+    app.serve_focus = ServeFocus::Port;
+    app.port = "800".into();
+    app.port_cursor = 1;
+    app.on_paste("8\n8");
+    assert_eq!(app.port, "88800");
+    assert_eq!(app.port_cursor, 3);
+}
+
+#[test]
+fn serve_rejects_invalid_host_before_spawning() {
+    let mut app = new_app();
+    app.screen = Screen::Serve;
+    app.host = "bad host!".into();
+    app.serve_installed(0, 0);
+    assert!(app.server.is_none(), "invalid host must not spawn");
+    assert!(
+        app.toasts.iter().any(|t| t.text.contains("host")),
+        "expected a host validation toast: {:?}",
+        app.toasts
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1616,6 +1976,44 @@ fn chat_ctrl_l_clears_transcript() {
     assert!(!app.chat.messages.is_empty());
     app.on_key(key(KeyCode::Enter));
     assert!(app.chat.messages.is_empty());
+}
+
+#[test]
+fn chat_clear_modal_confirm_or_dismiss() {
+    // y confirms like Enter and toasts.
+    let mut app = chat_ready_app();
+    app.chat.messages.push(ChatMessage {
+        from_user: true,
+        content: "hi".into(),
+        stats: None,
+    });
+    app.on_key(ctrl_key('l'));
+    app.on_key(key(KeyCode::Char('y')));
+    assert!(app.chat.messages.is_empty(), "y confirms the clear");
+    assert!(
+        app.toasts.iter().any(|t| t.text.contains("chat cleared")),
+        "clearing raises a toast"
+    );
+
+    // Esc / n / h / Left all dismiss and keep the transcript.
+    for dismiss in [
+        key(KeyCode::Esc),
+        key(KeyCode::Char('n')),
+        key(KeyCode::Char('h')),
+        key(KeyCode::Left),
+    ] {
+        let mut app = chat_ready_app();
+        app.chat.messages.push(ChatMessage {
+            from_user: true,
+            content: "hi".into(),
+            stats: None,
+        });
+        app.on_key(ctrl_key('l'));
+        assert!(matches!(app.modal, Some(Modal::ClearChat)));
+        app.on_key(dismiss);
+        assert!(app.modal.is_none(), "dismiss closes the modal");
+        assert_eq!(app.chat.messages.len(), 1, "transcript survives dismiss");
+    }
 }
 
 #[test]

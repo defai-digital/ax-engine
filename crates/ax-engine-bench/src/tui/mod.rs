@@ -90,7 +90,7 @@ pub(crate) fn cmd_tui(args: &[OsString]) -> Result<u8, String> {
              launches ax-engine-server; Chat streams replies with markdown,\n\
              live tok/s stats, prompt history (↑), and /clear /copy /retry.\n\
              Keys: 1-5 screens (Ctrl+1-5 while typing) · ↑↓ move · Enter select\n\
-             · Esc back one level · ? help · q quit\n\
+             · b next step · Esc back one level · ? help · q quit\n\
              (quitting asks first while jobs are running)."
         );
         return Ok(0);
@@ -294,6 +294,9 @@ struct App {
     pub serve_idx: usize,
     pub host: String,
     pub port: String,
+    /// Char-index carets for Host/Port text entry (0 = before the first char).
+    pub host_cursor: usize,
+    pub port_cursor: usize,
     pub server: Option<Job>,
     pub server_url: Option<String>,
     /// Set once the server job's log confirms it actually bound (not just spawned).
@@ -308,8 +311,8 @@ struct App {
     /// Up from the first content row enters this mode; Down/Enter leaves it.
     pub focus_tabs: bool,
 
-    /// Previous screen for Esc back-one-level (not a full history stack).
-    pub previous_screen: Option<Screen>,
+    /// Screen history for Esc back-one-level, oldest first (a real stack).
+    pub back_stack: Vec<Screen>,
     /// After a guided download finishes, start the server automatically.
     pub auto_serve_after_download: bool,
     /// After the server binds, jump to Chat automatically.
@@ -324,6 +327,8 @@ struct App {
     pub banner_rect: Cell<Rect>,
     /// Home first-run hero hit target.
     pub hero_rect: Cell<Rect>,
+    /// Active modal's popup + chip hit targets (mouse confirm/cancel).
+    modal_hits: Cell<widgets::ModalHits>,
 }
 
 impl App {
@@ -359,13 +364,15 @@ impl App {
             serve_idx: 0,
             host: "127.0.0.1".into(),
             port: "8080".into(),
+            host_cursor: "127.0.0.1".chars().count(),
+            port_cursor: "8080".chars().count(),
             server: None,
             server_url: None,
             server_ready: false,
             server_model: None,
             chat: ChatState::new(),
             focus_tabs: false,
-            previous_screen: None,
+            back_stack: Vec::new(),
             auto_serve_after_download: false,
             auto_chat_after_serve: false,
             tab_hits: Cell::new(Vec::new()),
@@ -373,6 +380,7 @@ impl App {
             step_header_rect: Cell::new(Rect::default()),
             banner_rect: Cell::new(Rect::default()),
             hero_rect: Cell::new(Rect::default()),
+            modal_hits: Cell::new(widgets::ModalHits::default()),
         }
     }
 
@@ -642,10 +650,14 @@ impl App {
         self.navigate_to(screen);
     }
 
-    /// Navigate to a screen, pushing the current one for Esc back-one-level.
+    /// Navigate to a screen, pushing the current one onto the Esc back stack.
     pub(crate) fn navigate_to(&mut self, screen: Screen) {
         if self.screen != screen {
-            self.previous_screen = Some(self.screen);
+            self.back_stack.push(self.screen);
+            // Long sessions must not grow the stack without bound.
+            if self.back_stack.len() > 16 {
+                self.back_stack.remove(0);
+            }
         }
         self.screen = screen;
         self.focus_tabs = false;
@@ -653,12 +665,20 @@ impl App {
 
     /// Pop the previous screen if any. Returns true when a pop happened.
     pub(crate) fn go_back_screen(&mut self) -> bool {
-        if let Some(prev) = self.previous_screen.take() {
+        if let Some(prev) = self.back_stack.pop() {
             self.screen = prev;
             self.focus_tabs = false;
             true
         } else {
             false
+        }
+    }
+
+    /// Esc/←/h "back" from a top-level screen: step back one level when there
+    /// is history, otherwise land on Home (the one screen with no back).
+    pub(crate) fn back_or_home(&mut self) {
+        if !self.go_back_screen() {
+            self.navigate_to(Screen::Home);
         }
     }
 
@@ -951,6 +971,22 @@ impl App {
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
         if self.modal.is_some() {
+            // The dialog owns the mouse: the first chip acts as confirm and
+            // the last as cancel; a click outside dismisses like Esc.
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                let hits = self.modal_hits.get();
+                let inside = |rect: Rect| {
+                    mouse.column >= rect.x
+                        && mouse.column < rect.x + rect.width
+                        && mouse.row >= rect.y
+                        && mouse.row < rect.y + rect.height
+                };
+                if hits.confirm.is_some_and(inside) {
+                    self.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                } else if hits.cancel.is_some_and(inside) || !inside(hits.popup) {
+                    self.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                }
+            }
             return;
         }
         if self.show_help {
@@ -998,11 +1034,23 @@ impl App {
                 self.filter.push_str(text);
                 self.clamp_family_idx_to_filter();
             }
-            Screen::Serve => match self.serve_focus {
-                ServeFocus::Host => self.host.push_str(text),
-                ServeFocus::Port => self.port.push_str(text),
-                ServeFocus::List => {}
-            },
+            Screen::Serve => {
+                // Single-line fields: drop newlines/control chars from pastes.
+                let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+                match self.serve_focus {
+                    ServeFocus::Host => {
+                        let at = widgets::char_boundary(&self.host, self.host_cursor);
+                        self.host.insert_str(at, &clean);
+                        self.host_cursor += clean.chars().count();
+                    }
+                    ServeFocus::Port => {
+                        let at = widgets::char_boundary(&self.port, self.port_cursor);
+                        self.port.insert_str(at, &clean);
+                        self.port_cursor += clean.chars().count();
+                    }
+                    ServeFocus::List => {}
+                }
+            }
             _ => {}
         }
     }
@@ -1084,6 +1132,23 @@ impl App {
 
     // -- server lifecycle -------------------------------------------------------
 
+    /// Validation message for the host field, if it holds non-empty text that
+    /// is neither a hostname nor an IP literal (IPv4 or bracketed/plain IPv6).
+    pub fn host_error(&self) -> Option<&'static str> {
+        let trimmed = self.host.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let valid = trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'));
+        if valid {
+            None
+        } else {
+            Some("host must be a hostname or IP address")
+        }
+    }
+
     /// Validation message for the port field, if it holds non-empty, non-numeric, or out-of-range text.
     pub fn port_error(&self) -> Option<&'static str> {
         let trimmed = self.port.trim();
@@ -1101,6 +1166,10 @@ impl App {
     }
 
     fn serve_installed(&mut self, family_idx: usize, variant_idx: usize) {
+        if let Some(err) = self.host_error() {
+            self.toast_error(err);
+            return;
+        }
         if let Some(err) = self.port_error() {
             self.toast_error(err);
             return;
@@ -1122,6 +1191,10 @@ impl App {
     }
 
     fn start_server_for_download(&mut self, download_idx: usize) {
+        if let Some(err) = self.host_error() {
+            self.toast_error(err);
+            return;
+        }
         if let Some(err) = self.port_error() {
             self.toast_error(err);
             return;
@@ -1343,11 +1416,34 @@ impl App {
 
     // -- rendering ------------------------------------------------------------
 
+    /// Smallest usable terminal; below this we show a resize hint instead of
+    /// silently clamping every panel to zero height.
+    const MIN_TERM_WIDTH: u16 = 60;
+    const MIN_TERM_HEIGHT: u16 = 15;
+
     pub fn draw(&self, frame: &mut Frame) {
+        let term = frame.area();
+        if term.width < Self::MIN_TERM_WIDTH || term.height < Self::MIN_TERM_HEIGHT {
+            let popup = widgets::centered_rect(44.min(term.width), 4.min(term.height), term);
+            let lines = vec![
+                Line::from(Span::styled("terminal too small", theme::warn())),
+                Line::from(Span::styled(
+                    format!(
+                        "need at least {}×{} — resize to continue",
+                        Self::MIN_TERM_WIDTH,
+                        Self::MIN_TERM_HEIGHT
+                    ),
+                    theme::label(),
+                )),
+            ];
+            frame.render_widget(Paragraph::new(lines), popup);
+            return;
+        }
         // Cleared each frame; the active content list re-records it.
         self.content_list_rect.set(Rect::default());
         self.banner_rect.set(Rect::default());
         self.hero_rect.set(Rect::default());
+        self.modal_hits.set(widgets::ModalHits::default());
         let outer = Layout::vertical([
             Constraint::Length(2), // tab bar + separator
             Constraint::Min(0),    // content
@@ -1536,10 +1632,10 @@ impl App {
                         key_hint("Enter"),
                         key_label(" download"),
                         key_sep(),
-                        key_hint("c"),
+                        key_hint("f"),
                         key_label(" folder"),
                         key_sep(),
-                        key_hint("d"),
+                        key_hint("r"),
                         key_label(" default"),
                         key_sep(),
                         key_hint("Esc"),
@@ -1691,7 +1787,7 @@ impl App {
             Screen::Downloads => "Downloads: Enter serve when ready · x cancel",
             Screen::Serve => "Serve: Enter start · x stop · c copy URL · t chat · Tab fields",
             Screen::Chat => {
-                "Chat: Enter send · ↑ history · Ctrl+Y copy · Ctrl+R retry · Ctrl+L clear · / commands · PgUp/PgDn scroll"
+                "Chat: Enter send · ↑ history · Ctrl+J newline · Ctrl+U clear draft · Ctrl+Y copy · Ctrl+R retry · Ctrl+L clear · / commands · PgUp/PgDn scroll"
             }
         };
         let lines = vec![
@@ -1740,7 +1836,7 @@ impl App {
     }
 
     fn draw_modal(&self, frame: &mut Frame, area: Rect, modal: &Modal) {
-        match modal {
+        let hits = match modal {
             Modal::Quit { downloads, server } => {
                 let mut lines = Vec::new();
                 if *downloads > 0 {
@@ -1768,7 +1864,7 @@ impl App {
                         theme::key_chip_dim("Esc stay"),
                     ],
                     theme::WARN,
-                );
+                )
             }
             Modal::ServeReady { download_idx } => {
                 let label = self
@@ -1787,7 +1883,7 @@ impl App {
                         theme::key_chip_dim("Esc not now"),
                     ],
                     theme::OK,
-                );
+                )
             }
             Modal::ServeInstalled {
                 family_idx,
@@ -1819,7 +1915,7 @@ impl App {
                         theme::key_chip_dim("Esc back"),
                     ],
                     theme::OK,
-                );
+                )
             }
             Modal::CancelDownload { download_idx } => {
                 let label = self
@@ -1840,7 +1936,7 @@ impl App {
                         theme::key_chip_dim("Esc keep"),
                     ],
                     theme::WARN,
-                );
+                )
             }
             Modal::DeleteModel {
                 family_idx,
@@ -1921,39 +2017,46 @@ impl App {
                         vec![theme::key_chip_dim("Esc keep")]
                     },
                     theme::DANGER,
-                );
+                )
             }
-            Modal::StopServer => {
-                widgets::draw_modal_with(
-                    frame,
-                    area,
-                    "⚠ Stop server",
-                    vec![Line::raw("Stop the running server?")],
-                    vec![
-                        theme::key_chip_danger("y stop"),
-                        theme::key_sep(),
-                        theme::key_chip_dim("Esc keep"),
-                    ],
-                    theme::WARN,
-                );
+            Modal::StopServer => widgets::draw_modal_with(
+                frame,
+                area,
+                "⚠ Stop server",
+                vec![Line::raw("Stop the running server?")],
+                vec![
+                    theme::key_chip_danger("y stop"),
+                    theme::key_sep(),
+                    theme::key_chip_dim("Esc keep"),
+                ],
+                theme::WARN,
+            ),
+            Modal::ClearChat => widgets::draw_modal_with(
+                frame,
+                area,
+                "⚠ Clear chat",
+                vec![Line::raw(
+                    "Clear the whole transcript? This cannot be undone.",
+                )],
+                vec![
+                    theme::key_chip_danger("y clear"),
+                    theme::key_sep(),
+                    theme::key_chip_dim("Esc keep"),
+                ],
+                theme::WARN,
+            ),
+            Modal::DestPicker(picker) => {
+                self.draw_dest_picker(frame, area, picker);
+                widgets::ModalHits {
+                    popup: widgets::centered_rect(
+                        72.min(area.width.saturating_sub(2)),
+                        22.min(area.height.saturating_sub(2)),
+                        area,
+                    ),
+                    ..Default::default()
+                }
             }
-            Modal::ClearChat => {
-                widgets::draw_modal_with(
-                    frame,
-                    area,
-                    "⚠ Clear chat",
-                    vec![Line::raw(
-                        "Clear the whole transcript? This cannot be undone.",
-                    )],
-                    vec![
-                        theme::key_chip_danger("y clear"),
-                        theme::key_sep(),
-                        theme::key_chip_dim("Esc keep"),
-                    ],
-                    theme::WARN,
-                );
-            }
-            Modal::DestPicker(picker) => self.draw_dest_picker(frame, area, picker),
-        }
+        };
+        self.modal_hits.set(hits);
     }
 }

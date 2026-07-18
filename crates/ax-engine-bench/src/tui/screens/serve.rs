@@ -30,7 +30,10 @@ impl App {
                         self.serve_idx += 1;
                     }
                 }
-                KeyCode::Tab => self.serve_focus = ServeFocus::Host,
+                KeyCode::Tab => {
+                    self.host_cursor = self.host.chars().count();
+                    self.serve_focus = ServeFocus::Host;
+                }
                 KeyCode::Enter => {
                     if self.server_ready {
                         self.navigate_to(Screen::Chat);
@@ -53,11 +56,7 @@ impl App {
                 }
                 KeyCode::Char('c') => self.copy_server_url(),
                 KeyCode::Char('t') => self.navigate_to(Screen::Chat),
-                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc if !self.go_back_screen() => {
-                    self.screen = Screen::Home;
-                    self.focus_tabs = false;
-                    self.previous_screen = None;
-                }
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => self.back_or_home(),
                 _ => {}
             },
             ServeFocus::Host => self.edit_field(code, true),
@@ -66,24 +65,53 @@ impl App {
     }
 
     fn edit_field(&mut self, code: KeyCode, is_host: bool) {
-        let field = if is_host {
-            &mut self.host
-        } else {
-            &mut self.port
-        };
+        // Focus changes first so the field borrow below stays local.
         match code {
-            KeyCode::Char(c) => field.push(c),
-            KeyCode::Backspace => {
-                field.pop();
-            }
             KeyCode::Tab => {
-                self.serve_focus = if is_host {
-                    ServeFocus::Port
+                if is_host {
+                    self.port_cursor = self.port.chars().count();
+                    self.serve_focus = ServeFocus::Port;
                 } else {
-                    ServeFocus::List
-                };
+                    self.serve_focus = ServeFocus::List;
+                }
+                return;
             }
-            KeyCode::Enter | KeyCode::Esc => self.serve_focus = ServeFocus::List,
+            KeyCode::Enter | KeyCode::Esc => {
+                self.serve_focus = ServeFocus::List;
+                return;
+            }
+            _ => {}
+        }
+        let (field, cursor) = if is_host {
+            (&mut self.host, &mut self.host_cursor)
+        } else {
+            (&mut self.port, &mut self.port_cursor)
+        };
+        let len = field.chars().count();
+        *cursor = (*cursor).min(len);
+        match code {
+            KeyCode::Left => *cursor = cursor.saturating_sub(1),
+            KeyCode::Right => *cursor = (*cursor + 1).min(len),
+            KeyCode::Home => *cursor = 0,
+            KeyCode::End => *cursor = len,
+            KeyCode::Backspace => {
+                if *cursor > 0 {
+                    let at = widgets::char_boundary(field, *cursor - 1);
+                    field.remove(at);
+                    *cursor -= 1;
+                }
+            }
+            KeyCode::Delete => {
+                if *cursor < len {
+                    let at = widgets::char_boundary(field, *cursor);
+                    field.remove(at);
+                }
+            }
+            KeyCode::Char(c) => {
+                let at = widgets::char_boundary(field, *cursor);
+                field.insert(at, c);
+                *cursor += 1;
+            }
             _ => {}
         }
     }
@@ -241,8 +269,18 @@ impl App {
     }
 
     fn draw_server_panel(&self, frame: &mut Frame, area: Rect) {
-        let host_line = field_line("Host", &self.host, self.serve_focus == ServeFocus::Host);
-        let port_line = field_line("Port", &self.port, self.serve_focus == ServeFocus::Port);
+        let host_line = field_line(
+            "Host",
+            &self.host,
+            self.serve_focus == ServeFocus::Host,
+            self.host_cursor,
+        );
+        let port_line = field_line(
+            "Port",
+            &self.port,
+            self.serve_focus == ServeFocus::Port,
+            self.port_cursor,
+        );
         let status = match (&self.server_url, &self.server) {
             (Some(url), Some(job)) if job.done.is_none() && self.server_ready => Line::from(vec![
                 Span::styled(format!(" {} ", theme::icon::RUNNING), theme::ok()),
@@ -278,7 +316,7 @@ impl App {
                 Span::styled("stopped — pick a model and press Enter", theme::label()),
             ]),
         };
-        let error_line = match self.port_error() {
+        let error_line = match self.host_error().or_else(|| self.port_error()) {
             Some(err) => Line::from(Span::styled(err, theme::danger())),
             None => Line::raw(""),
         };

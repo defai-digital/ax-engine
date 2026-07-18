@@ -15,7 +15,7 @@ use crate::tui::catalog;
 use crate::tui::jobs::{self, SPINNER};
 use crate::tui::theme;
 use crate::tui::widgets::{self, ToastLevel};
-use crate::tui::{App, Modal, Screen};
+use crate::tui::{App, Modal};
 
 impl App {
     pub(crate) fn on_key_downloads(&mut self, code: KeyCode) {
@@ -72,11 +72,7 @@ impl App {
                     self.toast_warn(format!("{label} removed from queue"));
                 }
             }
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc if !self.go_back_screen() => {
-                self.screen = Screen::Home;
-                self.focus_tabs = false;
-                self.previous_screen = None;
-            }
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => self.back_or_home(),
             _ => {}
         }
     }

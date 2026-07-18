@@ -59,10 +59,8 @@ impl App {
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
                     if !self.filter.is_empty() {
                         self.filter.clear();
-                    } else if !self.go_back_screen() {
-                        self.screen = Screen::Home;
-                        self.focus_tabs = false;
-                        self.previous_screen = None;
+                    } else {
+                        self.back_or_home();
                     }
                 }
                 _ => {}
@@ -134,10 +132,10 @@ impl App {
             WizardStage::Confirm => match code {
                 KeyCode::Up | KeyCode::Char('k') => self.focus_tab_bar(),
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.confirm_download(),
-                KeyCode::Char('c') => {
+                KeyCode::Char('f') => {
                     self.modal = Some(Modal::DestPicker(DirectoryPicker::new()));
                 }
-                KeyCode::Char('d') => {
+                KeyCode::Char('r') => {
                     self.confirm_dest = None;
                     self.toast("using the shared HF cache");
                 }
@@ -904,7 +902,7 @@ impl App {
             Span::raw("  "),
             Span::styled(" Enter download ", theme::cta()),
             Span::styled(
-                "  c change folder  ·  d default cache  ·  Esc back",
+                "  f change folder  ·  r default cache  ·  Esc back",
                 theme::label(),
             ),
         ]));

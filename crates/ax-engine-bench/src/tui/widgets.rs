@@ -100,7 +100,18 @@ pub(super) fn draw_toasts(frame: &mut Frame, area: Rect, toasts: &[Toast]) {
     }
 }
 
+/// Click targets recorded while drawing a modal: the dialog popup plus the
+/// first (confirm) and last (cancel) key chip, so mouse clicks map back to
+/// Enter/Esc through the normal key path.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ModalHits {
+    pub popup: Rect,
+    pub confirm: Option<Rect>,
+    pub cancel: Option<Rect>,
+}
+
 /// Modal variant with dimmed scrim, severity-colored border, and key chips.
+/// Returns the click targets for the rendered dialog.
 pub(super) fn draw_modal_with(
     frame: &mut Frame,
     area: Rect,
@@ -108,7 +119,7 @@ pub(super) fn draw_modal_with(
     mut lines: Vec<Line>,
     hints: Vec<Span<'static>>,
     border_color: Color,
-) {
+) -> ModalHits {
     // Dim the whole screen so the dialog clearly owns focus.
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(theme::SCRIM_BG).fg(theme::MUTED)),
@@ -117,6 +128,27 @@ pub(super) fn draw_modal_with(
     let width = 64.min(area.width.saturating_sub(4)).max(20);
     let height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
     let popup = centered_rect(width, height, area);
+    // Chip hit-rects: the hint spans render on the last content row, laid out
+    // consecutively from the left inner edge.
+    let hints_y = popup.y + popup.height.saturating_sub(2);
+    let mut chip_x = popup.x + 1;
+    let mut chip_rects: Vec<Rect> = Vec::new();
+    for span in &hints {
+        let w = span.width() as u16;
+        chip_rects.push(Rect {
+            x: chip_x,
+            y: hints_y,
+            width: w,
+            height: 1,
+        });
+        chip_x = chip_x.saturating_add(w);
+    }
+    let (confirm, cancel) = match chip_rects.len() {
+        0 => (None, None),
+        // A lone chip is always the dismiss affordance (e.g. "Esc keep").
+        1 => (None, chip_rects.first().copied()),
+        _ => (chip_rects.first().copied(), chip_rects.last().copied()),
+    };
     lines.push(Line::raw(""));
     lines.push(Line::from(hints));
     frame.render_widget(Clear, popup);
@@ -136,6 +168,11 @@ pub(super) fn draw_modal_with(
             .wrap(Wrap { trim: false }),
         popup,
     );
+    ModalHits {
+        popup,
+        confirm,
+        cancel,
+    }
 }
 
 pub(super) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
@@ -298,26 +335,53 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn field_line(label: &str, value: &str, active: bool) -> Line<'static> {
-    let value_style = if active {
-        // Match list selection so focused Host/Port fields read as "cursor here".
-        Style::default().fg(theme::ON_SELECT).bg(theme::SELECT)
-    } else {
-        Style::default().fg(theme::DIM)
-    };
+/// Byte offset of the `idx`-th char boundary in `text` (end of string when
+/// `idx` is past the last char). Char-based editing never splits a codepoint.
+pub(super) fn char_boundary(text: &str, idx: usize) -> usize {
+    text.char_indices()
+        .nth(idx)
+        .map(|(byte, _)| byte)
+        .unwrap_or(text.len())
+}
+
+/// Host/Port row. When `active`, the value renders as an amber bar with an
+/// inverted caret cell at char index `cursor` (trailing blank when at end).
+pub(super) fn field_line(label: &str, value: &str, active: bool, cursor: usize) -> Line<'static> {
     let prefix = if active {
         format!("{} ", theme::icon::RUNNING)
     } else {
         "  ".into()
     };
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             prefix,
             Style::default().fg(if active { theme::SELECT } else { theme::MUTED }),
         ),
         Span::styled(format!("{label}: "), theme::label()),
-        Span::styled(format!(" {value} "), value_style),
-    ])
+    ];
+    if !active {
+        spans.push(Span::styled(
+            format!(" {value} "),
+            Style::default().fg(theme::DIM),
+        ));
+        return Line::from(spans);
+    }
+    let bar = Style::default().fg(theme::ON_SELECT).bg(theme::SELECT);
+    let caret = Style::default().fg(theme::SELECT).bg(theme::ON_SELECT);
+    let len = value.chars().count();
+    let cursor = cursor.min(len);
+    spans.push(Span::styled(" ", bar));
+    for (i, c) in value.chars().enumerate() {
+        spans.push(Span::styled(
+            c.to_string(),
+            if i == cursor { caret } else { bar },
+        ));
+    }
+    if cursor == len {
+        spans.push(Span::styled(" ", caret));
+    }
+    spans.push(Span::styled(" ", bar));
+    Line::from(spans)
 }
 
 /// Fit `text` into exactly `width` columns for aligned list rows: space-padded

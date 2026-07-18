@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::tui::jobs::Job;
 use crate::tui::markdown::render_markdown;
 use crate::tui::theme;
-use crate::tui::{App, Modal, Screen, widgets};
+use crate::tui::{App, Modal, widgets};
 
 pub(crate) struct ChatMessage {
     pub from_user: bool,
@@ -270,11 +270,8 @@ impl App {
             if matches!(
                 key.code,
                 KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace
-            ) && !self.go_back_screen()
-            {
-                self.screen = Screen::Home;
-                self.focus_tabs = false;
-                self.previous_screen = None;
+            ) {
+                self.back_or_home();
             }
             return;
         }
@@ -283,10 +280,8 @@ impl App {
             if self.chat.streaming() {
                 self.chat.cancel();
                 self.toast_warn("reply cancelled");
-            } else if !self.go_back_screen() {
-                self.screen = Screen::Home;
-                self.focus_tabs = false;
-                self.previous_screen = None;
+            } else {
+                self.back_or_home();
             }
             return;
         }
