@@ -226,7 +226,12 @@ impl OpenAiStreamDriver {
             GenerateStreamEvent::Step(payload) => {
                 let request_id = payload.request.request_id;
                 let model_id = payload.request.model_id.clone();
-                let decoded = self.decode_step_text(tx, &payload);
+                let decoded = match self.decode_step_text(tx, &payload) {
+                    Ok(decoded) => decoded,
+                    // Decode already emitted error + [DONE]; stop the driver so
+                    // later steps cannot append content after the terminal frame.
+                    Err(()) => return false,
+                };
                 // Gemma 4 reasoning rides channel tokens the filter just
                 // captured — drain even when no content tokens survived.
                 if !self.emit_gemma4_reasoning(tx, request_id, &model_id) {
@@ -341,7 +346,7 @@ impl OpenAiStreamDriver {
         &mut self,
         tx: &StreamEventSender,
         payload: &ax_engine_sdk::GenerateStreamStepEvent,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, ()> {
         match self.stream_kind {
             OpenAiStreamKind::Completion => stream_delta_text(
                 &payload.delta_text,
@@ -358,7 +363,7 @@ impl OpenAiStreamDriver {
                 {
                     filtered = filter.filter(&payload.delta_tokens);
                     if filtered.is_empty() {
-                        return None;
+                        return Ok(None);
                     }
                     filtered.as_slice()
                 } else {
@@ -938,21 +943,36 @@ fn native_mlx_openai_stream_tokenizer(
         })
 }
 
+/// Decode a step's text. `Ok(None)` means "no text this step" (empty tokens or
+/// no decoder); `Err(())` means a decode failure already emitted error+[DONE]
+/// and the stream driver must stop.
 fn stream_delta_text(
     delta_text: &Option<String>,
     delta_tokens: &[u32],
     decoder: Option<&mut IncrementalDecoder>,
     tx: &StreamEventSender,
-) -> Option<String> {
+) -> Result<Option<String>, ()> {
     if let Some(delta_text) = delta_text {
-        return Some(delta_text.clone());
+        return Ok(Some(delta_text.clone()));
     }
     if delta_tokens.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let decoder = decoder?;
-    match decoder.push(delta_tokens) {
-        Ok(text) => Some(text),
+    let Some(decoder) = decoder else {
+        return Ok(None);
+    };
+    map_stream_decode_result(decoder.push(delta_tokens), tx)
+}
+
+/// Shared error mapping so a decode failure emits the terminal SSE error frame
+/// and surfaces `Err(())` — callers must stop the driver (not treat it as an
+/// empty step).
+fn map_stream_decode_result(
+    result: Result<String, ax_engine_sdk::EngineTokenizerError>,
+    tx: &StreamEventSender,
+) -> Result<Option<String>, ()> {
+    match result {
+        Ok(text) => Ok(Some(text)),
         Err(error) => {
             send_stream_error(
                 tx,
@@ -960,7 +980,7 @@ fn stream_delta_text(
                     "failed to decode native MLX OpenAI stream tokens: {error}"
                 )),
             );
-            None
+            Err(())
         }
     }
 }
@@ -1221,6 +1241,66 @@ mod gpt_oss_harmony_stream_filter_tests {
         ];
         // Unknown channel body dropped; trailing content after end is emitted.
         assert_eq!(filter.filter(&tokens), vec![300]);
+    }
+}
+
+#[cfg(test)]
+mod stream_delta_text_tests {
+    use ax_engine_sdk::EngineTokenizerError;
+    use tokio::sync::mpsc;
+
+    use super::{map_stream_decode_result, stream_delta_text};
+
+    #[test]
+    fn empty_tokens_are_ok_none() {
+        let (tx, _rx) = mpsc::channel(1);
+        assert_eq!(stream_delta_text(&None, &[], None, &tx), Ok(None));
+    }
+
+    #[test]
+    fn explicit_delta_text_bypasses_decoder() {
+        let (tx, _rx) = mpsc::channel(1);
+        assert_eq!(
+            stream_delta_text(&Some("hello".to_string()), &[1, 2, 3], None, &tx),
+            Ok(Some("hello".to_string()))
+        );
+    }
+
+    #[test]
+    fn decode_failure_emits_error_done_and_returns_err() {
+        // `send_stream_error` uses blocking_send (the production stream driver
+        // runs on a blocking worker), so this test must not nest inside a
+        // tokio runtime.
+        let (tx, mut rx) = mpsc::channel(4);
+        let result = map_stream_decode_result(
+            Err(EngineTokenizerError::Decode(
+                "synthetic decode failure".to_string(),
+            )),
+            &tx,
+        );
+        assert_eq!(
+            result,
+            Err(()),
+            "decode failure must stop the stream driver"
+        );
+        drop(tx);
+
+        let error_event = rx.blocking_recv().expect("error event");
+        let Ok(event) = error_event;
+        assert!(
+            format!("{event:?}").contains("synthetic decode failure"),
+            "error payload should carry the decode message: {event:?}"
+        );
+        let done_event = rx.blocking_recv().expect("[DONE] event");
+        let Ok(done) = done_event;
+        assert!(
+            format!("{done:?}").contains("[DONE]"),
+            "decode failure must emit terminal [DONE]: {done:?}"
+        );
+        assert!(
+            rx.blocking_recv().is_none(),
+            "no further events after [DONE]"
+        );
     }
 }
 

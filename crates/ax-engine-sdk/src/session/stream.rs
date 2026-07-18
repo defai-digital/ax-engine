@@ -153,6 +153,25 @@ impl<'a> GenerateStream<'a> {
             observed_event_count,
         })
     }
+
+    /// Cancel an in-flight native request when the stream is abandoned before
+    /// a terminal Response (or after a hard error). Matches the Python binding
+    /// Drop discipline so a dropped stream cannot keep co-decoding and holding
+    /// KV alongside later generate/stream calls on the same session.
+    fn cancel_native_if_active(&mut self) {
+        if !self.state.needs_native_cancel() {
+            return;
+        }
+        let request_id = self.state.request_id();
+        let _ = self.session.cancel_request(request_id);
+        self.state.finish();
+    }
+}
+
+impl Drop for GenerateStream<'_> {
+    fn drop(&mut self) {
+        self.cancel_native_if_active();
+    }
 }
 
 impl Iterator for GenerateStream<'_> {
@@ -163,7 +182,9 @@ impl Iterator for GenerateStream<'_> {
             Ok(Some(event)) => Some(Ok(event)),
             Ok(None) => None,
             Err(error) => {
-                self.state.finish();
+                // Cancel before marking Done so a subsequent Drop is a no-op
+                // and the native request does not keep running after the error.
+                self.cancel_native_if_active();
                 Some(Err(error))
             }
         }
@@ -200,6 +221,15 @@ impl GenerateStreamState {
             Self::Native(state) => state.request_id,
             Self::LlamaCpp(state) => state.request_id,
             Self::MlxLm(state) => state.request_id,
+        }
+    }
+
+    /// True when this stream still owns a live native request that must be
+    /// cancelled if the consumer abandons the stream.
+    fn needs_native_cancel(&self) -> bool {
+        match self {
+            Self::Native(state) => state.phase != GenerateStreamPhase::Done,
+            Self::LlamaCpp(_) | Self::MlxLm(_) => false,
         }
     }
 

@@ -81,7 +81,15 @@ pub(crate) fn parse_json_schema_response_format(
     })))
 }
 
-/// Walk the schema and reject any keyword outside the Phase A subset.
+/// JSON Schema type names the Phase A validator understands.
+const SUPPORTED_TYPES: &[&str] = &[
+    "object", "array", "string", "boolean", "null", "number", "integer",
+];
+
+/// Walk the schema and reject any keyword outside the Phase A subset, or any
+/// supported keyword whose value shape cannot be enforced. Malformed values
+/// must fail closed at request time — silently accepting them would advertise
+/// validation that is never applied.
 fn validate_schema_supported(schema: &Value, path: &str) -> Result<(), String> {
     let object = match schema {
         Value::Object(object) => object,
@@ -106,6 +114,7 @@ fn validate_schema_supported(schema: &Value, path: &str) -> Result<(), String> {
             ));
         }
         match keyword {
+            "type" => validate_type_keyword(value, path)?,
             "properties" => {
                 let Value::Object(properties) = value else {
                     return Err(format!("schema{path}/properties: expected an object"));
@@ -114,16 +123,94 @@ fn validate_schema_supported(schema: &Value, path: &str) -> Result<(), String> {
                     validate_schema_supported(subschema, &format!("{path}/properties/{name}"))?;
                 }
             }
+            "required" => {
+                let Value::Array(names) = value else {
+                    return Err(format!(
+                        "schema{path}/required: expected an array of strings"
+                    ));
+                };
+                if names.iter().any(|name| !name.is_string()) {
+                    return Err(format!(
+                        "schema{path}/required: every entry must be a string property name"
+                    ));
+                }
+            }
             "items" => validate_schema_supported(value, &format!("{path}/items"))?,
-            "additionalProperties" if !value.is_boolean() => {
+            "additionalProperties" => {
+                if !value.is_boolean() {
+                    return Err(format!(
+                        "schema{path}/additionalProperties: only boolean values are supported"
+                    ));
+                }
+            }
+            "enum" => {
+                let Value::Array(options) = value else {
+                    return Err(format!("schema{path}/enum: expected a non-empty array"));
+                };
+                if options.is_empty() {
+                    return Err(format!("schema{path}/enum: expected a non-empty array"));
+                }
+            }
+            "const" => {}
+            "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum"
+                if !value.is_number() =>
+            {
                 return Err(format!(
-                    "schema{path}/additionalProperties: only boolean values are supported"
+                    "schema{path}/{keyword}: expected a number (boolean draft-04 forms are not supported)"
+                ));
+            }
+            "minLength" | "maxLength" | "minItems" | "maxItems"
+                if !is_non_negative_integer(value) =>
+            {
+                return Err(format!(
+                    "schema{path}/{keyword}: expected a non-negative integer"
                 ));
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+fn validate_type_keyword(value: &Value, path: &str) -> Result<(), String> {
+    match value {
+        Value::String(name) => validate_type_name(name, path),
+        Value::Array(names) => {
+            if names.is_empty() {
+                return Err(format!("schema{path}/type: type array must not be empty"));
+            }
+            for entry in names {
+                let Some(name) = entry.as_str() else {
+                    return Err(format!(
+                        "schema{path}/type: every type-array entry must be a string"
+                    ));
+                };
+                validate_type_name(name, path)?;
+            }
+            Ok(())
+        }
+        _ => Err(format!(
+            "schema{path}/type: expected a string or array of strings"
+        )),
+    }
+}
+
+fn validate_type_name(name: &str, path: &str) -> Result<(), String> {
+    if SUPPORTED_TYPES.contains(&name) {
+        Ok(())
+    } else {
+        Err(format!(
+            "schema{path}/type: unsupported type {name}; supported types: {}",
+            SUPPORTED_TYPES.join(", ")
+        ))
+    }
+}
+
+fn is_non_negative_integer(value: &Value) -> bool {
+    // Require a JSON integer that `as_u64` can read — the same path
+    // `keyword_u64` uses at validation time — so a float like `2.0` cannot
+    // be accepted at request time and then silently skipped later.
+    value.as_u64().is_some()
 }
 
 /// Validate an output value against the schema. First mismatch wins; the
@@ -259,10 +346,14 @@ fn validate_type(expected: &Value, value: &Value, display_path: &str) -> Result<
         }
         _ => false,
     };
+    // Schema parse already rejects malformed `type` values; treat anything
+    // that slipped through as non-matching so validation stays fail-closed.
     let accepted = match expected {
         Value::String(name) => matches(name),
-        Value::Array(names) => names.iter().filter_map(Value::as_str).any(matches),
-        _ => true,
+        Value::Array(names) => {
+            !names.is_empty() && names.iter().filter_map(Value::as_str).any(matches)
+        }
+        _ => false,
     };
     if accepted {
         Ok(())
@@ -383,6 +474,90 @@ mod tests {
         }))
         .expect_err("schema-valued additionalProperties is unsupported");
         assert!(error.contains("additionalProperties"), "{error}");
+    }
+
+    #[test]
+    fn malformed_keyword_values_fail_closed_at_request_time() {
+        // Pre-fix these schemas were accepted and the broken constraint was
+        // then silently ignored during output validation — fail-open.
+        let cases = [
+            (
+                json!({"type": 123}),
+                "type",
+                "non-string type must be rejected",
+            ),
+            (
+                json!({"type": "widget"}),
+                "type",
+                "unknown type name must be rejected",
+            ),
+            (
+                json!({"type": "integer", "minimum": "0"}),
+                "minimum",
+                "string minimum must be rejected",
+            ),
+            (
+                json!({"type": "number", "exclusiveMinimum": true, "minimum": 0}),
+                "exclusiveMinimum",
+                "draft-04 boolean exclusiveMinimum must be rejected",
+            ),
+            (
+                json!({"type": "string", "minLength": "3"}),
+                "minLength",
+                "string minLength must be rejected",
+            ),
+            (
+                json!({"type": "string", "minLength": -1}),
+                "minLength",
+                "negative minLength must be rejected",
+            ),
+            (
+                json!({"type": "object", "required": "x"}),
+                "required",
+                "non-array required must be rejected",
+            ),
+            (
+                json!({"type": "object", "required": [1]}),
+                "required",
+                "non-string required entries must be rejected",
+            ),
+            (
+                json!({"enum": "a"}),
+                "enum",
+                "non-array enum must be rejected",
+            ),
+            (json!({"enum": []}), "enum", "empty enum must be rejected"),
+        ];
+        for (schema, needle, label) in cases {
+            let error = parse(json!({
+                "type": "json_schema",
+                "json_schema": {"schema": schema}
+            }))
+            .expect_err(label);
+            assert!(
+                error.contains(needle),
+                "{label}: expected {needle:?} in {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn well_formed_numeric_and_length_bounds_still_parse() {
+        parse(json!({
+            "type": "json_schema",
+            "json_schema": {"schema": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer", "minimum": 0, "maximum": 10, "exclusiveMinimum": -1},
+                    "s": {"type": "string", "minLength": 0, "maxLength": 8},
+                    "a": {"type": "array", "minItems": 0, "maxItems": 2, "items": {"type": "string"}}
+                },
+                "required": ["n"],
+                "additionalProperties": false
+            }}
+        }))
+        .expect("well-formed bounds must still parse")
+        .expect("contract");
     }
 
     #[test]

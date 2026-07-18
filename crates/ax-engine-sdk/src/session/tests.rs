@@ -1822,6 +1822,70 @@ fn shared_native_step_advances_multiple_stream_states_once() {
 }
 
 #[test]
+fn dropping_native_generate_stream_cancels_in_flight_request() {
+    // Mirror the Python GenerateStreamIterator Drop contract: abandoning a
+    // native stream mid-generation must cancel the request so it cannot keep
+    // co-decoding (and holding KV) with later session work.
+    let core = EngineCore::with_runtime_components(
+        KvManagerConfig::validated(CacheGroupId(0), 16, 64),
+        DeterministicRunner,
+        DeterministicSampler,
+    );
+    let config = mlx_test_session_config();
+    let mut session = EngineSession {
+        core,
+        runtime: config.runtime_report(),
+        config,
+        next_request_id: 1,
+        native_request_routes: BTreeMap::new(),
+        native_route_report_order: VecDeque::new(),
+        llama_requests: BTreeMap::new(),
+        llama_terminal_request_order: VecDeque::new(),
+    };
+    let request = GenerateRequest {
+        model_id: "qwen3".to_string(),
+        input_tokens: vec![1, 2],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 8,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    let request_id = {
+        let mut stream = session
+            .stream_generate(request)
+            .expect("native stream should start");
+        let event = stream
+            .next_event()
+            .expect("request event should apply")
+            .expect("request event should be present");
+        let GenerateStreamEvent::Request(request_event) = event else {
+            panic!("first stream event should be Request");
+        };
+        // Drop without consuming a terminal Response.
+        request_event.request.request_id
+    };
+    assert!(
+        !session.has_active_stepwise_requests(),
+        "dropping GenerateStream must cancel the native request"
+    );
+    let report = session
+        .request_report(request_id)
+        .expect("cancelled request should still expose a terminal report");
+    assert!(
+        report.cancel_requested
+            || matches!(
+                report.state,
+                SessionRequestState::Cancelled
+                    | SessionRequestState::Finished
+                    | SessionRequestState::Failed
+            ),
+        "cancelled stream request should be terminal or mark cancel_requested; got {report:?}"
+    );
+}
+
+#[test]
 fn has_active_stepwise_requests_reflects_native_terminal_state() {
     // A caller about to discard this session (e.g. a model hot-swap) must be
     // able to tell whether doing so would orphan a non-terminal stepwise
