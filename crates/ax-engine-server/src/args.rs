@@ -254,6 +254,14 @@ pub struct ServerArgs {
     #[arg(long = "stream-max-duration-secs")]
     pub stream_max_duration_secs: Option<u64>,
 
+    /// Idle-evict non-default resident models after this many seconds without
+    /// an admitted request (multi-model serving). The default model is never
+    /// evicted, and eviction only runs while the server is otherwise idle.
+    /// Unset (or non-positive) disables eviction. Falls back to
+    /// AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS.
+    #[arg(long = "model-idle-timeout-secs")]
+    pub model_idle_timeout_secs: Option<u64>,
+
     /// Opt-in mDNS / DNS-SD advertisement so AX Serving agents can discover
     /// this server on the local LAN (`_ax-engine._tcp`). Requires a non-loopback
     /// bind host (typically `--host 0.0.0.0`). See docs/LAN-DISCOVERY.md.
@@ -389,6 +397,19 @@ impl ServerArgs {
         )
         .unwrap_or(rps);
         Some(crate::rate_limit::RateLimitConfig { rps, burst })
+    }
+
+    /// Idle timeout for evicting non-default resident models; `None` disables.
+    pub(crate) fn resolved_model_idle_timeout(&self) -> Option<std::time::Duration> {
+        self.model_idle_timeout_secs
+            .map(|secs| secs.to_string())
+            .or_else(|| std::env::var("AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS").ok())
+            .as_deref()
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .filter(|secs| *secs > 0)
+            .map(std::time::Duration::from_secs)
     }
 
     pub(crate) fn resolved_stream_deadlines(

@@ -62,6 +62,7 @@ pub(crate) fn chat_delta_chunk(
             delta: OpenAiChatDelta {
                 role,
                 content: Some(content),
+                reasoning_content: None,
                 tool_calls: None,
             },
             finish_reason: None,
@@ -86,6 +87,7 @@ pub(crate) fn chat_tool_calls_delta_chunk(
             delta: OpenAiChatDelta {
                 role,
                 content: None,
+                reasoning_content: None,
                 tool_calls: Some(
                     tool_calls
                         .iter()
@@ -101,6 +103,72 @@ pub(crate) fn chat_tool_calls_delta_chunk(
                         })
                         .collect(),
                 ),
+            },
+            finish_reason: None,
+        }],
+    }
+}
+
+/// One completed tool call as a streaming delta (ADR-040 D1). `index` is the
+/// call's 0-based position across the whole stream — not within this chunk —
+/// and the first (only) fragment for a call carries `id`, `type`,
+/// `function.name`, and the full `function.arguments`, per the streaming
+/// tool-call conformance rules agent clients depend on.
+pub(crate) fn chat_single_tool_call_delta_chunk(
+    request_id: u64,
+    model: String,
+    role: Option<&'static str>,
+    call: &OpenAiToolCall,
+    index: u32,
+) -> OpenAiChatCompletionChunk {
+    OpenAiChatCompletionChunk {
+        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
+        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
+        created: unix_timestamp_secs(),
+        model,
+        system_fingerprint: None,
+        choices: vec![OpenAiChatCompletionChunkChoice {
+            index: 0,
+            delta: OpenAiChatDelta {
+                role,
+                content: None,
+                reasoning_content: None,
+                tool_calls: Some(vec![OpenAiToolCallDelta {
+                    index,
+                    id: Some(call.id.clone()),
+                    tool_type: Some(call.tool_type),
+                    function: Some(OpenAiFunctionCallDelta {
+                        name: Some(call.function.name.clone()),
+                        arguments: Some(call.function.arguments.clone()),
+                    }),
+                }]),
+            },
+            finish_reason: None,
+        }],
+    }
+}
+
+/// Streaming reasoning fragment (`delta.reasoning_content`), emitted for
+/// thinking models when the caller opted into reasoning output.
+pub(crate) fn chat_reasoning_delta_chunk(
+    request_id: u64,
+    model: String,
+    role: Option<&'static str>,
+    reasoning: String,
+) -> OpenAiChatCompletionChunk {
+    OpenAiChatCompletionChunk {
+        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
+        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
+        created: unix_timestamp_secs(),
+        model,
+        system_fingerprint: None,
+        choices: vec![OpenAiChatCompletionChunkChoice {
+            index: 0,
+            delta: OpenAiChatDelta {
+                role,
+                content: None,
+                reasoning_content: Some(reasoning),
+                tool_calls: None,
             },
             finish_reason: None,
         }],

@@ -7,6 +7,47 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Multi-model serving: `POST /v1/model/load` accepts `load_mode=add` to keep
+  multiple models resident (scoped to Qwen 3.6 27B/35B and Gemma 4
+  12B/26B/31B), with per-request `model` routing across the OpenAI, gRPC,
+  Ollama, and Anthropic surfaces and `POST /v1/model/unload` to retire a
+  retained model. Load/unload preflight runs synchronously before admission
+  drain.
+- Memory-aware load admission: loads whose projected peak resident set
+  (disk-derived estimate) exceeds the Metal working-set budget are rejected
+  with `422 insufficient_memory` before any drain;
+  `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off` disables the check.
+- `response_format: json_schema` (non-streaming): OpenAI request shape
+  accepted; output validated server-side against a documented schema subset
+  (`502 invalid_output` on mismatch); schemas using unsupported keywords are
+  rejected up front with `400 unsupported_json_schema` rather than silently
+  partially validated. Post-hoc validation, not constrained decoding.
+- Streaming reasoning: native Qwen ChatML and Gemma 4 chat streams emit
+  incremental `delta.reasoning_content` when the `reasoning` opt-in is set
+  (previously rejected for all streaming requests).
+- `usage.prompt_tokens_details.cached_tokens`: OpenAI responses report
+  per-request prefix-cache reuse in the standard prompt-caching shape.
+- Per-model `/metrics`: engine-step series now carry a `model` label (plus
+  unlabeled aggregates), fixing last-writer-wins gauge interleaving under
+  multi-model serving.
+- `--model-idle-timeout-secs` / `AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS`: opt-in
+  idle eviction of non-default resident models for multi-model serving.
+
+### Changed
+
+- Client `stop` sequences are now enforced on the native MLX backend
+  (previously rejected with `400 unsupported_parameter`): OpenAI semantics,
+  server-side over decoded text, on chat, completions, Ollama, and Anthropic
+  surfaces; streaming stops end the stream early and cancel the generation.
+  The Anthropic surface reports the matched `stop_sequence`.
+- Native Qwen ChatML and Gemma 4 chat streams with `tools` now emit
+  incremental tool-call deltas (live content, one `delta.tool_calls`
+  fragment per completed call with stream-wide 0-based `index`,
+  `finish_reason:"tool_calls"`) instead of buffering the entire generation
+  into a single chunk. GLM 4.x / GPT-OSS keep the buffered fallback.
+
 ## [6.8.2] - 2026-07-09
 
 ### Added

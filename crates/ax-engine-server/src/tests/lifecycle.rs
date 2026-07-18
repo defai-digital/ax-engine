@@ -208,14 +208,13 @@ async fn llama_cpp_stepwise_request_endpoints_share_sdk_lifecycle() {
     assert_eq!(terminal_json, expected_terminal);
     assert_eq!(state.admission.active_jobs(), 0);
     assert_eq!(state.snapshot().generation_service.pending_jobs(), 0);
-    assert_eq!(
-        state
-            .metrics
-            .engine_step_gauges()
-            .expect("step metrics should be observed")
-            .steps_total,
-        observed_steps
+    let step_models = state.metrics.engine_step_gauges_per_model();
+    assert!(
+        !step_models.is_empty(),
+        "step metrics should be observed per model"
     );
+    let steps_total: u64 = step_models.iter().map(|(_, step)| step.steps_total).sum();
+    assert_eq!(steps_total, observed_steps);
 
     llama_cpp_server_handle
         .join()

@@ -23,9 +23,7 @@ use crate::errors::{ErrorResponse, admission_error_response, error_response, map
 use crate::generation::native::run_stateless_generate_request;
 use crate::generation::streaming::{StreamStateSource, build_stream_state};
 use crate::metadata::{MODEL_OWNER, context_length};
-use crate::openai::generation::{
-    populate_native_mlx_output_text, validate_openai_json_object_response,
-};
+use crate::openai::generation::{populate_native_mlx_output_text, validate_openai_response_format};
 use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
     build_openai_chat_request_offloading_media, build_openai_completion_request,
@@ -335,10 +333,18 @@ pub(crate) async fn ollama_chat(
     let openai_request = ollama_chat_to_openai_request(request)?;
     if can_true_stream {
         let OpenAiBuiltRequest {
-            generate_request, ..
+            generate_request,
+            response_options,
+            ..
         } = build_openai_chat_request_offloading_media(&live, openai_request).await?;
-        return stream_ollama_native(state, live, generate_request, OllamaNativeStreamKind::Chat)
-            .await;
+        return stream_ollama_native(
+            state,
+            live,
+            generate_request,
+            OllamaNativeStreamKind::Chat,
+            response_options.client_stop_sequences,
+        )
+        .await;
     }
     let response = run_ollama_chat_completion(state, live, openai_request).await?;
     let ollama = ollama_chat_response_from_openai(response)?;
@@ -366,13 +372,16 @@ pub(crate) async fn ollama_generate(
     let openai_request = ollama_generate_to_openai_request(request)?;
     if can_true_stream {
         let OpenAiBuiltRequest {
-            generate_request, ..
+            generate_request,
+            response_options,
+            ..
         } = build_openai_completion_request(&live, openai_request)?;
         return stream_ollama_native(
             state,
             live,
             generate_request,
             OllamaNativeStreamKind::Generate,
+            response_options.client_stop_sequences,
         )
         .await;
     }
@@ -402,7 +411,9 @@ async fn stream_ollama_native(
     live: LiveState,
     generate_request: ax_engine_sdk::GenerateRequest,
     kind: OllamaNativeStreamKind,
+    client_stop_sequences: Vec<String>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let stop_scanner = crate::openai::stop::StopSequenceScanner::new(client_stop_sequences);
     let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return Err(server_error(
             "native MLX Ollama streaming requires mlx_model_artifacts_dir with tokenizer.json"
@@ -427,7 +438,7 @@ async fn stream_ollama_native(
     match stream_context {
         StreamStateSource::Service(mut events) => {
             tokio::task::spawn_blocking(move || {
-                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, || {
+                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
                     events.blocking_recv().transpose()
                 });
             });
@@ -439,7 +450,7 @@ async fn stream_ollama_native(
         } => {
             tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, || {
+                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
                     context.next_stream_event(&mut state)
                 });
             });
@@ -451,7 +462,7 @@ async fn stream_ollama_native(
         } => {
             tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, || {
+                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
                     session.next_stream_event(&mut state)
                 });
             });
@@ -471,6 +482,7 @@ fn drive_ollama_native_events<N>(
     tx: &mpsc::Sender<Result<String, std::io::Error>>,
     cancel: &AtomicBool,
     tokenizer: EngineTokenizer,
+    mut stop_scanner: Option<crate::openai::stop::StopSequenceScanner>,
     mut next: N,
 ) where
     N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
@@ -533,8 +545,26 @@ fn drive_ollama_native_events<N>(
                 if let Some(filter) = channel_filter.as_mut() {
                     filter.mark_kept_output();
                 }
-                let chunk = ollama_native_delta_chunk(kind, &payload.request.model_id, delta_text);
-                if send_ollama_ndjson_line(tx, &chunk).is_err() {
+                // Client stops are enforced server-side on the native backend
+                // (ADR-040 D2): withheld candidate text never streams, and a
+                // match ends the stream (receiver drop cancels the request).
+                let (emit, stop_matched) = match stop_scanner.as_mut() {
+                    Some(scanner) => {
+                        let step = scanner.push(&delta_text);
+                        (step.emit, step.matched)
+                    }
+                    None => (delta_text, false),
+                };
+                if !emit.is_empty() {
+                    let chunk = ollama_native_delta_chunk(kind, &payload.request.model_id, emit);
+                    if send_ollama_ndjson_line(tx, &chunk).is_err() {
+                        return;
+                    }
+                }
+                if stop_matched {
+                    let final_chunk =
+                        ollama_native_stop_final_chunk(kind, &payload.request.model_id);
+                    let _ = send_ollama_ndjson_line(tx, &final_chunk);
                     return;
                 }
             }
@@ -544,10 +574,36 @@ fn drive_ollama_native_events<N>(
                 if let Some(filter) = channel_filter.as_mut()
                     && let Some(body_text) = filter.take_fallback_text(&mut decoder)
                 {
-                    let chunk =
-                        ollama_native_delta_chunk(kind, &payload.response.model_id, body_text);
-                    if send_ollama_ndjson_line(tx, &chunk).is_err() {
+                    let (emit, stop_matched) = match stop_scanner.as_mut() {
+                        Some(scanner) => {
+                            let step = scanner.push(&body_text);
+                            (step.emit, step.matched)
+                        }
+                        None => (body_text, false),
+                    };
+                    if !emit.is_empty() {
+                        let chunk =
+                            ollama_native_delta_chunk(kind, &payload.response.model_id, emit);
+                        if send_ollama_ndjson_line(tx, &chunk).is_err() {
+                            return;
+                        }
+                    }
+                    if stop_matched {
+                        let final_chunk =
+                            ollama_native_stop_final_chunk(kind, &payload.response.model_id);
+                        let _ = send_ollama_ndjson_line(tx, &final_chunk);
                         return;
+                    }
+                }
+                // Release the stop scanner's withheld tail (no match fired).
+                if let Some(scanner) = stop_scanner.as_mut() {
+                    let tail = scanner.finish();
+                    if !tail.is_empty() {
+                        let chunk =
+                            ollama_native_delta_chunk(kind, &payload.response.model_id, tail);
+                        if send_ollama_ndjson_line(tx, &chunk).is_err() {
+                            return;
+                        }
                     }
                 }
                 let summary = ollama_generate_response_from_generate(payload.response);
@@ -838,7 +894,7 @@ async fn run_ollama_chat_completion(
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
         })
         .await?;
-        validate_openai_json_object_response(&response, &response_options)?;
+        validate_openai_response_format(&response, &response_options)?;
         return Ok(openai_chat_completion_response(
             &response,
             OpenAiStreamKind::ChatCompletion.response_id(request_id),
@@ -862,7 +918,7 @@ async fn run_ollama_chat_completion(
             llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
         })
         .await?;
-        validate_openai_json_object_response(&response, &response_options)?;
+        validate_openai_response_format(&response, &response_options)?;
         return Ok(openai_chat_completion_response(
             &response,
             OpenAiStreamKind::ChatCompletion.response_id(request_id),
@@ -884,7 +940,7 @@ async fn run_ollama_chat_completion(
         OpenAiStreamKind::ChatCompletion,
         response_options.include_reasoning,
     )?;
-    validate_openai_json_object_response(&response, &response_options)?;
+    validate_openai_response_format(&response, &response_options)?;
     Ok(openai_chat_completion_response(
         &response,
         OpenAiStreamKind::ChatCompletion.response_id(request_id),
@@ -911,8 +967,15 @@ async fn run_ollama_completion(
         OpenAiStreamKind::Completion,
         response_options.include_reasoning,
     )?;
-    validate_openai_json_object_response(&response, &response_options)?;
+    validate_openai_response_format(&response, &response_options)?;
     debug_assert!(native_reasoning.is_none());
+    // Native client stops are enforced server-side (ADR-040 D2); the Ollama
+    // generate surface is built directly from GenerateResponse, so truncate
+    // here rather than in the OpenAI response builders.
+    let _ = crate::openai::stop::apply_client_stops_to_generate_response(
+        &mut response,
+        &response_options.client_stop_sequences,
+    );
     Ok(ollama_generate_response_from_generate(response))
 }
 
@@ -982,6 +1045,28 @@ fn ollama_tool_call(call: OpenAiToolCall) -> OllamaToolCall {
             unsupported: BTreeMap::new(),
         },
         unsupported: BTreeMap::new(),
+    }
+}
+
+/// Final NDJSON chunk when a client stop sequence ends the stream early: the
+/// generation was cancelled, so the usual end-of-stream summary payload (with
+/// timing/usage counts) never arrives.
+fn ollama_native_stop_final_chunk(kind: OllamaNativeStreamKind, model_id: &str) -> Value {
+    match kind {
+        OllamaNativeStreamKind::Chat => json!({
+            "model": model_id,
+            "created_at": rfc3339_now(),
+            "message": {"role": "assistant", "content": ""},
+            "done": true,
+            "done_reason": "stop",
+        }),
+        OllamaNativeStreamKind::Generate => json!({
+            "model": model_id,
+            "created_at": rfc3339_now(),
+            "response": "",
+            "done": true,
+            "done_reason": "stop",
+        }),
     }
 }
 
@@ -1323,6 +1408,7 @@ mod tests {
                 prompt_tokens: 3,
                 completion_tokens: 2,
                 total_tokens: 5,
+                prompt_tokens_details: None,
             }),
         };
 

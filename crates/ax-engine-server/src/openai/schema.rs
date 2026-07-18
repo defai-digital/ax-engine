@@ -393,6 +393,8 @@ pub(crate) struct OpenAiChatDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tool_calls: Option<Vec<OpenAiToolCallDelta>>,
 }
 
@@ -420,6 +422,15 @@ pub(crate) struct OpenAiUsage {
     pub(crate) prompt_tokens: u32,
     pub(crate) completion_tokens: u32,
     pub(crate) total_tokens: u32,
+    /// OpenAI prompt-caching shape: agent clients read
+    /// `prompt_tokens_details.cached_tokens` to see prefix-cache reuse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(crate) struct OpenAiPromptTokensDetails {
+    pub(crate) cached_tokens: u32,
 }
 
 #[derive(Clone, Copy, Debug)]

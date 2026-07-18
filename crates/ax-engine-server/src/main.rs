@@ -90,6 +90,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cluster: lan_cluster.clone(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         });
+    if let Some(idle_timeout) = args.resolved_model_idle_timeout() {
+        model_load::spawn_model_idle_evictor(state.clone(), idle_timeout);
+    }
     let app = build_router(state.clone());
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
     // Use the OS-assigned port when `--port 0` so mDNS advertises a reachable endpoint.

@@ -20,12 +20,17 @@ use crate::generation::streaming::{
     drive_stream_events, send_stream_error, spawn_sse_blocking_stream_task, spawn_stream_task,
 };
 use crate::openai::chunks::{
-    chat_delta_chunk, chat_final_chunk, completion_delta_chunk, completion_final_chunk,
-    next_chat_delta_role,
+    chat_delta_chunk, chat_final_chunk, chat_reasoning_delta_chunk,
+    chat_single_tool_call_delta_chunk, chat_tool_calls_final_chunk, completion_delta_chunk,
+    completion_final_chunk, next_chat_delta_role,
 };
+use crate::openai::reasoning_stream::ThinkTagScanner;
+use crate::openai::requests::OpenAiResponseOptions;
 use crate::openai::responses::finish_reason_from_llama_cpp_chat;
 use crate::openai::schema::OpenAiStreamKind;
 use crate::openai::sse::send_openai_stream_chunk;
+use crate::openai::stop::StopSequenceScanner;
+use crate::openai::tool_stream::{ToolCallStreamScanner, ToolScanEvent};
 use crate::tasks::run_blocking_session_task;
 
 const STREAM_CHANNEL_CAPACITY: usize = 128;
@@ -35,13 +40,29 @@ pub(crate) async fn stream_openai_request(
     live: LiveState,
     request: GenerateRequest,
     stream_kind: OpenAiStreamKind,
+    response_options: &OpenAiResponseOptions,
+    incremental_tool_chat: bool,
+    reasoning_family: Option<StreamReasoningFamily>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let pipeline = OpenAiStreamPipeline {
+        tool_scanner: incremental_tool_chat
+            .then(|| ToolCallStreamScanner::new(response_options.tool_contract.clone())),
+        stop_scanner: StopSequenceScanner::new(response_options.client_stop_sequences.clone()),
+    };
     let stream_context = build_stream_state(&state, &live, request).await?;
     let tokenizer = native_mlx_openai_stream_tokenizer(&live)?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_stream_task(tx, stream_context, move |next_event, tx, cancel| {
-        drive_openai_stream_state(tx, cancel, stream_kind, next_event, tokenizer);
+        drive_openai_stream_state(
+            tx,
+            cancel,
+            stream_kind,
+            next_event,
+            tokenizer,
+            pipeline,
+            reasoning_family,
+        );
     })
     .map_err(crate::errors::map_generation_service_error)?;
 
@@ -106,16 +127,43 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
 }
 
+/// Post-decode text stages for an OpenAI stream: tool-call scanning (ADR-040
+/// D1) and client stop-sequence matching (ADR-040 D2). Both operate on
+/// visible text after channel filtering and incremental decode; the stop
+/// scanner sits downstream of the tool scanner, so stop strings can never
+/// truncate a tool-call span.
+pub(crate) struct OpenAiStreamPipeline {
+    pub(crate) tool_scanner: Option<ToolCallStreamScanner>,
+    pub(crate) stop_scanner: Option<StopSequenceScanner>,
+}
+
+/// Which streaming-reasoning mechanism the request's model family uses.
+/// Computed at routing time; only native Qwen ChatML / Gemma 4 chat streams
+/// support reasoning output (others fail closed at request build).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum StreamReasoningFamily {
+    /// Qwen `<think>…</think>` text tags.
+    QwenThink,
+    /// Gemma 4 thinking-channel tokens (captured by the channel filter).
+    Gemma4Channel,
+}
+
+enum StreamReasoningMode {
+    QwenThink(ThinkTagScanner),
+    Gemma4Channel(IncrementalDecoder),
+}
+
 fn drive_openai_stream_state<N>(
     tx: StreamEventSender,
     cancel: StreamCancelFlag,
     stream_kind: OpenAiStreamKind,
     next_event: N,
     tokenizer: Option<EngineTokenizer>,
+    pipeline: OpenAiStreamPipeline,
+    reasoning_family: Option<StreamReasoningFamily>,
 ) where
     N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
-    let mut chat_role_emitted = false;
     // Chat streams over the native token path strip model-specific channel
     // framing (Gemma 4 thinking channels, GPT-OSS Harmony analysis/commentary);
     // raw completion streams keep the verbatim decode.
@@ -125,127 +173,367 @@ fn drive_openai_stream_state<N>(
             .and_then(ChatChannelStreamFilter::from_tokenizer),
         OpenAiStreamKind::Completion => None,
     };
-    let mut decoder = tokenizer.map(IncrementalDecoder::new);
+    let reasoning = match reasoning_family {
+        Some(StreamReasoningFamily::QwenThink) => {
+            Some(StreamReasoningMode::QwenThink(ThinkTagScanner::new()))
+        }
+        Some(StreamReasoningFamily::Gemma4Channel) => {
+            if let Some(filter) = channel_filter.as_mut() {
+                filter.enable_reasoning_capture();
+            }
+            tokenizer.as_ref().map(|tokenizer| {
+                StreamReasoningMode::Gemma4Channel(IncrementalDecoder::new(tokenizer.clone()))
+            })
+        }
+        None => None,
+    };
+    let mut driver = OpenAiStreamDriver {
+        stream_kind,
+        chat_role_emitted: false,
+        decoder: tokenizer.map(IncrementalDecoder::new),
+        channel_filter,
+        pipeline,
+        reasoning,
+        calls_emitted: 0,
+    };
 
     drive_stream_events(
         &tx,
         &cancel,
         next_event,
-        |event| {
-            send_openai_stream_event(
-                &tx,
-                event,
-                stream_kind,
-                &mut chat_role_emitted,
-                decoder.as_mut(),
-                channel_filter.as_mut(),
-            )
-        },
+        |event| driver.handle_event(&tx, event),
         || {
             let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
         },
     );
 }
 
-fn send_openai_stream_event(
-    tx: &StreamEventSender,
-    event: GenerateStreamEvent,
+struct OpenAiStreamDriver {
     stream_kind: OpenAiStreamKind,
-    chat_role_emitted: &mut bool,
-    mut decoder: Option<&mut IncrementalDecoder>,
-    mut channel_filter: Option<&mut ChatChannelStreamFilter>,
-) -> bool {
-    match event {
-        GenerateStreamEvent::Request(_) => true,
-        GenerateStreamEvent::Step(payload) => match stream_kind {
-            OpenAiStreamKind::Completion => {
-                let Some(delta_text) =
-                    stream_delta_text(&payload.delta_text, &payload.delta_tokens, decoder, tx)
-                else {
+    chat_role_emitted: bool,
+    decoder: Option<IncrementalDecoder>,
+    channel_filter: Option<ChatChannelStreamFilter>,
+    pipeline: OpenAiStreamPipeline,
+    reasoning: Option<StreamReasoningMode>,
+    /// Tool-call deltas emitted so far; also the next call's 0-based `index`.
+    calls_emitted: u32,
+}
+
+impl OpenAiStreamDriver {
+    fn handle_event(&mut self, tx: &StreamEventSender, event: GenerateStreamEvent) -> bool {
+        match event {
+            GenerateStreamEvent::Request(_) => true,
+            GenerateStreamEvent::Step(payload) => {
+                let request_id = payload.request.request_id;
+                let model_id = payload.request.model_id.clone();
+                let decoded = self.decode_step_text(tx, &payload);
+                // Gemma 4 reasoning rides channel tokens the filter just
+                // captured — drain even when no content tokens survived.
+                if !self.emit_gemma4_reasoning(tx, request_id, &model_id) {
+                    return false;
+                }
+                let Some(delta_text) = decoded else {
                     return true;
                 };
                 if delta_text.is_empty() {
                     return true;
                 }
-                let chunk = completion_delta_chunk(
-                    payload.request.request_id,
-                    payload.request.model_id,
-                    delta_text,
-                );
-                send_openai_stream_chunk(tx, &chunk)
+                if let Some(filter) = self.channel_filter.as_mut() {
+                    filter.mark_kept_output();
+                }
+                let content_text = if let Some(StreamReasoningMode::QwenThink(scanner)) =
+                    self.reasoning.as_mut()
+                {
+                    let step = scanner.push(&delta_text);
+                    if !step.reasoning.is_empty()
+                        && !emit_reasoning_chunk(
+                            tx,
+                            request_id,
+                            &model_id,
+                            &mut self.chat_role_emitted,
+                            step.reasoning,
+                        )
+                    {
+                        return false;
+                    }
+                    step.content
+                } else {
+                    delta_text
+                };
+                if content_text.is_empty() {
+                    return true;
+                }
+                self.process_text(tx, request_id, &model_id, content_text)
             }
+            GenerateStreamEvent::Response(payload) => {
+                let request_id = payload.response.request_id;
+                let model_id = payload.response.model_id.clone();
+                if !self.emit_gemma4_reasoning(tx, request_id, &model_id) {
+                    return false;
+                }
+                // The model can leave its entire answer inside an unclosed
+                // thinking/final channel; serve that body before the final
+                // chunk rather than an empty message. In Gemma 4 reasoning
+                // mode the body already streamed as reasoning_content, so the
+                // fallback would duplicate it.
+                let gemma4_reasoning_active =
+                    matches!(self.reasoning, Some(StreamReasoningMode::Gemma4Channel(_)));
+                if !gemma4_reasoning_active
+                    && let Some(filter) = self.channel_filter.as_mut()
+                    && let Some(decoder) = self.decoder.as_mut()
+                    && let Some(body_text) = filter.take_fallback_text(decoder)
+                    && !self.process_text(tx, request_id, &model_id, body_text)
+                {
+                    return false;
+                }
+                // Flush the think scanner before the tool/stop scanners so
+                // its residual content flows through them.
+                if let Some(StreamReasoningMode::QwenThink(scanner)) = self.reasoning.as_mut() {
+                    let step = scanner.finish();
+                    if !step.reasoning.is_empty()
+                        && !emit_reasoning_chunk(
+                            tx,
+                            request_id,
+                            &model_id,
+                            &mut self.chat_role_emitted,
+                            step.reasoning,
+                        )
+                    {
+                        return false;
+                    }
+                    if !step.content.is_empty()
+                        && !self.process_text(tx, request_id, &model_id, step.content)
+                    {
+                        return false;
+                    }
+                }
+                if !self.flush_pipeline(tx, request_id, &model_id) {
+                    return false;
+                }
+                if self.calls_emitted > 0 {
+                    let chunk = chat_tool_calls_final_chunk(request_id, model_id);
+                    send_openai_stream_chunk(tx, &chunk)
+                } else {
+                    match self.stream_kind {
+                        OpenAiStreamKind::Completion => {
+                            let chunk = completion_final_chunk(
+                                request_id,
+                                model_id,
+                                payload.response.finish_reason,
+                            );
+                            send_openai_stream_chunk(tx, &chunk)
+                        }
+                        OpenAiStreamKind::ChatCompletion => {
+                            let chunk = chat_final_chunk(
+                                request_id,
+                                model_id,
+                                payload.response.finish_reason,
+                            );
+                            send_openai_stream_chunk(tx, &chunk)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn decode_step_text(
+        &mut self,
+        tx: &StreamEventSender,
+        payload: &ax_engine_sdk::GenerateStreamStepEvent,
+    ) -> Option<String> {
+        match self.stream_kind {
+            OpenAiStreamKind::Completion => stream_delta_text(
+                &payload.delta_text,
+                &payload.delta_tokens,
+                self.decoder.as_mut(),
+                tx,
+            ),
             OpenAiStreamKind::ChatCompletion => {
                 // Native token path: drop channel-framing tokens before decode
                 // so analysis/thinking channels never surface as content.
                 let filtered;
                 let delta_tokens = if payload.delta_text.is_none()
-                    && let Some(filter) = channel_filter.as_mut()
+                    && let Some(filter) = self.channel_filter.as_mut()
                 {
                     filtered = filter.filter(&payload.delta_tokens);
                     if filtered.is_empty() {
-                        return true;
+                        return None;
                     }
                     filtered.as_slice()
                 } else {
                     payload.delta_tokens.as_slice()
                 };
-                let Some(delta_text) =
-                    stream_delta_text(&payload.delta_text, delta_tokens, decoder, tx)
-                else {
-                    return true;
-                };
-                if delta_text.is_empty() {
-                    return true;
-                }
-                if let Some(filter) = channel_filter.as_mut() {
-                    filter.mark_kept_output();
-                }
-                let role = next_chat_delta_role(chat_role_emitted);
-                let chunk = chat_delta_chunk(
-                    payload.request.request_id,
-                    payload.request.model_id,
-                    role,
-                    delta_text,
-                );
-                send_openai_stream_chunk(tx, &chunk)
+                stream_delta_text(&payload.delta_text, delta_tokens, self.decoder.as_mut(), tx)
             }
-        },
-        GenerateStreamEvent::Response(payload) => match stream_kind {
-            OpenAiStreamKind::Completion => {
-                let chunk = completion_final_chunk(
-                    payload.response.request_id,
-                    payload.response.model_id,
-                    payload.response.finish_reason,
-                );
-                send_openai_stream_chunk(tx, &chunk)
+        }
+    }
+
+    /// Decode and emit any Gemma 4 channel-body tokens captured by the
+    /// filter this step as `delta.reasoning_content`.
+    fn emit_gemma4_reasoning(
+        &mut self,
+        tx: &StreamEventSender,
+        request_id: u64,
+        model_id: &str,
+    ) -> bool {
+        let Some(StreamReasoningMode::Gemma4Channel(decoder)) = self.reasoning.as_mut() else {
+            return true;
+        };
+        let Some(filter) = self.channel_filter.as_mut() else {
+            return true;
+        };
+        let tokens = filter.take_reasoning_delta();
+        if tokens.is_empty() {
+            return true;
+        }
+        match decoder.push(&tokens) {
+            Ok(text) if text.is_empty() => true,
+            Ok(text) => {
+                emit_reasoning_chunk(tx, request_id, model_id, &mut self.chat_role_emitted, text)
             }
-            OpenAiStreamKind::ChatCompletion => {
-                // The model can leave its entire answer inside an unclosed
-                // thinking/final channel; serve that body before the final
-                // chunk rather than an empty message.
-                if let Some(filter) = channel_filter.as_mut()
-                    && let Some(decoder) = decoder.as_mut()
-                    && let Some(body_text) = filter.take_fallback_text(decoder)
-                {
-                    let role = next_chat_delta_role(chat_role_emitted);
-                    let chunk = chat_delta_chunk(
-                        payload.response.request_id,
-                        payload.response.model_id.clone(),
+            Err(error) => {
+                send_stream_error(
+                    tx,
+                    ErrorResponse::server_error(format!(
+                        "failed to decode native MLX reasoning stream tokens: {error}"
+                    )),
+                );
+                false
+            }
+        }
+    }
+
+    /// Route decoded text through the tool scanner (chat only) and the stop
+    /// scanner. Returns false when the stream must end (send failure or a
+    /// stop match, which terminates the underlying generation via receiver
+    /// drop → worker `cancel_request`).
+    fn process_text(
+        &mut self,
+        tx: &StreamEventSender,
+        request_id: u64,
+        model_id: &str,
+        text: String,
+    ) -> bool {
+        if let Some(mut tool_scanner) = self.pipeline.tool_scanner.take() {
+            let events = tool_scanner.push(&text);
+            self.pipeline.tool_scanner = Some(tool_scanner);
+            self.emit_tool_events(tx, request_id, model_id, events)
+        } else {
+            self.emit_content(tx, request_id, model_id, text)
+        }
+    }
+
+    fn emit_tool_events(
+        &mut self,
+        tx: &StreamEventSender,
+        request_id: u64,
+        model_id: &str,
+        events: Vec<ToolScanEvent>,
+    ) -> bool {
+        for event in events {
+            match event {
+                ToolScanEvent::Content(content) => {
+                    if !self.emit_content(tx, request_id, model_id, content) {
+                        return false;
+                    }
+                }
+                ToolScanEvent::Call(call) => {
+                    let role = next_chat_delta_role(&mut self.chat_role_emitted);
+                    let chunk = chat_single_tool_call_delta_chunk(
+                        request_id,
+                        model_id.to_string(),
                         role,
-                        body_text,
+                        &call,
+                        self.calls_emitted,
                     );
                     if !send_openai_stream_chunk(tx, &chunk) {
                         return false;
                     }
+                    self.calls_emitted += 1;
                 }
-                let chunk = chat_final_chunk(
-                    payload.response.request_id,
-                    payload.response.model_id,
-                    payload.response.finish_reason,
-                );
+            }
+        }
+        true
+    }
+
+    /// Emit visible content, running it through the stop scanner. On a stop
+    /// match: emit the surviving prefix, the `finish_reason:"stop"` final
+    /// chunk and `[DONE]`, then return false to end the stream.
+    fn emit_content(
+        &mut self,
+        tx: &StreamEventSender,
+        request_id: u64,
+        model_id: &str,
+        text: String,
+    ) -> bool {
+        let (emit, matched) = match self.pipeline.stop_scanner.as_mut() {
+            Some(stop_scanner) => {
+                let step = stop_scanner.push(&text);
+                (step.emit, step.matched)
+            }
+            None => (text, false),
+        };
+        if !emit.is_empty() && !self.send_content_chunk(tx, request_id, model_id, emit) {
+            return false;
+        }
+        if matched {
+            let finish = Some(ax_engine_sdk::GenerateFinishReason::Stop);
+            let sent = match self.stream_kind {
+                OpenAiStreamKind::Completion => {
+                    let chunk = completion_final_chunk(request_id, model_id.to_string(), finish);
+                    send_openai_stream_chunk(tx, &chunk)
+                }
+                OpenAiStreamKind::ChatCompletion => {
+                    let chunk = chat_final_chunk(request_id, model_id.to_string(), finish);
+                    send_openai_stream_chunk(tx, &chunk)
+                }
+            };
+            if sent {
+                let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
+            }
+            return false;
+        }
+        true
+    }
+
+    fn send_content_chunk(
+        &mut self,
+        tx: &StreamEventSender,
+        request_id: u64,
+        model_id: &str,
+        text: String,
+    ) -> bool {
+        match self.stream_kind {
+            OpenAiStreamKind::Completion => {
+                let chunk = completion_delta_chunk(request_id, model_id.to_string(), text);
                 send_openai_stream_chunk(tx, &chunk)
             }
-        },
+            OpenAiStreamKind::ChatCompletion => {
+                let role = next_chat_delta_role(&mut self.chat_role_emitted);
+                let chunk = chat_delta_chunk(request_id, model_id.to_string(), role, text);
+                send_openai_stream_chunk(tx, &chunk)
+            }
+        }
+    }
+
+    /// End of stream: drain the tool scanner (an unterminated span may still
+    /// parse), then release the stop scanner's withheld tail.
+    fn flush_pipeline(&mut self, tx: &StreamEventSender, request_id: u64, model_id: &str) -> bool {
+        if let Some(mut tool_scanner) = self.pipeline.tool_scanner.take() {
+            let events = tool_scanner.finish();
+            self.pipeline.tool_scanner = Some(tool_scanner);
+            if !self.emit_tool_events(tx, request_id, model_id, events) {
+                return false;
+            }
+        }
+        if let Some(stop_scanner) = self.pipeline.stop_scanner.as_mut() {
+            let tail = stop_scanner.finish();
+            if !tail.is_empty() && !self.send_content_chunk(tx, request_id, model_id, tail) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -286,6 +574,23 @@ impl ChatChannelStreamFilter {
         match self {
             Self::Gemma4(filter) => filter.kept_output = true,
             Self::GptOss(filter) => filter.kept_output = true,
+        }
+    }
+
+    /// Enable per-step reasoning capture (Gemma 4 channel bodies). GPT-OSS
+    /// streaming reasoning is not supported; its build-time rejection stands.
+    pub(crate) fn enable_reasoning_capture(&mut self) {
+        if let Self::Gemma4(filter) = self {
+            filter.capture_reasoning = true;
+        }
+    }
+
+    /// Channel-body tokens accumulated since the last take (reasoning-mode
+    /// streams decode these into `delta.reasoning_content`).
+    pub(crate) fn take_reasoning_delta(&mut self) -> Vec<u32> {
+        match self {
+            Self::Gemma4(filter) => std::mem::take(&mut filter.reasoning_delta),
+            Self::GptOss(_) => Vec::new(),
         }
     }
 
@@ -339,6 +644,10 @@ pub(crate) struct Gemma4ChannelStreamFilter {
     last_channel_body: Vec<u32>,
     /// True once a non-empty outside-channel chunk has been sent.
     pub(crate) kept_output: bool,
+    /// When set, channel-body tokens also accumulate here per filter call so
+    /// the driver can stream them as `delta.reasoning_content`.
+    capture_reasoning: bool,
+    reasoning_delta: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -361,6 +670,15 @@ impl Gemma4ChannelStreamFilter {
             in_channel: false,
             last_channel_body: Vec::new(),
             kept_output: false,
+            capture_reasoning: false,
+            reasoning_delta: Vec::new(),
+        }
+    }
+
+    fn push_channel_body(&mut self, token: u32) {
+        self.last_channel_body.push(token);
+        if self.capture_reasoning {
+            self.reasoning_delta.push(token);
         }
     }
 
@@ -373,7 +691,7 @@ impl Gemma4ChannelStreamFilter {
                 if token == self.ids.close {
                     self.in_channel = false;
                 } else {
-                    self.last_channel_body.push(token);
+                    self.push_channel_body(token);
                 }
                 continue;
             }
@@ -389,7 +707,7 @@ impl Gemma4ChannelStreamFilter {
                 Gemma4ChannelStreamState::LeadPending => {
                     if self.thought_lead == Some(token) {
                         self.state = Gemma4ChannelStreamState::Suppressing;
-                        self.last_channel_body.push(token);
+                        self.push_channel_body(token);
                     } else {
                         self.state = Gemma4ChannelStreamState::Passing;
                         if token != self.ids.close {
@@ -401,7 +719,7 @@ impl Gemma4ChannelStreamFilter {
                     if token == self.ids.close {
                         self.state = Gemma4ChannelStreamState::Passing;
                     } else {
-                        self.last_channel_body.push(token);
+                        self.push_channel_body(token);
                     }
                 }
                 Gemma4ChannelStreamState::Passing => {
@@ -581,6 +899,18 @@ impl GptOssHarmonyStreamFilter {
         let _ = self.kept_output;
         None
     }
+}
+
+fn emit_reasoning_chunk(
+    tx: &StreamEventSender,
+    request_id: u64,
+    model_id: &str,
+    chat_role_emitted: &mut bool,
+    reasoning: String,
+) -> bool {
+    let role = next_chat_delta_role(chat_role_emitted);
+    let chunk = chat_reasoning_delta_chunk(request_id, model_id.to_string(), role, reasoning);
+    send_openai_stream_chunk(tx, &chunk)
 }
 
 fn native_mlx_openai_stream_tokenizer(

@@ -9,8 +9,8 @@ use super::requests::{OpenAiResponseOptions, OpenAiToolContract};
 use super::schema::{
     OpenAiChatCompletionChoice, OpenAiChatCompletionResponse, OpenAiChatLogprobs,
     OpenAiChatMessageResponse, OpenAiChatTokenLogprob, OpenAiCompletionChoice,
-    OpenAiCompletionLogprobs, OpenAiCompletionResponse, OpenAiFunctionCall, OpenAiStreamKind,
-    OpenAiToolCall, OpenAiUsage,
+    OpenAiCompletionLogprobs, OpenAiCompletionResponse, OpenAiFunctionCall,
+    OpenAiPromptTokensDetails, OpenAiStreamKind, OpenAiToolCall, OpenAiUsage,
 };
 use super::tool_names;
 
@@ -57,6 +57,8 @@ pub(crate) fn openai_completion_response(
     id: String,
     options: OpenAiResponseOptions,
 ) -> OpenAiCompletionResponse {
+    let mut text = response.output_text.clone().unwrap_or_default();
+    let stop_hit = crate::openai::stop::truncate_at_stop(&mut text, &options.client_stop_sequences);
     OpenAiCompletionResponse {
         id,
         object: "text_completion",
@@ -65,9 +67,19 @@ pub(crate) fn openai_completion_response(
         system_fingerprint: None,
         choices: vec![OpenAiCompletionChoice {
             index: 0,
-            text: response.output_text.clone().unwrap_or_default(),
-            logprobs: openai_completion_logprobs(response, options),
-            finish_reason: openai_finish_reason(response.finish_reason),
+            text,
+            // Sampled logprobs cover the full generation; a stop truncation
+            // would misalign them with the returned text, so omit the block.
+            logprobs: if stop_hit {
+                None
+            } else {
+                openai_completion_logprobs(response, options)
+            },
+            finish_reason: if stop_hit {
+                Some("stop")
+            } else {
+                openai_finish_reason(response.finish_reason)
+            },
         }],
         usage: openai_usage(response),
     }
@@ -92,11 +104,19 @@ pub(crate) fn openai_chat_completion_response(
     } else {
         None
     };
-    if tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()) {
+    let has_tool_calls = tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
+    if has_tool_calls {
         content.clear();
     }
-    let finish_reason = if tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()) {
+    // Client stops match visible assistant content only (ADR-040 D2): tool
+    // calls were already extracted above, so a stop string occurring inside
+    // call arguments can never truncate a call.
+    let stop_hit = !has_tool_calls
+        && crate::openai::stop::truncate_at_stop(&mut content, &options.client_stop_sequences);
+    let finish_reason = if has_tool_calls {
         Some("tool_calls")
+    } else if stop_hit {
+        Some("stop")
     } else {
         openai_finish_reason(response.finish_reason)
     };
@@ -114,7 +134,13 @@ pub(crate) fn openai_chat_completion_response(
                 reasoning_content,
                 tool_calls,
             },
-            logprobs: openai_chat_logprobs(response, options),
+            // Sampled logprobs cover the full generation; a stop truncation
+            // would misalign them with the returned content, so omit them.
+            logprobs: if stop_hit {
+                None
+            } else {
+                openai_chat_logprobs(response, options)
+            },
             finish_reason,
         }],
         usage: openai_usage(response),
@@ -275,7 +301,7 @@ fn collect_tool_call_markers<T: Copy>(
     }
 }
 
-fn extract_xml_tool_call_payload_at(
+pub(crate) fn extract_xml_tool_call_payload_at(
     content: &str,
     start: usize,
 ) -> Option<(OpenAiFunctionCall, String)> {
@@ -295,7 +321,7 @@ fn extract_xml_tool_call_payload_at(
     Some((function, remaining))
 }
 
-fn extract_gemma4_tool_call_payload_at(
+pub(crate) fn extract_gemma4_tool_call_payload_at(
     content: &str,
     start: usize,
 ) -> Option<(OpenAiFunctionCall, String)> {
@@ -324,7 +350,7 @@ fn extract_gemma4_tool_call_payload_at(
     Some((OpenAiFunctionCall { name, arguments }, remaining))
 }
 
-fn find_bare_gemma4_call(content: &str) -> Option<usize> {
+pub(crate) fn find_bare_gemma4_call(content: &str) -> Option<usize> {
     let start = content.find("call:")?;
     if content[..start].trim().is_empty() {
         Some(start)
@@ -333,7 +359,7 @@ fn find_bare_gemma4_call(content: &str) -> Option<usize> {
     }
 }
 
-fn extract_bare_gemma4_tool_call_payload_at(
+pub(crate) fn extract_bare_gemma4_tool_call_payload_at(
     content: &str,
     start: usize,
 ) -> Option<(OpenAiFunctionCall, String)> {
@@ -720,10 +746,22 @@ fn serialize_tool_arguments(value: Option<&Value>) -> String {
 
 pub(crate) fn openai_usage(response: &GenerateResponse) -> Option<OpenAiUsage> {
     let (prompt_tokens, completion_tokens) = response.known_usage()?;
+    // Prefix-cache reuse recorded by the engine for this request (the number
+    // of prompt tokens whose KV state was served from cache). Reported in the
+    // OpenAI prompt-caching shape; omitted when zero/unknown, matching how
+    // other local engines expose it.
+    let cached_tokens = response
+        .route
+        .crossover_decisions
+        .get("prefix_reused_tokens")
+        .copied()
+        .unwrap_or(0);
     Some(OpenAiUsage {
         prompt_tokens,
         completion_tokens,
         total_tokens: prompt_tokens.saturating_add(completion_tokens),
+        prompt_tokens_details: (cached_tokens > 0)
+            .then_some(OpenAiPromptTokensDetails { cached_tokens }),
     })
 }
 

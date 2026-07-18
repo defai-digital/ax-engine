@@ -185,10 +185,47 @@ than silently dropped.
   Gemma 4 thinking channels (extracted token-level during native decode).
   Unknown formats fail closed — the text is left in `content` untouched.
   Without the opt-in, responses keep their existing default behavior.
+  Streaming: native Qwen ChatML and Gemma 4 chat streams emit incremental
+  `delta.reasoning_content` fragments (Qwen via text-level `<think>` scanning
+  with marker holdback; Gemma 4 via the channel-token filter) interleaved
+  before/alongside content deltas; other families and delegated backends
+  keep rejecting `reasoning` + `stream` with `400 unsupported_parameter`.
+- **`usage.prompt_tokens_details.cached_tokens`**: when the engine served
+  part of the prompt from the prefix cache, non-streaming responses report
+  the reused token count in the OpenAI prompt-caching shape; the block is
+  omitted when reuse was zero or unknown.
 - **`response_format: json_object`** (completions and chat): non-streaming
   responses are validated server-side; output that is not a JSON object
   returns `502 invalid_output`. This is post-hoc validation, not constrained
-  decoding — JSON schema enforcement is not supported yet.
+  decoding.
+- **`response_format: json_schema`** (completions and chat): the OpenAI
+  `{"type":"json_schema","json_schema":{"name","schema","strict"?}}` shape is
+  accepted for non-streaming requests and the output is validated server-side
+  against the schema; mismatches return `502 invalid_output` with the first
+  failing path. The supported schema subset is `type` (including type
+  arrays), `properties`, `required`, `additionalProperties` (boolean),
+  `items`, `enum`, `const`, numeric bounds
+  (`minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`), and
+  string/array length bounds; schemas using any other keyword are rejected
+  up front with `400 unsupported_json_schema` naming the keyword — never
+  silently ignored. Like `json_object`, this is post-hoc validation, not
+  constrained decoding: output is checked, not guaranteed.
+- **`stop`** (completions and chat, all backends): client stop sequences are
+  honored everywhere. Delegated backends forward them upstream; the native
+  MLX backend enforces them server-side over decoded text with OpenAI
+  semantics (output truncated at the earliest match, matched text excluded,
+  `finish_reason:"stop"`). At most 4 sequences, each non-empty and at most
+  256 bytes (`400 invalid_request` otherwise). Native streaming withholds at
+  most `max(stop length) − 1` bytes so a match split across chunks never
+  leaks, and a match ends the stream and cancels the underlying generation.
+  Native non-streaming truncates after generation completes (matched-onward
+  text is discarded but its compute is not saved yet). Stops match visible
+  assistant content only — tool-call spans are exempt, so a stop string
+  occurring inside call arguments cannot corrupt a tool call. Sampled
+  logprobs are omitted from a stop-truncated response because they would
+  misalign with the truncated text. The Anthropic surface reports the
+  matched sequence as `stop_sequence` with `stop_reason:"stop_sequence"`.
+  gRPC requests do not get server-side native stop enforcement yet.
 - **`tools` / `tool_choice`** (chat): experimental. Native Qwen ChatML and
   native Gemma 4 text sessions render tool schemas into the prompt, replay
   assistant `tool_calls` history, and parse generated spans back into
@@ -209,9 +246,17 @@ than silently dropped.
   models report `primary_use="coding"`, `coding_only=true`, and
   `chat_default=false`; Qwen3.6 models report `primary_use="general"`,
   `coding_supported=true`, and `chat_default=true`.
-  Streaming requests return buffered SSE chunks with `delta.tool_calls` once the
-  tool call is complete. Bare JSON answers are never reinterpreted as tool
-  calls.
+  Streaming: native Qwen ChatML and Gemma 4 chat streams emit tool calls
+  incrementally — content outside tool-call spans streams live, and each
+  completed call arrives as one `delta.tool_calls` fragment carrying its
+  0-based stream-wide `index`, `id`, `type`, `function.name`, and the full
+  `function.arguments` string, with `finish_reason:"tool_calls"` in the final
+  chunk. Marker text withheld during scanning never leaks into content, and
+  unparseable tool-ish spans fall back to content deltas. Argument text is
+  not streamed token-by-token — a call is emitted once complete. GLM 4.x and
+  GPT-OSS tool streams keep the previous buffered single-chunk behavior
+  (their tool markers do not survive the incremental stream decode).
+  Bare JSON answers are never reinterpreted as tool calls.
 - **Context limit preflight** (native MLX OpenAI text/chat): AX tokenizes the
   rendered prompt before generation and rejects
   `prompt_tokens + max_tokens > context_length` with
@@ -856,6 +901,35 @@ so an operator can retry with valid artifacts and recover without restarting
 the server process.
 `load_mode=add` is incompatible with `memory_constrained`, because retaining
 existing models necessarily preserves their resident memory.
+
+The optional `--model-idle-timeout-secs` flag (env
+`AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS`) enables idle eviction for multi-model
+serving: a background sweep retires non-default resident models that have not
+admitted a request within the timeout, following the same drain/retire flow
+as `POST /v1/model/unload`. The default model is never evicted, and a sweep
+only runs while the server is otherwise idle (the unload flow drains global
+admission, so evicting during active traffic would stall unrelated
+requests). Disabled when unset.
+
+Engine-step metrics on `/metrics` (`ax_engine_steps_total`,
+`ax_engine_step_scheduled_requests`, `ax_engine_step_scheduled_tokens`,
+`ax_engine_step_kv_usage_blocks`, `ax_engine_step_prefix_hits_total`) are
+emitted per loaded model with a `model` label, plus an unlabeled aggregate
+series (summed across models) for dashboards written against the
+single-model layout.
+
+Load requests also run a memory admission preflight before any drain: AX
+estimates the incoming model's resident footprint from its on-disk
+safetensors bytes (plus a runtime factor and fixed floor), adds the resident
+models that survive the load (including the outgoing model for
+availability-first replaces, whose overlap window is the policy's point), and
+rejects the load with `422 insufficient_memory` — reporting the projected
+peak, resident, incoming, and budget numbers in GiB — when the projected peak
+exceeds the Metal working-set budget (the same
+`max_recommended_working_set_size` source the runner uses for its wired
+limit). The check skips rather than blocks when the budget or the incoming
+weight layout is unknowable, and `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off`
+disables it entirely if the estimate is wrong for a host.
 The `mlx_lm_delegated` backend supports blocking `/v1/generate` and SSE
 `/v1/generate/stream` through `mlx_lm.server` `/v1/completions`. It also
 supports streamed OpenAI-compatible completion/chat endpoints by forwarding

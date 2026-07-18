@@ -102,9 +102,13 @@ pub(crate) async fn anthropic_messages(
 ) -> Result<Json<AnthropicMessageResponse>, (StatusCode, Json<ErrorResponse>)> {
     let live = select_openai_model(&state, request.model.as_deref())?;
     let openai_request = request.into_openai_chat_request()?;
-    let (request_id, response) =
+    let (request_id, response, stop_sequence) =
         run_anthropic_messages_generation(state, live, openai_request).await?;
-    Ok(Json(anthropic_message_response(request_id, &response)))
+    Ok(Json(anthropic_message_response(
+        request_id,
+        &response,
+        stop_sequence,
+    )))
 }
 
 impl AnthropicMessagesRequest {
@@ -239,7 +243,7 @@ async fn run_anthropic_messages_generation(
     state: AppState,
     live: crate::app_state::LiveState,
     request: OpenAiChatCompletionHttpRequest,
-) -> Result<(u64, GenerateResponse), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(u64, GenerateResponse, Option<String>), (StatusCode, Json<ErrorResponse>)> {
     if mlx_lm::is_selected(&live) {
         let OpenAiBuiltMlxLmChatRequest {
             chat_request,
@@ -256,7 +260,7 @@ async fn run_anthropic_messages_generation(
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
         })
         .await?;
-        return Ok((request_id, response));
+        return Ok((request_id, response, None));
     }
 
     if llama_cpp::supports_server_chat(&live) {
@@ -275,13 +279,13 @@ async fn run_anthropic_messages_generation(
             llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
         })
         .await?;
-        return Ok((request_id, response));
+        return Ok((request_id, response, None));
     }
 
     let OpenAiBuiltRequest {
         generate_request,
         stream,
-        response_options: _,
+        response_options,
     } = build_openai_chat_request_offloading_media(&live, request).await?;
     reject_unexpected_stream(stream)?;
     let (request_id, mut response) =
@@ -292,12 +296,19 @@ async fn run_anthropic_messages_generation(
         OpenAiStreamKind::ChatCompletion,
         false,
     )?;
-    Ok((request_id, response))
+    // Native client stops are enforced server-side (ADR-040 D2); the matched
+    // sequence surfaces as the Anthropic `stop_sequence` field.
+    let stop_sequence = crate::openai::stop::apply_client_stops_to_generate_response(
+        &mut response,
+        &response_options.client_stop_sequences,
+    );
+    Ok((request_id, response, stop_sequence))
 }
 
 fn anthropic_message_response(
     request_id: u64,
     response: &GenerateResponse,
+    stop_sequence: Option<String>,
 ) -> AnthropicMessageResponse {
     let (input_tokens, output_tokens) = response
         .known_usage()
@@ -311,8 +322,12 @@ fn anthropic_message_response(
             text: response.output_text.clone().unwrap_or_default(),
         }],
         model: response.model_id.clone(),
-        stop_reason: anthropic_stop_reason(response.finish_reason),
-        stop_sequence: None,
+        stop_reason: if stop_sequence.is_some() {
+            "stop_sequence"
+        } else {
+            anthropic_stop_reason(response.finish_reason)
+        },
+        stop_sequence,
         usage: AnthropicUsage {
             input_tokens,
             output_tokens,

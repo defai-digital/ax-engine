@@ -30,6 +30,8 @@ use crate::openai::chat_requests::{
     messages_contain_inline_media, reject_video_chat_content,
     render_gemma4_unified_chat_with_media, render_openai_chat_prompt_with_tools,
 };
+use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
+use crate::openai::stop::validate_client_stop_sequences;
 use crate::tasks::run_blocking_http_task;
 
 pub(crate) struct OpenAiBuiltRequest {
@@ -73,8 +75,13 @@ pub(crate) struct OpenAiResponseOptions {
     pub(crate) include_logprobs: bool,
     pub(crate) include_reasoning: bool,
     pub(crate) validate_json_object: bool,
+    pub(crate) json_schema: Option<Arc<JsonSchemaContract>>,
     pub(crate) parse_tool_calls: bool,
     pub(crate) tool_contract: Option<Arc<OpenAiToolContract>>,
+    /// Raw client `stop` sequences, enforced server-side on the native MLX
+    /// backend only (delegated backends forward them upstream). Applied to
+    /// visible assistant content; tool-call spans are exempt (ADR-040 D2).
+    pub(crate) client_stop_sequences: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -202,8 +209,10 @@ impl OpenAiResponseOptions {
             validate_json_object: openai_response_format_is_json_object(
                 request.response_format.as_ref(),
             ),
+            json_schema: parse_json_schema_response_format(request.response_format.as_ref())?,
             parse_tool_calls: false,
             tool_contract: None,
+            client_stop_sequences: Vec::new(),
         })
     }
 
@@ -224,20 +233,24 @@ impl OpenAiResponseOptions {
             validate_json_object: openai_response_format_is_json_object(
                 request.response_format.as_ref(),
             ),
+            json_schema: parse_json_schema_response_format(request.response_format.as_ref())?,
             parse_tool_calls: openai_tools_are_enabled(
                 request.tools.as_ref(),
                 request.tool_choice.as_ref(),
             ),
             tool_contract: OpenAiToolContract::from_tools(request.tools.as_ref()).map(Arc::new),
+            client_stop_sequences: Vec::new(),
         })
     }
 
-    /// Streaming chunks do not carry logprob, reasoning, or validated
-    /// JSON-object payloads yet; fail closed instead of silently dropping a
-    /// contract the caller asked for.
+    /// Streaming chunks do not carry logprob or validated JSON payloads yet;
+    /// fail closed instead of silently dropping a contract the caller asked
+    /// for. Reasoning streams only where a family mechanism exists
+    /// (`streaming_reasoning_supported`: native Qwen ChatML / Gemma 4 chat).
     pub(crate) fn reject_unsupported_streaming_contract(
         &self,
         stream: bool,
+        streaming_reasoning_supported: bool,
     ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
         if !stream {
             return Ok(());
@@ -250,6 +263,14 @@ impl OpenAiResponseOptions {
                     .to_string(),
             ));
         }
+        if self.json_schema.is_some() {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "unsupported_parameter",
+                "response_format json_schema validation is not supported for streaming requests yet"
+                    .to_string(),
+            ));
+        }
         if self.include_logprobs {
             return Err(error_response(
                 StatusCode::BAD_REQUEST,
@@ -257,11 +278,13 @@ impl OpenAiResponseOptions {
                 "logprobs are not supported for streaming requests yet".to_string(),
             ));
         }
-        if self.include_reasoning {
+        if self.include_reasoning && !streaming_reasoning_supported {
             return Err(error_response(
                 StatusCode::BAD_REQUEST,
                 "unsupported_parameter",
-                "reasoning output is not supported for streaming requests yet".to_string(),
+                "streaming reasoning output is only supported on native Qwen ChatML and Gemma 4 \
+                 chat sessions"
+                    .to_string(),
             ));
         }
         Ok(())
@@ -311,8 +334,8 @@ pub(crate) fn build_openai_completion_request(
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_completion_request(&request);
-    let response_options = OpenAiResponseOptions::from_completion_request(&request)?;
-    response_options.reject_unsupported_streaming_contract(request.stream)?;
+    let mut response_options = OpenAiResponseOptions::from_completion_request(&request)?;
+    response_options.reject_unsupported_streaming_contract(request.stream, false)?;
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, false, structured_output);
     let multimodal_inputs = request.multimodal_inputs;
@@ -326,10 +349,12 @@ pub(crate) fn build_openai_completion_request(
         .stop
         .map(OpenAiStopInput::into_vec)
         .unwrap_or_default();
-    reject_unsupported_stop_sequences_on_native_backend(
-        live.runtime_report.selected_backend,
-        &stop_sequences,
-    )?;
+    validate_client_stop_sequences(&stop_sequences)?;
+    if live.runtime_report.selected_backend == SelectedBackend::Mlx {
+        // Delegated backends enforce stops upstream; the native backend
+        // enforces them server-side over decoded text (ADR-040 D2).
+        response_options.client_stop_sequences = stop_sequences.clone();
+    }
     let (input_tokens, input_text) = match request.prompt {
         OpenAiPromptInput::Text(text) => {
             reject_openai_multimodal_inputs_without_tokens(
@@ -400,8 +425,15 @@ pub(crate) fn build_openai_chat_request(
     reject_video_chat_content(&request.messages)?;
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
-    let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
-    response_options.reject_unsupported_streaming_contract(request.stream)?;
+    let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    let streaming_reasoning_supported = live.runtime_report.selected_backend
+        == SelectedBackend::Mlx
+        && matches!(
+            chat::ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+            chat::ChatPromptTemplate::QwenChatMl | chat::ChatPromptTemplate::Gemma4
+        );
+    response_options
+        .reject_unsupported_streaming_contract(request.stream, streaming_reasoning_supported)?;
     let mut input_tokens = request.input_tokens;
     let mut multimodal_inputs = request.multimodal_inputs;
     reject_video_multimodal_inputs(&multimodal_inputs)?;
@@ -467,10 +499,12 @@ pub(crate) fn build_openai_chat_request(
         .stop
         .map(OpenAiStopInput::into_vec)
         .unwrap_or_default();
-    reject_unsupported_stop_sequences_on_native_backend(
-        live.runtime_report.selected_backend,
-        &user_stop,
-    )?;
+    validate_client_stop_sequences(&user_stop)?;
+    if live.runtime_report.selected_backend == SelectedBackend::Mlx {
+        // Delegated backends enforce stops upstream; the native backend
+        // enforces them server-side over decoded text (ADR-040 D2).
+        response_options.client_stop_sequences = user_stop.clone();
+    }
 
     let payload = OpenAiBuiltPayload {
         sampling: build_openai_sampling(live, sampling_params),
@@ -519,7 +553,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
     )?;
-    response_options.reject_unsupported_streaming_contract(request.stream)?;
+    response_options.reject_unsupported_streaming_contract(request.stream, false)?;
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
     let stop_sequences = openai_chat_stop_sequences(live.model_id.as_ref(), request.stop);
@@ -561,7 +595,7 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
     )?;
-    response_options.reject_unsupported_streaming_contract(request.stream)?;
+    response_options.reject_unsupported_streaming_contract(request.stream, false)?;
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
     let stop_sequences = openai_chat_stop_sequences(live.model_id.as_ref(), request.stop);
@@ -1008,34 +1042,6 @@ fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
         .or_else(|| value.as_u64().map(|value| value != 0))
         .or_else(|| value.as_f64().map(|value| value != 0.0))
         .unwrap_or(true)
-}
-
-/// Client-supplied stop sequences (`stop` / Anthropic `stop_sequences` /
-/// Ollama `options.stop`) are only enforced by the delegated llama.cpp and
-/// mlx_lm backends, which forward them to the upstream process/server. The
-/// native MLX backend's `RequestSubmission`/`SamplingParams` have no
-/// string-stop-sequence concept at all — the value used to reach
-/// `GenerateRequest.stop_sequences` and then get silently discarded, so the
-/// model kept generating straight through the stop string until EOS or
-/// `max_tokens`. Fail closed instead: this checks the RAW, caller-supplied
-/// stop list, not `chat::stop_sequences`'s merged output, so model-family
-/// default stops (e.g. Gemma4's `<end_of_turn>`, enforced separately via the
-/// tokenizer's own EOS token id) are never rejected — only an explicit,
-/// unsupported-on-native client `stop` value is.
-fn reject_unsupported_stop_sequences_on_native_backend(
-    selected_backend: SelectedBackend,
-    stop: &[String],
-) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if selected_backend != SelectedBackend::Mlx || stop.is_empty() {
-        return Ok(());
-    }
-    Err(error_response(
-        StatusCode::BAD_REQUEST,
-        "unsupported_parameter",
-        "stop sequences are not supported on the native MLX backend yet; the delegated \
-         llama.cpp and mlx_lm backends honor them"
-            .to_string(),
-    ))
 }
 
 /// OpenAI sampling params AX does not implement. Non-default values fail

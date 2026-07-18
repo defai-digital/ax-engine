@@ -160,10 +160,11 @@ fn bins_from_env() -> Vec<(f32, f32)> {
                     let (Some(thr), Some(prior)) = (it.next(), it.next()) else {
                         continue;
                     };
-                    if let (Ok(t), Ok(p)) = (thr.parse::<f32>(), prior.parse::<f32>()) {
-                        if t.is_finite() && p.is_finite() {
-                            bins.push((t, p.clamp(gate_min(), gate_max())));
-                        }
+                    if let (Ok(t), Ok(p)) = (thr.parse::<f32>(), prior.parse::<f32>())
+                        && t.is_finite()
+                        && p.is_finite()
+                    {
+                        bins.push((t, p.clamp(gate_min(), gate_max())));
                     }
                 }
                 if !bins.is_empty() {
@@ -307,24 +308,21 @@ pub fn resolve_mtp_gate(
         return (g, ResolutionSource::Explicit);
     }
     // Non-auto profiles are hard pins (ADR-022).
-    if !matches!(profile, SpeculationProfile::Auto) {
-        if let Some(g) = profile.qwen_gate(temperature) {
-            return (g, ResolutionSource::Profile);
-        }
+    if !matches!(profile, SpeculationProfile::Auto)
+        && let Some(g) = profile.qwen_gate(temperature)
+    {
+        return (g, ResolutionSource::Profile);
     }
     // High-T auto diversity pin BEFORE adaptive.
     if matches!(profile, SpeculationProfile::Auto)
         && SpeculationProfile::is_diversity_temperature(temperature)
+        && let Some(g) = profile.qwen_gate(temperature)
     {
-        if let Some(g) = profile.qwen_gate(temperature) {
-            return (g, ResolutionSource::Profile);
-        }
+        return (g, ResolutionSource::Profile);
     }
     // Low-T auto + adaptive: always use st.gate when present (including frozen).
-    if adaptive_enabled {
-        if let Some(st) = adaptive {
-            return (st.gate, ResolutionSource::Adaptive);
-        }
+    if adaptive_enabled && let Some(st) = adaptive {
+        return (st.gate, ResolutionSource::Adaptive);
     }
     if let Some(g) = profile.qwen_gate(temperature) {
         return (g, ResolutionSource::Profile);

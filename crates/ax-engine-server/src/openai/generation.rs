@@ -27,7 +27,8 @@ use crate::openai::requests::{
 use crate::openai::responses::openai_chat_completion_response;
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::streaming::{
-    stream_openai_llama_cpp_chat_request, stream_openai_mlx_lm_chat_request, stream_openai_request,
+    StreamReasoningFamily, stream_openai_llama_cpp_chat_request, stream_openai_mlx_lm_chat_request,
+    stream_openai_request,
 };
 use crate::tasks::run_blocking_session_task;
 
@@ -57,7 +58,7 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
         llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
     })
     .await?;
-    validate_openai_json_object_response(&response, &response_options)?;
+    validate_openai_response_format(&response, &response_options)?;
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(
         &response,
@@ -93,7 +94,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
     })
     .await?;
-    validate_openai_json_object_response(&response, &response_options)?;
+    validate_openai_response_format(&response, &response_options)?;
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(
         &response,
@@ -115,7 +116,20 @@ pub(crate) async fn run_openai_text_generation(
         response_options,
     } = request;
     if stream {
-        if response_options.parse_tool_calls && matches!(kind, OpenAiStreamKind::ChatCompletion) {
+        let tool_chat =
+            response_options.parse_tool_calls && matches!(kind, OpenAiStreamKind::ChatCompletion);
+        // Incremental tool-call streaming (ADR-040 D1) covers the product
+        // scope's text-marker families. GLM 4.x encodes tool markers as
+        // special tokens the plain incremental decode strips, and GPT-OSS
+        // calls ride Harmony commentary channels — both keep the buffered
+        // fallback until their stream decodes preserve the markers.
+        let incremental_tool_chat = tool_chat
+            && live.runtime_report.selected_backend == SelectedBackend::Mlx
+            && matches!(
+                ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+                ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Gemma4
+            );
+        if tool_chat && !incremental_tool_chat {
             return stream_buffered_openai_tool_chat_response(
                 state,
                 live,
@@ -124,7 +138,30 @@ pub(crate) async fn run_openai_text_generation(
             )
             .await;
         }
-        return stream_openai_request(state, live, generate_request, kind).await;
+        // Streaming reasoning (M2): the request build already rejected
+        // reasoning+stream for families without a mechanism.
+        let reasoning_family = if response_options.include_reasoning
+            && matches!(kind, OpenAiStreamKind::ChatCompletion)
+            && live.runtime_report.selected_backend == SelectedBackend::Mlx
+        {
+            match ChatPromptTemplate::for_model_id(live.model_id.as_ref()) {
+                ChatPromptTemplate::QwenChatMl => Some(StreamReasoningFamily::QwenThink),
+                ChatPromptTemplate::Gemma4 => Some(StreamReasoningFamily::Gemma4Channel),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        return stream_openai_request(
+            state,
+            live,
+            generate_request,
+            kind,
+            &response_options,
+            incremental_tool_chat,
+            reasoning_family,
+        )
+        .await;
     }
 
     let (request_id, mut response) =
@@ -135,7 +172,7 @@ pub(crate) async fn run_openai_text_generation(
         kind,
         response_options.include_reasoning,
     )?;
-    validate_openai_json_object_response(&response, &response_options)?;
+    validate_openai_response_format(&response, &response_options)?;
 
     Ok(kind.build_non_stream_response(&response, request_id, response_options, native_reasoning))
 }
@@ -154,7 +191,7 @@ async fn stream_buffered_openai_tool_chat_response(
         OpenAiStreamKind::ChatCompletion,
         response_options.include_reasoning,
     )?;
-    validate_openai_json_object_response(&response, &response_options)?;
+    validate_openai_response_format(&response, &response_options)?;
 
     let chat_response = openai_chat_completion_response(
         &response,
@@ -250,28 +287,47 @@ fn streaming_delegated_tool_calls_error() -> (StatusCode, Json<ErrorResponse>) {
     )
 }
 
-pub(crate) fn validate_openai_json_object_response(
+/// Post-hoc `response_format` validation for `json_object` and Phase A
+/// `json_schema` (ADR-040 D3: validated, not constrained — Phase B upgrades
+/// this to guided decoding without changing the request shape).
+pub(crate) fn validate_openai_response_format(
     response: &GenerateResponse,
     options: &OpenAiResponseOptions,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if !options.validate_json_object {
+    if !options.validate_json_object && options.json_schema.is_none() {
         return Ok(());
     }
     let text = response.output_text.as_deref().unwrap_or("").trim();
-    match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(serde_json::Value::Object(_)) => Ok(()),
-        Ok(_) => Err(error_response(
+    let value = serde_json::from_str::<serde_json::Value>(text).map_err(|error| {
+        error_response(
+            StatusCode::BAD_GATEWAY,
+            "invalid_output",
+            format!("model output did not satisfy response_format: {error}"),
+        )
+    })?;
+    if options.validate_json_object && !value.is_object() {
+        return Err(error_response(
             StatusCode::BAD_GATEWAY,
             "invalid_output",
             "model output did not satisfy response_format json_object: expected a JSON object"
                 .to_string(),
-        )),
-        Err(error) => Err(error_response(
-            StatusCode::BAD_GATEWAY,
-            "invalid_output",
-            format!("model output did not satisfy response_format json_object: {error}"),
-        )),
+        ));
     }
+    if let Some(contract) = options.json_schema.as_deref() {
+        crate::openai::json_schema::validate_value(&contract.schema, &value).map_err(
+            |message| {
+                let name = contract.name.as_deref().unwrap_or("response");
+                error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "invalid_output",
+                    format!(
+                        "model output did not satisfy response_format json_schema {name}: {message}"
+                    ),
+                )
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// Decode native MLX output tokens into `response.output_text`. For chat

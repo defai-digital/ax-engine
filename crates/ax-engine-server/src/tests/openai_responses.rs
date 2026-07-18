@@ -1,5 +1,5 @@
 use crate::openai::chunks::{chat_tool_calls_delta_chunk, chat_tool_calls_final_chunk};
-use crate::openai::generation::validate_openai_json_object_response;
+use crate::openai::generation::validate_openai_response_format;
 use crate::openai::requests::{OpenAiResponseOptions, OpenAiToolContract};
 use crate::openai::responses::{
     openai_chat_completion_response, openai_completion_response, openai_finish_reason,
@@ -8,6 +8,7 @@ use ax_engine_sdk::{
     CapabilityReport, GenerateFinishReason, GenerateResponse, GenerateRouteReport, GenerateStatus,
     ResolutionPolicy, RuntimeReport, SelectedBackend, SupportTier,
 };
+use axum::http::StatusCode;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -809,7 +810,7 @@ fn chat_response_leaves_bare_json_content_alone_even_with_tools_enabled() {
 fn json_object_validation_rejects_invalid_model_output() {
     let response = sample_generate_response("not json", Vec::new(), Vec::new());
 
-    let error = validate_openai_json_object_response(
+    let error = validate_openai_response_format(
         &response,
         &OpenAiResponseOptions {
             validate_json_object: true,
@@ -829,12 +830,144 @@ fn json_object_validation_accepts_json_objects_only() {
         validate_json_object: true,
         ..Default::default()
     };
-    validate_openai_json_object_response(&object_response, &options)
+    validate_openai_response_format(&object_response, &options)
         .expect("JSON object should be accepted");
 
     let array_response = sample_generate_response(r#"[1,2]"#, Vec::new(), Vec::new());
-    let _ = validate_openai_json_object_response(&array_response, &options)
+    let _ = validate_openai_response_format(&array_response, &options)
         .expect_err("non-object JSON should fail closed");
+}
+
+#[test]
+fn chat_response_truncates_at_client_stop_and_reports_stop_finish() {
+    let response = sample_generate_response(
+        "hello STOP world",
+        vec![10, 11],
+        vec![Some(-0.1), Some(-0.2)],
+    );
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_logprobs: true,
+            client_stop_sequences: vec!["STOP".to_string()],
+            ..Default::default()
+        },
+        None,
+    );
+    let choice = &openai.choices[0];
+    assert_eq!(choice.message.content, "hello ");
+    assert_eq!(choice.finish_reason, Some("stop"));
+    // Sampled logprobs cover the full generation and would misalign with the
+    // truncated content, so they are omitted on a stop truncation.
+    assert!(choice.logprobs.is_none());
+}
+
+#[test]
+fn completion_response_truncates_at_client_stop() {
+    let response = sample_generate_response("alpha###beta", Vec::new(), Vec::new());
+    let openai = openai_completion_response(
+        &response,
+        "cmpl-test".to_string(),
+        OpenAiResponseOptions {
+            client_stop_sequences: vec!["###".to_string()],
+            ..Default::default()
+        },
+    );
+    assert_eq!(openai.choices[0].text, "alpha");
+    assert_eq!(openai.choices[0].finish_reason, Some("stop"));
+}
+
+#[test]
+fn client_stop_inside_tool_call_body_cannot_truncate_the_call() {
+    // The stop string ("\n\n") occurs inside the tool-call span. Tool calls
+    // are extracted before stop matching (ADR-040 D2), so the call survives
+    // and the stop does not fire on the residual content.
+    let response = sample_generate_response(
+        "<tool_call>\n{\"name\": \"f\",\n\n\"arguments\": {}}\n</tool_call>",
+        Vec::new(),
+        Vec::new(),
+    );
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            client_stop_sequences: vec!["\n\n".to_string()],
+            ..Default::default()
+        },
+        None,
+    );
+    let choice = &openai.choices[0];
+    assert_eq!(choice.finish_reason, Some("tool_calls"));
+    let tool_calls = choice
+        .message
+        .tool_calls
+        .as_ref()
+        .expect("tool call should be extracted before stop matching");
+    assert_eq!(tool_calls[0].function.name, "f");
+}
+
+#[test]
+fn response_format_json_schema_validates_output() {
+    use crate::openai::json_schema::JsonSchemaContract;
+
+    let schema = json!({
+        "type": "object",
+        "properties": {"x": {"type": "integer"}},
+        "required": ["x"],
+        "additionalProperties": false
+    });
+    let options = OpenAiResponseOptions {
+        json_schema: Some(Arc::new(JsonSchemaContract {
+            name: Some("answer".to_string()),
+            schema,
+        })),
+        ..Default::default()
+    };
+
+    let valid = sample_generate_response("{\"x\": 3}", Vec::new(), Vec::new());
+    validate_openai_response_format(&valid, &options).expect("schema-conforming output passes");
+
+    let invalid = sample_generate_response("{\"x\": \"three\"}", Vec::new(), Vec::new());
+    let error = validate_openai_response_format(&invalid, &options)
+        .expect_err("schema-violating output must fail");
+    assert_eq!(error.0, StatusCode::BAD_GATEWAY);
+    assert_eq!(error.1.0.error.code.as_deref(), Some("invalid_output"));
+    assert!(
+        error.1.0.error.message.contains("/x"),
+        "mismatch path should be reported: {}",
+        error.1.0.error.message
+    );
+}
+
+#[test]
+fn usage_reports_cached_tokens_from_prefix_reuse() {
+    let mut response = sample_generate_response("hello", vec![10], vec![Some(-0.1)]);
+    response
+        .route
+        .crossover_decisions
+        .insert("prefix_reused_tokens".to_string(), 512);
+    let openai = openai_completion_response(&response, "cmpl-test".to_string(), Default::default());
+    let usage = openai.usage.expect("usage should be present");
+    assert_eq!(
+        usage
+            .prompt_tokens_details
+            .expect("cached-token details should be present")
+            .cached_tokens,
+        512
+    );
+
+    // No recorded reuse: the details block is omitted entirely.
+    let response = sample_generate_response("hello", vec![10], vec![Some(-0.1)]);
+    let openai = openai_completion_response(&response, "cmpl-test".to_string(), Default::default());
+    assert!(
+        openai
+            .usage
+            .expect("usage should be present")
+            .prompt_tokens_details
+            .is_none()
+    );
 }
 
 fn sample_generate_response(

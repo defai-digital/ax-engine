@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ax_engine_sdk::{
@@ -26,6 +26,9 @@ pub(crate) struct LiveState {
     pub(crate) runtime_report: RuntimeReport,
     pub(crate) generation_service: Arc<NativeGenerationService>,
     pub(crate) embedding_batcher: Arc<EmbeddingMicroBatcher>,
+    /// Unix seconds of the last admitted request for this model; drives the
+    /// optional idle-eviction of non-default resident models.
+    pub(crate) last_used: Arc<AtomicU64>,
 }
 
 /// Process-local model registry. One model remains the default for requests
@@ -176,6 +179,7 @@ impl AppState {
             drop(permit);
             return Err(crate::admission::AdmissionError::StaleGeneration);
         }
+        live.last_used.store(unix_now_secs(), Ordering::Relaxed);
         Ok(permit)
     }
 
@@ -212,9 +216,10 @@ impl LiveState {
 
 fn attach_generation_metrics(live: &LiveState, metrics: &Arc<ServerMetrics>) {
     let step_metrics = Arc::downgrade(metrics);
+    let step_model_id = live.model_id.clone();
     live.generation_service.set_step_observer(move |report| {
         if let Some(metrics) = step_metrics.upgrade() {
-            metrics.record_step_report(report);
+            metrics.record_step_report(step_model_id.as_ref(), report);
         }
     });
     let pressure_metrics = Arc::downgrade(metrics);
@@ -265,12 +270,19 @@ pub(crate) struct ServerMetrics {
     pub(crate) grpc_status_error_total: AtomicU64,
     pub(crate) generation_saturated_commands_total: AtomicU64,
     pub(crate) generation_stream_backlog_overflows_total: AtomicU64,
-    engine_step_observed: AtomicBool,
-    engine_steps_total: AtomicU64,
-    engine_step_scheduled_requests: AtomicU64,
-    engine_step_scheduled_tokens: AtomicU64,
-    engine_step_kv_usage_blocks: AtomicU64,
-    engine_step_prefix_hits_total: AtomicU64,
+    /// Engine-step stats keyed by model id. Multi-model serving runs one
+    /// engine worker per model; a single set of gauges would interleave
+    /// last-writer-wins values from unrelated models.
+    engine_step_stats: Mutex<BTreeMap<String, EngineStepStats>>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EngineStepStats {
+    steps_total: u64,
+    scheduled_requests: u64,
+    scheduled_tokens: u64,
+    kv_usage_blocks: u64,
+    prefix_hits_total: u64,
 }
 
 /// Point-in-time copy of the engine-step gauges cached by
@@ -349,30 +361,48 @@ impl ServerMetrics {
         self.grpc_requests_in_flight.fetch_sub(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_step_report(&self, report: &EngineStepReport) {
-        self.engine_steps_total.fetch_add(1, Ordering::Relaxed);
-        self.engine_step_scheduled_requests
-            .store(report.scheduled_requests as u64, Ordering::Relaxed);
-        self.engine_step_scheduled_tokens
-            .store(report.scheduled_tokens as u64, Ordering::Relaxed);
-        self.engine_step_kv_usage_blocks
-            .store(report.kv_usage_blocks as u64, Ordering::Relaxed);
-        self.engine_step_prefix_hits_total
-            .fetch_add(report.prefix_hits as u64, Ordering::Relaxed);
-        self.engine_step_observed.store(true, Ordering::Release);
+    pub(crate) fn record_step_report(&self, model_id: &str, report: &EngineStepReport) {
+        let mut stats = self
+            .engine_step_stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !stats.contains_key(model_id) {
+            stats.insert(model_id.to_string(), EngineStepStats::default());
+        }
+        let Some(entry) = stats.get_mut(model_id) else {
+            return;
+        };
+        entry.steps_total = entry.steps_total.saturating_add(1);
+        entry.scheduled_requests = report.scheduled_requests as u64;
+        entry.scheduled_tokens = report.scheduled_tokens as u64;
+        entry.kv_usage_blocks = report.kv_usage_blocks as u64;
+        entry.prefix_hits_total = entry
+            .prefix_hits_total
+            .saturating_add(report.prefix_hits as u64);
     }
 
-    pub(crate) fn engine_step_gauges(&self) -> Option<EngineStepGauges> {
-        if !self.engine_step_observed.load(Ordering::Acquire) {
-            return None;
-        }
-        Some(EngineStepGauges {
-            steps_total: self.engine_steps_total.load(Ordering::Relaxed),
-            scheduled_requests: self.engine_step_scheduled_requests.load(Ordering::Relaxed),
-            scheduled_tokens: self.engine_step_scheduled_tokens.load(Ordering::Relaxed),
-            kv_usage_blocks: self.engine_step_kv_usage_blocks.load(Ordering::Relaxed),
-            prefix_hits_total: self.engine_step_prefix_hits_total.load(Ordering::Relaxed),
-        })
+    /// Per-model engine-step snapshots for `/metrics`, sorted by model id.
+    /// Empty until the first step is observed.
+    pub(crate) fn engine_step_gauges_per_model(&self) -> Vec<(String, EngineStepGauges)> {
+        let stats = self
+            .engine_step_stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        stats
+            .iter()
+            .map(|(model_id, entry)| {
+                (
+                    model_id.clone(),
+                    EngineStepGauges {
+                        steps_total: entry.steps_total,
+                        scheduled_requests: entry.scheduled_requests,
+                        scheduled_tokens: entry.scheduled_tokens,
+                        kv_usage_blocks: entry.kv_usage_blocks,
+                        prefix_hits_total: entry.prefix_hits_total,
+                    },
+                )
+            })
+            .collect()
     }
 }
 
@@ -416,7 +446,15 @@ fn build_live_state_inner(
         runtime_report,
         generation_service,
         embedding_batcher,
+        last_used: Arc::new(AtomicU64::new(unix_now_secs())),
     })
+}
+
+pub(crate) fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 pub(crate) fn build_app_state(
@@ -425,6 +463,63 @@ pub(crate) fn build_app_state(
 ) -> Result<AppState, GenerationServiceStartError> {
     let live = build_live_state(model_id, session_config)?;
     Ok(AppState::new(live))
+}
+
+#[cfg(test)]
+mod step_metrics_tests {
+    use super::*;
+
+    fn step_report(scheduled_tokens: u32, prefix_hits: u32) -> EngineStepReport {
+        EngineStepReport {
+            step_id: None,
+            scheduled_requests: 1,
+            scheduled_tokens,
+            ttft_events: 0,
+            prefix_hits,
+            kv_usage_blocks: 8,
+            evictions: 0,
+            preempted_requests: 0,
+            preempted_tokens: 0,
+            cpu_time_us: 0,
+            runner_time_us: 0,
+            route: None,
+            metal_dispatch: None,
+        }
+    }
+
+    #[test]
+    fn step_metrics_are_tracked_per_model_not_last_writer_wins() {
+        let metrics = ServerMetrics::default();
+        metrics.record_step_report("qwen3.6-27b", &step_report(64, 2));
+        metrics.record_step_report("gemma-4-12b", &step_report(128, 0));
+        metrics.record_step_report("qwen3.6-27b", &step_report(32, 1));
+
+        let per_model = metrics.engine_step_gauges_per_model();
+        assert_eq!(per_model.len(), 2);
+        let gemma = &per_model
+            .iter()
+            .find(|(model, _)| model == "gemma-4-12b")
+            .expect("gemma entry")
+            .1;
+        assert_eq!(gemma.steps_total, 1);
+        assert_eq!(gemma.scheduled_tokens, 128);
+        assert_eq!(gemma.prefix_hits_total, 0);
+        let qwen = &per_model
+            .iter()
+            .find(|(model, _)| model == "qwen3.6-27b")
+            .expect("qwen entry")
+            .1;
+        assert_eq!(qwen.steps_total, 2);
+        // Gauges hold the latest step; counters accumulate.
+        assert_eq!(qwen.scheduled_tokens, 32);
+        assert_eq!(qwen.prefix_hits_total, 3);
+    }
+
+    #[test]
+    fn step_metrics_are_empty_before_first_step() {
+        let metrics = ServerMetrics::default();
+        assert!(metrics.engine_step_gauges_per_model().is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -565,7 +660,7 @@ mod tests {
             .await
             .expect("delegated idle step should succeed");
 
-        assert!(state.metrics.engine_step_gauges().is_some());
+        assert!(!state.metrics.engine_step_gauges_per_model().is_empty());
     }
 
     #[tokio::test]

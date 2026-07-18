@@ -117,7 +117,7 @@ pub(crate) async fn load_model(
     // over backend/artifact validation because replacing its owner would
     // orphan request IDs. The loading flag already blocks new submissions.
     ensure_no_active_stepwise_for_all(&state).await?;
-    let live = validate_load_preflight(&state, &model_id, &model_path, load_mode)?;
+    let live = validate_load_preflight(&state, &model_id, &model_path, load_mode, load_policy)?;
     let drain_guard = state.admission.begin_drain();
     let response_model_id = model_id.clone();
 
@@ -212,6 +212,17 @@ pub(crate) async fn unload_model(
             "model_id must not be empty".to_string(),
         ));
     }
+    perform_unload(&state, model_id.clone()).await?;
+    Ok(Json(UnloadModelResponse {
+        model_id,
+        state: "unloaded",
+    }))
+}
+
+/// Shared unload flow used by the HTTP handler and the idle evictor: takes
+/// the loading flag, validates, drains admission, and retires the model on a
+/// detached task so a caller disconnect cannot abort cleanup.
+async fn perform_unload(state: &AppState, model_id: String) -> Result<(), HttpErrorResponse> {
     if state
         .loading
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -226,10 +237,10 @@ pub(crate) async fn unload_model(
     // The loading flag serializes registry mutations, so these preconditions
     // remain true until remove_live runs. Reject without draining active work.
     let loading_guard = LoadingFlagGuard(state.clone());
-    validate_unload_preflight(&state, &model_id)?;
+    validate_unload_preflight(state, &model_id)?;
     let drain_guard = state.admission.begin_drain();
     let state_clone = state.clone();
-    let unload_model_id = model_id.clone();
+    let unload_model_id = model_id;
     let task = tokio::spawn(async move {
         let _drain_guard = drain_guard;
         let _loading_guard = loading_guard;
@@ -253,11 +264,7 @@ pub(crate) async fn unload_model(
     });
 
     match task.await {
-        Ok(Ok(())) => Ok(Json(UnloadModelResponse {
-            model_id,
-            state: "unloaded",
-        })),
-        Ok(Err(error)) => Err(error),
+        Ok(result) => result,
         Err(error) => Err(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",
@@ -266,11 +273,57 @@ pub(crate) async fn unload_model(
     }
 }
 
+/// Background idle evictor (opt-in via `--model-idle-timeout-secs`): retires
+/// non-default resident models that have not admitted a request within the
+/// timeout. The default model is never evicted, and a sweep only runs while
+/// the server is otherwise idle — the unload flow drains global admission, so
+/// evicting during active traffic would stall unrelated requests.
+pub(crate) fn spawn_model_idle_evictor(state: AppState, idle_timeout: Duration) {
+    let tick = Duration::from_secs((idle_timeout.as_secs() / 4).clamp(10, 60));
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tick).await;
+            if state.admission.active_jobs() != 0 {
+                continue;
+            }
+            let default_model_id = state.snapshot().model_id;
+            let now = crate::app_state::unix_now_secs();
+            let idle_candidates = state
+                .snapshots()
+                .into_iter()
+                .filter(|live| live.model_id.as_ref() != default_model_id.as_ref())
+                .filter(|live| {
+                    let last_used = live.last_used.load(Ordering::Acquire);
+                    now.saturating_sub(last_used) >= idle_timeout.as_secs()
+                })
+                .map(|live| live.model_id.as_ref().clone())
+                .collect::<Vec<_>>();
+            for model_id in idle_candidates {
+                match perform_unload(&state, model_id.clone()).await {
+                    Ok(()) => {
+                        tracing::info!(model_id, "idle-evicted resident model");
+                    }
+                    Err((_, error)) => {
+                        // Busy (load in progress, active work) or already
+                        // gone: skip this sweep and retry on a later tick.
+                        tracing::debug!(
+                            model_id,
+                            error = %error.0.error.message,
+                            "idle eviction skipped"
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn validate_load_preflight(
     state: &AppState,
     model_id: &str,
     model_path: &std::path::Path,
     load_mode: LoadModelMode,
+    load_policy: LoadModelPolicy,
 ) -> Result<crate::app_state::LiveState, HttpErrorResponse> {
     let live = state.snapshot();
     if !live
@@ -328,7 +381,131 @@ fn validate_load_preflight(
             }
         }
     }
+    validate_load_memory_preflight(state, model_path, load_mode, load_policy)?;
     Ok(live)
+}
+
+/// Runtime factor + fixed floor over on-disk weight bytes (ADR-040 D4):
+/// quantized weights land in memory at ~disk size; the extra 1/8 covers
+/// compiled graphs, speculative-decoding state, and allocator slack; the
+/// floor covers KV baseline and runtime buffers. Conservative by design —
+/// the estimator's job is to fail a load that cannot fit, loudly and early.
+const LOAD_FOOTPRINT_FIXED_FLOOR_BYTES: u64 = 768 * 1024 * 1024;
+
+fn estimated_footprint_bytes(weight_bytes: u64) -> u64 {
+    weight_bytes
+        .saturating_add(weight_bytes / 8)
+        .saturating_add(LOAD_FOOTPRINT_FIXED_FLOOR_BYTES)
+}
+
+/// Sum of `*.safetensors` file sizes directly in the artifacts dir; `None`
+/// when there are none (unknown layout — the preflight then skips rather
+/// than guessing).
+fn model_weight_bytes(dir: &std::path::Path) -> Option<u64> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("safetensors")
+            && let Ok(metadata) = entry.metadata()
+            && metadata.is_file()
+        {
+            total = total.saturating_add(metadata.len());
+        }
+    }
+    (total > 0).then_some(total)
+}
+
+/// Peak resident estimate for the load: `add` keeps every resident model;
+/// `replace` under `availability_first` keeps the outgoing model resident
+/// until the replacement is ready (the overlap is that policy's point), while
+/// `memory_constrained` shuts it down first.
+fn projected_peak_bytes(
+    resident_total: u64,
+    outgoing: u64,
+    incoming: u64,
+    load_mode: LoadModelMode,
+    load_policy: LoadModelPolicy,
+) -> u64 {
+    let resident = match (load_mode, load_policy) {
+        (LoadModelMode::Replace, LoadModelPolicy::MemoryConstrained) => {
+            resident_total.saturating_sub(outgoing)
+        }
+        _ => resident_total,
+    };
+    resident.saturating_add(incoming)
+}
+
+fn memory_preflight_disabled() -> bool {
+    std::env::var("AX_SERVER_LOAD_MEMORY_PREFLIGHT")
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "off" | "0" | "false")
+        })
+        .unwrap_or(false)
+}
+
+fn gib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+}
+
+/// Memory admission for model loads (ADR-040 D4). Runs synchronously before
+/// drain, preserving the no-side-effects-on-reject preflight contract. Skips
+/// (never blocks) when the device budget or the incoming weight layout is
+/// unknowable, and can be disabled with `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off`.
+fn validate_load_memory_preflight(
+    state: &AppState,
+    model_path: &std::path::Path,
+    load_mode: LoadModelMode,
+    load_policy: LoadModelPolicy,
+) -> Result<(), HttpErrorResponse> {
+    if memory_preflight_disabled() {
+        return Ok(());
+    }
+    let budget = mlx_sys::max_recommended_working_set_size() as u64;
+    if budget == 0 {
+        return Ok(());
+    }
+    let Some(incoming_weights) = model_weight_bytes(model_path) else {
+        return Ok(());
+    };
+    let incoming = estimated_footprint_bytes(incoming_weights);
+
+    let outgoing_model_id = state.snapshot().model_id;
+    let mut resident_total = 0u64;
+    let mut outgoing = 0u64;
+    for live in state.snapshots() {
+        let Some(dir) = live.session_config.mlx_model_artifacts_dir() else {
+            continue;
+        };
+        let Some(weights) = model_weight_bytes(dir) else {
+            continue;
+        };
+        let footprint = estimated_footprint_bytes(weights);
+        resident_total = resident_total.saturating_add(footprint);
+        if live.model_id.as_ref() == outgoing_model_id.as_ref() {
+            outgoing = footprint;
+        }
+    }
+
+    let peak = projected_peak_bytes(resident_total, outgoing, incoming, load_mode, load_policy);
+    if peak <= budget {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "insufficient_memory",
+        format!(
+            "projected peak resident set {:.1} GiB (resident models {:.1} GiB + incoming model \
+             {:.1} GiB estimated) exceeds the Metal working-set budget {:.1} GiB; unload a model \
+             first, use load_policy=memory_constrained for replace, or set \
+             AX_SERVER_LOAD_MEMORY_PREFLIGHT=off to override",
+            gib(peak),
+            gib(resident_total),
+            gib(incoming),
+            gib(budget)
+        ),
+    ))
 }
 
 fn validate_unload_preflight(state: &AppState, model_id: &str) -> Result<(), HttpErrorResponse> {
@@ -571,6 +748,82 @@ mod tests {
         ] {
             assert!(!is_supported_multi_model_id(model_id), "{model_id}");
         }
+    }
+
+    #[test]
+    fn footprint_estimate_adds_runtime_factor_and_floor() {
+        let weights = 16 * 1024 * 1024 * 1024u64; // 16 GiB on disk
+        let footprint = estimated_footprint_bytes(weights);
+        assert_eq!(
+            footprint,
+            weights + weights / 8 + LOAD_FOOTPRINT_FIXED_FLOOR_BYTES
+        );
+    }
+
+    #[test]
+    fn projected_peak_counts_overlap_per_mode_and_policy() {
+        let resident_total = 30u64;
+        let outgoing = 20u64;
+        let incoming = 25u64;
+        // add: every resident model stays.
+        assert_eq!(
+            projected_peak_bytes(
+                resident_total,
+                outgoing,
+                incoming,
+                LoadModelMode::Add,
+                LoadModelPolicy::AvailabilityFirst
+            ),
+            55
+        );
+        // replace + availability_first: outgoing stays resident until the
+        // replacement is ready, so the peak includes it.
+        assert_eq!(
+            projected_peak_bytes(
+                resident_total,
+                outgoing,
+                incoming,
+                LoadModelMode::Replace,
+                LoadModelPolicy::AvailabilityFirst
+            ),
+            55
+        );
+        // replace + memory_constrained: outgoing is shut down first.
+        assert_eq!(
+            projected_peak_bytes(
+                resident_total,
+                outgoing,
+                incoming,
+                LoadModelMode::Replace,
+                LoadModelPolicy::MemoryConstrained
+            ),
+            35
+        );
+    }
+
+    #[test]
+    fn weight_bytes_sums_safetensors_only() {
+        let dir =
+            std::env::temp_dir().join(format!("ax-model-weight-bytes-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("test dir should create");
+        std::fs::write(dir.join("model-00001.safetensors"), vec![0u8; 1024])
+            .expect("weight shard should write");
+        std::fs::write(dir.join("model-00002.safetensors"), vec![0u8; 512])
+            .expect("weight shard should write");
+        std::fs::write(dir.join("tokenizer.json"), b"{}").expect("tokenizer should write");
+        assert_eq!(model_weight_bytes(&dir), Some(1536));
+        std::fs::remove_dir_all(&dir).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn weight_bytes_is_unknown_without_safetensors() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-model-weight-bytes-empty-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("test dir should create");
+        assert_eq!(model_weight_bytes(&dir), None);
+        std::fs::remove_dir_all(&dir).expect("test dir should clean up");
     }
 
     #[test]

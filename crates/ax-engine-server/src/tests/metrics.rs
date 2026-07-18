@@ -38,20 +38,26 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_generation_stream_backlog_overflows_total 0\n"));
     assert!(body.contains("ax_engine_generation_worker_ready 1\n"));
 
-    metrics.record_step_report(&EngineStepReport {
-        scheduled_requests: 3,
-        scheduled_tokens: 17,
-        kv_usage_blocks: 9,
-        prefix_hits: 2,
-        ..Default::default()
-    });
-    metrics.record_step_report(&EngineStepReport {
-        scheduled_requests: 1,
-        scheduled_tokens: 5,
-        kv_usage_blocks: 4,
-        prefix_hits: 1,
-        ..Default::default()
-    });
+    metrics.record_step_report(
+        "test-model",
+        &EngineStepReport {
+            scheduled_requests: 3,
+            scheduled_tokens: 17,
+            kv_usage_blocks: 9,
+            prefix_hits: 2,
+            ..Default::default()
+        },
+    );
+    metrics.record_step_report(
+        "test-model",
+        &EngineStepReport {
+            scheduled_requests: 1,
+            scheduled_tokens: 5,
+            kv_usage_blocks: 4,
+            prefix_hits: 1,
+            ..Default::default()
+        },
+    );
 
     let (status, _, body) = text_response(
         &app,
@@ -69,4 +75,7 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_step_scheduled_tokens 5\n"));
     assert!(body.contains("ax_engine_step_kv_usage_blocks 4\n"));
     assert!(body.contains("ax_engine_step_prefix_hits_total 3\n"));
+    // Per-model labeled series accompany the unlabeled aggregates.
+    assert!(body.contains("ax_engine_steps_total{model=\"test-model\"} 2\n"));
+    assert!(body.contains("ax_engine_step_prefix_hits_total{model=\"test-model\"} 3\n"));
 }

@@ -141,40 +141,96 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
     // Engine-step gauges come from the snapshot cached by the generation worker;
     // scraping must never call `step_report` itself
     // (that call advances the engine or consumes request stream chunks).
-    if let Some(step) = metrics.engine_step_gauges() {
-        append_counter(
+    // Each loaded model runs its own engine worker, so every series is
+    // emitted per model (label `model`) plus an unlabeled aggregate for
+    // dashboards written against the single-model layout.
+    let step_models = metrics.engine_step_gauges_per_model();
+    if !step_models.is_empty() {
+        append_step_metric(
             &mut body,
             "ax_engine_steps_total",
-            "Successful engine steps observed by the current server process.",
-            step.steps_total,
+            "Successful engine steps observed by the current server process (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            |step| step.steps_total,
         );
-        append_gauge(
+        append_step_metric(
             &mut body,
             "ax_engine_step_scheduled_requests",
-            "Requests scheduled in the latest observed engine step.",
-            step.scheduled_requests,
+            "Requests scheduled in the latest observed engine step (unlabeled: summed across loaded models).",
+            "gauge",
+            &step_models,
+            |step| step.scheduled_requests,
         );
-        append_gauge(
+        append_step_metric(
             &mut body,
             "ax_engine_step_scheduled_tokens",
-            "Tokens scheduled in the latest observed engine step.",
-            step.scheduled_tokens,
+            "Tokens scheduled in the latest observed engine step (unlabeled: summed across loaded models).",
+            "gauge",
+            &step_models,
+            |step| step.scheduled_tokens,
         );
-        append_gauge(
+        append_step_metric(
             &mut body,
             "ax_engine_step_kv_usage_blocks",
-            "KV cache blocks used in the latest observed engine step.",
-            step.kv_usage_blocks,
+            "KV cache blocks used in the latest observed engine step (unlabeled: summed across loaded models).",
+            "gauge",
+            &step_models,
+            |step| step.kv_usage_blocks,
         );
-        append_counter(
+        append_step_metric(
             &mut body,
             "ax_engine_step_prefix_hits_total",
-            "Prefix cache hits accumulated across observed engine steps.",
-            step.prefix_hits_total,
+            "Prefix cache hits accumulated across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            |step| step.prefix_hits_total,
         );
     }
 
     ([("content-type", "text/plain; version=0.0.4")], body).into_response()
+}
+
+/// One engine-step metric: HELP/TYPE once, then the unlabeled aggregate
+/// followed by one `model`-labeled series per loaded model.
+fn append_step_metric(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    metric_type: &str,
+    step_models: &[(String, crate::app_state::EngineStepGauges)],
+    value: impl Fn(&crate::app_state::EngineStepGauges) -> u64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(metric_type);
+    body.push('\n');
+    let total: u64 = step_models.iter().map(|(_, step)| value(step)).sum();
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(&total.to_string());
+    body.push('\n');
+    for (model_id, step) in step_models {
+        body.push_str(name);
+        body.push_str("{model=\"");
+        body.push_str(&escape_label_value(model_id));
+        body.push_str("\"} ");
+        body.push_str(&value(step).to_string());
+        body.push('\n');
+    }
+}
+
+fn escape_label_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 fn append_counter(body: &mut String, name: &str, help: &str, value: u64) {
