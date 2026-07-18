@@ -31,7 +31,7 @@ use ratatui::widgets::canvas::{Canvas, Line as CanvasLine};
 use ratatui::widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table};
 
 use crate::tui::catalog;
-use crate::tui::metrics::{HISTORY_LEN, LiveMetrics, PressureBand};
+use crate::tui::metrics::{HISTORY_LEN, LiveMetrics, PressureBand, SAMPLE_INTERVAL};
 use crate::tui::theme;
 
 /// Preferred minimum host panel height when callers size explicitly.
@@ -322,12 +322,28 @@ fn draw_util_chart(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
         if x_row[1].width >= 8 {
             let ends = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(x_row[1]);
-            frame.render_widget(Paragraph::new(Span::styled("~4m", theme::label())), ends[0]);
+            frame.render_widget(
+                Paragraph::new(Span::styled(window_label(), theme::label())),
+                ends[0],
+            );
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled("now", theme::label())).right_aligned()),
                 ends[1],
             );
         }
+    }
+}
+
+/// X-axis window label derived from the history capacity × sample interval
+/// (currently 120 × 2 s ≈ "~4m"), so the hint cannot drift from the actual
+/// sampling constants.
+pub(crate) fn window_label() -> String {
+    let secs = HISTORY_LEN as u64 * SAMPLE_INTERVAL.as_secs();
+    let mins = secs / 60;
+    if mins >= 1 {
+        format!("~{mins}m")
+    } else {
+        format!("~{secs}s")
     }
 }
 

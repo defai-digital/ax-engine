@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 pub(super) const HISTORY_LEN: usize = 120;
 
 /// How often host probes append a chart point (slower = calmer trend line).
-const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
+pub(super) const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// One row in the process strip.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
