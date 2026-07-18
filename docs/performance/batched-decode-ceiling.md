@@ -162,10 +162,48 @@ ON** with a kill-switch that restores the bit-exact per-row path.
 
 Remaining gap to the ~3.3× replica ceiling is the compute-bound FFN matmuls
 (2.8× true amortization for that size on Apple Silicon 4-bit) plus fixed
-per-step overhead — diminishing returns on dense. **Phase 3.7+: extend the
-batched forward to MoE + linear-attention** so Qwen3-Coder-Next can batch (the
-original target; needs batched gather_qmm expert routing and batched
-gated-delta) — a multi-week effort, tracked separately.
+per-step overhead — diminishing returns on dense.
+
+## Phase 3.7 handoff (2026-07-17): batched MoE + linear-attention — scoped and de-risked
+
+The original target (Qwen3-Coder-Next) is MoE + linear-attention, both rejected
+by `dense_batched_decode_structural_rejections`. Scoping the extension found it
+is an **integration** effort, not a kernel rewrite — the compute kernels are
+already batch-capable:
+
+- **MoE experts** — `moe_experts_forward` is `leading_elements`-general (it
+  already serves multi-token prefill `[1, seq, H]`), so a batched decode
+  `[B, 1, H]` input flows through the same `gather_qmm` with `[B, top_k]`
+  indices. The MoE half is a clean wiring change.
+- **Linear-attention** — `gated_delta_decode_kernel` already takes a `batch: i32`
+  parameter and per-row SSM state, so it decodes B rows in one dispatch.
+
+**The real work (the integration gaps):**
+
+1. **Batched recurrent-state store.** `BatchedKvCache` holds only full-attention
+   `[B, kv_heads, cap, head_dim]` K/V — it has **no** linear-attention SSM state.
+   Need a sibling batched store for the per-row gated-delta recurrent state
+   (`[B, ...state_shape]`), with the same oracle contract BatchedKvCache already
+   meets: **row r byte-identical to a single-sequence run**. This is where
+   silent numerical bugs live; it must be oracle-tested first, in isolation.
+2. **Route by layer kind in `layer_forward_batched`.** Replace the
+   `router_proj.is_none()` / `linear_attn.is_none()` asserts with: MoE layers →
+   the leading-general MoE block; linear-attention layers → the batch-param
+   gated-delta with the batched state store. Lift the corresponding entries in
+   `dense_batched_decode_structural_rejections`.
+3. **Certify per-model on greedy-token divergence** (the 3.6 pattern), not
+   bit-identity — batched `gather_qmm`/gated-delta will bf16-drift vs per-row.
+
+**Why it wasn't completed here:** every local MoE checkpoint is hybrid (MoE +
+linear-attention / sliding / MLA — verified: Qwen3.6-35B-A3B is also MoE +
+linear-attn), so there is **no MoE-only or linear-only test target** to land an
+end-to-end increment against — both halves must ship together for any real
+model. Each half CAN be unit-tested in isolation first (batched MoE block vs
+per-row; batched recurrent-state store vs single-sequence oracle), which is the
+right first increment. The batched recurrent-state integration is a focused
+multi-day effort best done fresh, not rushed at a marathon's tail — the
+fused-downproj report's lesson (rushing weight/reduction code is how silent
+numerical bugs enter a forward pass) applies directly.
 
 **Revised Phase 3 plan (updated after 3.2/3.3):**
 - **Realistic ceiling: ~2.7× aggregate at batch=8** (the true matmul
