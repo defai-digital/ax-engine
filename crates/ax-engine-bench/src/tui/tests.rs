@@ -1660,6 +1660,212 @@ fn serve_rejects_invalid_host_before_spawning() {
 }
 
 // ---------------------------------------------------------------------------
+// Log pane scrollback (Downloads / Serve)
+// ---------------------------------------------------------------------------
+
+/// Downloads app whose selected task carries `lines` canned log lines.
+fn downloads_app_with_log(lines: usize) -> App {
+    let mut app = new_app();
+    app.screen = Screen::Downloads;
+    let log = (0..lines).map(|i| format!("log line {i:03}")).collect();
+    app.downloads.push(test_task(Some(Job::running_with_log(log))));
+    app
+}
+
+/// Content height of the log pane as last drawn; fails if never drawn.
+fn log_view_height(app: &App) -> usize {
+    let rect = app.log_rect.get();
+    assert!(rect.height > 1, "log pane must be drawn before scrolling");
+    (rect.height - 1) as usize
+}
+
+fn push_download_log_lines(app: &mut App, from: usize, count: usize) {
+    let job = app.downloads[0].job.as_mut().unwrap();
+    for i in from..from + count {
+        job.log.push(format!("log line {i:03}"));
+    }
+}
+
+#[test]
+fn downloads_log_pgup_scrolls_and_pgdn_repins() {
+    let mut app = downloads_app_with_log(120);
+    let text = render(&app);
+    // Pinned at the bottom: newest lines visible, oldest not, no indicator.
+    assert!(text.contains("log line 119"));
+    assert!(!text.contains("log line 000"));
+    assert!(!text.contains("scrolled"));
+    assert!(app.downloads_log_scroll.is_pinned());
+
+    let height = log_view_height(&app);
+    for _ in 0..10 {
+        app.on_key(key(KeyCode::PageUp));
+    }
+    assert_eq!(
+        app.downloads_log_scroll.first_visible(120, height),
+        0,
+        "repeated PgUp lands on (and clamps at) the oldest line"
+    );
+    let text = render(&app);
+    assert!(text.contains("log line 000"), "oldest lines visible: {text}");
+    assert!(!text.contains("log line 119"));
+    assert!(
+        text.contains("↑ scrolled (PgDn to bottom)"),
+        "scrolled indicator in the pane title: {text}"
+    );
+
+    for _ in 0..10 {
+        app.on_key(key(KeyCode::PageDown));
+    }
+    assert!(
+        app.downloads_log_scroll.is_pinned(),
+        "reaching the bottom re-pins"
+    );
+    let text = render(&app);
+    assert!(text.contains("log line 119"));
+    assert!(
+        !text.contains("↑ scrolled"),
+        "indicator hides when pinned: {text}"
+    );
+}
+
+#[test]
+fn wheel_over_downloads_log_scrolls_log_not_queue_selection() {
+    let mut app = downloads_app_with_log(120);
+    app.downloads.push(test_task(Some(Job::running_with_log(vec![]))));
+    let _ = render(&app); // records log + queue hit rects
+    let log_rect = app.log_rect.get();
+    let (lx, ly) = (log_rect.x + 2, log_rect.y + 2);
+
+    app.on_mouse(mouse(MouseEventKind::ScrollUp, lx, ly));
+    assert!(
+        !app.downloads_log_scroll.is_pinned(),
+        "wheel over the log pane scrolls the log"
+    );
+    assert_eq!(app.download_idx, 0, "queue selection must not move");
+    app.on_mouse(mouse(MouseEventKind::ScrollDown, lx, ly));
+    assert!(
+        app.downloads_log_scroll.is_pinned(),
+        "wheeling back down re-pins"
+    );
+
+    // Wheel outside the log pane keeps today's behavior (row selection).
+    let queue = app.content_list_rect.get();
+    app.on_mouse(mouse(MouseEventKind::ScrollDown, queue.x + 2, queue.y + 2));
+    assert_eq!(app.download_idx, 1);
+    assert!(app.downloads_log_scroll.is_pinned());
+}
+
+#[test]
+fn downloads_log_scroll_clamps_at_top_and_bottom() {
+    let mut app = downloads_app_with_log(30);
+    let _ = render(&app);
+    let height = log_view_height(&app);
+    let bottom = 30usize.saturating_sub(height);
+    assert!(bottom > 0, "the log must overflow the pane for this test");
+
+    app.on_key(key(KeyCode::PageUp)); // one page overshoots a short overflow
+    assert_eq!(
+        app.downloads_log_scroll.first_visible(30, height),
+        0,
+        "cannot scroll past the top"
+    );
+    app.on_key(key(KeyCode::PageDown));
+    assert!(
+        app.downloads_log_scroll.is_pinned(),
+        "bottom clamps to pinned instead of overshooting"
+    );
+}
+
+#[test]
+fn changing_download_row_resets_log_scroll() {
+    let mut app = downloads_app_with_log(120);
+    app.downloads.push(test_task(Some(Job::running_with_log(
+        (0..120).map(|i| format!("other line {i:03}")).collect(),
+    ))));
+    let _ = render(&app);
+    app.on_key(key(KeyCode::PageUp));
+    assert!(!app.downloads_log_scroll.is_pinned());
+
+    app.on_key(key(KeyCode::Down)); // move selection to the second row
+    assert_eq!(app.download_idx, 1);
+    assert!(
+        app.downloads_log_scroll.is_pinned(),
+        "switching rows re-pins the log pane"
+    );
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.download_idx, 0);
+    assert!(
+        app.downloads_log_scroll.is_pinned(),
+        "coming back to the row stays pinned (no stale offset)"
+    );
+}
+
+#[test]
+fn serve_log_scrolls_with_keys_and_wheel() {
+    let mut app = new_app();
+    app.screen = Screen::Serve;
+    app.server = Some(Job::running_with_log(
+        (0..120).map(|i| format!("serve line {i:03}")).collect(),
+    ));
+    let _ = render(&app);
+
+    app.on_key(key(KeyCode::PageUp));
+    assert!(!app.serve_log_scroll.is_pinned());
+    let text = render(&app);
+    assert!(
+        text.contains("↑ scrolled"),
+        "serve log shows the indicator: {text}"
+    );
+    // Field-editing focus does not block log scrolling.
+    app.serve_focus = ServeFocus::Host;
+    app.on_key(key(KeyCode::PageDown));
+    assert!(app.serve_log_scroll.is_pinned());
+    app.serve_focus = ServeFocus::List;
+
+    // Wheel over the log pane scrolls it too.
+    let rect = app.log_rect.get();
+    app.on_mouse(mouse(MouseEventKind::ScrollUp, rect.x + 2, rect.y + 2));
+    assert!(!app.serve_log_scroll.is_pinned());
+
+    // Replacing the server job re-pins the pane.
+    app.stop_server();
+    assert!(app.serve_log_scroll.is_pinned());
+}
+
+#[test]
+fn new_log_lines_stay_put_when_scrolled_and_follow_when_pinned() {
+    let mut app = downloads_app_with_log(60);
+    let _ = render(&app);
+    let height = log_view_height(&app);
+
+    // Pinned: appended lines keep the view on the newest output.
+    push_download_log_lines(&mut app, 60, 20); // lines 060..=079
+    assert_eq!(
+        app.downloads_log_scroll.first_visible(80, height),
+        80 - height
+    );
+    let text = render(&app);
+    assert!(text.contains("log line 079"), "pinned view follows new lines");
+
+    // Scrolled up: the same lines stay in view as more output arrives.
+    app.on_key(key(KeyCode::PageUp));
+    let anchored = app.downloads_log_scroll.first_visible(80, height);
+    push_download_log_lines(&mut app, 80, 20); // lines 080..=099
+    assert_eq!(
+        app.downloads_log_scroll.first_visible(100, height),
+        anchored,
+        "scrolled view must not move when new lines arrive"
+    );
+    let text = render(&app);
+    let anchored_line = format!("log line {anchored:03}");
+    assert!(
+        text.contains(&anchored_line),
+        "anchored line still on screen: {text}"
+    );
+    assert!(!text.contains("log line 099"), "no yank to the bottom");
+}
+
+// ---------------------------------------------------------------------------
 // Chat
 // ---------------------------------------------------------------------------
 
