@@ -67,7 +67,7 @@ impl Toast {
             ToastLevel::Warning => theme::WARN,
             ToastLevel::Error => theme::DANGER,
         };
-        Style::default().fg(Color::Black).bg(color)
+        Style::default().fg(theme::ON_ACCENT).bg(color)
     }
     fn icon(&self) -> &'static str {
         match self.level {
@@ -111,7 +111,7 @@ pub(super) fn draw_modal_with(
 ) {
     // Dim the whole screen so the dialog clearly owns focus.
     frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(Color::Black).fg(theme::MUTED)),
+        Paragraph::new("").style(Style::default().bg(theme::SCRIM_BG).fg(theme::MUTED)),
         area,
     );
     let width = 64.min(area.width.saturating_sub(4)).max(20);
@@ -200,7 +200,7 @@ pub(super) fn draw_banner(frame: &mut Frame, area: Rect, kind: ToastLevel, text:
         ),
         ToastLevel::Error => (
             theme::icon::ERROR,
-            Style::default().fg(theme::TEXT).bg(theme::DANGER),
+            Style::default().fg(theme::ON_ACCENT).bg(theme::DANGER),
         ),
     };
     let line = format!(" {icon}  {text} ");
@@ -313,11 +313,7 @@ pub(super) fn field_line(label: &str, value: &str, active: bool) -> Line<'static
     Line::from(vec![
         Span::styled(
             prefix,
-            Style::default().fg(if active {
-                theme::SELECT
-            } else {
-                theme::MUTED
-            }),
+            Style::default().fg(if active { theme::SELECT } else { theme::MUTED }),
         ),
         Span::styled(format!("{label}: "), theme::label()),
         Span::styled(format!(" {value} "), value_style),

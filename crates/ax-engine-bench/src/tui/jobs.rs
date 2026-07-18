@@ -207,6 +207,17 @@ impl DownloadMode {
     }
 }
 
+/// Result of advancing a download task by one tick.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DownloadOutcome {
+    /// Nothing new: still queued/running, or already in a terminal state.
+    Pending,
+    /// The child just exited successfully (done transitioned to Some(0)).
+    Finished,
+    /// The child just exited non-zero without a user cancel.
+    Failed,
+}
+
 pub(super) struct DownloadTask {
     pub label: String,
     pub repo_id: &'static str,
@@ -347,10 +358,10 @@ impl DownloadTask {
         });
     }
 
-    /// Advance the child job; returns true when it just finished successfully.
-    pub fn tick(&mut self) -> bool {
+    /// Advance the child job; reports the edge when it just finished or failed.
+    pub fn tick(&mut self) -> DownloadOutcome {
         let Some(job) = &mut self.job else {
-            return false;
+            return DownloadOutcome::Pending;
         };
         let before = job.done;
         for line in job.tick() {
@@ -368,14 +379,26 @@ impl DownloadTask {
                 }
             });
         }
-        finished_ok
+        match (before, job.done) {
+            (None, Some(0)) => DownloadOutcome::Finished,
+            // User-cancelled jobs already got their toast from the cancel flow.
+            (None, Some(_)) if !self.cancelled => DownloadOutcome::Failed,
+            _ => DownloadOutcome::Pending,
+        }
     }
 
     pub fn cancel(&mut self) {
-        if let Some(job) = &mut self.job {
-            job.cancel();
-        } else {
-            self.cancelled = true;
+        match &mut self.job {
+            // Running: kill the child and mark it user-cancelled so the queue
+            // label reads "cancelled" instead of "failed (-130)".
+            Some(job) if job.done.is_none() => {
+                job.cancel();
+                self.cancelled = true;
+            }
+            // Queued: nothing to kill, just mark it.
+            None => self.cancelled = true,
+            // Already finished: keep the ready/failed label as-is.
+            Some(_) => {}
         }
     }
 }

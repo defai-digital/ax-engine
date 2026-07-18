@@ -25,15 +25,20 @@ pub(crate) enum HomeAction {
 
 impl App {
     /// (label, action) rows for the Home action list.
+    ///
+    /// Returning users (installed models) get **Browse** first so Enter does
+    /// not immediately serve/infer. First-run keeps **Quick start** first as
+    /// the guided download path.
     pub(crate) fn home_actions(&self) -> Vec<(String, HomeAction)> {
         let mut actions = Vec::new();
+        let has_installed = !installed_variants(&self.families).is_empty();
         let quick = match self.quick_start_target() {
             Some((fi, vi)) => {
                 let family = &self.families[fi];
                 let variant = &family.variants[vi];
                 if variant.installed {
                     format!(
-                        "Serve {} {} (installed)",
+                        "Serve {} {} (shortcut)",
                         family.display_name(),
                         variant.precision()
                     )
@@ -48,15 +53,22 @@ impl App {
             }
             None => "Browse models".to_string(),
         };
-        actions.push((format!("Quick start — {quick}"), HomeAction::QuickStart));
-        actions.push(("Browse all models".into(), HomeAction::Browse));
-        if !installed_variants(&self.families).is_empty() {
+        let quick_row = (format!("Quick start — {quick}"), HomeAction::QuickStart);
+
+        if has_installed {
+            // Safe default order: explore first, explicit serve, optional shortcut.
+            actions.push(("Browse all models".into(), HomeAction::Browse));
             actions.push(("Serve an installed model".into(), HomeAction::Serve));
+            if self.server_ready {
+                actions.push(("Open chat".into(), HomeAction::Chat));
+            }
+            actions.push(quick_row);
+            actions.push(("Help".into(), HomeAction::Help));
+        } else {
+            actions.push(quick_row);
+            actions.push(("Browse all models".into(), HomeAction::Browse));
+            actions.push(("Help".into(), HomeAction::Help));
         }
-        if self.server_ready {
-            actions.push(("Open chat".into(), HomeAction::Chat));
-        }
-        actions.push(("Help".into(), HomeAction::Help));
         actions
     }
 
@@ -255,11 +267,14 @@ impl App {
             ),
         };
         self.hero_rect.set(area);
-        let selected = self.home_idx == 0;
+        let quick_selected = self
+            .home_actions()
+            .get(self.home_idx)
+            .is_some_and(|(_, a)| *a == HomeAction::QuickStart);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(if selected {
-                theme::ACCENT
+            .border_style(Style::default().fg(if quick_selected {
+                theme::SELECT
             } else {
                 theme::BORDER_INACTIVE
             }))
@@ -292,7 +307,7 @@ impl App {
             Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    if selected {
+                    if quick_selected {
                         " Enter  run  "
                     } else {
                         " ↑↓  then Enter  "
@@ -312,17 +327,14 @@ impl App {
             .enumerate()
             .map(|(i, (label, action))| {
                 let selected = i == self.home_idx;
-                let is_primary = action == HomeAction::QuickStart;
-                // On first-run the hero owns Quick start; list starts at secondary actions.
-                // Still list all actions so keyboard indices stay consistent.
-                let style = if is_primary && selected {
-                    theme::cta()
-                } else if is_primary {
-                    Style::default()
-                        .fg(theme::ACCENT)
-                        .add_modifier(Modifier::BOLD)
-                } else if selected {
-                    Style::default().fg(theme::ON_ACCENT).bg(theme::ACCENT)
+                let is_quick = action == HomeAction::QuickStart;
+                // Selection always uses the amber cursor bar so focus is obvious.
+                // Quick start is no longer styled as a permanent primary CTA when
+                // unselected — that looked like the default action on every row.
+                let style = if selected {
+                    theme::highlight_active()
+                } else if is_quick {
+                    Style::default().fg(theme::DIM)
                 } else {
                     Style::default().fg(theme::TEXT)
                 };

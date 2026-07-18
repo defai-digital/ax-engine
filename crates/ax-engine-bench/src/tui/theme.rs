@@ -60,6 +60,10 @@ pub const BORDER_INACTIVE: Color = MUTED;
 /// Filled background behind fenced code blocks in chat (dark-terminal neutral).
 pub const CODE_BG: Color = Color::Rgb(32, 33, 36);
 
+/// Scrim fill behind modals and the help overlay — solid black dim so the
+/// dialog clearly owns focus.
+pub const SCRIM_BG: Color = Color::Black;
+
 // ---------------------------------------------------------------------------
 // Reusable style constructors
 // ---------------------------------------------------------------------------

@@ -43,7 +43,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use catalog::{Family, build_families, installed_variants};
 use hardware::HardwareInfo;
-use jobs::{DownloadMode, DownloadTask, Job};
+use jobs::{DownloadMode, DownloadOutcome, DownloadTask, Job};
 use metrics::LiveMetrics;
 use screens::chat::ChatState;
 use widgets::{DirectoryPicker, Toast};
@@ -211,6 +211,38 @@ enum Modal {
     DestPicker(DirectoryPicker),
 }
 
+/// Server lifecycle status shown in the tab-bar summary, derived from the
+/// server job + ready flag so label and color are decided in exactly one place.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerStatus {
+    Ready,
+    Starting,
+    Failed,
+    Stopped,
+}
+
+impl ServerStatus {
+    /// Tab-bar chip text: status icon + word.
+    fn label(self) -> String {
+        match self {
+            Self::Ready => format!("{} running", theme::icon::RUNNING),
+            Self::Starting => format!("{} starting", theme::icon::QUEUED),
+            Self::Failed => format!("{} failed", theme::icon::ERROR),
+            Self::Stopped => format!("{} stopped", theme::icon::IDLE),
+        }
+    }
+
+    /// Chip color matching the status severity.
+    fn color(self) -> Color {
+        match self {
+            Self::Ready => theme::OK,
+            Self::Starting => theme::WARN,
+            Self::Failed => theme::DANGER,
+            Self::Stopped => theme::MUTED,
+        }
+    }
+}
+
 struct App {
     pub quit: bool,
     pub screen: Screen,
@@ -293,6 +325,8 @@ impl App {
             modal: None,
             toasts: Vec::new(),
             show_help: false,
+            // Always 0: home_actions() puts the safe default first (Browse when
+            // models are installed, Quick start only on first-run empty home).
             home_idx: 0,
             live_metrics: LiveMetrics::new(total_ram),
             stage: WizardStage::Families,
@@ -349,13 +383,13 @@ impl App {
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         while !self.quit {
             terminal.draw(|frame| self.draw(frame))?;
+            // Block up to the 100ms tick for the first event, then drain
+            // anything queued behind it so held-down keys stay responsive.
             if event::poll(Duration::from_millis(100))? {
-                match event::read()? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
-                    Event::Mouse(mouse) => self.on_mouse(mouse),
-                    Event::Paste(text) => self.on_paste(&text),
-                    _ => {}
-                }
+                self.on_event(event::read()?);
+            }
+            while event::poll(Duration::ZERO)? {
+                self.on_event(event::read()?);
             }
             self.tick();
         }
@@ -369,33 +403,61 @@ impl App {
         Ok(())
     }
 
+    /// Dispatch one terminal event: key presses, mouse, and bracketed paste.
+    fn on_event(&mut self, event: Event) {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
+            Event::Mouse(mouse) => self.on_mouse(mouse),
+            Event::Paste(text) => self.on_paste(&text),
+            _ => {}
+        }
+    }
+
+    /// True while a modal or text entry owns input, so tick-driven
+    /// auto-navigation must not yank the user away mid-flow.
+    fn input_busy(&self) -> bool {
+        self.modal.is_some() || self.typing()
+    }
+
     /// Advance all background jobs and time-based UI state by one poll cycle.
     fn tick(&mut self) {
         let mut finished: Vec<(usize, String)> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
         for (idx, task) in self.downloads.iter_mut().enumerate() {
-            if task.tick() {
-                finished.push((idx, task.label.clone()));
+            match task.tick() {
+                DownloadOutcome::Finished => finished.push((idx, task.label.clone())),
+                DownloadOutcome::Failed => failed.push(task.label.clone()),
+                DownloadOutcome::Pending => {}
             }
+        }
+        for label in failed {
+            // A failed download installed nothing — no reload, no navigation,
+            // just say how to recover.
+            self.toast_error(format!("{label} failed — press r to retry"));
         }
         for (idx, label) in finished {
             self.reload_families();
             self.download_idx = idx;
+            // Never yank the user out of a modal or text entry; toasts and the
+            // auto-serve chain itself still fire.
+            let may_navigate = self.screen != Screen::Chat && !self.input_busy();
             if self.auto_serve_after_download {
                 self.auto_serve_after_download = false;
                 self.toast_success(format!("{label} ready — starting server…"));
-                if self.screen != Screen::Chat {
+                if may_navigate {
                     self.navigate_to(Screen::Serve);
                 }
                 self.start_server_for_download(idx);
             } else {
                 self.toast_success(format!("{label} ready — Enter to serve"));
-                // Guided handoff: jump to Downloads unless the user is mid-chat.
-                if self.screen != Screen::Chat {
+                // Guided handoff: jump to Downloads unless the user is mid-flow.
+                if may_navigate {
                     self.navigate_to(Screen::Downloads);
                 }
             }
         }
         self.start_next_queued_download();
+        let server_was_running = self.server_running();
         if let Some(job) = &mut self.server {
             job.tick();
         }
@@ -404,11 +466,22 @@ impl App {
         if self.server_ready && !was_ready {
             if self.auto_chat_after_serve {
                 self.auto_chat_after_serve = false;
-                self.navigate_to(Screen::Chat);
+                // Same anti-yank guard as the download handoff: a binding
+                // server must not interrupt a modal or text field.
+                if !self.input_busy() {
+                    self.navigate_to(Screen::Chat);
+                }
                 self.toast_success("Server ready — type a message");
             } else {
                 self.toast_success("Server ready — press t Chat");
             }
+        } else if server_was_running && !self.server_running() && !was_ready {
+            // Died before ever binding. update_server_ready only warns on the
+            // ready→stopped crash, so this never double-toasts.
+            let detail = self
+                .server_error_line()
+                .unwrap_or_else(|| "see Serve log".to_string());
+            self.toast_error(format!("server failed to start — {detail}"));
         }
         self.chat.tick();
         widgets::expire_toasts(&mut self.toasts);
@@ -640,13 +713,17 @@ impl App {
         match code {
             KeyCode::Left | KeyCode::Char('h') => {
                 if idx > 0 {
-                    self.screen = SCREENS[idx - 1];
+                    // Navigate like digit jumps (Esc history stays correct),
+                    // but keep bar focus so repeated arrows keep moving.
+                    self.goto_screen(SCREENS[idx - 1]);
+                    self.focus_tabs = true;
                 }
                 true
             }
             KeyCode::Right | KeyCode::Char('l') => {
                 if idx + 1 < SCREENS.len() {
-                    self.screen = SCREENS[idx + 1];
+                    self.goto_screen(SCREENS[idx + 1]);
+                    self.focus_tabs = true;
                 }
                 true
             }
@@ -659,10 +736,12 @@ impl App {
                 self.focus_tabs = false;
                 true
             }
-            // Any other key leaves the bar so screen handlers can run.
+            // Any other key leaves the bar but stays consumed — falling
+            // through to the screen handler would fire two actions for one
+            // keypress (e.g. `x` opening the destructive delete modal).
             _ => {
                 self.focus_tabs = false;
-                false
+                true
             }
         }
     }
@@ -745,6 +824,9 @@ impl App {
                 mut typed,
             } => match code {
                 KeyCode::Esc | KeyCode::Left => {}
+                // Nothing typed yet: n/h dismiss like the other confirm modals
+                // instead of silently starting the confirm string.
+                KeyCode::Char('n') | KeyCode::Char('h') if typed.is_empty() => {}
                 KeyCode::Enter if typed == "delete" => {
                     self.delete_installed_variant(family_idx, variant_idx);
                 }
@@ -829,6 +911,15 @@ impl App {
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
         if self.modal.is_some() {
+            return;
+        }
+        if self.show_help {
+            // Help owns the screen: swallow every mouse event so scrolls and
+            // clicks cannot leak through to the screen below. A left-click
+            // dismisses help, mirroring "any key closes help".
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.show_help = false;
+            }
             return;
         }
         match mouse.kind {
@@ -1183,20 +1274,12 @@ impl App {
         None
     }
 
-    fn server_summary(&self) -> (String, Color) {
+    fn server_status(&self) -> ServerStatus {
         match (&self.server_url, &self.server) {
-            (Some(url), Some(job)) if job.done.is_none() && self.server_ready => (
-                format!(
-                    "{} @ {url}",
-                    self.server_model.as_deref().unwrap_or("model")
-                ),
-                theme::OK,
-            ),
-            (Some(_), Some(job)) if job.done.is_none() => ("starting…".into(), theme::WARN),
-            (_, Some(job)) if job.done.is_some() => {
-                ("failed (see Serve log)".into(), theme::DANGER)
-            }
-            _ => ("stopped".into(), theme::MUTED),
+            (Some(_), Some(job)) if job.done.is_none() && self.server_ready => ServerStatus::Ready,
+            (Some(_), Some(job)) if job.done.is_none() => ServerStatus::Starting,
+            (_, Some(job)) if job.done.is_some() => ServerStatus::Failed,
+            _ => ServerStatus::Stopped,
         }
     }
 
@@ -1252,22 +1335,10 @@ impl App {
     /// Build compact status spans for the right side of the tab bar.
     fn build_status_spans(&self) -> Vec<Span<'static>> {
         let mut spans = Vec::new();
-        let (_server_text, server_color) = self.server_summary();
-        let short_server = match server_color {
-            c if c == theme::OK || c == Color::Green => {
-                format!("{} running", theme::icon::RUNNING)
-            }
-            c if c == theme::WARN || c == Color::Yellow => {
-                format!("{} starting", theme::icon::QUEUED)
-            }
-            c if c == theme::DANGER || c == Color::Red => {
-                format!("{} failed", theme::icon::ERROR)
-            }
-            _ => format!("{} stopped", theme::icon::IDLE),
-        };
+        let status = self.server_status();
         spans.push(Span::styled(
-            short_server,
-            Style::default().fg(server_color),
+            status.label(),
+            Style::default().fg(status.color()),
         ));
         if let Some((dl_text, dl_color)) = self.active_download_summary() {
             let short_dl = if dl_text.contains('%') {
@@ -1535,7 +1606,7 @@ impl App {
             )),
         ];
         frame.render_widget(
-            Paragraph::new("").style(Style::default().bg(Color::Black)),
+            Paragraph::new("").style(Style::default().bg(theme::SCRIM_BG)),
             area,
         );
         frame.render_widget(ratatui::widgets::Clear, popup);

@@ -403,6 +403,38 @@ fn app_starts_on_home_with_hardware_summary() {
 }
 
 #[test]
+fn home_default_action_is_browse_when_models_installed() {
+    use super::catalog::installed_variants;
+    use super::screens::home::HomeAction;
+
+    let app = new_app();
+    let actions = app.home_actions();
+    let selected = actions
+        .get(app.home_idx)
+        .map(|(_, action)| *action)
+        .expect("home has at least one action");
+    if installed_variants(&app.families).is_empty() {
+        assert_eq!(
+            selected,
+            HomeAction::QuickStart,
+            "first-run default should be Quick start"
+        );
+        assert_eq!(actions[0].1, HomeAction::QuickStart);
+    } else {
+        assert_eq!(
+            selected,
+            HomeAction::Browse,
+            "with installed models, Enter must not immediately serve; default Browse"
+        );
+        assert_eq!(actions[0].1, HomeAction::Browse);
+        assert!(
+            actions.iter().any(|(_, a)| *a == HomeAction::QuickStart),
+            "Quick start remains available as a non-default shortcut"
+        );
+    }
+}
+
+#[test]
 fn live_metrics_panel_renders_gauges() {
     let mut app = new_app();
     app.live_metrics = super::metrics::LiveMetrics::for_tests();
@@ -1055,7 +1087,7 @@ fn delete_modal_requires_typed_word() {
         typed: String::new(),
     });
     // Enter with the wrong word keeps the modal open (and deletes nothing).
-    app.on_key(key(KeyCode::Char('n')));
+    app.on_key(key(KeyCode::Char('x')));
     app.on_key(key(KeyCode::Enter));
     assert!(matches!(app.modal, Some(Modal::DeleteModel { .. })));
     let text = render(&app);
@@ -1063,6 +1095,31 @@ fn delete_modal_requires_typed_word() {
     // Esc closes without deleting.
     app.on_key(key(KeyCode::Esc));
     assert!(app.modal.is_none());
+}
+
+#[test]
+fn delete_modal_n_dismisses_only_when_nothing_typed() {
+    let mut app = new_app();
+    app.modal = Some(Modal::DeleteModel {
+        family_idx: 0,
+        variant_idx: 0,
+        typed: String::new(),
+    });
+    // "no" dismisses like every other confirm modal while the confirm string
+    // is still empty.
+    app.on_key(key(KeyCode::Char('n')));
+    assert!(app.modal.is_none());
+    // Once typing has started, n is just another character of the word.
+    app.modal = Some(Modal::DeleteModel {
+        family_idx: 0,
+        variant_idx: 0,
+        typed: String::new(),
+    });
+    app.on_key(key(KeyCode::Char('d')));
+    app.on_key(key(KeyCode::Char('n')));
+    assert!(
+        matches!(&app.modal, Some(Modal::DeleteModel { typed, .. }) if typed == "dn")
+    );
 }
 
 // ---------------------------------------------------------------------------
