@@ -1781,6 +1781,96 @@ mod tests {
     }
 
     #[test]
+    fn fair_prefill_interleave_advances_decode_every_step_while_chunking_a_long_prefill() {
+        // The *temporal* interleave (what "chunked-prefill interleave" means):
+        // drive `plan` across steps, advancing each request's state by what it
+        // was scheduled. A 1024-token prefill (cap 256) trickles in over 4 steps,
+        // and the 2-request decode cohort advances one token on EVERY one of
+        // those steps — decode never stalls waiting for the long prefill to
+        // finish. Deterministic scheduler simulation; no serving stack needed.
+        let scheduler = Scheduler::new();
+        const CAP: u32 = 256;
+        const PROMPT: usize = 1024;
+        let mut prefill_processed: u32 = 0;
+        let mut decode_generated: [usize; 2] = [1, 1]; // already decoding
+        let mut prefill_steps = 0u32;
+        let mut decode_steps_advanced = 0u32;
+
+        for _ in 0..16 {
+            // guard against a non-terminating loop
+            if prefill_processed >= PROMPT as u32 {
+                break;
+            }
+            let snaps = vec![
+                make_snapshot(
+                    1,
+                    1,
+                    "qwen3",
+                    &[7; 8],
+                    8,
+                    &vec![9u32; decode_generated[0]],
+                    512,
+                ),
+                make_snapshot(
+                    2,
+                    2,
+                    "qwen3",
+                    &[7; 8],
+                    8,
+                    &vec![9u32; decode_generated[1]],
+                    512,
+                ),
+                make_snapshot(
+                    3,
+                    3,
+                    "qwen3",
+                    &vec![5u32; PROMPT],
+                    prefill_processed,
+                    &[],
+                    512,
+                ),
+            ];
+            let mut input = SchedulerInput::new(StepId(100), snaps, None, 4096);
+            input.multi_prefill_fair = true;
+            input.max_prefill_tokens_per_request_per_step = CAP;
+            input.block_size_tokens = 16;
+            input.available_kv_blocks = 4096;
+            input.total_kv_blocks = 4096;
+            let batch = scheduler.plan(&input).execution_batch.expect("batch");
+            let find = |id: u64| batch.items.iter().find(|it| it.request_id.0 == id).cloned();
+
+            let prefill = find(3).expect("prefill scheduled");
+            assert_eq!(prefill.mode, ExecutionMode::Prefill);
+            assert!(
+                prefill.scheduled_token_count <= CAP,
+                "prefill chunk must respect the interleave cap"
+            );
+            prefill_processed += prefill.scheduled_token_count;
+            prefill_steps += 1;
+
+            let decode_advanced = find(1).is_some_and(|it| it.mode == ExecutionMode::Decode)
+                && find(2).is_some_and(|it| it.mode == ExecutionMode::Decode);
+            assert!(
+                decode_advanced,
+                "decode cohort must advance on every prefill step (no stall)"
+            );
+            decode_generated[0] += 1;
+            decode_generated[1] += 1;
+            decode_steps_advanced += 1;
+        }
+
+        assert_eq!(
+            prefill_steps,
+            (PROMPT as u32).div_ceil(CAP),
+            "1024-token prefill chunked across ceil(1024/256)=4 steps"
+        );
+        assert_eq!(
+            decode_steps_advanced, prefill_steps,
+            "decode advanced on every one of those steps — the interleave"
+        );
+    }
+
+    #[test]
     fn fair_multi_prefill_headroom_limits_admission() {
         let scheduler = Scheduler::new();
         // fair_chunk=16, block_size=16 → 1 block per prefill; available=1 → admit 1.
