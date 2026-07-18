@@ -1123,22 +1123,30 @@ env_flag!(
     "AX_DIFFUSION_PROFILE"
 );
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_BATCHED_SHARED_PROJ` — route batched-decode projections
-    /// (QKV, attention output, FFN) through a single batched
+    /// (QKV, attention output, FFN, lm_head) through a single batched
     /// `quantized_matmul` (`ProjectionBatchPolicy::Shared`) instead of the
     /// per-row `RowExact` loop.
     ///
-    /// **Default: OFF** (opt-in). `RowExact` runs one `quantized_matmul` per
-    /// batch row so each row is bit-identical to single-request decode (the
-    /// current certification bar), but it re-reads the weight B times and so
-    /// does not amortize the weight read — the batched FFN then dominates and
-    /// caps aggregate scaling at ~1.24× (Phase 3.4,
-    /// docs/performance/batched-decode-ceiling.md). `Shared` reads the weight
-    /// once for all rows and amortizes toward the ~3.3× ceiling, at the cost
-    /// of bf16 accumulation-order drift vs per-row (measured ~2.3e-2), so it
-    /// is **not** bit-identical and must be certified on greedy-token
-    /// divergence, not bit-identity. Opt-in until that certification lands.
+    /// **Default: ON** (kill-switch via `AX_MLX_BATCHED_SHARED_PROJ=0`, which
+    /// restores the per-row bit-exact path). `RowExact` runs one
+    /// `quantized_matmul` per batch row so each row is bit-identical to
+    /// single-request decode, but it re-reads the weight B times and so does
+    /// not amortize the weight read — the batched FFN + lm_head then dominate
+    /// and cap aggregate scaling at ~1.24× (Phase 3.4,
+    /// docs/performance/batched-decode-ceiling.md). `Shared` reads each weight
+    /// once for all rows and amortizes: **+56% aggregate throughput at batch=8
+    /// on Llama-8B-4bit** (65→97 tok/s, 1.23×→1.92× scaling).
+    ///
+    /// The batched vs per-row `quantized_matmul` bf16 accumulation drift
+    /// (~2.3e-2) does **not** flip greedy argmax: the decoded token stream is
+    /// byte-identical to RowExact across three dense checkpoints (Llama-3.1-8B,
+    /// Qwen3-4B, Ministral-8B) and the 25 batched correctness tests pass with
+    /// this policy. Batched decode is itself opt-in (`AX_MLX_BATCHED_DECODE`),
+    /// so the appropriate certification is greedy-token equivalence, which this
+    /// meets; the kill-switch restores bit-exactness if a checkpoint ever needs
+    /// it.
     batched_shared_projections_enabled,
     "AX_MLX_BATCHED_SHARED_PROJ"
 );

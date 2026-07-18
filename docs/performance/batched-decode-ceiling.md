@@ -144,12 +144,28 @@ RowExact, and the **25 batched correctness tests pass with the flag on**. So on
 these workloads the bf16 accumulation drift does not flip argmax; Shared is
 greedy-equivalent in practice, not merely close.
 
-Status: opt-in pending a broader per-model token-divergence certification
-(single-prompt checksum + 25 tests is strong but not the full promotion bar).
-The default-flip is the remaining 3.5 gate. Two follow-ups: (a) Shared reaches
-1.80× not the 3.3× ceiling — a residual non-amortizing stage remains (the KV
-cache materialize / attention at this shape / fixed per-step overhead), profile
-it next; (b) extend to MoE / linear-attention (Coder-Next) — Phase 3.6+.
+## Phase 3.6 result (2026-07-17): lm_head fix (+56% total), and DEFAULT-FLIPPED to ON
+
+Profiling the Shared residual found the last big per-row site: the **lm_head**
+(`[B, hidden] × [hidden, 128256]`, ~262 MB at 4-bit) was hardcoded `RowExact`
+in `decode_batched_forward` — outside the per-layer profiler, re-read B times
+per step. Routing it through the same flag: batch=8 on Llama-8B **95.0 → 97.2
+tok/s (1.80× → 1.92×)**. Combined with 3.5, Shared is now **+56% over RowExact**
+(65 → 97 tok/s), token stream still identical.
+
+**Default-flip certification (met):** the batched-vs-per-row bf16 drift does not
+flip greedy argmax — the decoded token stream is **byte-identical** to RowExact
+on **three dense checkpoints** (Llama-3.1-8B, Qwen3-4B, Ministral-8B), the 25
+batched correctness tests pass with the policy on, and the full workspace suite
+is green with it as the default. `AX_MLX_BATCHED_SHARED_PROJ` is now **default
+ON** with a kill-switch that restores the bit-exact per-row path.
+
+Remaining gap to the ~3.3× replica ceiling is the compute-bound FFN matmuls
+(2.8× true amortization for that size on Apple Silicon 4-bit) plus fixed
+per-step overhead — diminishing returns on dense. **Phase 3.7+: extend the
+batched forward to MoE + linear-attention** so Qwen3-Coder-Next can batch (the
+original target; needs batched gather_qmm expert routing and batched
+gated-delta) — a multi-week effort, tracked separately.
 
 **Revised Phase 3 plan (updated after 3.2/3.3):**
 - **Realistic ceiling: ~2.7× aggregate at batch=8** (the true matmul

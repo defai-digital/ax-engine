@@ -1,0 +1,9 @@
+=== qwen3-4b divergence: RowExact vs Shared token checksums ===
+  RowExact batch8: slot0_fnv=5bcbaa3a83222d4b
+  Shared   batch8: slot0_fnv=5bcbaa3a83222d4b
+  → IDENTICAL (greedy-equivalent)
+=== ministral-8b divergence: RowExact vs Shared token checksums ===
+  RowExact batch8: slot0_fnv=0f509181eac3dfac
+  Shared   batch8: slot0_fnv=0f509181eac3dfac
+  → IDENTICAL (greedy-equivalent)
+DIVERGENCE-DONE
