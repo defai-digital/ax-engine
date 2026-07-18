@@ -5,13 +5,14 @@
 //! SSE `data:` lines append deltas to the transcript as they arrive.
 
 use std::process::Command;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect, Size};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tui_scrollview::ScrollView;
 use unicode_width::UnicodeWidthChar;
@@ -73,10 +74,9 @@ pub(in crate::tui) struct ChatState {
     /// happens with `&App`) clamps it so the cursor row stays inside the
     /// height-capped box, mirroring the transcript `scroll` RefCell pattern.
     pub input_scroll: std::cell::Cell<usize>,
-    /// Whole-transcript render cache keyed by a hash of everything the lines
-    /// depend on — re-parsing markdown for the full history every frame was
-    /// the hot path while streaming.
-    pub transcript_cache: std::cell::RefCell<Option<(u64, Vec<Line<'static>>)>>,
+    /// Whole-transcript render cache keyed by content hash + wrap width.
+    /// `Rc` so a cache hit only clones a pointer, not every styled span.
+    pub transcript_cache: std::cell::RefCell<Option<TranscriptCache>>,
     pub job: Option<Job>,
     pub error: Option<String>,
     /// Sent prompts, oldest first (readline-style recall with ↑/↓).
@@ -93,6 +93,14 @@ pub(in crate::tui) struct ChatState {
 
 /// Cap on stored prompt history entries.
 const HISTORY_CAP: usize = 100;
+
+/// Cached transcript lines + wrapped height for a (content key, width) pair.
+pub(crate) struct TranscriptCache {
+    key: u64,
+    width: u16,
+    lines: Rc<Vec<Line<'static>>>,
+    content_height: u16,
+}
 
 impl ChatState {
     pub fn new() -> Self {
@@ -126,13 +134,14 @@ impl ChatState {
     }
 
     /// Drain streamed lines into the transcript; called every poll tick.
-    pub fn tick(&mut self) {
+    /// Returns true when the transcript or stream status may have changed.
+    pub fn tick(&mut self) -> bool {
         let Some(job) = &mut self.job else {
-            return;
+            return false;
         };
-        let fresh = job.tick();
+        let job_tick = job.tick();
         let mut finished = false;
-        for line in &fresh {
+        for line in &job_tick.fresh {
             match parse_sse_line(line) {
                 SseEvent::Delta(text) => {
                     if self.first_delta_at.is_none() {
@@ -174,7 +183,12 @@ impl ChatState {
             }
             self.finalize_stats();
             self.job = None;
+            return true;
         }
+        // Live stream: always dirty so the title's elapsed/tok-s counter moves
+        // between SSE chunks (even when this tick carried no new content).
+        let _ = job_tick.material;
+        true
     }
 
     /// Stamp the just-finished assistant reply with its measured stats.
@@ -883,6 +897,13 @@ impl App {
                     if self.chat.streaming() && idx == last_idx {
                         lines.push(Line::from(Span::styled("…", theme::body_dim())));
                     }
+                } else if self.chat.streaming() && idx == last_idx {
+                    // Plain text while tokens stream: re-parsing growing
+                    // markdown every frame was the chat hot path. Full
+                    // markdown runs once when the reply finishes.
+                    for part in answer.lines() {
+                        lines.push(Line::from(Span::styled(part.to_string(), theme::body())));
+                    }
                 } else {
                     lines.extend(render_markdown(answer));
                 }
@@ -912,18 +933,6 @@ impl App {
     }
 
     fn draw_chat_transcript(&self, frame: &mut Frame, area: Rect) {
-        let key = self.transcript_key();
-        let lines = {
-            let mut cache = self.chat.transcript_cache.borrow_mut();
-            match cache.as_ref() {
-                Some((k, cached)) if *k == key => cached.clone(),
-                _ => {
-                    let built = self.build_transcript_lines();
-                    *cache = Some((key, built.clone()));
-                    built
-                }
-            }
-        };
         let title = if self.chat.streaming() {
             let est = self.chat.stream_chars.div_ceil(4);
             let secs = self
@@ -945,8 +954,43 @@ impl App {
         frame.render_widget(block, area);
 
         let text_width = inner.width.saturating_sub(1).max(1);
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-        let content_height = (paragraph.line_count(text_width) as u16).max(1);
+        let key = self.transcript_key();
+        let (lines, content_height) = {
+            let mut cache = self.chat.transcript_cache.borrow_mut();
+            match cache.as_ref() {
+                Some(c) if c.key == key && c.width == text_width => {
+                    (Rc::clone(&c.lines), c.content_height)
+                }
+                Some(c) if c.key == key => {
+                    // Same content, new wrap width — remeasure without rebuild.
+                    let paragraph =
+                        Paragraph::new(Text::from(c.lines.as_slice())).wrap(Wrap { trim: false });
+                    let height = (paragraph.line_count(text_width) as u16).max(1);
+                    let lines = Rc::clone(&c.lines);
+                    *cache = Some(TranscriptCache {
+                        key,
+                        width: text_width,
+                        lines: Rc::clone(&lines),
+                        content_height: height,
+                    });
+                    (lines, height)
+                }
+                _ => {
+                    let built = Rc::new(self.build_transcript_lines());
+                    let paragraph =
+                        Paragraph::new(Text::from(built.as_slice())).wrap(Wrap { trim: false });
+                    let height = (paragraph.line_count(text_width) as u16).max(1);
+                    *cache = Some(TranscriptCache {
+                        key,
+                        width: text_width,
+                        lines: Rc::clone(&built),
+                        content_height: height,
+                    });
+                    (built, height)
+                }
+            }
+        };
+        let paragraph = Paragraph::new(Text::from(lines.as_slice())).wrap(Wrap { trim: false });
         let mut scroll_view = ScrollView::new(Size::new(text_width, content_height));
         scroll_view.render_widget(paragraph, Rect::new(0, 0, text_width, content_height));
         let mut state = self.chat.scroll.borrow_mut();

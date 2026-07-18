@@ -15,6 +15,15 @@ pub(super) enum JobMsg {
     Line(String),
 }
 
+/// Result of advancing a background job by one poll cycle.
+pub(super) struct JobTick {
+    /// Lines that arrived this tick (for progress/SSE parsers).
+    pub fresh: Vec<String>,
+    /// True when log, exit status, or download byte counters moved.
+    /// Spinner-only advances leave this false so off-screen jobs stay quiet.
+    pub material: bool,
+}
+
 pub(super) const LOG_CAP: usize = 1000;
 pub(super) const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const SPEED_HISTORY_CAP: usize = 120;
@@ -129,13 +138,19 @@ impl Job {
     }
 
     /// Drain pending lines into `log` and refresh liveness/byte counters.
-    /// Returns the lines that arrived this tick so callers can parse them
+    ///
+    /// `fresh` is the lines that arrived this tick so callers can parse them
     /// (progress events, SSE chunks) without re-scanning the whole log.
-    pub fn tick(&mut self) -> Vec<String> {
+    /// `material` is true when anything a non-spinner UI cares about changed
+    /// (new lines, exit status, or a byte resample) — spinner alone does not
+    /// count, so off-screen jobs do not force 10 Hz full-frame repaints.
+    pub fn tick(&mut self) -> JobTick {
         let mut fresh = Vec::new();
+        let mut material = false;
         while let Ok(JobMsg::Line(line)) = self.rx.try_recv() {
             self.log.push(line.clone());
             fresh.push(line);
+            material = true;
             if self.log.len() > LOG_CAP {
                 let overflow = self.log.len() - LOG_CAP;
                 self.log.drain(0..overflow);
@@ -146,6 +161,7 @@ impl Job {
             && let Ok(Some(status)) = child.try_wait()
         {
             self.done = Some(status.code().unwrap_or(-1));
+            material = true;
         }
         if let Some(dir) = &self.watch_dir {
             let now = Instant::now();
@@ -175,10 +191,12 @@ impl Job {
                     let overflow = self.speed_history.len() - SPEED_HISTORY_CAP;
                     self.speed_history.drain(0..overflow);
                 }
+                // Progress gauge / tab-bar percent updates at sample rate.
+                material = true;
             }
         }
         self.spinner = (self.spinner + 1) % SPINNER.len();
-        fresh
+        JobTick { fresh, material }
     }
 
     pub fn is_running(&self) -> bool {
@@ -366,15 +384,19 @@ impl DownloadTask {
         });
     }
 
-    /// Advance the child job; reports the edge when it just finished or failed.
-    pub fn tick(&mut self) -> DownloadOutcome {
+    /// Advance the child job; reports the edge when it just finished or failed
+    /// and whether anything visible (besides the spinner) changed.
+    pub fn tick(&mut self) -> (DownloadOutcome, bool) {
         let Some(job) = &mut self.job else {
-            return DownloadOutcome::Pending;
+            return (DownloadOutcome::Pending, false);
         };
         let before = job.done;
-        for line in job.tick() {
+        let JobTick { fresh, material } = job.tick();
+        let mut changed = material;
+        for line in fresh {
             if let Some((_done, _total, message)) = parse_progress_event(&line) {
                 self.phase = Some(message);
+                changed = true;
             }
         }
         let finished_ok = before.is_none() && job.done == Some(0);
@@ -387,12 +409,13 @@ impl DownloadTask {
                 }
             });
         }
-        match (before, job.done) {
+        let outcome = match (before, job.done) {
             (None, Some(0)) => DownloadOutcome::Finished,
             // User-cancelled jobs already got their toast from the cancel flow.
             (None, Some(_)) if !self.cancelled => DownloadOutcome::Failed,
             _ => DownloadOutcome::Pending,
-        }
+        };
+        (outcome, changed)
     }
 
     pub fn cancel(&mut self) {

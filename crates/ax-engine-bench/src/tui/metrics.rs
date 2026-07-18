@@ -5,7 +5,7 @@
 //! | Metric | Source | Notes |
 //! |---|---|---|
 //! | Unified memory used/free/total | `vm_stat` + `hw.memsize` | not discrete VRAM |
-//! | CPU average % | `ps -A -o %cpu=` / ncpu | host-wide |
+//! | CPU average % | `ps -A -o %cpu=` / ncpu | host-wide (fast) |
 //! | Load average · P/E cores | `vm.loadavg`, `hw.perflevel*` | |
 //! | GPU util % | `ioreg` IOAccelerator `Device Utilization %` | AGX snapshot |
 //! | GPU memory in use | `ioreg` `In use system memory` | from unified pool |
@@ -15,10 +15,19 @@
 //!
 //! Omitted: discrete VRAM totals, fan, board power, encode engines
 //! (`powermetrics` needs root).
+//!
+//! ## Sampling model
+//!
+//! All subprocess probes run on a **background thread**. The UI tick only
+//! launches a sample (at most one in flight) and applies finished snapshots.
+//! That keeps the event loop free — `top -l 1` alone can take ~1s on macOS
+//! and must never block key handling or redraw.
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// Samples kept for chart history (~4 min at one sample / 2 s).
@@ -35,7 +44,38 @@ pub(super) struct TopProc {
     pub name: String,
 }
 
+/// Completed host probe payload (built off the UI thread).
 #[derive(Clone, Debug, Default)]
+struct MetricsSnapshot {
+    total_ram_bytes: Option<u64>,
+    used_ram_bytes: Option<u64>,
+    free_ram_bytes: Option<u64>,
+    cpu_percent: Option<f64>,
+    logical_cpus: Option<u32>,
+    perf_cpus: Option<u32>,
+    eff_cpus: Option<u32>,
+    load_1m: Option<f64>,
+    free_disk_bytes: Option<u64>,
+    top_procs: Vec<TopProc>,
+    chip_name: Option<String>,
+    gpu_cores: Option<u32>,
+    gpu_percent: Option<f64>,
+    gpu_mem_bytes: Option<u64>,
+}
+
+/// Inputs captured for a background sample (owned so the thread is `'static`).
+struct SampleRequest {
+    cache_root: PathBuf,
+    need_identity: bool,
+    total_ram_bytes: Option<u64>,
+    logical_cpus: Option<u32>,
+    perf_cpus: Option<u32>,
+    eff_cpus: Option<u32>,
+    chip_name: Option<String>,
+    gpu_cores: Option<u32>,
+}
+
+#[derive(Debug, Default)]
 pub(super) struct LiveMetrics {
     pub total_ram_bytes: Option<u64>,
     /// App-pressure used ≈ active + wired + compressor pages.
@@ -72,10 +112,14 @@ pub(super) struct LiveMetrics {
 
     last_sample: Option<Instant>,
     identity_probed: bool,
+    /// In-flight background sample; UI never blocks on probes.
+    pending: Option<Receiver<MetricsSnapshot>>,
 }
 
 impl LiveMetrics {
     pub fn new(total_ram_bytes: Option<u64>) -> Self {
+        // Cheap sysctls only at construction — subprocess probes are deferred
+        // to the first background sample so App::new stays snappy.
         LiveMetrics {
             total_ram_bytes,
             logical_cpus: sysctl_u32("hw.logicalcpu"),
@@ -177,15 +221,33 @@ impl LiveMetrics {
         }
     }
 
-    /// Refresh probes when the sample interval has elapsed.
-    ///
-    /// On each successful sample we push **MEM · CPU · GPU** histories in
-    /// lockstep (same length, same timestamp) so the multi-series chart lines
-    /// stay aligned with the gauges.
     /// Advance samplers; returns true only when new data actually landed
     /// (the TUI repaints on that signal, not on every poll cycle).
+    ///
+    /// Never blocks: subprocess probes run on a helper thread.
     pub fn tick(&mut self, models_bytes: u64, cache_root: &Path) -> bool {
         self.models_bytes = models_bytes;
+
+        // Apply a finished sample first (non-blocking).
+        if let Some(rx) = &self.pending {
+            match rx.try_recv() {
+                Ok(snap) => {
+                    self.pending = None;
+                    self.apply_snapshot(snap);
+                    self.push_histories();
+                    self.last_sample = Some(Instant::now());
+                    return true;
+                }
+                Err(TryRecvError::Empty) => {
+                    // Still sampling — do not launch another.
+                    return false;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.pending = None;
+                }
+            }
+        }
+
         let now = Instant::now();
         if self
             .last_sample
@@ -193,23 +255,77 @@ impl LiveMetrics {
         {
             return false;
         }
-        self.last_sample = Some(now);
-        if self.total_ram_bytes.is_none() {
-            self.total_ram_bytes = sysctl_string("hw.memsize").and_then(|s| s.parse().ok());
-        }
-        if self.logical_cpus.is_none() {
-            self.logical_cpus = sysctl_u32("hw.logicalcpu");
-        }
-        if !self.identity_probed {
-            self.probe_identity();
-        }
-        self.sample_memory();
-        self.sample_cpu();
-        self.sample_gpu();
-        self.sample_top_procs();
-        self.load_1m = parse_loadavg_1m(&sysctl_string("vm.loadavg").unwrap_or_default());
-        self.free_disk_bytes = free_disk_bytes(cache_root);
 
+        let need_identity = !self.identity_probed;
+        if need_identity {
+            // Avoid re-queueing identity probes if the worker is slow.
+            self.identity_probed = true;
+        }
+        let request = SampleRequest {
+            cache_root: cache_root.to_path_buf(),
+            need_identity,
+            total_ram_bytes: self.total_ram_bytes,
+            logical_cpus: self.logical_cpus,
+            perf_cpus: self.perf_cpus,
+            eff_cpus: self.eff_cpus,
+            chip_name: self.chip_name.clone(),
+            gpu_cores: self.gpu_cores,
+        };
+        let (tx, rx) = mpsc::channel();
+        self.pending = Some(rx);
+        thread::spawn(move || {
+            let snap = collect_snapshot(request);
+            let _ = tx.send(snap);
+        });
+        false
+    }
+
+    fn apply_snapshot(&mut self, snap: MetricsSnapshot) {
+        if snap.total_ram_bytes.is_some() {
+            self.total_ram_bytes = snap.total_ram_bytes;
+        }
+        if snap.used_ram_bytes.is_some() {
+            self.used_ram_bytes = snap.used_ram_bytes;
+        }
+        if snap.free_ram_bytes.is_some() {
+            self.free_ram_bytes = snap.free_ram_bytes;
+        }
+        if snap.cpu_percent.is_some() {
+            self.cpu_percent = snap.cpu_percent;
+        }
+        if snap.logical_cpus.is_some() {
+            self.logical_cpus = snap.logical_cpus;
+        }
+        if snap.perf_cpus.is_some() {
+            self.perf_cpus = snap.perf_cpus;
+        }
+        if snap.eff_cpus.is_some() {
+            self.eff_cpus = snap.eff_cpus;
+        }
+        if snap.load_1m.is_some() {
+            self.load_1m = snap.load_1m;
+        }
+        if snap.free_disk_bytes.is_some() {
+            self.free_disk_bytes = snap.free_disk_bytes;
+        }
+        if !snap.top_procs.is_empty() {
+            self.top_procs = snap.top_procs;
+        }
+        if snap.chip_name.is_some() {
+            self.chip_name = snap.chip_name;
+        }
+        if snap.gpu_cores.is_some() {
+            self.gpu_cores = snap.gpu_cores;
+        }
+        if snap.gpu_percent.is_some() {
+            self.gpu_percent = snap.gpu_percent;
+        }
+        if snap.gpu_mem_bytes.is_some() {
+            self.gpu_mem_bytes = snap.gpu_mem_bytes;
+        }
+    }
+
+    fn push_histories(&mut self) {
         // Lockstep histories: always push all three so series share an x-axis.
         // On probe miss, **hold last value** (never invent a dip to 0) so the
         // chart does not show false gaps. First sample may still be 0 until
@@ -235,21 +351,37 @@ impl LiveMetrics {
         if let Some(r) = self.models_ratio() {
             push_hist(&mut self.models_history, (r * 100.0).round() as u64);
         }
-        true
     }
+}
 
-    fn probe_identity(&mut self) {
-        self.identity_probed = true;
-        if self.perf_cpus.is_none() {
-            self.perf_cpus = sysctl_u32("hw.perflevel0.logicalcpu")
+/// Run every host probe off the UI thread.
+fn collect_snapshot(req: SampleRequest) -> MetricsSnapshot {
+    let mut snap = MetricsSnapshot {
+        total_ram_bytes: req.total_ram_bytes,
+        logical_cpus: req.logical_cpus,
+        perf_cpus: req.perf_cpus,
+        eff_cpus: req.eff_cpus,
+        chip_name: req.chip_name,
+        gpu_cores: req.gpu_cores,
+        ..Default::default()
+    };
+
+    if snap.total_ram_bytes.is_none() {
+        snap.total_ram_bytes = sysctl_string("hw.memsize").and_then(|s| s.parse().ok());
+    }
+    if snap.logical_cpus.is_none() {
+        snap.logical_cpus = sysctl_u32("hw.logicalcpu");
+    }
+    if req.need_identity {
+        if snap.perf_cpus.is_none() {
+            snap.perf_cpus = sysctl_u32("hw.perflevel0.logicalcpu")
                 .or_else(|| sysctl_u32("hw.perflevel0.physicalcpu"));
         }
-        if self.eff_cpus.is_none() {
-            self.eff_cpus = sysctl_u32("hw.perflevel1.logicalcpu")
+        if snap.eff_cpus.is_none() {
+            snap.eff_cpus = sysctl_u32("hw.perflevel1.logicalcpu")
                 .or_else(|| sysctl_u32("hw.perflevel1.physicalcpu"));
         }
-        // Prefer AGX model; fall back to CPU brand string.
-        if self.chip_name.is_none()
+        if snap.chip_name.is_none()
             && let Some(out) = Command::new("ioreg")
                 .args(["-r", "-d", "1", "-c", "IOAccelerator"])
                 .output()
@@ -258,90 +390,85 @@ impl LiveMetrics {
         {
             let text = String::from_utf8_lossy(&out.stdout);
             let sample = parse_ioreg_gpu(&text);
-            self.chip_name = sample.chip_name;
-            if self.gpu_cores.is_none() {
-                self.gpu_cores = sample.gpu_cores;
+            snap.chip_name = sample.chip_name;
+            if snap.gpu_cores.is_none() {
+                snap.gpu_cores = sample.gpu_cores;
+            }
+            // Reuse this ioreg output for util numbers when identity was needed.
+            if sample.gpu_percent.is_some() {
+                snap.gpu_percent = sample.gpu_percent;
+            }
+            if sample.gpu_mem_bytes.is_some() {
+                snap.gpu_mem_bytes = sample.gpu_mem_bytes;
             }
         }
-        if self.chip_name.is_none() {
-            self.chip_name = sysctl_string("machdep.cpu.brand_string");
+        if snap.chip_name.is_none() {
+            snap.chip_name = sysctl_string("machdep.cpu.brand_string");
         }
     }
 
-    fn sample_memory(&mut self) {
-        let output = Command::new("vm_stat").output().ok();
-        if let Some(out) = output
-            && out.status.success()
-        {
-            let text = String::from_utf8_lossy(&out.stdout);
-            self.used_ram_bytes = parse_vm_stat_used_bytes(&text);
-            self.free_ram_bytes = parse_vm_stat_free_bytes(&text);
-        }
+    // Memory
+    if let Some(out) = Command::new("vm_stat")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        snap.used_ram_bytes = parse_vm_stat_used_bytes(&text);
+        snap.free_ram_bytes = parse_vm_stat_free_bytes(&text);
     }
 
-    fn sample_cpu(&mut self) {
-        // Prefer host-level sample from `top` (user+sys). `ps %cpu` sum/ncpu is
-        // noisy on macOS and can briefly fail/empty, which used to clear the
-        // gauge and leave gaps in the chart.
-        if let Some(out) = Command::new("top")
-            .args(["-l", "1", "-n", "0", "-s", "0"])
+    // CPU — prefer `ps` over `top -l 1`. On macOS, `top -l 1` routinely takes
+    // ~0.5–1.5s even with `-n 0 -s 0`, which freezes a synchronous UI loop.
+    if let Some(out) = Command::new("ps")
+        .args(["-A", "-o", "%cpu="])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        let ncpu = snap.logical_cpus.unwrap_or(1).max(1) as f64;
+        snap.cpu_percent = parse_ps_cpu_percent(&text, ncpu);
+    }
+
+    // GPU util (skip second ioreg if identity pass already filled it).
+    if (snap.gpu_percent.is_none() || snap.gpu_mem_bytes.is_none())
+        && let Some(out) = Command::new("ioreg")
+            .args(["-r", "-d", "1", "-c", "IOAccelerator"])
             .output()
             .ok()
             .filter(|o| o.status.success())
-        {
-            let text = String::from_utf8_lossy(&out.stdout);
-            if let Some(p) = parse_top_cpu_percent(&text) {
-                self.cpu_percent = Some(p);
-                return;
-            }
-        }
-        let output = Command::new("ps").args(["-A", "-o", "%cpu="]).output().ok();
-        let Some(out) = output.filter(|o| o.status.success()) else {
-            return; // keep previous cpu_percent
-        };
-        let text = String::from_utf8_lossy(&out.stdout);
-        let ncpu = self.logical_cpus.unwrap_or(1).max(1) as f64;
-        if let Some(p) = parse_ps_cpu_percent(&text, ncpu) {
-            self.cpu_percent = Some(p);
-        }
-    }
-
-    fn sample_gpu(&mut self) {
-        let output = Command::new("ioreg")
-            .args(["-r", "-d", "1", "-c", "IOAccelerator"])
-            .output()
-            .ok();
-        let Some(out) = output.filter(|o| o.status.success()) else {
-            return;
-        };
+    {
         let text = String::from_utf8_lossy(&out.stdout);
         let sample = parse_ioreg_gpu(&text);
-        if sample.gpu_percent.is_some() {
-            self.gpu_percent = sample.gpu_percent;
+        if snap.gpu_percent.is_none() {
+            snap.gpu_percent = sample.gpu_percent;
         }
-        if sample.gpu_mem_bytes.is_some() {
-            self.gpu_mem_bytes = sample.gpu_mem_bytes;
+        if snap.gpu_mem_bytes.is_none() {
+            snap.gpu_mem_bytes = sample.gpu_mem_bytes;
         }
-        if self.chip_name.is_none() {
-            self.chip_name = sample.chip_name;
+        if snap.chip_name.is_none() {
+            snap.chip_name = sample.chip_name;
         }
-        if self.gpu_cores.is_none() {
-            self.gpu_cores = sample.gpu_cores;
+        if snap.gpu_cores.is_none() {
+            snap.gpu_cores = sample.gpu_cores;
         }
     }
 
-    fn sample_top_procs(&mut self) {
-        // rss is KiB on macOS; sort by RSS descending, take a few.
-        let output = Command::new("ps")
-            .args(["-A", "-o", "rss=,pid=,comm="])
-            .output()
-            .ok();
-        let Some(out) = output.filter(|o| o.status.success()) else {
-            return;
-        };
+    // Top processes
+    if let Some(out) = Command::new("ps")
+        .args(["-A", "-o", "rss=,pid=,comm="])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+    {
         let text = String::from_utf8_lossy(&out.stdout);
-        self.top_procs = parse_ps_top_rss(&text, 10);
+        snap.top_procs = parse_ps_top_rss(&text, 10);
     }
+
+    snap.load_1m = parse_loadavg_1m(&sysctl_string("vm.loadavg").unwrap_or_default());
+    snap.free_disk_bytes = free_disk_bytes(&req.cache_root);
+    snap
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -395,9 +522,13 @@ pub(super) fn parse_loadavg_1m(raw: &str) -> Option<f64> {
 
 /// Parse macOS `top -l 1` host CPU line into busy percent 0–100.
 ///
+/// Kept for unit tests and offline parsing; the live sampler uses `ps`
+/// instead because `top -l 1` is multi-hundred-ms on typical Macs.
+///
 /// Accepts forms like:
 /// `CPU usage: 1.42% user, 5.71% sys, 92.85% idle`
 /// Prefer `100 - idle` when idle is present; else `user + sys`.
+#[cfg(test)]
 pub(super) fn parse_top_cpu_percent(raw: &str) -> Option<f64> {
     for line in raw.lines() {
         let line = line.trim();
@@ -419,6 +550,7 @@ pub(super) fn parse_top_cpu_percent(raw: &str) -> Option<f64> {
     None
 }
 
+#[cfg(test)]
 fn parse_top_field_percent(line: &str, field: &str) -> Option<f64> {
     // Match "12.3% user" / "12.3% idle" (order is value then unit then label).
     let lower = line.to_ascii_lowercase();
@@ -434,7 +566,7 @@ fn parse_top_field_percent(line: &str, field: &str) -> Option<f64> {
     before[num_start..].trim().parse().ok()
 }
 
-/// Parse `ps -A -o %cpu=` into average utilization 0–100 (fallback).
+/// Parse `ps -A -o %cpu=` into average utilization 0–100.
 pub(super) fn parse_ps_cpu_percent(raw: &str, ncpu: f64) -> Option<f64> {
     let mut sum = 0.0_f64;
     let mut any = false;
@@ -721,5 +853,35 @@ PhysMem: 33G used
         let s = parse_ioreg_gpu(raw);
         assert!((s.gpu_percent.unwrap() - 15.0).abs() < 1e-6);
         assert_eq!(s.gpu_mem_bytes, Some(1000));
+    }
+
+    #[test]
+    fn tick_is_nonblocking_and_applies_async_sample() {
+        // Regression: sample must not call `top` (or any multi-hundred-ms
+        // probe) on the calling thread.
+        let mut m = LiveMetrics::new(Some(16 * 1024 * 1024 * 1024));
+        let cache = std::env::temp_dir();
+        let t0 = Instant::now();
+        let first = m.tick(0, &cache);
+        // First call only launches the worker.
+        assert!(!first, "first tick launches worker, does not apply yet");
+        assert!(
+            t0.elapsed() < Duration::from_millis(50),
+            "tick must not block on host probes (elapsed {:?})",
+            t0.elapsed()
+        );
+        // Wait for the background sample (ps/vm_stat/ioreg, not top).
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut applied = false;
+        while Instant::now() < deadline {
+            if m.tick(0, &cache) {
+                applied = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(applied, "background sample should land within 3s");
+        // A second immediate tick must not re-sample inside the interval.
+        assert!(!m.tick(0, &cache));
     }
 }

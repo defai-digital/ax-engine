@@ -382,6 +382,8 @@ struct App {
     pub serve_log_scroll: LogScroll,
     /// Set once the server job's log confirms it actually bound (not just spawned).
     pub server_ready: bool,
+    /// Next server-log index to scan for a bind line (avoids O(n) full rescan).
+    server_ready_scan: usize,
     /// Label of the model the running server was started with (chat request body).
     pub server_model: Option<String>,
 
@@ -454,6 +456,7 @@ impl App {
             server_url: None,
             serve_log_scroll: LogScroll::default(),
             server_ready: false,
+            server_ready_scan: 0,
             server_model: None,
             chat: ChatState::new(),
             focus_tabs: false,
@@ -544,8 +547,13 @@ impl App {
     fn tick(&mut self) -> bool {
         let mut finished: Vec<(usize, String)> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
+        // Material download changes (bytes/phase/log/exit). Spinner alone does
+        // not count — off-screen downloads must not force 10 Hz full redraws.
+        let mut download_material = false;
         for (idx, task) in self.downloads.iter_mut().enumerate() {
-            match task.tick() {
+            let (outcome, changed) = task.tick();
+            download_material |= changed;
+            match outcome {
                 DownloadOutcome::Finished => finished.push((idx, task.label.clone())),
                 DownloadOutcome::Failed => failed.push(task.label.clone()),
                 DownloadOutcome::Pending => {}
@@ -579,8 +587,9 @@ impl App {
         }
         self.start_next_queued_download();
         let server_was_running = self.server_running();
+        let mut server_material = false;
         if let Some(job) = &mut self.server {
-            job.tick();
+            server_material = job.tick().material;
         }
         let was_ready = self.server_ready;
         self.update_server_ready();
@@ -609,7 +618,7 @@ impl App {
         // inline in the transcript.
         let was_streaming = self.chat.streaming();
         let chat_had_error = self.chat.error.is_some();
-        self.chat.tick();
+        let chat_changed = self.chat.tick();
         if !chat_had_error && let Some(message) = self.chat.error.clone() {
             self.toast_error(message);
         }
@@ -618,22 +627,30 @@ impl App {
         let had_toasts = !self.toasts.is_empty();
         widgets::expire_toasts(&mut self.toasts);
         self.clamp_list_indices();
-        // Host load for Home gauges/chart (~2 s throttle inside sampler).
+        // Host load for Home gauges/chart. Probes run on a background thread
+        // (~2 s interval); only the Home screen paints them, so only dirties
+        // the frame when the user can actually see the gauges.
         let models_bytes: u64 = installed_variants(&self.families)
             .into_iter()
             .map(|(fi, vi)| self.families[fi].variants[vi].size)
             .sum();
         let cache_root = crate::default_hf_cache_root();
         let metrics_sampled = self.live_metrics.tick(models_bytes, &cache_root);
-        // Repaint only when something visible can move on its own: download
-        // spinners/progress, a binding server, a streaming reply, fresh toast,
-        // or a new metrics sample. A fully idle app stays dark.
+        let download_running = self.downloads.iter().any(|t| t.is_running());
+        // Spinner animation only matters on the Downloads screen; tab-bar
+        // percent updates come through download_material at the 1 Hz sample.
+        let spinner_visible = download_running && self.screen == Screen::Downloads;
+        // Repaint only when something visible can move on its own. A fully
+        // idle app (or one with off-screen quiet jobs) stays dark.
         was_streaming
+            || chat_changed
             || had_toasts
-            || metrics_sampled
+            || (metrics_sampled && self.screen == Screen::Home)
             || !self.toasts.is_empty()
-            || self.downloads.iter().any(|t| t.is_running())
-            || (self.server_running() && !self.server_ready)
+            || download_material
+            || spinner_visible
+            || server_material
+            || (self.server_ready != was_ready)
             || self.chat.streaming()
     }
 
@@ -1417,6 +1434,7 @@ impl App {
         model_label: &str,
     ) {
         self.server_ready = false;
+        self.server_ready_scan = 0;
         // Every path through here replaces the server job — re-pin its log.
         self.serve_log_scroll.pin_to_bottom();
         let host = if self.host.trim().is_empty() {
@@ -1493,9 +1511,23 @@ impl App {
             }
             return;
         }
-        if !self.server_ready && job.log.iter().any(|line| server_log_indicates_ready(line)) {
-            self.server_ready = true;
+        if self.server_ready {
+            return;
         }
+        // Only scan lines that arrived since the last check. LOG_CAP can drain
+        // from the front and invalidate absolute indices — rescan from 0 then.
+        let start = if self.server_ready_scan > job.log.len() {
+            0
+        } else {
+            self.server_ready_scan
+        };
+        for line in &job.log[start..] {
+            if server_log_indicates_ready(line) {
+                self.server_ready = true;
+                break;
+            }
+        }
+        self.server_ready_scan = job.log.len();
     }
 
     fn stop_server(&mut self) {
@@ -1505,6 +1537,7 @@ impl App {
         self.server = None;
         self.server_url = None;
         self.server_ready = false;
+        self.server_ready_scan = 0;
         self.server_model = None;
         self.serve_log_scroll.pin_to_bottom();
     }
