@@ -233,6 +233,17 @@ impl GenerateStreamState {
         }
     }
 
+    /// Exhaust the native step guard so the next `next_stream_event` returns
+    /// `RequestDidNotTerminate`. Binding-crate tests use this to drive the
+    /// real error path without waiting on a model failure.
+    #[doc(hidden)]
+    pub fn test_only_exhaust_native_step_budget(&mut self) {
+        if let Self::Native(state) = self {
+            state.phase = GenerateStreamPhase::Step;
+            state.step_count = state.max_steps;
+        }
+    }
+
     fn finish(&mut self) {
         match self {
             Self::Native(state) => state.phase = GenerateStreamPhase::Done,

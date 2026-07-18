@@ -470,6 +470,38 @@ impl EngineSession {
         Self::from_validated_config_and_core(config, core)
     }
 
+    /// Deterministic native session for binding-crate unit tests (no MLX weights).
+    ///
+    /// Uses `DeterministicRunner` so stream submit/step/cancel can be exercised
+    /// without model artifacts. Selected backend remains MLX-native so the
+    /// native stream / stepwise paths are the ones under test.
+    #[doc(hidden)]
+    pub fn new_deterministic_native_for_tests() -> Self {
+        use ax_engine_core::{DeterministicRunner, DeterministicSampler};
+
+        let config = EngineSessionConfig {
+            // Clear auto-detected artifact dirs so tests never touch real models.
+            mlx_runtime_artifacts_dir: None,
+            mlx_runtime_artifacts_source: None,
+            ..EngineSessionConfig::default()
+        };
+        let core = EngineCore::with_runtime_components(
+            config.kv_config,
+            DeterministicRunner,
+            DeterministicSampler,
+        );
+        Self {
+            core,
+            runtime: config.runtime_report(),
+            config,
+            next_request_id: 1,
+            native_request_routes: BTreeMap::new(),
+            native_route_report_order: VecDeque::new(),
+            llama_requests: BTreeMap::new(),
+            llama_terminal_request_order: VecDeque::new(),
+        }
+    }
+
     #[cfg(feature = "mlx-native")]
     pub fn new_with_shared_mlx_prefix_cache(
         config: EngineSessionConfig,
