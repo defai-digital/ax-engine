@@ -1,0 +1,9 @@
+patched
+=== full batched-decode-layer replica (0.32.0) ===
+MLX 0.32.0  full batched-decode layer replica x32, single eval
+batch  step_us  scaling
+    1    12398   1.00x
+    2    13045   1.90x
+    4    16662   2.98x
+    8    29967   3.31x
+REPLICA3-DONE

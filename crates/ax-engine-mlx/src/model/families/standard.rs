@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, MlxVectorArray, add, rms_norm, rope, slice};
+use mlx_sys::{MlxArray, MlxDtype, MlxVectorArray, add, rms_norm, rope, rope_dynamic, slice};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -965,34 +965,35 @@ pub fn layer_forward_batched(
         seq,
         cfg.rms_norm_eps,
     );
-    let rope_row = |x: &MlxArray, heads: i32| -> MlxArray {
-        let batch = x.shape()[0];
-        let rows: Vec<MlxArray> = (0..batch)
-            .map(|r| {
-                let row = slice(
-                    x,
-                    &[r, 0, 0, 0],
-                    &[r + 1, heads, seq as i32, head_dim as i32],
-                    &[1, 1, 1, 1],
-                    None,
-                );
-                rope(
-                    &row,
-                    rope_dims as i32,
-                    false,
-                    rope_base,
-                    1.0,
-                    offsets[r as usize] as i32,
-                    rope_freqs_ref,
-                    None,
-                )
-            })
-            .collect();
-        let refs: Vec<&MlxArray> = rows.iter().collect();
-        mlx_sys::concatenate(&refs, 0, None)
+    // Per-row RoPE in ONE dispatch: each batch row is at a different decode
+    // position (`offsets[r]`), so this used to slice each row, `rope` it with
+    // that row's scalar offset, and concatenate — O(batch) slices + ropes +
+    // a concat, per q and per k, per layer. That per-row loop was the
+    // seq-independent, batch-linear cost that kept batched decode from
+    // amortizing (docs/performance/batched-decode-ceiling.md, Phase 3.3).
+    // MLX 0.32 `rope_dynamic` accepts a `[batch]` offset array and applies a
+    // per-row position — bit-identical to the loop — so one call replaces it.
+    let offsets_i32: Vec<i32> = offsets.iter().map(|&o| o as i32).collect();
+    let offset_arr = MlxArray::from_raw_data(
+        offsets_i32.as_ptr() as *const u8,
+        std::mem::size_of_val(offsets_i32.as_slice()),
+        &[offsets_i32.len() as i32],
+        MlxDtype::Int32,
+    );
+    let rope_row = |x: &MlxArray| -> MlxArray {
+        rope_dynamic(
+            x,
+            rope_dims as i32,
+            false,
+            rope_base,
+            1.0,
+            &offset_arr,
+            rope_freqs_ref,
+            None,
+        )
     };
-    let q_rope = rope_row(&q, cfg.n_heads as i32);
-    let k_rope = rope_row(&k, kv_heads as i32);
+    let q_rope = rope_row(&q);
+    let k_rope = rope_row(&k);
     let (cached_k, cached_v) = cache.append_decode_layer(layer_idx, &k_rope, &v);
     let attn_sdpa =
         full_precision_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, seq, mask);

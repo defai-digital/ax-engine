@@ -79,7 +79,32 @@ own KV cache; batched SDPA reads B caches and runs B attentions with no
 cross-batch weight to amortize), plus possible structural overhead in
 `layer_forward_batched`; confirming it needs stage-timing the batched step.
 
-**Revised Phase 3 plan (updated after 3.2):**
+## Phase 3.3 update (2026-07-17): ceiling is ~3.3×, and AX's 1.24× is a fixable AX bug
+
+A pure-MLX replica of the FULL batched decode step — per-layer QKV/O/FFN
+quantized matmuls + SDPA (with a ragged validity mask) + lm_head + argmax,
+×32 layers, single eval — amortizes **3.3× at batch=8** (1.92× @2, 3.0× @4).
+So the realistic ceiling is ~3.3× (higher than the 2.69× square-matmul
+estimate; the big FFN/lm_head matmuls are more bandwidth-bound), and AX's 1.24×
+is **~2.7× below a ceiling that pure MLX reaches with the same structure** —
+i.e. a recoverable AX-side implementation issue, not a hardware/MLX limit.
+
+Ruled out as the culprit (each tested):
+- **RoPE per-row loop** — real inefficiency (O(batch) slice+rope+concat, now
+  fixed via `rope_dynamic` with a `[batch]` offset array, parity-clean, 25
+  batched tests pass), but removing it did **not** move the ceiling → the step
+  is not dispatch-bound.
+- **SDPA validity mask** — replica with vs without: 3.31× vs 3.30×.
+- **lm_head + argmax** — replica with vs without: 3.28× vs 3.30×.
+- **Attention key length** — seq 8 vs 256: 1.24× vs 1.20× (seq-independent).
+
+Remaining suspects are **AX-specific code the replica does not model**:
+`qk_norm`/`v_norm` (RMSNorm on Q/K/V projections), the `BatchedKvCache`
+append/materialize (per-step batched-buffer management), or a batched-helper
+inefficiency. Pinpointing needs **stage-instrumenting the real
+`decode_batched_forward`** (Python replicas are exhausted — they amortize fine).
+
+**Revised Phase 3 plan (updated after 3.2/3.3):**
 - **Realistic ceiling: ~2.7× aggregate at batch=8** (the true matmul
   amortization on this hardware), i.e. ~53→~143 agg tok/s on Llama-8B, not the
   naive ×8. Meaningful for concurrent serving; zero for single-request.

@@ -1,0 +1,14 @@
+patched mask
+=== no mask ===
+batch  step_us  scaling
+    1    12408   1.00x
+    2    12916   1.92x
+    4    16451   3.02x
+    8    30102   3.30x
+=== WITH validity mask (AX pattern) ===
+batch  step_us  scaling
+    1    12477   1.00x
+    2    12975   1.92x
+    4    16732   2.98x
+    8    30159   3.31x
+MASK-DONE
