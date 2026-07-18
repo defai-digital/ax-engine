@@ -102,33 +102,46 @@ async fn model_add_rejects_memory_constrained_policy() {
 
 #[tokio::test]
 async fn model_unload_rejects_last_or_unknown_model() {
-    let app = build_router(llama_cpp_state());
+    let state = llama_cpp_state();
+    let _active_request = state
+        .admission
+        .try_admit()
+        .expect("test request should hold admission open");
+    let app = build_router(state);
 
-    let (last_status, last_body) = json_response(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/v1/model/unload")
-            .header("content-type", "application/json")
-            .body(Body::from(json_request_body(&json!({"model_id": "qwen3"}))))
-            .unwrap(),
+    let (last_status, last_body) = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/model/unload")
+                .header("content-type", "application/json")
+                .body(Body::from(json_request_body(&json!({"model_id": "qwen3"}))))
+                .unwrap(),
+        ),
     )
-    .await;
+    .await
+    .expect("invalid unload must not wait for active traffic");
     assert_eq!(last_status, StatusCode::CONFLICT);
     assert_eq!(last_body["error"]["code"], json!("last_model"));
 
-    let (missing_status, missing_body) = json_response(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/v1/model/unload")
-            .header("content-type", "application/json")
-            .body(Body::from(json_request_body(
-                &json!({"model_id": "not-loaded"}),
-            )))
-            .unwrap(),
+    let (missing_status, missing_body) = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/model/unload")
+                .header("content-type", "application/json")
+                .body(Body::from(json_request_body(
+                    &json!({"model_id": "not-loaded"}),
+                )))
+                .unwrap(),
+        ),
     )
-    .await;
+    .await
+    .expect("unknown unload must not wait for active traffic");
     assert_eq!(missing_status, StatusCode::BAD_REQUEST);
     assert_eq!(missing_body["error"]["code"], json!("model_not_found"));
 }

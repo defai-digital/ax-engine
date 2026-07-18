@@ -167,11 +167,11 @@ pub(crate) async fn models(State(state): State<AppState>) -> Json<ModelsResponse
 }
 
 fn model_card(live: &LiveState) -> ModelCard {
-    let context_length = context_length(&live);
-    let max_output_tokens = max_output_tokens_live(&live, context_length);
-    let openai_text = openai_text_supported_live(&live);
-    let native_multimodal = native_processed_multimodal_support_live(&live);
-    let openai_tool_calling = openai_tool_calling_supported_live(&live, openai_text);
+    let context_length = context_length(live);
+    let max_output_tokens = max_output_tokens_live(live, context_length);
+    let openai_text = openai_text_supported_live(live);
+    let native_multimodal = native_processed_multimodal_support_live(live);
+    let openai_tool_calling = openai_tool_calling_supported_live(live, openai_text);
     ModelCard {
         id: live.model_id.to_string(),
         object: "model",

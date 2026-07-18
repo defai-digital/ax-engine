@@ -839,7 +839,12 @@ drain receive HTTP 503 or gRPC `UNAVAILABLE` and can retry after loading.
 model the default for requests that omit `model`, and enables per-request model
 routing. Add mode is limited to Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B. Use
 `POST /v1/model/unload` with `{"model_id":"..."}` to retire a retained model;
-the last loaded model cannot be unloaded.
+the last loaded model cannot be unloaded. `add` rejects a model ID that is
+already loaded. Once the registry contains more than one model, `replace` also
+enforces the same five-model scope because it retains the other sessions; an
+unrestricted historical hot-swap remains available when only one model is
+loaded. Invalid load and unload requests are rejected before admission drains,
+so they do not wait for or interrupt unrelated active traffic.
 The optional `load_policy` request field accepts `availability_first` (the
 default) or `memory_constrained`. Availability-first keeps the drained model
 resident until its replacement is ready, preserving rollback at the cost of a

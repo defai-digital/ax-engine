@@ -3517,20 +3517,39 @@ mod tests {
             "qwen3"
         );
 
-        // step2: qwen3 request 1 does decode (still earliest arrival), gemma deferred again
+        // step2: the model anchor rotates, so gemma receives its prefill turn
+        // without ever sharing an execution batch with qwen3.
         let step2 = engine.step(8, true).unwrap();
-        assert_eq!(step2.schedule_plan.selected_requests, vec![RequestId(1)]);
-
-        // step3: qwen3 request 1 finished and cleaned up, now gemma request 2 gets scheduled
-        let step3 = engine.step(8, true).unwrap();
-        assert!(
-            step3
+        assert_eq!(step2.schedule_plan.selected_requests, vec![RequestId(2)]);
+        assert_eq!(step2.schedule_plan.deferred_requests, vec![RequestId(1)]);
+        assert_eq!(
+            step2
                 .schedule_plan
-                .selected_requests
-                .contains(&RequestId(2))
+                .execution_batch
+                .as_ref()
+                .unwrap()
+                .model_id,
+            "gemma"
         );
+
+        // step3: qwen3 rotates back in and finishes its decode.
+        let step3 = engine.step(8, true).unwrap();
+        assert_eq!(step3.schedule_plan.selected_requests, vec![RequestId(1)]);
         assert_eq!(
             step3
+                .schedule_plan
+                .execution_batch
+                .as_ref()
+                .unwrap()
+                .model_id,
+            "qwen3"
+        );
+
+        // step4: after qwen3 completes, gemma remains independently runnable.
+        let step4 = engine.step(8, true).unwrap();
+        assert_eq!(step4.schedule_plan.selected_requests, vec![RequestId(2)]);
+        assert_eq!(
+            step4
                 .schedule_plan
                 .execution_batch
                 .as_ref()

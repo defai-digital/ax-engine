@@ -68,7 +68,8 @@ pub(crate) async fn load_model(
     State(state): State<AppState>,
     Json(request): Json<LoadModelRequest>,
 ) -> Result<Json<LoadModelResponse>, HttpErrorResponse> {
-    if request.model_id.trim().is_empty() {
+    let model_id = request.model_id.trim().to_string();
+    if model_id.is_empty() {
         return Err(error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid_request",
@@ -85,6 +86,17 @@ pub(crate) async fn load_model(
         ));
     }
 
+    let load_policy = request.load_policy;
+    let load_mode = request.load_mode;
+    if load_mode == LoadModelMode::Add && load_policy == LoadModelPolicy::MemoryConstrained {
+        return Err(error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_request",
+            "load_mode=add retains existing models and is incompatible with load_policy=memory_constrained"
+                .to_string(),
+        ));
+    }
+
     // Prevent concurrent loads — 409 if already in progress (mirrors ax-serving).
     if state
         .loading
@@ -97,21 +109,17 @@ pub(crate) async fn load_model(
             "a model load is already in progress".to_string(),
         ));
     }
+    // Hold the loading flag across synchronous validation and move the guard
+    // into the detached task only after every request error has been ruled out.
+    // Invalid loads must not close admission or wait for unrelated traffic.
+    let loading_guard = LoadingFlagGuard(state.clone());
+    // Preserve the lifecycle contract: live stepwise work takes precedence
+    // over backend/artifact validation because replacing its owner would
+    // orphan request IDs. The loading flag already blocks new submissions.
+    ensure_no_active_stepwise_for_all(&state).await?;
+    let live = validate_load_preflight(&state, &model_id, &model_path, load_mode)?;
     let drain_guard = state.admission.begin_drain();
-
-    let model_id = request.model_id.clone();
-    let load_policy = request.load_policy;
-    let load_mode = request.load_mode;
-
-    if load_mode == LoadModelMode::Add && load_policy == LoadModelPolicy::MemoryConstrained {
-        state.loading.store(false, Ordering::Release);
-        return Err(error_response(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "invalid_request",
-            "load_mode=add retains existing models and is incompatible with load_policy=memory_constrained"
-                .to_string(),
-        ));
-    }
+    let response_model_id = model_id.clone();
 
     // Run load + swap in a detached task: axum drops handler futures when the
     // client disconnects, and the load must still complete (or fail) and clear
@@ -119,39 +127,11 @@ pub(crate) async fn load_model(
     let state_clone = state.clone();
     let load_task = tokio::spawn(async move {
         let _drain_guard = drain_guard;
-        let _loading_guard = LoadingFlagGuard(state_clone.clone());
+        let _loading_guard = loading_guard;
         ensure_no_active_stepwise_for_all(&state_clone).await?;
         // Clone the current config and swap in the new model artifacts dir.
         // Only MLX-native consumes this field; delegated backends would keep
         // serving the old model under a new identifier.
-        let live = state_clone.snapshot();
-        if !live
-            .session_config
-            .resolved_backend
-            .selected_backend
-            .is_mlx()
-        {
-            return Err(error_response(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "unsupported_backend",
-                "model load is only supported on the MLX-native backend".to_string(),
-            ));
-        }
-        if load_mode == LoadModelMode::Replace
-            && live.model_id.as_ref() != &model_id
-            && state_clone.snapshot_for_model(Some(&model_id)).is_some()
-        {
-            return Err(error_response(
-                StatusCode::CONFLICT,
-                "model_already_loaded",
-                format!(
-                    "model {model_id} is already loaded; unload it before replacing the default model with the same id"
-                ),
-            ));
-        }
-        if load_mode == LoadModelMode::Add {
-            validate_multi_model_target(&model_id, &model_path)?;
-        }
         let new_config =
             Arc::unwrap_or_clone(live.session_config).with_mlx_model_artifacts_dir(model_path);
         wait_for_idle_without_stepwise(&state_clone).await?;
@@ -205,7 +185,7 @@ pub(crate) async fn load_model(
 
     match load_task.await {
         Ok(Ok(ctx_len)) => Ok(Json(LoadModelResponse {
-            model_id: request.model_id,
+            model_id: response_model_id,
             state: "loaded",
             context_length: ctx_len,
             load_policy,
@@ -243,12 +223,16 @@ pub(crate) async fn unload_model(
             "a model load or unload is already in progress".to_string(),
         ));
     }
+    // The loading flag serializes registry mutations, so these preconditions
+    // remain true until remove_live runs. Reject without draining active work.
+    let loading_guard = LoadingFlagGuard(state.clone());
+    validate_unload_preflight(&state, &model_id)?;
     let drain_guard = state.admission.begin_drain();
     let state_clone = state.clone();
     let unload_model_id = model_id.clone();
     let task = tokio::spawn(async move {
         let _drain_guard = drain_guard;
-        let _loading_guard = LoadingFlagGuard(state_clone.clone());
+        let _loading_guard = loading_guard;
         ensure_no_active_stepwise_for_all(&state_clone).await?;
         wait_for_idle_without_stepwise(&state_clone).await?;
         let live = state_clone
@@ -280,6 +264,90 @@ pub(crate) async fn unload_model(
             format!("unload task panicked: {error}"),
         )),
     }
+}
+
+fn validate_load_preflight(
+    state: &AppState,
+    model_id: &str,
+    model_path: &std::path::Path,
+    load_mode: LoadModelMode,
+) -> Result<crate::app_state::LiveState, HttpErrorResponse> {
+    let live = state.snapshot();
+    if !live
+        .session_config
+        .resolved_backend
+        .selected_backend
+        .is_mlx()
+    {
+        return Err(error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsupported_backend",
+            "model load is only supported on the MLX-native backend".to_string(),
+        ));
+    }
+
+    let loaded_model_ids = state.model_ids();
+    match load_mode {
+        LoadModelMode::Add => {
+            if loaded_model_ids.iter().any(|loaded| loaded == model_id) {
+                return Err(error_response(
+                    StatusCode::CONFLICT,
+                    "model_already_loaded",
+                    format!(
+                        "model {model_id} is already loaded; use load_mode=replace to replace it"
+                    ),
+                ));
+            }
+            validate_multi_model_target(model_id, model_path)?;
+            validate_retained_multi_model_ids(&loaded_model_ids)?;
+        }
+        LoadModelMode::Replace => {
+            if live.model_id.as_ref() != model_id
+                && loaded_model_ids.iter().any(|loaded| loaded == model_id)
+            {
+                return Err(error_response(
+                    StatusCode::CONFLICT,
+                    "model_already_loaded",
+                    format!(
+                        "model {model_id} is already loaded; unload it before replacing the default model with the same id"
+                    ),
+                ));
+            }
+
+            // Replacing the sole model preserves the historical unrestricted
+            // hot-swap contract. Once another model is retained, the result is
+            // multi-model serving and every surviving/new model must remain in
+            // the five-model product scope.
+            if loaded_model_ids.len() > 1 {
+                validate_multi_model_target(model_id, model_path)?;
+                let retained = loaded_model_ids
+                    .into_iter()
+                    .filter(|loaded| loaded != live.model_id.as_ref())
+                    .collect::<Vec<_>>();
+                validate_retained_multi_model_ids(&retained)?;
+            }
+        }
+    }
+    Ok(live)
+}
+
+fn validate_unload_preflight(state: &AppState, model_id: &str) -> Result<(), HttpErrorResponse> {
+    let loaded_model_ids = state.model_ids();
+    if !loaded_model_ids.iter().any(|loaded| loaded == model_id) {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "model_not_found",
+            format!("model {model_id} is not loaded"),
+        ));
+    }
+    if loaded_model_ids.len() == 1 {
+        return Err(error_response(
+            StatusCode::CONFLICT,
+            "last_model",
+            "cannot unload the last model; load another model first".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 async fn wait_for_idle_without_stepwise(state: &AppState) -> Result<(), HttpErrorResponse> {
@@ -328,6 +396,22 @@ fn validate_multi_model_target(
             inferred.as_deref().unwrap_or("unknown")
         ),
     ))
+}
+
+fn validate_retained_multi_model_ids(model_ids: &[String]) -> Result<(), HttpErrorResponse> {
+    if let Some(model_id) = model_ids
+        .iter()
+        .find(|model_id| multi_model_target_key(model_id).is_none())
+    {
+        return Err(error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsupported_model",
+            format!(
+                "multi-model loading is limited to Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B; retained model_id={model_id} is outside that scope"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -487,5 +571,18 @@ mod tests {
         ] {
             assert!(!is_supported_multi_model_id(model_id), "{model_id}");
         }
+    }
+
+    #[test]
+    fn retained_models_cannot_bypass_multi_model_product_scope() {
+        let supported = vec!["qwen3.6-27b".to_string(), "gemma-4-31b-it".to_string()];
+        validate_retained_multi_model_ids(&supported)
+            .expect("targeted multi-model ids should be accepted");
+
+        let unsupported = vec!["qwen3.6-27b".to_string(), "llama3.3-70b".to_string()];
+        let error = validate_retained_multi_model_ids(&unsupported)
+            .expect_err("an out-of-scope retained model must be rejected");
+        assert_eq!(error.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(error.1.0.error.code.as_deref(), Some("unsupported_model"));
     }
 }
