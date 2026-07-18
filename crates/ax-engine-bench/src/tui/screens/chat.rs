@@ -385,6 +385,14 @@ impl App {
                     self.chat.input.remove(byte_idx);
                 }
             }
+            KeyCode::Delete => {
+                self.chat.hist_nav = None;
+                let len = self.chat.input.chars().count();
+                if self.chat.cursor < len {
+                    let byte_idx = char_to_byte_idx(&self.chat.input, self.chat.cursor);
+                    self.chat.input.remove(byte_idx);
+                }
+            }
             KeyCode::Left => self.chat.cursor = self.chat.cursor.saturating_sub(1),
             KeyCode::Right => {
                 self.chat.cursor = (self.chat.cursor + 1).min(self.chat.input.chars().count());
@@ -424,7 +432,9 @@ impl App {
             }
             KeyCode::Down => {
                 if self.chat.input.contains('\n') && self.chat.hist_nav.is_none() {
-                    let _ = self.move_chat_cursor_vert(1);
+                    if !self.move_chat_cursor_vert(1) {
+                        self.scroll_transcript(false, false);
+                    }
                 } else {
                     self.history_recall(1);
                 }

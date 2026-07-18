@@ -2637,3 +2637,69 @@ fn util_chart_legend_entries_and_derived_x_label_render() {
         "x-axis label {expected}: {text:.200}"
     );
 }
+
+#[test]
+fn chat_multiline_down_at_bottom_scrolls_transcript() {
+    let mut app = chat_ready_app();
+    for i in 0..40 {
+        app.chat.messages.push(ChatMessage {
+            from_user: false,
+            content: format!("line {i}"),
+            stats: None,
+        });
+    }
+    type_text(&mut app, "hi");
+    let mut nl = key(KeyCode::Char('j'));
+    nl.modifiers = KeyModifiers::CONTROL;
+    app.on_key(nl);
+    type_text(&mut app, "there");
+    assert!(app.chat.input.contains('\n'));
+    let before = app.chat.scroll.borrow().offset().y;
+    app.on_key(key(KeyCode::Down));
+    let after = app.chat.scroll.borrow().offset().y;
+    assert!(
+        after > before,
+        "Down at bottom of multi-line draft scrolls transcript (before={before} after={after})"
+    );
+}
+
+#[test]
+fn chat_delete_key_forward_deletes_at_cursor() {
+    let mut app = chat_ready_app();
+    type_text(&mut app, "abcd");
+    app.on_key(key(KeyCode::Home));
+    app.on_key(key(KeyCode::Delete));
+    assert_eq!(app.chat.input, "bcd");
+    assert_eq!(app.chat.cursor, 0);
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Delete));
+    assert_eq!(app.chat.input, "bd");
+    assert_eq!(app.chat.cursor, 1);
+    app.on_key(key(KeyCode::End));
+    app.on_key(key(KeyCode::Delete));
+    assert_eq!(app.chat.input, "bd", "Delete at end is a no-op");
+    app.chat.input = "aé日".into();
+    app.chat.cursor = 1;
+    app.on_key(key(KeyCode::Delete));
+    assert_eq!(app.chat.input, "a日");
+    app.on_key(key(KeyCode::Delete));
+    assert_eq!(app.chat.input, "a");
+}
+
+#[test]
+fn chat_typing_gate_excludes_crashed_server() {
+    let mut app = chat_ready_app();
+    assert!(app.typing(), "live server => chat is typing");
+    if let Some(job) = app.server.as_mut() {
+        job.done = Some(1);
+    }
+    assert!(
+        !app.typing(),
+        "crashed server => chat is not typing (read-only)"
+    );
+    app.on_key(key(KeyCode::Char('q')));
+    assert!(
+        app.chat.input.is_empty(),
+        "read-only chat does not capture letter keys"
+    );
+}

@@ -1003,7 +1003,9 @@ impl App {
         match self.screen {
             Screen::Models => self.stage == WizardStage::Families && self.filtering,
             Screen::Serve => matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port),
-            Screen::Chat => self.server_ready,
+            Screen::Chat => {
+                self.server_ready && !self.server.as_ref().is_some_and(|job| job.done.is_some())
+            }
             _ => false,
         }
     }
