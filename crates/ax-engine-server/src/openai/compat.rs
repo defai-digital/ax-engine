@@ -9,7 +9,7 @@ use crate::errors::{ErrorResponse, error_response};
 use crate::metadata::context_length;
 use crate::openai::chat_requests::render_openai_chat_prompt_with_tools;
 use crate::openai::schema::OpenAiChatCompletionHttpRequest;
-use crate::openai::validation::validate_model;
+use crate::openai::validation::select_model;
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
 
@@ -51,8 +51,7 @@ pub(crate) async fn tokenize(
     State(state): State<AppState>,
     Json(request): Json<TokenizeRequest>,
 ) -> Result<Json<serde_json::Value>, HttpErrorResponse> {
-    let live = state.snapshot();
-    validate_model(&live, request.model.as_deref())?;
+    let live = select_model(&state, request.model.as_deref())?;
     let tokenizer = tokenizer_for_live(&live)?;
     let tokens = tokenizer
         .encode_with_special_tokens(&request.content, request.add_special)
@@ -98,8 +97,7 @@ pub(crate) async fn apply_template(
     State(state): State<AppState>,
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
 ) -> Result<Json<ApplyTemplateResponse>, HttpErrorResponse> {
-    let live = state.snapshot();
-    validate_model(&live, request.model.as_deref())?;
+    let live = select_model(&state, request.model.as_deref())?;
     // Pass through tools/tool_choice: the real /v1/chat/completions path
     // (openai/requests.rs) renders a tool-definition system block from
     // them, so omitting them here made this "preview the exact prompt"
@@ -153,8 +151,7 @@ pub(crate) async fn detokenize(
     State(state): State<AppState>,
     Json(request): Json<DetokenizeRequest>,
 ) -> Result<Json<DetokenizeResponse>, HttpErrorResponse> {
-    let live = state.snapshot();
-    validate_model(&live, request.model.as_deref())?;
+    let live = select_model(&state, request.model.as_deref())?;
     let tokenizer = tokenizer_for_live_op(&live, "/detokenize")?;
     let content = tokenizer.decode(&request.tokens, false).map_err(|error| {
         error_response(

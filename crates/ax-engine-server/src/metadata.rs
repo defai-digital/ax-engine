@@ -159,34 +159,38 @@ pub(crate) async fn runtime_info(State(state): State<AppState>) -> Json<ServerIn
 }
 
 pub(crate) async fn models(State(state): State<AppState>) -> Json<ModelsResponse> {
-    let live = state.snapshot();
+    let data = state.snapshots().iter().map(model_card).collect();
+    Json(ModelsResponse {
+        object: "list",
+        data,
+    })
+}
+
+fn model_card(live: &LiveState) -> ModelCard {
     let context_length = context_length(&live);
     let max_output_tokens = max_output_tokens_live(&live, context_length);
     let openai_text = openai_text_supported_live(&live);
     let native_multimodal = native_processed_multimodal_support_live(&live);
     let openai_tool_calling = openai_tool_calling_supported_live(&live, openai_text);
-    Json(ModelsResponse {
-        object: "list",
-        data: vec![ModelCard {
-            id: live.model_id.to_string(),
-            object: "model",
-            owned_by: MODEL_OWNER,
-            capabilities: model_capabilities(openai_text, native_multimodal, openai_tool_calling),
-            limit: ModelLimit {
-                context: context_length,
-                output: max_output_tokens,
-            },
-            context_length,
-            max_output_tokens,
-            ax_engine: ax_engine_model_metadata(
-                live.model_id.as_ref(),
-                openai_text,
-                native_multimodal,
-                openai_tool_calling,
-            ),
-            runtime: live.runtime_report.clone(),
-        }],
-    })
+    ModelCard {
+        id: live.model_id.to_string(),
+        object: "model",
+        owned_by: MODEL_OWNER,
+        capabilities: model_capabilities(openai_text, native_multimodal, openai_tool_calling),
+        limit: ModelLimit {
+            context: context_length,
+            output: max_output_tokens,
+        },
+        context_length,
+        max_output_tokens,
+        ax_engine: ax_engine_model_metadata(
+            live.model_id.as_ref(),
+            openai_text,
+            native_multimodal,
+            openai_tool_calling,
+        ),
+        runtime: live.runtime_report.clone(),
+    }
 }
 
 fn server_info_response(live: &LiveState) -> ServerInfoResponse {
@@ -292,7 +296,10 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
     NativeProcessedMultimodalSupport {
         image,
         audio,
-        video: image,
+        // The public multi-model profile intentionally supports text, image,
+        // and audio only. Keep the lower-level Gemma4 video primitives private
+        // to existing callers, but never advertise video serving capability.
+        video: false,
     }
 }
 

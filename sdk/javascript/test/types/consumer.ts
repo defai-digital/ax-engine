@@ -34,6 +34,15 @@ export async function smokeTypes(client = new AxEngineClient({ baseUrl: "http://
   const chatResponse = await client.chatCompletion(chatRequest);
   const chatText: string | null = chatResponse.choices[0]?.message.content ?? null;
 
+  const loaded = await client.loadModel({
+    model_id: "qwen3.6-27b",
+    model_path: "/models/qwen3.6-27b",
+    load_policy: "availability_first",
+    load_mode: "add",
+  });
+  await client.step(loaded.model_id);
+  await client.unloadModel({ model_id: loaded.model_id });
+
   for await (const event of client.streamGenerate(generateRequest)) {
     const typedEvent: PreviewGenerateStreamEvent = event;
     if (

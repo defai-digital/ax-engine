@@ -106,6 +106,16 @@ fn generation_service_status(error: GenerationServiceError) -> Status {
     }
 }
 
+fn grpc_model(state: &AppState, requested: &str) -> Result<crate::app_state::LiveState, Status> {
+    let requested = (!requested.is_empty()).then_some(requested);
+    state.snapshot_for_model(requested).ok_or_else(|| {
+        Status::not_found(format!(
+            "requested model is not loaded; loaded models: {}",
+            state.model_ids().join(", ")
+        ))
+    })
+}
+
 // ─── Service implementation ───────────────────────────────────────────────────
 
 #[tonic::async_trait]
@@ -131,14 +141,17 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         _request: Request<proto::ModelsRequest>,
     ) -> Result<Response<proto::ModelsResponse>, Status> {
-        let live = self.state.snapshot();
+        let lives = self.state.snapshots();
         Ok(Response::new(proto::ModelsResponse {
             object: "list".to_string(),
-            data: vec![proto::ModelCard {
-                id: live.model_id.to_string(),
-                object: "model".to_string(),
-                owned_by: MODEL_OWNER.to_string(),
-            }],
+            data: lives
+                .iter()
+                .map(|live| proto::ModelCard {
+                    id: live.model_id.to_string(),
+                    object: "model".to_string(),
+                    owned_by: MODEL_OWNER.to_string(),
+                })
+                .collect(),
         }))
     }
 
@@ -148,8 +161,9 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::GenerateRequest>,
     ) -> Result<Response<proto::GenerateResponse>, Status> {
-        let live = self.state.snapshot();
-        let req = proto_to_generate_request(&live, request.into_inner())?;
+        let request = request.into_inner();
+        let live = grpc_model(&self.state, &request.model)?;
+        let req = proto_to_generate_request(&live, request)?;
         let request_id = self.state.allocate_request_id();
         let mut response = run_grpc_generate_request(&self.state, &live, request_id, req).await?;
         // Decode native MLX tokens so unary Generate returns text (HTTP parity).
@@ -166,8 +180,9 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::GenerateRequest>,
     ) -> Result<Response<Self::StreamGenerateStream>, Status> {
-        let live = self.state.snapshot();
-        let req = proto_to_generate_request(&live, request.into_inner())?;
+        let request = request.into_inner();
+        let live = grpc_model(&self.state, &request.model)?;
+        let req = proto_to_generate_request(&live, request)?;
         let stream = build_grpc_stream_state(&self.state, &live, req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
         spawn_grpc_generate_stream(tx, stream).map_err(generation_service_status)?;
@@ -180,8 +195,8 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::ChatCompletionRequest>,
     ) -> Result<Response<proto::ChatCompletionResponse>, Status> {
-        let live = self.state.snapshot();
         let req = request.into_inner();
+        let live = grpc_model(&self.state, &req.model)?;
         let generate_req = build_chat_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
         let mut r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
@@ -219,8 +234,8 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::ChatCompletionRequest>,
     ) -> Result<Response<Self::StreamChatCompletionStream>, Status> {
-        let live = self.state.snapshot();
         let req = request.into_inner();
+        let live = grpc_model(&self.state, &req.model)?;
         let model_id = live.model_id.to_string();
         let generate_req = build_chat_generate_request(&live, &req)?;
         let tokenizer = native_grpc_stream_tokenizer(&live)?;
@@ -237,8 +252,8 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::CompletionRequest>,
     ) -> Result<Response<proto::CompletionResponse>, Status> {
-        let live = self.state.snapshot();
         let req = request.into_inner();
+        let live = grpc_model(&self.state, &req.model)?;
         let generate_req = build_completion_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
         let mut r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
@@ -272,8 +287,8 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::CompletionRequest>,
     ) -> Result<Response<Self::StreamCompletionStream>, Status> {
-        let live = self.state.snapshot();
         let req = request.into_inner();
+        let live = grpc_model(&self.state, &req.model)?;
         let model_id = live.model_id.to_string();
         let generate_req = build_completion_generate_request(&live, &req)?;
         let tokenizer = native_grpc_stream_tokenizer(&live)?;
@@ -290,8 +305,8 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::EmbeddingsRequest>,
     ) -> Result<Response<proto::EmbeddingsResponse>, Status> {
-        let live = self.state.snapshot();
         let req = request.into_inner();
+        let live = grpc_model(&self.state, &req.model)?;
         let model_id = live.model_id.to_string();
         let pooling = match req.pooling.as_str() {
             "mean" => EmbeddingPooling::Mean,

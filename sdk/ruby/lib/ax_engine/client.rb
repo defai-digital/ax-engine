@@ -60,8 +60,9 @@ module AxEngine
     end
 
     # POST /v1/step
-    def step
-      post("/v1/step", {})
+    def step(model: nil)
+      path = model.nil? ? "/v1/step" : "/v1/step?model=#{URI.encode_www_form_component(model)}"
+      post(path, {})
     end
 
     # POST /v1/completions  (OpenAI-compat text completion)
@@ -80,9 +81,14 @@ module AxEngine
     end
 
     # POST /v1/model/load — hot-swap the running model without server restart.
-    # request: { model_id:, model_path: }
+    # request: { model_id:, model_path:, load_policy: nil, load_mode: nil }
     def load_model(request = nil, **kwargs)
       post("/v1/model/load", request_body(request, kwargs))
+    end
+
+    # POST /v1/model/unload — remove a retained model.
+    def unload_model(request = nil, **kwargs)
+      post("/v1/model/unload", request_body(request, kwargs))
     end
 
     # Stream POST /v1/generate/stream  — yields SSE event hashes.

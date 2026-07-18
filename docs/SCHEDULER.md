@@ -30,8 +30,9 @@ states are filtered out before `plan()` is called.
 
 ```text
 1. Filter: keep only Runnable snapshots
-2. Filter: keep only snapshots whose model_id matches the first request
-           (multi-model batches are not supported; extras are deferred)
+2. Choose one model anchor by rotating first-arrival model order with `step_id`;
+   keep only matching snapshots (multi-model batches remain unsupported and
+   extras are deferred for this step)
 3. Classify each request as Prefill or Decode
 4. Sort by (execution_mode_priority, arrival_sequence, request_id)
            Decode = priority 0, Prefill = priority 1

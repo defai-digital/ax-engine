@@ -7,7 +7,7 @@ use crate::app_state::AppState;
 
 pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Response {
     let metrics = state.metrics.as_ref();
-    let live = state.snapshot();
+    let lives = state.snapshots();
     let mut body = String::new();
 
     append_counter(
@@ -73,32 +73,47 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
     append_gauge(
         &mut body,
         "ax_engine_generation_jobs_pending",
-        "Commands and active streams owned by the current model generation worker.",
-        live.generation_service.pending_jobs() as u64,
+        "Commands and active streams owned by loaded model generation workers.",
+        lives
+            .iter()
+            .map(|live| live.generation_service.pending_jobs() as u64)
+            .sum(),
     );
     append_gauge(
         &mut body,
         "ax_engine_generation_commands_queued",
-        "Commands waiting in the current model generation's bounded worker queue.",
-        live.generation_service.queued_commands() as u64,
+        "Commands waiting in loaded model generation workers' bounded queues.",
+        lives
+            .iter()
+            .map(|live| live.generation_service.queued_commands() as u64)
+            .sum(),
     );
     append_gauge(
         &mut body,
         "ax_engine_generation_command_queue_capacity",
-        "Maximum commands that can wait in the current model generation worker queue.",
-        live.generation_service.command_queue_capacity() as u64,
+        "Combined queue capacity of loaded model generation workers.",
+        lives
+            .iter()
+            .map(|live| live.generation_service.command_queue_capacity() as u64)
+            .sum(),
     );
     append_gauge(
         &mut body,
         "ax_engine_generation_active_streams",
-        "Native streams owned by the current model generation worker.",
-        live.generation_service.active_streams() as u64,
+        "Native streams owned by loaded model generation workers.",
+        lives
+            .iter()
+            .map(|live| live.generation_service.active_streams() as u64)
+            .sum(),
     );
     append_gauge(
         &mut body,
         "ax_engine_generation_buffered_stream_events",
-        "Current model generation events buffered behind backpressured consumers.",
-        live.generation_service.buffered_stream_events() as u64,
+        "Loaded model generation events buffered behind backpressured consumers.",
+        lives
+            .iter()
+            .map(|live| live.generation_service.buffered_stream_events() as u64)
+            .sum(),
     );
     append_counter(
         &mut body,
@@ -119,8 +134,8 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
     append_gauge(
         &mut body,
         "ax_engine_generation_worker_ready",
-        "Whether the current model generation worker can accept commands.",
-        u64::from(live.generation_service.is_ready()),
+        "Whether every loaded model generation worker can accept commands.",
+        u64::from(!lives.is_empty() && lives.iter().all(|live| live.generation_service.is_ready())),
     );
 
     // Engine-step gauges come from the snapshot cached by the generation worker;

@@ -219,12 +219,25 @@ export interface OpenAiEmbeddingResponse {
 export interface LoadModelRequest {
   model_id: string;
   model_path: string;
+  load_policy?: "availability_first" | "memory_constrained";
+  load_mode?: "replace" | "add";
 }
 
 export interface LoadModelResponse {
   model_id: string;
   state: "loaded" | string;
   context_length: number;
+  load_policy: "availability_first" | "memory_constrained";
+  load_mode: "replace" | "add";
+}
+
+export interface UnloadModelRequest {
+  model_id: string;
+}
+
+export interface UnloadModelResponse {
+  model_id: string;
+  state: "unloaded" | string;
 }
 
 export interface StreamEvent<T = unknown> {
@@ -529,11 +542,12 @@ export class AxEngineClient {
   submit(request: PreviewGenerateRequest): Promise<RequestReport>;
   requestSnapshot(requestId: number | string): Promise<RequestReport>;
   cancel(requestId: number | string): Promise<RequestReport>;
-  step(): Promise<StepReport>;
+  step(model?: string): Promise<StepReport>;
   completion(request: OpenAiCompletionRequest): Promise<OpenAiCompletionResponse>;
   chatCompletion(request: OpenAiChatCompletionRequest): Promise<OpenAiChatCompletionResponse>;
   embeddings(request: OpenAiEmbeddingRequest): Promise<OpenAiEmbeddingResponse>;
   loadModel(request: LoadModelRequest): Promise<LoadModelResponse>;
+  unloadModel(request: UnloadModelRequest): Promise<UnloadModelResponse>;
   streamGenerate(
     request: PreviewGenerateRequest,
   ): AsyncGenerator<PreviewGenerateStreamEvent, void, void>;

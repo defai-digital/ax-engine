@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use crate::app_state::{AppState, build_replacement_live_state};
+use crate::app_state::{AppState, build_live_state, build_replacement_live_state};
 use crate::errors::{ErrorResponse, error_response, map_generation_service_error};
 use crate::generation::service::{GenerationServiceError, NativeGenerationService};
 
@@ -22,6 +22,10 @@ pub(crate) struct LoadModelRequest {
     pub model_path: String,
     #[serde(default)]
     pub load_policy: LoadModelPolicy,
+    /// `replace` preserves the historical hot-swap behavior. `add` retains
+    /// existing models and publishes this model into the process registry.
+    #[serde(default)]
+    pub load_mode: LoadModelMode,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -32,12 +36,32 @@ pub(crate) enum LoadModelPolicy {
     MemoryConstrained,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LoadModelMode {
+    #[default]
+    Replace,
+    Add,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct LoadModelResponse {
     pub model_id: String,
     pub state: &'static str,
     pub context_length: u32,
     pub load_policy: LoadModelPolicy,
+    pub load_mode: LoadModelMode,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct UnloadModelRequest {
+    pub model_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct UnloadModelResponse {
+    pub model_id: String,
+    pub state: &'static str,
 }
 
 pub(crate) async fn load_model(
@@ -77,7 +101,17 @@ pub(crate) async fn load_model(
 
     let model_id = request.model_id.clone();
     let load_policy = request.load_policy;
-    let generation_service = state.snapshot().generation_service;
+    let load_mode = request.load_mode;
+
+    if load_mode == LoadModelMode::Add && load_policy == LoadModelPolicy::MemoryConstrained {
+        state.loading.store(false, Ordering::Release);
+        return Err(error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_request",
+            "load_mode=add retains existing models and is incompatible with load_policy=memory_constrained"
+                .to_string(),
+        ));
+    }
 
     // Run load + swap in a detached task: axum drops handler futures when the
     // client disconnects, and the load must still complete (or fail) and clear
@@ -86,7 +120,7 @@ pub(crate) async fn load_model(
     let load_task = tokio::spawn(async move {
         let _drain_guard = drain_guard;
         let _loading_guard = LoadingFlagGuard(state_clone.clone());
-        ensure_no_active_stepwise(&generation_service).await?;
+        ensure_no_active_stepwise_for_all(&state_clone).await?;
         // Clone the current config and swap in the new model artifacts dir.
         // Only MLX-native consumes this field; delegated backends would keep
         // serving the old model under a new identifier.
@@ -103,11 +137,26 @@ pub(crate) async fn load_model(
                 "model load is only supported on the MLX-native backend".to_string(),
             ));
         }
+        if load_mode == LoadModelMode::Replace
+            && live.model_id.as_ref() != &model_id
+            && state_clone.snapshot_for_model(Some(&model_id)).is_some()
+        {
+            return Err(error_response(
+                StatusCode::CONFLICT,
+                "model_already_loaded",
+                format!(
+                    "model {model_id} is already loaded; unload it before replacing the default model with the same id"
+                ),
+            ));
+        }
+        if load_mode == LoadModelMode::Add {
+            validate_multi_model_target(&model_id, &model_path)?;
+        }
         let new_config =
             Arc::unwrap_or_clone(live.session_config).with_mlx_model_artifacts_dir(model_path);
-        wait_for_idle_without_stepwise(&state_clone, &generation_service).await?;
+        wait_for_idle_without_stepwise(&state_clone).await?;
         if load_policy == LoadModelPolicy::MemoryConstrained {
-            generation_service
+            live.generation_service
                 .shutdown()
                 .await
                 .map_err(map_generation_service_error)?;
@@ -116,22 +165,29 @@ pub(crate) async fn load_model(
         // Start the replacement from the blocking pool and wait for readiness there.
         // The service constructs the session on its dedicated owner worker; weight
         // loading can take tens of seconds and must not stall the async runtime.
-        let result =
-            tokio::task::spawn_blocking(move || build_replacement_live_state(model_id, new_config))
-                .await;
+        let result = tokio::task::spawn_blocking(move || match load_mode {
+            LoadModelMode::Replace => build_replacement_live_state(model_id, new_config),
+            LoadModelMode::Add => build_live_state(model_id, new_config),
+        })
+        .await;
         match result {
             Ok(Ok(live)) => {
                 let ctx_len = crate::metadata::context_length(&live);
-                let previous = state_clone.swap_live(live);
-                previous.retire().await.map_err(|error| {
-                    error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "server_error",
-                        format!(
-                            "new model loaded but previous generation failed to retire: {error}"
-                        ),
-                    )
-                })?;
+                let previous = match load_mode {
+                    LoadModelMode::Replace => Some(state_clone.swap_live(live)),
+                    LoadModelMode::Add => state_clone.publish_live(live, true),
+                };
+                if let Some(previous) = previous {
+                    previous.retire().await.map_err(|error| {
+                        error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "server_error",
+                            format!(
+                                "new model loaded but previous generation failed to retire: {error}"
+                            ),
+                        )
+                    })?;
+                }
                 Ok(ctx_len)
             }
             Ok(Err(e)) => Err(error_response(
@@ -153,6 +209,7 @@ pub(crate) async fn load_model(
             state: "loaded",
             context_length: ctx_len,
             load_policy,
+            load_mode,
         })),
         Ok(Err(e)) => Err(e),
         Err(e) => Err(error_response(
@@ -163,12 +220,71 @@ pub(crate) async fn load_model(
     }
 }
 
-async fn wait_for_idle_without_stepwise(
-    state: &AppState,
-    generation_service: &NativeGenerationService,
-) -> Result<(), HttpErrorResponse> {
+pub(crate) async fn unload_model(
+    State(state): State<AppState>,
+    Json(request): Json<UnloadModelRequest>,
+) -> Result<Json<UnloadModelResponse>, HttpErrorResponse> {
+    let model_id = request.model_id.trim().to_string();
+    if model_id.is_empty() {
+        return Err(error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_request",
+            "model_id must not be empty".to_string(),
+        ));
+    }
+    if state
+        .loading
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(error_response(
+            StatusCode::CONFLICT,
+            "model_loading",
+            "a model load or unload is already in progress".to_string(),
+        ));
+    }
+    let drain_guard = state.admission.begin_drain();
+    let state_clone = state.clone();
+    let unload_model_id = model_id.clone();
+    let task = tokio::spawn(async move {
+        let _drain_guard = drain_guard;
+        let _loading_guard = LoadingFlagGuard(state_clone.clone());
+        ensure_no_active_stepwise_for_all(&state_clone).await?;
+        wait_for_idle_without_stepwise(&state_clone).await?;
+        let live = state_clone
+            .remove_live(&unload_model_id)
+            .map_err(|reason| match reason {
+                "last_model" => error_response(
+                    StatusCode::CONFLICT,
+                    "last_model",
+                    "cannot unload the last model; load another model first".to_string(),
+                ),
+                _ => error_response(
+                    StatusCode::BAD_REQUEST,
+                    "model_not_found",
+                    format!("model {unload_model_id} is not loaded"),
+                ),
+            })?;
+        live.retire().await.map_err(map_generation_service_error)
+    });
+
+    match task.await {
+        Ok(Ok(())) => Ok(Json(UnloadModelResponse {
+            model_id,
+            state: "unloaded",
+        })),
+        Ok(Err(error)) => Err(error),
+        Err(error) => Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            format!("unload task panicked: {error}"),
+        )),
+    }
+}
+
+async fn wait_for_idle_without_stepwise(state: &AppState) -> Result<(), HttpErrorResponse> {
     loop {
-        ensure_no_active_stepwise(generation_service).await?;
+        ensure_no_active_stepwise_for_all(state).await?;
         if state.admission.active_jobs() == 0 {
             return Ok(());
         }
@@ -178,6 +294,67 @@ async fn wait_for_idle_without_stepwise(
         {
             return Ok(());
         }
+    }
+}
+
+async fn ensure_no_active_stepwise_for_all(state: &AppState) -> Result<(), HttpErrorResponse> {
+    for live in state.snapshots() {
+        ensure_no_active_stepwise(&live.generation_service).await?;
+    }
+    Ok(())
+}
+
+fn validate_multi_model_target(
+    model_id: &str,
+    model_path: &std::path::Path,
+) -> Result<(), HttpErrorResponse> {
+    let inferred = crate::args::infer_model_id_from_artifacts(model_path).map_err(|message| {
+        error_response(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request", message)
+    })?;
+    let requested_target = multi_model_target_key(model_id);
+    let inferred_target = inferred.as_deref().and_then(multi_model_target_key);
+    if requested_target.is_some()
+        && inferred
+            .as_deref()
+            .is_none_or(|_| inferred_target == requested_target)
+    {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "unsupported_model",
+        format!(
+            "multi-model loading is limited to Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B; requested model_id={model_id}, inferred_artifact_model={}",
+            inferred.as_deref().unwrap_or("unknown")
+        ),
+    ))
+}
+
+#[cfg(test)]
+fn is_supported_multi_model_id(model_id: &str) -> bool {
+    multi_model_target_key(model_id).is_some()
+}
+
+fn multi_model_target_key(model_id: &str) -> Option<&'static str> {
+    let normalized = model_id
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>();
+    let qwen36 = normalized.contains("qwen3-6") || normalized.contains("qwen36");
+    let gemma4 = normalized.contains("gemma-4") || normalized.contains("gemma4");
+    if qwen36 && normalized.contains("35b") {
+        Some("qwen3.6-35b")
+    } else if qwen36 && normalized.contains("27b") {
+        Some("qwen3.6-27b")
+    } else if gemma4 && normalized.contains("12b") {
+        Some("gemma-4-12b")
+    } else if gemma4 && normalized.contains("26b") {
+        Some("gemma-4-26b")
+    } else if gemma4 && normalized.contains("31b") {
+        Some("gemma-4-31b")
+    } else {
+        None
     }
 }
 
@@ -285,8 +462,30 @@ mod tests {
         ensure_no_active_stepwise(&generation_service)
             .await
             .expect("a stopped worker has no live stepwise state");
-        wait_for_idle_without_stepwise(&state, &generation_service)
+        wait_for_idle_without_stepwise(&state)
             .await
             .expect("recovery load should proceed after the worker stopped");
+    }
+
+    #[test]
+    fn multi_model_target_allowlist_is_exact_to_product_scope() {
+        for model_id in [
+            "qwen3.6-35b-a3b",
+            "mlx-community/Qwen3.6-27B-6bit",
+            "gemma-4-12b-it",
+            "gemma-4-26b-a4b-it",
+            "gemma-4-31b-it",
+        ] {
+            assert!(is_supported_multi_model_id(model_id), "{model_id}");
+        }
+        for model_id in [
+            "qwen3.5-9b",
+            "qwen3-coder-next",
+            "gemma-4-e2b-it",
+            "gemma-4-e4b-it",
+            "llama3.3-70b",
+        ] {
+            assert!(!is_supported_multi_model_id(model_id), "{model_id}");
+        }
     }
 }

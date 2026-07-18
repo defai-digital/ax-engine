@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -15,9 +16,7 @@ use crate::generation::service::{
 use crate::generation::streaming::StreamDeadlines;
 use crate::rate_limit::RateLimitConfig;
 
-/// All state that changes atomically when a new model is loaded.
-/// Wrapped behind `Arc<RwLock<>>` in `AppState`; handlers bind admission to
-/// `generation` so a stale snapshot cannot submit work after a replacement.
+/// All state owned by one loaded model.
 #[derive(Clone)]
 pub(crate) struct LiveState {
     pub(crate) generation: u64,
@@ -27,6 +26,14 @@ pub(crate) struct LiveState {
     pub(crate) runtime_report: RuntimeReport,
     pub(crate) generation_service: Arc<NativeGenerationService>,
     pub(crate) embedding_batcher: Arc<EmbeddingMicroBatcher>,
+}
+
+/// Process-local model registry. One model remains the default for requests
+/// that omit `model`; callers that provide a model id are routed to the
+/// matching independently-owned generation service.
+pub(crate) struct LiveModelRegistry {
+    default_model_id: String,
+    models: BTreeMap<String, LiveState>,
 }
 
 /// Metadata published on `GET /v1/discovery` and mDNS TXT (no secrets).
@@ -39,8 +46,8 @@ pub(crate) struct DiscoveryMeta {
 
 #[derive(Clone)]
 pub(crate) struct AppState {
-    /// Swappable model state — take a snapshot at the start of each handler.
-    pub(crate) live: Arc<parking_lot::RwLock<LiveState>>,
+    /// Loaded model states — take a snapshot at the start of each handler.
+    pub(crate) live: Arc<parking_lot::RwLock<LiveModelRegistry>>,
     pub(crate) api_key: Option<Arc<String>>,
     pub(crate) metrics: Arc<ServerMetrics>,
     /// Set to true while a model load is in progress; prevents concurrent loads.
@@ -57,8 +64,14 @@ impl AppState {
         live.generation = 1;
         let metrics = Arc::new(ServerMetrics::default());
         attach_generation_metrics(&live, &metrics);
+        let default_model_id = live.model_id.as_ref().clone();
+        let mut models = BTreeMap::new();
+        models.insert(default_model_id.clone(), live);
         Self {
-            live: Arc::new(parking_lot::RwLock::new(live)),
+            live: Arc::new(parking_lot::RwLock::new(LiveModelRegistry {
+                default_model_id,
+                models,
+            })),
             api_key: None,
             metrics,
             loading: Arc::new(AtomicBool::new(false)),
@@ -73,7 +86,64 @@ impl AppState {
     /// Clone all live-model fields atomically. The read lock is held only for
     /// the duration of the Arc clones — never across an await point.
     pub(crate) fn snapshot(&self) -> LiveState {
-        self.live.read().clone()
+        let registry = self.live.read();
+        registry.models[&registry.default_model_id].clone()
+    }
+
+    /// Resolve an explicitly requested model, or the default model when the
+    /// request omits `model`.
+    pub(crate) fn snapshot_for_model(&self, model_id: Option<&str>) -> Option<LiveState> {
+        let registry = self.live.read();
+        let model_id = model_id.unwrap_or(&registry.default_model_id);
+        registry.models.get(model_id).cloned()
+    }
+
+    /// Snapshot every loaded model in stable id order.
+    pub(crate) fn snapshots(&self) -> Vec<LiveState> {
+        self.live.read().models.values().cloned().collect()
+    }
+
+    pub(crate) fn model_ids(&self) -> Vec<String> {
+        self.live.read().models.keys().cloned().collect()
+    }
+
+    /// Remove a loaded model. The last model cannot be removed because every
+    /// request that omits `model` must continue to resolve deterministically.
+    pub(crate) fn remove_live(&self, model_id: &str) -> Result<LiveState, &'static str> {
+        let mut registry = self.live.write();
+        if !registry.models.contains_key(model_id) {
+            return Err("model_not_found");
+        }
+        if registry.models.len() == 1 {
+            return Err("last_model");
+        }
+        let next_default = if registry.default_model_id == model_id {
+            registry
+                .models
+                .keys()
+                .find(|key| key.as_str() != model_id)
+                .cloned()
+                .ok_or("last_model")?
+        } else {
+            registry.default_model_id.clone()
+        };
+        let removed = registry.models.remove(model_id).ok_or("model_not_found")?;
+        registry.default_model_id = next_default;
+        Ok(removed)
+    }
+
+    /// Add or replace a named model while retaining every other loaded model.
+    /// The published model becomes the default when `make_default` is true.
+    pub(crate) fn publish_live(&self, mut new: LiveState, make_default: bool) -> Option<LiveState> {
+        new.generation = self.next_live_generation.fetch_add(1, Ordering::AcqRel);
+        attach_generation_metrics(&new, &self.metrics);
+        let model_id = new.model_id.as_ref().clone();
+        let mut registry = self.live.write();
+        let previous = registry.models.insert(model_id.clone(), new);
+        if make_default {
+            registry.default_model_id = model_id;
+        }
+        previous
     }
 
     /// Replace the live model state. Called by the load endpoint after
@@ -81,7 +151,14 @@ impl AppState {
     pub(crate) fn swap_live(&self, mut new: LiveState) -> LiveState {
         new.generation = self.next_live_generation.fetch_add(1, Ordering::AcqRel);
         attach_generation_metrics(&new, &self.metrics);
-        std::mem::replace(&mut *self.live.write(), new)
+        let new_model_id = new.model_id.as_ref().clone();
+        let mut registry = self.live.write();
+        let old_model_id = registry.default_model_id.clone();
+        let previous = registry.models[&old_model_id].clone();
+        registry.models.remove(&old_model_id);
+        registry.models.insert(new_model_id.clone(), new);
+        registry.default_model_id = new_model_id;
+        previous
     }
 
     pub(crate) fn try_admit(
@@ -89,7 +166,13 @@ impl AppState {
         live: &LiveState,
     ) -> Result<AdmissionPermit, crate::admission::AdmissionError> {
         let permit = self.admission.try_admit()?;
-        if self.live.read().generation != live.generation {
+        let current_generation = self
+            .live
+            .read()
+            .models
+            .get(live.model_id.as_ref())
+            .map(|current| current.generation);
+        if current_generation != Some(live.generation) {
             drop(permit);
             return Err(crate::admission::AdmissionError::StaleGeneration);
         }
@@ -418,6 +501,34 @@ mod tests {
         assert_eq!(live.model_id.as_ref().as_str(), "second");
         assert_eq!(live.generation, 2);
         assert!(!previous_service.is_ready());
+    }
+
+    #[tokio::test]
+    async fn registry_routes_explicit_models_and_unloads_safely() {
+        let state = test_state("first");
+        let first = state.snapshot();
+        let second = build_live_state("second".to_string(), first.session_config.as_ref().clone())
+            .expect("second model state should build");
+
+        assert!(state.publish_live(second, true).is_none());
+        assert_eq!(state.snapshot().model_id.as_ref(), "second");
+        assert_eq!(
+            state
+                .snapshot_for_model(Some("first"))
+                .expect("first model remains loaded")
+                .model_id
+                .as_ref(),
+            "first"
+        );
+        assert_eq!(state.model_ids(), vec!["first", "second"]);
+
+        let removed = state.remove_live("second").expect("second model unloads");
+        assert_eq!(state.snapshot().model_id.as_ref(), "first");
+        assert!(matches!(state.remove_live("first"), Err("last_model")));
+        removed
+            .retire()
+            .await
+            .expect("removed generation worker should retire");
     }
 
     #[tokio::test]

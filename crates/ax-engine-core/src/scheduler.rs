@@ -367,7 +367,18 @@ impl Scheduler {
             };
         }
 
-        let batch_model_id = runnable[0].model_id.clone();
+        // Multi-model batches remain invalid, but rotate the model anchor by
+        // step so a long-running request from the oldest model cannot starve
+        // every other model indefinitely. Model order is first-arrival order,
+        // making the choice deterministic for a given SchedulerInput.
+        let mut runnable_models = Vec::new();
+        for snapshot in &runnable {
+            if !runnable_models.contains(&snapshot.model_id) {
+                runnable_models.push(snapshot.model_id.clone());
+            }
+        }
+        let model_index = input.step_id.0 as usize % runnable_models.len();
+        let batch_model_id = runnable_models[model_index].clone();
         let mut remaining_budget = input.global_token_budget;
         let mut selected_requests = Vec::new();
         let mut deferred_requests = Vec::new();
@@ -1661,6 +1672,28 @@ mod tests {
         let batch = schedule_plan.execution_batch.unwrap();
         assert_eq!(batch.model_id, "qwen3");
         assert_eq!(batch.items.len(), 2);
+    }
+
+    #[test]
+    fn rotates_model_anchor_across_steps_to_prevent_starvation() {
+        let scheduler = Scheduler::new();
+        let snapshots = vec![
+            make_snapshot(1, 1, "qwen3", &[10, 11], 0, &[], 16),
+            make_snapshot(2, 2, "gemma", &[20, 21], 0, &[], 16),
+            make_snapshot(3, 3, "qwen3", &[30, 31], 0, &[], 16),
+        ];
+
+        let first = scheduler.plan(&SchedulerInput::new(
+            StepId(22),
+            snapshots.clone(),
+            None,
+            16,
+        ));
+        let second = scheduler.plan(&SchedulerInput::new(StepId(23), snapshots, None, 16));
+
+        assert_eq!(first.execution_batch.unwrap().model_id, "qwen3");
+        assert_eq!(second.execution_batch.unwrap().model_id, "gemma");
+        assert_eq!(second.selected_requests, vec![RequestId(2)]);
     }
 
     #[test]

@@ -233,7 +233,7 @@ Current direct-support LLM families:
 
 | Family | Direct model IDs | Current scope | Notes |
 | --- | --- | --- | --- |
-| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters; processed/token-aligned Gemma4 unified media tensors on native generate and OpenAI token-array routes when the manifest contains unified media roles | Dense, unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention; K=V full-attention layers; logit softcapping |
+| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters; processed/token-aligned Gemma4 unified image/audio tensors on server routes when the manifest contains the required media roles | Dense, unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention; K=V full-attention layers; logit softcapping |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` / `qwen3.5-9b` preset | Repo-owned MLX runtime; MLX affine 4-bit weights | GatedDeltaNet linear attention + dense SwiGLU FFN; `attn_output_gate` per-head interleaving |
 | Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
@@ -366,10 +366,10 @@ into AX-owned support claims.
 | You want AX-owned performance and token/KV behavior for a listed family | Direct support | AX owns the MLX graph and runtime policy |
 | You have an MLX text model that `mlx-lm` already serves but AX does not own | `mlx_lm_delegated` | Keeps AX API surfaces while upstream runs the model |
 | You have GGUF weights or a non-MLX local model | `llama_cpp` | llama.cpp is the delegated local inference route |
-| You have Gemma4 unified image/audio/video inputs already preprocessed into AX's validated `multimodal_inputs.gemma4_unified` tensor contract | Direct support | Native MLX can consume processed media tensors without raw media decoding in the hot path; OpenAI-shaped routes require pre-tokenized prompt tokens for span alignment |
-| You need client-side preprocessing for image URLs/data URIs, WAV audio URLs/data URIs, OpenAI-style `input_audio` WAV base64, or decoded video frames | Direct support through the Python helper | The helper prepares the processed tensor contract before the request reaches the optimized runtime |
-| You need server-side raw OpenAI media content-part decoding on native Gemma4 unified chat | Direct support when documented for that format | Inline PNG/JPEG, WAV/MP3, GIF, and FFmpeg-backed MP4/WebM are decoded into AX's processed tensor contract before the optimized runtime |
-| You need multimodal input on delegated routes, remote media URL fetching, or encoded video decoding without `ffmpeg` | Unsupported unless explicitly documented elsewhere | Delegated routes are text-first, remote fetching is intentionally disabled, and MP4/WebM codec decode is outside MLX tensor kernels |
+| You have Gemma4 unified image/audio inputs already preprocessed into AX's validated `multimodal_inputs.gemma4_unified` tensor contract | Direct support | Native MLX can consume processed media tensors without raw media decoding in the hot path; OpenAI-shaped routes require pre-tokenized prompt tokens for span alignment |
+| You need client-side preprocessing for image URLs/data URIs, WAV audio URLs/data URIs, or OpenAI-style `input_audio` WAV base64 | Direct support through the Python helper | The helper prepares the processed tensor contract before the request reaches the optimized runtime |
+| You need server-side raw OpenAI media content-part decoding on native Gemma4 unified chat | Direct support for image/audio | Inline PNG/JPEG and WAV/MP3 are decoded into AX's processed tensor contract before the optimized runtime |
+| You need multimodal input on delegated routes, remote media URL fetching, or video | Unsupported | Delegated routes are text-first, remote fetching is intentionally disabled, and the public server profile is text/image/audio only |
 
 ## Evidence Rules
 

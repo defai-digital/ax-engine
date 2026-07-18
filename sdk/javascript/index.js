@@ -172,8 +172,11 @@ export class AxEngineClient {
     });
   }
 
-  async step() {
-    return this.#requestJson("/v1/step", { method: "POST" });
+  async step(model) {
+    const path = model === undefined
+      ? "/v1/step"
+      : `/v1/step?model=${encodeURIComponent(model)}`;
+    return this.#requestJson(path, { method: "POST" });
   }
 
   async completion(request) {
@@ -199,6 +202,13 @@ export class AxEngineClient {
 
   async loadModel(request) {
     return this.#requestJson("/v1/model/load", {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  async unloadModel(request) {
+    return this.#requestJson("/v1/model/unload", {
       method: "POST",
       body: request,
     });

@@ -72,8 +72,17 @@ public final class AxEngineClient: @unchecked Sendable {
     }
 
     /// POST /v1/step — advance the scheduler by one step.
-    public func step() async throws -> StepReport {
-        try await post("/v1/step", body: Empty())
+    public func step(model: String? = nil) async throws -> StepReport {
+        let path: String
+        if let model {
+            var components = URLComponents()
+            components.path = "/v1/step"
+            components.queryItems = [URLQueryItem(name: "model", value: model)]
+            path = components.string ?? "/v1/step"
+        } else {
+            path = "/v1/step"
+        }
+        return try await post(path, body: Empty())
     }
 
     // MARK: - OpenAI-compatible
@@ -96,6 +105,11 @@ public final class AxEngineClient: @unchecked Sendable {
     /// POST /v1/model/load — hot-swap the running model without server restart.
     public func loadModel(_ request: LoadModelRequest) async throws -> LoadModelResponse {
         try await post("/v1/model/load", body: request)
+    }
+
+    /// POST /v1/model/unload — remove a retained model from the running server.
+    public func unloadModel(_ request: UnloadModelRequest) async throws -> UnloadModelResponse {
+        try await post("/v1/model/unload", body: request)
     }
 
     // MARK: - Streaming

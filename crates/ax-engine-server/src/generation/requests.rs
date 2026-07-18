@@ -1,7 +1,10 @@
 use ax_engine_sdk::{GenerateRequest, GenerateSampling, RequestMultimodalInputs};
+use axum::Json;
+use axum::http::StatusCode;
 use serde::Deserialize;
 
 use crate::app_state::LiveState;
+use crate::errors::{ErrorResponse, error_response};
 use crate::openai::requests::{GenerateRequestParts, build_generate_request_internal};
 
 #[derive(Debug, Deserialize)]
@@ -20,6 +23,24 @@ pub(crate) struct GenerateHttpRequest {
     multimodal_inputs: RequestMultimodalInputs,
     #[serde(default)]
     metadata: Option<String>,
+}
+
+impl GenerateHttpRequest {
+    pub(crate) fn reject_video_inputs(&self) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+        let has_video = self
+            .multimodal_inputs
+            .gemma4_unified
+            .as_ref()
+            .is_some_and(|inputs| !inputs.videos.is_empty());
+        if !has_video {
+            return Ok(());
+        }
+        Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_modality",
+            "video input is not supported; this server accepts text, image, and audio".to_string(),
+        ))
+    }
 }
 
 pub(crate) fn build_generate_request(

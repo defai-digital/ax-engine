@@ -480,10 +480,17 @@ public struct GenerateStreamEvent: Sendable {
 public struct LoadModelRequest: Encodable, Sendable {
     public var modelId: String
     public var modelPath: String
+    public var loadPolicy: String?
+    public var loadMode: String?
 
-    public init(modelId: String, modelPath: String) {
+    public init(
+        modelId: String, modelPath: String,
+        loadPolicy: String? = nil, loadMode: String? = nil
+    ) {
         self.modelId = modelId
         self.modelPath = modelPath
+        self.loadPolicy = loadPolicy
+        self.loadMode = loadMode
     }
 }
 
@@ -491,4 +498,19 @@ public struct LoadModelResponse: Decodable, Sendable {
     public var modelId: String
     public var state: String
     public var contextLength: UInt32
+    public var loadPolicy: String
+    public var loadMode: String
+}
+
+public struct UnloadModelRequest: Encodable, Sendable {
+    public var modelId: String
+
+    public init(modelId: String) {
+        self.modelId = modelId
+    }
+}
+
+public struct UnloadModelResponse: Decodable, Sendable {
+    public var modelId: String
+    public var state: String
 }

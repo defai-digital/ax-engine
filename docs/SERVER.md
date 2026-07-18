@@ -50,6 +50,8 @@ Current preview endpoints:
 - `GET /metrics`
 - `GET /v1/runtime`
 - `GET /v1/models`
+- `POST /v1/model/load`
+- `POST /v1/model/unload`
 - `GET /api/tags`
 - `POST /api/show`
 - `GET /api/ps`
@@ -62,7 +64,7 @@ Current preview endpoints:
 - `POST /v1/requests`
 - `GET /v1/requests/:request_id`
 - `POST /v1/requests/:request_id/cancel`
-- `POST /v1/step`
+- `POST /v1/step` (`?model=<loaded-model-id>` selects a non-default model)
 - `POST /v1/generate/stream`
 - `POST /v1/generate`
 
@@ -218,9 +220,9 @@ than silently dropped.
 
 ## Ollama Surface
 
-AX also exposes a focused Ollama-shaped adapter for the loaded local model:
+AX also exposes a focused Ollama-shaped adapter for loaded local models:
 
-- `GET /api/tags` returns an Ollama-style `models` list containing the current
+- `GET /api/tags` returns an Ollama-style `models` list containing every loaded
   AX model.
 - `POST /api/show`, `GET /api/ps`, and `GET /api/version` provide the
   Ollama-style metadata/readiness probes common clients use before issuing a
@@ -415,14 +417,13 @@ guessing tokenizer or template behavior. Delegated `llama_cpp` and
 `mlx_lm_delegated` routes keep forwarding rendered text to their configured
 upstream backend.
 
-`GET /v1/models` advertises image, audio, and video input only for repo-owned
+`GET /v1/models` advertises image and audio input only for repo-owned
 native MLX sessions whose `model-manifest.json` contains the converted Gemma4
 unified media tensor roles. Two input shapes are accepted on those sessions:
 
 - **Inline media on chat.** `POST /v1/chat/completions` accepts OpenAI-style
-  content parts with base64 `data:` URIs: `image_url` (PNG/JPEG),
-  `input_audio` / `audio_url` (WAV or MP3), and `video_url` (animated GIF, plus
-  MP4/WebM when `ffmpeg` is installed on the server `PATH`). The server decodes
+  content parts with base64 `data:` URIs: `image_url` (PNG/JPEG) and
+  `input_audio` / `audio_url` (WAV or MP3). The server decodes
   and preprocesses media into Gemma4 unified soft-token spans and tensors.
   Remote `http(s)` media URLs are rejected; callers must inline base64 data.
 - **Processed tensors.** OpenAI completions and chat also accept
@@ -438,27 +439,20 @@ Multimodal serving contract limits:
 - **Prompt budget.** Multimodal prefill is atomic: the expanded prompt
   (media soft tokens included) must fit within `--max-batch-tokens`
   (default 2048) in one scheduler step. Over-budget requests fail with an
-  actionable HTTP 400 instead of being scheduled. A maximum-length video
-  (32 frames at ~70 soft tokens per frame plus timestamps, ~2,400+ tokens)
-  needs a raised `--max-batch-tokens`. Under concurrent load a fitting
-  request may wait for a step with enough budget; it is never split.
-- **Token budgets.** Image and video soft-token budgets come from the model's
-  `preprocessor_config.json` (Gemma 4 12B: up to 280 soft tokens per image,
-  70 per video frame); there is no per-request budget or quality override.
+  actionable HTTP 400 instead of being scheduled. Under concurrent load a
+  fitting request may wait for a step with enough budget; it is never split.
+- **Token budgets.** Image soft-token budgets come from the model's
+  `preprocessor_config.json` (Gemma 4 12B: up to 280 soft tokens per image);
+  there is no per-request budget or quality override.
 - **Audio.** WAV and MP3 input is downmixed to mono and resampled to the
   model rate (16 kHz). The container is sniffed from magic bytes, not the
   declared `format` field. Other formats (AAC/OGG/FLAC) are rejected; send
   pre-computed audio tensors via `/v1/generate` instead. Audio longer than
   the model's `audio_seq_length` cap (750 frames × 40 ms = 30 s by default)
   is silently truncated, and MP3 decoding stops at that cap.
-- **Video.** Animated GIF is decoded in-process. MP4/WebM inline input is
-  decoded by `ffmpeg` if that binary is available on the server `PATH`; video
-  container and codec decode is not an MLX tensor-kernel operation. Frames are
-  sampled uniformly to at most 32 frames, each rendered with an `mm:ss`
-  timestamp. During extraction frames are downscaled to at most 1600 px on the
-  longest side and the decoded stream is capped at 512 MiB; a video whose
-  decoded stream exceeds that cap is sampled from the decoded prefix only. If
-  `ffmpeg` is unavailable, send pre-computed video tensors via `/v1/generate`.
+- **Video.** Public server routes reject video with `unsupported_modality`.
+  Lower-level Gemma4 preprocessing primitives remain internal compatibility
+  code, but video is not advertised by `/v1/models`.
 - **Caching.** Prefix caching is disabled for multimodal requests; every
   multimodal prefill recomputes the full prompt with that request's own
   media tensors.
@@ -467,8 +461,8 @@ Multimodal serving contract limits:
   verbatim.
 
 `scripts/qa_gemma4_multimodal.py --strict` runs an end-to-end probe set
-(image color, image description, audio smoke, speech transcription, GIF frame
-count) against a live server and fails on thinking-channel leaks or content
+(image color, image description, audio smoke, speech transcription) against a
+live server and fails on thinking-channel leaks or content
 mismatches.
 
 You can also run the optional Python OpenAI shim with an explicit MLX model
@@ -704,7 +698,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 For native MLX Gemma4 unified models, `/v1/chat/completions` also accepts the
 AX extension `input_tokens` plus processed `multimodal_inputs.gemma4_unified`.
 When `input_tokens` is present, AX validates the message roles and still rejects
-raw image/audio/video content parts, then uses the supplied prompt tokens
+raw image/audio content parts, then uses the supplied prompt tokens
 directly so media spans remain aligned. Delegated chat backends reject both
 `input_tokens` and `multimodal_inputs`.
 
@@ -733,7 +727,7 @@ options match. Tune it with:
 Set `AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH=1` to disable grouping for
 diagnostics.
 
-Submit a request into the shared preview session:
+Submit a request into the selected model's preview session:
 
 ```text
 curl http://127.0.0.1:8080/v1/requests \
@@ -745,10 +739,12 @@ curl http://127.0.0.1:8080/v1/requests \
   }'
 ```
 
-Advance the shared preview session by one engine step:
+Advance the default model's preview session by one engine step, or select a
+loaded model explicitly:
 
 ```text
 curl -X POST http://127.0.0.1:8080/v1/step
+curl -X POST 'http://127.0.0.1:8080/v1/step?model=gemma-4-12b-it'
 ```
 
 Inspect or cancel a submitted request:
@@ -799,12 +795,12 @@ families still execute scheduler batch items individually and must not be
 described as continuous-batching speedups without server-path evidence.
 For native MLX Gemma4 unified models, `/v1/generate` and
 `/v1/generate/stream` also accept preprocessed
-`multimodal_inputs.gemma4_unified` image/audio/video tensors. AX does not
-decode raw image/audio/video URLs or files on this path; callers must run media
+`multimodal_inputs.gemma4_unified` image/audio tensors. AX does not
+decode raw image/audio URLs or files on this path; callers must run media
 loading and processor output generation before sending the native request.
 The Python SDK helper can perform that client-side preprocessing for image
-paths/URLs/data URIs, WAV audio paths/URLs/data URIs, OpenAI-style
-`input_audio` WAV base64 dictionaries, and decoded video frame sequences.
+paths/URLs/data URIs, WAV audio paths/URLs/data URIs, and OpenAI-style
+`input_audio` WAV base64 dictionaries.
 Native MLX OpenAI-compatible completions and chat can also carry processed
 `multimodal_inputs` when the prompt is already tokenized: completions use a
 token-array `prompt`, while chat uses AX's `input_tokens` extension. Text
@@ -824,20 +820,26 @@ Streaming mode emits unnamed SSE `data:` chunks plus `[DONE]` in the familiar
 OpenAI-style envelope instead of AX-specific lifecycle event names.
 OpenAI-shaped completion and chat responses include `system_fingerprint: null`
 because the preview server does not yet publish a stable backend fingerprint.
-The `/v1/requests` and `/v1/step` endpoints instead operate on one shared
-preview session held by the server so they can surface the same request
-lifecycle contract as the SDK.
+The `/v1/requests` endpoint routes by `model`; `/v1/step` advances the default
+model unless its optional `model` query selects another loaded model. Request
+snapshot and cancellation look up the process-unique request ID across all
+loaded sessions, preserving the SDK lifecycle contract.
 The server allocates request ids from one process-local sequence across both
 paths so transport logs and client correlation do not collide when clients mix
 blocking and stepwise APIs.
 
-`POST /v1/model/load` closes native admission before draining the old service.
-It rejects a swap while non-terminal stepwise work exists, waits for generation,
-streaming, and embedding permits to reach zero, clears process-global compiled
-layer closures, builds the replacement session, and only then atomically
-publishes the new `LiveState`. A disconnected load client does not cancel this
-cleanup sequence. Requests arriving during the drain receive HTTP 503 or gRPC
-`UNAVAILABLE` and can retry after the load finishes.
+`POST /v1/model/load` closes native admission before changing the process-local
+model registry. It rejects a change while non-terminal stepwise work exists and
+waits for generation, streaming, and embedding permits to reach zero. A
+disconnected load client does not cancel cleanup. Requests arriving during the
+drain receive HTTP 503 or gRPC `UNAVAILABLE` and can retry after loading.
+
+`load_mode` accepts `replace` (default, historical hot-swap semantics) or `add`.
+`add` retains the existing independently-owned model sessions, makes the new
+model the default for requests that omit `model`, and enables per-request model
+routing. Add mode is limited to Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B. Use
+`POST /v1/model/unload` with `{"model_id":"..."}` to retire a retained model;
+the last loaded model cannot be unloaded.
 The optional `load_policy` request field accepts `availability_first` (the
 default) or `memory_constrained`. Availability-first keeps the drained model
 resident until its replacement is ready, preserving rollback at the cost of a
@@ -847,6 +849,8 @@ intentionally leaves the server unavailable if replacement loading fails.
 Inference remains unavailable in that state, but `/v1/model/load` stays usable
 so an operator can retry with valid artifacts and recover without restarting
 the server process.
+`load_mode=add` is incompatible with `memory_constrained`, because retaining
+existing models necessarily preserves their resident memory.
 The `mlx_lm_delegated` backend supports blocking `/v1/generate` and SSE
 `/v1/generate/stream` through `mlx_lm.server` `/v1/completions`. It also
 supports streamed OpenAI-compatible completion/chat endpoints by forwarding

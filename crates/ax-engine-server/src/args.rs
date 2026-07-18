@@ -6,6 +6,7 @@ mod artifacts;
 mod presets;
 mod session;
 
+pub(crate) use artifacts::infer_model_id_from_artifacts;
 pub use presets::{ServerPreset, render_presets};
 
 pub const API_KEY_ENV: &str = "AX_ENGINE_API_KEY";

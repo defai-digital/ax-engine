@@ -51,6 +51,60 @@ func TestHealthOK(t *testing.T) {
 	})
 }
 
+func TestMultiModelLifecycle(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/step", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("model"); got != "mlx-community/Qwen3.6-27B-6bit" {
+			t.Errorf("model query: got %q", got)
+		}
+		writeJSON(w, StepReport{})
+	})
+	mux.HandleFunc("/v1/model/load", func(w http.ResponseWriter, r *http.Request) {
+		var req LoadModelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		if req.LoadPolicy != "availability_first" || req.LoadMode != "add" {
+			t.Errorf("load controls: got policy=%q mode=%q", req.LoadPolicy, req.LoadMode)
+		}
+		writeJSON(w, LoadModelResponse{
+			ModelID: req.ModelID, State: "loaded", ContextLength: 32768,
+			LoadPolicy: req.LoadPolicy, LoadMode: req.LoadMode,
+		})
+	})
+	mux.HandleFunc("/v1/model/unload", func(w http.ResponseWriter, r *http.Request) {
+		var req UnloadModelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writeJSON(w, UnloadModelResponse{ModelID: req.ModelID, State: "unloaded"})
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL})
+		ctx := context.Background()
+		if _, err := client.StepModel(ctx, "mlx-community/Qwen3.6-27B-6bit"); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := client.LoadModel(ctx, LoadModelRequest{
+			ModelID: "qwen3.6-27b", ModelPath: "/models/qwen",
+			LoadPolicy: "availability_first", LoadMode: "add",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.LoadMode != "add" {
+			t.Errorf("load mode: got %q", loaded.LoadMode)
+		}
+		unloaded, err := client.UnloadModel(ctx, UnloadModelRequest{ModelID: loaded.ModelID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unloaded.State != "unloaded" {
+			t.Errorf("unload state: got %q", unloaded.State)
+		}
+	})
+}
+
 func TestCompletionOK(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, r *http.Request) {

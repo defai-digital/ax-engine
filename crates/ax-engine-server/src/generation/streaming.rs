@@ -20,7 +20,7 @@ use crate::errors::map_generation_service_error;
 use crate::errors::{ErrorResponse, admission_error_response, map_session_error};
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
 use crate::generation::service::{GenerationServiceError, NativeEventReceiver};
-use crate::openai::validation::validate_model;
+use crate::openai::validation::select_model;
 use crate::tasks::run_blocking_session_task;
 
 const STREAM_CHANNEL_CAPACITY: usize = 128;
@@ -36,8 +36,8 @@ pub(crate) async fn generate_stream(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
 ) -> Result<Sse<ReceiverStream<StreamEvent>>, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
-    validate_model(&live, request.model.as_deref())?;
+    request.reject_video_inputs()?;
+    let live = select_model(&state, request.model.as_deref())?;
 
     let request = build_generate_request(&live, request);
     let stream_context = build_stream_state(&state, &live, request).await?;

@@ -16,7 +16,7 @@ use super::generation::native::generate;
 use super::generation::streaming::generate_stream;
 use super::metadata::{health, models, runtime_info};
 use super::metrics::prometheus_metrics;
-use super::model_load::load_model;
+use super::model_load::{load_model, unload_model};
 use super::ollama::{
     ollama_chat, ollama_generate, ollama_ps, ollama_show, ollama_tags, ollama_version,
 };
@@ -49,6 +49,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/apply-template", post(apply_template))
         .route("/v1/apply-template", post(apply_template))
         .route("/v1/model/load", post(load_model))
+        .route("/v1/model/unload", post(unload_model))
         .route("/v1/embeddings", post(openai_embeddings))
         .route("/v1/embedding_records", post(embedding_records))
         .route("/v1/messages", post(anthropic_messages))

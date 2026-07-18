@@ -5,15 +5,75 @@ import http from "node:http";
 
 import { AxEngineClient, AxEngineHttpError, AxEngineStreamError } from "../index.js";
 
-test("type declarations expose loadModel", async () => {
+test("type declarations expose multi-model lifecycle", async () => {
   const declarations = await readFile(new URL("../index.d.ts", import.meta.url), "utf8");
 
   assert.match(declarations, /interface LoadModelRequest/);
   assert.match(declarations, /interface LoadModelResponse/);
+  assert.match(declarations, /load_policy\?: "availability_first" \| "memory_constrained"/);
+  assert.match(declarations, /load_mode\?: "replace" \| "add"/);
   assert.match(
     declarations,
     /loadModel\(request: LoadModelRequest\): Promise<LoadModelResponse>/,
   );
+  assert.match(
+    declarations,
+    /unloadModel\(request: UnloadModelRequest\): Promise<UnloadModelResponse>/,
+  );
+});
+
+test("step selects a model through an encoded query", async () => {
+  await withServer((req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/v1/step?model=mlx-community%2FQwen3.6-27B-6bit");
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ scheduled_requests: 0, scheduled_tokens: 0 }));
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    const report = await client.step("mlx-community/Qwen3.6-27B-6bit");
+    assert.equal(report.scheduled_requests, 0);
+  });
+});
+
+test("load and unload preserve multi-model lifecycle fields", async () => {
+  let requestCount = 0;
+  await withServer((req, res) => {
+    requestCount += 1;
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const payload = JSON.parse(body);
+      res.setHeader("content-type", "application/json");
+      if (requestCount === 1) {
+        assert.equal(req.url, "/v1/model/load");
+        assert.equal(payload.load_policy, "availability_first");
+        assert.equal(payload.load_mode, "add");
+        res.end(JSON.stringify({
+          model_id: payload.model_id,
+          state: "loaded",
+          context_length: 32768,
+          load_policy: payload.load_policy,
+          load_mode: payload.load_mode,
+        }));
+      } else {
+        assert.equal(req.url, "/v1/model/unload");
+        assert.equal(payload.model_id, "qwen3.6-27b");
+        res.end(JSON.stringify({ model_id: payload.model_id, state: "unloaded" }));
+      }
+    });
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    const loaded = await client.loadModel({
+      model_id: "qwen3.6-27b",
+      model_path: "/models/qwen",
+      load_policy: "availability_first",
+      load_mode: "add",
+    });
+    assert.equal(loaded.load_mode, "add");
+    const unloaded = await client.unloadModel({ model_id: loaded.model_id });
+    assert.equal(unloaded.state, "unloaded");
+  });
 });
 
 test("type declarations allow minimal health responses", async () => {

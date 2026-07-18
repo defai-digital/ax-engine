@@ -13,7 +13,7 @@ use crate::errors::{ErrorResponse, admission_error_response, error_response, map
 use crate::openai::schema::{
     OpenAiEmbeddingObject, OpenAiEmbeddingRequest, OpenAiEmbeddingResponse, OpenAiEmbeddingUsage,
 };
-use crate::openai::validation::validate_model;
+use crate::openai::validation::select_model;
 
 const DEFAULT_EMBED_MAX_TOKENS: usize = 8192;
 const DEFAULT_EMBED_TIMEOUT_MS: u64 = 30_000;
@@ -22,8 +22,7 @@ pub(crate) async fn openai_embeddings(
     State(state): State<AppState>,
     Json(request): Json<OpenAiEmbeddingRequest>,
 ) -> Result<Json<OpenAiEmbeddingResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
-    validate_model(&live, request.model.as_deref())?;
+    let live = select_model(&state, request.model.as_deref())?;
 
     let pooling = parse_embedding_pooling(request.pooling.as_deref())
         .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))?;

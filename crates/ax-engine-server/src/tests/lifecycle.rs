@@ -1,3 +1,4 @@
+use crate::app_state::build_live_state;
 use crate::routes::build_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -45,6 +46,44 @@ async fn submit_request_rejects_while_a_model_load_is_in_progress() {
     llama_cpp_server_handle
         .join()
         .expect("llama.cpp server thread should finish");
+}
+
+#[tokio::test]
+async fn step_routes_to_an_explicit_loaded_model() {
+    let state = super::fixtures::llama_cpp_state();
+    let config = state.snapshot().session_config.as_ref().clone();
+    let second = build_live_state("gemma-4-12b-it".to_string(), config)
+        .expect("second delegated state should build");
+    state.publish_live(second, false);
+    let app = build_router(state.clone());
+
+    let (status, _) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/step?model=gemma-4-12b-it")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (missing_status, missing) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/step?model=not-loaded")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(missing_status, StatusCode::BAD_REQUEST);
+    assert_eq!(missing["error"]["code"], json!("model_not_found"));
+
+    let removed = state
+        .remove_live("gemma-4-12b-it")
+        .expect("second model should remove");
+    removed.retire().await.expect("second worker should retire");
 }
 
 #[tokio::test]

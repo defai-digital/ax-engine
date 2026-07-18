@@ -327,8 +327,10 @@ type GenerateStreamEvent struct {
 
 // LoadModelRequest is the body for POST /v1/model/load.
 type LoadModelRequest struct {
-	ModelID   string `json:"model_id"`
-	ModelPath string `json:"model_path"`
+	ModelID    string `json:"model_id"`
+	ModelPath  string `json:"model_path"`
+	LoadPolicy string `json:"load_policy,omitempty"`
+	LoadMode   string `json:"load_mode,omitempty"`
 }
 
 // LoadModelResponse is the response from POST /v1/model/load.
@@ -336,6 +338,19 @@ type LoadModelResponse struct {
 	ModelID       string `json:"model_id"`
 	State         string `json:"state"`
 	ContextLength uint32 `json:"context_length"`
+	LoadPolicy    string `json:"load_policy"`
+	LoadMode      string `json:"load_mode"`
+}
+
+// UnloadModelRequest is the body for POST /v1/model/unload.
+type UnloadModelRequest struct {
+	ModelID string `json:"model_id"`
+}
+
+// UnloadModelResponse is the response from POST /v1/model/unload.
+type UnloadModelResponse struct {
+	ModelID string `json:"model_id"`
+	State   string `json:"state"`
 }
 
 // ModelCard describes a single model served by ax-engine-server.

@@ -195,14 +195,14 @@ async fn tokenize_endpoint_rejects_model_mismatch() {
         body.get("error")
             .and_then(|error| error.get("code"))
             .and_then(Value::as_str),
-        Some("model_mismatch")
+        Some("model_not_found")
     );
     assert!(
         body.get("error")
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str)
             .unwrap_or_default()
-            .contains("does not match configured preview model")
+            .contains("is not loaded")
     );
 
     std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
@@ -247,14 +247,14 @@ async fn detokenize_endpoint_rejects_model_mismatch() {
         body.get("error")
             .and_then(|error| error.get("code"))
             .and_then(Value::as_str),
-        Some("model_mismatch")
+        Some("model_not_found")
     );
     assert!(
         body.get("error")
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str)
             .unwrap_or_default()
-            .contains("does not match configured preview model")
+            .contains("is not loaded")
     );
 
     std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");

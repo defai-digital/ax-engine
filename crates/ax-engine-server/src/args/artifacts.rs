@@ -87,7 +87,7 @@ pub(super) fn resolve_hf_cache_model_artifacts(
     }
 }
 
-pub(super) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String>, String> {
+pub(crate) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String>, String> {
     if path.join(GEMMA4_ASSISTANT_MTP_CONTRACT_FILE).is_file() {
         let contract = load_json(&path.join(GEMMA4_ASSISTANT_MTP_CONTRACT_FILE))?;
         if let Some(target_model_id) = contract.get("target_model_id").and_then(Value::as_str)

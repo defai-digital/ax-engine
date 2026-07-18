@@ -19,7 +19,7 @@ use crate::openai::schema::{
     OpenAiChatCompletionHttpRequest, OpenAiChatContent, OpenAiChatMessage, OpenAiStopInput,
     OpenAiStreamKind,
 };
-use crate::openai::validation::validate_openai_request;
+use crate::openai::validation::select_openai_model;
 use crate::tasks::run_blocking_session_task;
 
 #[derive(Debug, Deserialize)]
@@ -100,8 +100,7 @@ pub(crate) async fn anthropic_messages(
     State(state): State<AppState>,
     Json(request): Json<AnthropicMessagesRequest>,
 ) -> Result<Json<AnthropicMessageResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
-    validate_openai_request(&live, request.model.as_deref())?;
+    let live = select_openai_model(&state, request.model.as_deref())?;
     let openai_request = request.into_openai_chat_request()?;
     let (request_id, response) =
         run_anthropic_messages_generation(state, live, openai_request).await?;

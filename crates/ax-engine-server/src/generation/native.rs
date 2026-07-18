@@ -8,15 +8,15 @@ use axum::http::StatusCode;
 use crate::app_state::{AppState, LiveState};
 use crate::errors::{ErrorResponse, admission_error_response, map_generation_service_error};
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
-use crate::openai::validation::validate_model;
+use crate::openai::validation::select_model;
 use crate::tasks::run_blocking_session_task;
 
 pub(crate) async fn generate(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
 ) -> Result<Json<GenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
-    validate_model(&live, request.model.as_deref())?;
+    request.reject_video_inputs()?;
+    let live = select_model(&state, request.model.as_deref())?;
 
     let request = build_generate_request(&live, request);
     let (_, response) = run_stateless_generate_request(&state, &live, request).await?;

@@ -27,8 +27,8 @@ pub(crate) use crate::openai::chat_requests::{
     chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
 };
 use crate::openai::chat_requests::{
-    messages_contain_inline_media, render_gemma4_unified_chat_with_media,
-    render_openai_chat_prompt_with_tools,
+    messages_contain_inline_media, reject_video_chat_content,
+    render_gemma4_unified_chat_with_media, render_openai_chat_prompt_with_tools,
 };
 use crate::tasks::run_blocking_http_task;
 
@@ -316,6 +316,7 @@ pub(crate) fn build_openai_completion_request(
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, false, structured_output);
     let multimodal_inputs = request.multimodal_inputs;
+    reject_video_multimodal_inputs(&multimodal_inputs)?;
     reject_openai_multimodal_inputs_without_native_mlx(
         live,
         "OpenAI completions",
@@ -378,13 +379,13 @@ pub(crate) fn build_openai_completion_request(
 
 /// Build an OpenAI chat request, offloading the build to the blocking pool
 /// when the messages carry inline media. Media preprocessing decodes
-/// image/audio bytes and can wait on an ffmpeg child process for MP4/WebM
-/// video — seconds-scale blocking work that must not stall the async executor
+/// image/audio bytes — blocking work that must not stall the async executor
 /// threads. Text-only requests build inline; that path is template rendering.
 pub(crate) async fn build_openai_chat_request_offloading_media(
     live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
+    reject_video_chat_content(&request.messages)?;
     if !messages_contain_inline_media(&request.messages) {
         return build_openai_chat_request(live, request);
     }
@@ -396,12 +397,14 @@ pub(crate) fn build_openai_chat_request(
     live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
+    reject_video_chat_content(&request.messages)?;
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let mut input_tokens = request.input_tokens;
     let mut multimodal_inputs = request.multimodal_inputs;
+    reject_video_multimodal_inputs(&multimodal_inputs)?;
     reject_gemma4_tools_when_ax_cannot_render_them(
         live.model_id.as_ref(),
         request.tools.as_ref(),
@@ -702,6 +705,23 @@ fn reject_openai_multimodal_inputs_without_native_mlx(
         format!(
             "{route} multimodal_inputs require native MLX backend; delegated text backends cannot consume Gemma4UnifiedRuntimeInputs"
         ),
+    ))
+}
+
+fn reject_video_multimodal_inputs(
+    multimodal_inputs: &RequestMultimodalInputs,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let has_video = multimodal_inputs
+        .gemma4_unified
+        .as_ref()
+        .is_some_and(|inputs| !inputs.videos.is_empty());
+    if !has_video {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_modality",
+        "video input is not supported; this server accepts text, image, and audio".to_string(),
     ))
 }
 

@@ -38,7 +38,7 @@ use crate::openai::schema::{
     OpenAiStreamKind, OpenAiToolCall,
 };
 use crate::openai::streaming::{ChatChannelStreamFilter, IncrementalDecoder};
-use crate::openai::validation::validate_openai_request;
+use crate::openai::validation::select_openai_model;
 use crate::tasks::run_blocking_session_task;
 
 #[derive(Debug, Deserialize)]
@@ -261,9 +261,8 @@ pub(crate) struct OllamaVersionResponse {
 }
 
 pub(crate) async fn ollama_tags(State(state): State<AppState>) -> Json<OllamaTagsResponse> {
-    let live = state.snapshot();
     Json(OllamaTagsResponse {
-        models: vec![ollama_model_tag(&live)],
+        models: state.snapshots().iter().map(ollama_model_tag).collect(),
     })
 }
 
@@ -271,12 +270,11 @@ pub(crate) async fn ollama_show(
     State(state): State<AppState>,
     Json(request): Json<OllamaShowRequest>,
 ) -> Result<Json<OllamaShowResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
     reject_unsupported_fields(&request.unsupported, "request")?;
     if request.verbose == Some(true) {
         reject_unused_field(request.verbose, "verbose")?;
     }
-    validate_openai_request(&live, request.model.as_deref())?;
+    let live = select_openai_model(&state, request.model.as_deref())?;
     let tag = ollama_model_tag(&live);
     Ok(Json(OllamaShowResponse {
         license: String::new(),
@@ -291,19 +289,24 @@ pub(crate) async fn ollama_show(
 }
 
 pub(crate) async fn ollama_ps(State(state): State<AppState>) -> Json<OllamaPsResponse> {
-    let live = state.snapshot();
-    let tag = ollama_model_tag(&live);
     Json(OllamaPsResponse {
-        models: vec![OllamaRunningModel {
-            name: tag.name,
-            model: tag.model,
-            size: tag.size,
-            digest: tag.digest,
-            details: tag.details,
-            expires_at: rfc3339_now(),
-            size_vram: 0,
-            context_length: context_length(&live),
-        }],
+        models: state
+            .snapshots()
+            .iter()
+            .map(|live| {
+                let tag = ollama_model_tag(live);
+                OllamaRunningModel {
+                    name: tag.name,
+                    model: tag.model,
+                    size: tag.size,
+                    digest: tag.digest,
+                    details: tag.details,
+                    expires_at: rfc3339_now(),
+                    size_vram: 0,
+                    context_length: context_length(live),
+                }
+            })
+            .collect(),
     })
 }
 
@@ -317,8 +320,7 @@ pub(crate) async fn ollama_chat(
     State(state): State<AppState>,
     Json(request): Json<OllamaChatRequest>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
-    validate_openai_request(&live, request.model.as_deref())?;
+    let live = select_openai_model(&state, request.model.as_deref())?;
     reject_ollama_tools_without_support(&live, request.tools.as_ref())?;
     let stream = request.stream;
     // True per-token NDJSON streaming for the native MLX backend. Tool and
@@ -353,8 +355,7 @@ pub(crate) async fn ollama_generate(
     State(state): State<AppState>,
     Json(request): Json<OllamaGenerateRequest>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
-    validate_openai_request(&live, request.model.as_deref())?;
+    let live = select_openai_model(&state, request.model.as_deref())?;
     if let Some(response) = ollama_generate_lifecycle_response(&live, &request) {
         return Ok(Json(response).into_response());
     }

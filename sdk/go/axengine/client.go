@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -174,6 +175,12 @@ func (c *Client) Step(ctx context.Context) (StepReport, error) {
 	return requestJSON[StepReport](c, ctx, http.MethodPost, "/v1/step", nil)
 }
 
+// StepModel advances the scheduler for one loaded model by one step.
+func (c *Client) StepModel(ctx context.Context, model string) (StepReport, error) {
+	path := "/v1/step?model=" + url.QueryEscape(model)
+	return requestJSON[StepReport](c, ctx, http.MethodPost, path, nil)
+}
+
 // Completion calls POST /v1/completions (OpenAI-compat text completion).
 func (c *Client) Completion(ctx context.Context, req OpenAiCompletionRequest) (OpenAiCompletionResponse, error) {
 	return requestJSON[OpenAiCompletionResponse](c, ctx, http.MethodPost, "/v1/completions", req)
@@ -192,6 +199,11 @@ func (c *Client) Embeddings(ctx context.Context, req OpenAiEmbeddingRequest) (Op
 // LoadModel calls POST /v1/model/load to hot-swap the running model.
 func (c *Client) LoadModel(ctx context.Context, req LoadModelRequest) (LoadModelResponse, error) {
 	return requestJSON[LoadModelResponse](c, ctx, http.MethodPost, "/v1/model/load", req)
+}
+
+// UnloadModel calls POST /v1/model/unload to remove a retained model.
+func (c *Client) UnloadModel(ctx context.Context, req UnloadModelRequest) (UnloadModelResponse, error) {
+	return requestJSON[UnloadModelResponse](c, ctx, http.MethodPost, "/v1/model/unload", req)
 }
 
 // Models calls GET /v1/models to list available models.

@@ -33,8 +33,8 @@ use app_state::{ServerLimits, build_app_state};
 use args::{ServerArgs, render_presets};
 use routes::build_router;
 
-// Processed Gemma4 unified media tensors are JSON-heavy: multi-image and capped
-// video benchmark cases can exceed 100 MiB before transport compression.
+// Processed Gemma4 unified media tensors are JSON-heavy: multi-image and audio
+// payloads can exceed 100 MiB before transport compression.
 const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 
 fn log_host_detection_warnings(session_config: &EngineSessionConfig) {

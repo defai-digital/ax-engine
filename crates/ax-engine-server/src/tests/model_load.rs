@@ -63,6 +63,77 @@ async fn model_load_rejects_missing_model_path() {
 }
 
 #[tokio::test]
+async fn model_add_rejects_memory_constrained_policy() {
+    let temp_model_dir = std::env::temp_dir().join(format!(
+        "ax-engine-server-model-add-policy-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_model_dir).expect("temp model dir should create");
+    let app = build_router(llama_cpp_state());
+    let (status, body) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/model/load")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model_id": "qwen3.6-27b",
+                "model_path": temp_model_dir,
+                "load_policy": "memory_constrained",
+                "load_mode": "add"
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], json!("invalid_request"));
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("incompatible")
+    );
+    std::fs::remove_dir_all(temp_model_dir).expect("temp model dir should clean up");
+}
+
+#[tokio::test]
+async fn model_unload_rejects_last_or_unknown_model() {
+    let app = build_router(llama_cpp_state());
+
+    let (last_status, last_body) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/model/unload")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({"model_id": "qwen3"}))))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(last_status, StatusCode::CONFLICT);
+    assert_eq!(last_body["error"]["code"], json!("last_model"));
+
+    let (missing_status, missing_body) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/model/unload")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(
+                &json!({"model_id": "not-loaded"}),
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(missing_status, StatusCode::BAD_REQUEST);
+    assert_eq!(missing_body["error"]["code"], json!("model_not_found"));
+}
+
+#[tokio::test]
 async fn model_load_rejects_delegated_backend_before_relabeling_model() {
     let temp_model_dir = std::env::temp_dir().join(format!(
         "ax-engine-server-model-load-delegated-{}",

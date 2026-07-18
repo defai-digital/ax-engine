@@ -1,3 +1,4 @@
+use crate::app_state::build_live_state;
 use crate::routes::build_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -42,6 +43,40 @@ async fn models_reports_ax_code_safe_capabilities() {
     );
     assert_eq!(model["context_length"], json!(16 * 1024u32));
     assert_eq!(model["limit"]["output"], json!(2048u32));
+}
+
+#[tokio::test]
+async fn models_lists_every_loaded_model() {
+    let state = llama_cpp_state();
+    let config = state.snapshot().session_config.as_ref().clone();
+    let second = build_live_state("gemma-4-12b-it".to_string(), config)
+        .expect("second delegated state should build");
+    assert!(state.publish_live(second, true).is_none());
+    let app = build_router(state.clone());
+
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let ids = json["data"]
+        .as_array()
+        .expect("models data should be an array")
+        .iter()
+        .map(|model| model["id"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["gemma-4-12b-it", "qwen3"]);
+
+    let removed = state
+        .remove_live("gemma-4-12b-it")
+        .expect("second model should remove");
+    removed.retire().await.expect("second worker should retire");
 }
 
 #[tokio::test]
@@ -193,7 +228,7 @@ async fn models_advertises_processed_gemma4_unified_modalities_for_native_mlx() 
     assert_eq!(model["capabilities"]["input"]["text"], json!(true));
     assert_eq!(model["capabilities"]["input"]["audio"], json!(true));
     assert_eq!(model["capabilities"]["input"]["image"], json!(true));
-    assert_eq!(model["capabilities"]["input"]["video"], json!(true));
+    assert_eq!(model["capabilities"]["input"]["video"], json!(false));
     assert_eq!(model["capabilities"]["output"]["text"], json!(true));
     assert_eq!(model["capabilities"]["output"]["audio"], json!(false));
     assert_eq!(model["capabilities"]["output"]["image"], json!(false));
