@@ -80,6 +80,45 @@ async fn models_lists_every_loaded_model() {
 }
 
 #[tokio::test]
+async fn health_and_discovery_list_every_loaded_model() {
+    let state = llama_cpp_state();
+    let config = state.snapshot().session_config.as_ref().clone();
+    let second = build_live_state("gemma-4-12b-it".to_string(), config)
+        .expect("second delegated state should build");
+    assert!(state.publish_live(second, false).is_none());
+    let app = build_router(state.clone());
+
+    for uri in ["/health", "/v1/discovery"] {
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(
+            json["models"],
+            json!(["gemma-4-12b-it", "qwen3"]),
+            "{uri} should list every loaded model"
+        );
+        assert_eq!(
+            json["model_id"],
+            json!("qwen3"),
+            "{uri} default model should be unchanged by a non-default add"
+        );
+    }
+
+    let removed = state
+        .remove_live("gemma-4-12b-it")
+        .expect("second model should remove");
+    removed.retire().await.expect("second worker should retire");
+}
+
+#[tokio::test]
 async fn readiness_fails_when_any_loaded_model_worker_is_unavailable() {
     let state = llama_cpp_state();
     let config = state.snapshot().session_config.as_ref().clone();

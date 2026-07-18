@@ -886,10 +886,14 @@ drain receive HTTP 503 or gRPC `UNAVAILABLE` and can retry after loading.
 
 `load_mode` accepts `replace` (default, historical hot-swap semantics) or `add`.
 `add` retains the existing independently-owned model sessions, makes the new
-model the default for requests that omit `model`, and enables per-request model
-routing. Add mode is limited to Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B. Use
-`POST /v1/model/unload` with `{"model_id":"..."}` to retire a retained model;
-the last loaded model cannot be unloaded. `add` rejects a model ID that is
+model the default for requests that omit `model` (opt out with
+`"make_default": false` — `replace` swaps the default in place and rejects
+`false`), and enables per-request model routing. Add mode is limited to
+Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B. Use `POST /v1/model/unload` with
+`{"model_id":"..."}` to retire a retained model; the last loaded model cannot
+be unloaded. Unloading the current default reassigns the default to another
+resident model; both load and unload responses report the resulting
+`default_model_id` so clients can observe the reassignment. `add` rejects a model ID that is
 already loaded. Once the registry contains more than one model, `replace` also
 enforces the same five-model scope because it retains the other sessions; an
 unrestricted historical hot-swap remains available when only one model is
@@ -905,6 +909,15 @@ process execution arbiter grants one model turn per engine step (and per
 embedding execution), rotating fairly among waiting model IDs. This preserves
 single-model execution on the process-wide MLX/Metal target without letting one
 busy model monopolize every turn; it does not create a cross-model fused batch.
+Because a turn is one engine step, a sibling model's decode waits while a long
+prefill step runs (up to `--max-batch-tokens` prompt tokens, default 2048 —
+roughly 1-2 s on the supported model sizes). For latency-sensitive multi-model
+serving, shrink the per-step budget with `--max-batch-tokens` (for example
+512), or enable `--multi-prefill-fair` with
+`--max-prefill-tokens-per-request-per-step` to chunk prefills per request
+without shrinking the global step budget (the per-request cap is honored only
+in fair mode). Either trades some prefill throughput for decode turns
+interleaving between the smaller chunks.
 The optional `load_policy` request field accepts `availability_first` (the
 default) or `memory_constrained`. Availability-first keeps the drained model
 resident until its replacement is ready, preserving rollback at the cost of a
@@ -935,17 +948,23 @@ single-model layout. Unload and replacement remove the retired generation's
 per-model sample immediately.
 
 Load requests also run a memory admission preflight before any drain: AX
-estimates the incoming model's resident footprint from its on-disk
-safetensors bytes (plus a runtime factor and fixed floor), adds the resident
-models that survive the load (including the outgoing model for
-availability-first replaces, whose overlap window is the policy's point), and
-rejects the load with `422 insufficient_memory` — reporting the projected
-peak, resident, incoming, and budget numbers in GiB — when the projected peak
-exceeds the Metal working-set budget (the same
+estimates each model's resident footprint from its on-disk safetensors bytes
+(plus a runtime factor) and its worst-case KV pool — derived from the
+manifest's attention geometry (full-attention layers at the configured
+`total_blocks × block-size` pool; sliding-window layers bounded at their
+ring window; hybrid linear-attention layers and KV-shared layers charge no
+per-token cache) — plus a fixed runtime floor. It adds the resident models
+that survive the load (including the outgoing model for availability-first
+replaces, whose overlap window is the policy's point), and rejects the load
+with `422 insufficient_memory` — reporting the projected peak, resident,
+incoming (with its KV share), and budget numbers in GiB — when the projected
+peak exceeds the Metal working-set budget (the same
 `max_recommended_working_set_size` source the runner uses for its wired
-limit). The check skips rather than blocks when the budget or the incoming
-weight layout is unknowable, and `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off`
-disables it entirely if the estimate is wrong for a host.
+limit). Models whose KV geometry is unknowable (MLA latent caches,
+diffusion, unreadable manifests) fall back to the flat-floor estimate; the
+check skips rather than blocks when the budget or the incoming weight layout
+is unknowable, and `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off` disables it
+entirely if the estimate is wrong for a host.
 The `mlx_lm_delegated` backend supports blocking `/v1/generate` and SSE
 `/v1/generate/stream` through `mlx_lm.server` `/v1/completions`. It also
 supports streamed OpenAI-compatible completion/chat endpoints by forwarding

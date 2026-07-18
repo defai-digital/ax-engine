@@ -1,8 +1,12 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use ax_engine_sdk::{
+    KvManagerConfig, NativeDiffusionConfig, NativeLinearAttentionConfig, NativeMlaAttentionConfig,
+};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -26,6 +30,12 @@ pub(crate) struct LoadModelRequest {
     /// existing models and publishes this model into the process registry.
     #[serde(default)]
     pub load_mode: LoadModelMode,
+    /// Whether the loaded model becomes the default for requests that omit
+    /// `model`. Defaults to `true` (the historical behavior). Only
+    /// meaningful for `load_mode=add`; `replace` swaps the default model in
+    /// place and rejects `false`.
+    #[serde(default)]
+    pub make_default: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -94,6 +104,9 @@ pub(crate) struct LoadModelResponse {
     pub context_length: u32,
     pub load_policy: LoadModelPolicy,
     pub load_mode: LoadModelMode,
+    /// Default model after the load — differs from `model_id` for
+    /// `load_mode=add` with `make_default:false`.
+    pub default_model_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +118,9 @@ pub(crate) struct UnloadModelRequest {
 pub(crate) struct UnloadModelResponse {
     pub model_id: String,
     pub state: &'static str,
+    /// Default model after the unload — reports the reassignment when the
+    /// unloaded model was the default.
+    pub default_model_id: String,
 }
 
 pub(crate) async fn load_model(
@@ -139,6 +155,16 @@ pub(crate) async fn load_model(
                 .to_string(),
         ));
     }
+    if load_mode == LoadModelMode::Replace && request.make_default == Some(false) {
+        return Err(error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_request",
+            "load_mode=replace swaps the default model in place and cannot honor make_default=false; \
+             use load_mode=add to load a non-default model"
+                .to_string(),
+        ));
+    }
+    let make_default = request.make_default.unwrap_or(true);
 
     // Prevent concurrent loads — 409 if already in progress (mirrors ax-serving).
     if state
@@ -198,7 +224,7 @@ pub(crate) async fn load_model(
                 let ctx_len = crate::metadata::context_length(&live);
                 let previous = match load_mode {
                     LoadModelMode::Replace => Some(state_clone.swap_live(live)),
-                    LoadModelMode::Add => state_clone.publish_live(live, true),
+                    LoadModelMode::Add => state_clone.publish_live(live, make_default),
                 };
                 if let Some(previous) = previous {
                     previous.retire().await.map_err(|error| {
@@ -233,6 +259,7 @@ pub(crate) async fn load_model(
             context_length: ctx_len,
             load_policy,
             load_mode,
+            default_model_id: state.snapshot().model_id.as_ref().clone(),
         })),
         Ok(Err(e)) => Err(e),
         Err(e) => Err(error_response(
@@ -259,6 +286,7 @@ pub(crate) async fn unload_model(
     Ok(Json(UnloadModelResponse {
         model_id,
         state: "unloaded",
+        default_model_id: state.snapshot().model_id.as_ref().clone(),
     }))
 }
 
@@ -443,10 +471,132 @@ fn validate_load_preflight(
 /// the estimator's job is to fail a load that cannot fit, loudly and early.
 const LOAD_FOOTPRINT_FIXED_FLOOR_BYTES: u64 = 768 * 1024 * 1024;
 
-fn estimated_footprint_bytes(weight_bytes: u64) -> u64 {
-    weight_bytes
-        .saturating_add(weight_bytes / 8)
-        .saturating_add(LOAD_FOOTPRINT_FIXED_FLOOR_BYTES)
+/// Floor applied when the KV pool is charged explicitly (ADR-041 D1): the
+/// remainder covers runtime buffers, linear-attention per-request state,
+/// MTP state, and allocator slack — everything the old 768 MiB floor
+/// bundled together with "KV baseline".
+const LOAD_FOOTPRINT_RUNTIME_FLOOR_BYTES: u64 = 512 * 1024 * 1024;
+
+/// K + V, at fp16/bf16 element width. Quantized-KV serving would shrink
+/// this; the admission bound stays at the unquantized worst case.
+const KV_CACHE_BYTES_PER_HEAD_ELEMENT: u64 = 2 * 2;
+
+fn estimated_footprint_bytes(weight_bytes: u64, kv_pool_bytes: Option<u64>) -> u64 {
+    let base = weight_bytes.saturating_add(weight_bytes / 8);
+    match kv_pool_bytes {
+        Some(kv_bytes) => base
+            .saturating_add(kv_bytes)
+            .saturating_add(LOAD_FOOTPRINT_RUNTIME_FLOOR_BYTES),
+        None => base.saturating_add(LOAD_FOOTPRINT_FIXED_FLOOR_BYTES),
+    }
+}
+
+/// Tolerant projection of `model-manifest.json` for KV-geometry estimation
+/// (ADR-041 D1). Only the fields the estimator needs; identity checks live
+/// in `MultiModelManifestIdentity` and stay independent. Unknown manifest
+/// fields never fail this parse.
+#[derive(Debug, Deserialize)]
+struct ManifestKvGeometry {
+    #[serde(default)]
+    model_family: String,
+    layer_count: u32,
+    attention_head_dim: u32,
+    kv_head_count: u32,
+    /// ISWA full-attention layers use this head dim; sliding layers use
+    /// `attention_head_dim`.
+    #[serde(default)]
+    global_head_dim: Option<u32>,
+    #[serde(default)]
+    sliding_window_size: Option<u32>,
+    /// Per-layer annotations ("sliding_attention" / "full_attention");
+    /// empty for homogeneous models.
+    #[serde(default)]
+    layer_types: Vec<String>,
+    /// Layers that read another layer's K/V and allocate none of their own.
+    #[serde(default)]
+    kv_shared_source_layers: BTreeMap<u32, u32>,
+    #[serde(default)]
+    linear_attention: NativeLinearAttentionConfig,
+    #[serde(default)]
+    mla_attention: NativeMlaAttentionConfig,
+    #[serde(default)]
+    diffusion: NativeDiffusionConfig,
+}
+
+fn manifest_kv_geometry(dir: &std::path::Path) -> Option<ManifestKvGeometry> {
+    let bytes = std::fs::read(dir.join("model-manifest.json")).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Tokens the engine can ever hand this model's KV manager: the logical
+/// block pool is the admission bound the scheduler enforces per model.
+fn kv_pool_tokens(kv_config: &KvManagerConfig) -> u64 {
+    u64::from(kv_config.total_blocks).saturating_mul(u64::from(kv_config.block_size_tokens))
+}
+
+/// Worst-case KV-cache bytes for one model at its configured pool, from the
+/// manifest's attention geometry. `None` when the geometry is unknowable —
+/// MLA latent caches and diffusion follow different math, and a zero dim or
+/// an unresolvable hybrid interval means the manifest predates this
+/// estimator — in which case the caller falls back to the flat floor
+/// (ADR-040 D4 behavior) rather than guessing.
+fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) -> Option<u64> {
+    if geometry.mla_attention.is_enabled() || geometry.diffusion.is_enabled() {
+        return None;
+    }
+    if geometry.layer_count == 0 || geometry.kv_head_count == 0 || geometry.attention_head_dim == 0
+    {
+        return None;
+    }
+    let linear_interval = if geometry.linear_attention.is_enabled() {
+        match geometry
+            .linear_attention
+            .resolved_full_attention_interval(&geometry.model_family)
+        {
+            Some(interval) if interval > 0 => Some(u64::from(interval)),
+            _ => return None,
+        }
+    } else {
+        None
+    };
+    let kv_heads = u64::from(geometry.kv_head_count);
+    let sliding_bytes_per_token = kv_heads
+        .saturating_mul(u64::from(geometry.attention_head_dim))
+        .saturating_mul(KV_CACHE_BYTES_PER_HEAD_ELEMENT);
+    let full_head_dim = geometry
+        .global_head_dim
+        .unwrap_or(geometry.attention_head_dim);
+    let full_bytes_per_token = kv_heads
+        .saturating_mul(u64::from(full_head_dim))
+        .saturating_mul(KV_CACHE_BYTES_PER_HEAD_ELEMENT);
+
+    let mut total = 0u64;
+    for layer_idx in 0..geometry.layer_count {
+        if geometry.kv_shared_source_layers.contains_key(&layer_idx) {
+            continue;
+        }
+        if let Some(interval) = linear_interval {
+            // Hybrid linear-attention layers keep per-request state, not a
+            // per-token cache; the runtime floor covers them.
+            if u64::from(layer_idx) % interval != interval - 1 {
+                continue;
+            }
+            total = total.saturating_add(pool_tokens.saturating_mul(full_bytes_per_token));
+            continue;
+        }
+        let layer_type = geometry.layer_types.get(layer_idx as usize);
+        if layer_type.is_some_and(|kind| kind == "sliding_attention") {
+            // Sliding layers are ring-bounded to the window, not the pool.
+            let tokens = match geometry.sliding_window_size {
+                Some(window) if window > 0 => pool_tokens.min(u64::from(window)),
+                _ => pool_tokens,
+            };
+            total = total.saturating_add(tokens.saturating_mul(sliding_bytes_per_token));
+        } else {
+            total = total.saturating_add(pool_tokens.saturating_mul(full_bytes_per_token));
+        }
+    }
+    Some(total)
 }
 
 /// Sum of `*.safetensors` file sizes directly in the artifacts dir; `None`
@@ -520,9 +670,15 @@ fn validate_load_memory_preflight(
     let Some(incoming_weights) = model_weight_bytes(model_path) else {
         return Ok(());
     };
-    let incoming = estimated_footprint_bytes(incoming_weights);
+    // The incoming session inherits the default model's config (see the
+    // load task), so its KV pool is sized from that config.
+    let default_live = state.snapshot();
+    let incoming_pool = kv_pool_tokens(&default_live.session_config.kv_config);
+    let incoming_kv = manifest_kv_geometry(model_path)
+        .and_then(|geometry| estimated_kv_pool_bytes(&geometry, incoming_pool));
+    let incoming = estimated_footprint_bytes(incoming_weights, incoming_kv);
 
-    let outgoing_model_id = state.snapshot().model_id;
+    let outgoing_model_id = default_live.model_id;
     let mut resident_total = 0u64;
     let mut outgoing = 0u64;
     for live in state.snapshots() {
@@ -532,7 +688,12 @@ fn validate_load_memory_preflight(
         let Some(weights) = model_weight_bytes(dir) else {
             continue;
         };
-        let footprint = estimated_footprint_bytes(weights);
+        // A resident manifest that cannot be read keeps the legacy flat
+        // floor — someone else's load must never fail on it.
+        let resident_kv = manifest_kv_geometry(dir).and_then(|geometry| {
+            estimated_kv_pool_bytes(&geometry, kv_pool_tokens(&live.session_config.kv_config))
+        });
+        let footprint = estimated_footprint_bytes(weights, resident_kv);
         resident_total = resident_total.saturating_add(footprint);
         if live.model_id.as_ref() == outgoing_model_id.as_ref() {
             outgoing = footprint;
@@ -543,17 +704,24 @@ fn validate_load_memory_preflight(
     if peak <= budget {
         return Ok(());
     }
+    let incoming_detail = match incoming_kv {
+        Some(kv_bytes) => format!(
+            "{:.1} GiB estimated (incl. {:.1} GiB KV pool)",
+            gib(incoming),
+            gib(kv_bytes)
+        ),
+        None => format!("{:.1} GiB estimated", gib(incoming)),
+    };
     Err(error_response(
         StatusCode::UNPROCESSABLE_ENTITY,
         "insufficient_memory",
         format!(
             "projected peak resident set {:.1} GiB (resident models {:.1} GiB + incoming model \
-             {:.1} GiB estimated) exceeds the Metal working-set budget {:.1} GiB; unload a model \
+             {incoming_detail}) exceeds the Metal working-set budget {:.1} GiB; unload a model \
              first, use load_policy=memory_constrained for replace, or set \
              AX_SERVER_LOAD_MEMORY_PREFLIGHT=off to override",
             gib(peak),
             gib(resident_total),
-            gib(incoming),
             gib(budget)
         ),
     ))
@@ -1010,10 +1178,120 @@ mod tests {
     #[test]
     fn footprint_estimate_adds_runtime_factor_and_floor() {
         let weights = 16 * 1024 * 1024 * 1024u64; // 16 GiB on disk
-        let footprint = estimated_footprint_bytes(weights);
+        let legacy = estimated_footprint_bytes(weights, None);
         assert_eq!(
-            footprint,
+            legacy,
             weights + weights / 8 + LOAD_FOOTPRINT_FIXED_FLOOR_BYTES
+        );
+
+        let kv_bytes = 3 * 1024 * 1024 * 1024u64;
+        let with_kv = estimated_footprint_bytes(weights, Some(kv_bytes));
+        assert_eq!(
+            with_kv,
+            weights + weights / 8 + kv_bytes + LOAD_FOOTPRINT_RUNTIME_FLOOR_BYTES
+        );
+    }
+
+    fn kv_geometry(value: serde_json::Value) -> ManifestKvGeometry {
+        serde_json::from_value(value).expect("geometry should parse")
+    }
+
+    #[test]
+    fn kv_pool_bytes_charges_dense_layers_at_pool() {
+        let geometry = kv_geometry(serde_json::json!({
+            "layer_count": 4, "attention_head_dim": 128, "kv_head_count": 2
+        }));
+        let per_token_layer = 2 * 128 * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
+        assert_eq!(
+            estimated_kv_pool_bytes(&geometry, 16384),
+            Some(4 * 16384 * per_token_layer)
+        );
+    }
+
+    #[test]
+    fn kv_pool_bytes_bounds_sliding_layers_and_skips_shared() {
+        let geometry = kv_geometry(serde_json::json!({
+            "layer_count": 6, "attention_head_dim": 128, "kv_head_count": 2,
+            "global_head_dim": 256, "sliding_window_size": 512,
+            "layer_types": [
+                "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "full_attention"
+            ],
+            "kv_shared_source_layers": {"3": 0}
+        }));
+        let pool = 16384u64;
+        let sliding_per_token = 2 * 128 * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
+        let full_per_token = 2 * 256 * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
+        // Layers 0, 1, 4 slide at the 512-token ring; layer 3 shares layer
+        // 0's KV and charges nothing; layers 2 and 5 are full attention at
+        // the pool, using the ISWA global head dim.
+        let expected = 3 * 512 * sliding_per_token + 2 * pool * full_per_token;
+        assert_eq!(estimated_kv_pool_bytes(&geometry, pool), Some(expected));
+    }
+
+    #[test]
+    fn kv_pool_bytes_charges_only_hybrid_full_attention_layers() {
+        let explicit = kv_geometry(serde_json::json!({
+            "model_family": "qwen3_5",
+            "layer_count": 8, "attention_head_dim": 256, "kv_head_count": 4,
+            "linear_attention": {"full_attention_interval": 4}
+        }));
+        let per_token_layer = 4 * 256 * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
+        // Layers 3 and 7 (every 4th) keep KV; linear layers hold per-request
+        // state covered by the runtime floor.
+        assert_eq!(
+            estimated_kv_pool_bytes(&explicit, 1000),
+            Some(2 * 1000 * per_token_layer)
+        );
+
+        let family_default = kv_geometry(serde_json::json!({
+            "model_family": "qwen3_5",
+            "layer_count": 8, "attention_head_dim": 256, "kv_head_count": 4,
+            "linear_attention": {"num_key_heads": 16}
+        }));
+        assert_eq!(
+            estimated_kv_pool_bytes(&family_default, 1000),
+            Some(2 * 1000 * per_token_layer)
+        );
+    }
+
+    #[test]
+    fn kv_pool_bytes_fails_open_on_unknown_geometry() {
+        let mla = kv_geometry(serde_json::json!({
+            "layer_count": 4, "attention_head_dim": 128, "kv_head_count": 2,
+            "mla_attention": {"kv_lora_rank": 512}
+        }));
+        assert_eq!(estimated_kv_pool_bytes(&mla, 1000), None);
+
+        let diffusion = kv_geometry(serde_json::json!({
+            "layer_count": 4, "attention_head_dim": 128, "kv_head_count": 2,
+            "diffusion": {"canvas_size": 64}
+        }));
+        assert_eq!(estimated_kv_pool_bytes(&diffusion, 1000), None);
+
+        let zero_layers = kv_geometry(serde_json::json!({
+            "layer_count": 0, "attention_head_dim": 128, "kv_head_count": 2
+        }));
+        assert_eq!(estimated_kv_pool_bytes(&zero_layers, 1000), None);
+
+        // Linear attention enabled on a family with no default interval and
+        // no explicit interval: geometry is unknowable.
+        let unresolved_hybrid = kv_geometry(serde_json::json!({
+            "model_family": "not_a_hybrid_family",
+            "layer_count": 4, "attention_head_dim": 128, "kv_head_count": 2,
+            "linear_attention": {"num_key_heads": 16}
+        }));
+        assert_eq!(estimated_kv_pool_bytes(&unresolved_hybrid, 1000), None);
+
+        // A sliding annotation without a window is charged at the pool
+        // (conservative), not skipped.
+        let sliding_without_window = kv_geometry(serde_json::json!({
+            "layer_count": 1, "attention_head_dim": 128, "kv_head_count": 2,
+            "layer_types": ["sliding_attention"]
+        }));
+        assert_eq!(
+            estimated_kv_pool_bytes(&sliding_without_window, 1000),
+            Some(1000 * 2 * 128 * KV_CACHE_BYTES_PER_HEAD_ELEMENT)
         );
     }
 

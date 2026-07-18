@@ -16,9 +16,19 @@ and this project adheres to Semantic Versioning.
   retained model. Load/unload preflight runs synchronously before admission
   drain.
 - Memory-aware load admission: loads whose projected peak resident set
-  (disk-derived estimate) exceeds the Metal working-set budget are rejected
-  with `422 insufficient_memory` before any drain;
-  `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off` disables the check.
+  exceeds the Metal working-set budget are rejected with
+  `422 insufficient_memory` before any drain. The estimate combines on-disk
+  safetensors bytes with each model's worst-case KV pool derived from
+  manifest attention geometry (sliding-window layers bounded at their ring
+  window, hybrid linear-attention and KV-shared layers charge no per-token
+  cache), so it scales with `--total-blocks` and with the number of resident
+  models; `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off` disables the check.
+- `POST /v1/model/load` accepts `make_default` (default `true`;
+  `load_mode=add` only) so a model can be added without changing what
+  requests that omit `model` resolve to; load and unload responses report
+  the resulting `default_model_id`.
+- `/health` and `/v1/discovery` list every loaded model id (`models`)
+  alongside the default `model_id` in multi-model serving.
 - `response_format: json_schema` (non-streaming): OpenAI request shape
   accepted; output validated server-side against a documented schema subset
   (`502 invalid_output` on mismatch); schemas using unsupported keywords are

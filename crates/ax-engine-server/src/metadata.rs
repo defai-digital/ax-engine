@@ -116,6 +116,7 @@ pub(crate) async fn health(
         "status": "ok",
         "service": "ax-engine-server",
         "model_id": live.model_id.as_ref(),
+        "models": state.model_ids(),
         "runtime": live.runtime_report.clone(),
     })))
 }
@@ -152,6 +153,7 @@ pub(crate) async fn discovery_info(
         "service": "ax-engine-server",
         "version": state.discovery.version,
         "model_id": live.model_id.as_ref(),
+        "models": state.model_ids(),
         "auth_required": auth_required,
         "openai_base_path": "/v1",
         "operations": operations,

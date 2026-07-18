@@ -101,6 +101,43 @@ async fn model_add_rejects_memory_constrained_policy() {
 }
 
 #[tokio::test]
+async fn model_load_rejects_replace_with_make_default_false() {
+    let temp_model_dir = std::env::temp_dir().join(format!(
+        "ax-engine-server-model-make-default-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_model_dir).expect("temp model dir should create");
+    let app = build_router(llama_cpp_state());
+    let (status, body) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/model/load")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model_id": "qwen3.6-27b",
+                "model_path": temp_model_dir,
+                "make_default": false
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], json!("invalid_request"));
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("make_default")
+    );
+    std::fs::remove_dir_all(temp_model_dir).expect("temp model dir should clean up");
+}
+
+#[tokio::test]
 async fn model_unload_rejects_last_or_unknown_model() {
     let state = llama_cpp_state();
     let _active_request = state

@@ -26,7 +26,8 @@ pub use ax_engine_core::gemma4_unified::{
     Gemma4UnifiedVideoInput, Gemma4UnifiedVideoRuntimeInput, Gemma4UnifiedVisionProcessor,
 };
 pub use ax_engine_core::{
-    CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvManagerConfig, RequestMultimodalInputs,
+    CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvManagerConfig, NativeDiffusionConfig,
+    NativeLinearAttentionConfig, NativeMlaAttentionConfig, RequestMultimodalInputs,
     RequestWorkloadHints,
 };
 #[cfg(feature = "mlx-native")]
