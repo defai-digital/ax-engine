@@ -22,6 +22,7 @@ use super::super::profile::{
     record_linear_attention_profile_layer,
 };
 use super::utils::qw;
+use crate::batched_linear_state::BatchedLinearState;
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::{
@@ -125,6 +126,226 @@ pub(crate) fn linear_attention_forward(
         &[&out],
     );
     out
+}
+
+/// Batched (leading dim `B`) linear-attention decode forward — Phase 3.7.
+///
+/// Mirrors [`linear_attention_forward`] for a `[B, 1, hidden]` cohort, reading
+/// and writing per-row conv1d + recurrent state from a [`BatchedLinearState`]
+/// instead of the single-request [`MlxKVCache`]. `x` is the already
+/// attn-normed input (the caller applies `attn_norm`, exactly as the single-row
+/// path splits that step into the layer shell).
+///
+/// Correctness contract (oracle-tested): **row `r` of the output is
+/// byte-identical to a single-sequence decode of row `r`** through the portable
+/// composition. This path deliberately uses the portable projection + conv1d +
+/// qk-norm ops (all batch-general: they derive `batch` from `shape[0]`) rather
+/// than the batch=1-shaped Metal/direct-C++ decode fast paths, and the portable
+/// gated RMSNorm. The gated-delta recurrent kernel is already batch-native
+/// (dispatches over `batch * num_value_heads`, state `[B, Hv, Dv, Dk]`), so it
+/// is shared with the single-row path unchanged. Decode-only (`seq == 1`).
+pub(crate) fn linear_attention_forward_batched(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    lin_state: &mut BatchedLinearState,
+    layer_idx: usize,
+) -> MlxArray {
+    let linear_cfg = cfg
+        .linear_attention
+        .as_ref()
+        .expect("linear attention layer requires linear_attention config");
+    let linear_w = w
+        .linear_attn
+        .as_ref()
+        .expect("linear attention layer requires linear attention weights");
+    let batch = x.shape()[0];
+    let seq = x.shape()[1];
+    debug_assert_eq!(seq, 1, "batched linear-attention forward is decode-only");
+
+    let (qkv, z, a, b) = linear_attention_inputs_batched(linear_cfg, linear_w, x, batch, seq);
+
+    // Snapshot this layer's current per-row state (cloned so the store can be
+    // reborrowed mutably for the write-back below). `None` on the first step.
+    let (conv_state, recurrent_state) = match lin_state.layer_state(layer_idx) {
+        Some((conv, rec)) => (Some(conv.clone()), Some(rec.clone())),
+        None => (None, None),
+    };
+    let (q, k, v, new_conv_state) = linear_attention_post_input_batched(
+        linear_cfg,
+        linear_w,
+        &qkv,
+        conv_state.as_ref(),
+        cfg.rms_norm_eps,
+    );
+
+    // `a_log` / `dt_bias` are pre-cast to f32 at load time (see single-row path).
+    let a_log_f32 = linear_w.a_log.clone();
+    let dt_bias_f32 = linear_w.dt_bias.clone();
+    let state = recurrent_state.unwrap_or_else(|| {
+        zeros(
+            &[
+                batch,
+                linear_cfg.num_value_heads as i32,
+                linear_cfg.value_head_dim as i32,
+                linear_cfg.key_head_dim as i32,
+            ],
+            MlxDtype::Float32,
+            None,
+        )
+    });
+    let (out, new_recurrent_state) =
+        gated_delta_kernel(&q, &k, &v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
+    lin_state.update_layer(layer_idx, new_conv_state, new_recurrent_state);
+
+    // Portable gated RMSNorm (allow_full_gate_metal = false): batch-general.
+    let out =
+        rms_norm_gated_with_full_gate_policy(&out, &z, &linear_w.norm, cfg.rms_norm_eps, false);
+    let flat = reshape(&out, &[batch, seq, linear_cfg.value_dim() as i32], None);
+    qw(&flat, &linear_w.out_proj)
+}
+
+/// Batched projection stage for [`linear_attention_forward_batched`] — the
+/// portable mirror of [`linear_attention_inputs`]'s composition, with the
+/// leading dim parameterised to `batch` instead of hardcoded `1`. Skips the
+/// direct-C++ packed shim (whose shape filter assumes batch=1) so the graph is
+/// provably batch-general.
+fn linear_attention_inputs_batched(
+    cfg: &LinearAttentionConfig,
+    w: &LinearAttentionWeights,
+    x: &MlxArray,
+    batch: i32,
+    seq: i32,
+) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
+    if let (Some(qkvz_w), Some(ba_w)) = (&w.in_proj_qkvz, &w.in_proj_ba) {
+        let mixed_qkvz = qw(x, qkvz_w);
+        let value_heads_per_key = cfg.num_value_heads / cfg.num_key_heads;
+        let value_dim_per_key = value_heads_per_key * cfg.value_head_dim;
+        let qkvz_per_key = cfg.key_head_dim * 2 + value_dim_per_key * 2;
+        let mixed_qkvz = reshape(
+            &mixed_qkvz,
+            &[batch, seq, cfg.num_key_heads as i32, qkvz_per_key as i32],
+            None,
+        );
+        let q = slice_last_dim(&mixed_qkvz, 0, cfg.key_head_dim as i32, None);
+        let k = slice_last_dim(
+            &mixed_qkvz,
+            cfg.key_head_dim as i32,
+            (cfg.key_head_dim * 2) as i32,
+            None,
+        );
+        let v = slice_last_dim(
+            &mixed_qkvz,
+            (cfg.key_head_dim * 2) as i32,
+            (cfg.key_head_dim * 2 + value_dim_per_key) as i32,
+            None,
+        );
+        let z = slice_last_dim(
+            &mixed_qkvz,
+            (cfg.key_head_dim * 2 + value_dim_per_key) as i32,
+            qkvz_per_key as i32,
+            None,
+        );
+        let qkv = concatenate(
+            &[
+                &reshape(&q, &[batch, seq, cfg.key_dim() as i32], None),
+                &reshape(&k, &[batch, seq, cfg.key_dim() as i32], None),
+                &reshape(&v, &[batch, seq, cfg.value_dim() as i32], None),
+            ],
+            2,
+            None,
+        );
+        let z = reshape(
+            &z,
+            &[
+                batch,
+                seq,
+                cfg.num_value_heads as i32,
+                cfg.value_head_dim as i32,
+            ],
+            None,
+        );
+        let mixed_ba = qw(x, ba_w);
+        let ba = reshape(
+            &mixed_ba,
+            &[
+                batch,
+                seq,
+                cfg.num_key_heads as i32,
+                (value_heads_per_key * 2) as i32,
+            ],
+            None,
+        );
+        let b = reshape(
+            &slice_last_dim(&ba, 0, value_heads_per_key as i32, None),
+            &[batch, seq, cfg.num_value_heads as i32],
+            None,
+        );
+        let a = reshape(
+            &slice_last_dim(
+                &ba,
+                value_heads_per_key as i32,
+                (value_heads_per_key * 2) as i32,
+                None,
+            ),
+            &[batch, seq, cfg.num_value_heads as i32],
+            None,
+        );
+        return (qkv, z, a, b);
+    }
+
+    // Split (non-packed) projections — same portable ops, batch leading dim.
+    let qkv = qw(
+        x,
+        w.in_proj_qkv
+            .as_ref()
+            .expect("split linear attention must have qkv projection"),
+    );
+    let z = reshape(
+        &qw(
+            x,
+            w.in_proj_z
+                .as_ref()
+                .expect("split linear attention must have z projection"),
+        ),
+        &[
+            batch,
+            seq,
+            cfg.num_value_heads as i32,
+            cfg.value_head_dim as i32,
+        ],
+        None,
+    );
+    let a = qw(
+        x,
+        w.in_proj_a
+            .as_ref()
+            .expect("split linear attention must have a projection"),
+    );
+    let b = qw(
+        x,
+        w.in_proj_b
+            .as_ref()
+            .expect("split linear attention must have b projection"),
+    );
+    (qkv, z, a, b)
+}
+
+/// Batched conv1d + split + qk-norm — the portable branch of
+/// [`linear_attention_post_input`], which is already batch-general (the conv1d,
+/// split and normalize helpers derive `batch` from `shape[0]`).
+fn linear_attention_post_input_batched(
+    cfg: &LinearAttentionConfig,
+    w: &LinearAttentionWeights,
+    qkv: &MlxArray,
+    cached_conv_state: Option<&MlxArray>,
+    eps: f32,
+) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
+    let (conv_out, new_conv_state) =
+        linear_attention_conv1d(cfg, qkv, &w.conv1d_dense, cached_conv_state);
+    let split = split_linear_attention_qkv(cfg, &conv_out);
+    let (q, k) = normalize_linear_attention_qk(cfg, &split.q, &split.k, eps);
+    (q, k, split.v, new_conv_state)
 }
 
 /// Run the linear-attention post-input chain (conv1d + SiLU + split + per-head

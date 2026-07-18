@@ -116,12 +116,21 @@ impl StructuralCapabilities {
         if self.has_sliding_window {
             reasons.push("sliding_window");
         }
-        if self.has_moe {
+        // MoE is supported by the batched path only through the qwen3-next router
+        // (the batched FFN's `moe_router_qwen3` + `gather_qmm` experts). MoE
+        // *without* linear attention spans other router families — Mixtral,
+        // Llama-4, Gemma-4, GPT-OSS — whose routing the batched path does not
+        // implement, so those stay rejected. Gated-delta linear attention only
+        // ships in the qwen3-next family, so its presence certifies the router
+        // kind: a linear+MoE hybrid (Qwen3-Coder-Next, Qwen3.6-35B-A3B) is
+        // supported, and a linear+dense model (Qwen3.5-9B) trivially so.
+        if self.has_moe && !self.has_linear_attention {
             reasons.push("moe");
         }
-        if self.has_linear_attention {
-            reasons.push("linear_attention");
-        }
+        // Linear attention (gated-delta) is handled by the batched linear path
+        // (`BatchedLinearState` + the batch-native gated_delta kernel), so it is
+        // no longer a structural rejection. Numerical certification remains a
+        // separate per-model gate at the runner.
         if self.has_mla {
             reasons.push("mla");
         }

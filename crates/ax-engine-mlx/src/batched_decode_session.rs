@@ -21,6 +21,7 @@ use mlx_sys::{MlxArray, slice};
 
 use crate::batched_decode_certification::BatchedDecodeCertificationStatus;
 use crate::batched_kv_cache::BatchedKvCache;
+use crate::batched_linear_state::BatchedLinearState;
 use crate::batched_sampling::argmax_batched;
 use crate::kv_cache::MlxKVCache;
 use crate::model::{ModelConfig, decode_batched_forward};
@@ -172,6 +173,11 @@ impl BatchedDecodeCapabilities {
 /// A batched decode cohort with continuous join/leave.
 pub struct BatchedDecodeSession {
     cache: BatchedKvCache,
+    /// Per-row gated-delta recurrent state for hybrid (linear-attention) models,
+    /// indexed by linear-layer order. `None` for pure full-attention models;
+    /// lazily allocated on the first [`Self::add`] whose prefill reveals
+    /// linear-attention layers. Swap-removed in lockstep with `cache`.
+    lin_state: Option<BatchedLinearState>,
     /// `slot → request id`; `slot_req.len() == cache.batch()`.
     slot_req: Vec<u64>,
     /// `slot → current (last-produced) token`.
@@ -184,6 +190,7 @@ impl BatchedDecodeSession {
     pub fn new(num_layers: usize, max_batch: usize) -> Self {
         Self {
             cache: BatchedKvCache::with_capacity(num_layers, max_batch),
+            lin_state: None,
             slot_req: Vec::with_capacity(max_batch),
             cur: Vec::with_capacity(max_batch),
         }
@@ -237,29 +244,61 @@ impl BatchedDecodeSession {
             !self.slot_req.contains(&id),
             "request {id} already in session"
         );
+        // Lazily provision the linear-attention recurrent-state store the first
+        // time a hybrid model's prefill reveals gated-delta layers. Capacity
+        // mirrors the KV cache; the store is indexed by linear-layer order.
+        if self.lin_state.is_none() {
+            let num_linear = (0..self.cache.num_layers())
+                .filter(|&l| matches!(prefill.linear_state(l), (Some(_), Some(_))))
+                .count();
+            if num_linear > 0 {
+                self.lin_state = Some(BatchedLinearState::with_capacity(
+                    num_linear,
+                    self.cache.capacity(),
+                ));
+            }
+        }
+
         let slot = self.cache.add_active_row();
+        // Linear-attention layers' recurrent state, in linear-layer order, seeded
+        // into `lin_state` after the loop (one `add_row` per joining request).
+        let mut lin_convs: Vec<MlxArray> = Vec::new();
+        let mut lin_recs: Vec<MlxArray> = Vec::new();
         for layer in 0..self.cache.num_layers() {
-            let (k, v) = prefill
-                .peek_layer_kv(layer)
-                .expect("prefilled full-attention layer KV");
-            let full = k.shape()[2];
-            let keep = seed_len
-                .map(|n| n.min(full as usize) as i32)
-                .unwrap_or(full);
-            let (k, v) = if keep < full {
-                let heads = k.shape()[1];
-                let dim = k.shape()[3];
-                let ones = [1, 1, 1, 1];
-                (
-                    slice(&k, &[0, 0, 0, 0], &[1, heads, keep, dim], &ones, None),
-                    slice(&v, &[0, 0, 0, 0], &[1, heads, keep, dim], &ones, None),
-                )
+            if let Some((k, v)) = prefill.peek_layer_kv(layer) {
+                // Full-attention layer: seed KV (optionally the first `seed_len`).
+                let full = k.shape()[2];
+                let keep = seed_len
+                    .map(|n| n.min(full as usize) as i32)
+                    .unwrap_or(full);
+                let (k, v) = if keep < full {
+                    let heads = k.shape()[1];
+                    let dim = k.shape()[3];
+                    let ones = [1, 1, 1, 1];
+                    (
+                        slice(&k, &[0, 0, 0, 0], &[1, heads, keep, dim], &ones, None),
+                        slice(&v, &[0, 0, 0, 0], &[1, heads, keep, dim], &ones, None),
+                    )
+                } else {
+                    (k, v)
+                };
+                self.cache.seed_row_layer(layer, slot, &k, &v);
+            } else if let (Some(conv), Some(rec)) = prefill.linear_state(layer) {
+                // Linear-attention layer: the conv1d + recurrent state is a fixed
+                // per-row tensor (no length-varying KV), so no `seed_len` slice.
+                lin_convs.push(conv.clone());
+                lin_recs.push(rec.clone());
             } else {
-                (k, v)
-            };
-            self.cache.seed_row_layer(layer, slot, &k, &v);
+                panic!(
+                    "batched decode: layer {layer} has neither full-attention KV nor linear state"
+                );
+            }
         }
         self.cache.materialize();
+        if let Some(lin) = self.lin_state.as_mut() {
+            let lin_slot = lin.add_row(&lin_convs, &lin_recs);
+            debug_assert_eq!(lin_slot, slot, "linear-state slot must track the KV slot");
+        }
         self.slot_req.push(id);
         self.cur.push(first_token);
     }
@@ -275,6 +314,10 @@ impl BatchedDecodeSession {
         // Vec::swap_remove moves the LAST element into `slot` — exactly the
         // move BatchedKvCache::remove_active_row performs on the KV buffers.
         self.cache.remove_active_row(slot);
+        if let Some(lin) = self.lin_state.as_mut() {
+            // Same swap-remove on the recurrent state so its rows stay aligned.
+            lin.remove_row(slot);
+        }
         self.slot_req.swap_remove(slot);
         self.cur.swap_remove(slot);
         true
@@ -300,7 +343,13 @@ impl BatchedDecodeSession {
         if self.cache.batch() == 0 {
             return Vec::new();
         }
-        let logits = decode_batched_forward(cfg, weights, &self.cur, &mut self.cache);
+        let logits = decode_batched_forward(
+            cfg,
+            weights,
+            &self.cur,
+            &mut self.cache,
+            self.lin_state.as_mut(),
+        );
         let toks = argmax_batched(&logits);
         self.cur.copy_from_slice(&toks);
         self.slot_req
@@ -328,7 +377,13 @@ impl BatchedDecodeSession {
         if self.cache.batch() == 0 {
             return None;
         }
-        let logits = decode_batched_forward(cfg, weights, &self.cur, &mut self.cache);
+        let logits = decode_batched_forward(
+            cfg,
+            weights,
+            &self.cur,
+            &mut self.cache,
+            self.lin_state.as_mut(),
+        );
         Some((self.slot_req.clone(), logits))
     }
 }

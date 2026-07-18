@@ -3397,6 +3397,15 @@ fn moe_experts_forward_impl(
     shared_expert_out: Option<&MlxArray>,
 ) -> MlxArray {
     let seq = x.shape().get(1).copied().unwrap_or(1) as usize;
+    // Leading batch dim. Two decode-only Metal fast paths below hardcode a
+    // single batch lane in their grid/output shape (`moe_fused_activation_unsort_metal`
+    // emits `[1, 1, top_k, hidden]`, grid `top_k*hidden`; the deep-expert-block
+    // stub's contract is likewise batch=1). They engage on `seq == 1`, which is
+    // also true for a `[B, 1, hidden]` batched-decode cohort — so gate them on
+    // `batch == 1` too, or lanes 1..B-1 are silently dropped. The remaining MoE
+    // path (gather_qmm + packed SwiGLU/GeGLU + portable activation) is
+    // batch-general, so `[B, 1, hidden]` decodes correctly through it.
+    let batch = x.shape().first().copied().unwrap_or(1) as usize;
     let profile_decode = seq == 1 && decode_profile_enabled();
     let profile_prefill = seq > 1 && prefill_profile_enabled();
     let profile_moe = moe_profile_enabled();
@@ -3415,6 +3424,7 @@ fn moe_experts_forward_impl(
     // gate_up + SwiGLU + gather_qmm down + weighted-sum into one dispatch.
     // Falls back to the standard multi-dispatch path when ineligible.
     if seq == 1
+        && batch == 1
         && let Some(out) = try_moe_deep_expert_block_metal(cfg, w, x, top_k_indices, top_k_weights)
     {
         return out;
@@ -3468,6 +3478,7 @@ fn moe_experts_forward_impl(
         } else if !cfg.uses_geglu && seq == 1 && fastpath::moe_swiglu_packed_metal_enabled() {
             packed_swiglu_metal_impl(&out, half)
         } else if seq == 1
+            && batch == 1
             && !gather_inputs.sorted_indices
             && fastpath::moe_fused_expert_block_enabled()
         {

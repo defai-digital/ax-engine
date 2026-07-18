@@ -119,6 +119,34 @@ fn single_decode(
     stream
 }
 
+/// Batched streams via a [`BatchedDecodeSession`] — the production path, which
+/// seeds and advances per-row linear-attention recurrent state for hybrid
+/// (gated-delta) models. Each request is admitted from its own prefill and the
+/// full cohort steps `gen_len` times. Row `i`'s stream starts with its prefill
+/// token, exactly like [`single_decode`].
+fn batched_streams_via_session(
+    cfg: &ModelConfig,
+    w: &ModelWeights,
+    prompts: &[Vec<u32>],
+    max_batch: usize,
+    gen_len: usize,
+) -> Vec<Vec<u32>> {
+    let prefills: Vec<(MlxKVCache, u32)> = prompts.iter().map(|p| prefill(cfg, w, p)).collect();
+    let mut session = BatchedDecodeSession::new(cfg.layer_count, max_batch.max(prompts.len()));
+    let mut streams: Vec<Vec<u32>> = Vec::with_capacity(prompts.len());
+    for (i, (cache, tok0)) in prefills.iter().enumerate() {
+        session.add(i as u64, cache, *tok0);
+        streams.push(vec![*tok0]);
+    }
+    for _ in 0..gen_len {
+        for (id, tok) in session.step(cfg, w) {
+            streams[id as usize].push(tok);
+        }
+    }
+    clear_cache();
+    streams
+}
+
 /// Seed a fresh `BatchedKvCache` from B independent prefills; returns the cache
 /// and the per-row first token.
 fn seed_batched(
@@ -245,6 +273,11 @@ fn main() {
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
     let weights = load_weights(&artifacts).expect("load weights");
     let layers = cfg.layer_count;
+    // Hybrid = has gated-delta linear-attention layers (Qwen3-Next). Those carry
+    // per-row recurrent state that only the `BatchedDecodeSession` seeds/advances,
+    // so hybrid models certify + benchmark through the session, not the raw
+    // `decode_batched_forward(None)` manual path (which handles full-attention KV).
+    let hybrid = weights.layers.iter().any(|w| w.linear_attn.is_some());
     let prompts = build_prompts(batch, prompt_len, cfg.vocab_size);
 
     println!("# batched decode 2a probe");
@@ -261,17 +294,22 @@ fn main() {
     }
     clear_cache();
 
-    let (mut bcache, mut cur) = seed_batched(&cfg, &weights, &prompts, layers);
-    let mut batched_streams: Vec<Vec<u32>> = cur.iter().map(|&t| vec![t]).collect();
-    for _ in 0..gen_len {
-        let logits = decode_batched_forward(&cfg, &weights, &cur, &mut bcache);
-        let toks = argmax_batched(&logits);
-        for r in 0..batch {
-            batched_streams[r].push(toks[r]);
-            cur[r] = toks[r];
+    let batched_streams: Vec<Vec<u32>> = if hybrid {
+        batched_streams_via_session(&cfg, &weights, &prompts, batch, gen_len)
+    } else {
+        let (mut bcache, mut cur) = seed_batched(&cfg, &weights, &prompts, layers);
+        let mut streams: Vec<Vec<u32>> = cur.iter().map(|&t| vec![t]).collect();
+        for _ in 0..gen_len {
+            let logits = decode_batched_forward(&cfg, &weights, &cur, &mut bcache, None);
+            let toks = argmax_batched(&logits);
+            for r in 0..batch {
+                streams[r].push(toks[r]);
+                cur[r] = toks[r];
+            }
         }
-    }
-    clear_cache();
+        clear_cache();
+        streams
+    };
 
     let mut mismatches = 0usize;
     for r in 0..batch {
@@ -307,6 +345,16 @@ fn main() {
     }
 
     // ── Perf: aggregate tok/s, batched vs B× single-stream (interleaved) ──
+    // Hybrid models benchmark through the session (per-row recurrent state), which
+    // the batched-decode-ceiling-probe already drives; the manual arm below is the
+    // full-attention path, so skip it for hybrids.
+    if hybrid {
+        println!();
+        println!(
+            "# hybrid model: run `batched-decode-ceiling-probe {model_dir}` for aggregate tok/s"
+        );
+        return;
+    }
     let time_single = || {
         let mut caches: Vec<(MlxKVCache, u32)> =
             prompts.iter().map(|p| prefill(&cfg, &weights, p)).collect();
@@ -322,7 +370,7 @@ fn main() {
         clear_cache();
         let t0 = Instant::now();
         for _ in 0..gen_len {
-            let logits = decode_batched_forward(&cfg, &weights, &cur, &mut bc);
+            let logits = decode_batched_forward(&cfg, &weights, &cur, &mut bc, None);
             cur.copy_from_slice(&argmax_batched(&logits));
         }
         t0.elapsed().as_secs_f64()

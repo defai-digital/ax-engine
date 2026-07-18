@@ -326,7 +326,10 @@ mod tests {
     }
 
     #[test]
-    fn structural_caps_reject_hybrid_without_family_allowlist() {
+    fn structural_caps_accept_qwen3_next_linear_and_hybrid_moe() {
+        // Gated-delta linear attention is now handled by the batched linear path
+        // (Phase 3.7), so a qwen3_5 linear + dense-FFN model is structurally
+        // eligible (no sliding/mla/gating/moe here).
         let mut m = base_manifest("qwen3_5", 4);
         m.linear_attention = NativeLinearAttentionConfig {
             full_attention_interval: Some(4),
@@ -336,18 +339,45 @@ mod tests {
             value_head_dim: Some(32),
             conv_kernel_dim: Some(4),
         };
-        let spec = ArchitectureSpec::from_manifest(&m);
-        let reasons = spec
-            .capabilities
-            .dense_batched_decode_structural_rejections();
+        let caps = ArchitectureSpec::from_manifest(&m).capabilities;
+        let reasons = caps.dense_batched_decode_structural_rejections();
         assert!(
-            reasons.contains(&"linear_attention"),
-            "expected linear_attention rejection, got {reasons:?}"
+            !reasons.contains(&"linear_attention"),
+            "linear attention is no longer a structural rejection, got {reasons:?}"
         );
         assert!(
-            !spec
-                .capabilities
-                .is_structurally_dense_full_attention_only()
+            reasons.is_empty(),
+            "linear + dense qwen3_5 should be structurally eligible, got {reasons:?}"
+        );
+        // Still not the *dense full-attention* pilot shape.
+        assert!(!caps.is_structurally_dense_full_attention_only());
+
+        // Add MoE → qwen3-next linear + MoE hybrid (Coder-Next / 35B-A3B): still
+        // eligible, because linear attention certifies the qwen3 router kind.
+        m.moe.expert_count = Some(8);
+        m.moe.experts_per_token = Some(2);
+        m.moe.expert_intermediate_size = Some(64);
+        let caps_moe = ArchitectureSpec::from_manifest(&m).capabilities;
+        let reasons_moe = caps_moe.dense_batched_decode_structural_rejections();
+        assert!(
+            !reasons_moe.contains(&"moe"),
+            "linear + MoE hybrid should not be moe-rejected, got {reasons_moe:?}"
+        );
+    }
+
+    #[test]
+    fn structural_caps_reject_moe_without_linear_attention() {
+        // MoE without linear attention spans non-qwen3 routers (Mixtral, Llama-4,
+        // Gemma-4, GPT-OSS) the batched path does not implement — stays rejected.
+        let mut m = base_manifest("qwen3", 4);
+        m.moe.expert_count = Some(8);
+        m.moe.experts_per_token = Some(2);
+        m.moe.expert_intermediate_size = Some(64);
+        let caps = ArchitectureSpec::from_manifest(&m).capabilities;
+        assert!(
+            caps.dense_batched_decode_structural_rejections()
+                .contains(&"moe"),
+            "MoE without linear attention must stay structurally rejected"
         );
     }
 

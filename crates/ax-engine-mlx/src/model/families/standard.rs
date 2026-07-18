@@ -55,14 +55,16 @@ use super::super::shared::{
     attention_output_projection_batched, bidirectional_attention,
     direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, ffn_swiglu_batched,
     flatten_attention_output_bhsd, flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs,
-    full_precision_attention, moe_experts_forward, moe_experts_forward_gemma4,
-    moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared, moe_router_gemma4,
-    moe_router_glm, moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
-    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project,
-    qkv_project_batched, qw, rms_norm_opt, shape_element_count, shared_expert_forward,
+    full_precision_attention, linear_attention_forward_batched, moe_experts_forward,
+    moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
+    moe_experts_forward_with_shared, moe_router_gemma4, moe_router_glm, moe_router_qwen3,
+    per_layer_input_gate_project, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
+    qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qkv_project_batched, qw, rms_norm_opt,
+    shape_element_count, shared_expert_forward,
 };
 use crate::attention_mask::create_ring_sliding_mask;
 use crate::batched_kv_cache::BatchedKvCache;
+use crate::batched_linear_state::BatchedLinearState;
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::per_layer_compile::{apply_layer_gemma4_dual_path_decode, apply_layer_moe_decode};
@@ -964,10 +966,6 @@ pub fn layer_forward_batched(
         "batched decode (2a): sliding-window layers unsupported"
     );
     assert!(
-        w.router_proj.is_none(),
-        "batched decode (2a): MoE layers unsupported"
-    );
-    assert!(
         w.per_layer_gate.is_none() && w.layer_scalar.is_none(),
         "batched decode (2a): per-layer-input gating / layer scalar unsupported"
     );
@@ -1071,10 +1069,72 @@ pub fn layer_forward_batched(
     mark(2, &[&hidden]);
 
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
-    let ffn_out = ffn_swiglu_batched(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx);
+    let ffn_out = ffn_batched(cfg, w, &normed2, layer_idx);
     let out = add(&hidden, &ffn_out, None);
     mark(3, &[&out]);
     out
+}
+
+/// Batched decode FFN — dense SwiGLU or sparse MoE, matching the single-row
+/// dispatch (`layer_forward` / `qwen3_linear::layer_forward`) for a
+/// `[B, 1, hidden]` cohort.
+///
+/// Dense path routes through [`ffn_swiglu_batched`] (row-exact / shared
+/// projection policy, Phase 3.5). MoE path uses the qwen3 router + experts,
+/// which are batch-general for `[B, 1, hidden]`: the router falls back off its
+/// batch=1 fused kernel, `gather_qmm` broadcasts the batch dim, and the one
+/// batch=1-shaped activation fast path is guarded off (see
+/// `moe_experts_forward_impl`). Expert selection therefore stays per-row; only
+/// the shared quantized reductions carry the usual batched-kernel bf16 drift,
+/// which decode certification bounds to greedy-token parity.
+fn ffn_batched(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    normed2: &MlxArray,
+    layer_idx: usize,
+) -> MlxArray {
+    if w.router_proj.is_none() {
+        return ffn_swiglu_batched(cfg, w, normed2, w.ffn_post_norm.as_ref(), layer_idx);
+    }
+    assert!(
+        !cfg.gemma4_moe_router,
+        "batched decode: gemma4 MoE router unsupported"
+    );
+    let (top_k_indices, top_k_weights) = moe_router_qwen3(cfg, w, normed2);
+    let out = if w.shared_gate_proj.is_some() {
+        let shared = shared_expert_forward(cfg, w, normed2);
+        moe_experts_forward_with_shared(cfg, w, normed2, &top_k_indices, &top_k_weights, &shared)
+    } else {
+        moe_experts_forward(cfg, w, normed2, &top_k_indices, &top_k_weights)
+    };
+    rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
+}
+
+/// Batched decode forward for a linear-attention (gated-delta) layer — the
+/// [`layer_forward_batched`] sibling for Qwen3-Next's linear layers. Mirrors
+/// `qwen3_linear::layer_forward` for a `[B, 1, hidden]` cohort: attn-norm →
+/// batched gated-delta ([`linear_attention_forward_batched`], reading/writing
+/// per-row state in `lin_state`) → residual → ffn-norm → batched FFN (dense or
+/// MoE) → residual. No KV cache (the recurrent state carries the history), so
+/// no offsets/mask. Decode-only.
+pub fn layer_forward_batched_linear(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    lin_state: &mut BatchedLinearState,
+    layer_idx: usize,
+) -> MlxArray {
+    assert!(
+        w.per_layer_gate.is_none() && w.layer_scalar.is_none(),
+        "batched decode: per-layer-input gating / layer scalar unsupported"
+    );
+    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+    let attn_proj = linear_attention_forward_batched(cfg, w, &normed, lin_state, layer_idx);
+    let hidden = add(hidden, &attn_proj, None);
+
+    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    let ffn_out = ffn_batched(cfg, w, &normed2, layer_idx);
+    add(&hidden, &ffn_out, None)
 }
 
 // ---------------------------------------------------------------------------

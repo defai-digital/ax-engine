@@ -492,6 +492,7 @@ pub fn decode_batched_forward(
     weights: &ModelWeights,
     tokens: &[u32],
     cache: &mut crate::batched_kv_cache::BatchedKvCache,
+    mut lin_state: Option<&mut crate::batched_linear_state::BatchedLinearState>,
 ) -> MlxArray {
     assert_eq!(
         tokens.len(),
@@ -515,10 +516,26 @@ pub fn decode_batched_forward(
         key_len,
     ));
 
+    // `BatchedLinearState` is indexed by linear-layer order (0, 1, 2, …), not
+    // global layer index, so linear layers carry a running counter. Full-attention
+    // layers decode through the KV-cache path; gated-delta layers advance their
+    // per-row recurrent state in `lin_state` (which must be present for a hybrid
+    // model — the runner routes only certified, correctly-provisioned cohorts here).
+    let mut linear_idx = 0usize;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        hidden = families::standard::layer_forward_batched(
-            cfg, layer_w, &hidden, cache, li, &offsets, &mask,
-        );
+        if layer_w.linear_attn.is_some() {
+            let lin = lin_state
+                .as_deref_mut()
+                .expect("batched decode: linear-attention layer requires a BatchedLinearState");
+            hidden = families::standard::layer_forward_batched_linear(
+                cfg, layer_w, &hidden, lin, linear_idx,
+            );
+            linear_idx += 1;
+        } else {
+            hidden = families::standard::layer_forward_batched(
+                cfg, layer_w, &hidden, cache, li, &offsets, &mask,
+            );
+        }
     }
     cache.advance_all(1);
 
@@ -5194,6 +5211,176 @@ mod tests {
 
         assert_eq!(out.shape(), vec![1, 2, 8]);
         assert_eq!(cache.collect_eval_refs().len(), 2);
+    }
+
+    /// Deterministic patterned values in `[lo, hi)` — non-trivial weights/inputs
+    /// so a batching bug that cross-contaminates rows actually changes results.
+    fn pat(n: usize, seed: u64, lo: f32, hi: f32) -> Vec<f32> {
+        (0..n)
+            .map(|i| {
+                let x = (i as u64)
+                    .wrapping_mul(2_654_435_761)
+                    .wrapping_add(seed.wrapping_mul(40_503))
+                    .wrapping_add(0x9E37_79B9);
+                let unit = (x % 4096) as f32 / 4096.0;
+                lo + unit * (hi - lo)
+            })
+            .collect()
+    }
+
+    /// Linear-attention layer weights (split projections) with patterned,
+    /// non-trivial values — for the batched-vs-single-row oracle.
+    fn patterned_linear_layer_weights(cfg: &LinearAttentionConfig, hidden: usize) -> LayerWeights {
+        let mut w = qwen35_linear_layer_weights(cfg, hidden);
+        let h = hidden as i32;
+        let conv_dim = cfg.conv_dim() as i32;
+        let value_dim = cfg.value_dim() as i32;
+        let hv = cfg.num_value_heads as i32;
+        let lin = LinearAttentionWeights {
+            in_proj_qkv: Some(dense_weight_from_data(
+                &pat((conv_dim * h) as usize, 1, -0.5, 0.5),
+                &[conv_dim, h],
+            )),
+            in_proj_z: Some(dense_weight_from_data(
+                &pat((value_dim * h) as usize, 2, -0.5, 0.5),
+                &[value_dim, h],
+            )),
+            in_proj_a: Some(dense_weight_from_data(
+                &pat((hv * h) as usize, 3, -0.5, 0.5),
+                &[hv, h],
+            )),
+            in_proj_b: Some(dense_weight_from_data(
+                &pat((hv * h) as usize, 4, -0.5, 0.5),
+                &[hv, h],
+            )),
+            in_proj_qkvz: None,
+            in_proj_ba: None,
+            conv1d_dense: array_f32(
+                &pat(
+                    (conv_dim * cfg.conv_kernel_dim as i32) as usize,
+                    5,
+                    -0.3,
+                    0.3,
+                ),
+                &[conv_dim, cfg.conv_kernel_dim as i32, 1],
+            ),
+            dt_bias: array_f32(&pat(hv as usize, 6, -0.5, 0.5), &[hv]),
+            // A_log stays modest: g = exp(-exp(a_log) * softplus(...)) ∈ (0, 1).
+            a_log: array_f32(&pat(hv as usize, 7, -1.0, 0.5), &[hv]),
+            norm: array_f32(
+                &pat(cfg.value_head_dim, 8, 0.5, 1.5),
+                &[cfg.value_head_dim as i32],
+            ),
+            out_proj: dense_weight_from_data(
+                &pat((h * value_dim) as usize, 9, -0.5, 0.5),
+                &[h, value_dim],
+            ),
+        };
+        w.linear_attn = Some(lin);
+        w
+    }
+
+    /// Phase 3.7 oracle: batching B linear-attention rows must be **byte-identical**
+    /// to B independent single-row decodes — for BOTH the layer output and the
+    /// post-step conv/recurrent state. This is where silent numerical batching
+    /// bugs (a reshape that mixes the batch axis into seq/heads, or state
+    /// threaded to the wrong row) would surface. Compares row `r` of a batch=B
+    /// run against a standalone batch=1 run of that same row through the exact
+    /// same code path.
+    #[test]
+    fn batched_linear_attention_row_is_byte_identical_to_single_row() {
+        use crate::batched_linear_state::BatchedLinearState;
+
+        let mut cfg = cfg(true);
+        cfg.hidden_size = 8;
+        cfg.linear_attention = Some({
+            let (q_scale, k_scale) = crate::linear_attention_ops::linear_attention_qk_scale(32);
+            LinearAttentionConfig {
+                full_attention_interval: 4,
+                num_value_heads: 1,
+                num_key_heads: 1,
+                key_head_dim: 32,
+                value_head_dim: 4,
+                conv_kernel_dim: 4,
+                q_scale,
+                k_scale,
+            }
+        });
+        let linear_cfg = cfg.linear_attention.as_ref().unwrap().clone();
+        let weights = patterned_linear_layer_weights(&linear_cfg, cfg.hidden_size);
+
+        const B: usize = 4;
+        let h = cfg.hidden_size as i32;
+        let conv_dim = linear_cfg.conv_dim() as i32;
+        let tail = linear_cfg.conv_kernel_dim as i32 - 1;
+        let hv = linear_cfg.num_value_heads as i32;
+        let dv = linear_cfg.value_head_dim as i32;
+        let dk = linear_cfg.key_head_dim as i32;
+
+        // Distinct per-row input, conv state, recurrent state.
+        let xs: Vec<MlxArray> = (0..B)
+            .map(|r| array_f32(&pat(h as usize, 100 + r as u64, -1.0, 1.0), &[1, 1, h]))
+            .collect();
+        let convs: Vec<MlxArray> = (0..B)
+            .map(|r| {
+                array_f32(
+                    &pat((tail * conv_dim) as usize, 200 + r as u64, -0.4, 0.4),
+                    &[1, tail, conv_dim],
+                )
+            })
+            .collect();
+        let recs: Vec<MlxArray> = (0..B)
+            .map(|r| {
+                array_f32(
+                    &pat((hv * dv * dk) as usize, 300 + r as u64, -0.3, 0.3),
+                    &[1, hv, dv, dk],
+                )
+            })
+            .collect();
+
+        // Reference: each row alone through the same batched function (B == 1).
+        let mut ref_out = Vec::new();
+        let mut ref_conv = Vec::new();
+        let mut ref_rec = Vec::new();
+        for r in 0..B {
+            let mut s1 = BatchedLinearState::with_capacity(1, 1);
+            s1.add_row(&[convs[r].clone()], &[recs[r].clone()]);
+            let out = linear_attention_forward_batched(&cfg, &weights, &xs[r], &mut s1, 0);
+            let (c, rc) = s1.row_state(0, 0).unwrap();
+            eval(&[&out, &c, &rc]);
+            ref_out.push(out.data_f32().to_vec());
+            ref_conv.push(c.data_f32().to_vec());
+            ref_rec.push(rc.data_f32().to_vec());
+        }
+
+        // Batched: all B rows together in one forward.
+        let mut sb = BatchedLinearState::with_capacity(1, B);
+        for r in 0..B {
+            sb.add_row(&[convs[r].clone()], &[recs[r].clone()]);
+        }
+        let x_batch = mlx_sys::concatenate(&xs.iter().collect::<Vec<_>>(), 0, None);
+        let out_batch = linear_attention_forward_batched(&cfg, &weights, &x_batch, &mut sb, 0);
+        eval(&[&out_batch]);
+        assert_eq!(out_batch.shape(), vec![B as i32, 1, h]);
+
+        for r in 0..B {
+            let row = mlx_sys::slice(
+                &out_batch,
+                &[r as i32, 0, 0],
+                &[r as i32 + 1, 1, h],
+                &[1, 1, 1],
+                None,
+            );
+            let (c, rc) = sb.row_state(0, r).unwrap();
+            eval(&[&row, &c, &rc]);
+            assert_eq!(row.data_f32(), ref_out[r], "output row {r} diverged");
+            assert_eq!(c.data_f32(), ref_conv[r], "conv state row {r} diverged");
+            assert_eq!(
+                rc.data_f32(),
+                ref_rec[r],
+                "recurrent state row {r} diverged"
+            );
+        }
     }
 
     #[test]

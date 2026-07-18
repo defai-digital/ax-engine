@@ -17,7 +17,7 @@ pub(crate) use attention::{
     prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj_flat, qk_norm_rope_bhsd_from_proj_with_route,
 };
-pub(crate) use linear_attention::linear_attention_forward;
+pub(crate) use linear_attention::{linear_attention_forward, linear_attention_forward_batched};
 pub(crate) use mla::glm_mla_attention_forward;
 #[cfg(test)]
 pub(crate) use mlp::per_layer_input_gate;
