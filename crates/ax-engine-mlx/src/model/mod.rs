@@ -5290,7 +5290,7 @@ mod tests {
     /// run against a standalone batch=1 run of that same row through the exact
     /// same code path.
     #[test]
-    fn batched_linear_attention_row_is_byte_identical_to_single_row() {
+    fn batched_linear_attention_row_matches_single_row_with_byte_identical_state() {
         use crate::batched_linear_state::BatchedLinearState;
 
         let mut cfg = cfg(true);
@@ -5375,7 +5375,26 @@ mod tests {
             );
             let (c, rc) = sb.row_state(0, r).unwrap();
             eval(&[&row, &c, &rc]);
-            assert_eq!(row.data_f32(), ref_out[r], "output row {r} diverged");
+            // The conv + recurrent states must stay BYTE-identical: they
+            // compound across decode steps, so any batched-vs-single drift
+            // there diverges a whole request. The projected output row is
+            // held to a tight per-element tolerance instead — MLX dispatches
+            // the output-projection matmul to different kernels for [1,·]
+            // vs [B,·] shapes on some hardware (different reduction order;
+            // observed 2026-07 on M-series under pip 0.31.2, pip 0.32.0, and
+            // Homebrew 0.31.2 alike: every element off by ~1e-4..2.2e-4
+            // while both states remained exactly equal). That per-step
+            // rounding does not accumulate; token-exactness of the serving
+            // path is gated separately at the runner level (ADR-037).
+            const OUT_ROW_ABS_TOLERANCE: f32 = 5e-4;
+            let row_data = row.data_f32();
+            assert_eq!(row_data.len(), ref_out[r].len(), "output row {r} shape");
+            for (index, (batched, single)) in row_data.iter().zip(&ref_out[r]).enumerate() {
+                assert!(
+                    (batched - single).abs() <= OUT_ROW_ABS_TOLERANCE,
+                    "output row {r}[{index}] diverged beyond tolerance: {batched} vs {single}"
+                );
+            }
             assert_eq!(c.data_f32(), ref_conv[r], "conv state row {r} diverged");
             assert_eq!(
                 rc.data_f32(),
