@@ -65,6 +65,21 @@ provenance, and enough metadata to rerun or reject the claim.
 | [Benchmark Design](../BENCH-DESIGN.md) | Workload contracts, manifests, fail-closed gates |
 | [Serving Benchmarks](../SERVING-BENCHMARKS.md) | Online prompt mix, concurrency, SLO goodput |
 
+## Decode Dispatch Efficiency Program (Phases 0–3)
+
+Outcome of the dispatch-bound decode optimization program (ADR-003). All numbers
+Apple M3 Max, MLX 0.32.0. "Parity" = greedy decode-trace FNV checksum.
+
+| Outcome | What | Evidence |
+| --- | --- | --- |
+| **Shipped, default-on** | `AX_MLX_AUTO_BUFFER_CAPS` — raise MLX per-buffer caps so `gather_qmm` stops splitting MoE command buffers. Coder-Next **1.25×**, 35B-A3B **1.11×** decode, parity clean. | [gather-qmm-async-serialization.md](gather-qmm-async-serialization.md) |
+| **Shipped, default-on** | `AX_MLX_BATCHED_SHARED_PROJ` — Shared batched projection policy for dense continuous decode: **+56%** aggregate at B=4, token-identical. | [batched-decode-ceiling.md](batched-decode-ceiling.md) |
+| **Shipped** | Runner split (5 slices, −4.2k lines) + decode-skeleton I1/I2 (typed direct-pipeline state, centralized barrier/readback). | internal spec |
+| **Opt-in, uncertified** | Batched decode for the Qwen3-Next hybrid (MoE + linear attention). Correct forward (B=1 token-exact), amortizes **1.73/2.64/3.84×** at B=2/4/8, but B>1 drifts from per-row (batched-MoE `gather_qmm` reductions) → fails bit-exact greedy parity, stays behind `AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED`. | [batched-hybrid-moe-linear-decode.md](batched-hybrid-moe-linear-decode.md) |
+| **Closed by decision** | Phase 2 decode-skeleton unification — banked I1/I2 + split; the `DecodeRoute` trait fold (I4–I7) is parked: both drivers dissolved (batched extension shipped without it; overlap fix is upstream-gated). | internal spec §8 |
+| **Upstream-gated** | Per-layer graph compile / zero-bubble overlap — decode is host-graph-encoding-bound, and the only lever is blocked on MLX GatherQMM shapeless-compile. | [ax-decode-overlap-residual.md](ax-decode-overlap-residual.md), [mlx-upstream-issue-gather-qmm-buffer-accounting.md](mlx-upstream-issue-gather-qmm-buffer-accounting.md) |
+| **Needs product sign-off** | Phase 3 remainder: B-buckets, fair prefill, paged KV as capacity. | — |
+
 ## Investigation Notes
 
 Historical or diagnostic context unless a current results page links a fresh
@@ -72,6 +87,12 @@ artifact.
 
 | Report | Use it for |
 | --- | --- |
+| [phase0-overlap-bandwidth-mtp.md](phase0-overlap-bandwidth-mtp.md) | Phase 0 measurement: host/GPU overlap, MoE bandwidth utilization, MTP clone cost |
 | [decode-gap.md](decode-gap.md) | Direct-decode gap analysis against `mlx_lm.benchmark` |
+| [gather-qmm-async-serialization.md](gather-qmm-async-serialization.md) | `gather_qmm` buffer-accounting root cause + the shipped auto-buffer-caps fix |
+| [ax-decode-overlap-residual.md](ax-decode-overlap-residual.md) | Why the decode overlap residual is host-graph-encoding-bound, not a sync bug |
+| [batched-decode-ceiling.md](batched-decode-ceiling.md) | Batched-decode amortization ceiling + the Shared projection default-flip |
+| [batched-hybrid-moe-linear-decode.md](batched-hybrid-moe-linear-decode.md) | Phase 3.7 hybrid (MoE + linear) batched decode: capability, amortization, drift |
 | [moe-bandwidth-gap.md](moe-bandwidth-gap.md) | Qwen3-Coder-Next MoE bandwidth diagnosis |
 | [moe-fused-downproj.md](moe-fused-downproj.md) | Failed fused-downprojection report and lessons |
+| [mlx-upstream-issue-gather-qmm-buffer-accounting.md](mlx-upstream-issue-gather-qmm-buffer-accounting.md) | Upstream MLX report draft (GatherQMM buffer accounting) |
