@@ -78,7 +78,8 @@ Apple M3 Max, MLX 0.32.0. "Parity" = greedy decode-trace FNV checksum.
 | **Opt-in, uncertified** | Batched decode for the Qwen3-Next hybrid (MoE + linear attention). Correct forward (B=1 token-exact), amortizes **1.73/2.64/3.84×** at B=2/4/8, but B>1 drifts from per-row (batched-MoE `gather_qmm` reductions) → fails bit-exact greedy parity, stays behind `AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED`. | [batched-hybrid-moe-linear-decode.md](batched-hybrid-moe-linear-decode.md) |
 | **Closed by decision** | Phase 2 decode-skeleton unification — banked I1/I2 + split; the `DecodeRoute` trait fold (I4–I7) is parked: both drivers dissolved (batched extension shipped without it; overlap fix is upstream-gated). | internal spec §8 |
 | **Upstream-gated** | Per-layer graph compile / zero-bubble overlap — decode is host-graph-encoding-bound, and the only lever is blocked on MLX GatherQMM shapeless-compile. | [ax-decode-overlap-residual.md](ax-decode-overlap-residual.md), [mlx-upstream-issue-gather-qmm-buffer-accounting.md](mlx-upstream-issue-gather-qmm-buffer-accounting.md) |
-| **Needs product sign-off** | Phase 3 remainder: B-buckets, fair prefill, paged KV as capacity. | — |
+| **Built, evidence-gated for default-on** | **Fair chunked-prefill interleave** — the scheduler already caps a lone prefill (`max_prefill_tokens_per_request_per_step`) so it can't inflate an active decode cohort's step; verified by a scheduler test. Default-on needs a serving A/B (`scripts/bench_ax_serving.py`). **B-bucket primitive** — the batch-size snap helper (`AX_MLX_DECODE_BATCH_BUCKETS`, default off) is built + tested; padding the cohort is deferred until the batched forward is compiled per shape (eager-path padding is a likely regression). | scheduler tests; `batched_decode_session.rs` |
+| **Needs product sign-off** | Phase 3 remainder: paged KV as capacity. | — |
 
 ## Investigation Notes
 

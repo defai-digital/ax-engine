@@ -77,6 +77,78 @@ pub fn batched_decode_allow_uncertified() -> bool {
     })
 }
 
+/// Batch-size buckets for the batched decode forward (Phase 3 "B-buckets").
+///
+/// As requests join/leave, the active cohort size B fluctuates and each distinct
+/// B is a distinct forward graph shape. Snapping B up to a bucket (and padding
+/// the cohort to it) bounds the number of shapes MLX ever plans/encodes — the
+/// batch-size analogue of the embed `max_len` buckets — and is the compile-cache
+/// key once the batched forward is compiled per shape.
+///
+/// Powers of two: fewest distinct shapes, at most `active-1` pad rows.
+///
+/// Staged primitive: the helper is built + oracle-tested but **not yet wired**.
+/// Wiring it means padding the cohort (KV cache + linear state + mask) to the
+/// bucket each step, whose payoff only materializes once the batched forward is
+/// compiled per shape — on the current eager path the pad compute is a likely
+/// regression, so padding is deferred (see `docs/performance/README.md`). Landed
+/// now, like `BatchedLinearState` was, so the bucket math is ready + verified.
+#[allow(dead_code)]
+pub(crate) const DEFAULT_DECODE_BATCH_BUCKETS: &[usize] = &[1, 2, 4, 8, 16, 32, 64];
+
+/// Smallest bucket `>= active`; returns `active` unchanged when it exceeds every
+/// bucket (unbounded tail) or `buckets` is empty. Pure — the env/caching wrapper
+/// is [`decode_batch_bucket`].
+#[allow(dead_code)]
+fn snap_batch_to_buckets(active: usize, buckets: &[usize]) -> usize {
+    buckets
+        .iter()
+        .copied()
+        .find(|&b| active <= b)
+        .unwrap_or(active)
+}
+
+/// `AX_MLX_DECODE_BATCH_BUCKETS` — snap the active batched-decode cohort size up
+/// to a fixed bucket (padding the cohort) for graph-shape stability.
+///
+/// **Default: OFF.** Unlike the embed `max_len` buckets (default-on, where the
+/// path is compiled so bucketing yields compile-cache hits), the batched decode
+/// forward is still eager, so bucketing trades pad compute for shape stability
+/// with no compile-cache payoff yet — an empirical question the A/B probe must
+/// answer before any default-flip. `off`/`0` disable; `on`/`1` use the default
+/// list; `2,4,8,16` a custom list.
+#[allow(dead_code)] // staged: wired when the batched forward is compiled per shape
+pub(crate) fn decode_batch_bucket(active: usize) -> usize {
+    static BUCKETS: OnceLock<Option<Vec<usize>>> = OnceLock::new();
+    let buckets = BUCKETS.get_or_init(|| match std::env::var("AX_MLX_DECODE_BATCH_BUCKETS") {
+        Err(_) => None, // default OFF
+        Ok(raw) => {
+            let t = raw.trim().to_ascii_lowercase();
+            if t.is_empty() || matches!(t.as_str(), "0" | "false" | "off" | "no") {
+                return None;
+            }
+            if matches!(t.as_str(), "1" | "true" | "on" | "yes" | "default") {
+                return Some(DEFAULT_DECODE_BATCH_BUCKETS.to_vec());
+            }
+            let mut b: Vec<usize> = t
+                .split(',')
+                .filter_map(|s| s.trim().parse::<usize>().ok())
+                .filter(|v| *v > 0)
+                .collect();
+            if b.is_empty() {
+                return None;
+            }
+            b.sort_unstable();
+            b.dedup();
+            Some(b)
+        }
+    });
+    match buckets.as_ref() {
+        Some(b) => snap_batch_to_buckets(active, b),
+        None => active,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BatchedDecodeCapabilities {
     certification_status: BatchedDecodeCertificationStatus,
@@ -733,5 +805,31 @@ mod tests {
         assert!(!caps.eligible(false));
         assert!(caps.eligible(true));
         assert_eq!(caps.rejection_reasons(false), vec!["certification_missing"]);
+    }
+
+    #[test]
+    fn snap_batch_to_buckets_rounds_up_to_the_next_bucket() {
+        let d = DEFAULT_DECODE_BATCH_BUCKETS;
+        assert_eq!(snap_batch_to_buckets(0, d), 1);
+        assert_eq!(snap_batch_to_buckets(1, d), 1);
+        assert_eq!(snap_batch_to_buckets(2, d), 2);
+        assert_eq!(snap_batch_to_buckets(3, d), 4);
+        assert_eq!(snap_batch_to_buckets(5, d), 8);
+        assert_eq!(snap_batch_to_buckets(8, d), 8);
+        assert_eq!(snap_batch_to_buckets(9, d), 16);
+        // Beyond the largest bucket: identity (no unbounded padding).
+        assert_eq!(snap_batch_to_buckets(65, d), 65);
+        // Custom list.
+        assert_eq!(snap_batch_to_buckets(10, &[2, 4, 8, 16]), 16);
+        // Empty list: identity.
+        assert_eq!(snap_batch_to_buckets(7, &[]), 7);
+    }
+
+    #[test]
+    fn decode_batch_bucket_is_identity_by_default() {
+        // Default OFF (no AX_MLX_DECODE_BATCH_BUCKETS in the test env): no padding.
+        for b in [1usize, 3, 5, 7, 13, 100] {
+            assert_eq!(decode_batch_bucket(b), b);
+        }
     }
 }

@@ -1721,6 +1721,66 @@ mod tests {
     }
 
     #[test]
+    fn fair_prefill_interleave_bounds_a_lone_prefill_sharing_the_decode_cohort_step() {
+        // The "fair chunked-prefill interleave" property (Phase 3): when a single
+        // new prefill shares a step with an active decode cohort, the per-request
+        // cap chunks that prefill so it cannot inflate the whole cohort's step
+        // latency. Decode is priority 0 (served first, in full); the lone prefill
+        // is bounded to the cap instead of grabbing the (ample) residual budget.
+        let scheduler = Scheduler::new();
+        let cohort_and_prefill = || {
+            SchedulerInput::new(
+                StepId(50),
+                vec![
+                    make_snapshot(1, 1, "qwen3", &[7; 8], 8, &[42], 128), // decode
+                    make_snapshot(2, 2, "qwen3", &[7; 8], 8, &[43], 128), // decode
+                    make_snapshot(3, 3, "qwen3", &[9; 256], 0, &[], 128), // long new prefill
+                ],
+                None,
+                4096, // ample: an uncapped lone prefill would take all 256 tokens
+            )
+        };
+        let find = |batch: &ExecutionBatch, id: u64| {
+            batch
+                .items
+                .iter()
+                .find(|it| it.request_id.0 == id)
+                .expect("item present")
+                .clone()
+        };
+
+        // Cap ON: prefill chunked to 32; decode cohort untouched (1 token each).
+        let mut capped = cohort_and_prefill();
+        capped.multi_prefill_fair = true;
+        capped.max_prefill_tokens_per_request_per_step = 32;
+        capped.block_size_tokens = 16;
+        capped.available_kv_blocks = 1024;
+        capped.total_kv_blocks = 1024;
+        let batch = scheduler.plan(&capped).execution_batch.expect("batch");
+        assert_eq!(find(&batch, 1).mode, ExecutionMode::Decode);
+        assert_eq!(find(&batch, 1).scheduled_token_count, 1);
+        assert_eq!(find(&batch, 2).scheduled_token_count, 1);
+        assert_eq!(find(&batch, 3).mode, ExecutionMode::Prefill);
+        assert_eq!(
+            find(&batch, 3).scheduled_token_count,
+            32,
+            "lone prefill must be chunked to the interleave cap, not the residual budget"
+        );
+
+        // Cap OFF (0): the same lone prefill grabs its whole 256-token prompt in
+        // one step — the latency spike the interleave cap exists to prevent. This
+        // asserts the cap is load-bearing, not incidental.
+        let mut uncapped = cohort_and_prefill();
+        uncapped.multi_prefill_fair = true;
+        uncapped.max_prefill_tokens_per_request_per_step = 0;
+        uncapped.block_size_tokens = 16;
+        uncapped.available_kv_blocks = 1024;
+        uncapped.total_kv_blocks = 1024;
+        let batch = scheduler.plan(&uncapped).execution_batch.expect("batch");
+        assert_eq!(find(&batch, 3).scheduled_token_count, 256);
+    }
+
+    #[test]
     fn fair_multi_prefill_headroom_limits_admission() {
         let scheduler = Scheduler::new();
         // fair_chunk=16, block_size=16 → 1 block per prefill; available=1 → admit 1.
