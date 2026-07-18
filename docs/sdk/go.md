@@ -88,7 +88,7 @@ client := axengine.NewClient(&axengine.ClientOptions{
 resp, err := client.Health(ctx)
 
 // GET /v1/runtime (ax-engine server info)
-// (call via Generate or ChatCompletion to get runtime in response)
+info, err := client.Runtime(ctx)
 
 // Native ax-engine generate (token-based)
 resp, err := client.Generate(ctx, axengine.PreviewGenerateRequest{

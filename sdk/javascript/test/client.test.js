@@ -14,11 +14,11 @@ test("type declarations expose multi-model lifecycle", async () => {
   assert.match(declarations, /load_mode\?: "replace" \| "add"/);
   assert.match(
     declarations,
-    /loadModel\(request: LoadModelRequest\): Promise<LoadModelResponse>/,
+    /loadModel\(request: LoadModelRequest, options\?: RequestOptions\): Promise<LoadModelResponse>/,
   );
   assert.match(
     declarations,
-    /unloadModel\(request: UnloadModelRequest\): Promise<UnloadModelResponse>/,
+    /unloadModel\(request: UnloadModelRequest, options\?: RequestOptions\): Promise<UnloadModelResponse>/,
   );
 });
 
@@ -90,6 +90,26 @@ test("type declarations allow minimal health responses", async () => {
 
   assert.match(declarations, /model_id\?: string/);
   assert.match(declarations, /runtime\?: RuntimeInfo/);
+  assert.match(declarations, /models\?: string\[\]/);
+  assert.match(declarations, /make_default\?: boolean/);
+  assert.match(declarations, /tools\?: ChatTool\[\]/);
+  assert.match(declarations, /tool_calls\?: OpenAiToolCall\[\]/);
+  assert.match(declarations, /tool_calls\?: OpenAiToolCallDelta\[\]/);
+  assert.match(declarations, /prompt_tokens_details\?: OpenAiPromptTokensDetails/);
+  assert.match(declarations, /signal\?: AbortSignal/);
+});
+
+test("abort signal cancels an in-flight request", async () => {
+  await withServer((req, res) => {
+    // Never respond; the client must escape via its AbortSignal.
+    req.on("close", () => res.destroy());
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    const controller = new AbortController();
+    const pending = client.health({ signal: controller.signal });
+    setTimeout(() => controller.abort(), 20);
+    await assert.rejects(pending, (error) => error.name === "AbortError");
+  });
 });
 
 async function withServer(handler, run) {

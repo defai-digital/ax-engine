@@ -80,7 +80,9 @@ module AxEngine
       post("/v1/embeddings", request_body(request, kwargs))
     end
 
-    # POST /v1/model/load — hot-swap the running model without server restart.
+    # POST /v1/model/load — hot-swap or add a served model without server
+    # restart. All request fields pass through (load_mode, load_policy,
+    # make_default, ...); the response includes default_model_id on 6.9+.
     # request: { model_id:, model_path:, load_policy: nil, load_mode: nil }
     def load_model(request = nil, **kwargs)
       post("/v1/model/load", request_body(request, kwargs))

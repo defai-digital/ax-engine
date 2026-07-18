@@ -86,10 +86,65 @@ export interface OpenAiCompletionRequest {
 }
 
 export interface OpenAiChatMessage {
-  role: string;
-  content:
+  role: "system" | "user" | "assistant" | "tool" | string;
+  /** Null/absent is valid for assistant messages that only carry tool_calls. */
+  content?:
     | string
-    | Array<OpenAiChatContentPart>;
+    | Array<OpenAiChatContentPart>
+    | null;
+  /** Assistant messages echoed back into the conversation after a tool turn. */
+  tool_calls?: OpenAiToolCall[];
+  /** Required on `role: "tool"` result messages. */
+  tool_call_id?: string;
+  name?: string;
+}
+
+export interface ChatToolFunction {
+  name: string;
+  description?: string;
+  parameters?: unknown;
+}
+
+export interface ChatTool {
+  type: "function";
+  function: ChatToolFunction;
+}
+
+export type ChatToolChoice =
+  | "auto"
+  | "none"
+  | "required"
+  | { type: "function"; function: { name: string } };
+
+export type ChatResponseFormat =
+  | { type: "text" }
+  | { type: "json_object" }
+  | {
+      type: "json_schema";
+      json_schema: { name?: string; strict?: boolean; schema: unknown };
+    };
+
+export interface OpenAiFunctionCall {
+  name: string;
+  arguments: string;
+}
+
+export interface OpenAiToolCall {
+  id: string;
+  type: "function";
+  function: OpenAiFunctionCall;
+}
+
+export interface OpenAiFunctionCallDelta {
+  name?: string;
+  arguments?: string;
+}
+
+export interface OpenAiToolCallDelta {
+  index: number;
+  id?: string;
+  type?: "function";
+  function?: OpenAiFunctionCallDelta;
 }
 
 export interface OpenAiChatContentPart {
@@ -116,18 +171,37 @@ export interface OpenAiChatCompletionRequest {
   stream?: boolean;
   metadata?: string;
   multimodal_inputs?: RequestMultimodalInputs;
+  tools?: ChatTool[];
+  tool_choice?: ChatToolChoice;
+  response_format?: ChatResponseFormat;
+  reasoning?: unknown;
+  logprobs?: boolean;
+  top_logprobs?: number;
+}
+
+export interface OpenAiPromptTokensDetails {
+  /** Prompt tokens served from the prefix cache. */
+  cached_tokens: number;
 }
 
 export interface OpenAiUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  prompt_tokens_details?: OpenAiPromptTokensDetails;
 }
+
+export type OpenAiFinishReason =
+  | "stop"
+  | "length"
+  | "tool_calls"
+  | "cancel"
+  | "content_filter";
 
 export interface OpenAiCompletionChoice {
   index: number;
   text: string;
-  finish_reason: "stop" | "length" | null;
+  finish_reason: OpenAiFinishReason | null;
 }
 
 export interface OpenAiCompletionResponse {
@@ -142,7 +216,7 @@ export interface OpenAiCompletionResponse {
 export interface OpenAiCompletionChunkChoice {
   index: number;
   text: string;
-  finish_reason: "stop" | "length" | null;
+  finish_reason: OpenAiFinishReason | null;
 }
 
 export interface OpenAiCompletionChunk {
@@ -156,12 +230,14 @@ export interface OpenAiCompletionChunk {
 export interface OpenAiChatMessageResponse {
   role: "assistant";
   content: string | null;
+  reasoning_content?: string;
+  tool_calls?: OpenAiToolCall[];
 }
 
 export interface OpenAiChatCompletionChoice {
   index: number;
   message: OpenAiChatMessageResponse;
-  finish_reason: "stop" | "length" | null;
+  finish_reason: OpenAiFinishReason | null;
 }
 
 export interface OpenAiChatCompletionResponse {
@@ -176,12 +252,14 @@ export interface OpenAiChatCompletionResponse {
 export interface OpenAiChatDelta {
   role?: string;
   content?: string;
+  reasoning_content?: string;
+  tool_calls?: OpenAiToolCallDelta[];
 }
 
 export interface OpenAiChatCompletionChunkChoice {
   index: number;
   delta: OpenAiChatDelta;
-  finish_reason: "stop" | "length" | null;
+  finish_reason: OpenAiFinishReason | null;
 }
 
 export interface OpenAiChatCompletionChunk {
@@ -262,6 +340,8 @@ export interface HealthResponse {
   status: string;
   service: string;
   model_id?: string;
+  /** Every loaded model id (multi-model serving); absent on pre-6.9 servers. */
+  models?: string[];
   runtime?: RuntimeInfo;
 }
 
@@ -545,30 +625,47 @@ export class AxEngineStreamError extends Error {
   payload: unknown;
 }
 
+export interface RequestOptions {
+  /** Aborts the underlying fetch (including an in-flight stream). */
+  signal?: AbortSignal;
+}
+
 export class AxEngineClient {
   constructor(options?: AxEngineClientOptions);
   readonly baseUrl: string;
-  health(): Promise<HealthResponse>;
-  runtime(): Promise<ServerInfoResponse>;
-  models(): Promise<ModelsResponse>;
-  generate(request: PreviewGenerateRequest): Promise<GenerateResponse>;
-  submit(request: PreviewGenerateRequest): Promise<RequestReport>;
-  requestSnapshot(requestId: number | string): Promise<RequestReport>;
-  cancel(requestId: number | string): Promise<RequestReport>;
-  step(model?: string): Promise<StepReport>;
-  completion(request: OpenAiCompletionRequest): Promise<OpenAiCompletionResponse>;
-  chatCompletion(request: OpenAiChatCompletionRequest): Promise<OpenAiChatCompletionResponse>;
-  embeddings(request: OpenAiEmbeddingRequest): Promise<OpenAiEmbeddingResponse>;
-  loadModel(request: LoadModelRequest): Promise<LoadModelResponse>;
-  unloadModel(request: UnloadModelRequest): Promise<UnloadModelResponse>;
+  health(options?: RequestOptions): Promise<HealthResponse>;
+  runtime(options?: RequestOptions): Promise<ServerInfoResponse>;
+  models(options?: RequestOptions): Promise<ModelsResponse>;
+  generate(request: PreviewGenerateRequest, options?: RequestOptions): Promise<GenerateResponse>;
+  submit(request: PreviewGenerateRequest, options?: RequestOptions): Promise<RequestReport>;
+  requestSnapshot(requestId: number | string, options?: RequestOptions): Promise<RequestReport>;
+  cancel(requestId: number | string, options?: RequestOptions): Promise<RequestReport>;
+  step(model?: string, options?: RequestOptions): Promise<StepReport>;
+  completion(
+    request: OpenAiCompletionRequest,
+    options?: RequestOptions,
+  ): Promise<OpenAiCompletionResponse>;
+  chatCompletion(
+    request: OpenAiChatCompletionRequest,
+    options?: RequestOptions,
+  ): Promise<OpenAiChatCompletionResponse>;
+  embeddings(
+    request: OpenAiEmbeddingRequest,
+    options?: RequestOptions,
+  ): Promise<OpenAiEmbeddingResponse>;
+  loadModel(request: LoadModelRequest, options?: RequestOptions): Promise<LoadModelResponse>;
+  unloadModel(request: UnloadModelRequest, options?: RequestOptions): Promise<UnloadModelResponse>;
   streamGenerate(
     request: PreviewGenerateRequest,
+    options?: RequestOptions,
   ): AsyncGenerator<PreviewGenerateStreamEvent, void, void>;
   streamCompletion(
     request: OpenAiCompletionRequest,
+    options?: RequestOptions,
   ): AsyncGenerator<StreamEvent<OpenAiCompletionChunk>, void, void>;
   streamChatCompletion(
     request: OpenAiChatCompletionRequest,
+    options?: RequestOptions,
   ): AsyncGenerator<StreamEvent<OpenAiChatCompletionChunk>, void, void>;
 }
 

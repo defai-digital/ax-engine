@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -505,6 +506,126 @@ func TestModelsOK(t *testing.T) {
 		}
 		if resp.Data[0].ID != "qwen3_dense" {
 			t.Errorf("data[0].id: got %q", resp.Data[0].ID)
+		}
+	})
+}
+
+func TestRuntimeOK(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/runtime", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method: got %s want GET", r.Method)
+		}
+		writeJSON(w, map[string]any{
+			"service": "ax-engine-server", "model_id": "qwen3",
+			"deterministic": true, "max_batch_tokens": 2048, "block_size_tokens": 16,
+			"runtime": map[string]any{
+				"selected_backend": "mlx_native", "support_tier": "native",
+				"resolution_policy": "auto",
+				"capabilities": map[string]any{
+					"text_generation": true, "token_streaming": true,
+					"deterministic_mode": true, "prefix_reuse": true,
+					"long_context_validation": "validated", "benchmark_metrics": "full",
+				},
+				"host": map[string]any{
+					"os": "macos", "arch": "arm64",
+					"supported_mlx_runtime": true, "unsupported_host_override_active": false,
+				},
+				"metal_toolchain": map[string]any{
+					"fully_available": true,
+					"metal":           map[string]any{"available": true},
+					"metallib":        map[string]any{"available": true},
+					"metal_ar":        map[string]any{"available": true},
+				},
+			},
+		})
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL})
+		info, err := client.Runtime(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Runtime.SelectedBackend != "mlx_native" {
+			t.Errorf("selected backend: got %q", info.Runtime.SelectedBackend)
+		}
+		if !info.Runtime.MetalToolchain.Metal.Available {
+			t.Error("metal tool should decode as available")
+		}
+	})
+}
+
+func TestChatCompletionDecodesToolCallsAndUsageDetails(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		var req OpenAiChatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		if req.Tools == nil {
+			t.Error("tools should serialize")
+		}
+		writeJSON(w, map[string]any{
+			"id": "chat-1", "object": "chat.completion", "created": 0, "model": "qwen3",
+			"choices": []map[string]any{{
+				"index": 0,
+				"message": map[string]any{
+					"role": "assistant", "content": nil,
+					"tool_calls": []map[string]any{{
+						"id": "call_0", "type": "function",
+						"function": map[string]any{"name": "get_weather", "arguments": `{"city":"Tokyo"}`},
+					}},
+				},
+				"finish_reason": "tool_calls",
+			}},
+			"usage": map[string]any{
+				"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25,
+				"prompt_tokens_details": map[string]any{"cached_tokens": 16},
+			},
+		})
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL})
+		resp, err := client.ChatCompletion(context.Background(), OpenAiChatCompletionRequest{
+			Messages: []OpenAiChatMessage{{Role: "user", Content: "weather?"}},
+			Tools: []map[string]any{{
+				"type":     "function",
+				"function": map[string]any{"name": "get_weather"},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		message := resp.Choices[0].Message
+		if message.Content != nil {
+			t.Errorf("content: got %v want nil", *message.Content)
+		}
+		if len(message.ToolCalls) != 1 || message.ToolCalls[0].Function.Name != "get_weather" {
+			t.Errorf("tool calls: got %+v", message.ToolCalls)
+		}
+		if resp.Usage == nil || resp.Usage.PromptTokensDetails == nil ||
+			resp.Usage.PromptTokensDetails.CachedTokens != 16 {
+			t.Errorf("usage details: got %+v", resp.Usage)
+		}
+	})
+}
+
+func TestStreamChatCompletionErrorEvent(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: error\ndata: {\"error\":{\"message\":\"model crashed\"}}\n\n"))
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL})
+		ch, errCh := client.StreamChatCompletion(context.Background(), OpenAiChatCompletionRequest{
+			Messages: []OpenAiChatMessage{{Role: "user", Content: "x"}},
+		})
+		for range ch { //nolint:revive
+		}
+		err := <-errCh
+		if err == nil || !strings.Contains(err.Error(), "model crashed") {
+			t.Errorf("stream error: got %v", err)
 		}
 	})
 }

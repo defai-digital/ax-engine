@@ -76,6 +76,14 @@ type OpenAiUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// PromptTokensDetails reports prefix-cache reuse in the OpenAI
+	// prompt-caching shape; nil when the server reports none.
+	PromptTokensDetails *OpenAiPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// OpenAiPromptTokensDetails is the OpenAI prompt-caching usage breakdown.
+type OpenAiPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 // OpenAiCompletionRequest is the /v1/completions request body.
@@ -131,7 +139,25 @@ type OpenAiCompletionChunk struct {
 // OpenAiChatMessage is a message in a chat conversation.
 type OpenAiChatMessage struct {
 	Role    string      `json:"role"`
-	Content interface{} `json:"content"` // string | []map[string]interface{}
+	Content interface{} `json:"content,omitempty"` // string | []map[string]interface{} | nil
+	// ToolCalls carries assistant tool calls echoed back after a tool turn.
+	ToolCalls []OpenAiToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID is required on role "tool" result messages.
+	ToolCallID *string `json:"tool_call_id,omitempty"`
+	Name       *string `json:"name,omitempty"`
+}
+
+// OpenAiToolCall is a completed tool call in a chat message.
+type OpenAiToolCall struct {
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function OpenAiFunctionCall `json:"function"`
+}
+
+// OpenAiFunctionCall carries a tool call's name and JSON-encoded arguments.
+type OpenAiFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // OpenAiChatCompletionRequest is the /v1/chat/completions request body.
@@ -150,12 +176,24 @@ type OpenAiChatCompletionRequest struct {
 	Stream            *bool                    `json:"stream,omitempty"`
 	Metadata          *string                  `json:"metadata,omitempty"`
 	MultimodalInputs  *RequestMultimodalInputs `json:"multimodal_inputs,omitempty"`
+	// Tools is the OpenAI function-tool list ([]map or typed structs).
+	Tools interface{} `json:"tools,omitempty"`
+	// ToolChoice is "auto" | "none" | "required" | {"type":"function",...}.
+	ToolChoice interface{} `json:"tool_choice,omitempty"`
+	// ResponseFormat is {"type":"text"|"json_object"|"json_schema",...}.
+	ResponseFormat interface{} `json:"response_format,omitempty"`
+	Reasoning      interface{} `json:"reasoning,omitempty"`
+	Logprobs       *bool       `json:"logprobs,omitempty"`
+	TopLogprobs    *int        `json:"top_logprobs,omitempty"`
 }
 
 // OpenAiChatMessageResponse is the assistant message in a chat completion response.
 type OpenAiChatMessageResponse struct {
 	Role    string  `json:"role"`
 	Content *string `json:"content"` // nil when tool_calls are present (server emits null)
+	// ReasoningContent carries separated reasoning when the request opted in.
+	ReasoningContent *string          `json:"reasoning_content,omitempty"`
+	ToolCalls        []OpenAiToolCall `json:"tool_calls,omitempty"`
 }
 
 // OpenAiChatCompletionChoice is a single chat completion choice.
@@ -177,8 +215,24 @@ type OpenAiChatCompletionResponse struct {
 
 // OpenAiChatDelta is the delta in a streaming chat completion chunk.
 type OpenAiChatDelta struct {
-	Role    *string `json:"role,omitempty"`
-	Content *string `json:"content,omitempty"`
+	Role             *string               `json:"role,omitempty"`
+	Content          *string               `json:"content,omitempty"`
+	ReasoningContent *string               `json:"reasoning_content,omitempty"`
+	ToolCalls        []OpenAiToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+// OpenAiToolCallDelta is a streamed tool-call fragment with a stream-wide index.
+type OpenAiToolCallDelta struct {
+	Index    int                      `json:"index"`
+	ID       *string                  `json:"id,omitempty"`
+	Type     *string                  `json:"type,omitempty"`
+	Function *OpenAiFunctionCallDelta `json:"function,omitempty"`
+}
+
+// OpenAiFunctionCallDelta is the function fragment of a streamed tool call.
+type OpenAiFunctionCallDelta struct {
+	Name      *string `json:"name,omitempty"`
+	Arguments *string `json:"arguments,omitempty"`
 }
 
 // OpenAiChatCompletionChunkChoice is a single chunk choice for streaming chat.
@@ -199,7 +253,7 @@ type OpenAiChatCompletionChunk struct {
 
 // OpenAiEmbeddingRequest is the /v1/embeddings request body.
 type OpenAiEmbeddingRequest struct {
-	Model          *string `json:"model,omitempty"`
+	Model *string `json:"model,omitempty"`
 	// Input accepts []int for one sequence or [][]int for an explicit batch.
 	Input          any     `json:"input"`
 	EncodingFormat *string `json:"encoding_format,omitempty"`
@@ -289,6 +343,87 @@ type HealthResponse struct {
 	Status  string `json:"status"`
 	Service string `json:"service"`
 	ModelID string `json:"model_id"`
+	// Models lists every loaded model id (multi-model serving); empty on
+	// pre-6.9 servers.
+	Models  []string     `json:"models,omitempty"`
+	Runtime *RuntimeInfo `json:"runtime,omitempty"`
+}
+
+// RuntimeInfo describes the resolved backend and host, as reported by
+// /health, /v1/runtime, and each /v1/models card.
+type RuntimeInfo struct {
+	SelectedBackend  string             `json:"selected_backend"`
+	SupportTier      string             `json:"support_tier"`
+	ResolutionPolicy string             `json:"resolution_policy"`
+	Capabilities     CapabilityReport   `json:"capabilities"`
+	FallbackReason   *string            `json:"fallback_reason,omitempty"`
+	Host             HostInfo           `json:"host"`
+	MetalToolchain   MetalToolchainInfo `json:"metal_toolchain"`
+	MlxRuntime       *MlxRuntimeInfo    `json:"mlx_runtime,omitempty"`
+	MlxModel         *MlxModelInfo      `json:"mlx_model,omitempty"`
+}
+
+// CapabilityReport describes what the resolved backend supports.
+type CapabilityReport struct {
+	TextGeneration        bool   `json:"text_generation"`
+	TokenStreaming        bool   `json:"token_streaming"`
+	DeterministicMode     bool   `json:"deterministic_mode"`
+	PrefixReuse           bool   `json:"prefix_reuse"`
+	LongContextValidation string `json:"long_context_validation"`
+	BenchmarkMetrics      string `json:"benchmark_metrics"`
+}
+
+// HostInfo describes the serving host.
+type HostInfo struct {
+	OS                            string  `json:"os"`
+	Arch                          string  `json:"arch"`
+	DetectedSoc                   *string `json:"detected_soc,omitempty"`
+	SupportedMlxRuntime           bool    `json:"supported_mlx_runtime"`
+	UnsupportedHostOverrideActive bool    `json:"unsupported_host_override_active"`
+}
+
+// ToolStatusInfo describes one Metal toolchain tool.
+type ToolStatusInfo struct {
+	Available bool    `json:"available"`
+	Version   *string `json:"version,omitempty"`
+}
+
+// MetalToolchainInfo describes the Metal toolchain availability.
+type MetalToolchainInfo struct {
+	FullyAvailable bool           `json:"fully_available"`
+	Metal          ToolStatusInfo `json:"metal"`
+	Metallib       ToolStatusInfo `json:"metallib"`
+	MetalAr        ToolStatusInfo `json:"metal_ar"`
+}
+
+// MlxRuntimeInfo describes the MLX runtime artifacts in use.
+type MlxRuntimeInfo struct {
+	Runner          string  `json:"runner"`
+	ArtifactsSource *string `json:"artifacts_source,omitempty"`
+}
+
+// MlxModelInfo describes the loaded MLX model artifacts.
+type MlxModelInfo struct {
+	ArtifactsSource   *string `json:"artifacts_source,omitempty"`
+	ModelFamily       string  `json:"model_family"`
+	TensorFormat      string  `json:"tensor_format"`
+	LayerCount        int     `json:"layer_count"`
+	TensorCount       int     `json:"tensor_count"`
+	TieWordEmbeddings bool    `json:"tie_word_embeddings"`
+	BindingsPrepared  bool    `json:"bindings_prepared"`
+	BuffersBound      bool    `json:"buffers_bound"`
+	BufferCount       int     `json:"buffer_count"`
+	BufferBytes       int64   `json:"buffer_bytes"`
+}
+
+// ServerInfoResponse is the response from GET /v1/runtime.
+type ServerInfoResponse struct {
+	Service         string      `json:"service"`
+	ModelID         string      `json:"model_id"`
+	Deterministic   bool        `json:"deterministic"`
+	MaxBatchTokens  uint32      `json:"max_batch_tokens"`
+	BlockSizeTokens uint32      `json:"block_size_tokens"`
+	Runtime         RuntimeInfo `json:"runtime"`
 }
 
 // StreamEvent is a generic SSE event envelope.
@@ -367,9 +502,57 @@ type UnloadModelResponse struct {
 
 // ModelCard describes a single model served by ax-engine-server.
 type ModelCard struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	OwnedBy string `json:"owned_by"`
+	ID              string                `json:"id"`
+	Object          string                `json:"object"`
+	OwnedBy         string                `json:"owned_by"`
+	Capabilities    ModelCapabilities     `json:"capabilities"`
+	Limit           ModelLimit            `json:"limit"`
+	ContextLength   uint32                `json:"context_length"`
+	MaxOutputTokens uint32                `json:"max_output_tokens"`
+	AxEngine        AxEngineModelMetadata `json:"ax_engine"`
+	Runtime         *RuntimeInfo          `json:"runtime,omitempty"`
+}
+
+// ModelCapabilities describes what a served model supports.
+type ModelCapabilities struct {
+	Temperature bool            `json:"temperature"`
+	Reasoning   bool            `json:"reasoning"`
+	Attachment  bool            `json:"attachment"`
+	Toolcall    bool            `json:"toolcall"`
+	Input       ModelModalities `json:"input"`
+	Output      ModelModalities `json:"output"`
+	Interleaved bool            `json:"interleaved"`
+}
+
+// ModelModalities flags the media types a model accepts or emits.
+type ModelModalities struct {
+	Text  bool `json:"text"`
+	Audio bool `json:"audio"`
+	Image bool `json:"image"`
+	Video bool `json:"video"`
+	PDF   bool `json:"pdf"`
+}
+
+// ModelLimit is the context/output token budget for a served model.
+type ModelLimit struct {
+	Context uint32 `json:"context"`
+	Output  uint32 `json:"output"`
+}
+
+// AxEngineModelMetadata carries ax-engine-specific model support flags.
+type AxEngineModelMetadata struct {
+	NativeGenerateSupported                 bool   `json:"native_generate_supported"`
+	OpenaiCompletionsSupported              bool   `json:"openai_completions_supported"`
+	OpenaiChatCompletionsSupported          bool   `json:"openai_chat_completions_supported"`
+	OpenaiToolCallingSupported              bool   `json:"openai_tool_calling_supported"`
+	OpenaiTextInputSupported                bool   `json:"openai_text_input_supported"`
+	NativeMultimodalInputSupported          bool   `json:"native_multimodal_input_supported"`
+	Gemma4UnifiedMultimodalInputSupported   bool   `json:"gemma4_unified_multimodal_input_supported"`
+	OpenaiTokenizedMultimodalInputSupported bool   `json:"openai_tokenized_multimodal_input_supported"`
+	PrimaryUse                              string `json:"primary_use"`
+	ChatDefault                             bool   `json:"chat_default"`
+	CodingSupported                         bool   `json:"coding_supported"`
+	CodingOnly                              bool   `json:"coding_only"`
 }
 
 // ModelsResponse is the response from GET /v1/models.

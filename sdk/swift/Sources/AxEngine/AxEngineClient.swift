@@ -44,6 +44,11 @@ public final class AxEngineClient: @unchecked Sendable {
         try await get("/health")
     }
 
+    /// GET /v1/runtime — resolved backend and host report.
+    public func runtime() async throws -> ServerInfoResponse {
+        try await get("/v1/runtime")
+    }
+
     /// GET /v1/models
     public func models() async throws -> ModelsResponse {
         try await get("/v1/models")
@@ -72,17 +77,25 @@ public final class AxEngineClient: @unchecked Sendable {
     }
 
     /// POST /v1/step — advance the scheduler by one step.
+    ///
+    /// The query must be attached via `URLComponents` on the resolved URL:
+    /// passing a `?`-bearing string through `appendingPathComponent`
+    /// percent-encodes it and the server routes it as a 404 path.
     public func step(model: String? = nil) async throws -> StepReport {
-        let path: String
-        if let model {
-            var components = URLComponents()
-            components.path = "/v1/step"
-            components.queryItems = [URLQueryItem(name: "model", value: model)]
-            path = components.string ?? "/v1/step"
-        } else {
-            path = "/v1/step"
+        guard let model else {
+            return try await post("/v1/step", body: Empty())
         }
-        return try await post(path, body: Empty())
+        let stepURL = baseURL.appendingPathComponent("/v1/step")
+        var components = URLComponents(url: stepURL, resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "model", value: model)]
+        guard let url = components?.url else {
+            throw AxEngineHTTPError(
+                statusCode: 0,
+                message: "failed to build /v1/step?model= URL",
+                payload: nil
+            )
+        }
+        return try await post(url: url, body: Empty())
     }
 
     // MARK: - OpenAI-compatible
@@ -176,6 +189,16 @@ public final class AxEngineClient: @unchecked Sendable {
 
     private func post<B: Encodable, R: Decodable>(_ path: String, body: B) async throws -> R {
         var urlRequest = buildRequest(method: "POST", path: path, body: try encoder.encode(body))
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try await execute(urlRequest)
+    }
+
+    /// POST to a fully-resolved URL (used when a query string is required —
+    /// `buildRequest` path composition percent-encodes `?`).
+    private func post<B: Encodable, R: Decodable>(url: URL, body: B) async throws -> R {
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "POST"
+        urlRequest.httpBody = try encoder.encode(body)
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         return try await execute(urlRequest)
     }

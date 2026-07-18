@@ -381,6 +381,74 @@ final class AxEngineClientTests: XCTestCase {
             XCTAssertEqual(err.message, "something went wrong")
         }
     }
+
+    func testStepWithModelSendsQueryString() async throws {
+        MockURLProtocol.handler = { req in
+            XCTAssertEqual(req.httpMethod, "POST")
+            // A percent-encoded "?" would land in the path and 404 server-side.
+            XCTAssertEqual(req.url?.path, "/v1/step")
+            XCTAssertEqual(req.url?.query, "model=qwen3.6-27b")
+            return jsonResponse([
+                "step_id": 3, "scheduled_requests": 0, "scheduled_tokens": 0,
+                "ttft_events": 0, "prefix_hits": 0, "kv_usage_blocks": 0,
+                "evictions": 0, "cpu_time_us": 0, "runner_time_us": 0,
+            ])
+        }
+        let report = try await makeClient().step(model: "qwen3.6-27b")
+        XCTAssertEqual(report.stepId, 3)
+    }
+
+    func testLoadModelSendsMakeDefaultAndDecodesDefaultModelId() async throws {
+        var captured: [String: Any] = [:]
+        MockURLProtocol.handler = { req in
+            captured = readBody(req).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            return jsonResponse([
+                "model_id": "qwen3.6-27b", "state": "loaded", "context_length": 16384,
+                "load_policy": "availability_first", "load_mode": "add",
+                "default_model_id": "qwen3",
+            ])
+        }
+        let loaded = try await makeClient().loadModel(.init(
+            modelId: "qwen3.6-27b", modelPath: "/models/qwen",
+            loadPolicy: "availability_first", loadMode: "add",
+            makeDefault: false
+        ))
+        XCTAssertTrue(captured["make_default"] as? Bool == false)
+        XCTAssertEqual(loaded.defaultModelId, "qwen3")
+    }
+
+    func testChatCompletionDecodesToolCallsAndUsageDetails() async throws {
+        MockURLProtocol.handler = { _ in
+            jsonResponse([
+                "id": "chat-1", "object": "chat.completion", "created": 0,
+                "model": "qwen3.6-27b",
+                "choices": [[
+                    "index": 0,
+                    "message": [
+                        "role": "assistant", "content": NSNull(),
+                        "tool_calls": [[
+                            "id": "call_0", "type": "function",
+                            "function": ["name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"],
+                        ]],
+                    ],
+                    "finish_reason": "tool_calls",
+                ]],
+                "usage": [
+                    "prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25,
+                    "prompt_tokens_details": ["cached_tokens": 16],
+                ],
+            ])
+        }
+        let resp = try await makeClient().chatCompletion(.init(
+            messages: [.init(role: "user", content: "weather?")]
+        ))
+        let message = resp.choices[0].message
+        XCTAssertNil(message.content)
+        XCTAssertEqual(message.toolCalls?.count, 1)
+        XCTAssertEqual(message.toolCalls?[0].function.name, "get_weather")
+        XCTAssertEqual(resp.choices[0].finishReason, "tool_calls")
+        XCTAssertEqual(resp.usage?.promptTokensDetails?.cachedTokens, 16)
+    }
 }
 
 #endif  // canImport(XCTest)

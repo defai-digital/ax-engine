@@ -136,94 +136,105 @@ export class AxEngineClient {
     this.defaultHeaders = normalizeHeaders(headers);
   }
 
-  async health() {
-    return this.#requestJson("/health", { method: "GET" });
+  async health(options = {}) {
+    return this.#requestJson("/health", { method: "GET", signal: options.signal });
   }
 
-  async runtime() {
-    return this.#requestJson("/v1/runtime", { method: "GET" });
+  async runtime(options = {}) {
+    return this.#requestJson("/v1/runtime", { method: "GET", signal: options.signal });
   }
 
-  async models() {
-    return this.#requestJson("/v1/models", { method: "GET" });
+  async models(options = {}) {
+    return this.#requestJson("/v1/models", { method: "GET", signal: options.signal });
   }
 
-  async generate(request) {
+  async generate(request, options = {}) {
     return this.#requestJson("/v1/generate", {
       method: "POST",
       body: request,
+      signal: options.signal,
     });
   }
 
-  async submit(request) {
+  async submit(request, options = {}) {
     return this.#requestJson("/v1/requests", {
       method: "POST",
       body: request,
+      signal: options.signal,
     });
   }
 
-  async requestSnapshot(requestId) {
-    return this.#requestJson(`/v1/requests/${requestId}`, { method: "GET" });
+  async requestSnapshot(requestId, options = {}) {
+    return this.#requestJson(`/v1/requests/${requestId}`, {
+      method: "GET",
+      signal: options.signal,
+    });
   }
 
-  async cancel(requestId) {
+  async cancel(requestId, options = {}) {
     return this.#requestJson(`/v1/requests/${requestId}/cancel`, {
       method: "POST",
+      signal: options.signal,
     });
   }
 
-  async step(model) {
+  async step(model, options = {}) {
     const path = model === undefined
       ? "/v1/step"
       : `/v1/step?model=${encodeURIComponent(model)}`;
-    return this.#requestJson(path, { method: "POST" });
+    return this.#requestJson(path, { method: "POST", signal: options.signal });
   }
 
-  async completion(request) {
+  async completion(request, options = {}) {
     return this.#requestJson("/v1/completions", {
       method: "POST",
       body: request,
+      signal: options.signal,
     });
   }
 
-  async chatCompletion(request) {
+  async chatCompletion(request, options = {}) {
     return this.#requestJson("/v1/chat/completions", {
       method: "POST",
       body: request,
+      signal: options.signal,
     });
   }
 
-  async embeddings(request) {
+  async embeddings(request, options = {}) {
     return this.#requestJson("/v1/embeddings", {
       method: "POST",
       body: request,
+      signal: options.signal,
     });
   }
 
-  async loadModel(request) {
+  async loadModel(request, options = {}) {
     return this.#requestJson("/v1/model/load", {
       method: "POST",
       body: request,
+      signal: options.signal,
     });
   }
 
-  async unloadModel(request) {
+  async unloadModel(request, options = {}) {
     return this.#requestJson("/v1/model/unload", {
       method: "POST",
       body: request,
+      signal: options.signal,
     });
   }
 
-  async *streamGenerate(request) {
-    yield* this.#stream("/v1/generate/stream", request);
+  async *streamGenerate(request, options = {}) {
+    yield* this.#stream("/v1/generate/stream", request, options);
   }
 
-  async *streamCompletion(request) {
-    yield* this.#stream("/v1/completions", { ...request, stream: true });
+  async *streamCompletion(request, options = {}) {
+    yield* this.#stream("/v1/completions", { ...request, stream: true }, options);
   }
 
-  async *streamChatCompletion(request) {
-    yield* this.#stream("/v1/chat/completions", { ...request, stream: true });
+  async *streamChatCompletion(request, options = {}) {
+    yield* this.#stream("/v1/chat/completions", { ...request, stream: true }, options);
   }
 
   async #requestJson(path, init) {
@@ -260,10 +271,11 @@ export class AxEngineClient {
     return response;
   }
 
-  async *#stream(path, body) {
+  async *#stream(path, body, options = {}) {
     const response = await this.#request(path, {
       method: "POST",
       body,
+      signal: options.signal,
       headers: {
         accept: "text/event-stream",
       },

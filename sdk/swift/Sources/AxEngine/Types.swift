@@ -189,11 +189,57 @@ public struct StepReport: Decodable, Sendable {
 
 public struct OpenAiChatMessage: Codable, Sendable {
     public var role: String
-    public var content: String
+    /// Nil is valid for assistant messages that only carry `toolCalls`.
+    public var content: String?
+    /// Assistant tool calls echoed back into the conversation after a tool turn.
+    public var toolCalls: [OpenAiToolCall]?
+    /// Required on `role: "tool"` result messages.
+    public var toolCallId: String?
+    public var name: String?
 
-    public init(role: String, content: String) {
+    public init(
+        role: String, content: String? = nil,
+        toolCalls: [OpenAiToolCall]? = nil,
+        toolCallId: String? = nil, name: String? = nil
+    ) {
         self.role = role; self.content = content
+        self.toolCalls = toolCalls
+        self.toolCallId = toolCallId; self.name = name
     }
+}
+
+/// A completed tool call (assistant echo and response messages).
+public struct OpenAiToolCall: Codable, Sendable {
+    public var id: String
+    public var type: String
+    public var function: OpenAiFunctionCall
+
+    public init(id: String, type: String = "function", function: OpenAiFunctionCall) {
+        self.id = id; self.type = type; self.function = function
+    }
+}
+
+public struct OpenAiFunctionCall: Codable, Sendable {
+    public var name: String
+    /// JSON-encoded arguments string, exactly as the model produced it.
+    public var arguments: String
+
+    public init(name: String, arguments: String) {
+        self.name = name; self.arguments = arguments
+    }
+}
+
+/// A streamed tool-call fragment with a stream-wide index.
+public struct OpenAiToolCallDelta: Decodable, Sendable {
+    public var index: Int
+    public var id: String?
+    public var type: String?
+    public var function: OpenAiFunctionCallDelta?
+}
+
+public struct OpenAiFunctionCallDelta: Decodable, Sendable {
+    public var name: String?
+    public var arguments: String?
 }
 
 public struct OpenAiChatCompletionRequest: Encodable, Sendable {
@@ -211,6 +257,14 @@ public struct OpenAiChatCompletionRequest: Encodable, Sendable {
     public var stream: Bool?
     public var metadata: String?
     public var multimodalInputs: RequestMultimodalInputs?
+    public var logprobs: Bool?
+    public var topLogprobs: Int?
+    // Note: free-form `tools` / `tool_choice` / `response_format` /
+    // `reasoning` request fields are intentionally not typed yet:
+    // Foundation's .convertToSnakeCase also rewrites *dictionary* keys, so
+    // arbitrary user schema keys (e.g. "userId") would be silently
+    // corrupted. Typed support needs the explicit-CodingKeys refactor
+    // tracked in docs/sdk/swift.md.
 
     public init(
         model: String? = nil, messages: [OpenAiChatMessage],
@@ -219,7 +273,8 @@ public struct OpenAiChatCompletionRequest: Encodable, Sendable {
         topP: Double? = nil, topK: Int? = nil, minP: Double? = nil,
         repetitionPenalty: Double? = nil, stop: [String]? = nil,
         seed: Int? = nil, metadata: String? = nil,
-        multimodalInputs: RequestMultimodalInputs? = nil
+        multimodalInputs: RequestMultimodalInputs? = nil,
+        logprobs: Bool? = nil, topLogprobs: Int? = nil
     ) {
         self.model = model; self.messages = messages; self.maxTokens = maxTokens
         self.inputTokens = inputTokens
@@ -227,6 +282,7 @@ public struct OpenAiChatCompletionRequest: Encodable, Sendable {
         self.minP = minP; self.repetitionPenalty = repetitionPenalty
         self.stop = stop; self.seed = seed; self.metadata = metadata
         self.multimodalInputs = multimodalInputs
+        self.logprobs = logprobs; self.topLogprobs = topLogprobs
     }
 }
 
@@ -234,11 +290,20 @@ public struct OpenAiUsage: Decodable, Sendable {
     public var promptTokens: Int
     public var completionTokens: Int
     public var totalTokens: Int
+    /// Prefix-cache reuse in the OpenAI prompt-caching shape.
+    public var promptTokensDetails: OpenAiPromptTokensDetails?
+}
+
+public struct OpenAiPromptTokensDetails: Decodable, Sendable {
+    public var cachedTokens: Int
 }
 
 public struct OpenAiChatMessageResponse: Decodable, Sendable {
     public var role: String
     public var content: String?
+    /// Separated reasoning when the request opted in.
+    public var reasoningContent: String?
+    public var toolCalls: [OpenAiToolCall]?
 }
 
 public struct OpenAiChatCompletionChoice: Decodable, Sendable {
@@ -259,6 +324,8 @@ public struct OpenAiChatCompletionResponse: Decodable, Sendable {
 public struct OpenAiChatDelta: Decodable, Sendable {
     public var role: String?
     public var content: String?
+    public var reasoningContent: String?
+    public var toolCalls: [OpenAiToolCallDelta]?
 }
 
 public struct OpenAiChatCompletionChunkChoice: Decodable, Sendable {
@@ -435,12 +502,130 @@ public struct HealthResponse: Decodable, Sendable {
     public var status: String
     public var service: String?
     public var modelId: String?
+    /// Every loaded model id (multi-model serving); nil on pre-6.9 servers.
+    public var models: [String]?
+    public var runtime: RuntimeInfo?
 }
 
 public struct ModelCard: Decodable, Sendable {
     public var id: String
     public var object: String
     public var ownedBy: String
+    public var capabilities: ModelCapabilities?
+    public var limit: ModelLimit?
+    public var contextLength: UInt32?
+    public var maxOutputTokens: UInt32?
+    public var axEngine: AxEngineModelMetadata?
+    public var runtime: RuntimeInfo?
+}
+
+public struct ModelCapabilities: Decodable, Sendable {
+    public var temperature: Bool
+    public var reasoning: Bool
+    public var attachment: Bool
+    public var toolcall: Bool
+    public var input: ModelModalities
+    public var output: ModelModalities
+    public var interleaved: Bool
+}
+
+public struct ModelModalities: Decodable, Sendable {
+    public var text: Bool
+    public var audio: Bool
+    public var image: Bool
+    public var video: Bool
+    public var pdf: Bool
+}
+
+public struct ModelLimit: Decodable, Sendable {
+    public var context: UInt32
+    public var output: UInt32
+}
+
+public struct AxEngineModelMetadata: Decodable, Sendable {
+    public var nativeGenerateSupported: Bool
+    public var openaiCompletionsSupported: Bool
+    public var openaiChatCompletionsSupported: Bool
+    public var openaiToolCallingSupported: Bool
+    public var openaiTextInputSupported: Bool
+    public var nativeMultimodalInputSupported: Bool
+    public var gemma4UnifiedMultimodalInputSupported: Bool
+    public var openaiTokenizedMultimodalInputSupported: Bool
+    public var primaryUse: String
+    public var chatDefault: Bool
+    public var codingSupported: Bool
+    public var codingOnly: Bool
+}
+
+// MARK: - Runtime info
+
+public struct RuntimeInfo: Decodable, Sendable {
+    public var selectedBackend: String
+    public var supportTier: String
+    public var resolutionPolicy: String
+    public var capabilities: CapabilityReport
+    public var fallbackReason: String?
+    public var host: HostInfo
+    public var metalToolchain: MetalToolchainInfo
+    public var mlxRuntime: MlxRuntimeInfo?
+    public var mlxModel: MlxModelInfo?
+}
+
+public struct CapabilityReport: Decodable, Sendable {
+    public var textGeneration: Bool
+    public var tokenStreaming: Bool
+    public var deterministicMode: Bool
+    public var prefixReuse: Bool
+    public var longContextValidation: String
+    public var benchmarkMetrics: String
+}
+
+public struct HostInfo: Decodable, Sendable {
+    public var os: String
+    public var arch: String
+    public var detectedSoc: String?
+    public var supportedMlxRuntime: Bool
+    public var unsupportedHostOverrideActive: Bool
+}
+
+public struct ToolStatusInfo: Decodable, Sendable {
+    public var available: Bool
+    public var version: String?
+}
+
+public struct MetalToolchainInfo: Decodable, Sendable {
+    public var fullyAvailable: Bool
+    public var metal: ToolStatusInfo
+    public var metallib: ToolStatusInfo
+    public var metalAr: ToolStatusInfo
+}
+
+public struct MlxRuntimeInfo: Decodable, Sendable {
+    public var runner: String
+    public var artifactsSource: String?
+}
+
+public struct MlxModelInfo: Decodable, Sendable {
+    public var artifactsSource: String?
+    public var modelFamily: String
+    public var tensorFormat: String
+    public var layerCount: Int
+    public var tensorCount: Int
+    public var tieWordEmbeddings: Bool
+    public var bindingsPrepared: Bool
+    public var buffersBound: Bool
+    public var bufferCount: Int
+    public var bufferBytes: Int64
+}
+
+/// GET /v1/runtime response.
+public struct ServerInfoResponse: Decodable, Sendable {
+    public var service: String
+    public var modelId: String
+    public var deterministic: Bool
+    public var maxBatchTokens: UInt32
+    public var blockSizeTokens: UInt32
+    public var runtime: RuntimeInfo
 }
 
 public struct ModelsResponse: Decodable, Sendable {

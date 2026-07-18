@@ -89,7 +89,19 @@ let report   = try await client.submit(.init(inputTokens: [1, 2, 3], maxOutputTo
 let snapshot = try await client.requestSnapshot(id: report.requestId)
 let step     = try await client.step()
 let cancelled = try await client.cancel(id: report.requestId)
+
+// GET /v1/runtime — resolved backend and host report
+let info = try await client.runtime()
 ```
+
+> **Known limitation:** the typed request does not yet expose the free-form
+> `tools` / `tool_choice` / `response_format` / `reasoning` fields.
+> Foundation's `.convertToSnakeCase` also rewrites dictionary keys, so
+> arbitrary schema keys (for example `"userId"` inside tool parameters)
+> would be silently corrupted; typed support is pending an
+> explicit-CodingKeys refactor. Tool-call *responses*, streamed tool-call
+> deltas, assistant tool-call echo, and `role: "tool"` result messages are
+> fully supported.
 
 ### OpenAI-compatible endpoints
 

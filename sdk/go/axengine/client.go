@@ -150,6 +150,11 @@ func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
 	return requestJSON[HealthResponse](c, ctx, http.MethodGet, "/health", nil)
 }
 
+// Runtime calls GET /v1/runtime for the resolved backend and host report.
+func (c *Client) Runtime(ctx context.Context) (ServerInfoResponse, error) {
+	return requestJSON[ServerInfoResponse](c, ctx, http.MethodGet, "/v1/runtime", nil)
+}
+
 // Generate calls POST /v1/generate (ax-engine native API).
 func (c *Client) Generate(ctx context.Context, req PreviewGenerateRequest) (GenerateResponse, error) {
 	return requestJSON[GenerateResponse](c, ctx, http.MethodPost, "/v1/generate", req)

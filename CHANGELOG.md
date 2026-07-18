@@ -19,10 +19,12 @@ and this project adheres to Semantic Versioning.
   exceeds the Metal working-set budget are rejected with
   `422 insufficient_memory` before any drain. The estimate combines on-disk
   safetensors bytes with each model's worst-case KV pool derived from
-  manifest attention geometry (sliding-window layers bounded at their ring
-  window, hybrid linear-attention and KV-shared layers charge no per-token
-  cache), so it scales with `--total-blocks` and with the number of resident
-  models; `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off` disables the check.
+  manifest attention geometry (every KV-backed layer at the configured
+  pool — sliding-window rings bound KV per request, not per pool, so
+  sliding layers differ only in head dim; hybrid linear-attention and
+  KV-shared layers charge no per-token cache), so it scales with
+  `--total-blocks` and with the number of resident models;
+  `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off` disables the check.
 - `POST /v1/model/load` accepts `make_default` (default `true`;
   `load_mode=add` only) so a model can be added without changing what
   requests that omit `model` resolve to; load and unload responses report
@@ -31,6 +33,18 @@ and this project adheres to Semantic Versioning.
   request bodies already pass through unknown fields).
 - `/health` and `/v1/discovery` list every loaded model id (`models`)
   alongside the default `model_id` in multi-model serving.
+- SDK typed-contract catch-up: tool calling (request `tools`/`tool_choice`/
+  `response_format`, response `tool_calls`, streamed tool-call deltas),
+  `reasoning_content`, `usage.prompt_tokens_details.cached_tokens`, `/health`
+  `models` + `runtime`, full `/v1/models` cards, and `GET /v1/runtime`
+  clients in Go (`Runtime()`) and Swift (`runtime()`); JavaScript adds
+  per-call `AbortSignal` support and complete type declarations. Swift's
+  typed request defers free-form `tools` fields (Foundation snake-case key
+  rewriting would corrupt arbitrary schema keys — documented in
+  `docs/sdk/swift.md`) while fully typing tool-call responses and echo.
+- Swift SDK fix: `step(model:)` built the query with `appendingPathComponent`,
+  percent-encoding the `?` — multi-model step always returned 404. The query
+  is now attached via `URLComponents`, with a regression test.
 - `response_format: json_schema` (non-streaming): OpenAI request shape
   accepted; output validated server-side against a documented schema subset
   (`502 invalid_output` on mismatch); schemas using keywords outside that
