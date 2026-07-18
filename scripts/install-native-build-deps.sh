@@ -22,10 +22,15 @@ brew install protobuf
 # correct target, and mlx-sys/build.rs prefers a pip-installed mlx, so
 # installing it here is what makes builds resolve the correct one. See
 # scripts/build-pypi-wheel.sh's header for the full investigation.
-if ! python3 -m pip install --upgrade mlx; then
+# The exact admitted version is pinned in mlx.version at the repo root;
+# mlx-sys/build.rs enforces the same pin at link time, so an unpinned
+# install here would fail the build anyway. Bump the pin deliberately
+# (qmm microbench parity + bit-exactness gates first).
+MLX_PIN="$(cat "$(dirname "$0")/../mlx.version" | tr -d '[:space:]')"
+if ! python3 -m pip install --upgrade "mlx==${MLX_PIN}"; then
     # Fallback for runner images whose default python3 is externally managed
     # (PEP 668) and rejects plain pip installs.
-    python3 -m pip install --upgrade --break-system-packages mlx
+    python3 -m pip install --upgrade --break-system-packages "mlx==${MLX_PIN}"
 fi
 
 # Export resolved MLX dirs so cargo/maturin steps can find headers/lib even

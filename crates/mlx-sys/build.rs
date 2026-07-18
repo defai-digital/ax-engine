@@ -25,7 +25,22 @@ struct MlxDirs {
     mlx_lib_dir: String,
 }
 
-fn find_mlx_dirs() -> MlxDirs {
+/// Where the resolved MLX build came from — drives the provenance gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MlxProvenance {
+    /// `MLX_LIB_DIR` env var: an explicit operator/CI choice.
+    Explicit,
+    /// A pip-installed wheel (repo `.venv`, active venv, or python3's
+    /// site-packages) — the only supported source on macOS 26.x hosts.
+    PipWheel,
+    /// Homebrew formula. Refused by default: its build derives the
+    /// deployment target from `MacOS.version.major.minor`, which truncates
+    /// to 26.0 on every macOS 26.x host, silently compiling out the NAX
+    /// GEMM/attention kernels (~3-4x slower prefill, no build error).
+    Homebrew,
+}
+
+fn find_mlx_dirs() -> (MlxDirs, MlxProvenance) {
     // --- Priority 1: MLX_LIB_DIR env var ---
     if let Ok(lib_dir) = std::env::var("MLX_LIB_DIR") {
         let include_dir = std::env::var("MLX_INCLUDE_DIR").unwrap_or_else(|_| {
@@ -34,17 +49,20 @@ fn find_mlx_dirs() -> MlxDirs {
                 .map(|p| p.join("include").display().to_string())
                 .unwrap_or_else(|| format!("{lib_dir}/../include"))
         });
-        return MlxDirs {
-            mlx_include_dir: include_dir,
-            mlx_lib_dir: lib_dir,
-        };
+        return (
+            MlxDirs {
+                mlx_include_dir: include_dir,
+                mlx_lib_dir: lib_dir,
+            },
+            MlxProvenance::Explicit,
+        );
     }
 
-    // --- Priority 2: active Python venv / site-packages mlx (matches mlx-lm) ---
+    // --- Priority 2: pip-installed mlx (repo .venv, active venv, python3) ---
     // Prefer the pip wheel when present so native AX and mlx-lm share one MLX
     // build. Homebrew bottles have lagged the wheel's Metal backend quality.
     if let Some(dirs) = find_pip_mlx_dirs() {
-        return dirs;
+        return (dirs, MlxProvenance::PipWheel);
     }
 
     // --- Priority 3: brew --prefix mlx ---
@@ -66,7 +84,7 @@ fn find_mlx_dirs() -> MlxDirs {
             mlx_lib_dir: format!("{p}/lib"),
         };
         if mlx_dirs_valid(&dirs) {
-            return dirs;
+            return (dirs, MlxProvenance::Homebrew);
         }
     }
 
@@ -78,14 +96,15 @@ fn find_mlx_dirs() -> MlxDirs {
     };
     if !mlx_dirs_valid(&dirs) {
         panic!(
-            "No usable MLX installation found: checked MLX_LIB_DIR, the active \
-             Python's mlx package, `brew --prefix mlx`, and {prefix}. Install \
-             MLX with `pip install mlx` (preferred — Homebrew's formula builds \
-             without NAX acceleration on macOS 26.x hosts) or point \
-             MLX_LIB_DIR/MLX_INCLUDE_DIR at an MLX build."
+            "No usable MLX installation found: checked MLX_LIB_DIR, the repo \
+             .venv, the active Python's mlx package, `brew --prefix mlx`, and \
+             {prefix}. Install MLX with `pip install mlx=={}` (preferred — \
+             Homebrew's formula builds without NAX acceleration on macOS 26.x \
+             hosts) or point MLX_LIB_DIR/MLX_INCLUDE_DIR at an MLX build.",
+            pinned_mlx_version().unwrap_or_else(|| "<see mlx.version>".to_string())
         );
     }
-    dirs
+    (dirs, MlxProvenance::Homebrew)
 }
 
 /// A candidate is usable only if it has both the C++ headers and the dylib.
@@ -102,28 +121,45 @@ fn find_pip_mlx_dirs() -> Option<MlxDirs> {
     if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
         candidates.push(PathBuf::from(venv).join("lib"));
     }
+    // The repo-local `.venv` is the canonical dev environment: consult it
+    // even when the shell forgot to activate it, so a bare `cargo build`
+    // cannot silently drift to another MLX install on dev machines.
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let repo_venv = PathBuf::from(manifest_dir).join("../../.venv/lib");
+        if repo_venv.is_dir() {
+            candidates.push(repo_venv);
+        }
+    }
     if let Ok(prefix) = std::env::var("CONDA_PREFIX") {
         candidates.push(PathBuf::from(prefix).join("lib"));
     }
     // Prefer the Python that is building us (maturin/pyo3 set PYO3_PYTHON /
-    // PYTHON). Falling back to bare `python3` can miss the active venv.
-    let python = ["PYO3_PYTHON", "PYTHON", "PYTHON_SYS_EXECUTABLE"]
+    // PYTHON). Try each candidate until one actually executes — a stale
+    // pointer to a removed venv must not mask a working `python3`.
+    let pythons = ["PYO3_PYTHON", "PYTHON", "PYTHON_SYS_EXECUTABLE"]
         .iter()
-        .find_map(std::env::var_os)
-        .unwrap_or_else(|| "python3".into());
-    if let Ok(out) = std::process::Command::new(&python)
-        .args([
-            "-c",
-            "import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]))",
-        ])
-        .output()
-        && out.status.success()
-        && let Ok(s) = String::from_utf8(out.stdout)
-    {
-        let p = PathBuf::from(s.trim());
-        if p.is_dir() {
-            candidates.push(p);
+        .filter_map(std::env::var_os)
+        .chain(std::iter::once("python3".into()));
+    for python in pythons {
+        let Ok(out) = std::process::Command::new(&python)
+            .args([
+                "-c",
+                "import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]))",
+            ])
+            .output()
+        else {
+            continue;
+        };
+        if !out.status.success() {
+            continue;
         }
+        if let Ok(s) = String::from_utf8(out.stdout) {
+            let p = PathBuf::from(s.trim());
+            if p.is_dir() {
+                candidates.push(p);
+            }
+        }
+        break;
     }
 
     for base in candidates {
@@ -166,8 +202,101 @@ fn find_pip_mlx_dirs() -> Option<MlxDirs> {
     None
 }
 
+/// The admitted MLX version, pinned in `mlx.version` at the repo root.
+/// Bumping it is a deliberate act: rerun the qmm microbench parity gate and
+/// the bit-exactness suites first (see docs/GETTING-STARTED.md).
+fn pinned_mlx_version() -> Option<String> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    let pin_path = PathBuf::from(manifest_dir).join("../../mlx.version");
+    std::fs::read_to_string(pin_path)
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|pin| !pin.is_empty())
+}
+
+/// Parse `MLX_VERSION_MAJOR/MINOR/PATCH` out of `mlx/version.h`.
+fn resolved_mlx_version(include_dir: &str) -> Option<String> {
+    let header = PathBuf::from(include_dir).join("mlx/version.h");
+    let text = std::fs::read_to_string(header).ok()?;
+    let field = |name: &str| -> Option<u32> {
+        text.lines()
+            .find(|line| line.contains(name))
+            .and_then(|line| line.split_whitespace().last())
+            .and_then(|value| value.trim().parse::<u32>().ok())
+    };
+    Some(format!(
+        "{}.{}.{}",
+        field("MLX_VERSION_MAJOR")?,
+        field("MLX_VERSION_MINOR")?,
+        field("MLX_VERSION_PATCH")?
+    ))
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.trim(), "1" | "true" | "on" | "yes"))
+        .unwrap_or(false)
+}
+
+/// Fail the build (loudly, with remediation) when the resolved MLX is a
+/// source or version the repo has not admitted. Deployment correctness
+/// depends on this: a Homebrew fallback or a version drift changes kernels
+/// silently and invalidates every certified benchmark and bit-exactness gate.
+fn enforce_mlx_provenance_and_version(dirs: &MlxDirs, provenance: MlxProvenance) {
+    let version = resolved_mlx_version(&dirs.mlx_include_dir);
+    let pin = pinned_mlx_version();
+    println!(
+        "cargo:warning=mlx-sys: linking MLX {} from {} ({:?})",
+        version.as_deref().unwrap_or("<unknown version>"),
+        dirs.mlx_lib_dir,
+        provenance
+    );
+
+    if provenance == MlxProvenance::Homebrew {
+        if env_flag("AX_MLX_ALLOW_HOMEBREW") {
+            println!(
+                "cargo:warning=mlx-sys: AX_MLX_ALLOW_HOMEBREW=1 — linking Homebrew MLX; NAX \
+                 kernels may be silently disabled and certified benchmarks do not apply"
+            );
+        } else {
+            panic!(
+                "mlx-sys resolved MLX to the Homebrew formula at {} — refusing to link it. \
+                 Homebrew's build derives its deployment target from the macOS minor version, \
+                 which truncates to 26.0 on macOS 26.x hosts and silently compiles out the NAX \
+                 GEMM/attention kernels. Use the pip wheel instead: activate the repo .venv or \
+                 `python3 -m pip install mlx=={}`. Set AX_MLX_ALLOW_HOMEBREW=1 only for \
+                 bring-up experiments.",
+                dirs.mlx_lib_dir,
+                pin.as_deref().unwrap_or("<see mlx.version>")
+            );
+        }
+    }
+
+    if let (Some(version), Some(pin)) = (version.as_deref(), pin.as_deref())
+        && version != pin
+    {
+        if env_flag("AX_MLX_VERSION_OVERRIDE") {
+            println!(
+                "cargo:warning=mlx-sys: AX_MLX_VERSION_OVERRIDE=1 — MLX {version} does not \
+                 match the admitted pin {pin}; benchmarks and bit-exactness gates were \
+                 certified against the pin"
+            );
+        } else {
+            panic!(
+                "mlx-sys resolved MLX {version} from {} but the repo pins {pin} \
+                 (mlx.version). Install the pinned wheel (`python3 -m pip install \
+                 mlx=={pin}`), or — to deliberately test a different MLX — set \
+                 AX_MLX_VERSION_OVERRIDE=1 and rerun the qmm microbench parity gate and \
+                 bit-exactness suites before trusting any results.",
+                dirs.mlx_lib_dir
+            );
+        }
+    }
+}
+
 fn main() {
-    let dirs = find_mlx_dirs();
+    let (dirs, provenance) = find_mlx_dirs();
+    enforce_mlx_provenance_and_version(&dirs, provenance);
     let native_dir = PathBuf::from("native");
 
     // --- Compile native C++ shims (ax_shim.cpp + activation.cpp) ---
@@ -209,6 +338,22 @@ fn main() {
     println!("cargo:rerun-if-changed=native/activation.cpp");
     println!("cargo:rerun-if-env-changed=MLX_LIB_DIR");
     println!("cargo:rerun-if-env-changed=MLX_INCLUDE_DIR");
+    // Environment switches that change which MLX gets resolved (or whether
+    // the provenance/version gate applies) must re-trigger resolution —
+    // otherwise a stale link survives an env change.
+    println!("cargo:rerun-if-env-changed=VIRTUAL_ENV");
+    println!("cargo:rerun-if-env-changed=CONDA_PREFIX");
+    println!("cargo:rerun-if-env-changed=PYO3_PYTHON");
+    println!("cargo:rerun-if-env-changed=PYTHON");
+    println!("cargo:rerun-if-env-changed=PYTHON_SYS_EXECUTABLE");
+    println!("cargo:rerun-if-env-changed=AX_MLX_ALLOW_HOMEBREW");
+    println!("cargo:rerun-if-env-changed=AX_MLX_VERSION_OVERRIDE");
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let pin = PathBuf::from(manifest_dir).join("../../mlx.version");
+        if pin.exists() {
+            println!("cargo:rerun-if-changed={}", pin.display());
+        }
+    }
     // A Homebrew `mlx` upgrade swaps the dylib and headers under the
     // version-stable `/opt/homebrew/opt/mlx` symlink without touching any
     // tracked file, which would leave a stale shim object running against a

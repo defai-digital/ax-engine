@@ -34,6 +34,15 @@ and this project adheres to Semantic Versioning.
   multi-model serving.
 - `--model-idle-timeout-secs` / `AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS`: opt-in
   idle eviction of non-default resident models for multi-model serving.
+- MLX toolchain pinning: the admitted MLX version lives in `mlx.version`
+  (repo root); `mlx-sys` now resolves the repo `.venv` even when it is not
+  activated, refuses linking Homebrew's MLX formula (deployment-target
+  truncation silently disables NAX kernels; `AX_MLX_ALLOW_HOMEBREW=1` for
+  bring-up), and fails the build on version drift
+  (`AX_MLX_VERSION_OVERRIDE=1` to experiment). Install scripts, the wheel
+  build, and CI coverage install the pinned version, and
+  `scripts/check-mlx-version.sh` verifies the toolchain (pin, wheel dylib,
+  `LC_BUILD_VERSION` ≥ 26.2) without compiling.
 - TUI Chat: markdown rendering for assistant replies (headings, bold/italic,
   inline + fenced code blocks, lists, blockquotes, links), with reasoning
   models' `<think>` blocks shown as a dimmed "Thinking" section.

@@ -142,7 +142,13 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         # target truncates to 26.0 on macOS 26.x, silently compiling out the
         # NAX kernels (see the helper script's comment).
         self.assertNotIn("brew install mlx", helper)
-        self.assertIn("pip install --upgrade mlx", helper)
+        # And it must be the admitted pinned version (mlx.version at the repo
+        # root — the same pin mlx-sys/build.rs enforces at link time), never
+        # an unpinned "latest".
+        self.assertIn('pip install --upgrade "mlx==${MLX_PIN}"', helper)
+        self.assertIn("mlx.version", helper)
+        pin = (NATIVE_DEPS_SCRIPT.parent.parent / "mlx.version").read_text().strip()
+        self.assertRegex(pin, r"^\d+\.\d+\.\d+$")
         # Subsequent cargo/maturin steps (including fresh-venv maturin develop)
         # must see the resolved paths; CI does this via GITHUB_ENV.
         self.assertIn("MLX_LIB_DIR=", helper)

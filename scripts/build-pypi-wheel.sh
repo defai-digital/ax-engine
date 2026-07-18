@@ -51,7 +51,9 @@ cd "$REPO_ROOT"
 # ── 0. Ensure a correctly-built MLX (pip wheel) is available ──────────────
 # See the file header for why this must be pip's mlx, not Homebrew's.
 echo "==> Ensuring a correctly-built MLX (pip wheel) is available..."
-python3 -m pip install --upgrade --quiet mlx
+# Pinned in mlx.version (repo root); mlx-sys/build.rs enforces the same pin.
+MLX_PIN="$(tr -d '[:space:]' < "$REPO_ROOT/mlx.version")"
+python3 -m pip install --upgrade --quiet "mlx==${MLX_PIN}"
 MLX_PIP_DIR="$(python3 -c 'import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]))')"
 if [[ ! -f "$MLX_PIP_DIR/lib/libmlx.dylib" ]]; then
     echo "error: pip-installed mlx has no lib/libmlx.dylib at $MLX_PIP_DIR"

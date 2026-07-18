@@ -169,12 +169,25 @@ xcodebuild -downloadComponent MetalToolchain
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip maturin
-python -m pip install mlx
+python -m pip install "mlx==$(cat mlx.version)"
 cargo build --release -p ax-engine-server -p ax-engine-bench
 maturin develop --release
 export PATH="$PWD/target/release:$PATH"
 ax-engine doctor
+bash scripts/check-mlx-version.sh
 ```
+
+The repo pins the admitted MLX version in `mlx.version` at the repo root, and
+`crates/mlx-sys/build.rs` enforces it at link time: builds fail loudly if the
+resolved MLX is a different version (`AX_MLX_VERSION_OVERRIDE=1` to
+experiment) or the Homebrew formula (`AX_MLX_ALLOW_HOMEBREW=1` for bring-up
+only). The build also consults the repo-local `.venv` even when it is not
+activated, so a bare `cargo build` on a dev machine cannot silently drift to
+another MLX install. `scripts/check-mlx-version.sh` verifies the same
+contract without compiling: pinned version, wheel-bundled `libmlx.dylib`, and
+an `LC_BUILD_VERSION` target of 26.2+ (the NAX kernel floor). Bumping the pin
+is deliberate: update `mlx.version`, rerun the qmm microbench parity gate and
+the bit-exactness suites, and only then trust results.
 
 > [!IMPORTANT]
 > Install `mlx` with `pip`, not `brew install mlx`. Homebrew's `mlx` formula
