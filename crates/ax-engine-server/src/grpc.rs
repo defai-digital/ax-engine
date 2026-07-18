@@ -124,12 +124,14 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         _request: Request<proto::HealthRequest>,
     ) -> Result<Response<proto::HealthResponse>, Status> {
-        let live = self.state.snapshot();
-        if !live.generation_service.is_ready() {
-            return Err(Status::unavailable(
-                "the native generation worker is unavailable",
-            ));
+        let unavailable = self.state.unavailable_model_ids();
+        if !unavailable.is_empty() {
+            return Err(Status::unavailable(format!(
+                "native generation workers are unavailable for loaded models: {}",
+                unavailable.join(", ")
+            )));
         }
+        let live = self.state.snapshot();
         Ok(Response::new(proto::HealthResponse {
             status: "ok".to_string(),
             service: "ax-engine-server".to_string(),

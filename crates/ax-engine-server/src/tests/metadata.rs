@@ -80,6 +80,51 @@ async fn models_lists_every_loaded_model() {
 }
 
 #[tokio::test]
+async fn readiness_fails_when_any_loaded_model_worker_is_unavailable() {
+    let state = llama_cpp_state();
+    let config = state.snapshot().session_config.as_ref().clone();
+    let second = build_live_state("gemma-4-12b-it".to_string(), config)
+        .expect("second delegated state should build");
+    let second_service = second.generation_service.clone();
+    state.publish_live(second, false);
+    second_service
+        .shutdown()
+        .await
+        .expect("second worker should stop");
+    let app = build_router(state.clone());
+
+    for uri in ["/health", "/v1/discovery"] {
+        let (status, body) = json_response(
+            &app,
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+        assert_eq!(
+            body["error"]["code"],
+            json!("generation_worker_unavailable"),
+            "{uri}"
+        );
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("gemma-4-12b-it"),
+            "{uri}"
+        );
+    }
+
+    let removed = state
+        .remove_live("gemma-4-12b-it")
+        .expect("second model should remove");
+    removed.retire().await.expect("second worker should retire");
+}
+
+#[tokio::test]
 async fn models_advertises_openai_text_support_for_native_mlx() {
     // Native MLX serves the OpenAI text endpoints (see `validate_openai_text_backend`),
     // so `/v1/models` must advertise them rather than reporting them as unsupported.

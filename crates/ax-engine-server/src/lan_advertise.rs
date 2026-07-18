@@ -29,43 +29,17 @@ pub struct LanAdvertiseConfig {
 pub struct LanAdvertiser {
     daemon: ServiceDaemon,
     fullname: String,
+    config: parking_lot::Mutex<LanAdvertiseConfig>,
+}
+
+pub(crate) trait ModelAdvertisement: Send + Sync {
+    fn update_model(&self, model_id: &str) -> Result<(), String>;
 }
 
 impl LanAdvertiser {
     pub fn start(config: LanAdvertiseConfig) -> Result<Self, String> {
         let daemon = ServiceDaemon::new().map_err(|err| format!("mdns daemon: {err}"))?;
-
-        let mut properties: HashMap<String, String> = HashMap::new();
-        properties.insert("proto".into(), DISCOVERY_PROTO.into());
-        properties.insert("kind".into(), DISCOVERY_KIND.into());
-        properties.insert("version".into(), config.version);
-        properties.insert("model".into(), config.model_id);
-        properties.insert(
-            "auth".into(),
-            if config.auth_required {
-                "required".into()
-            } else {
-                "open".into()
-            },
-        );
-        properties.insert("scheme".into(), "http".into());
-        properties.insert("path".into(), "/v1".into());
-        properties.insert("instance".into(), config.instance_id.clone());
-        properties.insert("platform".into(), current_platform());
-        if let Some(cluster) = config.cluster.filter(|c| !c.is_empty()) {
-            properties.insert("cluster".into(), cluster);
-        }
-
-        let host_name = format!("{}.local.", sanitize_instance_name(&config.instance_name));
-        let service = ServiceInfo::new(
-            ENGINE_SERVICE_TYPE,
-            &sanitize_instance_name(&config.instance_name),
-            &host_name,
-            IpAddr::V4(config.advertise_ip),
-            config.port,
-            Some(properties),
-        )
-        .map_err(|err| format!("mdns service info: {err}"))?;
+        let service = service_info(&config)?;
 
         let fullname = service.get_fullname().to_string();
         daemon
@@ -79,8 +53,67 @@ impl LanAdvertiser {
             "ax-engine LAN mDNS advertisement registered"
         );
 
-        Ok(Self { daemon, fullname })
+        Ok(Self {
+            daemon,
+            fullname,
+            config: parking_lot::Mutex::new(config),
+        })
     }
+}
+
+impl ModelAdvertisement for LanAdvertiser {
+    fn update_model(&self, model_id: &str) -> Result<(), String> {
+        let mut config = self.config.lock();
+        if config.model_id == model_id {
+            return Ok(());
+        }
+        let mut updated = config.clone();
+        updated.model_id = model_id.to_string();
+        self.daemon
+            .register(service_info(&updated)?)
+            .map_err(|err| format!("mdns re-register: {err}"))?;
+        *config = updated;
+        Ok(())
+    }
+}
+
+fn service_info(config: &LanAdvertiseConfig) -> Result<ServiceInfo, String> {
+    let mut properties: HashMap<String, String> = HashMap::new();
+    properties.insert("proto".into(), DISCOVERY_PROTO.into());
+    properties.insert("kind".into(), DISCOVERY_KIND.into());
+    properties.insert("version".into(), config.version.clone());
+    properties.insert("model".into(), config.model_id.clone());
+    properties.insert(
+        "auth".into(),
+        if config.auth_required {
+            "required".into()
+        } else {
+            "open".into()
+        },
+    );
+    properties.insert("scheme".into(), "http".into());
+    properties.insert("path".into(), "/v1".into());
+    properties.insert("instance".into(), config.instance_id.clone());
+    properties.insert("platform".into(), current_platform());
+    if let Some(cluster) = config
+        .cluster
+        .as_ref()
+        .filter(|cluster| !cluster.is_empty())
+    {
+        properties.insert("cluster".into(), cluster.clone());
+    }
+
+    let instance_name = sanitize_instance_name(&config.instance_name);
+    let host_name = format!("{instance_name}.local.");
+    ServiceInfo::new(
+        ENGINE_SERVICE_TYPE,
+        &instance_name,
+        &host_name,
+        IpAddr::V4(config.advertise_ip),
+        config.port,
+        Some(properties),
+    )
+    .map_err(|err| format!("mdns service info: {err}"))
 }
 
 impl Drop for LanAdvertiser {
@@ -206,5 +239,33 @@ mod tests {
         assert!(is_advertisable_v4(Ipv4Addr::new(100, 64, 1, 1)));
         assert!(!is_advertisable_v4(Ipv4Addr::new(8, 8, 8, 8)));
         assert!(!is_advertisable_v4(Ipv4Addr::UNSPECIFIED));
+    }
+
+    #[test]
+    fn service_info_uses_current_default_model() {
+        let mut config = LanAdvertiseConfig {
+            instance_name: "test-engine".to_string(),
+            port: 8080,
+            advertise_ip: Ipv4Addr::new(192, 168, 1, 10),
+            version: "6.9.0".to_string(),
+            model_id: "first".to_string(),
+            auth_required: true,
+            cluster: Some("test".to_string()),
+            instance_id: "instance".to_string(),
+        };
+        assert_eq!(
+            service_info(&config)
+                .expect("service info should build")
+                .get_property_val_str("model"),
+            Some("first")
+        );
+
+        config.model_id = "second".to_string();
+        assert_eq!(
+            service_info(&config)
+                .expect("updated service info should build")
+                .get_property_val_str("model"),
+            Some("second")
+        );
     }
 }

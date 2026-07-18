@@ -54,6 +54,9 @@ _ax-engine._tcp.local.
 TXT keys: `proto`, `kind`, `version`, `model`, `auth`, `scheme`, `path`,
 `cluster`, `instance`, `platform`.
 
+`model` tracks the current default model. Registry operations that change the
+default re-announce the service so browsers do not retain the startup model.
+
 ## HTTP verify
 
 After browse, clients should call:
@@ -63,9 +66,9 @@ GET /v1/discovery
 ```
 
 This endpoint is unauthenticated by design (same class as `/healthz`). It never
-returns API keys or local filesystem secrets. When the generation worker is
-down it returns **503** (same readiness bar as `/health`) so agents do not
-register a dead peer after mDNS browse.
+returns API keys or local filesystem secrets. When any loaded model's generation
+worker is down it returns **503** (same readiness bar as `/health`) so agents do
+not register a partially unavailable peer after mDNS browse.
 
 ## Browse from AX Serving
 

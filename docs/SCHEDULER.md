@@ -26,6 +26,13 @@ The scheduler only sees `RequestState::Runnable` snapshots. Requests in
 `Waiting`, `Running`, `BlockedOnMemory`, `Finished`, `Cancelled`, and `Failed`
 states are filtered out before `plan()` is called.
 
+In multi-model server mode, every retained model owns a separate engine and
+scheduler, so the core scheduler does not see requests from sibling models. A
+process-wide execution arbiter sits above those sessions and rotates engine-step
+turns among waiting model IDs before a session calls its runner. The model
+anchor below remains the fail-safe when one engine is ever given snapshots for
+more than one model; neither layer creates a mixed-model batch.
+
 ## Selection Algorithm
 
 ```text

@@ -100,14 +100,18 @@ impl NativeProcessedMultimodalSupport {
 pub(crate) async fn health(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
-    if !live.generation_service.is_ready() {
+    let unavailable = state.unavailable_model_ids();
+    if !unavailable.is_empty() {
         return Err(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "generation_worker_unavailable",
-            "the native generation worker is unavailable".into(),
+            format!(
+                "native generation workers are unavailable for loaded models: {}",
+                unavailable.join(", ")
+            ),
         ));
     }
+    let live = state.snapshot();
     Ok(Json(json!({
         "status": "ok",
         "service": "ax-engine-server",
@@ -124,14 +128,18 @@ pub(crate) async fn health(
 pub(crate) async fn discovery_info(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
-    if !live.generation_service.is_ready() {
+    let unavailable = state.unavailable_model_ids();
+    if !unavailable.is_empty() {
         return Err(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "generation_worker_unavailable",
-            "the native generation worker is unavailable".into(),
+            format!(
+                "native generation workers are unavailable for loaded models: {}",
+                unavailable.join(", ")
+            ),
         ));
     }
+    let live = state.snapshot();
     let auth_required = state.api_key.is_some();
     let mut operations = vec![
         "chat_completions".to_string(),

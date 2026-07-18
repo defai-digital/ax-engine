@@ -44,6 +44,49 @@ pub(crate) enum LoadModelMode {
     Add,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MultiModelTarget {
+    Qwen36_35b,
+    Qwen36_27b,
+    Gemma4_12b,
+    Gemma4_26b,
+    Gemma4_31b,
+}
+
+impl MultiModelTarget {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Qwen36_35b => "qwen3.6-35b",
+            Self::Qwen36_27b => "qwen3.6-27b",
+            Self::Gemma4_12b => "gemma-4-12b",
+            Self::Gemma4_26b => "gemma-4-26b",
+            Self::Gemma4_31b => "gemma-4-31b",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct MultiModelManifestIdentity {
+    model_family: String,
+    layer_count: u32,
+    hidden_size: u32,
+    #[serde(default)]
+    intermediate_size: u32,
+    attention_head_count: u32,
+    attention_head_dim: u32,
+    kv_head_count: u32,
+    vocab_size: u32,
+    #[serde(default)]
+    moe: MultiModelMoeIdentity,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MultiModelMoeIdentity {
+    expert_count: Option<u32>,
+    experts_per_token: Option<u32>,
+    expert_intermediate_size: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct LoadModelResponse {
     pub model_id: String,
@@ -340,6 +383,7 @@ fn validate_load_preflight(
     }
 
     let loaded_model_ids = state.model_ids();
+    let loaded_models = state.snapshots();
     match load_mode {
         LoadModelMode::Add => {
             if loaded_model_ids.iter().any(|loaded| loaded == model_id) {
@@ -353,6 +397,7 @@ fn validate_load_preflight(
             }
             validate_multi_model_target(model_id, model_path)?;
             validate_retained_multi_model_ids(&loaded_model_ids)?;
+            validate_retained_multi_model_artifacts(&loaded_models)?;
         }
         LoadModelMode::Replace => {
             if live.model_id.as_ref() != model_id
@@ -378,6 +423,12 @@ fn validate_load_preflight(
                     .filter(|loaded| loaded != live.model_id.as_ref())
                     .collect::<Vec<_>>();
                 validate_retained_multi_model_ids(&retained)?;
+                let retained_models = loaded_models
+                    .iter()
+                    .filter(|loaded| loaded.model_id.as_ref() != live.model_id.as_ref())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                validate_retained_multi_model_artifacts(&retained_models)?;
             }
         }
     }
@@ -553,16 +604,9 @@ fn validate_multi_model_target(
     model_id: &str,
     model_path: &std::path::Path,
 ) -> Result<(), HttpErrorResponse> {
-    let inferred = crate::args::infer_model_id_from_artifacts(model_path).map_err(|message| {
-        error_response(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request", message)
-    })?;
     let requested_target = multi_model_target_key(model_id);
-    let inferred_target = inferred.as_deref().and_then(multi_model_target_key);
-    if requested_target.is_some()
-        && inferred
-            .as_deref()
-            .is_none_or(|_| inferred_target == requested_target)
-    {
+    let artifact_target = multi_model_artifact_target(model_path)?;
+    if requested_target.is_some() && requested_target == artifact_target {
         return Ok(());
     }
     Err(error_response(
@@ -570,9 +614,31 @@ fn validate_multi_model_target(
         "unsupported_model",
         format!(
             "multi-model loading is limited to Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B; requested model_id={model_id}, inferred_artifact_model={}",
-            inferred.as_deref().unwrap_or("unknown")
+            artifact_target.map_or("unknown", MultiModelTarget::as_str)
         ),
     ))
+}
+
+fn validate_retained_multi_model_artifacts(
+    lives: &[crate::app_state::LiveState],
+) -> Result<(), HttpErrorResponse> {
+    for live in lives {
+        let model_path = live
+            .session_config
+            .mlx_model_artifacts_dir()
+            .ok_or_else(|| {
+                error_response(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "unsupported_model",
+                    format!(
+                        "retained model {} has no native MLX artifact identity",
+                        live.model_id
+                    ),
+                )
+            })?;
+        validate_multi_model_target(live.model_id.as_ref(), model_path)?;
+    }
+    Ok(())
 }
 
 fn validate_retained_multi_model_ids(model_ids: &[String]) -> Result<(), HttpErrorResponse> {
@@ -596,26 +662,103 @@ fn is_supported_multi_model_id(model_id: &str) -> bool {
     multi_model_target_key(model_id).is_some()
 }
 
-fn multi_model_target_key(model_id: &str) -> Option<&'static str> {
-    let normalized = model_id
-        .to_ascii_lowercase()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect::<String>();
-    let qwen36 = normalized.contains("qwen3-6") || normalized.contains("qwen36");
-    let gemma4 = normalized.contains("gemma-4") || normalized.contains("gemma4");
-    if qwen36 && normalized.contains("35b") {
-        Some("qwen3.6-35b")
-    } else if qwen36 && normalized.contains("27b") {
-        Some("qwen3.6-27b")
-    } else if gemma4 && normalized.contains("12b") {
-        Some("gemma-4-12b")
-    } else if gemma4 && normalized.contains("26b") {
-        Some("gemma-4-26b")
-    } else if gemma4 && normalized.contains("31b") {
-        Some("gemma-4-31b")
+fn multi_model_target_key(model_id: &str) -> Option<MultiModelTarget> {
+    let normalized = normalize_model_label(model_id);
+    if target_label_matches(&normalized, &["qwen3-6-35b", "qwen36-35b"]) {
+        Some(MultiModelTarget::Qwen36_35b)
+    } else if target_label_matches(&normalized, &["qwen3-6-27b", "qwen36-27b"]) {
+        Some(MultiModelTarget::Qwen36_27b)
+    } else if target_label_matches(&normalized, &["gemma-4-12b", "gemma4-12b"]) {
+        Some(MultiModelTarget::Gemma4_12b)
+    } else if target_label_matches(&normalized, &["gemma-4-26b", "gemma4-26b"]) {
+        Some(MultiModelTarget::Gemma4_26b)
+    } else if target_label_matches(&normalized, &["gemma-4-31b", "gemma4-31b"]) {
+        Some(MultiModelTarget::Gemma4_31b)
     } else {
         None
+    }
+}
+
+fn normalize_model_label(model_id: &str) -> String {
+    let label = model_id.rsplit(['/', '\\']).next().unwrap_or(model_id);
+    let mut normalized = String::with_capacity(label.len());
+    let mut separated = false;
+    for ch in label.to_ascii_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch);
+            separated = false;
+        } else if !separated && !normalized.is_empty() {
+            normalized.push('-');
+            separated = true;
+        }
+    }
+    normalized.trim_end_matches('-').to_string()
+}
+
+fn target_label_matches(label: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| {
+        label == *prefix
+            || label
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with('-'))
+    })
+}
+
+fn multi_model_artifact_target(
+    model_path: &std::path::Path,
+) -> Result<Option<MultiModelTarget>, HttpErrorResponse> {
+    let manifest_path = model_path.join("model-manifest.json");
+    let bytes = std::fs::read(&manifest_path).map_err(|error| {
+        error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_request",
+            format!("cannot read {}: {error}", manifest_path.display()),
+        )
+    })?;
+    let identity =
+        serde_json::from_slice::<MultiModelManifestIdentity>(&bytes).map_err(|error| {
+            error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_request",
+                format!("cannot parse {}: {error}", manifest_path.display()),
+            )
+        })?;
+    Ok(multi_model_target_from_manifest(&identity))
+}
+
+fn multi_model_target_from_manifest(
+    identity: &MultiModelManifestIdentity,
+) -> Option<MultiModelTarget> {
+    let signature = (
+        identity.model_family.as_str(),
+        identity.layer_count,
+        identity.hidden_size,
+        identity.intermediate_size,
+        identity.attention_head_count,
+        identity.attention_head_dim,
+        identity.kv_head_count,
+        identity.vocab_size,
+        identity.moe.expert_count,
+        identity.moe.experts_per_token,
+        identity.moe.expert_intermediate_size,
+    );
+    match signature {
+        ("qwen3_5", 64, 5120, 17408, 24, 256, 4, 248320, None, None, None) => {
+            Some(MultiModelTarget::Qwen36_27b)
+        }
+        ("qwen3_5", 40, 2048, 0, 16, 256, 2, 248320, Some(256), Some(8), Some(512)) => {
+            Some(MultiModelTarget::Qwen36_35b)
+        }
+        ("gemma4", 48, 3840, 15360, 16, 256, 8, 262144, None, None, None) => {
+            Some(MultiModelTarget::Gemma4_12b)
+        }
+        ("gemma4", 30, 2816, 2112, 16, 256, 8, 262144, Some(128), Some(8), Some(704)) => {
+            Some(MultiModelTarget::Gemma4_26b)
+        }
+        ("gemma4", 60, 5376, 21504, 32, 256, 16, 262144, None, None, None) => {
+            Some(MultiModelTarget::Gemma4_31b)
+        }
+        _ => None,
     }
 }
 
@@ -742,11 +885,125 @@ mod tests {
         for model_id in [
             "qwen3.5-9b",
             "qwen3-coder-next",
+            "prefix-qwen3.6-35b",
+            "qwen3.65-35b",
             "gemma-4-e2b-it",
             "gemma-4-e4b-it",
+            "gemma-40-12b-it",
             "llama3.3-70b",
         ] {
             assert!(!is_supported_multi_model_id(model_id), "{model_id}");
+        }
+    }
+
+    #[test]
+    fn multi_model_artifact_identity_is_manifest_authoritative() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-multi-model-identity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be valid")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("test dir should create");
+        std::fs::write(
+            dir.join("model-manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "model_family": "qwen3_5",
+                "layer_count": 64,
+                "hidden_size": 5120,
+                "intermediate_size": 17408,
+                "attention_head_count": 24,
+                "attention_head_dim": 256,
+                "kv_head_count": 4,
+                "vocab_size": 248320
+            }))
+            .expect("manifest should serialize"),
+        )
+        .expect("manifest should write");
+
+        validate_multi_model_target("qwen3.6-27b-6bit", &dir)
+            .expect("the exact manifest signature should pass without config.json");
+        let mismatch = validate_multi_model_target("gemma-4-12b-it", &dir)
+            .expect_err("a mismatched public label must fail closed");
+        assert_eq!(
+            mismatch.1.0.error.code.as_deref(),
+            Some("unsupported_model")
+        );
+
+        std::fs::write(
+            dir.join("model-manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "model_family": "qwen3_5",
+                "layer_count": 63,
+                "hidden_size": 5120,
+                "intermediate_size": 17408,
+                "attention_head_count": 24,
+                "attention_head_dim": 256,
+                "kv_head_count": 4,
+                "vocab_size": 248320
+            }))
+            .expect("manifest should serialize"),
+        )
+        .expect("manifest should write");
+        let unknown = validate_multi_model_target("qwen3.6-27b-6bit", &dir)
+            .expect_err("an unknown architecture signature must fail closed");
+        assert_eq!(unknown.1.0.error.code.as_deref(), Some("unsupported_model"));
+        std::fs::remove_dir_all(dir).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn all_supported_manifest_signatures_are_distinct() {
+        let identities = [
+            (
+                serde_json::json!({
+                    "model_family": "qwen3_5", "layer_count": 64, "hidden_size": 5120,
+                    "intermediate_size": 17408, "attention_head_count": 24,
+                    "attention_head_dim": 256, "kv_head_count": 4, "vocab_size": 248320
+                }),
+                MultiModelTarget::Qwen36_27b,
+            ),
+            (
+                serde_json::json!({
+                    "model_family": "qwen3_5", "layer_count": 40, "hidden_size": 2048,
+                    "intermediate_size": 0, "attention_head_count": 16,
+                    "attention_head_dim": 256, "kv_head_count": 2, "vocab_size": 248320,
+                    "moe": {"expert_count": 256, "experts_per_token": 8,
+                            "expert_intermediate_size": 512}
+                }),
+                MultiModelTarget::Qwen36_35b,
+            ),
+            (
+                serde_json::json!({
+                    "model_family": "gemma4", "layer_count": 48, "hidden_size": 3840,
+                    "intermediate_size": 15360, "attention_head_count": 16,
+                    "attention_head_dim": 256, "kv_head_count": 8, "vocab_size": 262144
+                }),
+                MultiModelTarget::Gemma4_12b,
+            ),
+            (
+                serde_json::json!({
+                    "model_family": "gemma4", "layer_count": 30, "hidden_size": 2816,
+                    "intermediate_size": 2112, "attention_head_count": 16,
+                    "attention_head_dim": 256, "kv_head_count": 8, "vocab_size": 262144,
+                    "moe": {"expert_count": 128, "experts_per_token": 8,
+                            "expert_intermediate_size": 704}
+                }),
+                MultiModelTarget::Gemma4_26b,
+            ),
+            (
+                serde_json::json!({
+                    "model_family": "gemma4", "layer_count": 60, "hidden_size": 5376,
+                    "intermediate_size": 21504, "attention_head_count": 32,
+                    "attention_head_dim": 256, "kv_head_count": 16, "vocab_size": 262144
+                }),
+                MultiModelTarget::Gemma4_31b,
+            ),
+        ];
+        for (identity, expected) in identities {
+            let identity = serde_json::from_value(identity).expect("identity should parse");
+            assert_eq!(multi_model_target_from_manifest(&identity), Some(expected));
         }
     }
 

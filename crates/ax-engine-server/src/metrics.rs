@@ -144,7 +144,12 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
     // Each loaded model runs its own engine worker, so every series is
     // emitted per model (label `model`) plus an unlabeled aggregate for
     // dashboards written against the single-model layout.
-    let step_models = metrics.engine_step_gauges_per_model();
+    let loaded_model_ids = lives
+        .iter()
+        .map(|live| live.model_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut step_models = metrics.engine_step_gauges_per_model();
+    step_models.retain(|(model_id, _)| loaded_model_ids.contains(model_id.as_str()));
     if !step_models.is_empty() {
         append_step_metric(
             &mut body,

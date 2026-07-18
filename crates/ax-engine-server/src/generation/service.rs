@@ -20,6 +20,74 @@ type NativeEvent = Result<GenerateStreamEvent, EngineSessionError>;
 type SessionResult<T> = Result<T, EngineSessionError>;
 type StepObserver = Arc<dyn Fn(&EngineStepReport) + Send + Sync + 'static>;
 type PressureObserver = Arc<dyn Fn(GenerationPressureEvent) + Send + Sync + 'static>;
+type StepwiseTerminalObserver = Arc<dyn Fn(u64) + Send + Sync + 'static>;
+
+#[derive(Default)]
+pub(crate) struct ModelExecutionArbiter {
+    state: parking_lot::Mutex<ModelExecutionState>,
+    ready: parking_lot::Condvar,
+}
+
+#[derive(Default)]
+struct ModelExecutionState {
+    held: bool,
+    last_served: Option<String>,
+    waiters: BTreeMap<String, usize>,
+}
+
+struct ModelExecutionTurn<'a> {
+    arbiter: &'a ModelExecutionArbiter,
+}
+
+impl ModelExecutionArbiter {
+    fn acquire(&self, model_id: &str) -> ModelExecutionTurn<'_> {
+        let mut state = self.state.lock();
+        *state.waiters.entry(model_id.to_string()).or_default() += 1;
+        while state.held || next_waiting_model(&state).as_deref() != Some(model_id) {
+            self.ready.wait(&mut state);
+        }
+        let remove_waiter = if let Some(waiters) = state.waiters.get_mut(model_id) {
+            *waiters -= 1;
+            *waiters == 0
+        } else {
+            false
+        };
+        if remove_waiter {
+            state.waiters.remove(model_id);
+        }
+        state.held = true;
+        state.last_served = Some(model_id.to_string());
+        ModelExecutionTurn { arbiter: self }
+    }
+}
+
+impl Drop for ModelExecutionTurn<'_> {
+    fn drop(&mut self) {
+        let mut state = self.arbiter.state.lock();
+        state.held = false;
+        drop(state);
+        self.arbiter.ready.notify_all();
+    }
+}
+
+fn next_waiting_model(state: &ModelExecutionState) -> Option<String> {
+    let first = state.waiters.keys().next()?.clone();
+    let Some(last_served) = state.last_served.as_deref() else {
+        return Some(first);
+    };
+    state
+        .waiters
+        .keys()
+        .find(|model_id| model_id.as_str() > last_served)
+        .cloned()
+        .or(Some(first))
+}
+
+#[derive(Clone)]
+struct ModelExecutionTarget {
+    model_id: Arc<String>,
+    arbiter: Arc<ModelExecutionArbiter>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GenerationPressureEvent {
@@ -79,6 +147,8 @@ struct ServiceState {
     buffered_stream_events: AtomicUsize,
     step_observer: parking_lot::RwLock<Option<StepObserver>>,
     pressure_observer: parking_lot::RwLock<Option<PressureObserver>>,
+    stepwise_terminal_observer: parking_lot::RwLock<Option<StepwiseTerminalObserver>>,
+    execution_target: parking_lot::RwLock<Option<ModelExecutionTarget>>,
 }
 
 pub(crate) struct NativeGenerationService {
@@ -140,6 +210,8 @@ impl NativeGenerationService {
             buffered_stream_events: AtomicUsize::new(0),
             step_observer: parking_lot::RwLock::new(None),
             pressure_observer: parking_lot::RwLock::new(None),
+            stepwise_terminal_observer: parking_lot::RwLock::new(None),
+            execution_target: parking_lot::RwLock::new(None),
         });
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
@@ -343,6 +415,21 @@ impl NativeGenerationService {
         F: Fn(GenerationPressureEvent) + Send + Sync + 'static,
     {
         *self.state.pressure_observer.write() = Some(Arc::new(observer));
+    }
+
+    pub(crate) fn set_stepwise_terminal_observer<F>(&self, observer: F)
+    where
+        F: Fn(u64) + Send + Sync + 'static,
+    {
+        *self.state.stepwise_terminal_observer.write() = Some(Arc::new(observer));
+    }
+
+    pub(crate) fn set_execution_arbiter(
+        &self,
+        model_id: Arc<String>,
+        arbiter: Arc<ModelExecutionArbiter>,
+    ) {
+        *self.state.execution_target.write() = Some(ModelExecutionTarget { model_id, arbiter });
     }
 
     pub(crate) async fn shutdown(&self) -> Result<(), GenerationServiceError> {
@@ -595,6 +682,10 @@ fn handle_command(
 ) -> bool {
     match command {
         ServiceCommand::Execute(job) => {
+            let execution_target = state.execution_target.read().clone();
+            let _turn = execution_target
+                .as_ref()
+                .map(|target| target.arbiter.acquire(target.model_id.as_ref()));
             job(session);
             complete_job(state);
         }
@@ -645,6 +736,7 @@ fn handle_command(
                         let _ = session.cancel_request(request_id);
                         if stepwise_permits.remove(&request_id).is_some() {
                             complete_job(state);
+                            record_stepwise_terminal(state, request_id);
                         }
                     }
                 }
@@ -807,6 +899,10 @@ fn advance_shared_engine(
     service_state: &ServiceState,
 ) -> SessionResult<EngineStepReport> {
     maintain_streams(session, active_streams, service_state);
+    let execution_target = service_state.execution_target.read().clone();
+    let _turn = execution_target
+        .as_ref()
+        .map(|target| target.arbiter.acquire(target.model_id.as_ref()));
     match session.step_report_with_request_ids() {
         Ok((report, request_ids)) => {
             record_step_report(service_state, &report);
@@ -1057,6 +1153,7 @@ fn release_terminal_stepwise_permits(
     for request_id in terminal_request_ids {
         if stepwise_permits.remove(&request_id).is_some() {
             complete_job(service_state);
+            record_stepwise_terminal(service_state, request_id);
         }
     }
 }
@@ -1070,6 +1167,7 @@ fn release_terminal_stepwise_permit(
         && stepwise_permits.remove(&report.request_id).is_some()
     {
         complete_job(service_state);
+        record_stepwise_terminal(service_state, report.request_id);
     }
 }
 
@@ -1083,6 +1181,7 @@ fn cancel_all_stepwise(
         let _ = session.cancel_request(request_id);
         if stepwise_permits.remove(&request_id).is_some() {
             complete_job(service_state);
+            record_stepwise_terminal(service_state, request_id);
         }
     }
 }
@@ -1145,6 +1244,13 @@ fn record_pressure_event(state: &ServiceState, event: GenerationPressureEvent) {
     let observer = state.pressure_observer.read().clone();
     if let Some(observer) = observer {
         observer(event);
+    }
+}
+
+fn record_stepwise_terminal(state: &ServiceState, request_id: u64) {
+    let observer = state.stepwise_terminal_observer.read().clone();
+    if let Some(observer) = observer {
+        observer(request_id);
     }
 }
 
@@ -1385,6 +1491,48 @@ mod tests {
     }
 
     #[test]
+    fn execution_arbiter_rotates_between_waiting_models() {
+        let arbiter = Arc::new(ModelExecutionArbiter::default());
+        let first_turn = arbiter.acquire("alpha");
+        let (acquired_tx, acquired_rx) = std_mpsc::channel();
+        let mut workers = Vec::new();
+        for model_id in ["alpha", "beta"] {
+            let worker_arbiter = Arc::clone(&arbiter);
+            let acquired_tx = acquired_tx.clone();
+            workers.push(std::thread::spawn(move || {
+                let _turn = worker_arbiter.acquire(model_id);
+                acquired_tx
+                    .send(model_id)
+                    .expect("acquisition should be observed");
+            }));
+        }
+        drop(acquired_tx);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while arbiter.state.lock().waiters.len() < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(arbiter.state.lock().waiters.len(), 2);
+        drop(first_turn);
+
+        assert_eq!(
+            acquired_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("the next model should acquire"),
+            "beta"
+        );
+        assert_eq!(
+            acquired_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("the original model should reacquire"),
+            "alpha"
+        );
+        for worker in workers {
+            worker.join().expect("arbiter worker should finish");
+        }
+    }
+
+    #[test]
     fn failed_enqueue_rollback_tolerates_worker_exit_reset() {
         let state = ServiceState {
             alive: AtomicBool::new(false),
@@ -1394,6 +1542,8 @@ mod tests {
             buffered_stream_events: AtomicUsize::new(0),
             step_observer: parking_lot::RwLock::new(None),
             pressure_observer: parking_lot::RwLock::new(None),
+            stepwise_terminal_observer: parking_lot::RwLock::new(None),
+            execution_target: parking_lot::RwLock::new(None),
         };
 
         rollback_failed_enqueue(&state);

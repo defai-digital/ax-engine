@@ -39,7 +39,7 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_generation_worker_ready 1\n"));
 
     metrics.record_step_report(
-        "test-model",
+        "qwen3",
         &EngineStepReport {
             scheduled_requests: 3,
             scheduled_tokens: 17,
@@ -49,7 +49,7 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
         },
     );
     metrics.record_step_report(
-        "test-model",
+        "qwen3",
         &EngineStepReport {
             scheduled_requests: 1,
             scheduled_tokens: 5,
@@ -76,6 +76,6 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_step_kv_usage_blocks 4\n"));
     assert!(body.contains("ax_engine_step_prefix_hits_total 3\n"));
     // Per-model labeled series accompany the unlabeled aggregates.
-    assert!(body.contains("ax_engine_steps_total{model=\"test-model\"} 2\n"));
-    assert!(body.contains("ax_engine_step_prefix_hits_total{model=\"test-model\"} 3\n"));
+    assert!(body.contains("ax_engine_steps_total{model=\"qwen3\"} 2\n"));
+    assert!(body.contains("ax_engine_step_prefix_hits_total{model=\"qwen3\"} 3\n"));
 }

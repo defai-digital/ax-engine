@@ -149,13 +149,15 @@ gauges (scheduled requests and tokens, KV block usage, accumulated prefix-cache
 hits). The endpoint is read-only: engine-step values are snapshots cached when
 generation endpoints drive real steps, never sampled by stepping the engine
 from the scrape path. Engine-step gauges appear only after at least one step
-has been observed via `POST /v1/step`.
+has been observed via `POST /v1/step`. Per-model gauges are removed when their
+model generation is retired, so an unloaded model cannot leave stale series.
 `/metrics` requires the API key when authentication is enabled and never
 exposes prompts, outputs, or credentials.
 
 HTTP and gRPC health probes remain healthy while inference is active. They
-report unavailable only if the persistent native worker is no longer alive;
-normal busy state is exposed through `/slots` and the metrics above.
+report unavailable if any loaded model's persistent worker is no longer alive;
+normal busy state is exposed through `/slots` and the metrics above. This keeps
+readiness aligned with the complete model inventory advertised by the process.
 
 The gRPC ok/error counters have one known gap: `grpc-status` for a
 successful unary response and for *all* streaming RPCs lives in HTTP/2
@@ -867,8 +869,11 @@ OpenAI-shaped completion and chat responses include `system_fingerprint: null`
 because the preview server does not yet publish a stable backend fingerprint.
 The `/v1/requests` endpoint routes by `model`; `/v1/step` advances the default
 model unless its optional `model` query selects another loaded model. Request
-snapshot and cancellation look up the process-unique request ID across all
-loaded sessions, preserving the SDK lifecycle contract.
+snapshot and cancellation use a bounded, generation-aware ownership index
+populated at submission, so lifecycle operations route directly to the owning
+worker rather than scanning or waiting behind unrelated model workers. Retiring
+a generation removes its ownership entries, and terminal ownership follows the
+SDK's bounded terminal-report retention while preserving the lifecycle contract.
 The server allocates request ids from one process-local sequence across both
 paths so transport logs and client correlation do not collide when clients mix
 blocking and stepwise APIs.
@@ -890,6 +895,16 @@ enforces the same five-model scope because it retains the other sessions; an
 unrestricted historical hot-swap remains available when only one model is
 loaded. Invalid load and unload requests are rejected before admission drains,
 so they do not wait for or interrupt unrelated active traffic.
+The retained `model-manifest.json` is authoritative for this allowlist: AX
+validates the manifest's exact family and architecture signature against the
+requested model ID. Directory names, optional Hugging Face config metadata, and
+substring matches cannot admit an unsupported or mismatched model.
+
+Each retained model still owns an independent session and scheduler. A shared
+process execution arbiter grants one model turn per engine step (and per
+embedding execution), rotating fairly among waiting model IDs. This preserves
+single-model execution on the process-wide MLX/Metal target without letting one
+busy model monopolize every turn; it does not create a cross-model fused batch.
 The optional `load_policy` request field accepts `availability_first` (the
 default) or `memory_constrained`. Availability-first keeps the drained model
 resident until its replacement is ready, preserving rollback at the cost of a
@@ -916,7 +931,8 @@ Engine-step metrics on `/metrics` (`ax_engine_steps_total`,
 `ax_engine_step_kv_usage_blocks`, `ax_engine_step_prefix_hits_total`) are
 emitted per loaded model with a `model` label, plus an unlabeled aggregate
 series (summed across models) for dashboards written against the
-single-model layout.
+single-model layout. Unload and replacement remove the retired generation's
+per-model sample immediately.
 
 Load requests also run a memory admission preflight before any drain: AX
 estimates the incoming model's resident footprint from its on-disk

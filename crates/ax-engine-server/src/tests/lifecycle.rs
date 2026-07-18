@@ -4,6 +4,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
+use std::sync::mpsc as std_mpsc;
+use std::time::{Duration, Instant};
 
 use super::fixtures::{
     json_request_body, json_response, llama_cpp_server_state, normalize_measurement_fields,
@@ -84,6 +86,100 @@ async fn step_routes_to_an_explicit_loaded_model() {
         .remove_live("gemma-4-12b-it")
         .expect("second model should remove");
     removed.retire().await.expect("second worker should retire");
+}
+
+#[tokio::test]
+async fn request_lifecycle_routes_directly_past_an_unrelated_saturated_worker() {
+    let (llama_server_url, llama_server_handle) = spawn_llama_cpp_completion_stream_server(
+        1,
+        vec![json!({
+            "content": "hello",
+            "tokens": [4],
+            "stop": false
+        })],
+        |_| {},
+    );
+    let state = super::fixtures::llama_cpp_server_state(llama_server_url);
+    let config = state.snapshot().session_config.as_ref().clone();
+    let second = build_live_state("gemma-4-12b-it".to_string(), config)
+        .expect("second delegated state should build");
+    state.publish_live(second, false);
+    let app = build_router(state.clone());
+
+    let mut request = sample_http_request(&[1, 2, 3], 2);
+    request["model"] = json!("gemma-4-12b-it");
+    let (submit_status, submit) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/requests")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&request)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(submit_status, StatusCode::CREATED, "{submit}");
+    let request_id = submit["request_id"]
+        .as_u64()
+        .expect("request id should be returned");
+
+    let unrelated_service = state.snapshot().generation_service;
+    let (entered_tx, entered_rx) = std_mpsc::channel();
+    let (release_tx, release_rx) = std_mpsc::channel();
+    unrelated_service
+        .submit(move |_| {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv();
+        })
+        .expect("blocking command should enqueue");
+    entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("unrelated worker should block");
+    for _ in 0..unrelated_service.command_queue_capacity() {
+        unrelated_service
+            .submit(|_| {})
+            .expect("unrelated queue should fill to capacity");
+    }
+
+    let (snapshot_status, snapshot) = json_response(
+        &app,
+        Request::builder()
+            .uri(format!("/v1/requests/{request_id}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(snapshot_status, StatusCode::OK);
+    assert_eq!(snapshot["request_id"], json!(request_id));
+
+    let (cancel_status, cancelled) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/requests/{request_id}/cancel"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(cancel_status, StatusCode::OK);
+    assert_eq!(cancelled["request_id"], json!(request_id));
+    assert!(state.request_owner_is_terminal(request_id));
+
+    release_tx
+        .send(())
+        .expect("unrelated worker should release");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while unrelated_service.is_busy() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!unrelated_service.is_busy());
+    let removed = state
+        .remove_live("gemma-4-12b-it")
+        .expect("second model should remove");
+    removed.retire().await.expect("second worker should retire");
+    llama_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
 }
 
 #[tokio::test]

@@ -120,17 +120,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                  peers will see auth=open. Prefer requiring a bearer token on non-loopback binds."
             );
         }
-        let advertiser = lan_advertise::LanAdvertiser::start(lan_advertise::LanAdvertiseConfig {
-            instance_name: args.resolved_lan_instance_name(),
-            port: bound_port,
-            advertise_ip,
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            model_id: model_id.clone(),
-            auth_required: api_key.is_some(),
-            cluster: lan_cluster,
-            instance_id: discovery_instance_id,
-        })
-        .map_err(std::io::Error::other)?;
+        let advertiser = std::sync::Arc::new(
+            lan_advertise::LanAdvertiser::start(lan_advertise::LanAdvertiseConfig {
+                instance_name: args.resolved_lan_instance_name(),
+                port: bound_port,
+                advertise_ip,
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                model_id: model_id.clone(),
+                auth_required: api_key.is_some(),
+                cluster: lan_cluster,
+                instance_id: discovery_instance_id,
+            })
+            .map_err(std::io::Error::other)?,
+        );
+        state.set_model_advertisement(advertiser.clone());
         if !tracing_enabled {
             eprintln!(
                 "ax-engine-server LAN mDNS advertise on {}:{} (_ax-engine._tcp)",

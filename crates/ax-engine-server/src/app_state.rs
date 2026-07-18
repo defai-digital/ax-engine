@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,9 +11,11 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::admission::{AdmissionController, AdmissionPermit};
 use crate::generation::service::{
-    GenerationPressureEvent, GenerationServiceStartError, NativeGenerationService,
+    GenerationPressureEvent, GenerationServiceStartError, ModelExecutionArbiter,
+    NativeGenerationService,
 };
 use crate::generation::streaming::StreamDeadlines;
+use crate::lan_advertise::ModelAdvertisement;
 use crate::rate_limit::RateLimitConfig;
 
 /// All state owned by one loaded model.
@@ -39,6 +41,21 @@ pub(crate) struct LiveModelRegistry {
     models: BTreeMap<String, LiveState>,
 }
 
+#[derive(Clone)]
+struct RequestOwner {
+    model_id: Arc<String>,
+    generation: u64,
+    terminal: bool,
+}
+
+#[derive(Default)]
+struct RequestOwners {
+    by_id: BTreeMap<u64, RequestOwner>,
+    terminal_order: BTreeMap<(String, u64), VecDeque<u64>>,
+}
+
+const MAX_TERMINAL_REQUEST_OWNERS_PER_GENERATION: usize = 4096;
+
 /// Metadata published on `GET /v1/discovery` and mDNS TXT (no secrets).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DiscoveryMeta {
@@ -58,6 +75,9 @@ pub(crate) struct AppState {
     pub(crate) limits: Arc<ServerLimits>,
     pub(crate) admission: Arc<AdmissionController>,
     pub(crate) discovery: Arc<DiscoveryMeta>,
+    execution_arbiter: Arc<ModelExecutionArbiter>,
+    model_advertisement: Arc<parking_lot::RwLock<Option<Arc<dyn ModelAdvertisement>>>>,
+    request_owners: Arc<parking_lot::RwLock<RequestOwners>>,
     next_live_generation: Arc<AtomicU64>,
     next_request_id: Arc<AtomicU64>,
 }
@@ -66,7 +86,9 @@ impl AppState {
     pub(crate) fn new(mut live: LiveState) -> Self {
         live.generation = 1;
         let metrics = Arc::new(ServerMetrics::default());
-        attach_generation_metrics(&live, &metrics);
+        let execution_arbiter = Arc::new(ModelExecutionArbiter::default());
+        let request_owners = Arc::new(parking_lot::RwLock::new(RequestOwners::default()));
+        attach_live_state(&live, &metrics, &execution_arbiter, &request_owners);
         let default_model_id = live.model_id.as_ref().clone();
         let mut models = BTreeMap::new();
         models.insert(default_model_id.clone(), live);
@@ -81,6 +103,9 @@ impl AppState {
             limits: Arc::new(ServerLimits::default()),
             admission: Arc::new(AdmissionController::new(None)),
             discovery: Arc::new(DiscoveryMeta::default()),
+            execution_arbiter,
+            model_advertisement: Arc::new(parking_lot::RwLock::new(None)),
+            request_owners,
             next_live_generation: Arc::new(AtomicU64::new(2)),
             next_request_id: Arc::new(AtomicU64::new(1)),
         }
@@ -110,28 +135,43 @@ impl AppState {
         self.live.read().models.keys().cloned().collect()
     }
 
+    pub(crate) fn unavailable_model_ids(&self) -> Vec<String> {
+        self.live
+            .read()
+            .models
+            .iter()
+            .filter(|(_, live)| !live.generation_service.is_ready())
+            .map(|(model_id, _)| model_id.clone())
+            .collect()
+    }
+
     /// Remove a loaded model. The last model cannot be removed because every
     /// request that omits `model` must continue to resolve deterministically.
     pub(crate) fn remove_live(&self, model_id: &str) -> Result<LiveState, &'static str> {
-        let mut registry = self.live.write();
-        if !registry.models.contains_key(model_id) {
-            return Err("model_not_found");
-        }
-        if registry.models.len() == 1 {
-            return Err("last_model");
-        }
-        let next_default = if registry.default_model_id == model_id {
-            registry
-                .models
-                .keys()
-                .find(|key| key.as_str() != model_id)
-                .cloned()
-                .ok_or("last_model")?
-        } else {
-            registry.default_model_id.clone()
+        let (removed, next_default) = {
+            let mut registry = self.live.write();
+            if !registry.models.contains_key(model_id) {
+                return Err("model_not_found");
+            }
+            if registry.models.len() == 1 {
+                return Err("last_model");
+            }
+            let next_default = if registry.default_model_id == model_id {
+                registry
+                    .models
+                    .keys()
+                    .find(|key| key.as_str() != model_id)
+                    .cloned()
+                    .ok_or("last_model")?
+            } else {
+                registry.default_model_id.clone()
+            };
+            let removed = registry.models.remove(model_id).ok_or("model_not_found")?;
+            registry.default_model_id = next_default.clone();
+            (removed, next_default)
         };
-        let removed = registry.models.remove(model_id).ok_or("model_not_found")?;
-        registry.default_model_id = next_default;
+        self.remove_model_tracking(&removed);
+        self.update_advertised_model(&next_default);
         Ok(removed)
     }
 
@@ -139,12 +179,24 @@ impl AppState {
     /// The published model becomes the default when `make_default` is true.
     pub(crate) fn publish_live(&self, mut new: LiveState, make_default: bool) -> Option<LiveState> {
         new.generation = self.next_live_generation.fetch_add(1, Ordering::AcqRel);
-        attach_generation_metrics(&new, &self.metrics);
+        attach_live_state(
+            &new,
+            &self.metrics,
+            &self.execution_arbiter,
+            &self.request_owners,
+        );
         let model_id = new.model_id.as_ref().clone();
         let mut registry = self.live.write();
         let previous = registry.models.insert(model_id.clone(), new);
         if make_default {
-            registry.default_model_id = model_id;
+            registry.default_model_id = model_id.clone();
+        }
+        drop(registry);
+        if let Some(previous) = previous.as_ref() {
+            self.remove_model_tracking(previous);
+        }
+        if make_default {
+            self.update_advertised_model(&model_id);
         }
         previous
     }
@@ -153,14 +205,22 @@ impl AppState {
     /// successfully building a new session outside the lock.
     pub(crate) fn swap_live(&self, mut new: LiveState) -> LiveState {
         new.generation = self.next_live_generation.fetch_add(1, Ordering::AcqRel);
-        attach_generation_metrics(&new, &self.metrics);
+        attach_live_state(
+            &new,
+            &self.metrics,
+            &self.execution_arbiter,
+            &self.request_owners,
+        );
         let new_model_id = new.model_id.as_ref().clone();
         let mut registry = self.live.write();
         let old_model_id = registry.default_model_id.clone();
         let previous = registry.models[&old_model_id].clone();
         registry.models.remove(&old_model_id);
         registry.models.insert(new_model_id.clone(), new);
-        registry.default_model_id = new_model_id;
+        registry.default_model_id = new_model_id.clone();
+        drop(registry);
+        self.remove_model_tracking(&previous);
+        self.update_advertised_model(&new_model_id);
         previous
     }
 
@@ -187,6 +247,46 @@ impl AppState {
         self.next_request_id.fetch_add(1, Ordering::AcqRel)
     }
 
+    pub(crate) fn register_request_owner(&self, request_id: u64, live: &LiveState) {
+        let previous = self.request_owners.write().by_id.insert(
+            request_id,
+            RequestOwner {
+                model_id: Arc::clone(&live.model_id),
+                generation: live.generation,
+                terminal: false,
+            },
+        );
+        debug_assert!(previous.is_none(), "request IDs are process-unique");
+    }
+
+    pub(crate) fn remove_request_owner(&self, request_id: u64) {
+        self.request_owners.write().by_id.remove(&request_id);
+    }
+
+    pub(crate) fn snapshot_for_request(&self, request_id: u64) -> Option<LiveState> {
+        let owner = self.request_owners.read().by_id.get(&request_id).cloned()?;
+        self.live
+            .read()
+            .models
+            .get(owner.model_id.as_ref())
+            .filter(|live| live.generation == owner.generation)
+            .cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn request_owner_is_terminal(&self, request_id: u64) -> bool {
+        self.request_owners
+            .read()
+            .by_id
+            .get(&request_id)
+            .is_some_and(|owner| owner.terminal)
+    }
+
+    pub(crate) fn set_model_advertisement(&self, advertisement: Arc<dyn ModelAdvertisement>) {
+        *self.model_advertisement.write() = Some(advertisement);
+        self.update_advertised_model(self.snapshot().model_id.as_ref());
+    }
+
     pub(crate) fn with_api_key(mut self, api_key: Option<String>) -> Self {
         self.api_key = api_key.map(Arc::new);
         self
@@ -202,6 +302,27 @@ impl AppState {
         self.limits = Arc::new(limits);
         self
     }
+
+    fn remove_model_tracking(&self, live: &LiveState) {
+        let mut request_owners = self.request_owners.write();
+        request_owners.by_id.retain(|_, owner| {
+            owner.model_id.as_ref() != live.model_id.as_ref() || owner.generation != live.generation
+        });
+        request_owners
+            .terminal_order
+            .remove(&(live.model_id.as_ref().clone(), live.generation));
+        drop(request_owners);
+        self.metrics.remove_model_step_stats(live.model_id.as_ref());
+    }
+
+    fn update_advertised_model(&self, model_id: &str) {
+        let advertisement = self.model_advertisement.read().clone();
+        if let Some(advertisement) = advertisement
+            && let Err(error) = advertisement.update_model(model_id)
+        {
+            tracing::warn!(model_id, %error, "failed to update LAN model advertisement");
+        }
+    }
 }
 
 impl LiveState {
@@ -214,7 +335,21 @@ impl LiveState {
     }
 }
 
-fn attach_generation_metrics(live: &LiveState, metrics: &Arc<ServerMetrics>) {
+fn attach_live_state(
+    live: &LiveState,
+    metrics: &Arc<ServerMetrics>,
+    execution_arbiter: &Arc<ModelExecutionArbiter>,
+    request_owners: &Arc<parking_lot::RwLock<RequestOwners>>,
+) {
+    live.generation_service
+        .set_execution_arbiter(Arc::clone(&live.model_id), Arc::clone(execution_arbiter));
+    let request_owners = Arc::downgrade(request_owners);
+    live.generation_service
+        .set_stepwise_terminal_observer(move |request_id| {
+            if let Some(request_owners) = request_owners.upgrade() {
+                record_terminal_request_owner(&request_owners, request_id);
+            }
+        });
     let step_metrics = Arc::downgrade(metrics);
     let step_model_id = live.model_id.clone();
     live.generation_service.set_step_observer(move |report| {
@@ -228,6 +363,44 @@ fn attach_generation_metrics(live: &LiveState, metrics: &Arc<ServerMetrics>) {
             metrics.record_generation_pressure(event);
         }
     });
+}
+
+fn record_terminal_request_owner(
+    request_owners: &parking_lot::RwLock<RequestOwners>,
+    request_id: u64,
+) {
+    let mut request_owners = request_owners.write();
+    let Some(owner) = request_owners.by_id.get_mut(&request_id) else {
+        return;
+    };
+    if owner.terminal {
+        return;
+    }
+    owner.terminal = true;
+    let key = (owner.model_id.as_ref().clone(), owner.generation);
+    let order = request_owners
+        .terminal_order
+        .entry(key.clone())
+        .or_default();
+    order.push_back(request_id);
+    let mut evicted = Vec::new();
+    while order.len() > MAX_TERMINAL_REQUEST_OWNERS_PER_GENERATION {
+        if let Some(evicted_request_id) = order.pop_front() {
+            evicted.push(evicted_request_id);
+        }
+    }
+    for evicted_request_id in evicted {
+        let belongs_to_generation =
+            request_owners
+                .by_id
+                .get(&evicted_request_id)
+                .is_some_and(|owner| {
+                    owner.terminal && owner.model_id.as_ref() == &key.0 && owner.generation == key.1
+                });
+        if belongs_to_generation {
+            request_owners.by_id.remove(&evicted_request_id);
+        }
+    }
 }
 
 /// Resource limits resolved from CLI flags / env vars at startup (see
@@ -381,6 +554,13 @@ impl ServerMetrics {
             .saturating_add(report.prefix_hits as u64);
     }
 
+    pub(crate) fn remove_model_step_stats(&self, model_id: &str) {
+        self.engine_step_stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(model_id);
+    }
+
     /// Per-model engine-step snapshots for `/metrics`, sorted by model id.
     /// Empty until the first step is observed.
     pub(crate) fn engine_step_gauges_per_model(&self) -> Vec<(String, EngineStepGauges)> {
@@ -532,6 +712,16 @@ mod tests {
 
     use super::*;
 
+    #[derive(Default)]
+    struct RecordedAdvertisement(parking_lot::Mutex<Vec<String>>);
+
+    impl ModelAdvertisement for RecordedAdvertisement {
+        fn update_model(&self, model_id: &str) -> Result<(), String> {
+            self.0.lock().push(model_id.to_string());
+            Ok(())
+        }
+    }
+
     fn test_state(model_id: &str) -> AppState {
         let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
             backend_request: PreviewBackendRequest {
@@ -620,6 +810,104 @@ mod tests {
         let removed = state.remove_live("second").expect("second model unloads");
         assert_eq!(state.snapshot().model_id.as_ref(), "first");
         assert!(matches!(state.remove_live("first"), Err("last_model")));
+        removed
+            .retire()
+            .await
+            .expect("removed generation worker should retire");
+    }
+
+    #[tokio::test]
+    async fn request_owners_route_directly_and_are_pruned_on_unload() {
+        let state = test_state("first");
+        let config = state.snapshot().session_config.as_ref().clone();
+        let second = build_live_state("second".to_string(), config)
+            .expect("second model state should build");
+        state.publish_live(second, false);
+        let second = state
+            .snapshot_for_model(Some("second"))
+            .expect("second model should resolve");
+        state.register_request_owner(41, &second);
+
+        assert_eq!(
+            state
+                .snapshot_for_request(41)
+                .expect("request owner should resolve")
+                .model_id
+                .as_ref(),
+            "second"
+        );
+        let removed = state.remove_live("second").expect("second model unloads");
+        assert!(state.snapshot_for_request(41).is_none());
+        removed
+            .retire()
+            .await
+            .expect("removed generation worker should retire");
+    }
+
+    #[tokio::test]
+    async fn terminal_request_owners_are_bounded_without_evicting_active_requests() {
+        let state = test_state("first");
+        let live = state.snapshot();
+        state.register_request_owner(1, &live);
+        for request_id in 2..=(MAX_TERMINAL_REQUEST_OWNERS_PER_GENERATION as u64 + 2) {
+            state.register_request_owner(request_id, &live);
+            record_terminal_request_owner(&state.request_owners, request_id);
+        }
+
+        assert!(state.snapshot_for_request(1).is_some());
+        assert!(state.snapshot_for_request(2).is_none());
+        assert!(
+            state
+                .snapshot_for_request(MAX_TERMINAL_REQUEST_OWNERS_PER_GENERATION as u64 + 2)
+                .is_some()
+        );
+        assert_eq!(
+            state.request_owners.read().by_id.len(),
+            MAX_TERMINAL_REQUEST_OWNERS_PER_GENERATION + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn unload_prunes_step_metrics_and_refreshes_default_advertisement() {
+        let state = test_state("first");
+        let advertisement = Arc::new(RecordedAdvertisement::default());
+        state.set_model_advertisement(advertisement.clone());
+        let config = state.snapshot().session_config.as_ref().clone();
+        let second = build_live_state("second".to_string(), config)
+            .expect("second model state should build");
+        state.publish_live(second, true);
+        state.metrics.record_step_report(
+            "second",
+            &EngineStepReport {
+                scheduled_requests: 1,
+                scheduled_tokens: 8,
+                ..Default::default()
+            },
+        );
+        assert!(
+            state
+                .metrics
+                .engine_step_gauges_per_model()
+                .iter()
+                .any(|(model_id, _)| model_id == "second")
+        );
+
+        let removed = state.remove_live("second").expect("second model unloads");
+        assert!(
+            state
+                .metrics
+                .engine_step_gauges_per_model()
+                .iter()
+                .all(|(model_id, _)| model_id != "second")
+        );
+        assert_eq!(
+            advertisement.0.lock().as_slice(),
+            &[
+                "first".to_string(),
+                "second".to_string(),
+                "first".to_string()
+            ]
+        );
         removed
             .retire()
             .await
