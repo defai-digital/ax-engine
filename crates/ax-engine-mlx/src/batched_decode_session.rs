@@ -83,11 +83,56 @@ pub(crate) struct BatchedDecodeCapabilities {
     has_mtp: bool,
     is_diffusion: bool,
     has_sliding_window: bool,
+    /// OR over layers: any full/sliding (non-linear, non-MLA) attention layer.
+    has_full_attention: bool,
     has_moe: bool,
+    /// Weight-level: every MoE layer is compatible with `moe_router_qwen3`
+    /// (no gemma4 expert scale, no MXFP4). Independent of linear attention.
+    batched_qwen3_moe_router: bool,
     has_linear_attention: bool,
     has_mla: bool,
     has_layer_gating: bool,
+    /// Every layer has a usable attention projection layout for its kind
+    /// (linear / MLA / split-QKV / packed-QKV), not a naive all-split-QKVO check.
     has_complete_attention_projections: bool,
+}
+
+/// True when a layer's attention projections are sufficient for the batched
+/// path for that attention kind. Linear and MLA layers do not carry split
+/// Q/K/V/O; requiring them blocked hybrid Qwen3-Next eligibility (Issue 1).
+pub(crate) fn layer_has_usable_attention_projections(weights: &LayerWeights) -> bool {
+    if weights.linear_attn.is_some() {
+        return true;
+    }
+    if weights.glm_mla_attn.is_some() {
+        // MLA has its own layout; structural gates still reject MLA for batched
+        // decode. Completeness is independent of structural eligibility.
+        return true;
+    }
+    let has_o = weights.o_proj.is_some();
+    let has_split =
+        weights.q_proj.is_some() && weights.k_proj.is_some() && weights.v_proj.is_some();
+    let has_packed = weights.qkv_packed.is_some();
+    // Q-only layers that share KV from a source layer (assistant shared-KV).
+    let has_q_shared_kv =
+        weights.q_proj.is_some() && weights.k_proj.is_none() && weights.v_proj.is_none();
+    has_o && (has_split || has_packed || has_q_shared_kv)
+}
+
+/// Weight-level fail-closed check for the only MoE router the batched FFN runs
+/// (`moe_router_qwen3` + non-MXFP4 expert stacks). Gemma4 and GPT-OSS leave
+/// distinctive tensors that must never reach `ffn_batched`.
+fn layer_moe_is_batched_qwen3_compatible(weights: &LayerWeights) -> bool {
+    if weights.router_proj.is_none() {
+        return true;
+    }
+    weights.mxfp4_gate_up_exps.is_none()
+        && weights.mxfp4_down_exps.is_none()
+        && weights.router_expert_scale.is_none()
+        && weights.router_combined_scale.is_none()
+        && (weights.gate_up_exps_packed.is_some()
+            || weights.gate_exps.is_some()
+            || weights.down_exps.is_some())
 }
 
 impl BatchedDecodeCapabilities {
@@ -98,23 +143,38 @@ impl BatchedDecodeCapabilities {
         layers: &[LayerWeights],
         certification_status: BatchedDecodeCertificationStatus,
     ) -> Self {
+        let has_moe = layers.iter().any(|weights| weights.router_proj.is_some());
+        let has_linear_attention = layers.iter().any(|weights| weights.linear_attn.is_some());
+        let has_mla = layers.iter().any(|weights| weights.glm_mla_attn.is_some());
+        // Match StructuralCapabilities::from_layers: any non-linear, non-MLA
+        // layer participates as full/sliding attention (OR, not "pure dense").
+        // Projection completeness is a separate gate — incomplete dense layers
+        // still count as full-attention kind.
+        // Empty layer list is the synthetic "structure-only" test path and keeps
+        // the historical pure-dense default when no hybrid markers exist.
+        let has_full_attention = if layers.is_empty() {
+            !has_linear_attention && !has_mla
+        } else {
+            layers
+                .iter()
+                .any(|weights| weights.linear_attn.is_none() && weights.glm_mla_attn.is_none())
+        };
         Self {
             certification_status,
             has_mtp,
             is_diffusion,
             has_sliding_window: layer_windows.iter().any(Option::is_some),
-            has_moe: layers.iter().any(|weights| weights.router_proj.is_some()),
-            has_linear_attention: layers.iter().any(|weights| weights.linear_attn.is_some()),
-            has_mla: layers.iter().any(|weights| weights.glm_mla_attn.is_some()),
+            has_full_attention,
+            has_moe,
+            batched_qwen3_moe_router: has_moe
+                && layers.iter().all(layer_moe_is_batched_qwen3_compatible),
+            has_linear_attention,
+            has_mla,
             has_layer_gating: layers
                 .iter()
                 .any(|weights| weights.per_layer_gate.is_some() || weights.layer_scalar.is_some()),
-            has_complete_attention_projections: layers.iter().all(|weights| {
-                weights.q_proj.is_some()
-                    && weights.k_proj.is_some()
-                    && weights.v_proj.is_some()
-                    && weights.o_proj.is_some()
-            }),
+            has_complete_attention_projections: layers.is_empty()
+                || layers.iter().all(layer_has_usable_attention_projections),
         }
     }
 
@@ -130,25 +190,22 @@ impl BatchedDecodeCapabilities {
         // Structural gates via ADR-038 StructuralCapabilities (not family names).
         // Order matches the historical runner contract so route telemetry stays stable:
         // mtp → structural(diffusion first) → cert → remaining structure.
-        // Attention *kind* is independent of whether Q/K/V/O projections are
-        // complete — incomplete projections are a separate rejection
-        // (`missing_attention_projection`). Gating has_full_attention on
-        // projection completeness incorrectly added a spurious `no_attention`
-        // structural rejection for incomplete dense models.
+        // Attention *kind* is independent of whether projections are complete —
+        // incomplete projections are a separate rejection
+        // (`missing_attention_projection`).
         let structural = ax_engine_core::StructuralCapabilities {
-            has_full_attention: !self.has_sliding_window
-                && !self.has_linear_attention
-                && !self.has_mla,
+            has_full_attention: self.has_full_attention,
             has_sliding_window: self.has_sliding_window,
             has_linear_attention: self.has_linear_attention,
             has_mla: self.has_mla,
             has_moe: self.has_moe,
+            batched_qwen3_moe_router: self.batched_qwen3_moe_router,
             has_layer_gating: self.has_layer_gating,
             is_diffusion: self.is_diffusion,
             is_encoder_embed: false,
             is_multimodal_capable: false,
         };
-        let structural_reasons = structural.dense_batched_decode_structural_rejections();
+        let structural_reasons = structural.batched_decode_structural_rejections();
         // Emit diffusion first (legacy position), then defer other structural
         // reasons until after certification for telemetry stability.
         if structural_reasons.contains(&"diffusion") {
@@ -472,14 +529,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn incomplete_projections_do_not_emit_spurious_no_attention() {
-        use crate::weights::LayerWeights;
+    fn stub_layer_weights() -> crate::weights::LayerWeights {
         use mlx_sys::{MlxDtype, zeros};
-
-        // One dense layer with missing Q/K/V/O projections.
-        // Attention *kind* is still full; incompleteness is a separate gate.
-        let incomplete = LayerWeights {
+        crate::weights::LayerWeights {
             attn_norm: zeros(&[16], MlxDtype::Float32, None),
             attn_post_norm: None,
             q_norm: None,
@@ -522,7 +574,27 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
-        };
+        }
+    }
+
+    fn dense_split_layer() -> crate::weights::LayerWeights {
+        use crate::weights::QuantizedWeight;
+        use mlx_sys::{MlxDtype, zeros};
+        let mut layer = stub_layer_weights();
+        // Minimal stubs — only `.is_some()` is checked for eligibility.
+        let dummy = QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None);
+        layer.q_proj = Some(dummy.clone());
+        layer.k_proj = Some(dummy.clone());
+        layer.v_proj = Some(dummy.clone());
+        layer.o_proj = Some(dummy);
+        layer
+    }
+
+    #[test]
+    fn incomplete_projections_do_not_emit_spurious_no_attention() {
+        // One dense layer with missing Q/K/V/O projections.
+        // Attention *kind* is still full; incompleteness is a separate gate.
+        let incomplete = stub_layer_weights();
 
         let reasons = BatchedDecodeCapabilities::from_loaded_model(
             false,
@@ -541,5 +613,125 @@ mod tests {
             !reasons.contains(&"no_attention"),
             "incomplete dense projections must not be labeled no_attention: {reasons:?}"
         );
+    }
+
+    #[test]
+    fn hybrid_linear_layers_do_not_fail_projection_completeness() {
+        // Qwen3-Next hybrid: full-attention layer + linear-attention layer.
+        // Linear layers load with split Q/K/V/O all None — that must not emit
+        // missing_attention_projection (production runner bug fix).
+        use crate::weights::LinearAttentionWeights;
+        use mlx_sys::{MlxDtype, zeros};
+
+        let full = dense_split_layer();
+        let mut linear = stub_layer_weights();
+        linear.linear_attn = Some(LinearAttentionWeights {
+            in_proj_qkv: None,
+            in_proj_z: None,
+            in_proj_a: None,
+            in_proj_b: None,
+            in_proj_qkvz: None,
+            in_proj_ba: None,
+            conv1d_dense: zeros(&[1, 1, 1], MlxDtype::Float32, None),
+            dt_bias: zeros(&[1], MlxDtype::Float32, None),
+            a_log: zeros(&[1], MlxDtype::Float32, None),
+            norm: zeros(&[1], MlxDtype::Float32, None),
+            out_proj: crate::weights::QuantizedWeight::new(
+                zeros(&[1, 1], MlxDtype::Float32, None),
+                None,
+                None,
+            ),
+        });
+
+        let caps = BatchedDecodeCapabilities::from_loaded_model(
+            false,
+            false,
+            &[],
+            &[full, linear],
+            BatchedDecodeCertificationStatus::Missing,
+        );
+        let without_allow = caps.rejection_reasons(false);
+        assert!(
+            !without_allow.contains(&"missing_attention_projection"),
+            "hybrid must not fail projection completeness: {without_allow:?}"
+        );
+        assert!(
+            without_allow.contains(&"certification_missing"),
+            "uncertified hybrid still needs ALLOW or cert: {without_allow:?}"
+        );
+        assert!(
+            caps.eligible(true),
+            "hybrid + ALLOW_UNCERTIFIED must be eligible, got {:?}",
+            caps.rejection_reasons(true)
+        );
+        // Hybrid must not emit no_attention (full+linear both present).
+        assert!(
+            !caps.rejection_reasons(true).contains(&"no_attention"),
+            "hybrid must report attention structure, got {:?}",
+            caps.rejection_reasons(true)
+        );
+    }
+
+    #[test]
+    fn hybrid_qwen3_moe_admitted_only_with_compatible_router_weights() {
+        use crate::weights::QuantizedWeight;
+        use mlx_sys::{MlxDtype, zeros};
+
+        let mut full = dense_split_layer();
+        let dummy = QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None);
+        full.router_proj = Some(dummy.clone());
+        full.gate_up_exps_packed = Some(dummy.clone());
+        full.down_exps = Some(dummy);
+
+        let caps = BatchedDecodeCapabilities::from_loaded_model(
+            false,
+            false,
+            &[],
+            &[full],
+            BatchedDecodeCertificationStatus::Missing,
+        );
+        assert!(
+            !caps.rejection_reasons(true).contains(&"moe"),
+            "compatible MoE must not be moe-rejected under ALLOW: {:?}",
+            caps.rejection_reasons(true)
+        );
+        assert!(
+            caps.eligible(true),
+            "qwen3-style MoE under ALLOW must be eligible: {:?}",
+            caps.rejection_reasons(true)
+        );
+
+        // Gemma4-style expert scale must fail closed.
+        let mut gemma_moe = dense_split_layer();
+        let dummy = QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None);
+        gemma_moe.router_proj = Some(dummy);
+        gemma_moe.router_expert_scale = Some(zeros(&[8], MlxDtype::Float32, None));
+        let gemma_caps = BatchedDecodeCapabilities::from_loaded_model(
+            false,
+            false,
+            &[],
+            &[gemma_moe],
+            BatchedDecodeCertificationStatus::Missing,
+        );
+        assert!(
+            gemma_caps.rejection_reasons(true).contains(&"moe"),
+            "gemma4 MoE markers must reject even under ALLOW: {:?}",
+            gemma_caps.rejection_reasons(true)
+        );
+    }
+
+    #[test]
+    fn uncertified_path_still_requires_allow_flag() {
+        let full = dense_split_layer();
+        let caps = BatchedDecodeCapabilities::from_loaded_model(
+            false,
+            false,
+            &[],
+            &[full],
+            BatchedDecodeCertificationStatus::Missing,
+        );
+        assert!(!caps.eligible(false));
+        assert!(caps.eligible(true));
+        assert_eq!(caps.rejection_reasons(false), vec!["certification_missing"]);
     }
 }

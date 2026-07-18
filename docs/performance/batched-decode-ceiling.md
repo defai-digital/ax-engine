@@ -12,15 +12,25 @@ forward reads the weights and encodes the graph once for B tokens, so aggregate
 throughput should grow toward B×. This is the highest-ceiling remaining lever
 (vLLM/llama.cpp show near-linear aggregate on bandwidth-bound decode).
 
-## What the current code supports
+## What the current code supports (status as of Phase 3.7)
 
-`decode_batched_forward` / `BatchedDecodeSession` (default OFF,
-`AX_MLX_BATCHED_DECODE`) is **dense full-attention only**. Structural
-rejections (`architecture.rs::dense_batched_decode_structural_rejections`):
-`moe`, `linear_attention`, `mla`, `sliding_window`, `layer_gating`, `diffusion`,
-plus `mtp`. **Qwen3-Coder-Next (qwen3_next) is MoE + linear-attention → rejected
-on both counts.** Extending to it means batched MoE and batched linear-attention
-forwards — a large effort, which is why the ceiling had to be validated first.
+`decode_batched_forward` / `BatchedDecodeSession` is **opt-in**
+(`AX_MLX_BATCHED_DECODE`, default OFF). Structural rejections live in
+`architecture.rs::batched_decode_structural_rejections` (formerly
+`dense_batched_decode_structural_rejections`):
+
+| Shape | Structural | Numerical cert |
+| --- | --- | --- |
+| Dense full-attention (Llama, Qwen3, …) | admitted | certified pilots may default-route when flag on |
+| Linear + dense (Qwen3.5) | admitted (linear path) | cert per model |
+| Linear + **qwen3** MoE (Qwen3-Next / Coder-Next / 35B-A3B) | admitted via explicit `batched_qwen3_moe_router` | **uncertified** — needs `ALLOW_UNCERTIFIED` |
+| Other MoE (Gemma4, GPT-OSS, GLM, DeepSeek) | rejected (`moe` / `mla` / …) | n/a |
+| Sliding window, MLA, layer gating, diffusion, MTP | rejected | n/a |
+
+**Historical note (Phase 3.0/3.1):** this section originally stated linear/MoE
+were both rejected and Coder-Next was out of scope. That was true then; Phase
+3.5–3.7 lifted linear + qwen3-MoE. See
+[batched-hybrid-moe-linear-decode.md](batched-hybrid-moe-linear-decode.md).
 
 ## Ceiling measurement (dense, the supported path)
 
@@ -167,9 +177,9 @@ per-step overhead — diminishing returns on dense.
 ## Phase 3.7 handoff (2026-07-17): batched MoE + linear-attention — scoped and de-risked
 
 The original target (Qwen3-Coder-Next) is MoE + linear-attention, both rejected
-by `dense_batched_decode_structural_rejections`. Scoping the extension found it
-is an **integration** effort, not a kernel rewrite — the compute kernels are
-already batch-capable:
+by `batched_decode_structural_rejections` (then still rejecting linear/MoE).
+Scoping the extension found it is an **integration** effort, not a kernel
+rewrite — the compute kernels are already batch-capable:
 
 - **MoE experts** — `moe_experts_forward` is `leading_elements`-general (it
   already serves multi-token prefill `[1, seq, H]`), so a batched decode
@@ -190,7 +200,7 @@ already batch-capable:
    `router_proj.is_none()` / `linear_attn.is_none()` asserts with: MoE layers →
    the leading-general MoE block; linear-attention layers → the batch-param
    gated-delta with the batched state store. Lift the corresponding entries in
-   `dense_batched_decode_structural_rejections`.
+   `batched_decode_structural_rejections`.
 3. **Certify per-model on greedy-token divergence** (the 3.6 pattern), not
    bit-identity — batched `gather_qmm`/gated-delta will bf16-drift vs per-row.
 

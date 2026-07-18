@@ -674,7 +674,9 @@ env_flag_default_on!(
     /// the loader raises them to 1024 MB / 1000 ops before the first GPU op.
     /// Greedy token streams are bit-identical; measured on M3 Max:
     /// Qwen3-Coder-Next-4bit +22–25%, Qwen3.6-35B-A3B-4bit +14.5% (A/B/A).
-    /// Dense checkpoints (≤2 big tensors) never trigger the predicate.
+    /// When auto is ON, caps raise **optimistically on first process decision**
+    /// (including dense-first loads) so multi-model servers that load Llama then
+    /// MoE still get the MoE win; dense impact is measured neutral (Gemma ≈ 0.998).
     /// Evidence: `docs/performance/gather-qmm-async-serialization.md` and
     /// the interleaved A/B artifact recorded alongside it.
     auto_buffer_caps_enabled,

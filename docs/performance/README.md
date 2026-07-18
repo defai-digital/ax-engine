@@ -73,7 +73,7 @@ Apple M3 Max, MLX 0.32.0. "Parity" = greedy decode-trace FNV checksum.
 | Outcome | What | Evidence |
 | --- | --- | --- |
 | **Shipped, default-on** | `AX_MLX_AUTO_BUFFER_CAPS` — raise MLX per-buffer caps so `gather_qmm` stops splitting MoE command buffers. Coder-Next **1.25×**, 35B-A3B **1.11×** decode, parity clean. | [gather-qmm-async-serialization.md](gather-qmm-async-serialization.md) |
-| **Shipped, default-on** | `AX_MLX_BATCHED_SHARED_PROJ` — Shared batched projection policy for dense continuous decode: **+56%** aggregate at B=4, token-identical. | [batched-decode-ceiling.md](batched-decode-ceiling.md) |
+| **Shipped, default-on** | `AX_MLX_BATCHED_SHARED_PROJ` — Shared batched projection policy for dense continuous decode: **+56%** aggregate at **B=8** (RowExact 65 → Shared 97 tok/s on Llama-8B), token-identical. | [batched-decode-ceiling.md](batched-decode-ceiling.md) |
 | **Shipped** | Runner split (5 slices, −4.2k lines) + decode-skeleton I1/I2 (typed direct-pipeline state, centralized barrier/readback). | internal spec |
 | **Opt-in, uncertified** | Batched decode for the Qwen3-Next hybrid (MoE + linear attention). Correct forward (B=1 token-exact), amortizes **1.73/2.64/3.84×** at B=2/4/8, but B>1 drifts from per-row (batched-MoE `gather_qmm` reductions) → fails bit-exact greedy parity, stays behind `AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED`. | [batched-hybrid-moe-linear-decode.md](batched-hybrid-moe-linear-decode.md) |
 | **Closed by decision** | Phase 2 decode-skeleton unification — banked I1/I2 + split; the `DecodeRoute` trait fold (I4–I7) is parked: both drivers dissolved (batched extension shipped without it; overlap fix is upstream-gated). | internal spec §8 |

@@ -4811,19 +4811,29 @@ impl MlxRunner {
     }
 
     fn finish_pending_direct_for_ngram_transition(&self, state: &mut RequestState) -> Vec<u32> {
-        let Some(pending) = state.pending_direct.take() else {
-            tracing::error!(
-                "direct pipeline state machine invariant violated: \
-                 n-gram transition drain called without pending_direct; \
-                 returning empty token list"
-            );
-            state.direct_pipeline_emitted_tokens = 0;
-            return vec![];
-        };
-        let tok = self.run_direct_pipeline_finish_pending(state, pending);
-        state.ngram.feed(&[tok]);
-        state.direct_pipeline_emitted_tokens = 0;
-        vec![tok]
+        // Same consuming step type as the main direct path (I1): with
+        // final_by_max_output=true the only happy arm is FinishPending.
+        // Callers only invoke this when should_drain_pending_direct_before_ngram
+        // is true (greedy + pending present); BootstrapFinal is fail-closed.
+        match next_direct_pipeline_step(&mut state.pending_direct, true) {
+            DirectPipelineStep::FinishPending(pending) => {
+                let tok = self.run_direct_pipeline_finish_pending(state, pending);
+                state.ngram.feed(&[tok]);
+                state.direct_pipeline_emitted_tokens = 0;
+                vec![tok]
+            }
+            DirectPipelineStep::BootstrapFinal
+            | DirectPipelineStep::ContinuePending(_)
+            | DirectPipelineStep::Bootstrap => {
+                tracing::error!(
+                    "direct pipeline state machine invariant violated: \
+                     n-gram transition drain without pending_direct; \
+                     returning empty token list"
+                );
+                state.direct_pipeline_emitted_tokens = 0;
+                vec![]
+            }
+        }
     }
 
     fn run_non_ngram_decode(

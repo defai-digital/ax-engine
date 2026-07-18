@@ -374,16 +374,22 @@ pub const BUFFER_CAP_MIN_BIG_TENSORS: usize = 16;
 const BUFFER_CAP_TARGET_MB: u32 = 1024;
 const BUFFER_CAP_TARGET_OPS: u32 = 1000;
 
-/// Auto-raise MLX's Metal command-buffer caps for MoE-class checkpoints so
-/// `async_eval` keeps overlapping host graph build with GPU execution
-/// (`docs/performance/gather-qmm-async-serialization.md`). Decides once per
-/// process — MLX reads the variables a single time at Metal device init, so
-/// later loads could not change the outcome anyway.
+/// Auto-raise MLX's Metal command-buffer caps so `async_eval` keeps overlapping
+/// host graph build with GPU execution on MoE-class checkpoints
+/// (`docs/performance/gather-qmm-async-serialization.md`).
 ///
-/// Must run before the process's first MLX call. `MlxRunner::from_artifacts_inner`
-/// calls this ahead of its `set_wired_limit` (which constructs the Metal
-/// device); the `load_weights` call covers direct consumers (decode-trace,
-/// probes, bench paths) that never build a runner.
+/// **Decides once per process** — MLX reads `MLX_MAX_*_PER_BUFFER` a single
+/// time at Metal device init, so later loads cannot change the outcome.
+///
+/// **Optimistic raise when auto is ON:** caps are raised on the first decision
+/// regardless of whether the first checkpoint is MoE-class. Dense-first loads
+/// were previously a silent multi-model footgun (Llama then Coder-Next never
+/// got the MoE win). Dense impact is measured neutral (Gemma A/B ≈ 0.998);
+/// MoE impact is the ship reason (+11–25%). Pre-set env vars still win.
+///
+/// Must run before the process's first MLX Metal init.
+/// `MlxRunner::from_artifacts_inner` calls this ahead of `set_wired_limit`;
+/// `load_weights` covers direct consumers (decode-trace, probes, benches).
 pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
     static DECIDED: OnceLock<()> = OnceLock::new();
     DECIDED.get_or_init(|| {
@@ -395,20 +401,24 @@ pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
             .iter()
             .filter(|spec| spec.length_bytes > BUFFER_CAP_BIG_TENSOR_BYTES)
             .count();
-        if big_tensors < BUFFER_CAP_MIN_BIG_TENSORS {
-            return;
-        }
+        let is_moe_class = big_tensors >= BUFFER_CAP_MIN_BIG_TENSORS;
+        // Always raise under auto-ON (see doc above). Telemetry records whether
+        // the triggering checkpoint was MoE-class so operators can diagnose
+        // multi-model order.
         let (mb_applied, ops_applied) =
             mlx_sys::set_metal_buffer_caps_env(BUFFER_CAP_TARGET_MB, BUFFER_CAP_TARGET_OPS);
         tracing::info!(
             target = "ax_engine_mlx",
             big_tensors,
+            is_moe_class,
             mb_applied,
             ops_applied,
             target_mb = BUFFER_CAP_TARGET_MB,
             target_ops = BUFFER_CAP_TARGET_OPS,
-            "auto-raised MLX Metal command-buffer caps for MoE-class checkpoint \
-             (AX_MLX_AUTO_BUFFER_CAPS=0 to disable; pre-set MLX_MAX_*_PER_BUFFER wins)"
+            "auto-raised MLX Metal command-buffer caps (optimistic; applies to \
+             all subsequent models in this process). AX_MLX_AUTO_BUFFER_CAPS=0 \
+             to disable; pre-set MLX_MAX_*_PER_BUFFER wins. First-model-wins: \
+             MLX freezes these at Metal device init."
         );
     });
 }

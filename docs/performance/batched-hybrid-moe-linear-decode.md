@@ -32,10 +32,12 @@ Phase 3.7 extends the batched path to that shape:
   linear layers, auto-detected from the prefill cache; swap-removes both stores in
   lockstep on leave).
 - **Structural eligibility** (`ax-engine-core/architecture.rs`) — linear attention
-  is no longer a rejection; MoE is allowed **only when paired with linear
-  attention** (which certifies the qwen3-next router family). MoE *without* linear
-  attention (Mixtral, Llama-4, Gemma-4, GPT-OSS) stays rejected — the batched FFN
-  only implements the qwen3 router.
+  is no longer a rejection. MoE is allowed only when the explicit
+  `batched_qwen3_moe_router` capability is set (from model family at
+  `ArchitectureSpec` construction, and fail-closed from weight markers on the
+  runner path). Linear attention no longer proxies router eligibility.
+  Gemma-4 / GPT-OSS / GLM / DeepSeek MoE stay rejected. Runner projection
+  completeness is **per-layer kind** (linear layers do not need split Q/K/V/O).
 
 ## Correctness: the forward is right
 

@@ -352,33 +352,62 @@ mod tests {
         // Still not the *dense full-attention* pilot shape.
         assert!(!caps.is_structurally_dense_full_attention_only());
 
-        // Add MoE → qwen3-next linear + MoE hybrid (Coder-Next / 35B-A3B): still
-        // eligible, because linear attention certifies the qwen3 router kind.
+        // Add MoE → qwen3_5 family sets batched_qwen3_moe_router explicitly.
+        m.model_family = "qwen3_next".into();
         m.moe.expert_count = Some(8);
         m.moe.experts_per_token = Some(2);
         m.moe.expert_intermediate_size = Some(64);
         let caps_moe = ArchitectureSpec::from_manifest(&m).capabilities;
-        let reasons_moe = caps_moe.dense_batched_decode_structural_rejections();
+        assert!(
+            caps_moe.batched_qwen3_moe_router,
+            "qwen3_next MoE must set explicit qwen3 router capability"
+        );
+        let reasons_moe = caps_moe.batched_decode_structural_rejections();
         assert!(
             !reasons_moe.contains(&"moe"),
-            "linear + MoE hybrid should not be moe-rejected, got {reasons_moe:?}"
+            "qwen3 MoE hybrid should not be moe-rejected, got {reasons_moe:?}"
         );
     }
 
     #[test]
-    fn structural_caps_reject_moe_without_linear_attention() {
-        // MoE without linear attention spans non-qwen3 routers (Mixtral, Llama-4,
-        // Gemma-4, GPT-OSS) the batched path does not implement — stays rejected.
+    fn structural_caps_admit_qwen3_moe_without_linear_via_router_bit() {
+        // Router kind is explicit from family — pure dense MoE on qwen3 is
+        // structurally eligible (still needs numerical certification).
         let mut m = base_manifest("qwen3", 4);
         m.moe.expert_count = Some(8);
         m.moe.experts_per_token = Some(2);
         m.moe.expert_intermediate_size = Some(64);
         let caps = ArchitectureSpec::from_manifest(&m).capabilities;
+        assert!(caps.batched_qwen3_moe_router);
         assert!(
-            caps.dense_batched_decode_structural_rejections()
-                .contains(&"moe"),
-            "MoE without linear attention must stay structurally rejected"
+            !caps.batched_decode_structural_rejections().contains(&"moe"),
+            "qwen3 MoE router bit must admit MoE without linear proxy"
         );
+    }
+
+    #[test]
+    fn structural_caps_reject_unsupported_moe_router_families() {
+        // Gemma4 / GPT-OSS use different routers; family bit stays false.
+        for family in ["gemma4", "gpt_oss", "glm4_moe_lite", "deepseek_v3"] {
+            let mut m = base_manifest(family, 4);
+            m.moe.expert_count = Some(8);
+            m.moe.experts_per_token = Some(2);
+            m.moe.expert_intermediate_size = Some(64);
+            let caps = ArchitectureSpec::from_manifest(&m).capabilities;
+            assert!(
+                !caps.batched_qwen3_moe_router,
+                "{family} must not claim qwen3 batched MoE router"
+            );
+            assert!(
+                caps.batched_decode_structural_rejections().contains(&"moe")
+                    || caps.batched_decode_structural_rejections().contains(&"mla")
+                    || caps
+                        .batched_decode_structural_rejections()
+                        .contains(&"layer_gating"),
+                "{family} MoE must be structurally rejected for batched decode: {:?}",
+                caps.batched_decode_structural_rejections()
+            );
+        }
     }
 
     #[test]
@@ -387,7 +416,7 @@ mod tests {
         let spec = ArchitectureSpec::from_manifest(&m);
         assert!(
             spec.capabilities
-                .dense_batched_decode_structural_rejections()
+                .batched_decode_structural_rejections()
                 .is_empty()
         );
         assert!(
@@ -410,7 +439,7 @@ mod tests {
     #[test]
     fn empty_caps_report_no_attention() {
         let caps = StructuralCapabilities::default();
-        let reasons = caps.dense_batched_decode_structural_rejections();
+        let reasons = caps.batched_decode_structural_rejections();
         assert!(reasons.contains(&"no_attention"));
     }
 }

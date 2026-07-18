@@ -470,23 +470,25 @@ pub fn embed_decode_tokens_batched(
     reshape(&flat, &[batch, 1, hidden_size as i32], None)
 }
 
-/// Batched decode forward for full-attention **dense** families (Qwen3, Llama,
-/// Mistral) — batched MLX decode.
+/// Batched decode forward for dense full-attention families **and** Qwen3-Next
+/// hybrids (MoE + gated-delta linear attention) — continuous batched MLX decode.
 ///
 /// Embeds the B current tokens (`[B,1,hidden]`), builds the per-row validity
 /// mask once, runs the batched layer loop
-/// ([`families::standard::layer_forward_batched`]), and returns logits
-/// `[B, 1, vocab]`. Rows may be **ragged** — each row's decode position and KV
-/// length are read from the cache (`row_len(r)`), so a continuously-batched
+/// ([`families::standard::layer_forward_batched`] / linear sibling), and returns
+/// logits `[B, 1, vocab]`. Rows may be **ragged** — each row's decode position
+/// and KV length are read from the cache (`row_len(r)`), so a continuously-batched
 /// cohort at different sequence positions decodes together. The caller supplies
 /// the [`BatchedKvCache`] (seeded from per-request prefill) and turns logits into
 /// tokens via [`crate::batched_sampling::argmax_batched`] / `sample_batched_host`.
 ///
 /// Mirrors the single-sequence `forward` embed prologue
-/// (bf16 cast + optional `hidden_states_scale`) and final norm + lm_head. Every
-/// projection uses the row-exact policy because MLX selects a numerically
-/// different quantized reduction kernel when the leading batch dimension is
-/// greater than one; all non-projection operations remain shared across rows.
+/// (bf16 cast + optional `hidden_states_scale`) and final norm + lm_head.
+/// Dense projections default to the **Shared** batch policy
+/// (`AX_MLX_BATCHED_SHARED_PROJ`, default ON) for weight-read amortization;
+/// kill-switch restores per-row RowExact. Hybrid MoE amortization uses batched
+/// `gather_qmm` and is intentionally uncertified for bit-exact greedy parity
+/// (ADR-003 D5) — see `docs/performance/batched-hybrid-moe-linear-decode.md`.
 pub fn decode_batched_forward(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -2711,8 +2713,8 @@ pub(crate) fn build_embedding_batch_hidden_pub(
 ) -> (MlxArray, usize, usize, Vec<usize>) {
     let actual_lens: Vec<usize> = batch_token_ids.iter().map(Vec::len).collect();
     let raw_max = actual_lens.iter().copied().max().unwrap_or(0);
-    // Optional compile-key / pad snap (default OFF). See design
-    // mtp-embed-perf-sprint: AX_EMBED_MAX_LEN_BUCKETS.
+    // Optional compile-key / pad snap (**default ON**). Disable with
+    // AX_EMBED_MAX_LEN_BUCKETS=off. See mtp-embed-perf-sprint design.
     let max_len = embed_length_bucket(raw_max);
     let batch = batch_token_ids.len();
     let hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);

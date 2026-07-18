@@ -63,6 +63,11 @@ pub struct StructuralCapabilities {
     pub has_linear_attention: bool,
     pub has_mla: bool,
     pub has_moe: bool,
+    /// True when MoE layers use the qwen3 softmax router that the batched FFN
+    /// implements (`moe_router_qwen3` + non-MXFP4 expert stacks). Explicit
+    /// family/capability bit — **not** inferred from linear attention.
+    /// Gemma4, GPT-OSS (MXFP4), GLM, and DeepSeek routers stay false.
+    pub batched_qwen3_moe_router: bool,
     pub has_layer_gating: bool,
     pub is_diffusion: bool,
     pub is_encoder_embed: bool,
@@ -101,11 +106,16 @@ impl StructuralCapabilities {
         caps
     }
 
-    /// Structural rejections for the dense continuous-decode fast path.
+    /// Structural rejections for continuous batched decode (dense full-attention
+    /// pilot **and** hybrid linear / qwen3-MoE extensions).
     ///
     /// Prefer this over family-string allowlists (ADR-038 Phase 3). Numerical
-    /// certification remains a separate gate at the runner.
-    pub fn dense_batched_decode_structural_rejections(self) -> Vec<&'static str> {
+    /// certification remains a separate gate at the runner (ADR-003 D5).
+    ///
+    /// Formerly `dense_batched_decode_structural_rejections` — renamed after
+    /// Phase 3.7 admitted linear + qwen3-MoE hybrids; the dense-only pilot
+    /// predicate is [`Self::is_structurally_dense_full_attention_only`].
+    pub fn batched_decode_structural_rejections(self) -> Vec<&'static str> {
         let mut reasons = Vec::new();
         if self.is_diffusion {
             reasons.push("diffusion");
@@ -116,15 +126,11 @@ impl StructuralCapabilities {
         if self.has_sliding_window {
             reasons.push("sliding_window");
         }
-        // MoE is supported by the batched path only through the qwen3-next router
-        // (the batched FFN's `moe_router_qwen3` + `gather_qmm` experts). MoE
-        // *without* linear attention spans other router families — Mixtral,
-        // Llama-4, Gemma-4, GPT-OSS — whose routing the batched path does not
-        // implement, so those stay rejected. Gated-delta linear attention only
-        // ships in the qwen3-next family, so its presence certifies the router
-        // kind: a linear+MoE hybrid (Qwen3-Coder-Next, Qwen3.6-35B-A3B) is
-        // supported, and a linear+dense model (Qwen3.5-9B) trivially so.
-        if self.has_moe && !self.has_linear_attention {
+        // MoE is supported only via the explicit qwen3 router capability bit
+        // (set from model family at ArchitectureSpec construction). Linear
+        // attention is an independent attention path — it no longer proxies
+        // router eligibility. Gemma4 / GPT-OSS / GLM / DeepSeek MoE stay out.
+        if self.has_moe && !self.batched_qwen3_moe_router {
             reasons.push("moe");
         }
         // Linear attention (gated-delta) is handled by the batched linear path
@@ -144,10 +150,16 @@ impl StructuralCapabilities {
         reasons
     }
 
+    /// Backward-compatible alias for [`Self::batched_decode_structural_rejections`].
+    #[inline]
+    pub fn dense_batched_decode_structural_rejections(self) -> Vec<&'static str> {
+        self.batched_decode_structural_rejections()
+    }
+
     /// True when structural caps match the dense full-attention batched pilot
     /// shape (still requires numerical certification separately).
     pub fn is_structurally_dense_full_attention_only(self) -> bool {
-        self.dense_batched_decode_structural_rejections().is_empty()
+        self.batched_decode_structural_rejections().is_empty()
             && self.has_full_attention
             && !self.has_sliding_window
             && !self.has_linear_attention
@@ -237,12 +249,15 @@ impl ArchitectureSpec {
                     | NativeTensorRole::Gemma4UnifiedAudioProjection
             )
         });
-        let capabilities = StructuralCapabilities::from_layers(
+        let mut capabilities = StructuralCapabilities::from_layers(
             &layers,
             generation,
             has_layer_gating,
             is_multimodal_capable,
         );
+        // Explicit MoE router kind for the batched path (not inferred from linear).
+        capabilities.batched_qwen3_moe_router =
+            capabilities.has_moe && family_uses_batched_qwen3_moe_router(&manifest.model_family);
 
         Self {
             family_label: manifest.model_family.clone(),
@@ -274,6 +289,16 @@ fn uses_geglu(family: &str) -> bool {
 
 fn uses_mxfp4_moe(family: &str) -> bool {
     family == "gpt_oss"
+}
+
+/// Families whose decode MoE path uses `moe_router_qwen3` (the only router
+/// the continuous batched FFN implements). Mixtral shares that router layout
+/// but is still rejected for sliding-window structure.
+fn family_uses_batched_qwen3_moe_router(family: &str) -> bool {
+    matches!(
+        family,
+        "qwen3" | "qwen3_moe" | "qwen3_5" | "qwen3_next" | "mixtral"
+    )
 }
 
 fn build_layer_specs(manifest: &NativeModelManifest, generation: GenerationKind) -> Vec<LayerSpec> {
@@ -452,7 +477,7 @@ mod tests {
         );
         // Dense Qwen pilot still rejects SWA.
         assert!(
-            caps.dense_batched_decode_structural_rejections()
+            caps.batched_decode_structural_rejections()
                 .contains(&"sliding_window")
         );
 

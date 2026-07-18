@@ -319,6 +319,19 @@ impl MlxClosure {
                 message,
             });
         }
+        // In-body eval/op poison can leave rc=0 with non-null outputs while the
+        // thread-local error slot carries the real failure. Fail closed here so
+        // bare `try_apply`/`apply` match the production
+        // `try_apply_with_abort_safety` drain contract (per-layer compile).
+        if let Some(message) = crate::error::take_last_error() {
+            if !out_raw.ctx.is_null() {
+                unsafe { ffi::mlx_vector_array_free(out_raw) };
+            }
+            return Err(MlxClosureApplyError::FfiFailure {
+                operation: "mlx_closure_apply",
+                message,
+            });
+        }
         let out_vec = MlxVectorArray {
             inner: out_raw,
             owned: true,
@@ -434,14 +447,13 @@ mod tests {
             reached_after_eval.load(Ordering::SeqCst),
             "in-body eval failure must poison-and-continue, not unwind"
         );
-        // The apply itself may fail (poisoned slot / trampoline) or succeed
-        // with the slot set; either way the failure must be observable and
-        // the process must survive. Drain whatever is left for later tests.
-        let slot = crate::error::take_last_error();
+        // try_apply drains the error slot and fails closed when poison was set.
         assert!(
-            result.is_err() || slot.is_some(),
-            "a poisoned eval must surface through the apply error or the slot"
+            result.is_err(),
+            "a poisoned in-body eval must fail the apply (slot-draining contract)"
         );
+        // Leave no stale error for later tests on this thread.
+        let _ = crate::error::take_last_error();
     }
 
     #[test]
