@@ -304,6 +304,13 @@ impl App {
         let Some(pending) = self.pending else {
             return;
         };
+        // Fail before enqueueing so the queue does not sit on a permanent
+        // "failed" row for a missing Python dep (common after a bare mlx-only
+        // venv install).
+        if let Err(err) = crate::ensure_download_python_deps() {
+            self.toast_error(err);
+            return;
+        }
         let (subcmd, target, repo_id, total_bytes) = self.pending_plan(pending);
         let variant = &self.families[pending.family_idx].variants[pending.precision_idx];
         let dest = self.confirm_dest.as_ref().map(|parent| {

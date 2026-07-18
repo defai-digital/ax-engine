@@ -300,7 +300,8 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
 
 pub(super) fn field_line(label: &str, value: &str, active: bool) -> Line<'static> {
     let value_style = if active {
-        Style::default().fg(theme::ON_ACCENT).bg(theme::ACCENT)
+        // Match list selection so focused Host/Port fields read as "cursor here".
+        Style::default().fg(theme::ON_SELECT).bg(theme::SELECT)
     } else {
         Style::default().fg(theme::DIM)
     };
@@ -312,7 +313,11 @@ pub(super) fn field_line(label: &str, value: &str, active: bool) -> Line<'static
     Line::from(vec![
         Span::styled(
             prefix,
-            Style::default().fg(if active { theme::ACCENT } else { theme::MUTED }),
+            Style::default().fg(if active {
+                theme::SELECT
+            } else {
+                theme::MUTED
+            }),
         ),
         Span::styled(format!("{label}: "), theme::label()),
         Span::styled(format!(" {value} "), value_style),
@@ -417,12 +422,10 @@ pub(super) fn draw_tab_bar(
         };
         let label_width = label_text.chars().count() as u16;
         let style = if is_active && tabs_focused {
-            // Keyboard focus on the bar: brighter filled chip + reverse edge.
-            Style::default()
-                .fg(theme::ON_ACCENT)
-                .bg(theme::ACCENT)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            // Keyboard focus on the bar: same amber language as list selection.
+            theme::tab_keyboard_focus()
         } else if is_active {
+            // Current screen: accent + underline only (not a blue fill bar).
             theme::tab_active()
         } else if tabs_focused {
             // Other tabs stay readable while the bar owns focus.
@@ -461,11 +464,11 @@ pub(super) fn draw_tab_bar(
 
     frame.render_widget(Paragraph::new(Line::from(spans)), row0);
 
-    // Separator: accent while the tab bar owns keyboard focus.
+    // Separator: selection amber while the tab bar owns keyboard focus.
     let sep = "─".repeat(area.width as usize);
     frame.render_widget(
         Paragraph::new(sep).style(Style::default().fg(if tabs_focused {
-            theme::ACCENT
+            theme::SELECT
         } else {
             theme::BORDER_INACTIVE
         })),

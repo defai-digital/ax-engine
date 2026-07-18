@@ -270,6 +270,18 @@ def _emit_progress(done: int, total: int, file: str) -> None:
     print(json.dumps({"event": "progress", "done": done, "total": total, "file": file}), flush=True)
 
 
+def _prefer_classic_hf_transfer() -> None:
+    """Avoid hf_xet log-init races that surface as `File exists (os error 17)`.
+
+    Recent `huggingface_hub` + `hf_xet` stacks on macOS can fail mid-download
+    when concurrent processes both try to create the same xet log file. Classic
+    Hub transfer is slightly slower but reliable for CLI/TUI downloads. Users
+    who want xet can set ``HF_HUB_DISABLE_XET=0`` before launching.
+    """
+    if "HF_HUB_DISABLE_XET" not in os.environ:
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+
+
 def _run_hf_snapshot_download(
     repo_id: str,
     *,
@@ -277,6 +289,8 @@ def _run_hf_snapshot_download(
     progress_json: bool = False,
     progress_bar: bool = False,
 ) -> Path:
+    # Must run before importing huggingface_hub (constants read env at import).
+    _prefer_classic_hf_transfer()
     try:
         from huggingface_hub import snapshot_download
     except ImportError as error:

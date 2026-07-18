@@ -859,7 +859,7 @@ impl App {
                 for (ch, is_cursor) in row {
                     if is_cursor != run_is_cursor && !run.is_empty() {
                         let style = if run_is_cursor {
-                            Style::default().bg(theme::ACCENT).fg(theme::ON_ACCENT)
+                            Style::default().bg(theme::SELECT).fg(theme::ON_SELECT)
                         } else {
                             theme::body()
                         };
@@ -871,7 +871,7 @@ impl App {
                 }
                 if !run.is_empty() || run_is_cursor {
                     let style = if run_is_cursor {
-                        Style::default().bg(theme::ACCENT).fg(theme::ON_ACCENT)
+                        Style::default().bg(theme::SELECT).fg(theme::ON_SELECT)
                     } else {
                         theme::body()
                     };

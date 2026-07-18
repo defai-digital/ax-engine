@@ -1715,6 +1715,7 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
         return Ok(2);
     };
 
+    ensure_download_python_deps()?;
     let profile = profile_for_model(&model);
     let (code, summary, stderr) = run_download_summary(
         &model,
@@ -1744,6 +1745,7 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
 
 fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
     let args = parse_download_mtp_args(args)?;
+    ensure_download_python_deps()?;
     let target = mtp_download_target_for_model(&args.model)
         .ok_or_else(|| format_unknown_download_mtp_target(&args.model))?;
     let (download_code, download_summary, download_stderr) =
@@ -2633,6 +2635,42 @@ fn find_helper(env_name: &str, installed_name: &str, source_name: &str) -> Resul
 
 fn python() -> OsString {
     env::var_os("AX_ENGINE_PYTHON").unwrap_or_else(|| OsString::from("python3"))
+}
+
+/// Fail closed before spawning the download helper when `huggingface_hub` is
+/// missing from the Python used by `AX_ENGINE_PYTHON` / `python3`.
+fn ensure_download_python_deps() -> Result<(), String> {
+    // Unit tests exercise enqueue/UI without a live HF install. Opt back in
+    // with AX_ENGINE_REQUIRE_DOWNLOAD_DEPS=1 when testing the preflight itself.
+    #[cfg(test)]
+    if env::var_os("AX_ENGINE_REQUIRE_DOWNLOAD_DEPS").is_none() {
+        return Ok(());
+    }
+
+    let py = python();
+    let output = Command::new(&py)
+        .args(["-c", "import huggingface_hub"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|err| {
+            format!(
+                "failed to invoke Python for download preflight ({}): {err}",
+                py.to_string_lossy()
+            )
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let py_display = py.to_string_lossy();
+    Err(format!(
+        "huggingface_hub is required for model downloads.\n\
+         Install it into the same Python the CLI uses:\n\
+           {py_display} -m pip install huggingface_hub\n\
+         or:\n\
+           {py_display} -m pip install 'ax-engine[download]'\n\
+         Optional: set AX_ENGINE_PYTHON to a venv that already has the package."
+    ))
 }
 
 fn expand_home(value: &str) -> PathBuf {

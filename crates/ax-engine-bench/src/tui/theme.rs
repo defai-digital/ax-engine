@@ -11,8 +11,15 @@ use ratatui::text::Span;
 // Semantic palette (truecolor with named-color fallbacks in docs/comments)
 // ---------------------------------------------------------------------------
 
-/// Primary accent — navigation, active selections, focused borders.
+/// Primary accent — brand, tab labels, links, non-cursor chrome.
+/// Intentionally *not* used for the list/cursor selection bar so users can
+/// tell "where am I" apart from "which screen am I on".
 pub const ACCENT: Color = Color::Rgb(56, 189, 248); // sky-400
+
+/// Cursor / selected row fill — high-contrast warm bar, distinct from ACCENT.
+/// White-on-black terminals reverse poorly when everything is sky-blue; amber
+/// reads as "the focus is here" without colliding with green fits or red errors.
+pub const SELECT: Color = Color::Rgb(251, 191, 36); // amber-400
 
 /// Success / positive — running server, installed badges, ready toasts.
 pub const OK: Color = Color::Rgb(74, 222, 128); // green-400
@@ -40,8 +47,12 @@ pub const TEXT: Color = Color::White;
 /// Text on filled accent/ok chips.
 pub const ON_ACCENT: Color = Color::Black;
 
-/// Active border color for focused widgets.
-pub const BORDER_ACTIVE: Color = ACCENT;
+/// Text on the selection bar (same ink as ON_ACCENT; named for call sites).
+pub const ON_SELECT: Color = Color::Black;
+
+/// Active border for the focused panel — slate, not sky-blue, so the frame
+/// does not look like a second selection bar.
+pub const BORDER_ACTIVE: Color = Color::Rgb(203, 213, 225); // slate-300
 
 /// Inactive border color for unfocused widgets.
 pub const BORDER_INACTIVE: Color = MUTED;
@@ -53,20 +64,22 @@ pub const CODE_BG: Color = Color::Rgb(32, 33, 36);
 // Reusable style constructors
 // ---------------------------------------------------------------------------
 
-/// Active list highlight: bold dark-on-accent.
+/// Active list/cursor highlight: bold dark-on-amber (never sky-blue).
 pub fn highlight_active() -> Style {
     Style::default()
-        .bg(ACCENT)
-        .fg(ON_ACCENT)
+        .bg(SELECT)
+        .fg(ON_SELECT)
         .add_modifier(Modifier::BOLD)
 }
 
-/// Inactive list highlight: reversed.
+/// Selection ghost in an unfocused panel: dim underline only (no blue wash).
 pub fn highlight_inactive() -> Style {
-    Style::default().add_modifier(Modifier::REVERSED)
+    Style::default()
+        .fg(TEXT)
+        .add_modifier(Modifier::UNDERLINED | Modifier::DIM)
 }
 
-/// Bold accent title (panel headers, brand).
+/// Bold accent title (panel headers, brand) — text only, never a filled chip.
 pub fn title() -> Style {
     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
 }
@@ -106,7 +119,7 @@ pub fn feature() -> Style {
     Style::default().fg(FEATURE)
 }
 
-/// Primary CTA row (filled accent).
+/// Primary CTA row (filled accent). Actions, not cursor position.
 pub fn cta() -> Style {
     Style::default()
         .fg(ON_ACCENT)
@@ -114,12 +127,21 @@ pub fn cta() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// Active tab chip.
+/// Active tab for the current screen — underline + accent text only.
+/// Avoids a filled blue bar that competes with the amber selection cursor.
 pub fn tab_active() -> Style {
     Style::default()
-        .fg(ON_ACCENT)
-        .bg(ACCENT)
-        .add_modifier(Modifier::BOLD)
+        .fg(ACCENT)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+}
+
+/// Tab bar owns keyboard focus (↑ from content): filled amber so it matches
+/// the selection language ("focus is here").
+pub fn tab_keyboard_focus() -> Style {
+    Style::default()
+        .fg(ON_SELECT)
+        .bg(SELECT)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }
 
 /// Inactive tab label.
