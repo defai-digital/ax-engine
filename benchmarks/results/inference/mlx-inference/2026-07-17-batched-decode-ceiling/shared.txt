@@ -1,0 +1,8 @@
+model: /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2  prefill_len=32
+batch  agg_tok_s  per_req_tok_s  step_us  scaling_vs_b1
+    1       52.9           52.9    18918   1.00x  slot0_fnv=bd951636ab8da9ca
+    2       81.0           40.5    24704   1.53x  slot0_fnv=bd951636ab8da9ca
+    4       93.0           23.3    43000   1.76x  slot0_fnv=bd951636ab8da9ca
+    8       95.0           11.9    84229   1.80x  slot0_fnv=bd951636ab8da9ca
+
+interpretation: agg_tok_s scaling toward Nx proves batched decode amortizes the weight read / graph encoding; per_req_tok_s staying flat means no per-request penalty.

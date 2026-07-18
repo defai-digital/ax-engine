@@ -83,13 +83,25 @@ pub(crate) fn qkv_project(
     qkv_project_inner(cfg, w, x, head_dim, false, ProjectionBatchPolicy::Shared)
 }
 
+/// Projection policy for the batched-decode path: `RowExact` (per-row,
+/// bit-identical to single decode, no weight-read amortization) unless
+/// `AX_MLX_BATCHED_SHARED_PROJ` opts into `Shared` (one batched matmul,
+/// amortizes toward the ~3.3× ceiling, bf16-drifts vs per-row). Phase 3.5.
+fn batched_projection_policy() -> ProjectionBatchPolicy {
+    if fastpath::batched_shared_projections_enabled() {
+        ProjectionBatchPolicy::Shared
+    } else {
+        ProjectionBatchPolicy::RowExact
+    }
+}
+
 pub(crate) fn qkv_project_batched(
     cfg: &ModelConfig,
     w: &LayerWeights,
     x: &MlxArray,
     head_dim: usize,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
-    qkv_project_inner(cfg, w, x, head_dim, false, ProjectionBatchPolicy::RowExact)
+    qkv_project_inner(cfg, w, x, head_dim, false, batched_projection_policy())
 }
 
 /// Embedding variant of `qkv_project`: prefers a packed-QKV single-matmul when
@@ -251,7 +263,7 @@ pub(crate) fn attention_output_projection_batched(
         attn_flat,
         attn_gate,
         o_proj,
-        ProjectionBatchPolicy::RowExact,
+        batched_projection_policy(),
     )
 }
 
@@ -1433,14 +1445,7 @@ pub(crate) fn ffn_swiglu_batched(
     post_norm: Option<&MlxArray>,
     layer_idx: usize,
 ) -> MlxArray {
-    ffn_swiglu_with_policy(
-        cfg,
-        w,
-        x,
-        post_norm,
-        layer_idx,
-        ProjectionBatchPolicy::RowExact,
-    )
+    ffn_swiglu_with_policy(cfg, w, x, post_norm, layer_idx, batched_projection_policy())
 }
 
 fn ffn_swiglu_with_policy(

@@ -125,15 +125,31 @@ certification requires per-row parity with single-request decode. RowExact
 buys that exactness at the cost of all amortization — the same bf16
 reduction-order-drift tension as the fused-downproj report.
 
-**The fix (Phase 3.5, a real decision):** route the batched FFN (and the other
-projections, currently RowExact-eligible) through a single batched
-`quantized_matmul` (the `Shared` policy) to amortize toward the 3.3× ceiling,
-accept the bf16 numeric drift, and re-certify batched decode with a
-greedy-token-divergence measurement rather than bit-exactness. Batched decode
-is already a separate opt-in, uncertified-by-default path for concurrent
-serving, so a per-model certification measuring token divergence (not
-bit-identity) is the appropriate gate — mirroring how the sampled-batching
-path is already gated separately for reduction-order reasons.
+## Phase 3.5 result (2026-07-17): +46% aggregate, and greedy tokens DON'T diverge
+
+Shipped `AX_MLX_BATCHED_SHARED_PROJ` (default OFF): routes the batched QKV,
+attention-output, and FFN projections through the `Shared` policy (one batched
+`quantized_matmul`) instead of `RowExact`. A/B on Llama-8B (0.32.0):
+
+| batch | RowExact agg tok/s | Shared agg tok/s | Shared scaling | slot-0 token stream |
+| ---: | ---: | ---: | ---: | --- |
+| 1 | 53.0 | 52.9 | 1.00× | identical |
+| 2 | 57.3 | 81.0 | 1.53× | identical |
+| 4 | 62.6 | 93.0 | 1.76× | identical |
+| 8 | 65.2 | **95.0** | **1.80×** | identical (`bd951636…`) |
+
+**+46% aggregate throughput at batch=8** (65.2 → 95.0 tok/s), and — despite the
+2.3e-2 raw-matmul drift — the **greedy token stream is byte-identical** to
+RowExact, and the **25 batched correctness tests pass with the flag on**. So on
+these workloads the bf16 accumulation drift does not flip argmax; Shared is
+greedy-equivalent in practice, not merely close.
+
+Status: opt-in pending a broader per-model token-divergence certification
+(single-prompt checksum + 25 tests is strong but not the full promotion bar).
+The default-flip is the remaining 3.5 gate. Two follow-ups: (a) Shared reaches
+1.80× not the 3.3× ceiling — a residual non-amortizing stage remains (the KV
+cache materialize / attention at this shape / fixed per-step overhead), profile
+it next; (b) extend to MoE / linear-attention (Coder-Next) — Phase 3.6+.
 
 **Revised Phase 3 plan (updated after 3.2/3.3):**
 - **Realistic ceiling: ~2.7× aggregate at batch=8** (the true matmul

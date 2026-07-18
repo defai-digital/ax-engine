@@ -78,10 +78,18 @@ fn main() {
         for _ in 0..WARMUP {
             let _ = session.step(&cfg, &weights);
         }
+        // FNV-1a over slot-0's token stream — lets a RowExact vs Shared A/B
+        // measure greedy-token divergence (the Phase 3.5 certification signal),
+        // not just throughput.
+        let mut tok_hash: u64 = 0xcbf2_9ce4_8422_2325;
         let started = Instant::now();
         for _ in 0..STEPS {
             let out = session.step(&cfg, &weights);
             debug_assert_eq!(out.len(), batch);
+            if let Some(&(_, t)) = out.first() {
+                tok_hash ^= u64::from(t);
+                tok_hash = tok_hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
         }
         let wall_s = started.elapsed().as_secs_f64();
         let step_us = wall_s * 1e6 / STEPS as f64;
@@ -91,7 +99,7 @@ fn main() {
             b1_tok_s = agg_tok_s;
         }
         println!(
-            "{batch:>5}  {agg_tok_s:>9.1}  {per_req:>13.1}  {step_us:>7.0}  {:>5.2}x",
+            "{batch:>5}  {agg_tok_s:>9.1}  {per_req:>13.1}  {step_us:>7.0}  {:>5.2}x  slot0_fnv={tok_hash:016x}",
             agg_tok_s / b1_tok_s
         );
         // Per-stage breakdown when AX_MLX_BATCHED_PROFILE=1 (barriers on, so

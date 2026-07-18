@@ -1123,6 +1123,26 @@ env_flag!(
     "AX_DIFFUSION_PROFILE"
 );
 
+env_flag!(
+    /// `AX_MLX_BATCHED_SHARED_PROJ` — route batched-decode projections
+    /// (QKV, attention output, FFN) through a single batched
+    /// `quantized_matmul` (`ProjectionBatchPolicy::Shared`) instead of the
+    /// per-row `RowExact` loop.
+    ///
+    /// **Default: OFF** (opt-in). `RowExact` runs one `quantized_matmul` per
+    /// batch row so each row is bit-identical to single-request decode (the
+    /// current certification bar), but it re-reads the weight B times and so
+    /// does not amortize the weight read — the batched FFN then dominates and
+    /// caps aggregate scaling at ~1.24× (Phase 3.4,
+    /// docs/performance/batched-decode-ceiling.md). `Shared` reads the weight
+    /// once for all rows and amortizes toward the ~3.3× ceiling, at the cost
+    /// of bf16 accumulation-order drift vs per-row (measured ~2.3e-2), so it
+    /// is **not** bit-identical and must be certified on greedy-token
+    /// divergence, not bit-identity. Opt-in until that certification lands.
+    batched_shared_projections_enabled,
+    "AX_MLX_BATCHED_SHARED_PROJ"
+);
+
 /// Diffusion convergence: mean entropy threshold below which strict
 /// convergence triggers. Defaults to 0.005 when unset.
 pub fn diffusion_entropy_threshold() -> Option<f32> {
