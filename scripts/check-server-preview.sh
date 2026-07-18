@@ -105,7 +105,7 @@ def parse_openai_sse_payloads(body: str) -> list[dict]:
     return payloads
 
 
-for _ in range(300):
+for _ in range(1200):
     try:
         health = request_json("GET", "/health")
         break
@@ -412,7 +412,7 @@ def parse_openai_sse_payloads(body: str) -> list[dict]:
     return payloads
 
 
-for _ in range(300):
+for _ in range(1200):
     try:
         health = request_json("GET", "/health")
         break

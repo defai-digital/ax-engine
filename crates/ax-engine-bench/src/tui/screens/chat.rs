@@ -913,7 +913,11 @@ impl App {
                     let streaming_this = self.chat.streaming() && idx == last_idx;
                     let expanded = self.chat.thinking_expanded || streaming_this;
                     let think_lines: Vec<&str> = think.lines().collect();
-                    let marker = if expanded { "▾ Thinking" } else { "▸ Thinking" };
+                    let marker = if expanded {
+                        "▾ Thinking"
+                    } else {
+                        "▸ Thinking"
+                    };
                     lines.push(Line::from(Span::styled(marker, dim)));
                     if expanded || think_lines.len() <= THINKING_PREVIEW_LINES {
                         for part in think_lines {
