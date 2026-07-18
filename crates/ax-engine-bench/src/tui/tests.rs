@@ -1,3 +1,7 @@
+//! TUI state-machine and rendering tests. Test-only module: unwrap/expect/panic
+//! are fine per the workspace lint convention (see [workspace.lints.clippy]).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use super::catalog::{self, RamFit, build_families, family_key, most_recent_subdir, quant_bits};
 use super::hardware::{HardwareInfo, parse_df_available_kib};
 use super::jobs::{
@@ -1162,6 +1166,34 @@ fn server_status_waits_for_listening_line_before_going_green() {
 }
 
 #[test]
+fn server_ready_accepts_tracing_bind_address_line() {
+    // When RUST_LOG is set, ax-engine-server emits structured tracing instead of
+    // the "listening on http://" operator line. The TUI must still go green.
+    assert!(crate::tui::server_log_indicates_ready(
+        "2026-07-18T11:21:03.181885Z  INFO ax-engine-server preview listening bind_address=127.0.0.1:8080 model_id=gemma4-e2b"
+    ));
+    assert!(crate::tui::server_log_indicates_ready(
+        "ax-engine-server preview listening on http://127.0.0.1:8080 model_id=gemma4-e2b"
+    ));
+    assert!(!crate::tui::server_log_indicates_ready("booting model..."));
+    assert!(!crate::tui::server_log_indicates_ready(
+        "mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes."
+    ));
+
+    let mut app = new_app();
+    app.server = Some(Job::running_with_log(vec![
+        "2026-07-18T11:21:03Z  INFO ax-engine-server preview listening bind_address=127.0.0.1:8080"
+            .to_string(),
+    ]));
+    app.server_url = Some("http://127.0.0.1:8080".to_string());
+    app.update_server_ready();
+    assert!(
+        app.server_ready,
+        "tracing-format ready line must mark the server ready"
+    );
+}
+
+#[test]
 fn failed_server_surfaces_last_log_line() {
     let mut app = new_app();
     app.server = Some(Job::failed("model weights not found at /nope".into()));
@@ -1170,6 +1202,26 @@ fn failed_server_surfaces_last_log_line() {
     let text = render(&app);
     assert!(text.contains("failed:"));
     assert!(text.contains("model weights not found"));
+}
+
+#[test]
+fn failed_server_prefers_error_line_over_trailing_noise() {
+    let mut app = new_app();
+    let mut job = Job::failed("ignored".into());
+    job.log = vec![
+        "spawning /tmp/ax-engine-server for gemma4-e2b".into(),
+        "Error: Custom { kind: InvalidInput, error: \"could not infer --model-id\" }".into(),
+        "mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes.".into(),
+        "".into(),
+    ];
+    job.done = Some(1);
+    app.server = Some(job);
+    app.server_url = Some("http://127.0.0.1:8080".to_string());
+    let err = app.server_error_line().expect("error line");
+    assert!(
+        err.contains("could not infer") || err.contains("InvalidInput"),
+        "expected real error, got {err:?}"
+    );
 }
 
 #[test]

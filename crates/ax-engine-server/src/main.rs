@@ -142,6 +142,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Always emit a stable operator/TUI ready line. When RUST_LOG /
+    // AX_ENGINE_SERVER_LOG enables tracing, the structured `info!` form does
+    // not contain "listening on http://", which the TUI (and scripts) match on.
+    eprintln!(
+        "ax-engine-server preview listening on http://{} model_id={} support_tier={:?}",
+        bind_address, model_id, support_tier
+    );
+    if let Some(addr) = grpc_bind_address.as_deref() {
+        eprintln!("ax-engine-server gRPC listening on {addr}");
+    }
     if tracing_enabled {
         info!(
             bind_address = %bind_address,
@@ -150,14 +160,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             support_tier = ?support_tier,
             "ax-engine-server preview listening"
         );
-    } else {
-        eprintln!(
-            "ax-engine-server preview listening on http://{} model_id={} support_tier={:?}",
-            bind_address, model_id, support_tier
-        );
-        if let Some(addr) = grpc_bind_address.as_deref() {
-            eprintln!("ax-engine-server gRPC listening on {addr}");
-        }
     }
 
     let http_server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());

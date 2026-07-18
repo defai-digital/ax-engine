@@ -336,7 +336,7 @@ pub(super) fn draw_log(frame: &mut Frame, area: Rect, log: Option<&[String]>, ti
                         Style::default().fg(theme::WARN)
                     } else if l.contains("INFO") || l.contains("info") {
                         Style::default().fg(theme::OK)
-                    } else if l.contains("listening on") {
+                    } else if l.contains("listening on") || l.contains("preview listening") {
                         Style::default().fg(theme::OK).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme::DIM)

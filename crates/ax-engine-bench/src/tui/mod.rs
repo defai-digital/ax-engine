@@ -49,6 +49,31 @@ use screens::chat::ChatState;
 use widgets::{DirectoryPicker, Toast};
 
 // ---------------------------------------------------------------------------
+// Server ready detection
+// ---------------------------------------------------------------------------
+
+/// True when a captured `ax-engine-server` log line means the HTTP listener is up.
+///
+/// Handles both the stable operator line (no tracing) and the structured
+/// `tracing` form used when `RUST_LOG` / `AX_ENGINE_SERVER_LOG` is set:
+/// - `ax-engine-server preview listening on http://127.0.0.1:8080 ...`
+/// - `INFO ax-engine-server preview listening bind_address=127.0.0.1:8080 ...`
+pub(crate) fn server_log_indicates_ready(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("listening on http://") {
+        return true;
+    }
+    // Structured tracing: message is "ax-engine-server preview listening" plus
+    // bind_address=... fields (no "on http://" substring).
+    if lower.contains("preview listening")
+        && (lower.contains("bind_address=") || lower.contains("listening on"))
+    {
+        return true;
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1046,15 +1071,23 @@ impl App {
                 return;
             }
         }
+        // Record the resolved binary in the log so Serve failures are diagnosable
+        // when PATH / sibling resolution picks the wrong install.
+        let bin_display = cmd.get_program().to_string_lossy().into_owned();
         match Job::spawn(cmd, None) {
-            Ok(job) => {
+            Ok(mut job) => {
+                job.log
+                    .push(format!("spawning {bin_display} for {model_label}"));
                 self.server = Some(job);
                 self.server_url = Some(format!("http://{host}:{port}"));
                 self.server_model = Some(model_label.to_string());
             }
             Err(err) => {
-                self.server = Some(Job::failed(format!("failed to launch server: {err}")));
+                self.server = Some(Job::failed(format!(
+                    "failed to launch server ({bin_display}): {err}"
+                )));
                 self.server_url = None;
+                self.toast_error(format!("failed to launch server: {err}"));
             }
         }
     }
@@ -1073,12 +1106,7 @@ impl App {
             }
             return;
         }
-        if !self.server_ready
-            && job
-                .log
-                .iter()
-                .any(|line| line.contains("listening on http://"))
-        {
+        if !self.server_ready && job.log.iter().any(|line| server_log_indicates_ready(line)) {
             self.server_ready = true;
         }
     }
@@ -1094,13 +1122,32 @@ impl App {
     }
 
     /// Most recent non-empty server log line, surfaced when startup fails.
+    /// Prefer real startup failures over trailing MLX kernel noise (`mlx error:`).
     pub fn server_error_line(&self) -> Option<String> {
         let job = self.server.as_ref()?;
         job.done?;
+        let is_hard_error = |line: &str| {
+            let t = line.trim();
+            t.starts_with("Error:")
+                || t.contains("ERROR")
+                || t.contains("panic")
+                || t.contains("could not")
+                || t.contains("InvalidInput")
+                || t.contains("failed to launch")
+                || t.contains("Address already in use")
+        };
+        let is_soft_error = |line: &str| {
+            let t = line.trim();
+            !t.is_empty()
+                && !t.to_ascii_lowercase().starts_with("mlx error:")
+                && (t.contains("error") || t.contains("failed"))
+        };
         job.log
             .iter()
             .rev()
-            .find(|line| !line.trim().is_empty())
+            .find(|line| is_hard_error(line))
+            .or_else(|| job.log.iter().rev().find(|line| is_soft_error(line)))
+            .or_else(|| job.log.iter().rev().find(|line| !line.trim().is_empty()))
             .cloned()
     }
 

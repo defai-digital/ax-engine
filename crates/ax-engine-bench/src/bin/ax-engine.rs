@@ -2540,6 +2540,22 @@ fn normalize_alias(value: &str) -> String {
 }
 
 fn find_executable(name: &str) -> PathBuf {
+    // Optional absolute override used by dev shells and packaging.
+    // e.g. AX_ENGINE_SERVER=/path/to/ax-engine-server
+    let env_key = match name {
+        "ax-engine-server" => Some("AX_ENGINE_SERVER"),
+        "ax-engine-bench" => Some("AX_ENGINE_BENCH"),
+        _ => None,
+    };
+    if let Some(key) = env_key
+        && let Some(path) = env::var_os(key)
+    {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return path;
+        }
+    }
+
     if let Ok(current) = env::current_exe()
         && let Some(dir) = current.parent()
     {
@@ -2547,7 +2563,31 @@ fn find_executable(name: &str) -> PathBuf {
         if sibling.is_file() {
             return sibling;
         }
+        // `cargo test` places the harness under target/*/deps; look next to
+        // the profile root so `ax-engine-server` still resolves when spawning
+        // from tests or a deps-adjacent binary.
+        if dir.file_name().and_then(|s| s.to_str()) == Some("deps")
+            && let Some(profile_dir) = dir.parent()
+        {
+            let candidate = profile_dir.join(name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
     }
+
+    // Resolve the first absolute hit on PATH instead of returning a bare name
+    // (which depends on the child's PATH inheritance and can pick a stale
+    // install ahead of a just-built sibling).
+    if let Some(path_var) = env::var_os("PATH") {
+        for dir in env::split_paths(&path_var) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+
     PathBuf::from(name)
 }
 
