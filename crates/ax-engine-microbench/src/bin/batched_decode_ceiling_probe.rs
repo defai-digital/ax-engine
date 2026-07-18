@@ -78,17 +78,22 @@ fn main() {
         for _ in 0..WARMUP {
             let _ = session.step(&cfg, &weights);
         }
-        // FNV-1a over slot-0's token stream — lets a RowExact vs Shared A/B
-        // measure greedy-token divergence (the Phase 3.5 certification signal),
-        // not just throughput.
+        // FNV-1a over EVERY slot's token stream (not just slot 0 — a policy can
+        // diverge on one row and not another), so a RowExact vs Shared A/B
+        // measures greedy-token divergence across the whole cohort (the
+        // certification signal), not just throughput. Sorted by request id so
+        // the hash is order-independent of the session's internal slot order.
         let mut tok_hash: u64 = 0xcbf2_9ce4_8422_2325;
         let started = Instant::now();
         for _ in 0..STEPS {
-            let out = session.step(&cfg, &weights);
+            let mut out = session.step(&cfg, &weights);
             debug_assert_eq!(out.len(), batch);
-            if let Some(&(_, t)) = out.first() {
-                tok_hash ^= u64::from(t);
-                tok_hash = tok_hash.wrapping_mul(0x0000_0100_0000_01b3);
+            out.sort_by_key(|&(id, _)| id);
+            for (id, t) in &out {
+                for byte in id.to_le_bytes().into_iter().chain(t.to_le_bytes()) {
+                    tok_hash ^= u64::from(byte);
+                    tok_hash = tok_hash.wrapping_mul(0x0000_0100_0000_01b3);
+                }
             }
         }
         let wall_s = started.elapsed().as_secs_f64();
@@ -99,7 +104,7 @@ fn main() {
             b1_tok_s = agg_tok_s;
         }
         println!(
-            "{batch:>5}  {agg_tok_s:>9.1}  {per_req:>13.1}  {step_us:>7.0}  {:>5.2}x  slot0_fnv={tok_hash:016x}",
+            "{batch:>5}  {agg_tok_s:>9.1}  {per_req:>13.1}  {step_us:>7.0}  {:>5.2}x  cohort_fnv={tok_hash:016x}",
             agg_tok_s / b1_tok_s
         );
         // Per-stage breakdown when AX_MLX_BATCHED_PROFILE=1 (barriers on, so

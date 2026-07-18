@@ -1,0 +1,6 @@
+0
+=== FULL-COHORT divergence (all slots): RowExact vs Shared ===
+llama8b: RowExact=cohort_fnv=846ac67aca8bad7d  Shared=cohort_fnv=846ac67aca8bad7d  IDENTICAL
+qwen3-4b: RowExact=cohort_fnv=e823dd00333e5aa5  Shared=cohort_fnv=e823dd00333e5aa5  IDENTICAL
+ministral8b: RowExact=cohort_fnv=b4b0e62af6680ddd  Shared=cohort_fnv=b4b0e62af6680ddd  IDENTICAL
+COHORT-DIV-DONE
