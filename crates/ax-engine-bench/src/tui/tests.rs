@@ -2742,10 +2742,10 @@ fn host_validation_accepts_underscores() {
     app.host = "127.0.0.1".to_string();
     assert!(app.host_error().is_none());
     app.host = "host with spaces".to_string();
-    assert!(
-        app.host_error().is_some(),
-        "spaces must still be rejected"
-    );
+    assert!(app.host_error().is_some(), "spaces must still be rejected");
     app.host = "".to_string();
-    assert!(app.host_error().is_none(), "empty host is allowed (defaults)");
+    assert!(
+        app.host_error().is_none(),
+        "empty host is allowed (defaults)"
+    );
 }
