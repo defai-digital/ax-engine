@@ -264,6 +264,10 @@ ax-engine serve qwen36-35b --download --port 8080
 ax-engine download-mtp gemma-4-12b-4bit
 ```
 
+To keep a second allowlisted model resident while that server runs, use
+`POST /v1/model/load` with `load_mode=add` (Qwen 3.6 27B/35B and Gemma 4
+12B/26B/31B only). Details: [Multi-model serving](SERVER.md#multi-model-serving).
+
 ### Path B — Python API
 
 `download_model()` downloads LLM weights through `mlx-lm`, resolves the cache

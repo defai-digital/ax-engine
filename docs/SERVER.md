@@ -16,6 +16,10 @@ The current preview server is intentionally narrow:
 - built entirely on the Rust SDK contract
 - fails closed on unsupported hosts (requires M2 Max or newer, macOS 26+, 32 GB RAM)
 - explicit backend and support-tier reporting
+- multi-model registry: optional concurrent loaded models with per-request
+  `model` routing (`POST /v1/model/load` `load_mode=add` / unload) — scoped
+  allowlist, independent sessions, fair process-level Metal turn arbiter
+  (see [Multi-model serving](#multi-model-serving))
 - preview generation endpoint for bring-up and integration testing
 - preview OpenAI-compatible `/v1/completions` and `/v1/chat/completions`
   endpoints for native MLX sessions with tokenizer artifacts and delegated text
@@ -870,103 +874,115 @@ Streaming mode emits unnamed SSE `data:` chunks plus `[DONE]` in the familiar
 OpenAI-style envelope instead of AX-specific lifecycle event names.
 OpenAI-shaped completion and chat responses include `system_fingerprint: null`
 because the preview server does not yet publish a stable backend fingerprint.
-The `/v1/requests` endpoint routes by `model`; `/v1/step` advances the default
-model unless its optional `model` query selects another loaded model. Request
-snapshot and cancellation use a bounded, generation-aware ownership index
-populated at submission, so lifecycle operations route directly to the owning
-worker rather than scanning or waiting behind unrelated model workers. Retiring
-a generation removes its ownership entries, and terminal ownership follows the
-SDK's bounded terminal-report retention while preserving the lifecycle contract.
-The server allocates request ids from one process-local sequence across both
-paths so transport logs and client correlation do not collide when clients mix
-blocking and stepwise APIs.
+## Multi-model serving
+
+One process can keep several models loaded at once and route each request by
+`model`. `/health` and `/v1/discovery` report the default as `model_id` and
+every resident id in `models`. `GET /v1/models` lists one card per loaded
+model. OpenAI, gRPC, Ollama, and Anthropic request shapes that carry `model`
+resolve through the same registry; omit `model` to hit the default.
+
+### Load and unload
 
 `POST /v1/model/load` closes native admission before changing the process-local
 model registry. It rejects a change while non-terminal stepwise work exists and
 waits for generation, streaming, and embedding permits to reach zero. A
 disconnected load client does not cancel cleanup. Requests arriving during the
 drain receive HTTP 503 or gRPC `UNAVAILABLE` and can retry after loading.
+Invalid load and unload bodies fail **before** admission drains, so they do not
+stall unrelated traffic.
 
-`load_mode` accepts `replace` (default, historical hot-swap semantics) or `add`.
-`add` retains the existing independently-owned model sessions, makes the new
-model the default for requests that omit `model` (opt out with
-`"make_default": false` — `replace` swaps the default in place and rejects
-`false`), and enables per-request model routing. Add mode is limited to
-Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B. Use `POST /v1/model/unload` with
-`{"model_id":"..."}` to retire a retained model; the last loaded model cannot
-be unloaded. Unloading the current default reassigns the default to another
-resident model; both load and unload responses report the resulting
-`default_model_id` so clients can observe the reassignment. `add` rejects a model ID that is
-already loaded. Once the registry contains more than one model, `replace` also
-enforces the same five-model scope because it retains the other sessions; an
-unrestricted historical hot-swap remains available when only one model is
-loaded. Invalid load and unload requests are rejected before admission drains,
-so they do not wait for or interrupt unrelated active traffic.
-The retained `model-manifest.json` is authoritative for this allowlist: AX
-validates the manifest's exact family and architecture signature against the
-requested model ID. Directory names, optional Hugging Face config metadata, and
-substring matches cannot admit an unsupported or mismatched model.
+| Field | Values | Notes |
+| --- | --- | --- |
+| `model_id` | non-empty string | Advertised id for routing and `/v1/models` |
+| `model_path` | absolute artifacts dir | Must contain `model-manifest.json` and safetensors |
+| `load_mode` | `replace` (default), `add` | `replace` is historical hot-swap of the default; `add` retains other sessions |
+| `make_default` | bool, default `true` | Meaningful for `add` only; `replace` + `false` is `422` |
+| `load_policy` | `availability_first` (default), `memory_constrained` | See below; `add` + `memory_constrained` is rejected |
 
-Each retained model still owns an independent session and scheduler. A shared
-process execution arbiter grants one model turn per engine step (and per
-embedding execution), rotating fairly among waiting model IDs. This preserves
-single-model execution on the process-wide MLX/Metal target without letting one
-busy model monopolize every turn; it does not create a cross-model fused batch.
+```text
+# Keep the current default; add a second allowlisted model
+curl -s http://127.0.0.1:8080/v1/model/load -H 'content-type: application/json' -d '{
+  "model_id": "gemma-4-12b-it",
+  "model_path": "/absolute/path/to/gemma-4-12b-artifacts",
+  "load_mode": "add",
+  "make_default": false
+}'
+# → { "model_id", "state":"loaded", "context_length", "load_policy", "load_mode", "default_model_id" }
+
+curl -s http://127.0.0.1:8080/v1/model/unload -H 'content-type: application/json' \
+  -d '{"model_id":"gemma-4-12b-it"}'
+# → { "model_id", "state":"unloaded", "default_model_id" }
+```
+
+**Allowlist (`load_mode=add`, and `replace` once more than one model is
+resident):** Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B only. The retained
+`model-manifest.json` is authoritative — AX checks exact family and
+architecture signature against the requested id. Directory names, HF config
+hints, and substring matches cannot admit a mismatched model. A sole-model
+`replace` remains the unrestricted historical hot-swap.
+
+Other rules:
+
+- `add` rejects a `model_id` that is already loaded (`409`).
+- The last resident model cannot be unloaded (`409 last_model`).
+- Unloading the current default reassigns `default_model_id` to another
+  resident model; load/unload responses always report the resulting default.
+- Concurrent load/unload while another is in progress → `409 model_loading`.
+
+### Execution model
+
+Each retained model owns an independent `EngineSession` and scheduler (no
+cross-model fused batch). A process-wide execution arbiter grants one model
+turn per engine step and per embedding execution, rotating fairly among waiting
+model IDs so one busy model cannot monopolize Metal forever.
+
 Because a turn is one engine step, a sibling model's decode waits while a long
-prefill step runs (up to `--max-batch-tokens` prompt tokens, default 2048 —
-roughly 1-2 s on the supported model sizes). For latency-sensitive multi-model
-serving, shrink the per-step budget with `--max-batch-tokens` (for example
-512), or enable `--multi-prefill-fair` with
-`--max-prefill-tokens-per-request-per-step` to chunk prefills per request
-without shrinking the global step budget (the per-request cap is honored only
-in fair mode). Either trades some prefill throughput for decode turns
-interleaving between the smaller chunks.
-The optional `load_policy` request field accepts `availability_first` (the
-default) or `memory_constrained`. Availability-first keeps the drained model
-resident until its replacement is ready, preserving rollback at the cost of a
-temporary two-model memory peak. Memory-constrained shuts down and joins the old
-generation worker before loading the replacement; this lowers peak memory but
-intentionally leaves the server unavailable if replacement loading fails.
-Inference remains unavailable in that state, but `/v1/model/load` stays usable
-so an operator can retry with valid artifacts and recover without restarting
-the server process.
-`load_mode=add` is incompatible with `memory_constrained`, because retaining
-existing models necessarily preserves their resident memory.
+prefill runs (up to `--max-batch-tokens` prompt tokens, default 2048 — often
+roughly 1–2 s on the allowlisted sizes). For latency-sensitive multi-model
+serving, shrink `--max-batch-tokens` (for example 512) or enable
+`--multi-prefill-fair` with `--max-prefill-tokens-per-request-per-step` so
+prefills chunk and decode turns interleave between chunks.
 
-The optional `--model-idle-timeout-secs` flag (env
-`AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS`) enables idle eviction for multi-model
-serving: a background sweep retires non-default resident models that have not
-admitted a request within the timeout, following the same drain/retire flow
-as `POST /v1/model/unload`. The default model is never evicted, and a sweep
-only runs while the server is otherwise idle (the unload flow drains global
-admission, so evicting during active traffic would stall unrelated
-requests). Disabled when unset.
+Stepwise APIs: `/v1/requests` routes by `model`; `/v1/step?model=…` advances a
+non-default loaded model (omit `model` for the default). Request snapshot and
+cancel use a generation-aware ownership index so lifecycle ops hit the owning
+worker without scanning sibling models. Request ids are process-unique across
+all models.
 
-Engine-step metrics on `/metrics` (`ax_engine_steps_total`,
-`ax_engine_step_scheduled_requests`, `ax_engine_step_scheduled_tokens`,
-`ax_engine_step_kv_usage_blocks`, `ax_engine_step_prefix_hits_total`) are
-emitted per loaded model with a `model` label, plus an unlabeled aggregate
-series (summed across models) for dashboards written against the
-single-model layout. Unload and replacement remove the retired generation's
-per-model sample immediately.
+### Load policy and memory admission
 
-Load requests also run a memory admission preflight before any drain: AX
-estimates each model's resident footprint from its on-disk safetensors bytes
-(plus a runtime factor) and its worst-case KV pool — derived from the
-manifest's attention geometry (full-attention layers at the configured
-`total_blocks × block-size` pool; sliding-window layers bounded at their
-ring window; hybrid linear-attention layers and KV-shared layers charge no
-per-token cache) — plus a fixed runtime floor. It adds the resident models
-that survive the load (including the outgoing model for availability-first
-replaces, whose overlap window is the policy's point), and rejects the load
-with `422 insufficient_memory` — reporting the projected peak, resident,
-incoming (with its KV share), and budget numbers in GiB — when the projected
-peak exceeds the Metal working-set budget (the same
-`max_recommended_working_set_size` source the runner uses for its wired
-limit). Models whose KV geometry is unknowable (MLA latent caches,
-diffusion, unreadable manifests) fall back to the flat-floor estimate; the
-check skips rather than blocks when the budget or the incoming weight layout
-is unknowable, and `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off` disables it
+`load_policy`:
+
+- **`availability_first` (default)** — keeps the drained outgoing model
+  resident until the replacement is ready (temporary two-model peak; rollback
+  possible).
+- **`memory_constrained`** — shuts down and joins the old generation worker
+  before loading the replacement (lower peak; if load fails, inference stays
+  unavailable until a successful `/v1/model/load`). Incompatible with
+  `load_mode=add`.
+
+Every load also runs a **memory preflight** before drain: projected peak
+resident set (on-disk safetensors × 9/8, plus worst-case KV from manifest
+geometry and a runtime floor) vs Metal `max_recommended_working_set_size`.
+Over budget → `422 insufficient_memory` with GiB numbers. Skips (does not
+block) when budget or weight layout is unknowable; disable with
+`AX_SERVER_LOAD_MEMORY_PREFLIGHT=off`.
+
+### Idle eviction and metrics
+
+Optional `--model-idle-timeout-secs` / `AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS`
+retires non-default models that have not admitted a request within the
+timeout (same drain path as unload). The default model is never evicted;
+sweeps run only while the server is otherwise idle.
+
+Engine-step `/metrics` series carry a `model` label per loaded model, plus
+unlabeled aggregates for single-model dashboards. Unload/replace drop the
+retired generation's per-model samples immediately.
+
+The server allocates request ids from one process-local sequence across both
+blocking and stepwise paths so transport logs and client correlation do not
+collide when clients mix APIs.
 entirely if the estimate is wrong for a host.
 The `mlx_lm_delegated` backend supports blocking `/v1/generate` and SSE
 `/v1/generate/stream` through `mlx_lm.server` `/v1/completions`. It also

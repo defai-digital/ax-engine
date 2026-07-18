@@ -18,6 +18,9 @@ memory).**
 - **You own the stack you serve** — AX runs the MLX graph, KV/runtime, and
   OpenAI-compatible server for Gemma / Qwen / GLM; `mlx-lm` and `llama.cpp` stay
   optional compatibility adapters
+- **Multi-model serving** — keep a scoped set of Qwen 3.6 / Gemma 4 models
+  resident (`load_mode=add`), route with request `model`, optional idle eviction
+  and memory preflight; see [Server: Multi-model](docs/SERVER.md#multi-model-serving)
 - **Claims you can audit** — public rows ship with checked-in artifacts (route,
   model snapshot, sampler, accept rate, provenance)
 
@@ -81,6 +84,34 @@ Aliases, hardware sizing, and MTP targets:
 [Supported Models](docs/SUPPORTED-MODELS.md) ·
 [Hardware FAQ](docs/FAQ.md#what-hardware-does-ax-engine-support) ·
 [CLI](docs/CLI.md).
+
+### Multi-model serving
+
+One process can keep several **allowlisted** models loaded and route each
+request by `model` (OpenAI, gRPC, Ollama, Anthropic). Add mode is limited to
+Qwen 3.6 27B/35B and Gemma 4 12B/26B/31B; each model owns its own session and
+scheduler while a process arbiter fair-rotates Metal turns (no fused
+cross-model batch).
+
+```bash
+# After a first model is already serving on :8080
+curl -s http://127.0.0.1:8080/v1/model/load -H 'content-type: application/json' -d '{
+  "model_id": "gemma-4-12b-it",
+  "model_path": "/path/to/gemma-4-12b-artifacts",
+  "load_mode": "add",
+  "make_default": false
+}'
+
+curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/json' -d '{
+  "model": "gemma-4-12b-it",
+  "messages": [{"role": "user", "content": "Hi"}],
+  "max_tokens": 32
+}'
+```
+
+Full contract (load/unload, memory preflight, idle eviction, metrics labels):
+[Server: Multi-model serving](docs/SERVER.md#multi-model-serving) ·
+[Supported Models](docs/SUPPORTED-MODELS.md#multi-model-serving).
 
 ## Performance
 

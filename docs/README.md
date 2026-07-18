@@ -29,7 +29,7 @@ AX Engine is **direct-first**. Keep the path explicit when reading or claiming:
 | Use MTP or compare 4-bit vs 6-bit rows | [MTP Docs](mtp/README.md) | [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Benchmarks: MTP](BENCHMARKS.md#mtp-matrix) |
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md) |
 | Reproduce or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
-| Serve OpenAI / Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md) |
+| Serve OpenAI / Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md), [Multi-model](SERVER.md#multi-model-serving) |
 | Integrate from an app or agent | [SDK Docs](sdk/README.md) | [Server](SERVER.md), [Local Engine Clients](LOCAL-ENGINE-CLIENTS.md) |
 | Debug long context, prefix reuse, or KV | [Long Context](LONG-CONTEXT.md) | [KV Cache](KV-CACHE.md), [Scheduler](SCHEDULER.md) |
 | Change code safely | [Architecture](ARCHITECTURE.md) | [Scheduler](SCHEDULER.md), [KV Cache](KV-CACHE.md) |
@@ -83,7 +83,7 @@ history, or out of scope for a claim.
 
 ### Serving and SDKs
 
-- [Server](SERVER.md) — HTTP routes, streaming, auth, embeddings, backends
+- [Server](SERVER.md) — HTTP routes, multi-model load/unload, streaming, auth, embeddings, backends
 - [API Compatibility](API-COMPATIBILITY.md) — OpenAI-compatible contract and boundaries
 - [SDK Docs](sdk/README.md) — Rust, Python, JS/TS, Go, Ruby, Swift, Mojo
 - [Local Engine Clients](LOCAL-ENGINE-CLIENTS.md) — in-process vs sidecar HTTP for first-party apps

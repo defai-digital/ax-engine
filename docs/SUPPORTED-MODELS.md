@@ -27,6 +27,22 @@ support work for a model family that has had no meaningful upstream release or
 artifact refresh within the last six months unless an owner records a specific
 exception.
 
+## Multi-model serving
+
+`ax-engine-server` can keep more than one **direct** MLX model loaded in a
+single process (`POST /v1/model/load` with `load_mode=add`). This is a product
+allowlist, not “any downloaded model”:
+
+| Allowlisted multi-model targets | Notes |
+| --- | --- |
+| Qwen 3.6 27B / 35B | Manifest family + architecture signature must match the requested `model_id` |
+| Gemma 4 12B / 26B / 31B | Same manifest-authoritative check |
+
+Other families remain single-model hot-swap (`load_mode=replace` with only one
+resident model) or fail closed when `add` would leave a multi-model registry.
+Routing, memory preflight, idle eviction, and arbiter behavior:
+[Server: Multi-model serving](SERVER.md#multi-model-serving).
+
 ## Getting Model Artifacts
 
 AX Engine requires pre-sanitized MLX safetensors plus a `model-manifest.json`.
