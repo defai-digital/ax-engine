@@ -30,6 +30,8 @@ impl App {
                         self.serve_idx += 1;
                     }
                 }
+                KeyCode::PageUp => self.scroll_serve_log(true, true),
+                KeyCode::PageDown => self.scroll_serve_log(false, true),
                 KeyCode::Tab => {
                     self.host_cursor = self.host.chars().count();
                     self.serve_focus = ServeFocus::Host;
@@ -78,6 +80,15 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Esc => {
                 self.serve_focus = ServeFocus::List;
+                return;
+            }
+            // Log scrollback stays available while editing host/port.
+            KeyCode::PageUp => {
+                self.scroll_serve_log(true, true);
+                return;
+            }
+            KeyCode::PageDown => {
+                self.scroll_serve_log(false, true);
                 return;
             }
             _ => {}
@@ -168,6 +179,8 @@ impl App {
                 panels[1],
                 self.server.as_ref().map(|job| job.log.as_slice()),
                 " Log ",
+                self.serve_log_scroll,
+                &self.log_rect,
             );
             self.draw_serve_model_list(frame, panels[2]);
         } else if self.server_running() {
@@ -183,6 +196,8 @@ impl App {
                 panels[1],
                 self.server.as_ref().map(|job| job.log.as_slice()),
                 " Log ",
+                self.serve_log_scroll,
+                &self.log_rect,
             );
             self.draw_serve_model_list(frame, panels[2]);
         } else {
@@ -199,6 +214,8 @@ impl App {
                 panels[2],
                 self.server.as_ref().map(|job| job.log.as_slice()),
                 " Log ",
+                self.serve_log_scroll,
+                &self.log_rect,
             );
         }
     }
@@ -218,7 +235,7 @@ impl App {
                     Span::styled(
                         "2",
                         Style::default()
-                            .fg(theme::ACCENT)
+                            .fg(theme::colors().accent)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(" Models to download one first.", theme::label()),
@@ -238,7 +255,7 @@ impl App {
                         Span::styled(
                             widgets::ellipsis(&family.display_name(), 16),
                             Style::default()
-                                .fg(theme::TEXT)
+                                .fg(theme::colors().text)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(format!("{:<7}", v.precision()), theme::body_dim()),
@@ -283,25 +300,27 @@ impl App {
         );
         let status = match (&self.server_url, &self.server) {
             (Some(url), Some(job)) if job.done.is_none() && self.server_ready => Line::from(vec![
-                Span::styled(format!(" {} ", theme::icon::RUNNING), theme::ok()),
+                Span::styled(format!(" {} ", theme::icon::running()), theme::ok()),
                 Span::styled("running at ", theme::ok()),
                 Span::styled(
                     url.clone(),
-                    Style::default().fg(theme::OK).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::colors().ok)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
                 Span::styled(" Enter chat ", theme::cta()),
                 Span::styled("  c copy · x stop", theme::label()),
             ]),
             (Some(_), Some(job)) if job.done.is_none() => Line::from(vec![
-                Span::styled(format!(" {} ", theme::icon::QUEUED), theme::warn()),
+                Span::styled(format!(" {} ", theme::icon::queued()), theme::warn()),
                 Span::styled(
                     "starting… (large models can take a minute to load)",
                     theme::warn(),
                 ),
             ]),
             (_, Some(job)) if job.done.is_some() => Line::from(vec![
-                Span::styled(format!(" {} ", theme::icon::ERROR), theme::danger()),
+                Span::styled(format!(" {} ", theme::icon::error()), theme::danger()),
                 Span::styled(
                     format!(
                         "failed: {}",
@@ -312,7 +331,7 @@ impl App {
                 ),
             ]),
             _ => Line::from(vec![
-                Span::styled(format!(" {} ", theme::icon::IDLE), theme::label()),
+                Span::styled(format!(" {} ", theme::icon::idle()), theme::label()),
                 Span::styled("stopped — pick a model and press Enter", theme::label()),
             ]),
         };

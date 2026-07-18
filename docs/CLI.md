@@ -81,16 +81,22 @@ title plus a per-reply TTFT/tokens line (client-side estimates — the SSE
 stream carries no usage). Enter sends, Ctrl+J / Shift+Enter inserts a newline,
 ↑/↓ recall prompt history (PgUp/PgDn scrolls the transcript), bracketed paste
 works in the composer, `Ctrl+Y` copies the last reply, `Ctrl+R` regenerates
-it, `Ctrl+L` clears the transcript, and `/clear` `/copy` `/retry` `/help` work
-as slash commands. If the server exits mid-session the TUI drops back to the
-no-server card instead of failing on the next send.
+it, `Ctrl+L` clears the transcript (with confirmation), and `/clear` `/copy`
+`/retry` `/help` work
+as slash commands. If the server exits mid-session the transcript stays on
+screen read-only — scroll and copy keep working, a banner explains sends are
+blocked, and nothing fails until you try to send.
 Quick start enables an auto-chain (download → serve → chat). Otherwise, when a
 download finishes the TUI jumps to Downloads with the ready item selected;
-clicking the green banner or pressing Enter serves it. When the server binds,
+clicking the green banner or pressing `b` serves it. When the server binds,
 guided flows open Chat automatically. Downloads support retry (`r`), reveal in
 Finder (`o`), remove finished (`⌫`), and clear finished (`d`). `Esc` steps back
 one level (never quits); `q` quits (asks first while jobs are running).
 Installed sizes can be deleted from the wizard with `x` (typed confirmation).
+The TUI adapts to the terminal: `AX_TUI_THEME=light` selects a light-background
+palette, `NO_COLOR` (or `AX_TUI_THEME=mono`) disables color output, and status
+glyphs fall back to ASCII outside UTF-8 locales. Below 60×15 it asks for a
+resize instead of drawing a broken layout.
 
 The older `ax-engine ui-downloader` and `ax-engine download --interactive`
 prompts remain available for compatibility. TTY-gated non-interactive behavior

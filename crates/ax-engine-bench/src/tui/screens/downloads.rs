@@ -24,14 +24,16 @@ impl App {
                 if self.download_idx == 0 {
                     self.focus_tab_bar();
                 } else {
-                    self.download_idx = self.download_idx.saturating_sub(1);
+                    self.select_download(self.download_idx.saturating_sub(1));
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if self.download_idx + 1 < self.downloads.len() {
-                    self.download_idx += 1;
+                    self.select_download(self.download_idx + 1);
                 }
             }
+            KeyCode::PageUp => self.scroll_downloads_log(true, true),
+            KeyCode::PageDown => self.scroll_downloads_log(false, true),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 let Some(task) = self.downloads.get(self.download_idx) else {
                     return;
@@ -205,6 +207,8 @@ impl App {
                     .and_then(|task| task.job.as_ref())
                     .map(|job| job.log.as_slice()),
                 " Log ",
+                self.downloads_log_scroll,
+                &self.log_rect,
             );
         } else {
             let panels =
@@ -222,6 +226,8 @@ impl App {
                     .and_then(|task| task.job.as_ref())
                     .map(|job| job.log.as_slice()),
                 " Log ",
+                self.downloads_log_scroll,
+                &self.log_rect,
             );
         }
     }
@@ -240,7 +246,7 @@ impl App {
                     Span::styled(
                         "2",
                         Style::default()
-                            .fg(theme::ACCENT)
+                            .fg(theme::colors().accent)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
@@ -267,18 +273,18 @@ impl App {
                         "    ".into()
                     };
                     let status_icon = match task.status_label().as_str() {
-                        "cancelled" => theme::icon::IDLE,
-                        "queued" => theme::icon::QUEUED,
-                        "ready" => theme::icon::OK,
-                        "running" => theme::icon::RUNNING,
-                        _ => theme::icon::ERROR,
+                        "cancelled" => theme::icon::idle(),
+                        "queued" => theme::icon::queued(),
+                        "ready" => theme::icon::ok(),
+                        "running" => theme::icon::running(),
+                        _ => theme::icon::error(),
                     };
                     let status_style = match task.status_label().as_str() {
                         "cancelled" => theme::label(),
                         "queued" => theme::warn(),
                         "ready" => theme::ok(),
                         "running" => Style::default()
-                            .fg(theme::ACCENT)
+                            .fg(theme::colors().accent)
                             .add_modifier(Modifier::BOLD),
                         _ => theme::danger(),
                     };
@@ -294,7 +300,7 @@ impl App {
                         Span::styled(
                             widgets::ellipsis(&task.label, 18),
                             Style::default()
-                                .fg(theme::TEXT)
+                                .fg(theme::colors().text)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(format!("{:<4}", task.mode.label()), theme::body_dim()),
@@ -366,7 +372,11 @@ impl App {
         };
         frame.render_widget(
             Gauge::default()
-                .gauge_style(Style::default().fg(theme::ACCENT).bg(theme::MUTED))
+                .gauge_style(
+                    Style::default()
+                        .fg(theme::colors().accent)
+                        .bg(theme::colors().muted),
+                )
                 .ratio(ratio)
                 .label(gauge_label),
             chunks[0],
@@ -416,7 +426,7 @@ impl App {
         frame.render_widget(
             Sparkline::default()
                 .data(history)
-                .style(Style::default().fg(theme::ACCENT)),
+                .style(Style::default().fg(theme::colors().accent)),
             chunks[4],
         );
     }

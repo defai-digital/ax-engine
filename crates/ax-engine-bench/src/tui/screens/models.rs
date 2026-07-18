@@ -357,7 +357,7 @@ impl App {
             cancelled: false,
         };
         self.downloads.push(task);
-        self.download_idx = self.downloads.len().saturating_sub(1);
+        self.select_download(self.downloads.len().saturating_sub(1));
         self.start_next_queued_download();
         self.toast(format!("{label} queued"));
         self.pending = None;
@@ -447,7 +447,7 @@ impl App {
                 Span::styled(
                     family.display_name(),
                     Style::default()
-                        .fg(theme::TEXT)
+                        .fg(theme::colors().text)
                         .add_modifier(Modifier::BOLD),
                 ),
             ]),
@@ -462,7 +462,7 @@ impl App {
                 },
                 if family.has_mtp() {
                     Span::styled(
-                        format!("  {} speed-up", theme::icon::SPEED),
+                        format!("  {} speed-up", theme::icon::speed()),
                         theme::feature(),
                     )
                 } else {
@@ -475,7 +475,7 @@ impl App {
         for (i, v) in family.variants.iter().enumerate() {
             let fit = catalog::ram_fit(v.size_estimate(), self.hardware.total_ram_bytes);
             let rec = if self.is_recommended_variant(self.family_idx, i) {
-                format!(" {}", theme::icon::STAR)
+                format!(" {}", theme::icon::star())
             } else {
                 String::new()
             };
@@ -483,7 +483,7 @@ impl App {
                 Span::raw("  "),
                 Span::styled(
                     format!("{:<7}{rec}", v.precision()),
-                    Style::default().fg(theme::TEXT),
+                    Style::default().fg(theme::colors().text),
                 ),
                 Span::styled(
                     format!("{:>9}  ", catalog::format_approx_bytes(v.size_estimate())),
@@ -491,7 +491,7 @@ impl App {
                 ),
                 super::home::fit_span(fit),
                 if v.installed {
-                    Span::styled(format!(" {}", theme::icon::OK), theme::ok())
+                    Span::styled(format!(" {}", theme::icon::ok()), theme::ok())
                 } else {
                     Span::raw("")
                 },
@@ -503,7 +503,7 @@ impl App {
             Span::styled(
                 "Enter",
                 Style::default()
-                    .fg(theme::TEXT)
+                    .fg(theme::colors().text)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" or → pick a size", theme::label()),
@@ -534,11 +534,11 @@ impl App {
             }
             let style = if index == current {
                 Style::default()
-                    .fg(theme::ACCENT)
+                    .fg(theme::colors().accent)
                     .add_modifier(Modifier::BOLD)
             } else if index < current {
                 Style::default()
-                    .fg(theme::OK)
+                    .fg(theme::colors().ok)
                     .add_modifier(Modifier::UNDERLINED)
             } else {
                 theme::label()
@@ -579,7 +579,7 @@ impl App {
                 let family = &self.families[i];
                 let installed = family.installed_count();
                 let status = if installed == family.variants.len() {
-                    Span::styled(format!("{}all", theme::icon::OK), theme::ok())
+                    Span::styled(format!("{}all", theme::icon::ok()), theme::ok())
                 } else if installed > 0 {
                     Span::styled(
                         format!("{installed}/{}", family.variants.len()),
@@ -589,7 +589,7 @@ impl App {
                     Span::styled("--", theme::label())
                 };
                 let mtp = if family.has_mtp() {
-                    Span::styled(format!(" {}", theme::icon::SPEED), theme::feature())
+                    Span::styled(format!(" {}", theme::icon::speed()), theme::feature())
                 } else {
                     Span::raw("")
                 };
@@ -606,7 +606,7 @@ impl App {
                     Span::styled(
                         name_cell,
                         Style::default()
-                            .fg(theme::TEXT)
+                            .fg(theme::colors().text)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(format!(" {quant:<9}"), theme::body_dim()),
@@ -655,7 +655,7 @@ impl App {
             .enumerate()
             .map(|(i, v)| {
                 let rec = if self.is_recommended_variant(self.family_idx, i) {
-                    format!(" {}rec", theme::icon::STAR)
+                    format!(" {}rec", theme::icon::star())
                 } else {
                     String::new()
                 };
@@ -668,12 +668,12 @@ impl App {
                     self.hardware.total_ram_bytes,
                 ));
                 let mtp = if v.mtp_alias.is_some() {
-                    Span::styled(format!(" {}", theme::icon::SPEED), theme::feature())
+                    Span::styled(format!(" {}", theme::icon::speed()), theme::feature())
                 } else {
                     Span::raw("  ")
                 };
                 let status = if v.installed {
-                    Span::styled(format!(" {}", theme::icon::OK), theme::ok())
+                    Span::styled(format!(" {}", theme::icon::ok()), theme::ok())
                 } else {
                     Span::raw("  ")
                 };
@@ -681,7 +681,7 @@ impl App {
                     Span::styled(
                         format!("{:<7}{rec}", v.precision()),
                         Style::default()
-                            .fg(theme::TEXT)
+                            .fg(theme::colors().text)
                             .add_modifier(Modifier::BOLD),
                     ),
                     size,
@@ -706,7 +706,7 @@ impl App {
             Paragraph::new(Line::from(Span::styled(
                 format!(
                     "  {} = Quick start pick · ↑↓ move · Enter select",
-                    theme::icon::STAR
+                    theme::icon::star()
                 ),
                 theme::label(),
             ))),
@@ -725,7 +725,7 @@ impl App {
         let opt = |label: &str, sel: bool| {
             let style = if sel { theme::cta() } else { theme::body_dim() };
             let marker = if sel {
-                format!("{} ", theme::icon::SELECT)
+                format!("{} ", theme::icon::select())
             } else {
                 "  ".into()
             };
@@ -736,7 +736,7 @@ impl App {
                 Span::styled(
                     format!("{} {}", family.display_name(), variant.precision()),
                     Style::default()
-                        .fg(theme::TEXT)
+                        .fg(theme::colors().text)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" can run faster with an optional package.", theme::body()),
@@ -754,17 +754,17 @@ impl App {
             Line::from(Span::styled(
                 "Include the speed-up?",
                 Style::default()
-                    .fg(theme::TEXT)
+                    .fg(theme::colors().text)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
             opt("Yes — faster generation (recommended)", yes),
             opt("No — base model only", !yes),
         ];
-        let block = widgets::active_block(&format!(" {} Optional speed-up ", theme::icon::SPEED));
+        let block = widgets::active_block(&format!(" {} Optional speed-up ", theme::icon::speed()));
         frame.render_widget(
             Paragraph::new(text)
-                .block(block.border_style(Style::default().fg(theme::FEATURE)))
+                .block(block.border_style(Style::default().fg(theme::colors().feature)))
                 .wrap(Wrap { trim: false }),
             area,
         );
@@ -815,7 +815,7 @@ impl App {
             Line::from(Span::styled(
                 "  Download summary",
                 Style::default()
-                    .fg(theme::ACCENT)
+                    .fg(theme::colors().accent)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
@@ -828,7 +828,7 @@ impl App {
                 if variant.mtp_alias.is_none() {
                     "not available".into()
                 } else if pending.with_mtp {
-                    format!("{} included", theme::icon::SPEED)
+                    format!("{} included", theme::icon::speed())
                 } else {
                     "no".into()
                 },
@@ -853,8 +853,10 @@ impl App {
         match fit {
             RamFit::TooLarge => lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {} ", theme::icon::WARN),
-                    Style::default().fg(theme::ON_ACCENT).bg(theme::DANGER),
+                    format!("  {} ", theme::icon::warn()),
+                    Style::default()
+                        .fg(theme::colors().on_accent)
+                        .bg(theme::colors().danger),
                 ),
                 Span::raw(" "),
                 Span::styled(
@@ -864,8 +866,10 @@ impl App {
             ])),
             RamFit::Tight => lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {} ", theme::icon::WARN),
-                    Style::default().fg(theme::ON_ACCENT).bg(theme::WARN),
+                    format!("  {} ", theme::icon::warn()),
+                    Style::default()
+                        .fg(theme::colors().on_accent)
+                        .bg(theme::colors().warn),
                 ),
                 Span::raw(" "),
                 Span::styled("Fits, but leaves little headroom.", theme::warn()),
@@ -877,8 +881,10 @@ impl App {
         {
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {} ", theme::icon::WARN),
-                    Style::default().fg(theme::ON_ACCENT).bg(theme::DANGER),
+                    format!("  {} ", theme::icon::warn()),
+                    Style::default()
+                        .fg(theme::colors().on_accent)
+                        .bg(theme::colors().danger),
                 ),
                 Span::raw(" "),
                 Span::styled("Not enough free disk space.", theme::danger()),
@@ -887,8 +893,10 @@ impl App {
         if variant.installed && !pending.with_mtp {
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {} ", theme::icon::OK),
-                    Style::default().fg(theme::ON_ACCENT).bg(theme::OK),
+                    format!("  {} ", theme::icon::ok()),
+                    Style::default()
+                        .fg(theme::colors().on_accent)
+                        .bg(theme::colors().ok),
                 ),
                 Span::raw(" "),
                 Span::styled(
@@ -910,7 +918,7 @@ impl App {
             Paragraph::new(lines)
                 .block(widgets::active_block(&format!(
                     " {} Confirm download ",
-                    theme::icon::OK
+                    theme::icon::ok()
                 )))
                 .wrap(Wrap { trim: false }),
             area,
@@ -941,7 +949,7 @@ impl App {
                 Line::from(Span::styled(
                     " Download into a custom folder ",
                     Style::default()
-                        .fg(theme::TEXT)
+                        .fg(theme::colors().text)
                         .add_modifier(Modifier::BOLD),
                 )),
                 error,

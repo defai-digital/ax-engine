@@ -182,14 +182,16 @@ impl LiveMetrics {
     /// On each successful sample we push **MEM · CPU · GPU** histories in
     /// lockstep (same length, same timestamp) so the multi-series chart lines
     /// stay aligned with the gauges.
-    pub fn tick(&mut self, models_bytes: u64, cache_root: &Path) {
+    /// Advance samplers; returns true only when new data actually landed
+    /// (the TUI repaints on that signal, not on every poll cycle).
+    pub fn tick(&mut self, models_bytes: u64, cache_root: &Path) -> bool {
         self.models_bytes = models_bytes;
         let now = Instant::now();
         if self
             .last_sample
             .is_some_and(|t| now.duration_since(t) < SAMPLE_INTERVAL)
         {
-            return;
+            return false;
         }
         self.last_sample = Some(now);
         if self.total_ram_bytes.is_none() {
@@ -233,6 +235,7 @@ impl LiveMetrics {
         if let Some(r) = self.models_ratio() {
             push_hist(&mut self.models_history, (r * 100.0).round() as u64);
         }
+        true
     }
 
     fn probe_identity(&mut self) {

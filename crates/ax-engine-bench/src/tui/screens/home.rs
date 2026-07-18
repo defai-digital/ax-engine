@@ -277,9 +277,9 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if quick_selected {
-                theme::SELECT
+                theme::colors().select
             } else {
-                theme::BORDER_INACTIVE
+                theme::colors().border_inactive
             }))
             .title(Span::styled(
                 " Start here · press b or click ",
@@ -291,7 +291,7 @@ impl App {
             Line::from(Span::styled(
                 format!("  {}", title),
                 Style::default()
-                    .fg(theme::TEXT)
+                    .fg(theme::colors().text)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
@@ -302,8 +302,10 @@ impl App {
                 Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        format!(" {} recommended for this Mac ", theme::icon::STAR),
-                        Style::default().fg(theme::ON_ACCENT).bg(theme::ACCENT),
+                        format!(" {} recommended for this Mac ", theme::icon::star()),
+                        Style::default()
+                            .fg(theme::colors().on_accent)
+                            .bg(theme::colors().accent),
                     ),
                 ])
             },
@@ -337,12 +339,12 @@ impl App {
                 let style = if selected {
                     theme::highlight_active()
                 } else if is_quick {
-                    Style::default().fg(theme::DIM)
+                    Style::default().fg(theme::colors().dim)
                 } else {
-                    Style::default().fg(theme::TEXT)
+                    Style::default().fg(theme::colors().text)
                 };
                 let prefix = if selected {
-                    format!("{} ", theme::icon::SELECT)
+                    format!("{} ", theme::icon::select())
                 } else {
                     "  ".into()
                 };
@@ -378,14 +380,14 @@ impl App {
                     Span::styled(
                         "Enter",
                         Style::default()
-                            .fg(theme::TEXT)
+                            .fg(theme::colors().text)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(" on Quick start, or ", theme::label()),
                     Span::styled(
                         "2",
                         Style::default()
-                            .fg(theme::ACCENT)
+                            .fg(theme::colors().accent)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(" for Models.", theme::label()),
@@ -404,18 +406,18 @@ impl App {
                         catalog::ram_fit(variant.size_estimate(), self.hardware.total_ram_bytes);
                     Line::from(vec![
                         Span::styled(
-                            format!("  {} ", theme::icon::RUNNING),
+                            format!("  {} ", theme::icon::running()),
                             Style::default().fg(match fit {
-                                RamFit::Fits => theme::OK,
-                                RamFit::Tight => theme::WARN,
-                                RamFit::TooLarge => theme::DANGER,
-                                RamFit::Unknown => theme::MUTED,
+                                RamFit::Fits => theme::colors().ok,
+                                RamFit::Tight => theme::colors().warn,
+                                RamFit::TooLarge => theme::colors().danger,
+                                RamFit::Unknown => theme::colors().muted,
                             }),
                         ),
                         Span::styled(
                             widgets::ellipsis(&family.display_name(), 18),
                             Style::default()
-                                .fg(theme::TEXT)
+                                .fg(theme::colors().text)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(format!("{:<10}", variant.precision()), theme::body_dim()),
@@ -456,10 +458,10 @@ fn launcher_band_height(content_h: u16) -> u16 {
 /// Colored fit badge used across Home / wizard / Serve rows.
 pub(crate) fn fit_span(fit: RamFit) -> Span<'static> {
     let color = match fit {
-        RamFit::Fits => theme::OK,
-        RamFit::Tight => theme::WARN,
-        RamFit::TooLarge => theme::DANGER,
-        RamFit::Unknown => theme::MUTED,
+        RamFit::Fits => theme::colors().ok,
+        RamFit::Tight => theme::colors().warn,
+        RamFit::TooLarge => theme::colors().danger,
+        RamFit::Unknown => theme::colors().muted,
     };
     Span::styled(format!("{:<10}", fit.label()), Style::default().fg(color))
 }

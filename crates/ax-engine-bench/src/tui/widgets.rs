@@ -9,7 +9,10 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 
 use super::theme;
 
@@ -62,12 +65,12 @@ impl Toast {
     }
     fn style(&self) -> Style {
         let color = match self.level {
-            ToastLevel::Info => theme::ACCENT,
-            ToastLevel::Success => theme::OK,
-            ToastLevel::Warning => theme::WARN,
-            ToastLevel::Error => theme::DANGER,
+            ToastLevel::Info => theme::colors().accent,
+            ToastLevel::Success => theme::colors().ok,
+            ToastLevel::Warning => theme::colors().warn,
+            ToastLevel::Error => theme::colors().danger,
         };
-        Style::default().fg(theme::ON_ACCENT).bg(color)
+        Style::default().fg(theme::colors().on_accent).bg(color)
     }
     fn icon(&self) -> &'static str {
         match self.level {
@@ -122,7 +125,11 @@ pub(super) fn draw_modal_with(
 ) -> ModalHits {
     // Dim the whole screen so the dialog clearly owns focus.
     frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(theme::SCRIM_BG).fg(theme::MUTED)),
+        Paragraph::new("").style(
+            Style::default()
+                .bg(theme::colors().scrim_bg)
+                .fg(theme::colors().muted),
+        ),
         area,
     );
     let width = 64.min(area.width.saturating_sub(4)).max(20);
@@ -190,9 +197,9 @@ pub(super) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 /// so the UI is less “box of boxes”.
 pub(super) fn panel_block(title: &str, active: bool) -> Block<'static> {
     let (borders, border) = if active {
-        (Borders::ALL, theme::BORDER_ACTIVE)
+        (Borders::ALL, theme::colors().border_active)
     } else {
-        (Borders::LEFT, theme::BORDER_INACTIVE)
+        (Borders::LEFT, theme::colors().border_inactive)
     };
     Block::default()
         .borders(borders)
@@ -224,20 +231,28 @@ pub(super) fn draw_banner(frame: &mut Frame, area: Rect, kind: ToastLevel, text:
     }
     let (icon, style) = match kind {
         ToastLevel::Info => (
-            theme::icon::SELECT,
-            Style::default().fg(theme::ON_ACCENT).bg(theme::ACCENT),
+            theme::icon::select(),
+            Style::default()
+                .fg(theme::colors().on_accent)
+                .bg(theme::colors().accent),
         ),
         ToastLevel::Success => (
-            theme::icon::OK,
-            Style::default().fg(theme::ON_ACCENT).bg(theme::OK),
+            theme::icon::ok(),
+            Style::default()
+                .fg(theme::colors().on_accent)
+                .bg(theme::colors().ok),
         ),
         ToastLevel::Warning => (
-            theme::icon::WARN,
-            Style::default().fg(theme::ON_ACCENT).bg(theme::WARN),
+            theme::icon::warn(),
+            Style::default()
+                .fg(theme::colors().on_accent)
+                .bg(theme::colors().warn),
         ),
         ToastLevel::Error => (
-            theme::icon::ERROR,
-            Style::default().fg(theme::ON_ACCENT).bg(theme::DANGER),
+            theme::icon::error(),
+            Style::default()
+                .fg(theme::colors().on_accent)
+                .bg(theme::colors().danger),
         ),
     };
     let line = format!(" {icon}  {text} ");
@@ -272,7 +287,7 @@ pub(super) fn render_list(
     let list = List::new(rows)
         .block(block)
         .highlight_style(highlight)
-        .highlight_symbol(format!("{} ", theme::icon::SELECT));
+        .highlight_symbol(format!("{} ", theme::icon::select()));
     let mut state = ListState::default();
     state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
@@ -348,26 +363,34 @@ pub(super) fn char_boundary(text: &str, idx: usize) -> usize {
 /// inverted caret cell at char index `cursor` (trailing blank when at end).
 pub(super) fn field_line(label: &str, value: &str, active: bool, cursor: usize) -> Line<'static> {
     let prefix = if active {
-        format!("{} ", theme::icon::RUNNING)
+        format!("{} ", theme::icon::running())
     } else {
         "  ".into()
     };
     let mut spans = vec![
         Span::styled(
             prefix,
-            Style::default().fg(if active { theme::SELECT } else { theme::MUTED }),
+            Style::default().fg(if active {
+                theme::colors().select
+            } else {
+                theme::colors().muted
+            }),
         ),
         Span::styled(format!("{label}: "), theme::label()),
     ];
     if !active {
         spans.push(Span::styled(
             format!(" {value} "),
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::colors().dim),
         ));
         return Line::from(spans);
     }
-    let bar = Style::default().fg(theme::ON_SELECT).bg(theme::SELECT);
-    let caret = Style::default().fg(theme::SELECT).bg(theme::ON_SELECT);
+    let bar = Style::default()
+        .fg(theme::colors().on_select)
+        .bg(theme::colors().select);
+    let caret = Style::default()
+        .fg(theme::colors().select)
+        .bg(theme::colors().on_select);
     let len = value.chars().count();
     let cursor = cursor.min(len);
     spans.push(Span::styled(" ", bar));
@@ -400,33 +423,73 @@ pub(super) fn ellipsis(text: &str, width: usize) -> String {
 
 /// Scrolling log pane fed from a job's captured output.
 /// Applies basic coloring to ERROR/WARN/INFO lines for scannability.
-pub(super) fn draw_log(frame: &mut Frame, area: Rect, log: Option<&[String]>, title: &str) {
+///
+/// `scroll` is the pane's scrollback state: pinned shows the newest lines
+/// (autoscroll); scrolled anchors the window to an absolute log index so new
+/// output does not move what the user is reading. While scrolled, the title
+/// carries a dim "↑ scrolled" hint, and whenever the log overflows the pane a
+/// muted scrollbar appears on the right edge. Records `area` into `hit_target`
+/// so wheel events over the pane route to log scrollback, not row selection.
+pub(super) fn draw_log(
+    frame: &mut Frame,
+    area: Rect,
+    log: Option<&[String]>,
+    title: &str,
+    scroll: super::LogScroll,
+    hit_target: &std::cell::Cell<Rect>,
+) {
+    hit_target.set(area);
     let height = area.height.saturating_sub(1) as usize; // left bar chrome
+    let total = log.map_or(0, <[String]>::len);
+    let start = scroll.first_visible(total, height);
+    let end = (start + height).min(total);
     let lines: Vec<Line> = match log {
-        Some(log) => {
-            let start = log.len().saturating_sub(height);
-            log[start..]
-                .iter()
-                .map(|l| {
-                    let style = if l.contains("ERROR") || l.contains("error") || l.contains("panic")
-                    {
-                        Style::default().fg(theme::DANGER)
-                    } else if l.contains("WARN") || l.contains("warn") {
-                        Style::default().fg(theme::WARN)
-                    } else if l.contains("INFO") || l.contains("info") {
-                        Style::default().fg(theme::OK)
-                    } else if l.contains("listening on") || l.contains("preview listening") {
-                        Style::default().fg(theme::OK).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme::DIM)
-                    };
-                    Line::from(Span::styled(l.clone(), style))
-                })
-                .collect()
-        }
+        Some(log) => log[start..end]
+            .iter()
+            .map(|l| {
+                let style = if l.contains("ERROR") || l.contains("error") || l.contains("panic") {
+                    Style::default().fg(theme::colors().danger)
+                } else if l.contains("WARN") || l.contains("warn") {
+                    Style::default().fg(theme::colors().warn)
+                } else if l.contains("INFO") || l.contains("info") {
+                    Style::default().fg(theme::colors().ok)
+                } else if l.contains("listening on") || l.contains("preview listening") {
+                    Style::default()
+                        .fg(theme::colors().ok)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme::colors().dim)
+                };
+                Line::from(Span::styled(l.clone(), style))
+            })
+            .collect(),
         None => vec![Line::raw("")],
     };
-    frame.render_widget(Paragraph::new(lines).block(soft_block(title)), area);
+    let title = if scroll.is_scrolled(total, height) {
+        format!("{title}↑ scrolled (PgDn to bottom) ")
+    } else {
+        title.to_string()
+    };
+    let block = soft_block(&title);
+    let bar_area = block.inner(area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+    // Overflow affordance: muted scrollbar on the right edge whenever the log
+    // is longer than the pane (hidden when everything fits).
+    if total > height && height > 0 {
+        let mut state = ScrollbarState::new(total)
+            .position(start)
+            .viewport_content_length(height);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_symbol(Some("│"))
+                .thumb_symbol("█")
+                .style(Style::default().fg(theme::colors().muted)),
+            bar_area,
+            &mut state,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -503,7 +566,7 @@ pub(super) fn draw_tab_bar(
             theme::tab_active()
         } else if tabs_focused {
             // Other tabs stay readable while the bar owns focus.
-            Style::default().fg(theme::TEXT)
+            Style::default().fg(theme::colors().text)
         } else if let Some(b) = badge.filter(|b| !b.text.is_empty()) {
             // Inactive tab with a status badge: keep dim label, tint badge via
             // the whole chip so the count remains visible.
@@ -542,9 +605,9 @@ pub(super) fn draw_tab_bar(
     let sep = "─".repeat(area.width as usize);
     frame.render_widget(
         Paragraph::new(sep).style(Style::default().fg(if tabs_focused {
-            theme::SELECT
+            theme::colors().select
         } else {
-            theme::BORDER_INACTIVE
+            theme::colors().border_inactive
         })),
         row1,
     );

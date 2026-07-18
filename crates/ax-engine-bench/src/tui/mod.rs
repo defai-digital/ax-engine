@@ -91,13 +91,17 @@ pub(crate) fn cmd_tui(args: &[OsString]) -> Result<u8, String> {
              live tok/s stats, prompt history (↑), and /clear /copy /retry.\n\
              Keys: 1-5 screens (Ctrl+1-5 while typing) · ↑↓ move · Enter select\n\
              · b next step · Esc back one level · ? help · q quit\n\
-             (quitting asks first while jobs are running)."
+             (quitting asks first while jobs are running).\n\
+             Theme: AX_TUI_THEME=light|mono · NO_COLOR disables color."
         );
         return Ok(0);
     }
     if !io::stdout().is_terminal() {
         return Err("ax-engine tui needs an interactive terminal".into());
     }
+    // Resolve palette (dark / AX_TUI_THEME=light / NO_COLOR mono) and glyph
+    // set (Unicode / ASCII fallback) before anything draws.
+    theme::init();
     let mut terminal = ratatui::init();
     // ratatui::init() does not enable mouse reporting or bracketed paste; turn
     // both on so clicks/scroll reach us as Event::Mouse and pastes arrive as
@@ -189,6 +193,79 @@ pub(super) enum ServeFocus {
     Port,
 }
 
+/// Mouse-wheel scroll step for the job-log panes (lines per wheel tick).
+const LOG_WHEEL_LINES: usize = 3;
+
+/// Scrollback state for one job-log pane (Downloads / Serve).
+///
+/// Pinned (`None`) follows the newest line — today's autoscroll behavior.
+/// Scrolled (`Some(first)`) anchors the pane to an absolute log index, so
+/// lines appended while the user is reading do not move the view; scrolling
+/// back down to the bottom re-pins.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct LogScroll(Option<usize>);
+
+impl LogScroll {
+    /// Index of the first visible line for a `total`-line log in a
+    /// `height`-row pane. Pinned shows the newest `height` lines; a scrolled
+    /// anchor is clamped into range when the log shrinks or the pane grows.
+    pub fn first_visible(self, total: usize, height: usize) -> usize {
+        let bottom = total.saturating_sub(height);
+        self.0.map_or(bottom, |first| first.min(bottom))
+    }
+
+    /// True while following the newest output (autoscroll).
+    pub fn is_pinned(self) -> bool {
+        self.0.is_none()
+    }
+
+    /// Re-pin to the bottom; new lines follow again.
+    pub fn to_bottom(&mut self) {
+        self.0 = None;
+    }
+
+    /// True while the pane shows anything older than the newest page.
+    pub fn is_scrolled(self, total: usize, height: usize) -> bool {
+        self.0
+            .is_some_and(|first| first < total.saturating_sub(height))
+    }
+
+    /// Scroll `n` lines toward older output, clamped at the oldest line.
+    /// A log that fits the pane entirely cannot scroll.
+    pub fn scroll_up(&mut self, n: usize, total: usize, height: usize) {
+        let bottom = total.saturating_sub(height);
+        if bottom == 0 {
+            return;
+        }
+        let first = self.first_visible(total, height).saturating_sub(n);
+        self.0 = Some(first);
+    }
+
+    /// Scroll `n` lines toward newer output; reaching the bottom re-pins.
+    pub fn scroll_down(&mut self, n: usize, total: usize, height: usize) {
+        let Some(first) = self.0 else {
+            return;
+        };
+        let bottom = total.saturating_sub(height);
+        let next = first.saturating_add(n);
+        self.0 = (next < bottom).then_some(next);
+    }
+
+    /// One entry point for keys and wheel: `page` scrolls a full pane height,
+    /// otherwise a short wheel step.
+    pub fn scroll(&mut self, up: bool, page: bool, total: usize, height: usize) {
+        if height == 0 {
+            return;
+        }
+        let n = if page { height } else { LOG_WHEEL_LINES };
+        if up {
+            self.scroll_up(n, total, height);
+        } else {
+            self.scroll_down(n, total, height);
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct PendingDownload {
     pub family_idx: usize,
@@ -241,20 +318,20 @@ impl ServerStatus {
     /// Tab-bar chip text: status icon + word.
     fn label(self) -> String {
         match self {
-            Self::Ready => format!("{} running", theme::icon::RUNNING),
-            Self::Starting => format!("{} starting", theme::icon::QUEUED),
-            Self::Failed => format!("{} failed", theme::icon::ERROR),
-            Self::Stopped => format!("{} stopped", theme::icon::IDLE),
+            Self::Ready => format!("{} running", theme::icon::running()),
+            Self::Starting => format!("{} starting", theme::icon::queued()),
+            Self::Failed => format!("{} failed", theme::icon::error()),
+            Self::Stopped => format!("{} stopped", theme::icon::idle()),
         }
     }
 
     /// Chip color matching the status severity.
     fn color(self) -> Color {
         match self {
-            Self::Ready => theme::OK,
-            Self::Starting => theme::WARN,
-            Self::Failed => theme::DANGER,
-            Self::Stopped => theme::MUTED,
+            Self::Ready => theme::colors().ok,
+            Self::Starting => theme::colors().warn,
+            Self::Failed => theme::colors().danger,
+            Self::Stopped => theme::colors().muted,
         }
     }
 }
@@ -288,6 +365,8 @@ struct App {
     // Downloads
     pub downloads: Vec<DownloadTask>,
     pub download_idx: usize,
+    /// Log-pane scrollback for the selected download's job log.
+    pub downloads_log_scroll: LogScroll,
 
     // Serve
     pub serve_focus: ServeFocus,
@@ -299,6 +378,8 @@ struct App {
     pub port_cursor: usize,
     pub server: Option<Job>,
     pub server_url: Option<String>,
+    /// Log-pane scrollback for the server job log.
+    pub serve_log_scroll: LogScroll,
     /// Set once the server job's log confirms it actually bound (not just spawned).
     pub server_ready: bool,
     /// Label of the model the running server was started with (chat request body).
@@ -321,6 +402,8 @@ struct App {
     // Click-target rects recorded during the last draw (immediate-mode hit-testing).
     tab_hits: Cell<Vec<(Rect, usize)>>,
     pub content_list_rect: Cell<Rect>,
+    /// Rect of the job-log pane on Downloads / Serve (wheel-scroll routing).
+    pub log_rect: Cell<Rect>,
     /// Rect of the wizard step header row (for breadcrumb clicks).
     pub step_header_rect: Cell<Rect>,
     /// Journey banner hit target (Home / Downloads / Serve).
@@ -360,6 +443,7 @@ impl App {
             filtering: false,
             downloads: Vec::new(),
             download_idx: 0,
+            downloads_log_scroll: LogScroll::default(),
             serve_focus: ServeFocus::List,
             serve_idx: 0,
             host: "127.0.0.1".into(),
@@ -368,6 +452,7 @@ impl App {
             port_cursor: "8080".chars().count(),
             server: None,
             server_url: None,
+            serve_log_scroll: LogScroll::default(),
             server_ready: false,
             server_model: None,
             chat: ChatState::new(),
@@ -377,6 +462,7 @@ impl App {
             auto_chat_after_serve: false,
             tab_hits: Cell::new(Vec::new()),
             content_list_rect: Cell::new(Rect::default()),
+            log_rect: Cell::new(Rect::default()),
             step_header_rect: Cell::new(Rect::default()),
             banner_rect: Cell::new(Rect::default()),
             hero_rect: Cell::new(Rect::default()),
@@ -405,17 +491,27 @@ impl App {
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        // Repaint on input or when tick() reports visible activity; a fully
+        // idle app sleeps in poll() instead of redrawing at 10 Hz.
+        let mut dirty = true;
         while !self.quit {
-            terminal.draw(|frame| self.draw(frame))?;
+            if dirty {
+                terminal.draw(|frame| self.draw(frame))?;
+                dirty = false;
+            }
             // Block up to the 100ms tick for the first event, then drain
             // anything queued behind it so held-down keys stay responsive.
             if event::poll(Duration::from_millis(100))? {
                 self.on_event(event::read()?);
+                dirty = true;
             }
             while event::poll(Duration::ZERO)? {
                 self.on_event(event::read()?);
+                dirty = true;
             }
-            self.tick();
+            if self.tick() {
+                dirty = true;
+            }
         }
         for task in &mut self.downloads {
             task.cancel();
@@ -444,7 +540,8 @@ impl App {
     }
 
     /// Advance all background jobs and time-based UI state by one poll cycle.
-    fn tick(&mut self) {
+    /// Returns true when anything on screen could have changed.
+    fn tick(&mut self) -> bool {
         let mut finished: Vec<(usize, String)> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
         for (idx, task) in self.downloads.iter_mut().enumerate() {
@@ -461,7 +558,7 @@ impl App {
         }
         for (idx, label) in finished {
             self.reload_families();
-            self.download_idx = idx;
+            self.select_download(idx);
             // Never yank the user out of a modal or text entry; toasts and the
             // auto-serve chain itself still fire.
             let may_navigate = self.screen != Screen::Chat && !self.input_busy();
@@ -510,11 +607,15 @@ impl App {
         // Toast on the error *edge* (None → Some) so stream failures surface
         // even while the user is scrolled up; the error itself also renders
         // inline in the transcript.
+        let was_streaming = self.chat.streaming();
         let chat_had_error = self.chat.error.is_some();
         self.chat.tick();
         if !chat_had_error && let Some(message) = self.chat.error.clone() {
             self.toast_error(message);
         }
+        // Capture before expiry: the tick that drops the last toast must still
+        // repaint, or the stale toast lingers until the next dirty event.
+        let had_toasts = !self.toasts.is_empty();
         widgets::expire_toasts(&mut self.toasts);
         self.clamp_list_indices();
         // Host load for Home gauges/chart (~2 s throttle inside sampler).
@@ -523,16 +624,31 @@ impl App {
             .map(|(fi, vi)| self.families[fi].variants[vi].size)
             .sum();
         let cache_root = crate::default_hf_cache_root();
-        self.live_metrics.tick(models_bytes, &cache_root);
+        let metrics_sampled = self.live_metrics.tick(models_bytes, &cache_root);
+        // Repaint only when something visible can move on its own: download
+        // spinners/progress, a binding server, a streaming reply, fresh toast,
+        // or a new metrics sample. A fully idle app stays dark.
+        was_streaming
+            || had_toasts
+            || metrics_sampled
+            || !self.toasts.is_empty()
+            || self.downloads.iter().any(|t| t.is_running())
+            || (self.server_running() && !self.server_ready)
+            || self.chat.streaming()
     }
 
     /// Keep selection indices in range after installs/deletes/queue changes.
     pub(crate) fn clamp_list_indices(&mut self) {
+        let prev_download_idx = self.download_idx;
         let n_dl = self.downloads.len();
         if n_dl == 0 {
             self.download_idx = 0;
         } else if self.download_idx >= n_dl {
             self.download_idx = n_dl - 1;
+        }
+        if self.download_idx != prev_download_idx {
+            // The selected row shifted under the user; re-pin its log pane.
+            self.downloads_log_scroll.to_bottom();
         }
         let n_serve = installed_variants(&self.families).len();
         if n_serve == 0 {
@@ -560,6 +676,48 @@ impl App {
         } else if self.home_idx >= n_home {
             self.home_idx = n_home - 1;
         }
+    }
+
+    /// Select a download row; moving to a different row re-pins its log pane
+    /// (each row shows a different job log, so scrollback would be nonsense).
+    pub(crate) fn select_download(&mut self, idx: usize) {
+        if self.download_idx != idx {
+            self.download_idx = idx;
+            self.downloads_log_scroll.to_bottom();
+        }
+    }
+
+    // -- log pane scrollback ----------------------------------------------------
+
+    /// Content height of the log pane as last drawn (0 before the first
+    /// draw, which makes scroll input a safe no-op).
+    fn log_pane_height(&self) -> usize {
+        (self.log_rect.get().height as usize).saturating_sub(1)
+    }
+
+    /// PgUp/PgDn or wheel on the Downloads log pane.
+    pub(crate) fn scroll_downloads_log(&mut self, up: bool, page: bool) {
+        // Scrolling down while already pinned is a no-op; skip the log lookup.
+        if !up && self.downloads_log_scroll.is_pinned() {
+            return;
+        }
+        let total = self
+            .downloads
+            .get(self.download_idx)
+            .and_then(|task| task.job.as_ref())
+            .map_or(0, |job| job.log.len());
+        let height = self.log_pane_height();
+        self.downloads_log_scroll.scroll(up, page, total, height);
+    }
+
+    /// PgUp/PgDn or wheel on the Serve log pane.
+    pub(crate) fn scroll_serve_log(&mut self, up: bool, page: bool) {
+        if !up && self.serve_log_scroll.is_pinned() {
+            return;
+        }
+        let total = self.server.as_ref().map_or(0, |job| job.log.len());
+        let height = self.log_pane_height();
+        self.serve_log_scroll.scroll(up, page, total, height);
     }
 
     // -- input ----------------------------------------------------------------
@@ -709,7 +867,7 @@ impl App {
             return;
         }
         if let Some(idx) = self.downloads.iter().position(|t| t.is_ready()) {
-            self.download_idx = idx;
+            self.select_download(idx);
             self.navigate_to(Screen::Downloads);
             self.modal = Some(Modal::ServeReady { download_idx: idx });
             return;
@@ -999,18 +1157,35 @@ impl App {
             return;
         }
         match mouse.kind {
-            MouseEventKind::ScrollDown => self.scroll(KeyCode::Down),
-            MouseEventKind::ScrollUp => self.scroll(KeyCode::Up),
+            MouseEventKind::ScrollDown => self.scroll(KeyCode::Down, mouse.column, mouse.row),
+            MouseEventKind::ScrollUp => self.scroll(KeyCode::Up, mouse.column, mouse.row),
             MouseEventKind::Down(MouseButton::Left) => self.on_click(mouse.column, mouse.row),
             _ => {}
         }
     }
 
-    /// Wheel scroll routes to the active screen's existing up/down handler.
-    fn scroll(&mut self, code: KeyCode) {
+    /// Wheel scroll: over the job-log pane on Downloads / Serve it scrolls the
+    /// log; anywhere else it drives the active screen's existing up/down handler.
+    fn scroll(&mut self, code: KeyCode, col: u16, row: u16) {
         if self.focus_tabs {
             let _ = self.on_key_tabs(code);
             return;
+        }
+        if matches!(self.screen, Screen::Downloads | Screen::Serve) {
+            let rect = self.log_rect.get();
+            let over_log = col >= rect.x
+                && col < rect.x + rect.width
+                && row >= rect.y
+                && row < rect.y + rect.height;
+            if over_log {
+                let up = code == KeyCode::Up;
+                match self.screen {
+                    Screen::Downloads => self.scroll_downloads_log(up, false),
+                    Screen::Serve => self.scroll_serve_log(up, false),
+                    _ => {}
+                }
+                return;
+            }
         }
         match self.screen {
             Screen::Home => self.on_key_home(code),
@@ -1116,7 +1291,7 @@ impl App {
                 Screen::Models => self.on_click_models(idx),
                 Screen::Downloads => {
                     if idx < self.downloads.len() {
-                        self.download_idx = idx;
+                        self.select_download(idx);
                     }
                 }
                 Screen::Serve => {
@@ -1225,6 +1400,7 @@ impl App {
                 "MTP package path could not be resolved from the download log; re-run download-mtp or serve the package directory directly".into(),
             ));
             self.server_url = None;
+            self.serve_log_scroll.to_bottom();
             self.toast_error("could not find MTP package path to serve");
             return;
         }
@@ -1241,6 +1417,8 @@ impl App {
         model_label: &str,
     ) {
         self.server_ready = false;
+        // Every path through here replaces the server job — re-pin its log.
+        self.serve_log_scroll.to_bottom();
         let host = if self.host.trim().is_empty() {
             "127.0.0.1".to_string()
         } else {
@@ -1328,6 +1506,7 @@ impl App {
         self.server_url = None;
         self.server_ready = false;
         self.server_model = None;
+        self.serve_log_scroll.to_bottom();
     }
 
     /// Most recent non-empty server log line, surfaced when startup fails.
@@ -1396,11 +1575,14 @@ impl App {
                 .filter(|job| job.speed > 0.0)
                 .map(|job| format!(" · {}/s", catalog::format_bytes(job.speed as u64)))
                 .unwrap_or_default();
-            return Some((format!("{}{pct}{speed}", task.label), theme::ACCENT));
+            return Some((
+                format!("{}{pct}{speed}", task.label),
+                theme::colors().accent,
+            ));
         }
         let queued = self.downloads.iter().filter(|t| t.is_queued()).count();
         if queued > 0 {
-            return Some((format!("{queued} queued"), theme::WARN));
+            return Some((format!("{queued} queued"), theme::colors().warn));
         }
         None
     }
@@ -1441,6 +1623,7 @@ impl App {
         }
         // Cleared each frame; the active content list re-records it.
         self.content_list_rect.set(Rect::default());
+        self.log_rect.set(Rect::default());
         self.banner_rect.set(Rect::default());
         self.hero_rect.set(Rect::default());
         self.modal_hits.set(widgets::ModalHits::default());
@@ -1474,7 +1657,7 @@ impl App {
         }
 
         frame.render_widget(
-            Paragraph::new(self.footer_line()).style(Style::default().fg(theme::DIM)),
+            Paragraph::new(self.footer_line()).style(Style::default().fg(theme::colors().dim)),
             outer[2],
         );
         widgets::draw_toasts(frame, frame.area(), &self.toasts);
@@ -1517,25 +1700,25 @@ impl App {
         let downloads_badge = if active_dl > 0 {
             Some(widgets::TabBadge {
                 text: format!("·{active_dl}"),
-                style: Style::default().fg(theme::ACCENT),
+                style: Style::default().fg(theme::colors().accent),
             })
         } else if ready_dl > 0 {
             Some(widgets::TabBadge {
                 text: format!("·{ready_dl}"),
-                style: Style::default().fg(theme::OK),
+                style: Style::default().fg(theme::colors().ok),
             })
         } else {
             None
         };
         let serve_badge = if self.server_ready {
             Some(widgets::TabBadge {
-                text: theme::icon::RUNNING.into(),
-                style: Style::default().fg(theme::OK),
+                text: theme::icon::running().into(),
+                style: Style::default().fg(theme::colors().ok),
             })
         } else if self.server_running() {
             Some(widgets::TabBadge {
-                text: theme::icon::QUEUED.into(),
-                style: Style::default().fg(theme::WARN),
+                text: theme::icon::queued().into(),
+                style: Style::default().fg(theme::colors().warn),
             })
         } else {
             None
@@ -1587,7 +1770,10 @@ impl App {
                 ],
                 Screen::Models => match self.stage {
                     WizardStage::Families if self.filtering => vec![
-                        Span::styled("type to filter", Style::default().fg(theme::ACCENT)),
+                        Span::styled(
+                            "type to filter",
+                            Style::default().fg(theme::colors().accent),
+                        ),
                         key_sep(),
                         key_hint("Enter/Esc"),
                         key_label(" done — keeps the filter"),
@@ -1664,6 +1850,9 @@ impl App {
                     key_hint("x"),
                     key_label(" cancel"),
                     key_sep(),
+                    key_hint("PgUp/Dn"),
+                    key_label(" log"),
+                    key_sep(),
                     key_hint("b"),
                     key_label(" next step"),
                     key_sep(),
@@ -1674,7 +1863,7 @@ impl App {
                     if matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port) =>
                 {
                     vec![
-                        Span::styled("type to edit", Style::default().fg(theme::ACCENT)),
+                        Span::styled("type to edit", Style::default().fg(theme::colors().accent)),
                         key_sep(),
                         key_hint("Tab"),
                         key_label(" next"),
@@ -1692,6 +1881,9 @@ impl App {
                     key_sep(),
                     key_hint("x"),
                     key_label(" stop"),
+                    key_sep(),
+                    key_hint("PgUp/Dn"),
+                    key_label(" log"),
                     key_sep(),
                     key_hint("Esc"),
                     key_label(" back"),
@@ -1711,6 +1903,9 @@ impl App {
                     key_sep(),
                     key_hint("t"),
                     key_label(" chat"),
+                    key_sep(),
+                    key_hint("PgUp/Dn"),
+                    key_label(" log"),
                     key_sep(),
                     key_hint("Tab"),
                     key_label(" fields"),
@@ -1784,8 +1979,12 @@ impl App {
         let contextual = match self.screen {
             Screen::Home => "Home: ↑↓ move · Enter run the highlighted action",
             Screen::Models => "Models: wizard steps · / filter · Enter next · Esc back",
-            Screen::Downloads => "Downloads: Enter serve when ready · x cancel",
-            Screen::Serve => "Serve: Enter start · x stop · c copy URL · t chat · Tab fields",
+            Screen::Downloads => {
+                "Downloads: Enter serve when ready · x cancel · PgUp/PgDn scroll log"
+            }
+            Screen::Serve => {
+                "Serve: Enter start · x stop · c copy URL · t chat · Tab fields · PgUp/PgDn scroll log"
+            }
             Screen::Chat => {
                 "Chat: Enter send · ↑ history · Ctrl+J newline · Ctrl+U clear draft · Ctrl+Y copy · Ctrl+R retry · Ctrl+L clear · / commands · PgUp/PgDn scroll"
             }
@@ -1795,10 +1994,13 @@ impl App {
                 "AX Engine",
                 Style::default()
                     .add_modifier(Modifier::BOLD)
-                    .fg(theme::ACCENT),
+                    .fg(theme::colors().accent),
             )),
             Line::raw(""),
-            Line::from(Span::styled(contextual, Style::default().fg(theme::TEXT))),
+            Line::from(Span::styled(
+                contextual,
+                Style::default().fg(theme::colors().text),
+            )),
             Line::raw(""),
             Line::raw("Screens: 1-5 (or click tabs). While typing, use Ctrl+1-5."),
             Line::raw("  1 Home        this Mac + quick start"),
@@ -1811,14 +2013,16 @@ impl App {
             Line::raw("Nothing downloads until you confirm. Partials resume later."),
             Line::raw(""),
             Line::raw("b runs the highlighted next step on Home / Downloads / Serve."),
+            Line::raw("Log panes (Downloads / Serve) scroll with PgUp/PgDn or the mouse wheel;"),
+            Line::raw("scrolling back to the bottom re-pins to the newest output."),
             Line::raw(""),
             Line::from(Span::styled(
                 "Any key closes help. Esc steps back one level; q quits.",
-                Style::default().fg(theme::MUTED),
+                Style::default().fg(theme::colors().muted),
             )),
         ];
         frame.render_widget(
-            Paragraph::new("").style(Style::default().bg(theme::SCRIM_BG)),
+            Paragraph::new("").style(Style::default().bg(theme::colors().scrim_bg)),
             area,
         );
         frame.render_widget(ratatui::widgets::Clear, popup);
@@ -1827,7 +2031,7 @@ impl App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme::ACCENT))
+                        .border_style(Style::default().fg(theme::colors().accent))
                         .title(Span::styled(" Help ", theme::title())),
                 )
                 .wrap(Wrap { trim: false }),
@@ -1863,7 +2067,7 @@ impl App {
                         theme::key_sep(),
                         theme::key_chip_dim("Esc stay"),
                     ],
-                    theme::WARN,
+                    theme::colors().warn,
                 )
             }
             Modal::ServeReady { download_idx } => {
@@ -1882,7 +2086,7 @@ impl App {
                         theme::key_sep(),
                         theme::key_chip_dim("Esc not now"),
                     ],
-                    theme::OK,
+                    theme::colors().ok,
                 )
             }
             Modal::ServeInstalled {
@@ -1914,7 +2118,7 @@ impl App {
                         theme::key_sep(),
                         theme::key_chip_dim("Esc back"),
                     ],
-                    theme::OK,
+                    theme::colors().ok,
                 )
             }
             Modal::CancelDownload { download_idx } => {
@@ -1935,7 +2139,7 @@ impl App {
                         theme::key_sep(),
                         theme::key_chip_dim("Esc keep"),
                     ],
-                    theme::WARN,
+                    theme::colors().warn,
                 )
             }
             Modal::DeleteModel {
@@ -1977,13 +2181,16 @@ impl App {
                         .any(|t| (t.is_running() || t.is_queued()) && t.label == label);
                 let armed = typed == "delete";
                 let typed_style = if armed {
-                    Style::default().fg(theme::OK)
+                    Style::default().fg(theme::colors().ok)
                 } else {
-                    Style::default().fg(theme::WARN)
+                    Style::default().fg(theme::colors().warn)
                 };
                 let mut lines = vec![
                     Line::raw(format!("Remove {label} ({size}) from disk?")),
-                    Line::from(Span::styled(path, Style::default().fg(theme::MUTED))),
+                    Line::from(Span::styled(
+                        path,
+                        Style::default().fg(theme::colors().muted),
+                    )),
                 ];
                 if is_served {
                     lines.push(Line::from(Span::styled(
@@ -2016,7 +2223,7 @@ impl App {
                     } else {
                         vec![theme::key_chip_dim("Esc keep")]
                     },
-                    theme::DANGER,
+                    theme::colors().danger,
                 )
             }
             Modal::StopServer => widgets::draw_modal_with(
@@ -2029,7 +2236,7 @@ impl App {
                     theme::key_sep(),
                     theme::key_chip_dim("Esc keep"),
                 ],
-                theme::WARN,
+                theme::colors().warn,
             ),
             Modal::ClearChat => widgets::draw_modal_with(
                 frame,
@@ -2043,7 +2250,7 @@ impl App {
                     theme::key_sep(),
                     theme::key_chip_dim("Esc keep"),
                 ],
-                theme::WARN,
+                theme::colors().warn,
             ),
             Modal::DestPicker(picker) => {
                 self.draw_dest_picker(frame, area, picker);

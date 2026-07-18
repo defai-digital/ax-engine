@@ -695,6 +695,17 @@ fn help_closes_on_any_key() {
 }
 
 #[test]
+fn theme_defaults_to_dark_palette_and_unicode_glyphs() {
+    // Tests never call theme::init(), so the dark palette + Unicode glyphs
+    // must be the fallback regardless of the host locale.
+    assert_eq!(
+        super::theme::colors().accent,
+        ratatui::style::Color::Rgb(56, 189, 248)
+    );
+    assert_eq!(super::theme::icon::ok(), "✓");
+}
+
+#[test]
 fn tiny_terminal_gets_resize_hint_instead_of_broken_layout() {
     let app = new_app();
     let text = render_sized(&app, 50, 10);

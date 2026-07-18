@@ -149,24 +149,32 @@ impl Job {
         }
         if let Some(dir) = &self.watch_dir {
             let now = Instant::now();
-            let bytes = catalog::dir_size(dir);
-            if let Some((last_t, last_b)) = self.last_poll {
-                let dt = now.duration_since(last_t).as_secs_f64();
-                if dt > 0.0 {
-                    let inst = bytes.saturating_sub(last_b) as f64 / dt;
-                    self.speed = if self.speed == 0.0 {
-                        inst
-                    } else {
-                        0.6 * self.speed + 0.4 * inst
-                    };
+            // dir_size walks the whole cache tree; at the 10 Hz tick rate that
+            // recursive walk is the main cost of a download, so resample at
+            // ~1 Hz and reuse the last byte count (and speed) in between.
+            let resample = self
+                .last_poll
+                .is_none_or(|(last_t, _)| now.duration_since(last_t).as_secs_f64() >= 1.0);
+            if resample {
+                let bytes = catalog::dir_size(dir);
+                if let Some((last_t, last_b)) = self.last_poll {
+                    let dt = now.duration_since(last_t).as_secs_f64();
+                    if dt > 0.0 {
+                        let inst = bytes.saturating_sub(last_b) as f64 / dt;
+                        self.speed = if self.speed == 0.0 {
+                            inst
+                        } else {
+                            0.6 * self.speed + 0.4 * inst
+                        };
+                    }
                 }
-            }
-            self.last_poll = Some((now, bytes));
-            self.bytes = bytes;
-            self.speed_history.push(self.speed as u64);
-            if self.speed_history.len() > SPEED_HISTORY_CAP {
-                let overflow = self.speed_history.len() - SPEED_HISTORY_CAP;
-                self.speed_history.drain(0..overflow);
+                self.last_poll = Some((now, bytes));
+                self.bytes = bytes;
+                self.speed_history.push(self.speed as u64);
+                if self.speed_history.len() > SPEED_HISTORY_CAP {
+                    let overflow = self.speed_history.len() - SPEED_HISTORY_CAP;
+                    self.speed_history.drain(0..overflow);
+                }
             }
         }
         self.spinner = (self.spinner + 1) % SPINNER.len();

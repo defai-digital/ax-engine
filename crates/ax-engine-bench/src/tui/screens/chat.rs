@@ -73,6 +73,10 @@ pub(in crate::tui) struct ChatState {
     /// happens with `&App`) clamps it so the cursor row stays inside the
     /// height-capped box, mirroring the transcript `scroll` RefCell pattern.
     pub input_scroll: std::cell::Cell<usize>,
+    /// Whole-transcript render cache keyed by a hash of everything the lines
+    /// depend on — re-parsing markdown for the full history every frame was
+    /// the hot path while streaming.
+    pub transcript_cache: std::cell::RefCell<Option<(u64, Vec<Line<'static>>)>>,
     pub job: Option<Job>,
     pub error: Option<String>,
     /// Sent prompts, oldest first (readline-style recall with ↑/↓).
@@ -99,6 +103,7 @@ impl ChatState {
             scroll: std::cell::RefCell::new(tui_scrollview::ScrollViewState::new()),
             autoscroll: true,
             input_scroll: std::cell::Cell::new(0),
+            transcript_cache: std::cell::RefCell::new(None),
             job: None,
             error: None,
             history: Vec::new(),
@@ -736,7 +741,7 @@ impl App {
                     "Server starting…",
                     "  The model is loading; this can take a minute.",
                     Style::default()
-                        .fg(theme::WARN)
+                        .fg(theme::colors().warn)
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
@@ -744,7 +749,7 @@ impl App {
                     "No server running",
                     "  Start a model, then come back to chat.",
                     Style::default()
-                        .fg(theme::TEXT)
+                        .fg(theme::colors().text)
                         .add_modifier(Modifier::BOLD),
                 )
             };
@@ -759,7 +764,7 @@ impl App {
                     Span::styled(
                         "4",
                         Style::default()
-                            .fg(theme::ACCENT)
+                            .fg(theme::colors().accent)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(" for Serve", theme::label()),
@@ -770,9 +775,9 @@ impl App {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(if starting {
-                            theme::WARN
+                            theme::colors().warn
                         } else {
-                            theme::BORDER_INACTIVE
+                            theme::colors().border_inactive
                         }))
                         .title(Span::styled(" Chat ", theme::title())),
                 ),
@@ -809,7 +814,29 @@ impl App {
         self.draw_chat_input(frame, chunks[1]);
     }
 
-    fn draw_chat_transcript(&self, frame: &mut Frame, area: Rect) {
+    /// Hash of every input the transcript lines depend on. The streaming tail
+    /// is the only message whose content mutates in place, so older messages
+    /// hit the cache while a reply streams in.
+    fn transcript_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let messages = &self.chat.messages;
+        messages.len().hash(&mut h);
+        for message in messages {
+            message.from_user.hash(&mut h);
+            message.content.len().hash(&mut h);
+            message.stats.is_some().hash(&mut h);
+        }
+        if let Some(last) = messages.last() {
+            last.content.hash(&mut h);
+        }
+        self.chat.streaming().hash(&mut h);
+        self.chat.error.hash(&mut h);
+        self.server_model.hash(&mut h);
+        h.finish()
+    }
+
+    fn build_transcript_lines(&self) -> Vec<Line<'static>> {
         let mut lines: Vec<Line> = Vec::new();
         let last_idx = self.chat.messages.len().saturating_sub(1);
         for (idx, message) in self.chat.messages.iter().enumerate() {
@@ -817,7 +844,7 @@ impl App {
                 let mut spans = vec![Span::styled(
                     "You  ",
                     Style::default()
-                        .fg(theme::ACCENT)
+                        .fg(theme::colors().accent)
                         .add_modifier(Modifier::BOLD),
                 )];
                 let mut parts = message.content.lines();
@@ -837,12 +864,14 @@ impl App {
                 let short = widgets::ellipsis(model_name, 14);
                 lines.push(Line::from(Span::styled(
                     short,
-                    Style::default().fg(theme::OK).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::colors().ok)
+                        .add_modifier(Modifier::BOLD),
                 )));
                 let (thinking, answer) = split_thinking(&message.content);
                 if let Some(think) = thinking {
                     let dim = Style::default()
-                        .fg(theme::MUTED)
+                        .fg(theme::colors().muted)
                         .add_modifier(Modifier::ITALIC);
                     lines.push(Line::from(Span::styled("▸ Thinking", dim)));
                     for part in think.lines() {
@@ -865,7 +894,7 @@ impl App {
         }
         if let Some(error) = &self.chat.error {
             lines.push(Line::from(vec![
-                Span::styled(format!("{} ", theme::icon::ERROR), theme::danger()),
+                Span::styled(format!("{} ", theme::icon::error()), theme::danger()),
                 Span::styled(error.clone(), theme::danger()),
             ]));
         }
@@ -879,6 +908,22 @@ impl App {
                 .centered(),
             );
         }
+        lines
+    }
+
+    fn draw_chat_transcript(&self, frame: &mut Frame, area: Rect) {
+        let key = self.transcript_key();
+        let lines = {
+            let mut cache = self.chat.transcript_cache.borrow_mut();
+            match cache.as_ref() {
+                Some((k, cached)) if *k == key => cached.clone(),
+                _ => {
+                    let built = self.build_transcript_lines();
+                    *cache = Some((key, built.clone()));
+                    built
+                }
+            }
+        };
         let title = if self.chat.streaming() {
             let est = self.chat.stream_chars.div_ceil(4);
             let secs = self
@@ -892,7 +937,7 @@ impl App {
             " Chat ".to_string()
         };
         let block = if self.chat.streaming() {
-            widgets::active_block(&title).border_style(Style::default().fg(theme::WARN))
+            widgets::active_block(&title).border_style(Style::default().fg(theme::colors().warn))
         } else {
             widgets::soft_block(&title)
         };
@@ -912,7 +957,7 @@ impl App {
     }
 
     fn draw_chat_input(&self, frame: &mut Frame, area: Rect) {
-        let prompt = format!("{} ", theme::icon::SELECT);
+        let prompt = format!("{} ", theme::icon::select());
         let mut cells: Vec<(char, bool)> = prompt.chars().map(|c| (c, false)).collect();
         for (i, c) in self.chat.input.chars().enumerate() {
             if i == self.chat.cursor {
@@ -950,7 +995,9 @@ impl App {
                 for (ch, is_cursor) in row {
                     if is_cursor != run_is_cursor && !run.is_empty() {
                         let style = if run_is_cursor {
-                            Style::default().bg(theme::SELECT).fg(theme::ON_SELECT)
+                            Style::default()
+                                .bg(theme::colors().select)
+                                .fg(theme::colors().on_select)
                         } else {
                             theme::body()
                         };
@@ -962,7 +1009,9 @@ impl App {
                 }
                 if !run.is_empty() || run_is_cursor {
                     let style = if run_is_cursor {
-                        Style::default().bg(theme::SELECT).fg(theme::ON_SELECT)
+                        Style::default()
+                            .bg(theme::colors().select)
+                            .fg(theme::colors().on_select)
                     } else {
                         theme::body()
                     };

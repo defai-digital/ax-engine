@@ -67,7 +67,7 @@ impl Renderer {
             Event::Code(code) => {
                 self.spans.push(Span::styled(
                     code.into_string(),
-                    Style::default().fg(theme::FEATURE),
+                    Style::default().fg(theme::colors().feature),
                 ));
             }
             Event::SoftBreak => self.spans.push(Span::raw(" ")),
@@ -183,7 +183,7 @@ impl Renderer {
     fn current_style(&self) -> Style {
         let mut style = if self.heading {
             Style::default()
-                .fg(theme::ACCENT)
+                .fg(theme::colors().accent)
                 .add_modifier(Modifier::BOLD)
         } else if self.quote_depth > 0 {
             theme::body_dim()
@@ -206,7 +206,9 @@ impl Renderer {
     }
 
     fn push_code_line(&mut self, text: &str) {
-        let style = Style::default().fg(theme::TEXT).bg(theme::CODE_BG);
+        let style = Style::default()
+            .fg(theme::colors().text)
+            .bg(theme::colors().code_bg);
         self.lines
             .push(Line::from(Span::styled(format!("  {text}"), style)));
     }
@@ -273,7 +275,7 @@ mod tests {
     fn heading_is_bold_accent_without_hashes() {
         let lines = render_markdown("## Title\n");
         assert_eq!(plain(&lines), "Title");
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::ACCENT));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme::colors().accent));
         assert!(
             lines[0].spans[0]
                 .style
@@ -291,7 +293,7 @@ mod tests {
         assert_eq!(spans[3].content.as_ref(), "c");
         assert!(spans[3].style.add_modifier.contains(Modifier::ITALIC));
         assert_eq!(spans[5].content.as_ref(), "d");
-        assert_eq!(spans[5].style.fg, Some(theme::FEATURE));
+        assert_eq!(spans[5].style.fg, Some(theme::colors().feature));
     }
 
     #[test]
@@ -299,7 +301,7 @@ mod tests {
         let lines = render_markdown("```rust\nfn main() {}\n```\n");
         assert_eq!(plain(&lines), "── rust \n  fn main() {}");
         let code = &lines[1].spans[0];
-        assert_eq!(code.style.bg, Some(theme::CODE_BG));
+        assert_eq!(code.style.bg, Some(theme::colors().code_bg));
         assert_eq!(code.style.fg, Some(Color::White));
     }
 
@@ -313,7 +315,7 @@ mod tests {
     fn blockquote_gets_bar_prefix_and_dim() {
         let lines = render_markdown("> quoted\n");
         assert_eq!(plain(&lines), "│ quoted");
-        assert_eq!(lines[0].spans[1].style.fg, Some(theme::DIM));
+        assert_eq!(lines[0].spans[1].style.fg, Some(theme::colors().dim));
     }
 
     #[test]

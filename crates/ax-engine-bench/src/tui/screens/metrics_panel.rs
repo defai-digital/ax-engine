@@ -53,7 +53,7 @@ pub(crate) fn draw_live_metrics(frame: &mut Frame, area: Rect, metrics: &LiveMet
 
     let outer = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::BORDER_INACTIVE))
+        .border_style(Style::default().fg(theme::colors().border_inactive))
         .title(Span::styled(" This Mac ", theme::title()));
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -152,7 +152,7 @@ fn draw_device_strip(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
         "MEM",
         mem_bar_label(m),
         m.mem_ratio(),
-        theme::ACCENT,
+        theme::colors().accent,
     );
     draw_inline_meter(
         frame,
@@ -160,7 +160,7 @@ fn draw_device_strip(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
         "CPU",
         cpu_bar_label(m),
         m.cpu_ratio(),
-        theme::OK,
+        theme::colors().ok,
     );
     draw_inline_meter(
         frame,
@@ -168,7 +168,7 @@ fn draw_device_strip(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
         "GPU",
         gpu_bar_label(m),
         m.gpu_ratio(),
-        theme::FEATURE,
+        theme::colors().feature,
     );
 }
 
@@ -182,13 +182,13 @@ fn draw_inline_meter(
 ) {
     let ratio = ratio.unwrap_or(0.0);
     let color = match LiveMetrics::pressure_band(ratio) {
-        PressureBand::High => theme::DANGER,
-        PressureBand::Medium => theme::WARN,
+        PressureBand::High => theme::colors().danger,
+        PressureBand::Medium => theme::colors().warn,
         PressureBand::Low => series,
     };
     frame.render_widget(
         Gauge::default()
-            .gauge_style(Style::default().fg(color).bg(theme::MUTED))
+            .gauge_style(Style::default().fg(color).bg(theme::colors().muted))
             .ratio(ratio.clamp(0.0, 1.0))
             .label(format!("{tag} {label}")),
         area,
@@ -216,15 +216,15 @@ fn draw_util_chart(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
         Span::styled(" Utilization  ", theme::label()),
         Span::styled(
             format!("Mem {} ", fmt_pct(mem_now)),
-            Style::default().fg(theme::ACCENT),
+            Style::default().fg(theme::colors().accent),
         ),
         Span::styled(
             format!("CPU {} ", fmt_pct(cpu_now)),
-            Style::default().fg(theme::OK),
+            Style::default().fg(theme::colors().ok),
         ),
         Span::styled(
             format!("GPU {} ", fmt_pct(gpu_now)),
-            Style::default().fg(theme::FEATURE),
+            Style::default().fg(theme::colors().feature),
         ),
     ]);
 
@@ -238,7 +238,7 @@ fn draw_util_chart(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme::MUTED))
+                    .border_style(Style::default().fg(theme::colors().muted))
                     .title(title),
             ),
             area,
@@ -249,7 +249,7 @@ fn draw_util_chart(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
     let x_max = (window.saturating_sub(1)).max(1) as f64;
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::MUTED))
+        .border_style(Style::default().fg(theme::colors().muted))
         .title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -292,6 +292,8 @@ fn draw_util_chart(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
 
     // Line-only: no scatter Points layer (that was erasing series mid-line).
     // Draw order Mem → GPU → CPU so CPU wins residual cell collisions.
+    // Single-letter end labels: the title legend is color-only, so label each
+    // series at "now" for readers who cannot tell the hues apart.
     let mem_pts_c = mem_pts.clone();
     let cpu_pts_c = cpu_pts.clone();
     let gpu_pts_c = gpu_pts.clone();
@@ -300,9 +302,18 @@ fn draw_util_chart(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
         .x_bounds([0.0, x_max])
         .y_bounds([0.0, 100.0])
         .paint(move |ctx| {
-            draw_polyline(ctx, &mem_pts_c, theme::ACCENT);
-            draw_polyline(ctx, &gpu_pts_c, theme::FEATURE);
-            draw_polyline(ctx, &cpu_pts_c, theme::OK);
+            draw_polyline(ctx, &mem_pts_c, theme::colors().accent);
+            draw_polyline(ctx, &gpu_pts_c, theme::colors().feature);
+            draw_polyline(ctx, &cpu_pts_c, theme::colors().ok);
+            for (pts, tag, color) in [
+                (&mem_pts_c, "M", theme::colors().accent),
+                (&gpu_pts_c, "G", theme::colors().feature),
+                (&cpu_pts_c, "C", theme::colors().ok),
+            ] {
+                if let Some(&(_, y)) = pts.last() {
+                    ctx.print(x_max, y, Span::styled(tag, Style::default().fg(color)));
+                }
+            }
         });
     frame.render_widget(canvas, cols[1]);
 
@@ -395,7 +406,7 @@ fn fmt_pct(v: Option<f64>) -> String {
 fn draw_process_table(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
     let header = Row::new(vec!["PID", "RSS", "%MEM", "COMMAND"]).style(
         Style::default()
-            .fg(theme::ACCENT)
+            .fg(theme::colors().accent)
             .add_modifier(Modifier::BOLD),
     );
     let total = m.total_ram_bytes.unwrap_or(0).max(1);
@@ -436,7 +447,7 @@ fn draw_process_table(frame: &mut Frame, area: Rect, m: &LiveMetrics) {
     .block(
         Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(theme::MUTED))
+            .border_style(Style::default().fg(theme::colors().muted))
             .title(Span::styled(
                 " Top 10 memory (host RSS) · unified, not VRAM ",
                 theme::label(),
