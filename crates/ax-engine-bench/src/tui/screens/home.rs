@@ -110,19 +110,19 @@ impl App {
         if self.server_ready {
             return Some((
                 ToastLevel::Success,
-                "Server ready — click or Enter here to open Chat".into(),
+                "Server ready — press b or click to open Chat".into(),
             ));
         }
         if self.server_running() {
             return Some((
                 ToastLevel::Warning,
-                "Server starting — click to open Serve log…".into(),
+                "Server starting — press b or click to open Serve log…".into(),
             ));
         }
         if let Some(task) = self.downloads.iter().find(|t| t.is_ready()) {
             return Some((
                 ToastLevel::Success,
-                format!("{} ready — click or Enter here to serve", task.label),
+                format!("{} ready — press b or click to serve", task.label),
             ));
         }
         if let Some(task) = self.downloads.iter().find(|t| t.is_running()) {
@@ -132,13 +132,16 @@ impl App {
                 .unwrap_or_default();
             return Some((
                 ToastLevel::Info,
-                format!("Downloading {}{pct} — click to watch progress", task.label),
+                format!(
+                    "Downloading {}{pct} — press b or click to watch progress",
+                    task.label
+                ),
             ));
         }
         if installed_variants(&self.families).is_empty() {
             return Some((
                 ToastLevel::Info,
-                "Get started — click or Enter here for Quick start".into(),
+                "Get started — press b or click for Quick start".into(),
             ));
         }
         None
@@ -279,7 +282,7 @@ impl App {
                 theme::BORDER_INACTIVE
             }))
             .title(Span::styled(
-                " Start here · click or Enter ",
+                " Start here · press b or click ",
                 theme::title(),
             ));
         let inner = block.inner(area);
@@ -410,7 +413,7 @@ impl App {
                             }),
                         ),
                         Span::styled(
-                            format!("{:<18}", family.display_name()),
+                            widgets::ellipsis(&family.display_name(), 18),
                             Style::default()
                                 .fg(theme::TEXT)
                                 .add_modifier(Modifier::BOLD),

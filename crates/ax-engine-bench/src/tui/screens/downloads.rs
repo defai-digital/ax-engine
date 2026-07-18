@@ -33,21 +33,32 @@ impl App {
                 }
             }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                if self
-                    .downloads
-                    .get(self.download_idx)
-                    .is_some_and(|task| task.is_ready())
-                {
+                let Some(task) = self.downloads.get(self.download_idx) else {
+                    return;
+                };
+                if task.is_ready() {
                     self.modal = Some(Modal::ServeReady {
                         download_idx: self.download_idx,
                     });
+                } else if task.is_running() {
+                    let msg = match task.progress_ratio() {
+                        Some(ratio) => format!("still downloading — {:.0}%", ratio * 100.0),
+                        None => "still downloading".to_string(),
+                    };
+                    self.toast(msg);
+                } else if task.is_failed() {
+                    self.toast("failed — press r to retry");
+                } else if task.is_queued() {
+                    self.toast("queued — starts after current download");
+                } else if task.cancelled {
+                    self.toast("cancelled — press r to retry");
                 }
             }
             KeyCode::Char('r') => self.retry_selected_download(),
             KeyCode::Char('o') => self.reveal_selected_download(),
             KeyCode::Backspace | KeyCode::Delete => self.remove_selected_if_done(),
             KeyCode::Char('d') => self.clear_finished_downloads(),
-            KeyCode::Char('x') | KeyCode::Char('c') => {
+            KeyCode::Char('x') => {
                 let Some(task) = self.downloads.get_mut(self.download_idx) else {
                     return;
                 };
@@ -149,7 +160,7 @@ impl App {
         let banner = if selected_ready {
             Some((
                 ToastLevel::Success,
-                "Ready — click or Enter to serve this model".to_string(),
+                "Ready — press b or click to serve this model".to_string(),
             ))
         } else if let Some(task) = self.downloads.iter().find(|t| t.is_running()) {
             let pct = task
@@ -285,7 +296,7 @@ impl App {
                         Span::styled(format!("{:<7}", task.status_label()), status_style),
                         Span::raw(format!("{spin}{pct} ")),
                         Span::styled(
-                            format!("{:<18}", task.label),
+                            widgets::ellipsis(&task.label, 18),
                             Style::default()
                                 .fg(theme::TEXT)
                                 .add_modifier(Modifier::BOLD),
@@ -299,7 +310,7 @@ impl App {
         widgets::render_list(
             frame,
             area,
-            " Queue · r retry · o open · ⌫ remove · d clear ",
+            " Queue ",
             rows,
             self.download_idx,
             true,

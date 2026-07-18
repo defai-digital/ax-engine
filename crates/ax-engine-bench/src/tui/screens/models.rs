@@ -31,6 +31,14 @@ impl App {
                     self.filter.pop();
                     self.clamp_family_idx_to_filter();
                 }
+                // Wheel scroll routes here too (App::scroll → on_key_models):
+                // move within the filtered list without leaving filter mode.
+                KeyCode::Up => {
+                    let _ = self.move_family_selection(-1);
+                }
+                KeyCode::Down => {
+                    let _ = self.move_family_selection(1);
+                }
                 KeyCode::Enter | KeyCode::Esc => self.filtering = false,
                 _ => {}
             },
@@ -125,12 +133,13 @@ impl App {
             },
             WizardStage::Confirm => match code {
                 KeyCode::Up | KeyCode::Char('k') => self.focus_tab_bar(),
-                KeyCode::Enter | KeyCode::Right => self.confirm_download(),
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.confirm_download(),
                 KeyCode::Char('c') => {
                     self.modal = Some(Modal::DestPicker(DirectoryPicker::new()));
                 }
                 KeyCode::Char('d') => {
                     self.confirm_dest = None;
+                    self.toast("using the shared HF cache");
                 }
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
                     let back_to_options = self.pending.is_some_and(|pending| {
@@ -592,15 +601,7 @@ impl App {
                     Span::styled(" preview", theme::label())
                 };
                 let name = family.display_name();
-                let name_w = 16usize;
-                let name_cell = if name.chars().count() > name_w {
-                    name.chars()
-                        .take(name_w.saturating_sub(1))
-                        .collect::<String>()
-                        + "…"
-                } else {
-                    format!("{name:<name_w$}")
-                };
+                let name_cell = widgets::ellipsis(&name, 16);
                 // Compact quant: "4–8b" when multi, else single / MXFP4.
                 let quant = compact_quant_summary(family);
                 ListItem::new(Line::from(vec![
@@ -618,10 +619,10 @@ impl App {
             })
             .collect();
         let rows = if rows.is_empty() {
-            vec![ListItem::new(Line::from(Span::styled(
-                "No models match the filter.",
-                theme::warn(),
-            )))]
+            vec![ListItem::new(Line::from(vec![
+                Span::styled("No models match the filter.", theme::warn()),
+                Span::styled(" — Esc clears the filter", theme::label()),
+            ]))]
         } else {
             rows
         };
@@ -902,7 +903,10 @@ impl App {
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(" Enter download ", theme::cta()),
-            Span::styled("  c change folder  ·  Esc back", theme::label()),
+            Span::styled(
+                "  c change folder  ·  d default cache  ·  Esc back",
+                theme::label(),
+            ),
         ]));
         frame.render_widget(
             Paragraph::new(lines)

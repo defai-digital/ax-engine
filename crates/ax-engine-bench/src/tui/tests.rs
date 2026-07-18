@@ -1117,9 +1117,7 @@ fn delete_modal_n_dismisses_only_when_nothing_typed() {
     });
     app.on_key(key(KeyCode::Char('d')));
     app.on_key(key(KeyCode::Char('n')));
-    assert!(
-        matches!(&app.modal, Some(Modal::DeleteModel { typed, .. }) if typed == "dn")
-    );
+    assert!(matches!(&app.modal, Some(Modal::DeleteModel { typed, .. }) if typed == "dn"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1587,6 +1585,10 @@ fn chat_slash_clear_empties_transcript() {
     });
     type_text(&mut app, "/clear");
     app.on_key(key(KeyCode::Enter));
+    // Clearing asks for confirmation first; Enter confirms.
+    assert!(matches!(app.modal, Some(Modal::ClearChat)));
+    assert!(!app.chat.messages.is_empty());
+    app.on_key(key(KeyCode::Enter));
     assert!(app.chat.messages.is_empty());
     assert!(app.chat.input.is_empty());
 }
@@ -1609,6 +1611,10 @@ fn chat_ctrl_l_clears_transcript() {
         stats: None,
     });
     app.on_key(ctrl_key('l'));
+    // Clearing asks for confirmation first; Enter confirms.
+    assert!(matches!(app.modal, Some(Modal::ClearChat)));
+    assert!(!app.chat.messages.is_empty());
+    app.on_key(key(KeyCode::Enter));
     assert!(app.chat.messages.is_empty());
 }
 

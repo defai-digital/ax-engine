@@ -320,6 +320,20 @@ pub(super) fn field_line(label: &str, value: &str, active: bool) -> Line<'static
     ])
 }
 
+/// Fit `text` into exactly `width` columns for aligned list rows: space-padded
+/// when shorter, truncated with a trailing `…` when longer.  Char-based, so
+/// multi-byte names never get cut mid-codepoint.
+pub(super) fn ellipsis(text: &str, width: usize) -> String {
+    if text.chars().count() > width {
+        text.chars()
+            .take(width.saturating_sub(1))
+            .collect::<String>()
+            + "…"
+    } else {
+        format!("{text:<width$}")
+    }
+}
+
 /// Scrolling log pane fed from a job's captured output.
 /// Applies basic coloring to ERROR/WARN/INFO lines for scannability.
 pub(super) fn draw_log(frame: &mut Frame, area: Rect, log: Option<&[String]>, title: &str) {

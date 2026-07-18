@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::tui::jobs::Job;
 use crate::tui::markdown::render_markdown;
 use crate::tui::theme;
-use crate::tui::{App, Screen, widgets};
+use crate::tui::{App, Modal, Screen, widgets};
 
 pub(crate) struct ChatMessage {
     pub from_user: bool,
@@ -69,6 +69,10 @@ pub(in crate::tui) struct ChatState {
     /// every frame).  Scrolling up detaches; scrolling back to the bottom or
     /// sending a message re-attaches.
     pub autoscroll: bool,
+    /// Composer visual-row window start.  Cell because rendering (which
+    /// happens with `&App`) clamps it so the cursor row stays inside the
+    /// height-capped box, mirroring the transcript `scroll` RefCell pattern.
+    pub input_scroll: std::cell::Cell<usize>,
     pub job: Option<Job>,
     pub error: Option<String>,
     /// Sent prompts, oldest first (readline-style recall with ↑/↓).
@@ -94,6 +98,7 @@ impl ChatState {
             cursor: 0,
             scroll: std::cell::RefCell::new(tui_scrollview::ScrollViewState::new()),
             autoscroll: true,
+            input_scroll: std::cell::Cell::new(0),
             job: None,
             error: None,
             history: Vec::new(),
@@ -250,9 +255,14 @@ pub(crate) fn parse_sse_line(line: &str) -> SseEvent {
 
 impl App {
     pub(crate) fn on_key_chat(&mut self, key: KeyEvent) {
-        // Hint screen (no ready server): a plain info page, not an input.
-        // Global keys (1-5, q, ?) were already handled; back keys go Home.
-        if !self.server_ready {
+        // Server job present but exited (crashed or stopped mid-session):
+        // the transcript stays on screen in read-only mode below.
+        let server_stopped =
+            !self.server_ready && self.server.as_ref().is_some_and(|job| job.done.is_some());
+        // Info cards (no server job yet, or server still starting): a plain
+        // info page, not an input.  Global keys (1-5, q, ?) were already
+        // handled; back keys go Home.
+        if !self.server_ready && !server_stopped {
             if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
                 self.focus_tab_bar();
                 return;
@@ -280,6 +290,28 @@ impl App {
             }
             return;
         }
+        if server_stopped {
+            // Read-only: transcript scroll/copy/clear keep working; composer
+            // edits and retry (which would drop the last answer) stay off.
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                KeyCode::PageUp => self.scroll_transcript(true, true),
+                KeyCode::PageDown => self.scroll_transcript(false, true),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.chat.scroll.borrow().offset().y == 0 {
+                        self.focus_tab_bar();
+                    } else {
+                        self.scroll_transcript(true, false);
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => self.scroll_transcript(false, false),
+                KeyCode::Char('y') if ctrl => self.copy_last_reply(),
+                KeyCode::Char('l') if ctrl => self.modal = Some(Modal::ClearChat),
+                KeyCode::Enter => self.toast_error("server not running — start one on Serve (4)"),
+                _ => {}
+            }
+            return;
+        }
         if key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.chat.input.clear();
             self.chat.cursor = 0;
@@ -288,7 +320,7 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('l') => {
-                    self.clear_chat();
+                    self.modal = Some(Modal::ClearChat);
                     return;
                 }
                 KeyCode::Char('y') => {
@@ -518,8 +550,9 @@ impl App {
         self.chat.cursor = self.chat.input.chars().count();
     }
 
-    /// Ctrl+L / `/clear`: wipe the transcript and any stuck error.
-    fn clear_chat(&mut self) {
+    /// Ctrl+L / `/clear` (confirmed via `Modal::ClearChat`): wipe the
+    /// transcript and any stuck error.
+    pub(crate) fn clear_chat(&mut self) {
         self.chat.messages.clear();
         self.chat.error = None;
         self.toast("chat cleared");
@@ -584,7 +617,11 @@ impl App {
     }
 
     fn send_chat_message(&mut self) {
-        if self.chat.streaming() || self.chat.input.trim().is_empty() {
+        if self.chat.streaming() {
+            self.toast("reply in progress — Esc cancels");
+            return;
+        }
+        if self.chat.input.trim().is_empty() {
             return;
         }
         if !self.server_ready || self.server_url.is_none() {
@@ -617,7 +654,7 @@ impl App {
     /// `/clear` `/copy` `/retry` `/help` — local commands, never sent to the model.
     fn run_slash_command(&mut self, cmd: &str) {
         match cmd {
-            "/clear" => self.clear_chat(),
+            "/clear" => self.modal = Some(Modal::ClearChat),
             "/copy" => self.copy_last_reply(),
             "/retry" => self.retry_last(),
             "/help" | "/?" => self.show_help = true,
@@ -688,27 +725,39 @@ impl App {
     }
 
     pub(crate) fn draw_chat(&self, frame: &mut Frame, area: Rect) {
-        if !self.server_ready {
-            // Centered "no server" card.
+        // Server job present but exited: keep the normal layout below so the
+        // transcript stays readable, with an inline banner explaining sends
+        // are off.  No job / still starting get a centered info card.
+        let server_stopped =
+            !self.server_ready && self.server.as_ref().is_some_and(|job| job.done.is_some());
+        if !self.server_ready && !server_stopped {
+            let starting = self.server_running();
+            // Centered info card (warn accent while the server binds).
             let card_w = 54u16.min(area.width.saturating_sub(4));
             let card_h = 8u16.min(area.height.saturating_sub(2));
             let card = widgets::centered_rect(card_w, card_h, area);
+            let (heading, detail, heading_style) = if starting {
+                (
+                    "Server starting…",
+                    "  The model is loading; this can take a minute.",
+                    Style::default()
+                        .fg(theme::WARN)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                (
+                    "No server running",
+                    "  Start a model, then come back to chat.",
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .add_modifier(Modifier::BOLD),
+                )
+            };
             let lines = vec![
                 Line::raw(""),
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        "No server running",
-                        Style::default()
-                            .fg(theme::TEXT)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
+                Line::from(vec![Span::raw("  "), Span::styled(heading, heading_style)]),
                 Line::raw(""),
-                Line::from(Span::styled(
-                    "  Start a model, then come back to chat.",
-                    theme::label(),
-                )),
+                Line::from(Span::styled(detail, theme::label())),
                 Line::raw(""),
                 Line::from(vec![
                     Span::raw("  Press "),
@@ -725,7 +774,11 @@ impl App {
                 Paragraph::new(lines).block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme::BORDER_INACTIVE))
+                        .border_style(Style::default().fg(if starting {
+                            theme::WARN
+                        } else {
+                            theme::BORDER_INACTIVE
+                        }))
                         .title(Span::styled(" Chat ", theme::title())),
                 ),
                 card,
@@ -738,6 +791,23 @@ impl App {
         let input_height = ((visual_lines as u16) + 2)
             .min(area.height.saturating_sub(4))
             .max(3);
+        if server_stopped {
+            let chunks = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(input_height),
+            ])
+            .split(area);
+            widgets::draw_banner(
+                frame,
+                chunks[0],
+                widgets::ToastLevel::Warning,
+                "server stopped — press 4 for Serve",
+            );
+            self.draw_chat_transcript(frame, chunks[1]);
+            self.draw_chat_input(frame, chunks[2]);
+            return;
+        }
         let chunks =
             Layout::vertical([Constraint::Min(3), Constraint::Length(input_height)]).split(area);
         self.draw_chat_transcript(frame, chunks[0]);
@@ -769,7 +839,7 @@ impl App {
                 }
             } else {
                 let model_name = self.server_model.as_deref().unwrap_or("Model");
-                let short: String = model_name.chars().take(14).collect();
+                let short = widgets::ellipsis(model_name, 14);
                 lines.push(Line::from(Span::styled(
                     short,
                     Style::default().fg(theme::OK).add_modifier(Modifier::BOLD),
@@ -803,6 +873,16 @@ impl App {
                 Span::styled(format!("{} ", theme::icon::ERROR), theme::danger()),
                 Span::styled(error.clone(), theme::danger()),
             ]));
+        }
+        if lines.is_empty() {
+            // Fresh session: one dim centered cue instead of a blank pane.
+            lines.push(
+                Line::from(Span::styled(
+                    "Ask your model anything — / for commands",
+                    theme::label(),
+                ))
+                .centered(),
+            );
         }
         let title = if self.chat.streaming() {
             let est = self.chat.stream_chars.div_ceil(4);
@@ -850,8 +930,24 @@ impl App {
         }
         let cols = area.width.saturating_sub(2).max(8) as usize;
         let visual = layout_cells(&cells, cols);
+        // The box caps at ~6 visual rows while drafts can grow past that:
+        // scroll a window over the rows so the cursor's row is always inside.
+        let cursor_row = visual
+            .iter()
+            .position(|row| row.iter().any(|&(_, is_cursor)| is_cursor))
+            .unwrap_or(0);
+        let visible = area.height.saturating_sub(2).max(1) as usize;
+        let offset = clamp_composer_offset(
+            self.chat.input_scroll.get(),
+            cursor_row,
+            visible,
+            visual.len(),
+        );
+        self.chat.input_scroll.set(offset);
         let mut lines: Vec<Line> = visual
             .into_iter()
+            .skip(offset)
+            .take(visible)
             .map(|row| {
                 let mut spans: Vec<Span<'static>> = Vec::new();
                 let mut run = String::new();
@@ -885,12 +981,6 @@ impl App {
             .collect();
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(" ", theme::body())));
-        }
-        if (lines.len() as u16) + 1 < area.height {
-            lines.push(Line::from(Span::styled(
-                "Enter send · Ctrl+J newline · ↑ history · Ctrl+Y copy · Ctrl+R retry · / commands · Esc leave",
-                theme::label(),
-            )));
         }
         frame.render_widget(
             Paragraph::new(lines).block(widgets::active_block(" Message ")),
@@ -927,6 +1017,25 @@ pub(crate) fn count_visual_lines(text: &str, cols: usize) -> usize {
         }
     }
     lines
+}
+
+/// Clamp the composer window start so `cursor_row` stays visible inside a
+/// window of `visible` rows over `total` visual rows.  Shrinking drafts pull
+/// the offset back to 0 on their own.
+pub(crate) fn clamp_composer_offset(
+    offset: usize,
+    cursor_row: usize,
+    visible: usize,
+    total: usize,
+) -> usize {
+    let visible = visible.max(1);
+    let mut offset = offset.min(total.saturating_sub(visible));
+    if cursor_row < offset {
+        offset = cursor_row;
+    } else if cursor_row >= offset + visible {
+        offset = cursor_row + 1 - visible;
+    }
+    offset
 }
 
 /// Lay out cells into visual rows, wrapping at `cols` (display width) and

@@ -34,7 +34,8 @@ use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -100,10 +101,23 @@ pub(crate) fn cmd_tui(args: &[OsString]) -> Result<u8, String> {
     let mut terminal = ratatui::init();
     // ratatui::init() does not enable mouse reporting or bracketed paste; turn
     // both on so clicks/scroll reach us as Event::Mouse and pastes arrive as
-    // Event::Paste instead of a burst of key events.
-    let _ = ratatui::crossterm::execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste);
+    // Event::Paste instead of a burst of key events.  Also ask the terminal to
+    // disambiguate modifier keys so Shift+Enter arrives as Enter+SHIFT (the
+    // composer's documented newline shortcut) instead of a plain Enter —
+    // terminals without support just ignore the request.
+    let _ = ratatui::crossterm::execute!(
+        io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+        EnableMouseCapture,
+        EnableBracketedPaste
+    );
     let result = App::new().run(&mut terminal);
-    let _ = ratatui::crossterm::execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+    let _ = ratatui::crossterm::execute!(
+        io::stdout(),
+        PopKeyboardEnhancementFlags,
+        DisableMouseCapture,
+        DisableBracketedPaste
+    );
     ratatui::restore();
     match result {
         Ok(()) => Ok(0),
@@ -207,6 +221,8 @@ enum Modal {
         typed: String,
     },
     StopServer,
+    /// Confirm before wiping the chat transcript (Ctrl+L / `/clear`).
+    ClearChat,
     /// Custom destination for the wizard confirm step.
     DestPicker(DirectoryPicker),
 }
@@ -483,7 +499,14 @@ impl App {
                 .unwrap_or_else(|| "see Serve log".to_string());
             self.toast_error(format!("server failed to start — {detail}"));
         }
+        // Toast on the error *edge* (None → Some) so stream failures surface
+        // even while the user is scrolled up; the error itself also renders
+        // inline in the transcript.
+        let chat_had_error = self.chat.error.is_some();
         self.chat.tick();
+        if !chat_had_error && let Some(message) = self.chat.error.clone() {
+            self.toast_error(message);
+        }
         widgets::expire_toasts(&mut self.toasts);
         self.clamp_list_indices();
         // Host load for Home gauges/chart (~2 s throttle inside sampler).
@@ -588,6 +611,18 @@ impl App {
                 }
                 KeyCode::Char(c @ '1'..='5') => {
                     self.goto_screen(SCREENS[(c as usize) - ('1' as usize)]);
+                    return;
+                }
+                // Keyboard path for the guided next-step banner (b = banner).
+                // Only on screens that render it; Models wizard and Chat keep
+                // `b` as plain text/navigation input.
+                KeyCode::Char('b')
+                    if matches!(
+                        self.screen,
+                        Screen::Home | Screen::Downloads | Screen::Serve
+                    ) =>
+                {
+                    self.activate_journey_banner();
                     return;
                 }
                 _ => {}
@@ -862,6 +897,11 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
             },
+            Modal::ClearChat => match code {
+                KeyCode::Enter | KeyCode::Char('y') => self.clear_chat(),
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
+                _ => self.modal = Some(modal),
+            },
             Modal::DestPicker(mut picker) => match code {
                 KeyCode::Esc => {}
                 KeyCode::Left | KeyCode::Char('h') => {
@@ -946,13 +986,18 @@ impl App {
     }
 
     /// Bracketed-paste payload: route to the focused text entry (chat composer,
-    /// Serve host/port fields); ignored elsewhere and while a modal owns input.
+    /// Serve host/port fields, Models filter); ignored elsewhere and while a
+    /// modal owns input.
     fn on_paste(&mut self, text: &str) {
         if self.modal.is_some() || self.show_help {
             return;
         }
         match self.screen {
             Screen::Chat if self.server_ready => self.paste_chat_text(text),
+            Screen::Models if self.filtering => {
+                self.filter.push_str(text);
+                self.clamp_family_idx_to_filter();
+            }
             Screen::Serve => match self.serve_focus {
                 ServeFocus::Host => self.host.push_str(text),
                 ServeFocus::Port => self.port.push_str(text),
@@ -1248,8 +1293,21 @@ impl App {
         if self.downloads.iter().any(DownloadTask::is_running) {
             return;
         }
-        if let Some(task) = self.downloads.iter_mut().find(|task| task.is_queued()) {
-            task.spawn();
+        // A launch-time failure (e.g. executable not found) sets `done` via
+        // Job::failed before the first tick, so tick() never sees a
+        // None → Some edge and never toasts — surface it here instead.
+        let launch_error =
+            if let Some(task) = self.downloads.iter_mut().find(|task| task.is_queued()) {
+                task.spawn();
+                task.job
+                    .as_ref()
+                    .filter(|job| job.done.is_some())
+                    .and_then(|job| job.log.first().cloned())
+            } else {
+                None
+            };
+        if let Some(message) = launch_error {
+            self.toast_error(message);
         }
     }
 
@@ -1341,10 +1399,10 @@ impl App {
             Style::default().fg(status.color()),
         ));
         if let Some((dl_text, dl_color)) = self.active_download_summary() {
-            let short_dl = if dl_text.contains('%') {
-                format!("  ↓ {}", dl_text.split('%').next().unwrap_or("").trim())
-            } else {
-                format!("  ↓ {dl_text}")
+            // Compact form drops the speed suffix but keeps the percent sign.
+            let short_dl = match dl_text.split_once('%') {
+                Some((before, _)) => format!("  ↓ {}%", before.trim()),
+                None => format!("  ↓ {dl_text}"),
             };
             spans.push(Span::raw("  "));
             spans.push(Span::styled(short_dl, Style::default().fg(dl_color)));
@@ -1422,6 +1480,9 @@ impl App {
                     key_hint("Enter"),
                     key_label(" select"),
                     key_sep(),
+                    key_hint("b"),
+                    key_label(" next step"),
+                    key_sep(),
                     key_hint("Esc"),
                     key_label(" back"),
                     key_sep(),
@@ -1432,11 +1493,8 @@ impl App {
                     WizardStage::Families if self.filtering => vec![
                         Span::styled("type to filter", Style::default().fg(theme::ACCENT)),
                         key_sep(),
-                        key_hint("Enter"),
-                        key_label(" apply"),
-                        key_sep(),
-                        key_hint("Esc"),
-                        key_label(" cancel"),
+                        key_hint("Enter/Esc"),
+                        key_label(" done — keeps the filter"),
                     ],
                     WizardStage::Families => vec![
                         key_hint("↑↓"),
@@ -1481,6 +1539,9 @@ impl App {
                         key_hint("c"),
                         key_label(" folder"),
                         key_sep(),
+                        key_hint("d"),
+                        key_label(" default"),
+                        key_sep(),
                         key_hint("Esc"),
                         key_label(" back"),
                     ],
@@ -1498,12 +1559,34 @@ impl App {
                     key_hint("o"),
                     key_label(" open"),
                     key_sep(),
+                    key_hint("⌫"),
+                    key_label(" remove"),
+                    key_sep(),
+                    key_hint("d"),
+                    key_label(" clear"),
+                    key_sep(),
                     key_hint("x"),
                     key_label(" cancel"),
+                    key_sep(),
+                    key_hint("b"),
+                    key_label(" next step"),
                     key_sep(),
                     key_hint("Esc"),
                     key_label(" back"),
                 ],
+                Screen::Serve
+                    if matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port) =>
+                {
+                    vec![
+                        Span::styled("type to edit", Style::default().fg(theme::ACCENT)),
+                        key_sep(),
+                        key_hint("Tab"),
+                        key_label(" next"),
+                        key_sep(),
+                        key_hint("Esc"),
+                        key_label(" done"),
+                    ]
+                }
                 Screen::Serve if self.server_ready => vec![
                     key_hint("Enter"),
                     key_label(" chat"),
@@ -1518,6 +1601,9 @@ impl App {
                     key_label(" back"),
                 ],
                 Screen::Serve => vec![
+                    key_hint("↑↓"),
+                    key_label(" move"),
+                    key_sep(),
                     key_hint("Enter"),
                     key_label(" start"),
                     key_sep(),
@@ -1532,7 +1618,32 @@ impl App {
                     key_sep(),
                     key_hint("Tab"),
                     key_label(" fields"),
+                    key_sep(),
+                    key_hint("b"),
+                    key_label(" next step"),
+                    key_sep(),
+                    key_hint("Esc"),
+                    key_label(" back"),
                 ],
+                Screen::Chat
+                    if !self.server_ready
+                        && self.server.as_ref().is_some_and(|job| job.done.is_some()) =>
+                {
+                    // Read-only transcript after a crash/stop.
+                    vec![
+                        key_hint("PgUp"),
+                        key_label(" scroll"),
+                        key_sep(),
+                        key_hint("Ctrl+Y"),
+                        key_label(" copy"),
+                        key_sep(),
+                        key_hint("4"),
+                        key_label(" Serve"),
+                        key_sep(),
+                        key_hint("Esc"),
+                        key_label(" leave"),
+                    ]
+                }
                 Screen::Chat if !self.server_ready => vec![
                     key_hint("4"),
                     key_label(" Serve"),
@@ -1543,6 +1654,9 @@ impl App {
                 Screen::Chat => vec![
                     key_hint("Enter"),
                     key_label(" send"),
+                    key_sep(),
+                    key_hint("Ctrl+J"),
+                    key_label(" newline"),
                     key_sep(),
                     key_hint("↑"),
                     key_label(" history"),
@@ -1599,6 +1713,8 @@ impl App {
             Line::raw(""),
             Line::raw("Fit badges compare download size to this Mac's memory."),
             Line::raw("Nothing downloads until you confirm. Partials resume later."),
+            Line::raw(""),
+            Line::raw("b runs the highlighted next step on Home / Downloads / Serve."),
             Line::raw(""),
             Line::from(Span::styled(
                 "Any key closes help. Esc steps back one level; q quits.",
@@ -1731,7 +1847,7 @@ impl App {
                 variant_idx,
                 typed,
             } => {
-                let (label, path, size) = self
+                let (label, path, size, profile_label) = self
                     .families
                     .get(*family_idx)
                     .and_then(|f| f.variants.get(*variant_idx))
@@ -1746,28 +1862,55 @@ impl App {
                                 .display()
                                 .to_string(),
                             catalog::format_bytes(v.size),
+                            v.profile.label,
                         )
                     })
                     .unwrap_or_default();
+                // Non-blocking guard rails: warn when the target is in use.
+                // `server_model` is the display label for download-served
+                // models and the profile label for direct serves — check both.
+                let is_served = self.server_running()
+                    && self
+                        .server_model
+                        .as_deref()
+                        .is_some_and(|m| m == label || m == profile_label);
+                let has_active_download = !label.is_empty()
+                    && self
+                        .downloads
+                        .iter()
+                        .any(|t| (t.is_running() || t.is_queued()) && t.label == label);
                 let armed = typed == "delete";
                 let typed_style = if armed {
                     Style::default().fg(theme::OK)
                 } else {
                     Style::default().fg(theme::WARN)
                 };
+                let mut lines = vec![
+                    Line::raw(format!("Remove {label} ({size}) from disk?")),
+                    Line::from(Span::styled(path, Style::default().fg(theme::MUTED))),
+                ];
+                if is_served {
+                    lines.push(Line::from(Span::styled(
+                        "⚠ this model is currently served",
+                        theme::warn(),
+                    )));
+                }
+                if has_active_download {
+                    lines.push(Line::from(Span::styled(
+                        "⚠ download in progress",
+                        theme::warn(),
+                    )));
+                }
+                lines.push(Line::raw(""));
+                lines.push(Line::from(vec![
+                    Span::raw("Type 'delete' to confirm: "),
+                    Span::styled(format!("{typed}_"), typed_style),
+                ]));
                 widgets::draw_modal_with(
                     frame,
                     area,
                     "⚠ Delete model",
-                    vec![
-                        Line::raw(format!("Remove {label} ({size}) from disk?")),
-                        Line::from(Span::styled(path, Style::default().fg(theme::MUTED))),
-                        Line::raw(""),
-                        Line::from(vec![
-                            Span::raw("Type 'delete' to confirm: "),
-                            Span::styled(format!("{typed}_"), typed_style),
-                        ]),
-                    ],
+                    lines,
                     if armed {
                         vec![
                             theme::key_chip_danger("Enter delete"),
@@ -1788,6 +1931,22 @@ impl App {
                     vec![Line::raw("Stop the running server?")],
                     vec![
                         theme::key_chip_danger("y stop"),
+                        theme::key_sep(),
+                        theme::key_chip_dim("Esc keep"),
+                    ],
+                    theme::WARN,
+                );
+            }
+            Modal::ClearChat => {
+                widgets::draw_modal_with(
+                    frame,
+                    area,
+                    "⚠ Clear chat",
+                    vec![Line::raw(
+                        "Clear the whole transcript? This cannot be undone.",
+                    )],
+                    vec![
+                        theme::key_chip_danger("y clear"),
                         theme::key_sep(),
                         theme::key_chip_dim("Esc keep"),
                     ],

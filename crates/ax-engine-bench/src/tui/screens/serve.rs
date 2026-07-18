@@ -39,12 +39,16 @@ impl App {
                         if let Some(&(fi, vi)) = pairs.get(self.serve_idx) {
                             self.auto_chat_after_serve = true;
                             self.serve_installed(fi, vi);
+                        } else if pairs.is_empty() {
+                            self.toast_warn("no installed models — press 2 for Models");
                         }
                     }
                 }
                 KeyCode::Char('x') => {
                     if self.server_running() {
                         self.modal = Some(Modal::StopServer);
+                    } else {
+                        self.toast_warn("no server running");
                     }
                 }
                 KeyCode::Char('c') => self.copy_server_url(),
@@ -87,6 +91,7 @@ impl App {
     /// Put the server URL on the clipboard (shared pbcopy helper).
     fn copy_server_url(&mut self) {
         let Some(url) = self.server_url.clone() else {
+            self.toast_warn("nothing to copy yet");
             return;
         };
         if widgets::copy_to_clipboard(&url) {
@@ -100,7 +105,7 @@ impl App {
         let banner = if self.server_ready {
             Some((
                 ToastLevel::Success,
-                "Running — click or Enter to open Chat · c copy · x stop".to_string(),
+                "Running — press b or click to open Chat · c copy · x stop".to_string(),
             ))
         } else if self.server_running() {
             Some((
@@ -203,7 +208,7 @@ impl App {
                     ));
                     ListItem::new(Line::from(vec![
                         Span::styled(
-                            format!("{:<16}", family.display_name()),
+                            widgets::ellipsis(&family.display_name(), 16),
                             Style::default()
                                 .fg(theme::TEXT)
                                 .add_modifier(Modifier::BOLD),
@@ -224,7 +229,7 @@ impl App {
             frame,
             area,
             if self.server_ready {
-                " Switch model "
+                " Running — x to stop "
             } else {
                 " Models — Enter to serve "
             },
