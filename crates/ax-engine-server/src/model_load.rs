@@ -56,6 +56,7 @@ pub(crate) enum LoadModelMode {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MultiModelTarget {
+    Qwen35_9b,
     Qwen36_35b,
     Qwen36_27b,
     Gemma4_12b,
@@ -66,6 +67,7 @@ enum MultiModelTarget {
 impl MultiModelTarget {
     const fn as_str(self) -> &'static str {
         match self {
+            Self::Qwen35_9b => "qwen3.5-9b",
             Self::Qwen36_35b => "qwen3.6-35b",
             Self::Qwen36_27b => "qwen3.6-27b",
             Self::Gemma4_12b => "gemma-4-12b",
@@ -779,7 +781,7 @@ fn validate_multi_model_target(
         StatusCode::UNPROCESSABLE_ENTITY,
         "unsupported_model",
         format!(
-            "multi-model loading is limited to Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B; requested model_id={model_id}, inferred_artifact_model={}",
+            "multi-model loading is limited to Qwen 3.5 9B, Qwen 3.6 35B/27B, and Gemma 4 12B/26B/31B; requested model_id={model_id}, inferred_artifact_model={}",
             artifact_target.map_or("unknown", MultiModelTarget::as_str)
         ),
     ))
@@ -816,7 +818,7 @@ fn validate_retained_multi_model_ids(model_ids: &[String]) -> Result<(), HttpErr
             StatusCode::UNPROCESSABLE_ENTITY,
             "unsupported_model",
             format!(
-                "multi-model loading is limited to Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B; retained model_id={model_id} is outside that scope"
+                "multi-model loading is limited to Qwen 3.5 9B, Qwen 3.6 35B/27B, and Gemma 4 12B/26B/31B; retained model_id={model_id} is outside that scope"
             ),
         ));
     }
@@ -830,7 +832,9 @@ fn is_supported_multi_model_id(model_id: &str) -> bool {
 
 fn multi_model_target_key(model_id: &str) -> Option<MultiModelTarget> {
     let normalized = normalize_model_label(model_id);
-    if target_label_matches(&normalized, &["qwen3-6-35b", "qwen36-35b"]) {
+    if target_label_matches(&normalized, &["qwen3-5-9b", "qwen35-9b"]) {
+        Some(MultiModelTarget::Qwen35_9b)
+    } else if target_label_matches(&normalized, &["qwen3-6-35b", "qwen36-35b"]) {
         Some(MultiModelTarget::Qwen36_35b)
     } else if target_label_matches(&normalized, &["qwen3-6-27b", "qwen36-27b"]) {
         Some(MultiModelTarget::Qwen36_27b)
@@ -909,6 +913,12 @@ fn multi_model_target_from_manifest(
         identity.moe.expert_intermediate_size,
     );
     match signature {
+        // Signature read from the converted 9B artifact's manifest
+        // (dense hybrid GatedDeltaNet; vision tower stripped at
+        // conversion, so the text-decoder identity is authoritative).
+        ("qwen3_5", 32, 4096, 12288, 16, 256, 4, 248320, None, None, None) => {
+            Some(MultiModelTarget::Qwen35_9b)
+        }
         ("qwen3_5", 64, 5120, 17408, 24, 256, 4, 248320, None, None, None) => {
             Some(MultiModelTarget::Qwen36_27b)
         }
@@ -1040,6 +1050,9 @@ mod tests {
     #[test]
     fn multi_model_target_allowlist_is_exact_to_product_scope() {
         for model_id in [
+            "qwen3.5-9b",
+            "qwen35-9b",
+            "mlx-community/Qwen3.5-9B-MLX-4bit",
             "qwen3.6-35b-a3b",
             "mlx-community/Qwen3.6-27B-6bit",
             "gemma-4-12b-it",
@@ -1049,7 +1062,9 @@ mod tests {
             assert!(is_supported_multi_model_id(model_id), "{model_id}");
         }
         for model_id in [
-            "qwen3.5-9b",
+            "qwen3.5-0.8b",
+            "qwen3.55-9b",
+            "prefix-qwen3.5-9b",
             "qwen3-coder-next",
             "prefix-qwen3.6-35b",
             "qwen3.65-35b",
@@ -1122,6 +1137,14 @@ mod tests {
     #[test]
     fn all_supported_manifest_signatures_are_distinct() {
         let identities = [
+            (
+                serde_json::json!({
+                    "model_family": "qwen3_5", "layer_count": 32, "hidden_size": 4096,
+                    "intermediate_size": 12288, "attention_head_count": 16,
+                    "attention_head_dim": 256, "kv_head_count": 4, "vocab_size": 248320
+                }),
+                MultiModelTarget::Qwen35_9b,
+            ),
             (
                 serde_json::json!({
                     "model_family": "qwen3_5", "layer_count": 64, "hidden_size": 5120,
@@ -1364,7 +1387,11 @@ mod tests {
 
     #[test]
     fn retained_models_cannot_bypass_multi_model_product_scope() {
-        let supported = vec!["qwen3.6-27b".to_string(), "gemma-4-31b-it".to_string()];
+        let supported = vec![
+            "qwen3.5-9b".to_string(),
+            "qwen3.6-27b".to_string(),
+            "gemma-4-31b-it".to_string(),
+        ];
         validate_retained_multi_model_ids(&supported)
             .expect("targeted multi-model ids should be accepted");
 

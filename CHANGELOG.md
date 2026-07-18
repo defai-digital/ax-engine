@@ -10,7 +10,7 @@ and this project adheres to Semantic Versioning.
 ### Added
 
 - Multi-model serving: `POST /v1/model/load` accepts `load_mode=add` to keep
-  multiple models resident (scoped to Qwen 3.6 27B/35B and Gemma 4
+  multiple models resident (scoped to Qwen 3.5 9B, Qwen 3.6 27B/35B, and Gemma 4
   12B/26B/31B), with per-request `model` routing across the OpenAI, gRPC,
   Ollama, and Anthropic surfaces and `POST /v1/model/unload` to retire a
   retained model. Load/unload preflight runs synchronously before admission

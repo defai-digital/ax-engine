@@ -916,7 +916,8 @@ curl -s http://127.0.0.1:8080/v1/model/unload -H 'content-type: application/json
 ```
 
 **Allowlist (`load_mode=add`, and `replace` once more than one model is
-resident):** Qwen 3.6 35B/27B and Gemma 4 12B/26B/31B only. The retained
+resident):** Qwen 3.5 9B, Qwen 3.6 35B/27B, and Gemma 4 12B/26B/31B only.
+The retained
 `model-manifest.json` is authoritative — AX checks exact family and
 architecture signature against the requested id. Directory names, HF config
 hints, and substring matches cannot admit a mismatched model. A sole-model
