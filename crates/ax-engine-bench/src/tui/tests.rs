@@ -2728,3 +2728,24 @@ fn chat_paste_blocked_when_server_crashed() {
         "crashed-server paste must surface a toast"
     );
 }
+
+#[test]
+fn host_validation_accepts_underscores() {
+    let mut app = new_app();
+    app.host = "my_server.local".to_string();
+    assert!(
+        app.host_error().is_none(),
+        "underscores are valid in Docker/K8s hostnames"
+    );
+    app.host = "valid-host.example.com".to_string();
+    assert!(app.host_error().is_none());
+    app.host = "127.0.0.1".to_string();
+    assert!(app.host_error().is_none());
+    app.host = "host with spaces".to_string();
+    assert!(
+        app.host_error().is_some(),
+        "spaces must still be rejected"
+    );
+    app.host = "".to_string();
+    assert!(app.host_error().is_none(), "empty host is allowed (defaults)");
+}

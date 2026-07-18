@@ -1377,7 +1377,7 @@ impl App {
         }
         let valid = trimmed
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'));
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']'));
         if valid {
             None
         } else {
