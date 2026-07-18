@@ -523,7 +523,18 @@ pub fn decode_batched_forward(
     cache.advance_all(1);
 
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
-    let logits = qw_with_policy(&normed, &weights.lm_head, ProjectionBatchPolicy::RowExact);
+    // The lm_head (`[B, hidden] × [hidden, vocab]`, vocab up to ~262 MB at
+    // 4-bit) is the largest single projection and, like the layer projections,
+    // was per-row `RowExact` — re-reading the whole lm_head weight B times per
+    // step, the residual non-amortizing cost outside the per-layer profiler
+    // (Phase 3.6). Route it through the same `AX_MLX_BATCHED_SHARED_PROJ`
+    // policy so it amortizes with the rest.
+    let lm_head_policy = if crate::fastpath::batched_shared_projections_enabled() {
+        ProjectionBatchPolicy::Shared
+    } else {
+        ProjectionBatchPolicy::RowExact
+    };
+    let logits = qw_with_policy(&normed, &weights.lm_head, lm_head_policy);
     finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::Full)
 }
 
