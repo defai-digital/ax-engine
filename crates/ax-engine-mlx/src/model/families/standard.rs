@@ -1,6 +1,48 @@
 use mlx_sys::{MlxArray, MlxDtype, MlxVectorArray, add, rms_norm, rope, rope_dynamic, slice};
 use std::time::Instant;
 
+/// Env-gated per-stage timing for the batched decode forward
+/// (`AX_MLX_BATCHED_PROFILE=1`). Diagnostic only: when enabled it inserts an
+/// `eval` barrier at each stage boundary so per-stage GPU wall is attributable
+/// (Phase 3.4, docs/performance/batched-decode-ceiling.md). Off by default —
+/// the barriers and timers do not run, so the production path is unchanged.
+pub(crate) mod batched_profile {
+    use std::cell::RefCell;
+    use std::sync::OnceLock;
+
+    pub(crate) const STAGES: [&str; 4] = ["pre_attn", "attention", "o_proj", "ffn"];
+
+    thread_local! {
+        static ACC: RefCell<[u128; 4]> = const { RefCell::new([0; 4]) };
+    }
+
+    pub(crate) fn enabled() -> bool {
+        static E: OnceLock<bool> = OnceLock::new();
+        *E.get_or_init(|| {
+            matches!(
+                std::env::var("AX_MLX_BATCHED_PROFILE").as_deref(),
+                Ok("1") | Ok("true") | Ok("yes")
+            )
+        })
+    }
+
+    pub(super) fn record(stage: usize, us: u128) {
+        ACC.with(|a| {
+            let mut acc = a.borrow_mut();
+            acc[stage] = acc[stage].saturating_add(us);
+        });
+    }
+
+    /// Read and reset the per-stage microsecond accumulators.
+    pub fn take() -> [u128; 4] {
+        ACC.with(|a| {
+            let v = *a.borrow();
+            *a.borrow_mut() = [0; 4];
+            v
+        })
+    }
+}
+
 use super::super::ModelConfig;
 use super::super::config::layer_params;
 use super::super::profile::{
@@ -994,10 +1036,25 @@ pub fn layer_forward_batched(
     };
     let q_rope = rope_row(&q);
     let k_rope = rope_row(&k);
+    // Env-gated per-stage barrier timing (off by default → the `if` is false
+    // and nothing below changes the production graph).
+    let prof = batched_profile::enabled();
+    let mut mark_at = Instant::now();
+    let mut mark = |stage: usize, outs: &[&MlxArray]| {
+        if prof {
+            mlx_sys::eval(outs);
+            batched_profile::record(stage, mark_at.elapsed().as_micros());
+            mark_at = Instant::now();
+        }
+    };
+    mark(0, &[&q_rope, &k_rope, &v]);
+
     let (cached_k, cached_v) = cache.append_decode_layer(layer_idx, &k_rope, &v);
     let attn_sdpa =
         full_precision_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, seq, mask);
     let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
+    mark(1, &[&attn_flat]);
+
     let attn_proj = attention_output_projection_batched(
         &attn_flat,
         attn_gate.as_ref(),
@@ -1011,9 +1068,13 @@ pub fn layer_forward_batched(
         attn_proj
     };
     let hidden = add(hidden, &attn_proj, None);
+    mark(2, &[&hidden]);
+
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
     let ffn_out = ffn_swiglu_batched(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx);
-    add(&hidden, &ffn_out, None)
+    let out = add(&hidden, &ffn_out, None);
+    mark(3, &[&out]);
+    out
 }
 
 // ---------------------------------------------------------------------------

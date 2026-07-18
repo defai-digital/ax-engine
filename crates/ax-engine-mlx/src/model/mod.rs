@@ -129,6 +129,16 @@ mod families;
 
 pub(crate) use families::standard::layer_forward_bidirectional;
 
+/// Read and reset the batched-decode per-stage timing accumulators
+/// (`AX_MLX_BATCHED_PROFILE=1`); `[pre_attn, attention, o_proj, ffn]` µs.
+/// Diagnostic surface for Phase 3.4 batched-amortization work.
+pub fn take_batched_decode_profile() -> [u128; 4] {
+    families::standard::batched_profile::take()
+}
+
+/// Stage labels matching [`take_batched_decode_profile`].
+pub const BATCHED_DECODE_PROFILE_STAGES: [&str; 4] = families::standard::batched_profile::STAGES;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FinalLogitsMode {
     Full,

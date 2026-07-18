@@ -98,11 +98,42 @@ Ruled out as the culprit (each tested):
 - **lm_head + argmax** — replica with vs without: 3.28× vs 3.30×.
 - **Attention key length** — seq 8 vs 256: 1.24× vs 1.20× (seq-independent).
 
-Remaining suspects are **AX-specific code the replica does not model**:
-`qk_norm`/`v_norm` (RMSNorm on Q/K/V projections), the `BatchedKvCache`
-append/materialize (per-step batched-buffer management), or a batched-helper
-inefficiency. Pinpointing needs **stage-instrumenting the real
-`decode_batched_forward`** (Python replicas are exhausted — they amortize fine).
+## Phase 3.4 update (2026-07-17): ROOT-CAUSED — the FFN's per-row `RowExact` policy
+
+Stage-instrumented the real `layer_forward_batched` (env-gated
+`AX_MLX_BATCHED_PROFILE`, barriers per stage). Per-stage amortization
+batch 1→8 (Llama-8B):
+
+| stage | b1 µs | b8 µs | amortization |
+| --- | ---: | ---: | ---: |
+| pre_attn (norm+qkv+qk_norm+rope) | 11,330 | 21,392 | 4.2× |
+| attention (append+SDPA) | 8,428 | 11,855 | 5.7× |
+| o_proj (+post_norm) | 9,530 | 16,196 | 4.7× |
+| **ffn** | **24,004** | **116,464** | **1.65×** |
+
+The FFN is the culprit — it grows 4.85× for 8× batch (49%→73% of the step)
+while every other stage amortizes 4–5.7×. Root cause: **`ffn_swiglu_batched`
+passes `ProjectionBatchPolicy::RowExact`**, and `qw_with_policy` with `RowExact`
+(`utils.rs:54`) **loops over batch rows and does a separate `quantized_matmul`
+per row, then concatenates** — re-reading the gate_up and down weights B times
+instead of once. Zero weight-read amortization, by construction.
+
+Why RowExact exists: batched `quantized_matmul` is **not** bit-identical to
+per-row (measured max_abs_diff **2.3e-2** on `[8,1,4096]×[4096,14336]` bf16 —
+the batched kernel accumulates in a different order), and batched-decode
+certification requires per-row parity with single-request decode. RowExact
+buys that exactness at the cost of all amortization — the same bf16
+reduction-order-drift tension as the fused-downproj report.
+
+**The fix (Phase 3.5, a real decision):** route the batched FFN (and the other
+projections, currently RowExact-eligible) through a single batched
+`quantized_matmul` (the `Shared` policy) to amortize toward the 3.3× ceiling,
+accept the bf16 numeric drift, and re-certify batched decode with a
+greedy-token-divergence measurement rather than bit-exactness. Batched decode
+is already a separate opt-in, uncertified-by-default path for concurrent
+serving, so a per-model certification measuring token divergence (not
+bit-identity) is the appropriate gate — mirroring how the sampled-batching
+path is already gated separately for reduction-order reasons.
 
 **Revised Phase 3 plan (updated after 3.2/3.3):**
 - **Realistic ceiling: ~2.7× aggregate at batch=8** (the true matmul

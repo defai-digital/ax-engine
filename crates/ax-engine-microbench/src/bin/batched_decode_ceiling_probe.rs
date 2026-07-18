@@ -94,6 +94,20 @@ fn main() {
             "{batch:>5}  {agg_tok_s:>9.1}  {per_req:>13.1}  {step_us:>7.0}  {:>5.2}x",
             agg_tok_s / b1_tok_s
         );
+        // Per-stage breakdown when AX_MLX_BATCHED_PROFILE=1 (barriers on, so
+        // the tok/s above is invalid in that mode — read the stage split, not
+        // the rate). Accumulated over all layers × STEPS; report µs/step.
+        let stage_us = ax_engine_mlx::model::take_batched_decode_profile();
+        if stage_us.iter().any(|&u| u > 0) {
+            let per_step: Vec<f64> = stage_us.iter().map(|&u| u as f64 / STEPS as f64).collect();
+            let names = ax_engine_mlx::model::BATCHED_DECODE_PROFILE_STAGES;
+            let parts: Vec<String> = names
+                .iter()
+                .zip(&per_step)
+                .map(|(n, us)| format!("{n}={us:.0}"))
+                .collect();
+            println!("        stages µs/step: {}", parts.join("  "));
+        }
         clear_cache();
     }
     println!();
