@@ -89,10 +89,18 @@ pub(in crate::tui) struct ChatState {
     pub first_delta_at: Option<Instant>,
     /// Characters streamed so far in the current reply (stats: est. tokens).
     pub stream_chars: usize,
+    /// Ctrl+T toggle: render settled thinking blocks in full instead of the
+    /// collapsed preview. In-progress (streaming) thinking always renders
+    /// fully so the user can watch the reasoning arrive.
+    pub thinking_expanded: bool,
 }
 
 /// Cap on stored prompt history entries.
 const HISTORY_CAP: usize = 100;
+
+/// Settled thinking blocks collapse to this many leading lines; the rest
+/// sits behind a one-line "N more" summary until Ctrl+T expands them.
+const THINKING_PREVIEW_LINES: usize = 2;
 
 /// Cached transcript lines + wrapped height for a (content key, width) pair.
 pub(crate) struct TranscriptCache {
@@ -119,6 +127,7 @@ impl ChatState {
             send_at: None,
             first_delta_at: None,
             stream_chars: 0,
+            thinking_expanded: false,
         }
     }
 
@@ -321,6 +330,7 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') => self.scroll_transcript(false, false),
                 KeyCode::Char('y') if ctrl => self.copy_last_reply(),
                 KeyCode::Char('l') if ctrl => self.modal = Some(Modal::ClearChat),
+                KeyCode::Char('t') if ctrl => self.toggle_thinking(),
                 KeyCode::Enter => self.toast_error("server not running — start one on Serve (4)"),
                 _ => {}
             }
@@ -343,6 +353,10 @@ impl App {
                 }
                 KeyCode::Char('r') => {
                     self.retry_last();
+                    return;
+                }
+                KeyCode::Char('t') => {
+                    self.toggle_thinking();
                     return;
                 }
                 _ => {}
@@ -570,6 +584,11 @@ impl App {
         self.chat.messages.clear();
         self.chat.error = None;
         self.toast("chat cleared");
+    }
+
+    /// Ctrl+T: expand/collapse every thinking block in the transcript.
+    fn toggle_thinking(&mut self) {
+        self.chat.thinking_expanded = !self.chat.thinking_expanded;
     }
 
     /// Ctrl+Y / `/copy`: copy the last assistant reply's answer (thinking
@@ -846,6 +865,7 @@ impl App {
         }
         self.chat.streaming().hash(&mut h);
         self.chat.error.hash(&mut h);
+        self.chat.thinking_expanded.hash(&mut h);
         self.server_model.hash(&mut h);
         h.finish()
     }
@@ -887,9 +907,27 @@ impl App {
                     let dim = Style::default()
                         .fg(theme::colors().muted)
                         .add_modifier(Modifier::ITALIC);
-                    lines.push(Line::from(Span::styled("▸ Thinking", dim)));
-                    for part in think.lines() {
-                        lines.push(Line::from(Span::styled(part.to_string(), dim)));
+                    // Still-streaming thinking renders in full so the
+                    // reasoning is visible as it arrives; settled blocks
+                    // collapse to a short preview unless Ctrl+T expanded them.
+                    let streaming_this = self.chat.streaming() && idx == last_idx;
+                    let expanded = self.chat.thinking_expanded || streaming_this;
+                    let think_lines: Vec<&str> = think.lines().collect();
+                    let marker = if expanded { "▾ Thinking" } else { "▸ Thinking" };
+                    lines.push(Line::from(Span::styled(marker, dim)));
+                    if expanded || think_lines.len() <= THINKING_PREVIEW_LINES {
+                        for part in think_lines {
+                            lines.push(Line::from(Span::styled(part.to_string(), dim)));
+                        }
+                    } else {
+                        for part in think_lines.iter().take(THINKING_PREVIEW_LINES) {
+                            lines.push(Line::from(Span::styled(part.to_string(), dim)));
+                        }
+                        let more = think_lines.len() - THINKING_PREVIEW_LINES;
+                        lines.push(Line::from(Span::styled(
+                            format!("… {more} more thinking lines (Ctrl+T to expand)"),
+                            dim,
+                        )));
                     }
                 }
                 if answer.is_empty() {
