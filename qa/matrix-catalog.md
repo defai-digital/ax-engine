@@ -1,4 +1,4 @@
-# QA matrix catalog (direct + ngram + MTP + embed)
+# QA matrix catalog (direct + ngram + MTP + embed + multimodal)
 
 This documents the model matrix used for local verification. Paths are resolved
 from the active Hugging Face hub cache at runtime by `scripts/run_qa_matrix.py`
@@ -32,7 +32,30 @@ python3 scripts/run_qa_matrix.py --modes direct ngram --surface
 python3 scripts/run_qa_matrix.py --modes mtp --surface
 # embedding packages (no chat bank; runs qa/embedding_probes.py):
 python3 scripts/run_qa_matrix.py --modes embed --embed-tier standard
+# multimodal packages (no chat bank; runs qa/multimodal_probes.py):
+python3 scripts/run_qa_matrix.py --modes multimodal --multimodal-tier smoke
+python3 scripts/run_qa_matrix.py --modes multimodal --multimodal-tier standard
 ```
+
+### Multimodal cells
+
+```text
+OK|multimodal|gemma-4-12B-it|/path/to/gemma4-unified-snapshot
+```
+
+Requires `config.json` with `vision_config` + `image_token_id` (Gemma 4 unified).
+Rows that fail package detection are **skipped** as `not_multimodal_package`.
+
+**Tiers:** `smoke` (remote/video reject + image path) vs `standard` (+ solid-color content).
+
+Classification:
+
+- hard fail on `remote_media_rejected` / `video_rejected` / `multimodal_image` /
+  `image_describe_smoke` → `engine_fail`
+- hard fail on `image_color_content` → `model_quality` (quantization-sensitive)
+
+Public product policy: **video is rejected** on OpenAI chat routes. Surface and
+multimodal matrix probes assert reject; they do not require video generation.
 
 ### Embedding cells
 
@@ -70,6 +93,8 @@ sample; hard surface failures classify as `engine_fail` / `surface_hard_fail`.
 | **direct** | `--disable-ngram-acceleration` | pure direct decode |
 | **ngram** | (default; n-gram eligible) | n-gram acceleration path |
 | **MTP** | `--mlx-mtp-disable-ngram-stacking` (and **not** `--disable-ngram-acceleration`) | pure StrictMtp path |
+| **embed** | `--disable-ngram-acceleration` | embedding API QA only |
+| **multimodal** | `--disable-ngram-acceleration` | vision policy + image path QA |
 
 `--disable-ngram-acceleration` sets `mtp_requested=false` in the runner and
 forces `MtpRequestRoute::DirectFallback`, which **bypasses** MTP decode. The

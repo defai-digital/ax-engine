@@ -16,10 +16,16 @@ from surface_probes import (  # noqa: E402
     SurfaceReport,
     chat_completion_payload,
     extract_chat_content,
+    extract_sse_chat_text,
+    model_advertises_image,
+    normalize_answer_text,
     probe_cancel_request,
     probe_concurrent_chat,
     probe_multimodal_image,
+    probe_remote_media_rejected,
+    probe_stream_and_nonstream,
     probe_tools_schema,
+    probe_video_rejected,
     tiny_png_data_url,
 )
 
@@ -77,12 +83,70 @@ class SurfaceProbeHelperTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertTrue(result.hard)
 
-    def test_multimodal_soft_skip_on_400(self) -> None:
+    def test_multimodal_soft_skip_on_400_without_capability(self) -> None:
         with mock.patch(
             "surface_probes._post_json", return_value=(400, {"error": "no vision"})
         ):
-            result = probe_multimodal_image("http://127.0.0.1:9", "m")
+            result = probe_multimodal_image(
+                "http://127.0.0.1:9", "m", require_image=False
+            )
         self.assertTrue(result.skipped)
+
+    def test_multimodal_hard_fail_when_capability_claimed(self) -> None:
+        with mock.patch(
+            "surface_probes._post_json", return_value=(400, {"error": "no vision"})
+        ):
+            result = probe_multimodal_image(
+                "http://127.0.0.1:9", "m", require_image=True
+            )
+        self.assertFalse(result.passed)
+        self.assertTrue(result.hard)
+
+    def test_stream_parity_ok(self) -> None:
+        def fake_post(url, payload, timeout=60.0):
+            return 200, {"choices": [{"message": {"content": "7"}}]}
+
+        sse = 'data: {"choices":[{"delta":{"content":"7"}}]}\n\ndata: [DONE]\n'
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return sse.encode()
+
+        with mock.patch("surface_probes._post_json", side_effect=fake_post), mock.patch(
+            "surface_probes.urllib.request.urlopen", return_value=_Resp()
+        ):
+            result = probe_stream_and_nonstream(
+                "http://127.0.0.1:9", "m", require_parity=True
+            )
+        self.assertTrue(result.passed)
+        self.assertIn("parity=ok", result.detail)
+
+    def test_sse_and_normalize_helpers(self) -> None:
+        self.assertEqual(
+            extract_sse_chat_text(
+                'data: {"choices":[{"delta":{"content":"hi"}}]}\ndata: [DONE]\n'
+            ),
+            "hi",
+        )
+        self.assertEqual(normalize_answer_text("  A  B\n"), "a b")
+        self.assertTrue(
+            model_advertises_image(
+                {"capabilities": {"input": {"image": True}}}
+            )
+        )
+
+    def test_media_policy_probes(self) -> None:
+        with mock.patch(
+            "surface_probes._post_json", return_value=(422, {"error": "nope"})
+        ):
+            self.assertTrue(probe_remote_media_rejected("http://x", "m").passed)
+            self.assertTrue(probe_video_rejected("http://x", "m").passed)
 
     def test_cancel_skipped_on_404(self) -> None:
         with mock.patch(

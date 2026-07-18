@@ -87,6 +87,54 @@ echo "==> Surface probes"
   --timeout "$TIMEOUT" \
   --json-output "$OUT_DIR/surface.json"
 
+# When the mounted package (or live model card) looks multimodal, run the
+# multimodal smoke tier hard (policy + image path). Text-only packages skip.
+echo "==> Multimodal smoke (capability/package aware)"
+export ROOT_DIR BASE_URL MODEL_ID TIMEOUT OUT_DIR
+"$PYTHON_BIN" - <<'PY'
+from __future__ import annotations
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(os.environ["ROOT_DIR"])
+sys.path.insert(0, str(root / "qa"))
+from multimodal_probes import package_looks_like_multimodal, run_multimodal_probes
+from surface_probes import fetch_model_card, model_advertises_image
+
+base = os.environ["BASE_URL"]
+model = os.environ["MODEL_ID"]
+timeout = float(os.environ["TIMEOUT"])
+out = Path(os.environ["OUT_DIR"]) / "multimodal-smoke.json"
+artifacts = Path(os.environ["AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR"])
+card = fetch_model_card(base, model, timeout=min(timeout, 30.0))
+pkg = package_looks_like_multimodal(artifacts)
+adv = model_advertises_image(card)
+if not pkg and not adv:
+    payload = {
+        "schema_version": 1,
+        "kind": "multimodal_probes",
+        "skipped": True,
+        "reason": "text_only_package_and_card",
+        "hard_passed": True,
+    }
+    out.write_text(json.dumps(payload, indent=2))
+    print("multimodal smoke skipped (text-only)")
+    raise SystemExit(0)
+report = run_multimodal_probes(
+    base,
+    model,
+    timeout=timeout,
+    tier="smoke",
+    artifacts=artifacts if pkg else None,
+    require_image=True if (pkg or adv) else None,
+)
+out.write_text(json.dumps(report.as_dict(), indent=2))
+print(report.summary_line)
+raise SystemExit(0 if report.hard_passed else 1)
+PY
+
 echo "==> QA bank sample (seed=$SEED sample=$SAMPLE)"
 "$PYTHON_BIN" "$ROOT_DIR/qa/run_qa.py" \
   --base-url "$BASE_URL" \
@@ -107,4 +155,4 @@ if [[ -n "${AX_CI_LOG_DIR:-}" ]]; then
   cp -f "$LOG_FILE" "$AX_CI_LOG_DIR/qa-model-server.log" 2>/dev/null || true
 fi
 
-echo "==> QA model gate OK (surface hard pass; bank sample written)"
+echo "==> QA model gate OK (surface hard pass; multimodal smoke; bank sample written)"

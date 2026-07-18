@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified sequential QA matrix runner (direct / ngram / MTP).
+"""Unified sequential QA matrix runner (direct / ngram / MTP / embed / multimodal).
 
 Single orchestration entrypoint for local multi-model verification.
 ``qa/run_full_qa.sh`` is a thin wrapper that materializes an inventory and
@@ -10,6 +10,8 @@ Inventory lines::
     OK|direct|model_id|/path/to/artifacts
     OK|ngram|model_id|/path/to/artifacts
     OK|mtp|model_id|/path/to/artifacts
+    OK|embed|model_id|/path/to/artifacts
+    OK|multimodal|model_id|/path/to/artifacts
 
 Exit codes:
   0 — no engine failures (model_quality partials allowed by default)
@@ -38,7 +40,7 @@ HOST = "127.0.0.1"
 
 @dataclass
 class Cell:
-    mode: str  # direct | ngram | mtp | embed
+    mode: str  # direct | ngram | mtp | embed | multimodal
     model_id: str
     artifacts: Path
     status: str = "pending"  # ok|skip|engine_fail|model_quality|error
@@ -58,7 +60,7 @@ def load_matrix(path: Path) -> list[Cell]:
             continue
         _, mode, mid, art = parts
         mode = mode.strip().lower()
-        if mode not in ("direct", "ngram", "mtp", "embed"):
+        if mode not in ("direct", "ngram", "mtp", "embed", "multimodal"):
             continue
         cells.append(Cell(mode=mode, model_id=mid.strip(), artifacts=Path(art.strip())))
     return cells
@@ -124,6 +126,8 @@ def classify_engine_fail(log_text: str, qa_text: str) -> str | None:
         "Connection refused",
         "mtp_path_not_exercised",
         "surface_hard_fail",
+        "multimodal_hard_fail",
+        "not_multimodal_package",
     ]
     blob = (log_text + "\n" + qa_text).lower()
     for n in needles:
@@ -149,6 +153,26 @@ def package_looks_like_mtp(artifacts: Path) -> bool:
     return False
 
 
+def package_looks_like_multimodal(artifacts: Path) -> bool:
+    """True when package config looks like Gemma 4 unified multimodal."""
+    cfg_path = artifacts / "config.json"
+    if not cfg_path.is_file():
+        return False
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    if "vision_config" in cfg and (
+        "image_token_id" in cfg or "boi_token_id" in cfg
+    ):
+        return True
+    if (artifacts / "preprocessor_config.json").is_file() and "image_token_id" in cfg:
+        return True
+    return False
+
+
 def build_server_cmd(
     cell: Cell,
     model_id: str,
@@ -157,7 +181,7 @@ def build_server_cmd(
     host: str,
     port: int,
 ) -> list[str]:
-    """Build ax-engine-server argv for direct / ngram / MTP cells.
+    """Build ax-engine-server argv for direct / ngram / MTP / embed / multimodal.
 
     Critical: MTP packages must NOT pass ``--disable-ngram-acceleration``.
     That flag sets ``mtp_requested=false`` and forces DirectFallback.
@@ -176,8 +200,8 @@ def build_server_cmd(
         "--mlx-model-artifacts-dir",
         str(cell.artifacts),
     ]
-    if cell.mode in ("direct", "embed"):
-        # Embed models do not use decode/n-gram; keep path pure.
+    if cell.mode in ("direct", "embed", "multimodal"):
+        # Multimodal / embed / direct: pure path without n-gram stacking noise.
         cmd.append("--disable-ngram-acceleration")
     elif cell.mode == "ngram":
         # Default server path: n-gram acceleration eligible.
@@ -280,6 +304,7 @@ def run_cell(
     run_surface: bool,
     streams: str,
     embed_tier: str = "standard",
+    multimodal_tier: str = "smoke",
 ) -> Cell:
     safe = cell.model_id.replace("/", "_").replace(" ", "_")
     log_path = scratch / f"qa-{cell.mode}-{safe}.log"
@@ -341,6 +366,16 @@ def run_cell(
             f"mtp_active proposer_us={mtp_decisions.get('ax_mtp_source_mtp_proposer_wall_us')} "
             f"verify_tokens={mtp_decisions.get('ax_mtp_verify_tokens')}"
         )
+
+    if cell.mode == "multimodal" and not package_looks_like_multimodal(cell.artifacts):
+        cell.status = "skip"
+        cell.note = "not_multimodal_package"
+        log_path.write_text(
+            "SKIP not_multimodal_package\n"
+            f"artifacts={cell.artifacts}\n"
+            f"server_cmd={' '.join(cmd)}\n"
+        )
+        return cell
 
     kill_port(port)
     with server_log.open("w") as slog:
@@ -417,6 +452,61 @@ def run_cell(
                 else:
                     cell.status = "model_quality"
                     cell.note = "embed_partial:" + ",".join(failed)
+            return cell
+
+        # ---- Multimodal cells: policy + image path (+ content at standard) ----
+        if cell.mode == "multimodal":
+            sys.path.insert(0, str(repo / "qa"))
+            from multimodal_probes import run_multimodal_probes  # noqa: WPS433
+
+            mm_report = run_multimodal_probes(
+                base,
+                model_id,
+                timeout=float(timeout),
+                tier=multimodal_tier,
+                artifacts=cell.artifacts,
+                require_image=True,
+            )
+            mm_json = scratch / f"multimodal-{safe}.json"
+            mm_json.write_text(json.dumps(mm_report.as_dict(), indent=2))
+            cell.pass_line = mm_report.summary_line
+            cell.surface_line = mm_report.summary_line
+            log_path.write_text(
+                f"mode=multimodal model={cell.model_id}\n"
+                f"artifacts={cell.artifacts}\n"
+                f"server_cmd={' '.join(cmd)}\n"
+                f"tier={multimodal_tier}\n"
+                f"{mm_report.summary_line}\n\n"
+                f"{json.dumps(mm_report.as_dict(), indent=2)}\n\n"
+                f"--- server tail ---\n"
+                + server_log.read_text(errors="replace")[-6000:]
+            )
+            if mm_report.hard_passed:
+                cell.status = "ok"
+                cell.note = "multimodal_all_pass"
+            else:
+                failed = [
+                    r.name
+                    for r in mm_report.results
+                    if r.hard and not r.passed and not r.skipped
+                ]
+                # Policy / empty / 5xx = engine; color content may be model_quality
+                engine_names = {
+                    "remote_media_rejected",
+                    "video_rejected",
+                    "multimodal_image",
+                    "image_describe_smoke",
+                }
+                quality_names = {"image_color_content"}
+                if any(n in engine_names for n in failed):
+                    cell.status = "engine_fail"
+                    cell.note = "multimodal_hard_fail:" + ",".join(failed)
+                elif any(n in quality_names for n in failed):
+                    cell.status = "model_quality"
+                    cell.note = "multimodal_partial:" + ",".join(failed)
+                else:
+                    cell.status = "engine_fail"
+                    cell.note = "multimodal_hard_fail:" + ",".join(failed)
             return cell
 
         # ---- Chat cells: null-content smoke + optional surface + bank ----
@@ -657,20 +747,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--modes",
         nargs="+",
-        choices=["direct", "ngram", "mtp", "embed"],
+        choices=["direct", "ngram", "mtp", "embed", "multimodal"],
         default=None,
-        help="Filter inventory to these modes (embed = embedding model QA)",
+        help=(
+            "Filter inventory to these modes "
+            "(embed = embedding QA; multimodal = vision policy+path QA)"
+        ),
     )
     p.add_argument(
         "--surface",
         action="store_true",
-        help="Run product-surface probes (concurrency/stream/cancel/tools/multimodal)",
+        help=(
+            "Run product-surface probes "
+            "(concurrency/stream/cancel/tools/media-policy/multimodal)"
+        ),
     )
     p.add_argument(
         "--embed-tier",
         default=os.environ.get("QA_EMBED_TIER", "standard"),
         choices=["smoke", "standard"],
         help="Embedding QA tier: smoke (engine) or standard (+ pair/retrieval)",
+    )
+    p.add_argument(
+        "--multimodal-tier",
+        default=os.environ.get("QA_MULTIMODAL_TIER", "smoke"),
+        choices=["smoke", "standard"],
+        help=(
+            "Multimodal QA tier for multimodal cells: "
+            "smoke (policy+path) or standard (+ color/describe content)"
+        ),
     )
     p.add_argument(
         "--streams",
@@ -758,6 +863,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_surface=run_surface,
                 streams=args.streams,
                 embed_tier=args.embed_tier,
+                multimodal_tier=args.multimodal_tier,
             )
         except Exception as exc:
             cell.status = "error"

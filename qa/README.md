@@ -1,14 +1,27 @@
 # AX Engine QA
 
 Inference quality harness against a running `ax-engine-server`. It is **not** a
-full public-benchmark replacement (MMLU / GSM8K / HumanEval / IFEval / MTEB / …).
-It is a practical gate for:
+full public-benchmark replacement (MMLU / GSM8K / HumanEval / IFEval / MTEB /
+MMMU / …). It is a practical gate for:
 
 - server load + chat path health
 - catastrophic garbage / repetition / encoding corruption
 - basic capability across skill dimensions
-- product-surface paths (concurrency, stream, cancel, tools, multimodal)
+- product-surface paths (concurrency, stream parity, cancel, tools, media policy)
+- **multimodal serving health** (fail-closed remote/video, capability-honest image)
 - **embedding model health** (API shape, L2, batch consistency, semantic order)
+
+## Best practices (rethought)
+
+| Principle | Practice in this harness |
+| --- | --- |
+| **Separate engine vs model quality** | `engine_fail` blocks CI; `model_quality` is partial by default |
+| **Capability-honest soft skips** | Soft-skip vision only when `/v1/models` does **not** advertise image |
+| **Fail closed for unsupported media** | Remote image URLs and public `video_url` must 4xx (not 200/5xx) |
+| **Prove the path you claim** | MTP telemetry gate; multimodal package detection before probes |
+| **Small stratified bank, large inventory** | Seeded samples beat a fixed dozen “golden” prompts |
+| **Offline tests for the harness** | `check-qa.sh` always runs; GPU matrix is optional |
+| **Do not pretend to be leaderboards** | No vendored MMLU/MTEB/VLMEval; optional external adapters only |
 
 ## Process / CI integration
 
@@ -34,13 +47,14 @@ Model gate starts a server against `$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`, runs
 | `checkers.py` | Hard vs soft quality checks |
 | `client.py` | OpenAI chat + `/v1/generate` clients |
 | `run_qa.py` | CLI runner (HTML + JSON reports) |
-| `surface_probes.py` | Concurrent / stream / cancel / tools / multimodal probes |
+| `surface_probes.py` | Concurrent / stream parity / cancel / tools / media policy / multimodal |
+| `multimodal_probes.py` | Multimodal tiers (smoke / standard) for matrix + CI |
 | `embedding_probes.py` | Embedding QA tiers (smoke / standard) |
 | `embedding_bank.py` | Original STS / pair / retrieval fixtures (MTEB-shaped) |
 | `reporter.py` | Report generators |
 | `run_full_qa.sh` | Thin wrapper → unified matrix (direct + ngram inventory) |
 | `matrix-catalog.md` | Matrix inventory notes |
-| `../scripts/run_qa_matrix.py` | **Unified** direct / ngram / MTP orchestrator |
+| `../scripts/run_qa_matrix.py` | **Unified** direct / ngram / MTP / embed / multimodal orchestrator |
 | `../scripts/check-qa.sh` | Offline CI gate |
 | `../scripts/check-qa-model.sh` | Live-model CI gate |
 
@@ -55,6 +69,7 @@ OK|direct|model_id|/path/to/artifacts
 OK|ngram|model_id|/path/to/artifacts
 OK|mtp|model_id|/path/to/artifacts
 OK|embed|embedding_model_id|/path/to/artifacts
+OK|multimodal|vision_model_id|/path/to/artifacts
 ```
 
 ```bash
@@ -65,6 +80,10 @@ python3 scripts/run_qa_matrix.py --surface --modes direct mtp
 
 # Embedding packages only
 python3 scripts/run_qa_matrix.py --modes embed
+
+# Multimodal packages only (policy + image path; standard = + color content)
+python3 scripts/run_qa_matrix.py --modes multimodal --multimodal-tier smoke
+python3 scripts/run_qa_matrix.py --modes multimodal --multimodal-tier standard
 
 # Convenience default HF-cache list (direct + ngram)
 bash qa/run_full_qa.sh
@@ -79,6 +98,7 @@ Mode flags:
 | **ngram** | default (n-gram eligible) | chat bank + optional surface |
 | **MTP** | `--mlx-mtp-disable-ngram-stacking` (never `--disable-ngram-acceleration`) | chat bank + MTP path proof |
 | **embed** | `--disable-ngram-acceleration` | `embedding_probes` only (no chat bank) |
+| **multimodal** | `--disable-ngram-acceleration` | `multimodal_probes` only (no chat bank) |
 
 `--mode` on `run_qa.py` remains a **report label only**.
 
@@ -152,16 +172,51 @@ python3 qa/surface_probes.py \
 | Probe | Hard? | Notes |
 | --- | --- | --- |
 | `concurrent_chat` | yes | Parallel `/v1/chat/completions` |
-| `stream_nonstream` | yes | Both paths return content / SSE |
+| `stream_nonstream` | yes | Both paths return content; **parity** of normalized text (opt-out `--no-stream-parity`) |
 | `cancel_request` | yes* | `/v1/requests` + cancel; soft-skip if API 404 |
 | `tools_schema` | yes* | Tools payload must not 5xx; 400/422 soft-skip |
-| `multimodal_image` | yes* | Tiny PNG; soft-skip if model rejects vision |
+| `remote_media_rejected` | yes | Remote `https://…` image URL must 4xx |
+| `video_rejected` | yes | Public `video_url` must 4xx (product policy) |
+| `multimodal_image` | yes* | Tiny PNG; soft-skip **only** when model does not advertise image |
 
-Deeper Gemma multimodal suite remains `scripts/qa_gemma4_multimodal.py`
-(vision/audio/video; not offline-CI).
+## Multimodal QA
 
-Matrix integration: `python3 scripts/run_qa_matrix.py --surface`
-(or `QA_SURFACE=1`).
+```bash
+# Against an already-running vision model
+python3 qa/multimodal_probes.py \
+  --base-url http://127.0.0.1:8080 \
+  --model gemma-4-12B-it \
+  --tier smoke \
+  --json-output /tmp/mm.json
+
+# Stronger content gate (solid blue color + describe)
+python3 qa/multimodal_probes.py --model gemma-4-12B-it --tier standard --require-image
+```
+
+| Tier | Covers |
+| --- | --- |
+| **smoke** | remote reject, video reject, capability-honest image path |
+| **standard** | smoke + solid-color content + describe/thinking-channel smoke |
+
+Package detection: `config.json` with `vision_config` + `image_token_id` (Gemma 4 unified).
+
+| Layer | Market analogue | AX |
+| --- | --- | --- |
+| Fail-closed media | OpenAI/vLLM security posture | hard probes |
+| Vision path smoke | peer serving smoke | `multimodal_image` / describe |
+| Tiny content | color / OCR digit micro-suite | `image_color_content` (standard) |
+| Full VLM eval | VLMEvalKit / MMMU | **not** vendored |
+
+Deeper Gemma operator suite (audio/speech, Pillow fixtures) remains
+`scripts/qa_gemma4_multimodal.py --strict` (not offline-CI). Public product
+routes **reject video**; that script’s historical GIF probe is for research
+bring-up only — matrix/surface expect **reject**.
+
+CI model-smoke runs multimodal **smoke** when the mounted package or live
+card advertises image; text-only mounts skip cleanly.
+
+Matrix: `python3 scripts/run_qa_matrix.py --modes multimodal --multimodal-tier smoke`
+Surface on chat cells: `python3 scripts/run_qa_matrix.py --surface` (or `QA_SURFACE=1`).
 
 ## Hard vs soft checks (question bank)
 

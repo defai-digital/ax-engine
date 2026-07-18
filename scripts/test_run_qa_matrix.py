@@ -54,26 +54,35 @@ class RunQaMatrixTests(unittest.TestCase):
                         "OK|ngram|llama3.1-8b|/tmp/fake",
                         "OK|mtp|ax-local/x|/tmp/mtp",
                         "OK|embed|qwen3-embedding|/tmp/emb",
+                        "OK|multimodal|gemma4-mm|/tmp/mm",
                         "OK|bogus|x|/tmp/x",
                     ]
                 )
                 + "\n"
             )
             cells = m.load_matrix(p)
-            self.assertEqual(len(cells), 4)
+            self.assertEqual(len(cells), 5)
             self.assertEqual(cells[0].mode, "direct")
             self.assertEqual(cells[1].mode, "ngram")
             self.assertEqual(cells[2].mode, "mtp")
             self.assertEqual(cells[3].mode, "embed")
+            self.assertEqual(cells[4].mode, "multimodal")
 
-    def test_build_server_cmd_embed_disables_ngram(self) -> None:
+    def test_build_server_cmd_embed_and_multimodal_disable_ngram(self) -> None:
         m = _load()
         from pathlib import Path as P
 
         server = P("/tmp/ax-engine-server")
         embed = m.Cell(mode="embed", model_id="e", artifacts=P("/tmp/e"))
-        cmd = m.build_server_cmd(embed, "e", server_bin=server, host="127.0.0.1", port=1)
-        self.assertIn("--disable-ngram-acceleration", cmd)
+        mm = m.Cell(mode="multimodal", model_id="g", artifacts=P("/tmp/g"))
+        e_cmd = m.build_server_cmd(
+            embed, "e", server_bin=server, host="127.0.0.1", port=1
+        )
+        m_cmd = m.build_server_cmd(
+            mm, "g", server_bin=server, host="127.0.0.1", port=1
+        )
+        self.assertIn("--disable-ngram-acceleration", e_cmd)
+        self.assertIn("--disable-ngram-acceleration", m_cmd)
 
     def test_write_inventory(self) -> None:
         m = _load()
@@ -159,6 +168,22 @@ class RunQaMatrixTests(unittest.TestCase):
             asst.mkdir()
             (asst / "ax_gemma4_assistant_mtp.json").write_text("{}")
             self.assertTrue(m.package_looks_like_mtp(asst))
+
+    def test_package_looks_like_multimodal(self) -> None:
+        m = _load()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            plain = root / "plain"
+            plain.mkdir()
+            (plain / "config.json").write_text("{}")
+            self.assertFalse(m.package_looks_like_multimodal(plain))
+
+            mm = root / "mm"
+            mm.mkdir()
+            (mm / "config.json").write_text(
+                '{"image_token_id": 1, "vision_config": {"patch_size": 4}}'
+            )
+            self.assertTrue(m.package_looks_like_multimodal(mm))
 
 
 if __name__ == "__main__":

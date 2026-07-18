@@ -3,10 +3,15 @@
 These exercise serving paths that pure Q&A sampling does not cover:
 
 * concurrent chat completions
-* stream vs non-stream smoke
+* stream vs non-stream smoke (+ content parity)
 * request cancel via ``/v1/requests``
 * OpenAI tools schema acceptance (no panic / structured HTTP response)
-* multimodal image chat (optional; needs vision-capable model)
+* multimodal image chat (**capability-aware**: soft-skip only when the model
+  does not advertise image input)
+* fail-closed media policy (remote URL reject, public video reject)
+
+Best practice: soft-skips are allowed only when the model card does **not**
+claim the capability. Advertised vision that returns 4xx/empty is a hard fail.
 
 All probes target a **running** server. Pure helpers and payload builders are
 unit-tested offline in ``scripts/test_qa_surface_probes.py``.
@@ -17,6 +22,7 @@ from __future__ import annotations
 import base64
 import concurrent.futures
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -94,6 +100,106 @@ def _post_json(
             return int(exc.code), raw
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return 0, f"connection_error: {exc}"
+
+
+def _get_json(url: str, timeout: float = 30.0) -> tuple[int, dict[str, Any] | str]:
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            status = getattr(resp, "status", 200) or 200
+            try:
+                return int(status), json.loads(body)
+            except json.JSONDecodeError:
+                return int(status), body
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+        try:
+            return int(exc.code), json.loads(raw)
+        except json.JSONDecodeError:
+            return int(exc.code), raw
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return 0, f"connection_error: {exc}"
+
+
+def fetch_model_card(
+    base_url: str,
+    model: str,
+    *,
+    timeout: float = 30.0,
+) -> Optional[dict[str, Any]]:
+    """Return the ``/v1/models`` card matching ``model``, or None."""
+    status, body = _get_json(f"{base_url.rstrip('/')}/v1/models", timeout=timeout)
+    if status != 200 or not isinstance(body, dict):
+        return None
+    data = body.get("data") or []
+    if not isinstance(data, list):
+        return None
+    for item in data:
+        if isinstance(item, dict) and str(item.get("id") or "") == model:
+            return item
+    # Single-model servers often expose one card under a different id alias.
+    if len(data) == 1 and isinstance(data[0], dict):
+        return data[0]
+    return None
+
+
+def model_advertises_image(card: Optional[dict[str, Any]]) -> bool:
+    """True when the model card claims image / native multimodal input."""
+    if not card:
+        return False
+    caps = card.get("capabilities") or {}
+    if isinstance(caps, dict):
+        inp = caps.get("input") or {}
+        if isinstance(inp, dict) and inp.get("image") is True:
+            return True
+        if caps.get("attachment") is True and isinstance(inp, dict):
+            # attachment alone is weak; require explicit image when present.
+            if "image" in inp:
+                return bool(inp.get("image"))
+    ax = card.get("ax_engine") or {}
+    if isinstance(ax, dict):
+        if ax.get("native_multimodal_input_supported") is True:
+            return True
+        if ax.get("gemma4_unified_multimodal_input_supported") is True:
+            return True
+        if ax.get("openai_tokenized_multimodal_input_supported") is True:
+            return True
+    return False
+
+
+def normalize_answer_text(text: str) -> str:
+    """Collapse whitespace for stream/non-stream parity comparison."""
+    return re.sub(r"\s+", " ", (text or "").strip()).lower()
+
+
+def extract_sse_chat_text(raw: str) -> str:
+    """Best-effort content extraction from OpenAI-style chat SSE."""
+    pieces: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            obj = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        choices = obj.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            continue
+        delta = choices[0].get("delta") or {}
+        if isinstance(delta, dict) and delta.get("content"):
+            pieces.append(str(delta["content"]))
+            continue
+        message = choices[0].get("message") or {}
+        if isinstance(message, dict) and message.get("content"):
+            pieces.append(str(message["content"]))
+    return "".join(pieces)
 
 
 def chat_completion_payload(
@@ -260,21 +366,27 @@ def probe_stream_and_nonstream(
     model: str,
     *,
     timeout: float = 90.0,
+    require_parity: bool = True,
 ) -> SurfaceProbeResult:
+    """Stream + non-stream smoke; optionally require normalized content parity."""
     name = "stream_nonstream"
     start = time.monotonic()
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
-    prompt = "Reply with the single digit 7."
+    # Fixed short token answer — parity is meaningful at temperature 0.
+    prompt = "Reply with the single digit 7 and nothing else."
 
     status_ns, body_ns = _post_json(
         url,
-        chat_completion_payload(model, prompt, max_tokens=16, stream=False),
+        chat_completion_payload(
+            model, prompt, max_tokens=16, temperature=0.0, stream=False
+        ),
         timeout=timeout,
     )
     content_ns = extract_chat_content(body_ns) if status_ns == 200 else None
 
-    # Stream: reuse client-style minimal read — accept any non-empty SSE body.
-    stream_payload = chat_completion_payload(model, prompt, max_tokens=16, stream=True)
+    stream_payload = chat_completion_payload(
+        model, prompt, max_tokens=16, temperature=0.0, stream=True
+    )
     data = json.dumps(stream_payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -284,11 +396,13 @@ def probe_stream_and_nonstream(
     )
     stream_ok = False
     stream_detail = ""
+    stream_text = ""
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
         stream_ok = "data:" in raw and raw.strip() != ""
-        stream_detail = f"sse_bytes={len(raw)}"
+        stream_text = extract_sse_chat_text(raw)
+        stream_detail = f"sse_bytes={len(raw)} stream_chars={len(stream_text)}"
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
         stream_detail = f"stream_error={exc}"
         stream_ok = False
@@ -308,6 +422,27 @@ def probe_stream_and_nonstream(
         return SurfaceProbeResult(
             name, False, f"stream failed; {stream_detail}", elapsed_ms=elapsed
         )
+    if require_parity:
+        ns_n = normalize_answer_text(content_ns)
+        st_n = normalize_answer_text(stream_text)
+        if not st_n:
+            return SurfaceProbeResult(
+                name,
+                False,
+                f"stream produced no extractable content; {stream_detail}",
+                elapsed_ms=elapsed,
+            )
+        # Accept exact match or shared digit token (some templates add prose).
+        if ns_n != st_n and not (
+            "7" in ns_n and "7" in st_n and abs(len(ns_n) - len(st_n)) <= 24
+        ):
+            return SurfaceProbeResult(
+                name,
+                False,
+                f"stream/non-stream mismatch ns={ns_n[:60]!r} st={st_n[:60]!r}",
+                elapsed_ms=elapsed,
+            )
+        stream_detail += " parity=ok"
     return SurfaceProbeResult(
         name,
         True,
@@ -475,10 +610,19 @@ def probe_multimodal_image(
     model: str,
     *,
     timeout: float = 120.0,
+    require_image: Optional[bool] = None,
 ) -> SurfaceProbeResult:
-    """Send a tiny inline image; skip soft if model rejects multimodal."""
+    """Send a tiny inline image.
+
+    Soft-skip on 4xx only when the model does **not** advertise image input
+    (or ``require_image`` is explicitly False). Advertised vision that rejects
+    or returns empty content is a hard failure.
+    """
     name = "multimodal_image"
     start = time.monotonic()
+    if require_image is None:
+        card = fetch_model_card(base_url, model, timeout=min(timeout, 30.0))
+        require_image = model_advertises_image(card)
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
     content = [
         {"type": "text", "text": "Describe this image in three words."},
@@ -486,22 +630,35 @@ def probe_multimodal_image(
     ]
     status, body = _post_json(
         url,
-        chat_completion_payload(model, content, max_tokens=32),
+        chat_completion_payload(model, content, max_tokens=32, temperature=0.0),
         timeout=timeout,
     )
     elapsed = (time.monotonic() - start) * 1000
     if status in (400, 415, 422):
+        if require_image:
+            return SurfaceProbeResult(
+                name,
+                False,
+                (
+                    f"model advertises image but multimodal rejected "
+                    f"HTTP {status}: {str(body)[:160]}"
+                ),
+                elapsed_ms=elapsed,
+            )
         return SurfaceProbeResult(
             name,
             True,
-            f"multimodal rejected HTTP {status} (soft skip for non-vision models)",
+            f"multimodal rejected HTTP {status} (soft skip; no image capability)",
             hard=False,
             skipped=True,
             elapsed_ms=elapsed,
         )
-    if status >= 500:
+    if status >= 500 or status == 0:
         return SurfaceProbeResult(
-            name, False, f"server error HTTP {status}: {str(body)[:200]}", elapsed_ms=elapsed
+            name,
+            False,
+            f"server/connection error HTTP {status}: {str(body)[:200]}",
+            elapsed_ms=elapsed,
         )
     if status != 200:
         return SurfaceProbeResult(
@@ -512,8 +669,131 @@ def probe_multimodal_image(
         return SurfaceProbeResult(
             name, False, "empty multimodal content", elapsed_ms=elapsed
         )
+    stripped = str(text).strip()
+    if stripped == "thought" or stripped.startswith("thought\n"):
+        return SurfaceProbeResult(
+            name,
+            False,
+            f"thinking-channel leak in multimodal content: {stripped[:80]!r}",
+            elapsed_ms=elapsed,
+        )
     return SurfaceProbeResult(
-        name, True, f"image chat returned {len(text)} chars", elapsed_ms=elapsed
+        name,
+        True,
+        f"image chat returned {len(text)} chars (require_image={require_image})",
+        elapsed_ms=elapsed,
+    )
+
+
+def probe_remote_media_rejected(
+    base_url: str,
+    model: str,
+    *,
+    timeout: float = 60.0,
+) -> SurfaceProbeResult:
+    """Product policy: remote media URLs must fail closed (4xx, not 5xx/200)."""
+    name = "remote_media_rejected"
+    start = time.monotonic()
+    url = f"{base_url.rstrip('/')}/v1/chat/completions"
+    content = [
+        {"type": "text", "text": "What is in this image?"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "https://example.com/remote-image-must-reject.png"},
+        },
+    ]
+    status, body = _post_json(
+        url,
+        chat_completion_payload(model, content, max_tokens=16, temperature=0.0),
+        timeout=timeout,
+    )
+    elapsed = (time.monotonic() - start) * 1000
+    if status >= 500 or status == 0:
+        return SurfaceProbeResult(
+            name,
+            False,
+            f"server/connection error HTTP {status}: {str(body)[:160]}",
+            elapsed_ms=elapsed,
+        )
+    if status == 200:
+        return SurfaceProbeResult(
+            name,
+            False,
+            "remote image URL was accepted (expected fail-closed 4xx)",
+            elapsed_ms=elapsed,
+        )
+    if 400 <= status < 500:
+        return SurfaceProbeResult(
+            name,
+            True,
+            f"remote media rejected HTTP {status}",
+            elapsed_ms=elapsed,
+        )
+    return SurfaceProbeResult(
+        name,
+        False,
+        f"unexpected HTTP {status}: {str(body)[:160]}",
+        elapsed_ms=elapsed,
+    )
+
+
+def probe_video_rejected(
+    base_url: str,
+    model: str,
+    *,
+    timeout: float = 60.0,
+) -> SurfaceProbeResult:
+    """Product policy: public routes reject video (unsupported_modality)."""
+    name = "video_rejected"
+    start = time.monotonic()
+    url = f"{base_url.rstrip('/')}/v1/chat/completions"
+    # Minimal 1x1 GIF as data URL — still a video_url modality at the API.
+    gif = (
+        b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff"
+        b"\x00\x00\x00!\xf9\x04\x01\x00\x00\x00\x00,\x00"
+        b"\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+    )
+    content = [
+        {"type": "text", "text": "How many frames?"},
+        {
+            "type": "video_url",
+            "video_url": {
+                "url": "data:image/gif;base64," + base64.b64encode(gif).decode("ascii")
+            },
+        },
+    ]
+    status, body = _post_json(
+        url,
+        chat_completion_payload(model, content, max_tokens=16, temperature=0.0),
+        timeout=timeout,
+    )
+    elapsed = (time.monotonic() - start) * 1000
+    if status >= 500 or status == 0:
+        return SurfaceProbeResult(
+            name,
+            False,
+            f"server/connection error HTTP {status}: {str(body)[:160]}",
+            elapsed_ms=elapsed,
+        )
+    if status == 200:
+        return SurfaceProbeResult(
+            name,
+            False,
+            "video_url accepted on public chat route (expected reject)",
+            elapsed_ms=elapsed,
+        )
+    if 400 <= status < 500:
+        return SurfaceProbeResult(
+            name,
+            True,
+            f"video rejected HTTP {status}",
+            elapsed_ms=elapsed,
+        )
+    return SurfaceProbeResult(
+        name,
+        False,
+        f"unexpected HTTP {status}: {str(body)[:160]}",
+        elapsed_ms=elapsed,
     )
 
 
@@ -523,6 +803,8 @@ DEFAULT_PROBES: list[Callable[..., SurfaceProbeResult]] = [
     probe_cancel_request,
     probe_tools_schema,
     probe_multimodal_image,
+    probe_remote_media_rejected,
+    probe_video_rejected,
 ]
 
 
@@ -534,7 +816,9 @@ def run_surface_probes(
     include_multimodal: bool = True,
     include_tools: bool = True,
     include_cancel: bool = True,
+    include_media_policy: bool = True,
     concurrency_workers: int = 3,
+    require_stream_parity: bool = True,
 ) -> SurfaceReport:
     report = SurfaceReport(base_url=base_url, model=model)
     report.results.append(
@@ -542,11 +826,23 @@ def run_surface_probes(
             base_url, model, workers=concurrency_workers, timeout=timeout
         )
     )
-    report.results.append(probe_stream_and_nonstream(base_url, model, timeout=timeout))
+    report.results.append(
+        probe_stream_and_nonstream(
+            base_url,
+            model,
+            timeout=timeout,
+            require_parity=require_stream_parity,
+        )
+    )
     if include_cancel:
         report.results.append(probe_cancel_request(base_url, model, timeout=timeout))
     if include_tools:
         report.results.append(probe_tools_schema(base_url, model, timeout=timeout))
+    if include_media_policy:
+        report.results.append(
+            probe_remote_media_rejected(base_url, model, timeout=timeout)
+        )
+        report.results.append(probe_video_rejected(base_url, model, timeout=timeout))
     if include_multimodal:
         report.results.append(probe_multimodal_image(base_url, model, timeout=timeout))
     return report
@@ -564,6 +860,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-multimodal", action="store_true")
     parser.add_argument("--skip-tools", action="store_true")
     parser.add_argument("--skip-cancel", action="store_true")
+    parser.add_argument("--skip-media-policy", action="store_true")
+    parser.add_argument(
+        "--no-stream-parity",
+        action="store_true",
+        help="Only require SSE non-empty (skip content parity)",
+    )
     parser.add_argument("--workers", type=int, default=3)
     args = parser.parse_args(argv)
 
@@ -574,7 +876,9 @@ def main(argv: list[str] | None = None) -> int:
         include_multimodal=not args.skip_multimodal,
         include_tools=not args.skip_tools,
         include_cancel=not args.skip_cancel,
+        include_media_policy=not args.skip_media_policy,
         concurrency_workers=args.workers,
+        require_stream_parity=not args.no_stream_parity,
     )
     for r in report.results:
         flag = "SKIP" if r.skipped else ("PASS" if r.passed else "FAIL")
@@ -590,3 +894,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

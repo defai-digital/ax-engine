@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Runtime smoke + QA probes for Gemma 4 12B unified multimodal chat.
 
-Sends inline base64 image / audio / video through the OpenAI-compatible
+Sends inline base64 image / audio through the OpenAI-compatible
 `/v1/chat/completions` endpoint of a *running* AX Engine server and checks the
 responses. This is the end-to-end layer the preprocessing unit/golden tests
 cannot cover (they stop before the MLX graph runs), so it doubles as:
 
-  - a runtime smoke test (does the vision/audio/video graph produce tokens at
-    all?), and
-  - a QA probe set (does the model answer plausibly?).
+  - a runtime smoke test (does the vision/audio graph produce tokens at all?),
+  - a QA probe set (does the model answer plausibly?), and
+  - a product-policy check that public ``video_url`` is rejected.
+
+Matrix / CI multimodal gates live in ``qa/multimodal_probes.py`` (smoke +
+standard tiers). Prefer those for automated runs; this script is the richer
+operator suite (Pillow fixtures, macOS speech).
 
 It needs a live server with a Gemma 4 unified artifact loaded, so it is not part
 of CI. Run it against a local server:
@@ -16,11 +20,11 @@ of CI. Run it against a local server:
     python3 scripts/qa_gemma4_multimodal.py --url http://127.0.0.1:8000 \
         --model gemma-4-12B-it
 
-Exit code is 0 only if every probe returns HTTP 200 with non-empty content and
-no response leaks Gemma 4 thinking-channel framing (a content prefix like
-`thought\n`). Content-match checks (e.g. the answer mentions "red") are
-reported but do not fail the run by default, since exact wording depends on
-the quantized weights; pass `--strict` to fail on substring mismatches too.
+Exit code is 0 only if every probe succeeds: image/audio return HTTP 200 with
+non-empty content (no thinking-channel leak), and the video policy probe
+receives a 4xx reject. Content-match checks (e.g. the answer mentions "blue")
+are reported but do not fail the run by default; pass ``--strict`` to fail on
+substring mismatches too.
 
 On macOS the probe set includes a speech-transcription check synthesized with
 `say`/`afconvert`. Speech transcription is the reliable audio-health signal:
@@ -151,6 +155,8 @@ class Probe:
     name: str
     content: list[dict]
     expect_substring: str | None
+    # When True, success means a 4xx client error (product fail-closed policy).
+    expect_http_reject: bool = False
 
 
 def _build_probes() -> list[Probe]:
@@ -197,8 +203,10 @@ def _build_probes() -> list[Probe]:
             ],
             expect_substring=None,
         ),
+        # Public OpenAI chat routes reject video (unsupported_modality).
+        # Align operator suite with product policy + qa/multimodal_probes.
         Probe(
-            name="video-frame-count",
+            name="video-rejected",
             content=[
                 {"type": "text", "text": "How many distinct frames are in this clip?"},
                 {
@@ -206,7 +214,8 @@ def _build_probes() -> list[Probe]:
                     "video_url": {"url": f"data:image/gif;base64,{_b64(three_frame_gif)}"},
                 },
             ],
-            expect_substring="3",
+            expect_substring=None,
+            expect_http_reject=True,
         ),
     ]
     if MP3_TONE_FIXTURE.exists():
@@ -255,7 +264,10 @@ def _build_probes() -> list[Probe]:
     return probes
 
 
-def _post_chat(url: str, model: str, content: list[dict], max_tokens: int) -> str:
+def _post_chat(
+    url: str, model: str, content: list[dict], max_tokens: int
+) -> tuple[int, str | None]:
+    """Return (http_status, content_or_none). 4xx/5xx yield (code, None)."""
     payload = json.dumps(
         {
             "model": model,
@@ -270,9 +282,13 @@ def _post_chat(url: str, model: str, content: list[dict], max_tokens: int) -> st
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        body = json.loads(response.read().decode("utf-8"))
-    return body["choices"][0]["message"]["content"]
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            status = int(getattr(response, "status", 200) or 200)
+            return status, body["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as error:
+        return int(error.code), None
 
 
 def main() -> int:
@@ -291,9 +307,26 @@ def main() -> int:
     print(f"Probing {args.url} (model={args.model})\n")
     for probe in _build_probes():
         try:
-            answer = _post_chat(args.url, args.model, probe.content, args.max_tokens)
+            status, answer = _post_chat(
+                args.url, args.model, probe.content, args.max_tokens
+            )
         except (urllib.error.URLError, KeyError, ValueError) as error:
             print(f"[FAIL] {probe.name}: request error: {error}")
+            failures += 1
+            continue
+
+        if probe.expect_http_reject:
+            if 400 <= status < 500:
+                print(f"[PASS] {probe.name}: rejected HTTP {status} (product policy)")
+            else:
+                print(
+                    f"[FAIL] {probe.name}: expected 4xx reject, got HTTP {status}"
+                )
+                failures += 1
+            continue
+
+        if status != 200:
+            print(f"[FAIL] {probe.name}: HTTP {status}")
             failures += 1
             continue
 
