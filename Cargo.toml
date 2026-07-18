@@ -19,6 +19,11 @@ version = "6.9.0"
 
 [workspace.dependencies]
 base64 = "0.22"
+# TUI chat: markdown rendering of assistant replies (MIT, parser-only features).
+pulldown-cmark = { version = "0.13", default-features = false }
+# TUI chat composer: display-width columns so CJK/emoji align (direct dep; also
+# pulled transitively by ratatui).
+unicode-width = "0.2"
 fs2 = "0.4"
 hound = "3"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png"] }

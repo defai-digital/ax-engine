@@ -14,6 +14,7 @@
 mod catalog;
 mod hardware;
 mod jobs;
+mod markdown;
 mod metrics;
 mod screens;
 mod theme;
@@ -32,8 +33,8 @@ use std::time::Duration;
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -60,7 +61,8 @@ pub(crate) fn cmd_tui(args: &[OsString]) -> Result<u8, String> {
              wizard walks family -> size (with RAM-fit info) -> optional\n\
              speed-up -> a confirm summary before anything is downloaded.\n\
              Downloads run in a background queue with live progress; Serve\n\
-             launches ax-engine-server; Chat streams replies from the server.\n\
+             launches ax-engine-server; Chat streams replies with markdown,\n\
+             live tok/s stats, prompt history (↑), and /clear /copy /retry.\n\
              Keys: 1-5 screens (Ctrl+1-5 while typing) · ↑↓ move · Enter select\n\
              · Esc back one level · ? help · q quit\n\
              (quitting asks first while jobs are running)."
@@ -71,11 +73,12 @@ pub(crate) fn cmd_tui(args: &[OsString]) -> Result<u8, String> {
         return Err("ax-engine tui needs an interactive terminal".into());
     }
     let mut terminal = ratatui::init();
-    // ratatui::init() does not enable mouse reporting; turn it on so clicks and
-    // scroll reach us as Event::Mouse.
-    let _ = ratatui::crossterm::execute!(io::stdout(), EnableMouseCapture);
+    // ratatui::init() does not enable mouse reporting or bracketed paste; turn
+    // both on so clicks/scroll reach us as Event::Mouse and pastes arrive as
+    // Event::Paste instead of a burst of key events.
+    let _ = ratatui::crossterm::execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste);
     let result = App::new().run(&mut terminal);
-    let _ = ratatui::crossterm::execute!(io::stdout(), DisableMouseCapture);
+    let _ = ratatui::crossterm::execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
     match result {
         Ok(()) => Ok(0),
@@ -325,6 +328,7 @@ impl App {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
                     Event::Mouse(mouse) => self.on_mouse(mouse),
+                    Event::Paste(text) => self.on_paste(&text),
                     _ => {}
                 }
             }
@@ -825,6 +829,23 @@ impl App {
         }
     }
 
+    /// Bracketed-paste payload: route to the focused text entry (chat composer,
+    /// Serve host/port fields); ignored elsewhere and while a modal owns input.
+    fn on_paste(&mut self, text: &str) {
+        if self.modal.is_some() || self.show_help {
+            return;
+        }
+        match self.screen {
+            Screen::Chat if self.server_ready => self.paste_chat_text(text),
+            Screen::Serve => match self.serve_focus {
+                ServeFocus::Host => self.host.push_str(text),
+                ServeFocus::Port => self.port.push_str(text),
+                ServeFocus::List => {}
+            },
+            _ => {}
+        }
+    }
+
     pub fn on_click(&mut self, col: u16, row: u16) {
         // Tab bar click switches screens.
         let tab_hits = self.tab_hits.take();
@@ -1038,12 +1059,21 @@ impl App {
         }
     }
 
-    /// Flip `server_ready` once the server job's log confirms it actually bound.
+    /// Track the server job in both directions: flip `server_ready` on once the
+    /// log confirms the bind, and back off if the process has since exited
+    /// (crash, port conflict after start) so Chat stops accepting input.
     pub fn update_server_ready(&mut self) {
-        if self.server_ready {
+        let Some(job) = &self.server else {
+            return;
+        };
+        if job.done.is_some() {
+            if self.server_ready {
+                self.server_ready = false;
+                self.toast_warn("server stopped — restart it on Serve");
+            }
             return;
         }
-        if let Some(job) = &self.server
+        if !self.server_ready
             && job
                 .log
                 .iter()
@@ -1396,11 +1426,20 @@ impl App {
                     key_hint("Enter"),
                     key_label(" send"),
                     key_sep(),
-                    key_hint("Ctrl+J"),
-                    key_label(" newline"),
+                    key_hint("↑"),
+                    key_label(" history"),
                     key_sep(),
-                    key_hint("Ctrl+1-5"),
-                    key_label(" screens"),
+                    key_hint("PgUp"),
+                    key_label(" scroll"),
+                    key_sep(),
+                    key_hint("Ctrl+Y"),
+                    key_label(" copy"),
+                    key_sep(),
+                    key_hint("Ctrl+R"),
+                    key_label(" retry"),
+                    key_sep(),
+                    key_hint("/"),
+                    key_label(" cmds"),
                     key_sep(),
                     key_hint("Esc"),
                     key_label(" leave"),
@@ -1419,7 +1458,9 @@ impl App {
             Screen::Models => "Models: wizard steps · / filter · Enter next · Esc back",
             Screen::Downloads => "Downloads: Enter serve when ready · x cancel",
             Screen::Serve => "Serve: Enter start · x stop · c copy URL · t chat · Tab fields",
-            Screen::Chat => "Chat: type and Enter to send · Ctrl+1-5 switch screens · Esc leave",
+            Screen::Chat => {
+                "Chat: Enter send · ↑ history · Ctrl+Y copy · Ctrl+R retry · Ctrl+L clear · / commands · PgUp/PgDn scroll"
+            }
         };
         let lines = vec![
             Line::from(Span::styled(

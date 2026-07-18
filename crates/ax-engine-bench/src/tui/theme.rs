@@ -46,6 +46,9 @@ pub const BORDER_ACTIVE: Color = ACCENT;
 /// Inactive border color for unfocused widgets.
 pub const BORDER_INACTIVE: Color = MUTED;
 
+/// Filled background behind fenced code blocks in chat (dark-terminal neutral).
+pub const CODE_BG: Color = Color::Rgb(32, 33, 36);
+
 // ---------------------------------------------------------------------------
 // Reusable style constructors
 // ---------------------------------------------------------------------------

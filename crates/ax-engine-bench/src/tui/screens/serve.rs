@@ -2,9 +2,6 @@
 //! copy the URL, see a ready-to-paste curl example, and jump to Chat.
 //! When the server is live, the layout prioritizes status + chat handoff.
 
-use std::io::Write;
-use std::process::{Command, Stdio};
-
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -87,23 +84,12 @@ impl App {
         }
     }
 
-    /// Put the server URL on the clipboard via `pbcopy` (macOS host).
+    /// Put the server URL on the clipboard (shared pbcopy helper).
     fn copy_server_url(&mut self) {
         let Some(url) = self.server_url.clone() else {
             return;
         };
-        let copied = Command::new("pbcopy")
-            .stdin(Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                if let Some(stdin) = child.stdin.as_mut() {
-                    stdin.write_all(url.as_bytes())?;
-                }
-                child.wait()
-            })
-            .map(|status| status.success())
-            .unwrap_or(false);
-        if copied {
+        if widgets::copy_to_clipboard(&url) {
             self.toast_success("URL copied");
         } else {
             self.toast_error("copy failed (pbcopy unavailable)");

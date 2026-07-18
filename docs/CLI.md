@@ -75,7 +75,15 @@ downloads use `--dest`, and MTP packages use `--output`. Downloads run in a
 background queue with a progress bar, speed, ETA, and phase labels (driven by
 `--progress-json`); Serve launches `ax-engine-server` and shows the URL with a
 copyable curl example; Chat streams replies from the running server over
-`/v1/chat/completions` (Enter sends, Ctrl+J / Shift+Enter inserts a newline).
+`/v1/chat/completions` with markdown rendering (headings, lists, code blocks),
+dimmed thinking blocks for reasoning models, and live `~tok/s` stats in the
+title plus a per-reply TTFT/tokens line (client-side estimates — the SSE
+stream carries no usage). Enter sends, Ctrl+J / Shift+Enter inserts a newline,
+↑/↓ recall prompt history (PgUp/PgDn scrolls the transcript), bracketed paste
+works in the composer, `Ctrl+Y` copies the last reply, `Ctrl+R` regenerates
+it, `Ctrl+L` clears the transcript, and `/clear` `/copy` `/retry` `/help` work
+as slash commands. If the server exits mid-session the TUI drops back to the
+no-server card instead of failing on the next send.
 Quick start enables an auto-chain (download → serve → chat). Otherwise, when a
 download finishes the TUI jumps to Downloads with the ready item selected;
 clicking the green banner or pressing Enter serves it. When the server binds,

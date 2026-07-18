@@ -7,6 +7,22 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- TUI Chat: markdown rendering for assistant replies (headings, bold/italic,
+  inline + fenced code blocks, lists, blockquotes, links), with reasoning
+  models' `<think>` blocks shown as a dimmed "Thinking" section.
+- TUI Chat: live `~tok/s` + token estimate in the title while streaming and a
+  per-reply `TTFT · elapsed · ~tokens · ~tok/s` line after each answer
+  (client-side estimates; the SSE stream carries no usage chunk).
+- TUI Chat: readline-style prompt history (↑/↓, draft stash/restore),
+  bracketed paste into the composer, `Ctrl+Y` copy last reply, `Ctrl+R`
+  regenerate, `Ctrl+L` clear transcript, and `/clear` `/copy` `/retry`
+  `/help` slash commands. Composer column math is display-width aware
+  (CJK/emoji).
+- TUI: if the server process exits after binding, the Chat screen now drops
+  the stale ready state and returns to the no-server card with a warning.
+
 ## [6.8.2] - 2026-07-09
 
 ### Added

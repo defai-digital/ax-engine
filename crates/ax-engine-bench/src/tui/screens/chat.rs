@@ -5,6 +5,7 @@
 //! SSE `data:` lines append deltas to the transcript as they arrive.
 
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -13,14 +14,46 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tui_scrollview::ScrollView;
+use unicode_width::UnicodeWidthChar;
 
 use crate::tui::jobs::Job;
+use crate::tui::markdown::render_markdown;
 use crate::tui::theme;
 use crate::tui::{App, Screen, widgets};
 
 pub(crate) struct ChatMessage {
     pub from_user: bool,
     pub content: String,
+    /// Per-reply timing/throughput, filled when an assistant stream finishes.
+    pub stats: Option<ReplyStats>,
+}
+
+/// Client-side reply measurements.  The server's SSE stream carries no usage
+/// chunk, so token counts are estimates (`chars/4`) and rendered with `~`.
+/// `ttft` is exact (send → first delta).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ReplyStats {
+    pub ttft: Duration,
+    pub elapsed: Duration,
+    pub est_tokens: usize,
+}
+
+impl ReplyStats {
+    /// `0.8s TTFT · 12.3s · ~412 tok · ~33 tok/s`
+    pub(crate) fn summary(&self) -> String {
+        let secs = self.elapsed.as_secs_f64();
+        let rate = if secs > 0.05 {
+            self.est_tokens as f64 / secs
+        } else {
+            0.0
+        };
+        format!(
+            "{:.1}s TTFT · {:.1}s · ~{} tok · ~{rate:.0} tok/s",
+            self.ttft.as_secs_f64(),
+            secs,
+            self.est_tokens,
+        )
+    }
 }
 
 pub(in crate::tui) struct ChatState {
@@ -38,7 +71,20 @@ pub(in crate::tui) struct ChatState {
     pub autoscroll: bool,
     pub job: Option<Job>,
     pub error: Option<String>,
+    /// Sent prompts, oldest first (readline-style recall with ↑/↓).
+    pub history: Vec<String>,
+    /// Active history navigation: (index into `history`, stashed draft).
+    pub hist_nav: Option<(usize, String)>,
+    /// When the current request was sent (stats: TTFT/elapsed).
+    pub send_at: Option<Instant>,
+    /// First streamed delta arrival (stats: TTFT).
+    pub first_delta_at: Option<Instant>,
+    /// Characters streamed so far in the current reply (stats: est. tokens).
+    pub stream_chars: usize,
 }
+
+/// Cap on stored prompt history entries.
+const HISTORY_CAP: usize = 100;
 
 impl ChatState {
     pub fn new() -> Self {
@@ -50,6 +96,11 @@ impl ChatState {
             autoscroll: true,
             job: None,
             error: None,
+            history: Vec::new(),
+            hist_nav: None,
+            send_at: None,
+            first_delta_at: None,
+            stream_chars: 0,
         }
     }
 
@@ -74,6 +125,10 @@ impl ChatState {
         for line in &fresh {
             match parse_sse_line(line) {
                 SseEvent::Delta(text) => {
+                    if self.first_delta_at.is_none() {
+                        self.first_delta_at = Some(Instant::now());
+                    }
+                    self.stream_chars += text.chars().count();
                     if let Some(last) = self.messages.last_mut()
                         && !last.from_user
                     {
@@ -107,7 +162,32 @@ impl ChatState {
                         .unwrap_or_else(|| "no response from server".into())
                 ));
             }
+            self.finalize_stats();
             self.job = None;
+        }
+    }
+
+    /// Stamp the just-finished assistant reply with its measured stats.
+    pub(crate) fn finalize_stats(&mut self) {
+        let Some(send_at) = self.send_at.take() else {
+            return;
+        };
+        if self.stream_chars == 0 {
+            return;
+        }
+        let stats = ReplyStats {
+            ttft: self
+                .first_delta_at
+                .take()
+                .map(|at| at.saturating_duration_since(send_at))
+                .unwrap_or_default(),
+            elapsed: send_at.elapsed(),
+            est_tokens: self.stream_chars.div_ceil(4),
+        };
+        if let Some(last) = self.messages.last_mut()
+            && !last.from_user
+        {
+            last.stats = Some(stats);
         }
     }
 }
@@ -205,6 +285,23 @@ impl App {
             self.chat.cursor = 0;
             return;
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('l') => {
+                    self.clear_chat();
+                    return;
+                }
+                KeyCode::Char('y') => {
+                    self.copy_last_reply();
+                    return;
+                }
+                KeyCode::Char('r') => {
+                    self.retry_last();
+                    return;
+                }
+                _ => {}
+            }
+        }
         // Multi-line: Ctrl+J / Shift+Enter / Alt+Enter insert a newline; bare Enter sends.
         if key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.insert_chat_char('\n');
@@ -221,6 +318,7 @@ impl App {
             KeyCode::Enter => self.send_chat_message(),
             KeyCode::Char(c) => self.insert_chat_char(c),
             KeyCode::Backspace => {
+                self.chat.hist_nav = None;
                 if self.chat.cursor > 0 {
                     self.chat.cursor -= 1;
                     let byte_idx = char_to_byte_idx(&self.chat.input, self.chat.cursor);
@@ -251,31 +349,24 @@ impl App {
             }
             KeyCode::PageUp => self.scroll_transcript(true, true),
             KeyCode::PageDown => self.scroll_transcript(false, true),
-            // Prefer vertical cursor motion inside multi-line drafts; otherwise scroll.
-            // Empty draft + at top of transcript: further Up focuses the tab bar.
+            // Single-line draft: ↑/↓ walk prompt history (draft stashed and
+            // restored), matching readline muscle memory. Multi-line drafts
+            // keep vertical cursor motion. Transcript scroll = PgUp/PgDn/wheel.
             KeyCode::Up => {
-                if self.chat.input.contains('\n') {
+                if self.chat.input.contains('\n') && self.chat.hist_nav.is_none() {
                     // Top of multi-line draft → tab bar.
                     if !self.move_chat_cursor_vert(-1) {
                         self.focus_tab_bar();
                     }
-                } else if self.chat.input.is_empty() {
-                    // Empty composer: scroll transcript, then promote to tabs.
-                    let at_top = self.chat.scroll.borrow().offset().y == 0;
-                    if at_top {
-                        self.focus_tab_bar();
-                    } else {
-                        self.scroll_transcript(true, false);
-                    }
                 } else {
-                    self.scroll_transcript(true, false);
+                    self.history_recall(-1);
                 }
             }
             KeyCode::Down => {
-                if self.chat.input.contains('\n') {
+                if self.chat.input.contains('\n') && self.chat.hist_nav.is_none() {
                     let _ = self.move_chat_cursor_vert(1);
                 } else {
-                    self.scroll_transcript(false, false);
+                    self.history_recall(1);
                 }
             }
             _ => {}
@@ -283,6 +374,8 @@ impl App {
     }
 
     fn insert_chat_char(&mut self, c: char) {
+        // Editing detaches from history navigation (readline-style).
+        self.chat.hist_nav = None;
         let byte_idx = char_to_byte_idx(&self.chat.input, self.chat.cursor);
         self.chat.input.insert(byte_idx, c);
         self.chat.cursor += 1;
@@ -342,6 +435,130 @@ impl App {
         }
     }
 
+    /// Bracketed paste into the composer: normalize line endings, insert at
+    /// the cursor as one edit (no per-character key storm).
+    pub(crate) fn paste_chat_text(&mut self, text: &str) {
+        let clean = text.replace("\r\n", "\n").replace('\r', "\n");
+        if clean.is_empty() {
+            return;
+        }
+        self.chat.hist_nav = None;
+        let byte_idx = char_to_byte_idx(&self.chat.input, self.chat.cursor);
+        self.chat.input.insert_str(byte_idx, &clean);
+        self.chat.cursor += clean.chars().count();
+    }
+
+    /// Readline-style prompt history on ↑/↓ (single-line drafts only; the
+    /// in-progress draft is stashed and restored on the way back down).
+    /// With no history yet, ↑/↓ keep the scroll / tab-bar-promote behavior.
+    fn history_recall(&mut self, dir: i32) {
+        if self.chat.history.is_empty() {
+            if dir < 0 {
+                let at_top = self.chat.scroll.borrow().offset().y == 0;
+                if at_top {
+                    self.focus_tab_bar();
+                } else {
+                    self.scroll_transcript(true, false);
+                }
+            } else {
+                self.scroll_transcript(false, false);
+            }
+            return;
+        }
+        match self.chat.hist_nav {
+            None => {
+                if dir >= 0 {
+                    self.scroll_transcript(false, false);
+                    return;
+                }
+                let idx = self.chat.history.len() - 1;
+                let draft = std::mem::take(&mut self.chat.input);
+                self.chat.hist_nav = Some((idx, draft));
+                self.chat.input = self.chat.history[idx].clone();
+            }
+            Some((idx, _)) if dir < 0 => {
+                if idx == 0 {
+                    // ↑ past the oldest entry: restore the draft, promote to tabs.
+                    let draft = self
+                        .chat
+                        .hist_nav
+                        .take()
+                        .map(|(_, draft)| draft)
+                        .unwrap_or_default();
+                    self.chat.input = draft;
+                    self.chat.cursor = self.chat.input.chars().count();
+                    self.focus_tab_bar();
+                    return;
+                }
+                let idx = idx - 1;
+                if let Some(nav) = self.chat.hist_nav.as_mut() {
+                    nav.0 = idx;
+                }
+                self.chat.input = self.chat.history[idx].clone();
+            }
+            Some((idx, _)) => {
+                if idx + 1 < self.chat.history.len() {
+                    let idx = idx + 1;
+                    if let Some(nav) = self.chat.hist_nav.as_mut() {
+                        nav.0 = idx;
+                    }
+                    self.chat.input = self.chat.history[idx].clone();
+                } else {
+                    // ↓ past the newest entry: back to the stashed draft.
+                    let draft = self
+                        .chat
+                        .hist_nav
+                        .take()
+                        .map(|(_, draft)| draft)
+                        .unwrap_or_default();
+                    self.chat.input = draft;
+                }
+            }
+        }
+        self.chat.cursor = self.chat.input.chars().count();
+    }
+
+    /// Ctrl+L / `/clear`: wipe the transcript and any stuck error.
+    fn clear_chat(&mut self) {
+        self.chat.messages.clear();
+        self.chat.error = None;
+        self.toast("chat cleared");
+    }
+
+    /// Ctrl+Y / `/copy`: copy the last assistant reply's answer (thinking
+    /// block excluded) to the clipboard.
+    fn copy_last_reply(&mut self) {
+        let reply = self
+            .chat
+            .messages
+            .iter()
+            .rev()
+            .find(|m| !m.from_user && !m.content.is_empty())
+            .map(|m| split_thinking(&m.content).1.to_string());
+        match reply {
+            None => self.toast_warn("no reply to copy yet"),
+            Some(text) if widgets::copy_to_clipboard(&text) => {
+                self.toast_success("reply copied");
+            }
+            Some(_) => self.toast_error("copy failed (pbcopy unavailable)"),
+        }
+    }
+
+    /// Ctrl+R / `/retry`: drop the last assistant answer and regenerate it
+    /// from the same transcript prefix.
+    fn retry_last(&mut self) {
+        if self.chat.streaming() {
+            return;
+        }
+        let Some(last_user) = self.chat.messages.iter().rposition(|m| m.from_user) else {
+            self.toast_warn("nothing to retry yet");
+            return;
+        };
+        self.chat.messages.truncate(last_user + 1);
+        self.chat.error = None;
+        self.stream_reply();
+    }
+
     /// Scroll the transcript and maintain the follow-new-tokens attachment:
     /// any upward scroll detaches, and scrolling down past the end (offset
     /// stops moving) re-attaches.
@@ -370,37 +587,83 @@ impl App {
         if self.chat.streaming() || self.chat.input.trim().is_empty() {
             return;
         }
-        let Some(url) = self.server_url.clone().filter(|_| self.server_ready) else {
+        if !self.server_ready || self.server_url.is_none() {
             self.chat.error = Some("start a server first (press 4 Serve)".into());
             return;
-        };
+        }
         let prompt = std::mem::take(&mut self.chat.input);
         self.chat.cursor = 0;
+        if prompt.trim_start().starts_with('/') {
+            self.run_slash_command(prompt.trim());
+            return;
+        }
+        if self.chat.history.last() != Some(&prompt) {
+            self.chat.history.push(prompt.clone());
+            if self.chat.history.len() > HISTORY_CAP {
+                self.chat.history.remove(0);
+            }
+        }
+        self.chat.hist_nav = None;
         self.chat.error = None;
         self.chat.autoscroll = true;
         self.chat.messages.push(ChatMessage {
             from_user: true,
             content: prompt,
+            stats: None,
         });
+        self.stream_reply();
+    }
+
+    /// `/clear` `/copy` `/retry` `/help` — local commands, never sent to the model.
+    fn run_slash_command(&mut self, cmd: &str) {
+        match cmd {
+            "/clear" => self.clear_chat(),
+            "/copy" => self.copy_last_reply(),
+            "/retry" => self.retry_last(),
+            "/help" | "/?" => self.show_help = true,
+            other => {
+                self.chat.error = Some(format!(
+                    "unknown command {other} — try /clear /copy /retry /help"
+                ));
+            }
+        }
+    }
+
+    /// Spawn the streaming request for the current transcript and push the
+    /// empty assistant placeholder.  Shared by send and retry.
+    fn stream_reply(&mut self) {
+        let Some(url) = self.server_url.clone().filter(|_| self.server_ready) else {
+            self.chat.error = Some("start a server first (press 4 Serve)".into());
+            return;
+        };
         // No "model" field: the server 400s on any name that differs from its
         // configured model_id and accepts requests that omit it entirely.
-        let body = serde_json::json!({
-            "messages": self
-                .chat
-                .messages
-                .iter()
-                .map(|m| {
-                    serde_json::json!({
-                        "role": if m.from_user { "user" } else { "assistant" },
-                        "content": m.content,
-                    })
+        // Assistant history sends the answer only — thinking blocks are local
+        // display artifacts, not prompt material.
+        let messages: Vec<serde_json::Value> = self
+            .chat
+            .messages
+            .iter()
+            .map(|m| {
+                let content = if m.from_user {
+                    m.content.clone()
+                } else {
+                    split_thinking(&m.content).1.to_string()
+                };
+                serde_json::json!({
+                    "role": if m.from_user { "user" } else { "assistant" },
+                    "content": content,
                 })
-                .collect::<Vec<_>>(),
+            })
+            .collect();
+        let body = serde_json::json!({
+            "messages": messages,
             "stream": true,
         });
         self.chat.messages.push(ChatMessage {
             from_user: false,
             content: String::new(),
+            stats: None,
         });
         let mut cmd = Command::new("curl");
         cmd.args([
@@ -419,6 +682,9 @@ impl App {
             Job::spawn_with_stdin(cmd, Some(body.to_string()), None)
                 .unwrap_or_else(|err| Job::failed(format!("failed to launch curl: {err}"))),
         );
+        self.chat.send_at = Some(Instant::now());
+        self.chat.first_delta_at = None;
+        self.chat.stream_chars = 0;
     }
 
     pub(crate) fn draw_chat(&self, frame: &mut Frame, area: Rect) {
@@ -480,51 +746,55 @@ impl App {
 
     fn draw_chat_transcript(&self, frame: &mut Frame, area: Rect) {
         let mut lines: Vec<Line> = Vec::new();
-        for message in self.chat.messages.iter() {
-            let content = if !message.from_user && message.content.is_empty() {
-                if self.chat.streaming() { "…" } else { "" }
-            } else {
-                &message.content
-            };
-            let first_line = if message.from_user {
-                Line::from(vec![
-                    Span::styled(
-                        "You  ",
-                        Style::default()
-                            .fg(theme::ACCENT)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        content.lines().next().unwrap_or("").to_string(),
+        let last_idx = self.chat.messages.len().saturating_sub(1);
+        for (idx, message) in self.chat.messages.iter().enumerate() {
+            if message.from_user {
+                let mut spans = vec![Span::styled(
+                    "You  ",
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                )];
+                let mut parts = message.content.lines();
+                spans.push(Span::styled(
+                    parts.next().unwrap_or("").to_string(),
+                    theme::body(),
+                ));
+                lines.push(Line::from(spans));
+                for part in parts {
+                    lines.push(Line::from(Span::styled(
+                        format!("     {part}"),
                         theme::body(),
-                    ),
-                ])
+                    )));
+                }
             } else {
                 let model_name = self.server_model.as_deref().unwrap_or("Model");
                 let short: String = model_name.chars().take(14).collect();
-                Line::from(vec![
-                    Span::styled(
-                        format!("{short}  "),
-                        Style::default().fg(theme::OK).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        content.lines().next().unwrap_or("").to_string(),
-                        theme::body_dim(),
-                    ),
-                ])
-            };
-            lines.push(first_line);
-            // Additional lines (indented to align after badge).
-            let indent = if message.from_user { "     " } else { "      " };
-            for part in content.lines().skip(1) {
                 lines.push(Line::from(Span::styled(
-                    format!("{indent}{part}"),
-                    if message.from_user {
-                        theme::body()
-                    } else {
-                        theme::body_dim()
-                    },
+                    short,
+                    Style::default().fg(theme::OK).add_modifier(Modifier::BOLD),
                 )));
+                let (thinking, answer) = split_thinking(&message.content);
+                if let Some(think) = thinking {
+                    let dim = Style::default()
+                        .fg(theme::MUTED)
+                        .add_modifier(Modifier::ITALIC);
+                    lines.push(Line::from(Span::styled("▸ Thinking", dim)));
+                    for part in think.lines() {
+                        lines.push(Line::from(Span::styled(part.to_string(), dim)));
+                    }
+                }
+                if answer.is_empty() {
+                    // Placeholder while the (empty) reply is streaming in.
+                    if self.chat.streaming() && idx == last_idx {
+                        lines.push(Line::from(Span::styled("…", theme::body_dim())));
+                    }
+                } else {
+                    lines.extend(render_markdown(answer));
+                }
+                if let Some(stats) = message.stats {
+                    lines.push(Line::from(Span::styled(stats.summary(), theme::label())));
+                }
             }
             lines.push(Line::raw(""));
         }
@@ -535,14 +805,21 @@ impl App {
             ]));
         }
         let title = if self.chat.streaming() {
-            " Chat — replying… (Esc cancels) "
+            let est = self.chat.stream_chars.div_ceil(4);
+            let secs = self
+                .chat
+                .send_at
+                .map(|at| at.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
+            let rate = if secs > 0.05 { est as f64 / secs } else { 0.0 };
+            format!(" Chat — replying… ~{est} tok · ~{rate:.0} tok/s (Esc cancels) ")
         } else {
-            " Chat "
+            " Chat ".to_string()
         };
         let block = if self.chat.streaming() {
-            widgets::active_block(title).border_style(Style::default().fg(theme::WARN))
+            widgets::active_block(&title).border_style(Style::default().fg(theme::WARN))
         } else {
-            widgets::soft_block(title)
+            widgets::soft_block(&title)
         };
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -611,7 +888,7 @@ impl App {
         }
         if (lines.len() as u16) + 1 < area.height {
             lines.push(Line::from(Span::styled(
-                "Enter send · Ctrl+J / Shift+Enter newline · Ctrl+1-5 screens · Esc leave",
+                "Enter send · Ctrl+J newline · ↑ history · Ctrl+Y copy · Ctrl+R retry · / commands · Esc leave",
                 theme::label(),
             )));
         }
@@ -630,7 +907,8 @@ fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
 }
 
 /// Soft-wrap + hard-newline visual line count for the composer.
-fn count_visual_lines(text: &str, cols: usize) -> usize {
+/// Columns are display widths, so CJK/emoji don't drift the height estimate.
+pub(crate) fn count_visual_lines(text: &str, cols: usize) -> usize {
     let cols = cols.max(1);
     let mut lines = 1usize;
     // Leading prompt is ~2 cols.
@@ -640,34 +918,64 @@ fn count_visual_lines(text: &str, cols: usize) -> usize {
             lines += 1;
             col = 0;
         } else {
-            if col >= cols {
+            let w = UnicodeWidthChar::width(c).unwrap_or(0);
+            if col + w > cols {
                 lines += 1;
                 col = 0;
             }
-            col += 1;
+            col += w;
         }
     }
     lines
 }
 
-/// Lay out cells into visual rows, wrapping at `cols` and breaking on `\n`.
+/// Lay out cells into visual rows, wrapping at `cols` (display width) and
+/// breaking on `\n`.
 fn layout_cells(cells: &[(char, bool)], cols: usize) -> Vec<Vec<(char, bool)>> {
     let cols = cols.max(1);
     let mut rows: Vec<Vec<(char, bool)>> = vec![Vec::new()];
     let mut col = 0usize;
     for &(ch, is_cursor) in cells {
         if ch == '\n' {
-            rows.last_mut().unwrap().push(('\n', is_cursor));
+            if let Some(row) = rows.last_mut() {
+                row.push(('\n', is_cursor));
+            }
             rows.push(Vec::new());
             col = 0;
             continue;
         }
-        if col >= cols {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col > 0 && col + w > cols {
             rows.push(Vec::new());
             col = 0;
         }
-        rows.last_mut().unwrap().push((ch, is_cursor));
-        col += 1;
+        if let Some(row) = rows.last_mut() {
+            row.push((ch, is_cursor));
+        }
+        col += w;
     }
     rows
+}
+
+/// Split assistant content into `(thinking, answer)`.
+///
+/// The server pre-fills `<think>` into Qwen prompts, so the stream often
+/// carries only the closing tag; a leading `<think>` is stripped when the
+/// model emits it.  With an opening tag but no close yet (mid-stream),
+/// everything counts as thinking.  Render-time split keeps the streaming
+/// append path trivial and works for retries/history equally.
+pub(crate) fn split_thinking(content: &str) -> (Option<&str>, &str) {
+    let body = content.strip_prefix("<think>").unwrap_or(content);
+    match body.split_once("</think>") {
+        Some((think, answer)) => {
+            let think = think.trim();
+            let answer = answer.trim_start();
+            (if think.is_empty() { None } else { Some(think) }, answer)
+        }
+        None if content.starts_with("<think>") => {
+            let think = body.trim();
+            (if think.is_empty() { None } else { Some(think) }, "")
+        }
+        None => (None, content),
+    }
 }

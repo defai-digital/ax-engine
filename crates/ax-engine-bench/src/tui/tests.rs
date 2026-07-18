@@ -7,11 +7,14 @@ use super::metrics::{
     parse_loadavg_1m, parse_ps_cpu_percent, parse_ps_top_rss, parse_vm_stat_free_bytes,
     parse_vm_stat_used_bytes,
 };
-use super::screens::chat::{SseEvent, parse_sse_line};
+use super::screens::chat::{
+    ChatMessage, ReplyStats, SseEvent, count_visual_lines, parse_sse_line, split_thinking,
+};
 use super::{App, Modal, Screen, WizardStage};
 
 use std::path::{Path, PathBuf};
 use std::process;
+use std::time::Duration;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -26,6 +29,15 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent {
         code,
         modifiers: KeyModifiers::empty(),
+        kind: KeyEventKind::Press,
+        state: ratatui::crossterm::event::KeyEventState::empty(),
+    }
+}
+
+fn ctrl_key(c: char) -> KeyEvent {
+    KeyEvent {
+        code: KeyCode::Char(c),
+        modifiers: KeyModifiers::CONTROL,
         kind: KeyEventKind::Press,
         state: ratatui::crossterm::event::KeyEventState::empty(),
     }
@@ -1315,6 +1327,7 @@ fn chat_scroll_detaches_and_reattaches_follow_mode() {
         app.chat.messages.push(super::screens::chat::ChatMessage {
             from_user: i % 2 == 0,
             content: format!("message {i}"),
+            stats: None,
         });
     }
     assert!(app.chat.autoscroll, "follows new tokens by default");
@@ -1339,10 +1352,12 @@ fn chat_transcript_renders_when_server_ready() {
     app.chat.messages.push(super::screens::chat::ChatMessage {
         from_user: true,
         content: "What is AX?".into(),
+        stats: None,
     });
     app.chat.messages.push(super::screens::chat::ChatMessage {
         from_user: false,
         content: "A local inference engine.".into(),
+        stats: None,
     });
     let text = render(&app);
     assert!(text.contains("You"));
@@ -1354,4 +1369,280 @@ fn chat_transcript_renders_when_server_ready() {
         text.contains('›') || text.contains(">"),
         "input prompt should render"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Chat P0: history, slash commands, paste, stats, thinking, composer width
+// ---------------------------------------------------------------------------
+
+/// App with a "ready" server (points at the discard port; spawned curls fail
+/// fast with connection-refused rather than talking to anything real).
+fn chat_ready_app() -> App {
+    let mut app = new_app();
+    app.server = Some(Job::running_with_log(vec![]));
+    app.server_ready = true;
+    app.server_url = Some("http://127.0.0.1:9".into());
+    app.screen = Screen::Chat;
+    app
+}
+
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+}
+
+#[test]
+fn chat_send_pushes_history_and_dedupes_last() {
+    let mut app = chat_ready_app();
+    type_text(&mut app, "hello");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.chat.history, vec!["hello".to_string()]);
+    assert!(app.chat.input.is_empty());
+    assert!(app.chat.messages[0].from_user);
+    type_text(&mut app, "hello");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.chat.history.len(),
+        1,
+        "consecutive dupes are not stored"
+    );
+}
+
+#[test]
+fn chat_history_recall_restores_draft_on_the_way_down() {
+    let mut app = chat_ready_app();
+    app.chat.history = vec!["first".to_string(), "second".to_string()];
+    type_text(&mut app, "draft");
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.chat.input, "second");
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.chat.input, "first");
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.chat.input, "second");
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.chat.input, "draft",
+        "down past newest restores the draft"
+    );
+    assert!(app.chat.hist_nav.is_none());
+}
+
+#[test]
+fn chat_history_up_past_oldest_restores_draft_and_promotes_tabs() {
+    let mut app = chat_ready_app();
+    app.chat.history = vec!["only".to_string()];
+    type_text(&mut app, "draft");
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.chat.input, "only");
+    app.on_key(key(KeyCode::Up));
+    assert!(
+        app.focus_tabs,
+        "up past the oldest entry promotes to the tab bar"
+    );
+    assert_eq!(app.chat.input, "draft");
+    assert!(app.chat.hist_nav.is_none());
+}
+
+#[test]
+fn chat_up_without_history_keeps_scroll_and_tab_promotion() {
+    let mut app = chat_ready_app();
+    app.on_key(key(KeyCode::Up));
+    assert!(
+        app.focus_tabs,
+        "empty history + empty input: up reaches tab bar"
+    );
+}
+
+#[test]
+fn chat_history_is_capped() {
+    let mut app = chat_ready_app();
+    app.chat.history = (0..100).map(|i| format!("prompt {i}")).collect();
+    type_text(&mut app, "newest");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.chat.history.len(), 100);
+    assert_eq!(app.chat.history.last().map(String::as_str), Some("newest"));
+    assert_eq!(
+        app.chat.history.first().map(String::as_str),
+        Some("prompt 1")
+    );
+}
+
+#[test]
+fn chat_slash_clear_empties_transcript() {
+    let mut app = chat_ready_app();
+    app.chat.messages.push(ChatMessage {
+        from_user: true,
+        content: "hi".into(),
+        stats: None,
+    });
+    type_text(&mut app, "/clear");
+    app.on_key(key(KeyCode::Enter));
+    assert!(app.chat.messages.is_empty());
+    assert!(app.chat.input.is_empty());
+}
+
+#[test]
+fn chat_unknown_slash_command_reports_error() {
+    let mut app = chat_ready_app();
+    type_text(&mut app, "/bogus");
+    app.on_key(key(KeyCode::Enter));
+    let err = app.chat.error.unwrap_or_default();
+    assert!(err.contains("unknown command"), "got: {err}");
+}
+
+#[test]
+fn chat_ctrl_l_clears_transcript() {
+    let mut app = chat_ready_app();
+    app.chat.messages.push(ChatMessage {
+        from_user: true,
+        content: "hi".into(),
+        stats: None,
+    });
+    app.on_key(ctrl_key('l'));
+    assert!(app.chat.messages.is_empty());
+}
+
+#[test]
+fn chat_ctrl_r_retry_truncates_answer_and_respawns() {
+    let mut app = chat_ready_app();
+    app.chat.messages.push(ChatMessage {
+        from_user: true,
+        content: "hi".into(),
+        stats: None,
+    });
+    app.chat.messages.push(ChatMessage {
+        from_user: false,
+        content: "hello".into(),
+        stats: None,
+    });
+    app.on_key(ctrl_key('r'));
+    assert_eq!(app.chat.messages.len(), 2, "user turn + fresh placeholder");
+    assert!(app.chat.messages[0].from_user);
+    assert!(!app.chat.messages[1].from_user);
+    assert!(app.chat.messages[1].content.is_empty());
+    assert!(app.chat.job.is_some(), "retry should spawn a new stream");
+    app.chat.cancel();
+}
+
+#[test]
+fn chat_paste_inserts_at_cursor_and_normalizes_crlf() {
+    let mut app = chat_ready_app();
+    type_text(&mut app, "ab");
+    app.on_key(key(KeyCode::Left));
+    app.on_paste("X\r\nY");
+    assert_eq!(app.chat.input, "aX\nYb");
+}
+
+#[test]
+fn chat_paste_ignored_without_server() {
+    let mut app = new_app();
+    app.screen = Screen::Chat;
+    app.on_paste("hello");
+    assert!(app.chat.input.is_empty());
+}
+
+#[test]
+fn split_thinking_handles_all_stream_shapes() {
+    // Prompt-prefilled open tag: only the close tag arrives in the stream.
+    let (think, answer) = split_thinking("let me reason</think>\n\nThe answer.");
+    assert_eq!(think, Some("let me reason"));
+    assert_eq!(answer, "The answer.");
+    // Full tags emitted in content.
+    let (think, answer) = split_thinking("<think>deep</think>result");
+    assert_eq!(think, Some("deep"));
+    assert_eq!(answer, "result");
+    // Mid-stream thinking (open tag, no close yet).
+    let (think, answer) = split_thinking("<think>still going");
+    assert_eq!(think, Some("still going"));
+    assert_eq!(answer, "");
+    // Plain reply: untouched.
+    let (think, answer) = split_thinking("just text");
+    assert_eq!(think, None);
+    assert_eq!(answer, "just text");
+    // Empty thinking block (reasoning skipped) is suppressed.
+    let (think, answer) = split_thinking("<think>\n\n</think>\n\nplain");
+    assert_eq!(think, None);
+    assert_eq!(answer, "plain");
+}
+
+#[test]
+fn chat_transcript_renders_thinking_dimmed_and_answer() {
+    let mut app = chat_ready_app();
+    app.server_model = Some("qwen3-4b".into());
+    app.chat.messages.push(ChatMessage {
+        from_user: false,
+        content: "pondering</think>\n\n**Answer** here.".into(),
+        stats: None,
+    });
+    let text = render(&app);
+    assert!(text.contains("Thinking"));
+    assert!(text.contains("pondering"));
+    assert!(text.contains("Answer"));
+    assert!(text.contains("here."));
+}
+
+#[test]
+fn finalize_stats_estimates_tokens_and_ttft() {
+    let mut app = chat_ready_app();
+    app.chat.messages.push(ChatMessage {
+        from_user: false,
+        content: "x".repeat(400),
+        stats: None,
+    });
+    app.chat.send_at = Some(std::time::Instant::now());
+    app.chat.first_delta_at = Some(std::time::Instant::now());
+    app.chat.stream_chars = 400;
+    app.chat.finalize_stats();
+    let stats = app.chat.messages[0].stats;
+    assert!(stats.is_some(), "stats recorded");
+    let Some(stats) = stats else {
+        return;
+    };
+    assert_eq!(stats.est_tokens, 100, "chars/4 estimate");
+    assert!(stats.elapsed < Duration::from_secs(5));
+}
+
+#[test]
+fn reply_stats_summary_format() {
+    let stats = ReplyStats {
+        ttft: Duration::from_millis(800),
+        elapsed: Duration::from_millis(12_300),
+        est_tokens: 412,
+    };
+    assert_eq!(stats.summary(), "0.8s TTFT · 12.3s · ~412 tok · ~33 tok/s");
+}
+
+#[test]
+fn chat_streaming_title_shows_live_stats() {
+    let mut app = chat_ready_app();
+    app.chat.messages.push(ChatMessage {
+        from_user: false,
+        content: "partial".into(),
+        stats: None,
+    });
+    app.chat.job = Some(Job::running_with_log(vec![]));
+    app.chat.send_at = Some(std::time::Instant::now());
+    app.chat.stream_chars = 40;
+    let text = render(&app);
+    assert!(text.contains("~10 tok"), "title carries live est. tokens");
+    assert!(text.contains("tok/s"));
+}
+
+#[test]
+fn composer_counts_display_width_for_cjk() {
+    // Prompt occupies 2 cols; each CJK char takes 2 more.
+    assert_eq!(count_visual_lines("ab", 4), 1);
+    assert_eq!(count_visual_lines("你好", 4), 2);
+    assert_eq!(count_visual_lines("你好你好", 4), 3);
+    assert_eq!(count_visual_lines("abcd", 4), 2);
+}
+
+#[test]
+fn server_ready_flips_off_when_process_exits() {
+    let mut app = new_app();
+    app.server = Some(Job::failed("boom".into()));
+    app.server_ready = true;
+    app.update_server_ready();
+    assert!(!app.server_ready, "exited server must drop the ready flag");
 }

@@ -10,12 +10,14 @@ ax-engine-core = { path = "../ax-engine-core" }
 ax-engine-mlx = { path = "../ax-engine-mlx" }
 ax-engine-sdk = { path = "../ax-engine-sdk", features = ["mlx-native", "tokenizer"] }
 mlx-sys = { path = "../mlx-sys" }
+pulldown-cmark.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing-subscriber.workspace = true
 tui-scrollview.workspace = true
+unicode-width.workspace = true
 
 [lints]
 workspace = true

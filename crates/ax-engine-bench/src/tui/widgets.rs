@@ -280,6 +280,24 @@ pub(super) fn row_in_rect_ex(rect: Rect, col: u16, row: u16, active: bool) -> Op
     }
 }
 
+/// Copy text to the macOS clipboard via `pbcopy`.  Returns false when pbcopy
+/// is unavailable or fails (caller surfaces a toast).
+pub(super) fn copy_to_clipboard(text: &str) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            if let Some(stdin) = child.stdin.as_mut() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()
+        })
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 pub(super) fn field_line(label: &str, value: &str, active: bool) -> Line<'static> {
     let value_style = if active {
         Style::default().fg(theme::ON_ACCENT).bg(theme::ACCENT)
