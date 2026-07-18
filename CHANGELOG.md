@@ -33,10 +33,10 @@ and this project adheres to Semantic Versioning.
   alongside the default `model_id` in multi-model serving.
 - `response_format: json_schema` (non-streaming): OpenAI request shape
   accepted; output validated server-side against a documented schema subset
-  (`502 invalid_output` on mismatch); unsupported keywords and unenforceable
-  keyword values are rejected up front with `400 unsupported_json_schema`
-  rather than silently partially validated. Post-hoc validation, not
-  constrained decoding.
+  (`502 invalid_output` on mismatch); schemas using keywords outside that
+  subset are rejected up front with `400 unsupported_json_schema` rather than
+  silently partially validated. Post-hoc validation, not constrained
+  decoding. (Unenforceable *values* of supported keywords: see Fixed.)
 - Streaming reasoning: native Qwen ChatML and Gemma 4 chat streams emit
   incremental `delta.reasoning_content` when the `reasoning` opt-in is set
   (previously rejected for all streaming requests).

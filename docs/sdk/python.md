@@ -311,11 +311,6 @@ with ax_engine.Session(
         print(event.event, event.delta_tokens, event.response)
 ```
 
-On native MLX sessions, dropping the stream iterator (or leaving it after a
-mid-stream error) cancels the in-flight request so it does not keep
-co-decoding or holding KV alongside later `generate` / `stream_generate`
-calls on the same session.
-
 The wrapper now also exposes a thin text-first chat convenience layer.
 It uses the same small built-in chat-template registry as the server:
 Qwen model ids render as Qwen ChatML, Llama 3 model ids render as the Llama 3
@@ -398,6 +393,12 @@ with ax_engine.Session(
     for event in session.stream_generate([1, 2, 3], max_output_tokens=2):
         print(event.event, event.delta_tokens, event.response)
 ```
+
+On these native MLX sessions, dropping the stream iterator (or leaving it
+after a mid-stream error) cancels the in-flight request so it does not keep
+co-decoding or holding KV alongside later `generate` / `stream_generate`
+calls on the same session. Delegated llama.cpp / `mlx_lm` streams do not use
+that native cancel path.
 
 After `maturin develop`, you can run the streaming example:
 
