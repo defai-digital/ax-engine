@@ -298,6 +298,12 @@ enum Modal {
         typed: String,
     },
     StopServer,
+    /// From Serve with a running server: Enter on a different installed
+    /// model — stop the current one and restart with the selection.
+    RestartServer {
+        family_idx: usize,
+        variant_idx: usize,
+    },
     /// Confirm before wiping the chat transcript (Ctrl+L / `/clear`).
     ClearChat,
     /// Custom destination for the wizard confirm step.
@@ -477,20 +483,34 @@ impl App {
         self.families = build_families();
     }
 
+    /// Push a toast, coalescing consecutive duplicates: when the newest toast
+    /// carries the same text and level, refresh its timestamp instead of
+    /// stacking a copy (e.g. repeated Enter on a still-downloading row).
+    fn push_toast(&mut self, toast: widgets::Toast) {
+        if let Some(last) = self.toasts.last_mut()
+            && last.text == toast.text
+            && last.level == toast.level
+        {
+            last.at = std::time::Instant::now();
+            return;
+        }
+        self.toasts.push(toast);
+    }
+
     pub fn toast(&mut self, text: impl Into<String>) {
-        self.toasts.push(widgets::Toast::info(text.into()));
+        self.push_toast(widgets::Toast::info(text.into()));
     }
 
     pub fn toast_success(&mut self, text: impl Into<String>) {
-        self.toasts.push(widgets::Toast::success(text.into()));
+        self.push_toast(widgets::Toast::success(text.into()));
     }
 
     pub fn toast_warn(&mut self, text: impl Into<String>) {
-        self.toasts.push(widgets::Toast::warning(text.into()));
+        self.push_toast(widgets::Toast::warning(text.into()));
     }
 
     pub fn toast_error(&mut self, text: impl Into<String>) {
-        self.toasts.push(widgets::Toast::error(text.into()));
+        self.push_toast(widgets::Toast::error(text.into()));
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
@@ -1092,6 +1112,20 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
             },
+            Modal::RestartServer {
+                family_idx,
+                variant_idx,
+            } => match code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    // Same start path as Serve Enter / ServeInstalled, just
+                    // after stopping the currently served model.
+                    self.stop_server();
+                    self.auto_chat_after_serve = true;
+                    self.serve_installed(family_idx, variant_idx);
+                }
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
+                _ => self.modal = Some(modal),
+            },
             Modal::ClearChat => match code {
                 KeyCode::Enter | KeyCode::Char('y') => self.clear_chat(),
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
@@ -1355,6 +1389,31 @@ impl App {
 
     pub fn server_running(&self) -> bool {
         self.server.as_ref().is_some_and(|j| j.done.is_none())
+    }
+
+    /// True when the given catalog variant is the model the running server
+    /// was started with. `server_model` is the display label for
+    /// download-served models and the profile label for direct serves —
+    /// check both (same rule as the delete modal's in-use warning).
+    pub(crate) fn is_served_variant(&self, family_idx: usize, variant_idx: usize) -> bool {
+        if !self.server_running() {
+            return false;
+        }
+        let Some(variant) = self
+            .families
+            .get(family_idx)
+            .and_then(|f| f.variants.get(variant_idx))
+        else {
+            return false;
+        };
+        let label = format!(
+            "{} {}",
+            self.families[family_idx].display_name(),
+            variant.precision()
+        );
+        self.server_model
+            .as_deref()
+            .is_some_and(|m| m == label || m == variant.profile.label)
     }
 
     fn serve_installed(&mut self, family_idx: usize, variant_idx: usize) {
@@ -1907,7 +1966,7 @@ impl App {
                 }
                 Screen::Serve if self.server_ready => vec![
                     key_hint("Enter"),
-                    key_label(" chat"),
+                    key_label(" chat/switch"),
                     key_sep(),
                     key_hint("c"),
                     key_label(" copy"),
@@ -1961,6 +2020,9 @@ impl App {
                         key_hint("Ctrl+Y"),
                         key_label(" copy"),
                         key_sep(),
+                        key_hint("Ctrl+T"),
+                        key_label(" thinking"),
+                        key_sep(),
                         key_hint("4"),
                         key_label(" Serve"),
                         key_sep(),
@@ -1994,6 +2056,9 @@ impl App {
                     key_hint("Ctrl+R"),
                     key_label(" retry"),
                     key_sep(),
+                    key_hint("Ctrl+T"),
+                    key_label(" thinking"),
+                    key_sep(),
                     key_hint("/"),
                     key_label(" cmds"),
                     key_sep(),
@@ -2016,10 +2081,10 @@ impl App {
                 "Downloads: Enter serve when ready · x cancel · PgUp/PgDn scroll log"
             }
             Screen::Serve => {
-                "Serve: Enter start · x stop · c copy URL · t chat · Tab fields · PgUp/PgDn scroll log"
+                "Serve: Enter start/switch · x stop · c copy URL · t chat · Tab fields · PgUp/PgDn scroll log"
             }
             Screen::Chat => {
-                "Chat: Enter send · ↑ history · Ctrl+J newline · Ctrl+U clear draft · Ctrl+Y copy · Ctrl+R retry · Ctrl+L clear · / commands · PgUp/PgDn scroll"
+                "Chat: Enter send · ↑ history · Ctrl+J newline · Ctrl+U clear draft · Ctrl+Y copy · Ctrl+R retry · Ctrl+L clear · Ctrl+T thinking · / commands · PgUp/PgDn scroll"
             }
         };
         let lines = vec![
@@ -2271,6 +2336,38 @@ impl App {
                 ],
                 theme::colors().warn,
             ),
+            Modal::RestartServer {
+                family_idx,
+                variant_idx,
+            } => {
+                let label = self
+                    .families
+                    .get(*family_idx)
+                    .and_then(|f| f.variants.get(*variant_idx))
+                    .map(|v| {
+                        format!(
+                            "{} {}",
+                            self.families[*family_idx].display_name(),
+                            v.precision()
+                        )
+                    })
+                    .unwrap_or_default();
+                widgets::draw_modal_with(
+                    frame,
+                    area,
+                    "⚠ Restart server",
+                    vec![
+                        Line::raw(format!("Restart the server with {label}?")),
+                        Line::raw("The current model stops."),
+                    ],
+                    vec![
+                        theme::key_chip_danger("y restart"),
+                        theme::key_sep(),
+                        theme::key_chip_dim("Esc keep"),
+                    ],
+                    theme::colors().warn,
+                )
+            }
             Modal::ClearChat => widgets::draw_modal_with(
                 frame,
                 area,

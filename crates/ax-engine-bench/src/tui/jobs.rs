@@ -137,6 +137,24 @@ impl Job {
         }
     }
 
+    /// A finished, processless job with a fixed exit code (test-only).
+    #[cfg(test)]
+    pub fn exited(code: i32) -> Job {
+        let (_tx, rx) = mpsc::channel();
+        Job {
+            rx,
+            child: None,
+            log: Vec::new(),
+            done: Some(code),
+            watch_dir: None,
+            bytes: 0,
+            speed: 0.0,
+            speed_history: Vec::new(),
+            last_poll: None,
+            spinner: 0,
+        }
+    }
+
     /// Drain pending lines into `log` and refresh liveness/byte counters.
     ///
     /// `fresh` is the lines that arrived this tick so callers can parse them
@@ -244,6 +262,18 @@ pub(super) enum DownloadOutcome {
     Failed,
 }
 
+/// Coarse lifecycle state of a download, for icon/style mapping.
+/// `status_label` stays the label-only formatter over this (it adds the
+/// exit code for failures).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DownloadStatus {
+    Queued,
+    Running,
+    Ready,
+    Failed,
+    Cancelled,
+}
+
 pub(super) struct DownloadTask {
     pub label: String,
     pub repo_id: &'static str,
@@ -281,15 +311,30 @@ pub(super) fn parse_progress_event(line: &str) -> Option<(u64, u64, String)> {
 }
 
 impl DownloadTask {
-    pub fn status_label(&self) -> String {
+    /// Lifecycle state derived from the cancel flag + child exit code.
+    pub fn status(&self) -> DownloadStatus {
         if self.cancelled {
-            return "cancelled".into();
+            return DownloadStatus::Cancelled;
         }
         match self.job.as_ref().and_then(|job| job.done) {
-            None if self.job.is_none() => "queued".into(),
-            Some(0) => "ready".into(),
-            Some(code) => format!("failed ({code})"),
-            None => "running".into(),
+            None if self.job.is_none() => DownloadStatus::Queued,
+            Some(0) => DownloadStatus::Ready,
+            Some(_) => DownloadStatus::Failed,
+            None => DownloadStatus::Running,
+        }
+    }
+
+    /// Queue label for the status word; failures carry the exit code.
+    pub fn status_label(&self) -> String {
+        match self.status() {
+            DownloadStatus::Queued => "queued".into(),
+            DownloadStatus::Running => "running".into(),
+            DownloadStatus::Ready => "ready".into(),
+            DownloadStatus::Cancelled => "cancelled".into(),
+            DownloadStatus::Failed => match self.job.as_ref().and_then(|job| job.done) {
+                Some(code) => format!("failed ({code})"),
+                None => "failed".into(),
+            },
         }
     }
 

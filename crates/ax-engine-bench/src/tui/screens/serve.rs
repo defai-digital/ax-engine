@@ -38,7 +38,19 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if self.server_ready {
-                        self.navigate_to(Screen::Chat);
+                        // A running server makes Enter a switch action: the
+                        // served row still hands off to Chat, any other
+                        // installed row asks to restart with that model.
+                        let pairs = installed_variants(&self.families);
+                        match pairs.get(self.serve_idx) {
+                            Some(&(fi, vi)) if !self.is_served_variant(fi, vi) => {
+                                self.modal = Some(Modal::RestartServer {
+                                    family_idx: fi,
+                                    variant_idx: vi,
+                                });
+                            }
+                            _ => self.navigate_to(Screen::Chat),
+                        }
                     } else {
                         let pairs = installed_variants(&self.families);
                         if let Some(&(fi, vi)) = pairs.get(self.serve_idx) {
@@ -274,13 +286,13 @@ impl App {
             frame,
             area,
             if self.server_ready {
-                " Running — x to stop "
+                " Enter switch · t chat "
             } else {
                 " Models — Enter to serve "
             },
             rows,
             self.serve_idx,
-            list_active && !self.server_ready,
+            list_active,
             &self.content_list_rect,
         );
     }

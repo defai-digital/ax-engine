@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Gauge, ListItem, Paragraph, Sparkline};
 
 use crate::tui::catalog;
-use crate::tui::jobs::{self, SPINNER};
+use crate::tui::jobs::{self, DownloadStatus, SPINNER};
 use crate::tui::theme;
 use crate::tui::widgets::{self, ToastLevel};
 use crate::tui::{App, Modal};
@@ -272,21 +272,17 @@ impl App {
                     } else {
                         "    ".into()
                     };
-                    let status_icon = match task.status_label().as_str() {
-                        "cancelled" => theme::icon::idle(),
-                        "queued" => theme::icon::queued(),
-                        "ready" => theme::icon::ok(),
-                        "running" => theme::icon::running(),
-                        _ => theme::icon::error(),
-                    };
-                    let status_style = match task.status_label().as_str() {
-                        "cancelled" => theme::label(),
-                        "queued" => theme::warn(),
-                        "ready" => theme::ok(),
-                        "running" => Style::default()
-                            .fg(theme::colors().accent)
-                            .add_modifier(Modifier::BOLD),
-                        _ => theme::danger(),
+                    let (status_icon, status_style) = match task.status() {
+                        DownloadStatus::Cancelled => (theme::icon::idle(), theme::label()),
+                        DownloadStatus::Queued => (theme::icon::queued(), theme::warn()),
+                        DownloadStatus::Ready => (theme::icon::ok(), theme::ok()),
+                        DownloadStatus::Running => (
+                            theme::icon::running(),
+                            Style::default()
+                                .fg(theme::colors().accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        DownloadStatus::Failed => (theme::icon::error(), theme::danger()),
                     };
                     let dest_short = task
                         .dest
