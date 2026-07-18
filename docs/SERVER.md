@@ -983,7 +983,7 @@ retired generation's per-model samples immediately.
 The server allocates request ids from one process-local sequence across both
 blocking and stepwise paths so transport logs and client correlation do not
 collide when clients mix APIs.
-entirely if the estimate is wrong for a host.
+
 The `mlx_lm_delegated` backend supports blocking `/v1/generate` and SSE
 `/v1/generate/stream` through `mlx_lm.server` `/v1/completions`. It also
 supports streamed OpenAI-compatible completion/chat endpoints by forwarding
