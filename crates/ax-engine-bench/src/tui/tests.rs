@@ -2703,3 +2703,28 @@ fn chat_typing_gate_excludes_crashed_server() {
         "read-only chat does not capture letter keys"
     );
 }
+
+#[test]
+fn chat_paste_blocked_when_server_crashed() {
+    // A running server accepts pastes.
+    let mut app = chat_ready_app();
+    app.on_paste("hello");
+    assert_eq!(app.chat.input, "hello");
+    app.chat.input.clear();
+    app.chat.cursor = 0;
+    // Simulate a crash — job.done = Some(_) but server_ready hasn't flipped
+    // yet (one-tick gap between child exit and update_server_ready).
+    if let Some(job) = app.server.as_mut() {
+        job.done = Some(1);
+    }
+    app.on_paste("world");
+    assert!(
+        app.chat.input.is_empty(),
+        "read-only chat must not accept paste"
+    );
+    // And the user should see a toast (not silent drop).
+    assert!(
+        !app.toasts.is_empty(),
+        "crashed-server paste must surface a toast"
+    );
+}

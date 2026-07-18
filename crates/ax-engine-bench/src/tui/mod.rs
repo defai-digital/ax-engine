@@ -1257,7 +1257,15 @@ impl App {
             return;
         }
         match self.screen {
-            Screen::Chat if self.server_ready => self.paste_chat_text(text),
+            Screen::Chat
+                if self.server_ready
+                    && !self.server.as_ref().is_some_and(|job| job.done.is_some()) =>
+            {
+                self.paste_chat_text(text);
+            }
+            Screen::Chat if self.server.as_ref().is_some_and(|job| job.done.is_some()) => {
+                self.toast_warn("server stopped — start one on Serve (4)");
+            }
             Screen::Models if self.filtering => {
                 self.filter.push_str(text);
                 self.clamp_family_idx_to_filter();
