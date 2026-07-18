@@ -220,7 +220,7 @@ impl LogScroll {
     }
 
     /// Re-pin to the bottom; new lines follow again.
-    pub fn to_bottom(&mut self) {
+    pub fn pin_to_bottom(&mut self) {
         self.0 = None;
     }
 
@@ -648,7 +648,7 @@ impl App {
         }
         if self.download_idx != prev_download_idx {
             // The selected row shifted under the user; re-pin its log pane.
-            self.downloads_log_scroll.to_bottom();
+            self.downloads_log_scroll.pin_to_bottom();
         }
         let n_serve = installed_variants(&self.families).len();
         if n_serve == 0 {
@@ -683,7 +683,7 @@ impl App {
     pub(crate) fn select_download(&mut self, idx: usize) {
         if self.download_idx != idx {
             self.download_idx = idx;
-            self.downloads_log_scroll.to_bottom();
+            self.downloads_log_scroll.pin_to_bottom();
         }
     }
 
@@ -1400,7 +1400,7 @@ impl App {
                 "MTP package path could not be resolved from the download log; re-run download-mtp or serve the package directory directly".into(),
             ));
             self.server_url = None;
-            self.serve_log_scroll.to_bottom();
+            self.serve_log_scroll.pin_to_bottom();
             self.toast_error("could not find MTP package path to serve");
             return;
         }
@@ -1418,7 +1418,7 @@ impl App {
     ) {
         self.server_ready = false;
         // Every path through here replaces the server job — re-pin its log.
-        self.serve_log_scroll.to_bottom();
+        self.serve_log_scroll.pin_to_bottom();
         let host = if self.host.trim().is_empty() {
             "127.0.0.1".to_string()
         } else {
@@ -1506,7 +1506,7 @@ impl App {
         self.server_url = None;
         self.server_ready = false;
         self.server_model = None;
-        self.serve_log_scroll.to_bottom();
+        self.serve_log_scroll.pin_to_bottom();
     }
 
     /// Most recent non-empty server log line, surfaced when startup fails.

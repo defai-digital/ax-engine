@@ -1668,7 +1668,8 @@ fn downloads_app_with_log(lines: usize) -> App {
     let mut app = new_app();
     app.screen = Screen::Downloads;
     let log = (0..lines).map(|i| format!("log line {i:03}")).collect();
-    app.downloads.push(test_task(Some(Job::running_with_log(log))));
+    app.downloads
+        .push(test_task(Some(Job::running_with_log(log))));
     app
 }
 
@@ -1706,7 +1707,10 @@ fn downloads_log_pgup_scrolls_and_pgdn_repins() {
         "repeated PgUp lands on (and clamps at) the oldest line"
     );
     let text = render(&app);
-    assert!(text.contains("log line 000"), "oldest lines visible: {text}");
+    assert!(
+        text.contains("log line 000"),
+        "oldest lines visible: {text}"
+    );
     assert!(!text.contains("log line 119"));
     assert!(
         text.contains("↑ scrolled (PgDn to bottom)"),
@@ -1731,7 +1735,8 @@ fn downloads_log_pgup_scrolls_and_pgdn_repins() {
 #[test]
 fn wheel_over_downloads_log_scrolls_log_not_queue_selection() {
     let mut app = downloads_app_with_log(120);
-    app.downloads.push(test_task(Some(Job::running_with_log(vec![]))));
+    app.downloads
+        .push(test_task(Some(Job::running_with_log(vec![]))));
     let _ = render(&app); // records log + queue hit rects
     let log_rect = app.log_rect.get();
     let (lx, ly) = (log_rect.x + 2, log_rect.y + 2);
@@ -1845,7 +1850,10 @@ fn new_log_lines_stay_put_when_scrolled_and_follow_when_pinned() {
         80 - height
     );
     let text = render(&app);
-    assert!(text.contains("log line 079"), "pinned view follows new lines");
+    assert!(
+        text.contains("log line 079"),
+        "pinned view follows new lines"
+    );
 
     // Scrolled up: the same lines stay in view as more output arrives.
     app.on_key(key(KeyCode::PageUp));
