@@ -331,6 +331,11 @@ type LoadModelRequest struct {
 	ModelPath  string `json:"model_path"`
 	LoadPolicy string `json:"load_policy,omitempty"`
 	LoadMode   string `json:"load_mode,omitempty"`
+	// MakeDefault controls whether the loaded model becomes the default for
+	// requests that omit `model`. Server default is true; only meaningful
+	// for load_mode "add" (a "replace" load rejects false). Pointer so an
+	// explicit false survives serialization.
+	MakeDefault *bool `json:"make_default,omitempty"`
 }
 
 // LoadModelResponse is the response from POST /v1/model/load.
@@ -340,6 +345,9 @@ type LoadModelResponse struct {
 	ContextLength uint32 `json:"context_length"`
 	LoadPolicy    string `json:"load_policy"`
 	LoadMode      string `json:"load_mode"`
+	// DefaultModelID is the default model after the load; empty when the
+	// server predates 6.9.
+	DefaultModelID string `json:"default_model_id"`
 }
 
 // UnloadModelRequest is the body for POST /v1/model/unload.
@@ -351,6 +359,10 @@ type UnloadModelRequest struct {
 type UnloadModelResponse struct {
 	ModelID string `json:"model_id"`
 	State   string `json:"state"`
+	// DefaultModelID is the default model after the unload (reports the
+	// reassignment when the unloaded model was the default); empty when the
+	// server predates 6.9.
+	DefaultModelID string `json:"default_model_id"`
 }
 
 // ModelCard describes a single model served by ax-engine-server.

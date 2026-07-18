@@ -67,9 +67,13 @@ func TestMultiModelLifecycle(t *testing.T) {
 		if req.LoadPolicy != "availability_first" || req.LoadMode != "add" {
 			t.Errorf("load controls: got policy=%q mode=%q", req.LoadPolicy, req.LoadMode)
 		}
+		if req.MakeDefault == nil || *req.MakeDefault {
+			t.Errorf("make_default: explicit false should serialize, got %v", req.MakeDefault)
+		}
 		writeJSON(w, LoadModelResponse{
 			ModelID: req.ModelID, State: "loaded", ContextLength: 32768,
 			LoadPolicy: req.LoadPolicy, LoadMode: req.LoadMode,
+			DefaultModelID: "qwen3",
 		})
 	})
 	mux.HandleFunc("/v1/model/unload", func(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +81,9 @@ func TestMultiModelLifecycle(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode body: %v", err)
 		}
-		writeJSON(w, UnloadModelResponse{ModelID: req.ModelID, State: "unloaded"})
+		writeJSON(w, UnloadModelResponse{
+			ModelID: req.ModelID, State: "unloaded", DefaultModelID: "qwen3",
+		})
 	})
 	startServer(t, mux, func(baseURL string) {
 		client := NewClient(&ClientOptions{BaseURL: baseURL})
@@ -85,9 +91,11 @@ func TestMultiModelLifecycle(t *testing.T) {
 		if _, err := client.StepModel(ctx, "mlx-community/Qwen3.6-27B-6bit"); err != nil {
 			t.Fatal(err)
 		}
+		makeDefault := false
 		loaded, err := client.LoadModel(ctx, LoadModelRequest{
 			ModelID: "qwen3.6-27b", ModelPath: "/models/qwen",
 			LoadPolicy: "availability_first", LoadMode: "add",
+			MakeDefault: &makeDefault,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -95,12 +103,18 @@ func TestMultiModelLifecycle(t *testing.T) {
 		if loaded.LoadMode != "add" {
 			t.Errorf("load mode: got %q", loaded.LoadMode)
 		}
+		if loaded.DefaultModelID != "qwen3" {
+			t.Errorf("default model: got %q", loaded.DefaultModelID)
+		}
 		unloaded, err := client.UnloadModel(ctx, UnloadModelRequest{ModelID: loaded.ModelID})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if unloaded.State != "unloaded" {
 			t.Errorf("unload state: got %q", unloaded.State)
+		}
+		if unloaded.DefaultModelID != "qwen3" {
+			t.Errorf("unload default model: got %q", unloaded.DefaultModelID)
 		}
 	})
 }

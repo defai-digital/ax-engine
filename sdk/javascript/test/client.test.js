@@ -49,17 +49,23 @@ test("load and unload preserve multi-model lifecycle fields", async () => {
         assert.equal(req.url, "/v1/model/load");
         assert.equal(payload.load_policy, "availability_first");
         assert.equal(payload.load_mode, "add");
+        assert.equal(payload.make_default, false);
         res.end(JSON.stringify({
           model_id: payload.model_id,
           state: "loaded",
           context_length: 32768,
           load_policy: payload.load_policy,
           load_mode: payload.load_mode,
+          default_model_id: "qwen3",
         }));
       } else {
         assert.equal(req.url, "/v1/model/unload");
         assert.equal(payload.model_id, "qwen3.6-27b");
-        res.end(JSON.stringify({ model_id: payload.model_id, state: "unloaded" }));
+        res.end(JSON.stringify({
+          model_id: payload.model_id,
+          state: "unloaded",
+          default_model_id: "qwen3",
+        }));
       }
     });
   }, async (baseUrl) => {
@@ -69,10 +75,13 @@ test("load and unload preserve multi-model lifecycle fields", async () => {
       model_path: "/models/qwen",
       load_policy: "availability_first",
       load_mode: "add",
+      make_default: false,
     });
     assert.equal(loaded.load_mode, "add");
+    assert.equal(loaded.default_model_id, "qwen3");
     const unloaded = await client.unloadModel({ model_id: loaded.model_id });
     assert.equal(unloaded.state, "unloaded");
+    assert.equal(unloaded.default_model_id, "qwen3");
   });
 });
 

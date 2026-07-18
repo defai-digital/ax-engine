@@ -221,6 +221,12 @@ export interface LoadModelRequest {
   model_path: string;
   load_policy?: "availability_first" | "memory_constrained";
   load_mode?: "replace" | "add";
+  /**
+   * Whether the loaded model becomes the default for requests that omit
+   * `model`. Server default is true; only meaningful for `load_mode: "add"`
+   * (a `"replace"` load rejects `false`).
+   */
+  make_default?: boolean;
 }
 
 export interface LoadModelResponse {
@@ -229,6 +235,8 @@ export interface LoadModelResponse {
   context_length: number;
   load_policy: "availability_first" | "memory_constrained";
   load_mode: "replace" | "add";
+  /** Default model after the load; absent when the server predates 6.9. */
+  default_model_id?: string;
 }
 
 export interface UnloadModelRequest {
@@ -238,6 +246,11 @@ export interface UnloadModelRequest {
 export interface UnloadModelResponse {
   model_id: string;
   state: "unloaded" | string;
+  /**
+   * Default model after the unload (reports the reassignment when the
+   * unloaded model was the default); absent when the server predates 6.9.
+   */
+  default_model_id?: string;
 }
 
 export interface StreamEvent<T = unknown> {

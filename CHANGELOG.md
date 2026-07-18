@@ -26,7 +26,9 @@ and this project adheres to Semantic Versioning.
 - `POST /v1/model/load` accepts `make_default` (default `true`;
   `load_mode=add` only) so a model can be added without changing what
   requests that omit `model` resolve to; load and unload responses report
-  the resulting `default_model_id`.
+  the resulting `default_model_id`. The Go and Swift typed clients and the
+  JavaScript type declarations expose both fields (Ruby and JavaScript
+  request bodies already pass through unknown fields).
 - `/health` and `/v1/discovery` list every loaded model id (`models`)
   alongside the default `model_id` in multi-model serving.
 - `response_format: json_schema` (non-streaming): OpenAI request shape

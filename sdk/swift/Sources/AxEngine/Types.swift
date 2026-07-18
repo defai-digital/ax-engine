@@ -482,15 +482,21 @@ public struct LoadModelRequest: Encodable, Sendable {
     public var modelPath: String
     public var loadPolicy: String?
     public var loadMode: String?
+    /// Whether the loaded model becomes the default for requests that omit
+    /// `model`. Server default is true; only meaningful for `loadMode`
+    /// `"add"` (a `"replace"` load rejects `false`).
+    public var makeDefault: Bool?
 
     public init(
         modelId: String, modelPath: String,
-        loadPolicy: String? = nil, loadMode: String? = nil
+        loadPolicy: String? = nil, loadMode: String? = nil,
+        makeDefault: Bool? = nil
     ) {
         self.modelId = modelId
         self.modelPath = modelPath
         self.loadPolicy = loadPolicy
         self.loadMode = loadMode
+        self.makeDefault = makeDefault
     }
 }
 
@@ -500,6 +506,8 @@ public struct LoadModelResponse: Decodable, Sendable {
     public var contextLength: UInt32
     public var loadPolicy: String
     public var loadMode: String
+    /// Default model after the load; `nil` when the server predates 6.9.
+    public var defaultModelId: String?
 }
 
 public struct UnloadModelRequest: Encodable, Sendable {
@@ -513,4 +521,7 @@ public struct UnloadModelRequest: Encodable, Sendable {
 public struct UnloadModelResponse: Decodable, Sendable {
     public var modelId: String
     public var state: String
+    /// Default model after the unload (reports the reassignment when the
+    /// unloaded model was the default); `nil` when the server predates 6.9.
+    public var defaultModelId: String?
 }
