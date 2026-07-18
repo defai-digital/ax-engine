@@ -3,6 +3,7 @@ pub(crate) mod attention_mask;
 pub mod batched_decode_certification;
 pub mod batched_decode_session;
 pub mod batched_kv_cache;
+pub mod batched_linear_state;
 pub mod batched_sampling;
 pub(crate) mod diffusion;
 pub mod disk_prefix_cache;
