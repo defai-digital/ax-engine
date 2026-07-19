@@ -1,9 +1,6 @@
 name: Brew Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -28,18 +25,15 @@ env:
 jobs:
   update-tap:
     name: Update Homebrew tap formula
-    runs-on: macos-26
+    # Formula metadata only: AX Engine is neither built nor executed here.
+    runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
       - name: Resolve tag
         id: tag
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${GITHUB_REF_NAME}"
-          fi
+          TAG="${{ inputs.tag }}"
           if [[ -z "$TAG" ]]; then
             echo "error: could not determine release tag" >&2
             exit 1
@@ -69,23 +63,14 @@ jobs:
           MANIFEST="ax-engine-${TAG}-macos-arm64.manifest.json"
           DOWNLOAD_URL="https://github.com/${MAIN_REPO}/releases/download/${TAG}/${ARCHIVE}"
 
-          # The signed binary release is produced by scripts/publish-github-release.sh,
-          # which uploads the tarball, its minisign signature, and a .sha256 sidecar.
-          # We read that authoritative checksum here instead of rebuilding the tarball,
-          # so the tap formula always points at the exact signed artifact (and we never
-          # clobber it). The tag push can trigger this job before the assets finish
-          # uploading, so poll for the sidecar.
-          for attempt in $(seq 1 30); do
-            if gh release download "$TAG" --repo "$MAIN_REPO" \
-                 --pattern "${ARCHIVE}.sha256" --dir /tmp --clobber 2>/dev/null; then
-              break
-            fi
-            echo "waiting for ${ARCHIVE}.sha256 on release $TAG (attempt ${attempt}/30)..."
-            sleep 10
-          done
+          # The local publisher dispatches this workflow only after the signed
+          # release assets are uploaded and verified. Read that authoritative
+          # checksum instead of rebuilding or racing the release upload.
+          gh release download "$TAG" --repo "$MAIN_REPO" \
+            --pattern "${ARCHIVE}.sha256" --dir /tmp --clobber
 
           if [[ ! -f "/tmp/${ARCHIVE}.sha256" ]]; then
-            echo "error: ${ARCHIVE}.sha256 not found on release $TAG after waiting." >&2
+            echo "error: ${ARCHIVE}.sha256 not found on release $TAG." >&2
             echo "The signed release must be published first (scripts/publish-github-release.sh)." >&2
             exit 1
           fi

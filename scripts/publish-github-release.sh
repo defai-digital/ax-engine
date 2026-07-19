@@ -21,8 +21,11 @@ RELEASE_HELPER_SOURCES=(
 TAG=""
 DRY_RUN=false
 SKIP_CHECKS=false
+FULL_LOCAL_CHECKS=false
 SKIP_BUILD=false
+LOCAL_BUILD=false
 SKIP_TAG_PUSH=false
+SKIP_BREW_DISPATCH=false
 ALLOW_DIRTY=false
 MINISIGN=true
 MINISIGN_SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax-code.sec}"
@@ -42,6 +45,8 @@ DRAFT=false
 PRERELEASE=false
 CLOBBER_ASSETS=false
 APPLE_API_KEY_TEMP=""
+RELEASE_BIN_DIR="$ROOT_DIR/target/release"
+CANDIDATE_WORKFLOW="release-candidate.yml"
 
 cleanup() {
     if [[ -n "$APPLE_API_KEY_TEMP" ]]; then
@@ -57,18 +62,21 @@ usage: scripts/publish-github-release.sh <vX.Y.Z> [options]
 
 Publishes the macOS arm64 GitHub release assets for AX Engine:
   1. validate clean checkout and tag/version consistency
-  2. run release gates
-  3. build release binaries
+  2. require a successful CI run for the exact release commit
+  3. reuse a validated macOS release candidate, or build locally for dry-runs
   4. optionally Apple Developer ID sign and notarize binaries
   5. package tarball, sha256, and release manifest
   6. minisign artifacts by default
-  7. push the tag, create/update the GitHub release, upload assets, verify assets
+  7. push the tag, publish and verify assets, then dispatch Homebrew
 
 Options:
   --dry-run                  Run local checks/build/package/sign, but do not push or upload.
-  --skip-checks              Skip release gates.
+  --full-local-checks        Run local release gates in addition to exact-SHA CI verification.
+  --skip-checks              Skip local release gates. Published releases still require green CI.
+  --local-build              Build release binaries locally instead of using a candidate artifact.
   --skip-build               Reuse existing target/release binaries.
   --skip-tag-push            Do not push the tag before creating/uploading the release.
+  --skip-brew-dispatch       Do not dispatch the Homebrew formula update after upload.
   --allow-dirty              Allow a dirty git worktree.
   --artifact-dir <dir>       Output directory. Default: target/release-artifacts/<tag>
   --repo <owner/name>        GitHub repository. Default: defai-digital/ax-engine
@@ -114,6 +122,125 @@ run() {
     "$@"
 }
 
+require_green_ci() {
+    local ci_info
+    local ci_run_id
+    local ci_sha
+    local ci_url
+
+    ci_info="$(gh api --method GET \
+        "repos/${MAIN_REPO}/actions/workflows/ci.yml/runs" \
+        -f head_sha="$head_commit" \
+        -f status=success \
+        -F per_page=1 \
+        --jq '.workflow_runs[0] | if . == null then empty else [.id, .head_sha, .html_url] | @tsv end')"
+    [[ -n "$ci_info" ]] || {
+        die "no successful CI workflow found for release commit $head_commit"
+    }
+    IFS=$'\t' read -r ci_run_id ci_sha ci_url <<<"$ci_info"
+    [[ "$ci_sha" == "$head_commit" ]] || {
+        die "CI run $ci_run_id resolved to $ci_sha, expected $head_commit"
+    }
+    echo "Exact-SHA CI verified: $ci_url"
+}
+
+find_candidate_run() {
+    local artifact_name="$1"
+
+    # shellcheck disable=SC2016
+    gh api --method GET \
+        "repos/${MAIN_REPO}/actions/artifacts" \
+        -f name="$artifact_name" \
+        -F per_page=10 \
+        --jq '([.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[0]) as $artifact | if $artifact == null then empty else $artifact.workflow_run.id end'
+}
+
+validate_candidate_run() {
+    local candidate_run_id="$1"
+    local run_info
+    local workflow_name
+    local conclusion
+
+    run_info="$(gh api \
+        "repos/${MAIN_REPO}/actions/runs/${candidate_run_id}" \
+        --jq '[.name, .conclusion] | @tsv')"
+    IFS=$'\t' read -r workflow_name conclusion <<<"$run_info"
+    [[ "$workflow_name" == "Build Release Candidate" && "$conclusion" == "success" ]] || {
+        die "artifact came from invalid candidate run $candidate_run_id ($workflow_name, $conclusion)"
+    }
+}
+
+prepare_release_candidate() {
+    local artifact_name="ax-engine-release-candidate-${head_commit}"
+    local candidate_dir="$ARTIFACT_DIR/release-candidate"
+    local candidate_run_id
+    local request_id
+    local run_info
+    local run_title
+    local run_url
+
+    candidate_run_id="$(find_candidate_run "$artifact_name")"
+    if [[ -z "$candidate_run_id" ]]; then
+        request_id="${head_commit:0:12}-$(date -u +%Y%m%d%H%M%S)-$$"
+        run_title="Release candidate $TAG [$request_id]"
+        run gh workflow run "$CANDIDATE_WORKFLOW" \
+            --repo "$MAIN_REPO" \
+            --ref main \
+            -f tag="$TAG" \
+            -f git_commit="$head_commit" \
+            -f request_id="$request_id"
+
+        for _ in {1..30}; do
+            run_info="$(gh run list \
+                --repo "$MAIN_REPO" \
+                --workflow "$CANDIDATE_WORKFLOW" \
+                --event workflow_dispatch \
+                --limit 30 \
+                --json databaseId,displayTitle,url \
+                --jq "map(select(.displayTitle == \"$run_title\")) | first | if . == null then empty else [.databaseId, .url] | @tsv end")"
+            if [[ -n "$run_info" ]]; then
+                break
+            fi
+            sleep 2
+        done
+        [[ -n "$run_info" ]] || die "could not locate dispatched release-candidate workflow"
+        IFS=$'\t' read -r candidate_run_id run_url <<<"$run_info"
+        echo "Waiting for release candidate: $run_url"
+        run gh run watch "$candidate_run_id" --repo "$MAIN_REPO" --exit-status
+
+        candidate_run_id=""
+        for _ in {1..15}; do
+            candidate_run_id="$(find_candidate_run "$artifact_name")"
+            if [[ -n "$candidate_run_id" ]]; then
+                break
+            fi
+            sleep 2
+        done
+        [[ -n "$candidate_run_id" ]] || {
+            die "release-candidate run succeeded but artifact $artifact_name is missing"
+        }
+    else
+        echo "Reusing release candidate from workflow run $candidate_run_id"
+    fi
+    validate_candidate_run "$candidate_run_id"
+
+    rm -rf "$candidate_dir"
+    mkdir -p "$candidate_dir"
+    run gh run download "$candidate_run_id" \
+        --repo "$MAIN_REPO" \
+        --name "$artifact_name" \
+        --dir "$candidate_dir"
+    run python3 scripts/release_candidate.py verify \
+        --root "$candidate_dir" \
+        --tag "$TAG" \
+        --commit "$head_commit" \
+        --group binaries
+    for bin in "${RELEASE_BINS[@]}"; do
+        chmod +x "$candidate_dir/bin/$bin"
+    done
+    RELEASE_BIN_DIR="$candidate_dir/bin"
+}
+
 NOTARY_ARGS=()
 
 resolve_notary_args() {
@@ -156,12 +283,12 @@ codesign_release_binaries() {
             --entitlements "$MACOS_RELEASE_ENTITLEMENTS" \
             --timestamp \
             --force \
-            "target/release/$bin"
+            "$RELEASE_BIN_DIR/$bin"
     done
 
     echo "Verifying codesignatures"
     for bin in "${RELEASE_BINS[@]}"; do
-        run codesign --verify --strict --verbose=2 "target/release/$bin"
+        run codesign --verify --strict --verbose=2 "$RELEASE_BIN_DIR/$bin"
     done
 }
 
@@ -179,8 +306,13 @@ notarize_release_binaries() {
     fi
 
     local notarize_zip="$ARTIFACT_DIR/ax-engine-${TAG}-notarize.zip"
+    local notarize_inputs=()
+    local bin
     rm -f "$notarize_zip"
-    run zip -j "$notarize_zip" "${RELEASE_BINS[@]/#/target/release/}"
+    for bin in "${RELEASE_BINS[@]}"; do
+        notarize_inputs+=("$RELEASE_BIN_DIR/$bin")
+    done
+    run zip -j "$notarize_zip" "${notarize_inputs[@]}"
     run xcrun notarytool submit "$notarize_zip" "${NOTARY_ARGS[@]}" --wait
     rm -f "$notarize_zip"
 }
@@ -189,8 +321,11 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run) DRY_RUN=true ;;
         --skip-checks) SKIP_CHECKS=true ;;
+        --full-local-checks) FULL_LOCAL_CHECKS=true ;;
+        --local-build) LOCAL_BUILD=true ;;
         --skip-build) SKIP_BUILD=true ;;
         --skip-tag-push) SKIP_TAG_PUSH=true ;;
+        --skip-brew-dispatch) SKIP_BREW_DISPATCH=true ;;
         --allow-dirty) ALLOW_DIRTY=true ;;
         --artifact-dir)
             shift
@@ -276,6 +411,15 @@ done
     usage >&2
     die "release tag is required"
 }
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || {
+    die "release tag must be a version such as v6.9.0"
+}
+if [[ "$SKIP_CHECKS" = true && "$FULL_LOCAL_CHECKS" = true ]]; then
+    die "--skip-checks and --full-local-checks cannot be used together"
+fi
+if [[ "$SKIP_BUILD" = true && "$LOCAL_BUILD" = true ]]; then
+    die "--skip-build and --local-build cannot be used together"
+fi
 
 VERSION="${TAG#v}"
 TITLE="${TITLE:-$TAG}"
@@ -325,6 +469,9 @@ fi
 python3 scripts/check_version_sync.py --expected "$TAG"
 
 head_commit="$(git rev-parse HEAD)"
+if [[ "$DRY_RUN" = false ]]; then
+    require_green_ci
+fi
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
     tag_commit="$(git rev-list -n 1 "$TAG")"
     [[ "$tag_commit" == "$head_commit" ]] || {
@@ -339,7 +486,7 @@ else
     fi
 fi
 
-if [[ "$SKIP_CHECKS" = false ]]; then
+if [[ "$SKIP_CHECKS" = false && ( "$DRY_RUN" = true || "$FULL_LOCAL_CHECKS" = true ) ]]; then
     run cargo fmt --check
     run cargo test --quiet --no-fail-fast
     run cargo clippy --all-targets --all-features -- \
@@ -353,18 +500,22 @@ if [[ "$SKIP_CHECKS" = false ]]; then
     run bash scripts/check-bench-doctor.sh
     run bash scripts/check-metal-kernel-contract.sh
     run bash scripts/check-python-preview.sh
-else
+elif [[ "$SKIP_CHECKS" = true ]]; then
     echo "warning: skipping release checks (--skip-checks)" >&2
+else
+    echo "Reusing exact-SHA GitHub CI; pass --full-local-checks to repeat gates locally."
 fi
 
-if [[ "$SKIP_BUILD" = false ]]; then
+if [[ "$SKIP_BUILD" = true ]]; then
+    echo "warning: skipping build (--skip-build)" >&2
+elif [[ "$DRY_RUN" = true || "$LOCAL_BUILD" = true ]]; then
     run cargo build --release -p ax-engine-server -p ax-engine-bench --bins
 else
-    echo "warning: skipping build (--skip-build)" >&2
+    prepare_release_candidate
 fi
 
 for bin in "${RELEASE_BINS[@]}"; do
-    [[ -x "target/release/$bin" ]] || die "missing executable target/release/$bin"
+    [[ -x "$RELEASE_BIN_DIR/$bin" ]] || die "missing executable $RELEASE_BIN_DIR/$bin"
 done
 
 codesign_release_binaries
@@ -378,7 +529,7 @@ notarize_release_binaries
 
 release_payload=()
 for bin in "${RELEASE_BINS[@]}"; do
-    cp "target/release/$bin" "$STAGING_DIR/$bin"
+    cp "$RELEASE_BIN_DIR/$bin" "$STAGING_DIR/$bin"
     chmod +x "$STAGING_DIR/$bin"
     release_payload+=("$bin")
 done
@@ -526,6 +677,18 @@ for asset in "${assets[@]}"; do
         die "uploaded asset missing from GitHub release: $name"
     fi
 done
+
+if [[ "$SKIP_BREW_DISPATCH" = true ]]; then
+    echo "warning: skipping Homebrew workflow dispatch (--skip-brew-dispatch)" >&2
+elif [[ "$DRAFT" = true || "$PRERELEASE" = true ]]; then
+    echo "warning: not dispatching Homebrew for a draft or prerelease" >&2
+else
+    run gh workflow run brew-release.yml \
+        --repo "$MAIN_REPO" \
+        --ref main \
+        -f tag="$TAG"
+    echo "Dispatched Homebrew formula update after release asset verification."
+fi
 
 echo
 echo "Published GitHub release: https://github.com/${MAIN_REPO}/releases/tag/${TAG}"

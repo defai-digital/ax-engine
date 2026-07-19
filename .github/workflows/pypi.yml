@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish the built wheel to PyPI. Only works from a v* tag ref.
+        description: Publish the prepared wheel to PyPI. Only works from a v* tag ref.
         required: false
         default: false
         type: boolean
@@ -17,14 +17,137 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: read
 
 env:
   AX_ALLOW_UNSUPPORTED_HOST: "1"
 
 jobs:
-  build-wheel:
+  resolve_candidate:
+    name: Resolve exact-SHA wheel candidate
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.candidate.outputs.artifact_name }}
+      found: ${{ steps.candidate.outputs.found }}
+      run_id: ${{ steps.candidate.outputs.run_id }}
+
+    steps:
+      - name: Find validated candidate artifact
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_REF" != refs/tags/v* ]]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No tag ref; the macOS fallback build will run."
+            exit 0
+          fi
+
+          ARTIFACT_NAME="ax-engine-pypi-wheel-${RELEASE_SHA}"
+          # shellcheck disable=SC2016
+          RUN_ID="$(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts" \
+            -f name="$ARTIFACT_NAME" \
+            -F per_page=10 \
+            --jq '([.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[0]) as $artifact | if $artifact == null then empty else $artifact.workflow_run.id end')"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          if [[ -z "$RUN_ID" ]]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No exact-SHA candidate found; the macOS fallback build will run."
+            exit 0
+          fi
+          RUN_INFO="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
+            --jq '[.name, .conclusion] | @tsv')"
+          IFS=$'\t' read -r WORKFLOW_NAME CONCLUSION <<< "$RUN_INFO"
+          if [[ "$WORKFLOW_NAME" != "Build Release Candidate" || "$CONCLUSION" != "success" ]]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "Ignoring artifact from invalid candidate run $RUN_ID ($WORKFLOW_NAME, $CONCLUSION)."
+            exit 0
+          fi
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "Found exact-SHA wheel candidate in workflow run $RUN_ID."
+
+  promote_candidate:
+    name: Promote validated wheel candidate
+    needs: resolve_candidate
+    if: needs.resolve_candidate.outputs.found == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Download exact-SHA wheel candidate
+        env:
+          CANDIDATE_NAME: ${{ needs.resolve_candidate.outputs.artifact_name }}
+          CANDIDATE_RUN_ID: ${{ needs.resolve_candidate.outputs.run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p target/release-candidate-wheel
+          gh run download "$CANDIDATE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$CANDIDATE_NAME" \
+            --dir target/release-candidate-wheel
+
+      - name: Verify candidate commit, tag, and wheel digest
+        run: |
+          python3 scripts/release_candidate.py verify \
+            --root target/release-candidate-wheel \
+            --tag "$GITHUB_REF_NAME" \
+            --commit "$GITHUB_SHA" \
+            --group wheel
+          mkdir -p target/wheels/delocated
+          cp target/release-candidate-wheel/wheel/ax_engine-*.whl target/wheels/delocated/
+
+      - name: Install metadata checker
+        run: python -m pip install twine
+
+      - name: Check wheel metadata
+        run: python -m twine check target/wheels/delocated/ax_engine-*.whl
+
+      - name: Verify wheel filename matches tag version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          shopt -s nullglob
+          wheels=(target/wheels/delocated/ax_engine-*.whl)
+          if [[ ${#wheels[@]} -ne 1 ]]; then
+            echo "error: expected exactly one wheel, found ${#wheels[@]}" >&2
+            exit 1
+          fi
+          wheel_name="$(basename "${wheels[0]}")"
+          expected_prefix="ax_engine-${TAG_VERSION}-"
+          if [[ "$wheel_name" != ${expected_prefix}* ]]; then
+            echo "error: wheel filename '$wheel_name' does not contain version '$TAG_VERSION'" >&2
+            exit 1
+          fi
+          echo "Wheel version matches tag: $wheel_name"
+
+      - name: Upload promoted wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: ax-engine-pypi-wheel
+          path: target/wheels/delocated/ax_engine-*.whl
+          if-no-files-found: error
+
+  build_wheel:
     name: Build Python Wheel
+    needs: resolve_candidate
+    if: needs.resolve_candidate.outputs.found != 'true'
     runs-on: macos-26
     timeout-minutes: 35
 
@@ -38,9 +161,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Cache Rust build artifacts
+      - name: Cache release build artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: release-macos-arm64
           cache-on-failure: true
 
       - name: Install native build dependencies
@@ -54,8 +178,8 @@ jobs:
       - name: Verify Apple Silicon runner
         run: |
           arch="$(uname -m)"
-          if [ "$arch" != "arm64" ]; then
-            echo "PyPI wheels are macOS arm64 only; got runner architecture: $arch"
+          if [[ "$arch" != "arm64" ]]; then
+            echo "PyPI wheels are macOS arm64 only; got runner architecture: $arch" >&2
             exit 1
           fi
 
@@ -119,8 +243,16 @@ jobs:
     # Artifact upload only: this Linux-only PyPA action does not build, test,
     # or expand AX Engine's macOS 26+ runtime support matrix.
     runs-on: ubuntu-latest
-    needs: build-wheel
-    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    needs:
+      - resolve_candidate
+      - promote_candidate
+      - build_wheel
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) &&
+      needs.resolve_candidate.result == 'success' &&
+      (needs.promote_candidate.result == 'success' || needs.build_wheel.result == 'success')
     environment:
       name: pypi
       url: https://pypi.org/p/ax-engine

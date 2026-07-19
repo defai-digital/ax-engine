@@ -10,9 +10,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 WORKFLOWS_DIR = ROOT / ".github" / "workflows"
 NATIVE_DEPS_SCRIPT = ROOT / "scripts" / "install-native-build-deps.sh"
+PUBLISH_SCRIPT = ROOT / "scripts" / "publish-github-release.sh"
+RUST_TOOLCHAIN = ROOT / "rust-toolchain.toml"
 
 
 class CiWorkflowPolicyTests(unittest.TestCase):
+    def test_general_ci_runs_on_branches_but_not_tag_pushes(self) -> None:
+        workflow = CI_WORKFLOW.read_text()
+
+        self.assertIn('push:\n    branches:\n      - "**"', workflow)
+        self.assertNotIn("push:\n    tags:", workflow)
+
     def test_model_smoke_is_required_on_release_and_explicit_runs(self) -> None:
         workflow = CI_WORKFLOW.read_text()
 
@@ -76,7 +84,7 @@ class CiWorkflowPolicyTests(unittest.TestCase):
             path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")
         }
 
-        for workflow in ("coverage.yml", "brew-release.yml"):
+        for workflow in ("coverage.yml",):
             runner_lines = [
                 line.strip()
                 for line in workflow_texts[workflow].splitlines()
@@ -88,6 +96,11 @@ class CiWorkflowPolicyTests(unittest.TestCase):
                 runner_lines,
                 f"{workflow} must not validate AX Engine on Linux or pre-26 macOS",
             )
+
+        brew = workflow_texts["brew-release.yml"]
+        self.assertIn("Formula metadata only", brew)
+        self.assertIn("runs-on: ubuntu-latest", brew)
+        self.assertNotIn("bash scripts/build-pypi-wheel.sh", brew)
 
         ci = workflow_texts["ci.yml"]
         for job_name in (
@@ -109,11 +122,59 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("name: CI\n    runs-on: ubuntu-latest", ci)
 
         pypi = workflow_texts["pypi.yml"]
-        build_wheel, publish = pypi.split(
-            "  publish:\n    name: Publish to PyPI\n", maxsplit=1
-        )
-        self.assertIn("runs-on: macos-26", build_wheel)
+        self.assertIn("name: Build Python Wheel\n    needs: resolve_candidate", pypi)
+        self.assertIn("runs-on: macos-26", pypi)
+        self.assertIn("name: Promote validated wheel candidate", pypi)
+        _, publish = pypi.split("  publish:\n    name: Publish to PyPI\n", maxsplit=1)
         self.assertIn("Artifact upload only", publish)
+
+        candidate = workflow_texts["release-candidate.yml"]
+        self.assertIn("name: Build and validate macOS release candidate", candidate)
+        self.assertIn("runs-on: macos-26", candidate)
+        self.assertIn("bash scripts/build-pypi-wheel.sh", candidate)
+
+    def test_release_candidate_and_promotion_are_bound_to_exact_sha(self) -> None:
+        workflows = {
+            path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")
+        }
+        candidate = workflows["release-candidate.yml"]
+        pypi = workflows["pypi.yml"]
+
+        self.assertIn("ref: ${{ inputs.git_commit }}", candidate)
+        self.assertIn("Require successful CI for exact commit", candidate)
+        self.assertIn("ax-engine-release-candidate-${{ steps.identity.outputs.commit }}", candidate)
+        self.assertIn("ax-engine-pypi-wheel-${{ steps.identity.outputs.commit }}", candidate)
+        self.assertIn("shared-key: release-macos-arm64", candidate)
+        self.assertIn('ARTIFACT_NAME="ax-engine-pypi-wheel-${RELEASE_SHA}"', pypi)
+        self.assertIn("scripts/release_candidate.py verify", pypi)
+        self.assertIn("shared-key: release-macos-arm64", pypi)
+
+    def test_homebrew_is_dispatched_only_after_release_assets_are_verified(self) -> None:
+        brew = (WORKFLOWS_DIR / "brew-release.yml").read_text()
+        publisher = PUBLISH_SCRIPT.read_text()
+
+        self.assertNotIn("push:\n    tags:", brew)
+        self.assertIn("workflow_dispatch:", brew)
+        self.assertNotIn("for attempt in $(seq 1 30)", brew)
+        self.assertLess(
+            publisher.index("uploaded asset missing from GitHub release"),
+            publisher.index("gh workflow run brew-release.yml"),
+        )
+
+    def test_publisher_reuses_exact_sha_ci_by_default(self) -> None:
+        publisher = PUBLISH_SCRIPT.read_text()
+
+        self.assertIn("require_green_ci", publisher)
+        self.assertIn('-f head_sha="$head_commit"', publisher)
+        self.assertIn("--full-local-checks", publisher)
+        self.assertIn("prepare_release_candidate", publisher)
+        self.assertIn("for _ in {1..15}", publisher)
+
+    def test_rust_toolchain_is_pinned_for_reproducible_release_cache_keys(self) -> None:
+        toolchain = RUST_TOOLCHAIN.read_text()
+
+        self.assertRegex(toolchain, r'channel = "\d+\.\d+\.\d+"')
+        self.assertNotIn('channel = "stable"', toolchain)
 
     def test_supply_chain_checks_run_on_linux(self) -> None:
         workflow = CI_WORKFLOW.read_text()

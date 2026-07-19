@@ -85,8 +85,9 @@ throughput baselines.
   `--minisign`, it signs the release tarball with the shared ax-code signing
   key (`~/signkey/ax-code.sec`), verifies it with `~/signkey/ax-code.pub`, and
   uploads the matching `.minisig` beside the archive. Prefer
-  `publish-github-release.sh` for current releases so GitHub, PyPI, and
-  Homebrew tag-triggered follow-through stay on the same artifact.
+  `publish-github-release.sh` for current releases so GitHub, PyPI tag
+  promotion, and the publisher-dispatched Homebrew update stay on the same
+  release source.
 - `minisign-keygen.sh`: generates the minisign keypair for signing release
   artifacts. Defaults to the shared ax-code key paths (`~/signkey/ax-code.sec`
   / `~/signkey/ax-code.pub`), sets a private `700` directory and `600` secret
@@ -107,13 +108,16 @@ throughput baselines.
   `scripts/test_minisign_artifact.py` contract tests.
 - `publish-github-release.sh`: full local GitHub Release publisher for the
   macOS arm64 CLI assets. It verifies tag/version consistency, requires a clean
-  tree by default, runs release gates, builds `ax-engine-server` and
-  `ax-engine-bench`, optionally signs and notarizes the three release binaries
-  with `--sign-identity`, including the release entitlements required for
-  hardened-runtime binaries to load Homebrew's ad-hoc signed MLX dylibs, writes
-  a tarball, SHA256 file, and manifest under `target/release-artifacts/<tag>/`,
-  signs those artifacts with minisign by default, pushes the tag, creates the
-  GitHub release, uploads the assets, and verifies the uploaded asset names.
+  tree and successful GitHub CI for the exact release SHA, then creates or
+  reuses the SHA-bound artifact from `.github/workflows/release-candidate.yml`.
+  That macOS workflow builds the standalone binaries and PyPI wheel once and
+  smoke-tests the wheel before publishing immutable candidate manifests.
+  The local publisher verifies every binary digest, optionally signs and
+  notarizes the three binaries with `--sign-identity`, writes a tarball,
+  SHA256 file, and manifest under `target/release-artifacts/<tag>/`, signs those
+  artifacts with minisign, pushes the tag, publishes and verifies the GitHub
+  assets, then dispatches the Homebrew formula update. The tag-triggered PyPI
+  workflow promotes the matching wheel instead of rebuilding it.
   Notarization can use the local
   `AX_NOTARY_PROFILE` / `--notary-profile` Keychain profile or the same
   App Store Connect API env shape used by ax-code Desktop:
@@ -121,7 +125,14 @@ throughput baselines.
   `APPLE_API_ISSUER`. When `APPLE_API_KEY_B64` is set and `APPLE_API_KEY` is
   not, the script decodes the key into a temporary `.p8` file with `0600`
   permissions before calling `notarytool`. Use `--dry-run` to exercise local
-  steps without pushing, uploading, or submitting to Apple notarization.
+  checks/build/package steps without dispatching workflows, pushing, uploading,
+  or submitting to Apple notarization. Use `--full-local-checks` to repeat all
+  gates after exact-SHA CI, `--local-build` for an explicit local build, or
+  `--skip-brew-dispatch` when intentionally publishing GitHub-only assets.
+- `release_candidate.py`: writes and verifies the
+  `ax.release_candidate.v1` manifest shared by the local GitHub publisher and
+  PyPI promotion workflow. Candidate binaries and wheels are accepted only
+  when their tag, full source commit, paths, sizes, and SHA-256 digests match.
 - `download_model.py`: MLX LLM download helper. It delegates acquisition to
   `mlx-lm`, resolves the resulting cache snapshot, validates local model files,
   and generates the AX model manifest when `ax-engine-bench` or Cargo is

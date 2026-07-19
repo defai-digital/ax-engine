@@ -1,0 +1,165 @@
+name: Build Release Candidate
+run-name: Release candidate ${{ inputs.tag }} [${{ inputs.request_id }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose synchronized version files will be validated.
+        required: true
+        type: string
+      git_commit:
+        description: Exact 40-character commit SHA to build and bind into the artifacts.
+        required: true
+        type: string
+      request_id:
+        description: Correlation id used by the local publisher to find this run.
+        required: false
+        default: manual
+        type: string
+
+concurrency:
+  group: release-candidate-${{ inputs.git_commit }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  AX_ALLOW_UNSUPPORTED_HOST: "1"
+
+jobs:
+  build:
+    name: Build and validate macOS release candidate
+    runs-on: macos-26
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.git_commit }}
+
+      - name: Verify release identity
+        id: identity
+        env:
+          EXPECTED_COMMIT: ${{ inputs.git_commit }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]]; then
+            echo "error: checked out $ACTUAL_COMMIT, expected $EXPECTED_COMMIT" >&2
+            exit 1
+          fi
+          if [[ ! "$ACTUAL_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "error: release commit must be a full 40-character SHA" >&2
+            exit 1
+          fi
+          python3 scripts/check_version_sync.py --expected "$RELEASE_TAG"
+          echo "commit=$ACTUAL_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful CI for exact commit
+        env:
+          EXPECTED_COMMIT: ${{ steps.identity.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CI_RUN="$(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+            -f head_sha="$EXPECTED_COMMIT" \
+            -f status=success \
+            -F per_page=1 \
+            --jq '.workflow_runs[0].html_url // empty')"
+          if [[ -z "$CI_RUN" ]]; then
+            echo "error: no successful CI workflow found for $EXPECTED_COMMIT" >&2
+            exit 1
+          fi
+          echo "Using successful CI run: $CI_RUN"
+
+      - name: Verify Apple Silicon runner
+        run: |
+          if [[ "$(uname -m)" != "arm64" ]]; then
+            echo "error: release candidates require an Apple Silicon runner" >&2
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Cache release build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos-arm64
+          cache-on-failure: true
+
+      - name: Install native build dependencies
+        run: bash scripts/install-native-build-deps.sh
+
+      - name: Install Python build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "maturin>=1.7,<2" delocate twine
+
+      - name: Build delocated wheel and standalone binaries
+        run: bash scripts/build-pypi-wheel.sh
+
+      - name: Check wheel metadata
+        run: python -m twine check target/wheels/delocated/ax_engine-*.whl
+
+      - name: Smoke-test built wheel
+        run: |
+          python -m venv target/release-candidate-smoke
+          source target/release-candidate-smoke/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install target/wheels/delocated/ax_engine-*.whl
+          python examples/python/basic.py
+          python examples/python/stepwise.py
+          python examples/python/streaming.py
+          AX_ENGINE_RUN_INSTALLED_TESTS=1 python -m unittest discover -s python/tests -v
+
+      - name: Stage and verify immutable candidate
+        env:
+          RELEASE_COMMIT: ${{ steps.identity.outputs.commit }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          CANDIDATE_DIR="target/release-candidate"
+          mkdir -p "$CANDIDATE_DIR/bin" "$CANDIDATE_DIR/wheel"
+          cp target/release/ax-engine "$CANDIDATE_DIR/bin/ax-engine"
+          cp target/release/ax-engine-server "$CANDIDATE_DIR/bin/ax-engine-server"
+          cp target/release/ax-engine-bench "$CANDIDATE_DIR/bin/ax-engine-bench"
+          cp target/wheels/delocated/ax_engine-*.whl "$CANDIDATE_DIR/wheel/"
+          chmod +x "$CANDIDATE_DIR"/bin/*
+          python3 scripts/release_candidate.py create \
+            --root "$CANDIDATE_DIR" \
+            --tag "$RELEASE_TAG" \
+            --commit "$RELEASE_COMMIT"
+          python3 scripts/release_candidate.py verify \
+            --root "$CANDIDATE_DIR" \
+            --tag "$RELEASE_TAG" \
+            --commit "$RELEASE_COMMIT"
+
+      - name: Upload standalone binary candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: ax-engine-release-candidate-${{ steps.identity.outputs.commit }}
+          path: |
+            target/release-candidate/candidate-manifest.json
+            target/release-candidate/bin
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload wheel candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: ax-engine-pypi-wheel-${{ steps.identity.outputs.commit }}
+          path: |
+            target/release-candidate/candidate-manifest.json
+            target/release-candidate/wheel
+          if-no-files-found: error
+          retention-days: 14

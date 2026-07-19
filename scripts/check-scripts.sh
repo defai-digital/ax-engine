@@ -205,6 +205,8 @@ bash scripts/check-qa.sh
   scripts/check_version_sync.py \
   scripts/test_check_version_sync.py \
   scripts/test_ci_workflow_policy.py \
+  scripts/release_candidate.py \
+  scripts/test_release_candidate.py \
   scripts/test_release_signing.py \
   scripts/test_minisign_artifact.py
 "$PYTHON_BIN" -m unittest \
@@ -260,6 +262,7 @@ bash scripts/check-qa.sh
   scripts/test_render_readme_performance_charts.py \
   scripts/test_check_version_sync.py \
   scripts/test_ci_workflow_policy.py \
+  scripts/test_release_candidate.py \
   scripts/test_release_signing.py \
   scripts/test_minisign_artifact.py
 bash scripts/check-bench-inference-stack.sh
