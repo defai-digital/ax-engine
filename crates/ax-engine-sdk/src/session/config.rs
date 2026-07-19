@@ -374,13 +374,16 @@ impl EngineSessionConfig {
         Self::default_mlx_model_artifacts_selection().map(|selection| selection.source)
     }
 
-    pub fn from_resolved_request(request: ResolvedSessionConfigRequest) -> Self {
-        Self {
-            kv_config: KvManagerConfig::validated(
-                request.cache_group_id,
-                request.block_size_tokens,
-                request.total_blocks,
-            ),
+    pub fn from_resolved_request(
+        request: ResolvedSessionConfigRequest,
+    ) -> Result<Self, KvManagerError> {
+        let kv_config = KvManagerConfig::new(
+            request.cache_group_id,
+            request.block_size_tokens,
+            request.total_blocks,
+        )?;
+        Ok(Self {
+            kv_config,
             deterministic: request.deterministic,
             max_batch_tokens: request.max_batch_tokens,
             backend_policy: request.backend_policy,
@@ -400,7 +403,7 @@ impl EngineSessionConfig {
             max_prefill_tokens_per_request_per_step: request
                 .max_prefill_tokens_per_request_per_step,
             max_inflight_prefill_requests: request.max_inflight_prefill_requests,
-        }
+        })
     }
 
     fn default_mlx_runtime_artifacts_selection() -> Option<MlxRuntimeArtifactsSelection> {

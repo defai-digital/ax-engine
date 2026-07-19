@@ -5287,7 +5287,7 @@ fn build_session_preserves_llama_runtime_fields_via_sdk_factory() {
     let runtime = runtime_config_from_manifest(&manifest).expect("runtime config should load");
     let specs = scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
 
-    let config = session_config_from_runtime(&runtime, &specs);
+    let config = session_config_from_runtime(&runtime, &specs).expect("valid config");
 
     assert_eq!(config.kv_config.cache_group_id, CacheGroupId(0));
     assert_eq!(config.kv_config.block_size_tokens, 16);
@@ -5324,7 +5324,7 @@ fn build_session_preserves_mlx_runtime_artifact_defaults_via_sdk_factory() {
     let specs = scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
     let expected_default = EngineSessionConfig::default();
 
-    let config = session_config_from_runtime(&runtime, &specs);
+    let config = session_config_from_runtime(&runtime, &specs).expect("valid config");
 
     assert_eq!(
         config.mlx_runtime_artifacts_dir,
@@ -5357,7 +5357,7 @@ fn build_session_preserves_explicit_mlx_model_artifact_manifest_override() {
     let runtime = runtime_config_from_manifest(&manifest).expect("runtime config should load");
     let specs = scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
 
-    let config = session_config_from_runtime(&runtime, &specs);
+    let config = session_config_from_runtime(&runtime, &specs).expect("valid config");
 
     let expected_mlx_runtime_artifacts_dir =
         EngineSessionConfig::default_mlx_runtime_artifacts_dir().or_else(|| {
@@ -5398,7 +5398,7 @@ fn build_session_preserves_gguf_model_override_as_explicit_source() {
     let runtime = runtime_config_from_manifest(&manifest).expect("runtime config should load");
     let specs = scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
 
-    let config = session_config_from_runtime(&runtime, &specs);
+    let config = session_config_from_runtime(&runtime, &specs).expect("valid config");
 
     assert_eq!(
         config.mlx_model_artifacts_dir,

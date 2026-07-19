@@ -719,7 +719,7 @@ pub(crate) fn replay_step_guard(events: &[ReplayEvent]) -> u64 {
 pub(crate) fn session_config_from_runtime(
     runtime: &RuntimeConfig,
     specs: &[SyntheticRequestSpec],
-) -> EngineSessionConfig {
+) -> Result<EngineSessionConfig, CliError> {
     let estimated_total_blocks = specs
         .iter()
         .map(|spec| {
@@ -778,13 +778,14 @@ pub(crate) fn session_config_from_runtime(
         mlx_prefill_chunk: Some(crate::inference_args::BENCH_DEFAULT_MLX_PREFILL_CHUNK),
         ..ResolvedSessionConfigRequest::default()
     })
+    .map_err(|e| CliError::Contract(format!("invalid KV config: {e}")))
 }
 
 pub(crate) fn build_session(
     runtime: &RuntimeConfig,
     specs: &[SyntheticRequestSpec],
 ) -> Result<EngineSession, CliError> {
-    let session_config = session_config_from_runtime(runtime, specs);
+    let session_config = session_config_from_runtime(runtime, specs)?;
 
     EngineSession::new(session_config).map_err(|error| {
         CliError::Contract(format!(

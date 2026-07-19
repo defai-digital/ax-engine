@@ -7,6 +7,7 @@
 //! tests that call the router via `oneshot` without connect info).
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::time::Instant;
 
@@ -97,6 +98,9 @@ impl ClientRateLimiter {
 /// Prefer the bearer token (per-API-key fairness when keys are shared across
 /// many IPs), then the peer IP from `ConnectInfo`, then a shared default so
 /// `oneshot` tests without connect info still share a single bucket.
+///
+/// Security: the raw token is hashed so API keys never appear in bucket map
+/// keys, debug traces, or metrics labels.
 pub(crate) fn client_key<B>(request: &Request<B>) -> String {
     if let Some(auth) = request
         .headers()
@@ -109,13 +113,21 @@ pub(crate) fn client_key<B>(request: &Request<B>) -> String {
             .map(str::trim)
             .filter(|token| !token.is_empty());
         if let Some(token) = token {
-            return format!("key:{token}");
+            return format!("key:{}", hash_token(token));
         }
     }
     if let Some(ConnectInfo(addr)) = request.extensions().get::<ConnectInfo<SocketAddr>>() {
         return format!("ip:{}", addr.ip());
     }
     "default".to_string()
+}
+
+/// Hash a bearer token to a stable hex string so the raw secret is never
+/// stored in the bucket map or surfaced in logs/metrics.
+fn hash_token(token: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 #[cfg(test)]

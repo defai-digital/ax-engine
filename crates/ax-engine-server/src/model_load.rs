@@ -139,11 +139,27 @@ pub(crate) async fn load_model(
     }
 
     let model_path = PathBuf::from(&request.model_path);
-    if !model_path.exists() {
+    // Canonicalize to resolve symlinks and `..` components, preventing path
+    // traversal from escaping an intended model directory. The canonical form
+    // is used for all downstream validation and loading.
+    let model_path = match model_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return Err(error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_request",
+                format!(
+                    "model_path does not exist or cannot be resolved: {}",
+                    request.model_path
+                ),
+            ));
+        }
+    };
+    if !model_path.is_dir() {
         return Err(error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid_request",
-            format!("model_path does not exist: {}", request.model_path),
+            format!("model_path must be a directory: {}", model_path.display()),
         ));
     }
 
@@ -746,10 +762,23 @@ fn validate_unload_preflight(state: &AppState, model_id: &str) -> Result<(), Htt
     Ok(())
 }
 
+/// Maximum time to wait for in-flight requests to drain before model load
+/// proceeds with a warning. Prevents indefinite blocking if a job is stuck.
+const DRAIN_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
 async fn wait_for_idle_without_stepwise(state: &AppState) -> Result<(), HttpErrorResponse> {
+    let deadline = tokio::time::Instant::now() + DRAIN_IDLE_TIMEOUT;
     loop {
         ensure_no_active_stepwise_for_all(state).await?;
         if state.admission.active_jobs() == 0 {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!(
+                active_jobs = state.admission.active_jobs(),
+                timeout_secs = DRAIN_IDLE_TIMEOUT.as_secs(),
+                "drain idle timeout reached; proceeding with model load while jobs may still be active"
+            );
             return Ok(());
         }
         if tokio::time::timeout(Duration::from_millis(10), state.admission.wait_for_idle())
