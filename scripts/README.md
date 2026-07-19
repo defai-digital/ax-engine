@@ -79,15 +79,11 @@ throughput baselines.
   mode runs `cargo test --workspace --no-run` first, then crate-by-crate tests
   with timeout and `AX_CARGO_JOBS=1` by default so a stuck full workspace run
   does not leave orphaned compiler processes.
-- `brew-release.sh`: legacy local Homebrew release publisher. It packages
-  `ax-engine-server` and `ax-engine-bench`; with `--sign-identity`, it
-  codesigns and notarizes all packaged binaries before upload. With
-  `--minisign`, it signs the release tarball with the shared AX product signing
-  key (`~/signkey/ax.sec`), verifies it with `~/signkey/ax.pub`, and
-  uploads the matching `.minisig` beside the archive. Prefer
-  `publish-github-release.sh` for current releases so GitHub, PyPI tag
-  promotion, and the publisher-dispatched Homebrew update stay on the same
-  release source.
+- `brew-release.sh`: legacy local Homebrew release preview. Production mutation
+  is disabled; only `--dry-run` is accepted. Use `publish-github-release.sh`
+  for current releases so Developer ID signing, notarization, Minisign,
+  independent draft verification, GitHub publication, PyPI tag promotion, and
+  the publisher-dispatched Homebrew update stay on the same release source.
 - `minisign-keygen.sh`: generates the minisign keypair for signing release
   artifacts. Defaults to the shared AX key paths (`~/signkey/ax.sec`
   / `~/signkey/ax.pub`), sets a private `700` directory and `600` secret

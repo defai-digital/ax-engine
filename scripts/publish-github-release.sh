@@ -33,6 +33,7 @@ MINISIGN_SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax.sec}"
 MINISIGN_PUBLIC_KEY="${AX_MINISIGN_PUBLIC_KEY:-$HOME/signkey/ax.pub}"
 MINISIGN_PUBLIC_KEY_STRING="${AX_MINISIGN_PUBLIC_KEY_STRING:-}"
 SIGN_IDENTITY="${AX_CODESIGN_IDENTITY:-}"
+EXPECTED_APPLE_TEAM_ID="${AX_APPLE_TEAM_ID:-N5ZUZDUJS6}"
 NOTARY_PROFILE="${AX_NOTARY_PROFILE:-ax-notary}"
 APPLE_API_KEY="${APPLE_API_KEY:-}"
 APPLE_API_KEY_B64="${APPLE_API_KEY_B64:-}"
@@ -46,6 +47,7 @@ DRAFT=false
 PRERELEASE=false
 CLOBBER_ASSETS=false
 APPLE_API_KEY_TEMP=""
+RESOLVED_SIGN_IDENTITY=""
 RELEASE_BIN_DIR="$ROOT_DIR/target/release"
 CANDIDATE_WORKFLOW="release-candidate.yml"
 
@@ -65,10 +67,10 @@ Publishes the macOS arm64 GitHub release assets for AX Engine:
   1. validate clean checkout and tag/version consistency
   2. require a successful CI run for the exact release commit
   3. reuse a validated macOS release candidate, or build locally for dry-runs
-  4. optionally Apple Developer ID sign and notarize binaries
+  4. Apple Developer ID sign and notarize binaries for every published release
   5. package tarball, sha256, and release manifest
-  6. minisign artifacts by default
-  7. push the tag, publish and verify assets, then dispatch Homebrew
+  6. minisign artifacts
+  7. upload to a draft, independently verify, publish, then dispatch Homebrew
 
 Options:
   --dry-run                  Run local checks/build/package/sign, but do not push or upload.
@@ -83,10 +85,10 @@ Options:
   --repo <owner/name>        GitHub repository. Default: defai-digital/ax-engine
   --title <text>             Release title. Default: <tag>
   --notes-file <path>        Release notes file. Default: gh --generate-notes.
-  --draft                    Create the release as draft.
+  --draft                    Upload and verify the release, but leave it as a draft.
   --prerelease               Mark the release as prerelease.
   --clobber-assets           Overwrite existing release assets when uploading.
-  --no-minisign              Do not sign release artifacts.
+  --no-minisign              Do not sign release artifacts (dry-run/draft only).
   --minisign-key <path>      Secret key path. Default: ~/signkey/ax.sec
   --minisign-pubkey <path>   Public key file path. Default: ~/signkey/ax.pub
   --minisign-public-key <k>  Public key string for verification.
@@ -102,7 +104,7 @@ Options:
                              Defaults to APPLE_API_KEY_ID when set.
   --apple-api-issuer <uuid>  App Store Connect API issuer for notarytool.
                              Defaults to APPLE_API_ISSUER when set.
-  --skip-notarization        Codesign only; do not submit to Apple notary service.
+  --skip-notarization        Codesign only (dry-run/draft only).
   -h, --help                 Show this help.
 EOF
 }
@@ -275,6 +277,9 @@ resolve_notary_args() {
 }
 
 codesign_release_binaries() {
+    local bin
+    local resolved_authority
+    local signature_details
     if [[ -z "$SIGN_IDENTITY" ]]; then
         echo "warning: no --sign-identity provided; release binaries will not be Apple Developer ID signed" >&2
         return
@@ -295,6 +300,19 @@ codesign_release_binaries() {
     echo "Verifying codesignatures"
     for bin in "${RELEASE_BINS[@]}"; do
         run codesign --verify --strict --verbose=2 "$RELEASE_BIN_DIR/$bin"
+        signature_details="$(codesign -dv --verbose=4 "$RELEASE_BIN_DIR/$bin" 2>&1)"
+        grep -F "Authority=Developer ID Application: DEFAI PRIVATE LIMITED" <<<"$signature_details" >/dev/null || {
+            die "$bin is not signed by the expected Developer ID authority"
+        }
+        grep -F "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details" >/dev/null || {
+            die "$bin is not signed by Apple team $EXPECTED_APPLE_TEAM_ID"
+        }
+        resolved_authority="$(awk -F= '/^Authority=Developer ID Application:/ {sub(/^Authority=/, ""); print; exit}' <<<"$signature_details")"
+        [[ -n "$resolved_authority" ]] || die "could not resolve the Developer ID authority for $bin"
+        if [[ -n "$RESOLVED_SIGN_IDENTITY" && "$RESOLVED_SIGN_IDENTITY" != "$resolved_authority" ]]; then
+            die "release binaries were signed by different Developer ID identities"
+        fi
+        RESOLVED_SIGN_IDENTITY="$resolved_authority"
     done
 }
 
@@ -321,6 +339,94 @@ notarize_release_binaries() {
     run zip -j "$notarize_zip" "${notarize_inputs[@]}"
     run xcrun notarytool submit "$notarize_zip" "${NOTARY_ARGS[@]}" --wait
     rm -f "$notarize_zip"
+}
+
+verify_uploaded_release() {
+    local signature_details
+    local verify_dir
+    local expect_notarized=false
+    local expect_signed=false
+    if [[ -n "$SIGN_IDENTITY" ]]; then
+        expect_signed=true
+        if [[ "$SKIP_NOTARIZATION" = false ]]; then
+            expect_notarized=true
+        fi
+    fi
+    verify_dir="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-release-verify.XXXXXX")"
+    (
+        trap 'rm -rf "$verify_dir"' EXIT
+        run gh release download "$TAG" \
+            --repo "$MAIN_REPO" \
+            --dir "$verify_dir" \
+            --clobber
+
+        for asset in "$ARCHIVE" "$(basename "$SHA256_PATH")" "$(basename "$MANIFEST_PATH")"; do
+            [[ -f "$verify_dir/$asset" ]] || die "uploaded release asset is missing: $asset"
+        done
+        if [[ "$MINISIGN" = true ]]; then
+            cmp "$REPOSITORY_MINISIGN_PUBLIC_KEY" "$verify_dir/ax-minisign.pub" || {
+                die "uploaded ax-minisign.pub does not match the repository key"
+            }
+            for asset in "$ARCHIVE" "$(basename "$SHA256_PATH")" "$(basename "$MANIFEST_PATH")"; do
+                [[ -f "$verify_dir/$asset.minisig" ]] || die "uploaded Minisign signature is missing: $asset.minisig"
+                run minisign -V \
+                    -p "$REPOSITORY_MINISIGN_PUBLIC_KEY" \
+                    -m "$verify_dir/$asset" \
+                    -x "$verify_dir/$asset.minisig"
+            done
+        fi
+
+        (cd "$verify_dir" && shasum -a 256 -c "$(basename "$SHA256_PATH")")
+        python3 - \
+            "$verify_dir/$(basename "$MANIFEST_PATH")" \
+            "$SHA256" \
+            "$EXPECTED_APPLE_TEAM_ID" \
+            "$expect_signed" \
+            "$expect_notarized" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+expected_sha256 = sys.argv[2]
+expected_team = sys.argv[3]
+expect_signed = sys.argv[4] == "true"
+expect_notarized = sys.argv[5] == "true"
+archive = manifest.get("archive") or {}
+signing = manifest.get("code_signing") or {}
+if archive.get("sha256") != expected_sha256:
+    raise SystemExit("release manifest SHA256 does not match the verified archive")
+if bool(signing.get("apple_developer_id")) != expect_signed:
+    raise SystemExit("release manifest Developer ID signing state is incorrect")
+if bool(signing.get("notarized")) != expect_notarized:
+    raise SystemExit("release manifest notarization state is incorrect")
+if expect_signed:
+    identity = str(signing.get("identity") or "")
+    if expected_team not in identity:
+        raise SystemExit(f"release manifest signing identity does not contain Apple team {expected_team}")
+PY
+
+        if [[ -n "$SIGN_IDENTITY" ]]; then
+            mkdir "$verify_dir/payload"
+            tar -xzf "$verify_dir/$ARCHIVE" -C "$verify_dir/payload"
+            for bin in "${RELEASE_BINS[@]}"; do
+                run codesign --verify --strict --verbose=2 "$verify_dir/payload/$bin"
+                signature_details="$(codesign -dv --verbose=4 "$verify_dir/payload/$bin" 2>&1)"
+                grep -F "Authority=Developer ID Application: DEFAI PRIVATE LIMITED" <<<"$signature_details" >/dev/null || {
+                    die "uploaded $bin has the wrong Developer ID authority"
+                }
+                grep -F "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details" >/dev/null || {
+                    die "uploaded $bin has the wrong Apple team"
+                }
+                if [[ "$SKIP_NOTARIZATION" = false ]]; then
+                    run codesign --check-notarization "$verify_dir/payload/$bin"
+                    run spctl --assess --type execute --verbose=2 "$verify_dir/payload/$bin"
+                fi
+            done
+        fi
+    )
 }
 
 while [[ $# -gt 0 ]]; do
@@ -426,6 +532,11 @@ fi
 if [[ "$SKIP_BUILD" = true && "$LOCAL_BUILD" = true ]]; then
     die "--skip-build and --local-build cannot be used together"
 fi
+if [[ "$DRY_RUN" = false && "$DRAFT" = false ]]; then
+    [[ "$MINISIGN" = true ]] || die "published releases require Minisign; --no-minisign is allowed only with --dry-run or --draft"
+    [[ -n "$SIGN_IDENTITY" ]] || die "published releases require --sign-identity or AX_CODESIGN_IDENTITY"
+    [[ "$SKIP_NOTARIZATION" = false ]] || die "published releases must be notarized; --skip-notarization is allowed only with --dry-run or --draft"
+fi
 
 VERSION="${TAG#v}"
 TITLE="${TITLE:-$TAG}"
@@ -459,6 +570,9 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
             die "xcrun notarytool is not available - install current Xcode Command Line Tools"
         fi
     fi
+fi
+if [[ "$DRY_RUN" = false && -n "$SIGN_IDENTITY" && "$SKIP_NOTARIZATION" = false ]]; then
+    check_cmd spctl "spctl is required for Gatekeeper verification"
 fi
 resolve_notary_args
 
@@ -565,7 +679,7 @@ run tar -czf "$ARCHIVE_PATH" -C "$STAGING_DIR" "${release_payload[@]}"
 SHA256="$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
 printf '%s  %s\n' "$SHA256" "$ARCHIVE" > "$SHA256_PATH"
 
-AX_RELEASE_CODESIGN_IDENTITY="$SIGN_IDENTITY" \
+AX_RELEASE_CODESIGN_IDENTITY="${RESOLVED_SIGN_IDENTITY:-$SIGN_IDENTITY}" \
 AX_RELEASE_NOTARIZED="$([[ -n "$SIGN_IDENTITY" && "$SKIP_NOTARIZATION" = false && "$DRY_RUN" = false ]] && echo true || echo false)" \
 python3 - "$TAG" "$VERSION" "$MAIN_REPO" "$head_commit" "$ARCHIVE" "$SHA256" "$DOWNLOAD_URL" "$MANIFEST_PATH" "${RELEASE_BINS[@]}" "--" "${release_payload[@]}" <<'PY'
 from __future__ import annotations
@@ -668,15 +782,18 @@ if [[ -n "$NOTES_FILE" ]]; then
 else
     release_args+=(--generate-notes)
 fi
-if [[ "$DRAFT" = true ]]; then
-    release_args+=(--draft)
-fi
+# Assemble every release as a draft. It is published only after the uploaded
+# bytes pass independent Minisign, checksum, Developer ID, and notarization checks.
+release_args+=(--draft)
 if [[ "$PRERELEASE" = true ]]; then
     release_args+=(--prerelease)
 fi
 
-if gh release view "$TAG" --repo "$MAIN_REPO" >/dev/null 2>&1; then
-    echo "GitHub release already exists: $TAG"
+if release_is_draft="$(gh release view "$TAG" --repo "$MAIN_REPO" --json isDraft --jq .isDraft 2>/dev/null)"; then
+    [[ "$release_is_draft" == "true" ]] || {
+        die "release $TAG is already published; refusing to replace verified assets"
+    }
+    echo "Continuing existing draft release: $TAG"
 else
     run gh release create "${release_args[@]}" --verify-tag
 fi
@@ -687,13 +804,17 @@ if [[ "$CLOBBER_ASSETS" = true ]]; then
 fi
 run gh release upload "${upload_args[@]}"
 
-asset_names="$(gh release view "$TAG" --repo "$MAIN_REPO" --json assets --jq '.assets[].name')"
-for asset in "${assets[@]}"; do
-    name="$(basename "$asset")"
-    if ! grep -qxF "$name" <<<"$asset_names"; then
-        die "uploaded asset missing from GitHub release: $name"
-    fi
-done
+verify_uploaded_release
+
+if [[ "$DRAFT" = false ]]; then
+    release_is_draft="$(gh release view "$TAG" --repo "$MAIN_REPO" --json isDraft --jq .isDraft)"
+    [[ "$release_is_draft" == "true" ]] || {
+        die "release $TAG is no longer a draft; refusing to publish or mutate it"
+    }
+    run gh release edit "$TAG" --repo "$MAIN_REPO" --draft=false
+else
+    echo "Verified draft release: https://github.com/${MAIN_REPO}/releases/tag/${TAG}"
+fi
 
 if [[ "$SKIP_BREW_DISPATCH" = true ]]; then
     echo "warning: skipping Homebrew workflow dispatch (--skip-brew-dispatch)" >&2
@@ -704,7 +825,7 @@ else
         --repo "$MAIN_REPO" \
         --ref main \
         -f tag="$TAG"
-    echo "Dispatched Homebrew formula update after release asset verification."
+    echo "Dispatched Homebrew formula update after release publication and verification."
 fi
 
 echo

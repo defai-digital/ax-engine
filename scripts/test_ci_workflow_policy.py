@@ -157,8 +157,25 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", brew)
         self.assertNotIn("for attempt in $(seq 1 30)", brew)
         self.assertLess(
-            publisher.index("uploaded asset missing from GitHub release"),
+            publisher.rindex("verify_uploaded_release"),
+            publisher.index('gh release edit "$TAG"'),
+        )
+        self.assertLess(
+            publisher.index('gh release edit "$TAG"'),
             publisher.index("gh workflow run brew-release.yml"),
+        )
+
+    def test_homebrew_verifies_minisign_before_trusting_checksum(self) -> None:
+        brew = (WORKFLOWS_DIR / "brew-release.yml").read_text()
+
+        self.assertIn("sudo apt-get install -y minisign", brew)
+        self.assertIn("cmp docs/ax-minisign.pub /tmp/ax-minisign.pub", brew)
+        self.assertIn("minisign -V", brew)
+        self.assertIn("Homebrew release requires Developer ID signing and Apple notarization", brew)
+        self.assertLess(brew.index("minisign -V"), brew.index('SHA256="$(awk'))
+        self.assertLess(
+            brew.index("ACTUAL_SHA256="),
+            brew.rindex("      - name: Update Homebrew tap formula"),
         )
 
     def test_publisher_reuses_exact_sha_ci_by_default(self) -> None:

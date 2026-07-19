@@ -53,7 +53,10 @@ jobs:
       - name: Verify tag matches all SDK versions
         run: python3 scripts/check_version_sync.py --expected "${{ steps.tag.outputs.tag }}"
 
-      - name: Resolve checksum from the signed release asset
+      - name: Install Minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      - name: Download and verify signed release asset
         id: asset
         run: |
           set -euo pipefail
@@ -63,33 +66,58 @@ jobs:
           MANIFEST="ax-engine-${TAG}-macos-arm64.manifest.json"
           DOWNLOAD_URL="https://github.com/${MAIN_REPO}/releases/download/${TAG}/${ARCHIVE}"
 
-          # The local publisher dispatches this workflow only after the signed
-          # release assets are uploaded and verified. Read that authoritative
-          # checksum instead of rebuilding or racing the release upload.
+          # Re-download and independently verify the published bytes before
+          # trusting their checksum in the Homebrew formula.
           gh release download "$TAG" --repo "$MAIN_REPO" \
-            --pattern "${ARCHIVE}.sha256" --dir /tmp --clobber
+            --pattern "$ARCHIVE" \
+            --pattern "${ARCHIVE}.minisig" \
+            --pattern "${ARCHIVE}.sha256" \
+            --pattern "${ARCHIVE}.sha256.minisig" \
+            --pattern "$MANIFEST" \
+            --pattern "${MANIFEST}.minisig" \
+            --pattern "ax-minisign.pub" \
+            --dir /tmp \
+            --clobber
 
-          if [[ ! -f "/tmp/${ARCHIVE}.sha256" ]]; then
-            echo "error: ${ARCHIVE}.sha256 not found on release $TAG." >&2
-            echo "The signed release must be published first (scripts/publish-github-release.sh)." >&2
-            exit 1
-          fi
+          for asset in \
+            "$ARCHIVE" \
+            "${ARCHIVE}.minisig" \
+            "${ARCHIVE}.sha256" \
+            "${ARCHIVE}.sha256.minisig" \
+            "$MANIFEST" \
+            "${MANIFEST}.minisig" \
+            "ax-minisign.pub"; do
+            [[ -f "/tmp/$asset" ]] || {
+              echo "error: $asset not found on release $TAG." >&2
+              exit 1
+            }
+          done
+
+          cmp docs/ax-minisign.pub /tmp/ax-minisign.pub
+          for asset in "$ARCHIVE" "${ARCHIVE}.sha256" "$MANIFEST"; do
+            minisign -V \
+              -p docs/ax-minisign.pub \
+              -m "/tmp/$asset" \
+              -x "/tmp/${asset}.minisig"
+          done
 
           SHA256="$(awk '{print $1}' "/tmp/${ARCHIVE}.sha256")"
           if [[ ! "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
             echo "error: could not parse a sha256 from the sidecar: '${SHA256}'" >&2
             exit 1
           fi
-
-          gh release download "$TAG" --repo "$MAIN_REPO" \
-            --pattern "$MANIFEST" --dir /tmp --clobber
+          ACTUAL_SHA256="$(sha256sum "/tmp/$ARCHIVE" | awk '{print $1}')"
+          [[ "$ACTUAL_SHA256" == "$SHA256" ]] || {
+            echo "error: signed SHA256 sidecar does not match $ARCHIVE" >&2
+            exit 1
+          }
 
           {
             echo "archive=$ARCHIVE"
             echo "manifest=$MANIFEST"
             echo "sha256=$SHA256"
             echo "download_url=$DOWNLOAD_URL"
-            python3 - "/tmp/${MANIFEST}" <<'PY'
+            python3 - "/tmp/${MANIFEST}" "$ARCHIVE" "$SHA256" <<'PY'
           from __future__ import annotations
 
           import json
@@ -97,9 +125,16 @@ jobs:
           from pathlib import Path
 
           manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected_archive = sys.argv[2]
+          expected_sha256 = sys.argv[3]
+          archive = manifest.get("archive") or {}
           code_signing = manifest.get("code_signing") or {}
           apple_signed = bool(code_signing.get("apple_developer_id"))
           apple_notarized = bool(code_signing.get("notarized"))
+          if archive.get("name") != expected_archive or archive.get("sha256") != expected_sha256:
+              raise SystemExit("release manifest archive identity does not match verified bytes")
+          if not apple_signed or not apple_notarized:
+              raise SystemExit("Homebrew release requires Developer ID signing and Apple notarization")
           print(f"apple_signed={str(apple_signed).lower()}")
           print(f"apple_notarized={str(apple_notarized).lower()}")
           PY

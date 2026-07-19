@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
-# brew-release.sh — build, upload, and publish an ax-engine Homebrew release
-# from the local machine. Replaces the GitHub Actions release workflow.
+# brew-release.sh — legacy local Homebrew release preview.
+# Production mutation is disabled; use publish-github-release.sh.
 #
 # Usage:
-#   scripts/brew-release.sh v4.5.0
 #   scripts/brew-release.sh v4.5.0 --dry-run
-#   scripts/brew-release.sh v4.5.0 --skip-build
-#   scripts/brew-release.sh v4.5.0 --skip-build --skip-upload
-#   scripts/brew-release.sh v4.5.0 --minisign
-#   scripts/brew-release.sh v4.5.0 --sign-identity "Developer ID Application: Your Name (TEAMID)"
+#   scripts/brew-release.sh v4.5.0 --dry-run --skip-build
+#   scripts/brew-release.sh v4.5.0 --dry-run --minisign
+#   scripts/brew-release.sh v4.5.0 --dry-run --sign-identity "Developer ID Application: Your Name (TEAMID)"
 #
 # Flags:
-#   --dry-run                Build and package but do not upload or push anything
+#   --dry-run                Required: build and package but do not upload or push
 #   --skip-build             Use existing target/release binaries (skip cargo build)
 #   --skip-upload            Skip uploading the archive to the GitHub release
 #   --skip-tap               Skip cloning/updating the Homebrew tap
@@ -130,6 +128,12 @@ done
 
 if [[ -z "$TAG" ]]; then
     echo "error: tag is required (e.g. v4.5.0)" >&2
+    exit 1
+fi
+
+if [[ "$DRY_RUN" = false ]]; then
+    echo "error: scripts/brew-release.sh is a legacy preview and may not publish releases" >&2
+    echo "       use scripts/publish-github-release.sh for the fail-closed release workflow" >&2
     exit 1
 fi
 

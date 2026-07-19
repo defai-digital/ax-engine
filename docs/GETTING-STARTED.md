@@ -126,10 +126,11 @@ installer with bundled dynamic libraries. Prefer pip for normal deployment.
 #### Gatekeeper warning on older releases
 
 AX Engine release binaries for `6.7.1` and newer are expected to be Developer ID
-signed and notarized when published through `scripts/publish-github-release.sh`
-with `--sign-identity`. Older release archives were ad-hoc signed and may still
-show a Gatekeeper dialog that says _"cannot be opened because Apple cannot
-verify it"_. That does **not** mean the binaries are malicious.
+signed and notarized. The canonical `scripts/publish-github-release.sh` now
+requires Developer ID signing and notarization before it can publish. Older
+release archives were ad-hoc signed and may still show a Gatekeeper dialog that
+says _"cannot be opened because Apple cannot verify it"_. That does **not** mean
+the binaries are malicious.
 
 For older ad-hoc signed archives, use one of these one-time workarounds.
 

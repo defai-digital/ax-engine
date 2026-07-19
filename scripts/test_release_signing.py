@@ -30,6 +30,30 @@ class ReleaseSigningTests(unittest.TestCase):
                 self.assertIn("MACOS_RELEASE_ENTITLEMENTS=", text)
                 self.assertIn('--entitlements "$MACOS_RELEASE_ENTITLEMENTS"', text)
 
+    def test_publisher_fails_closed_and_verifies_uploaded_release(self):
+        with open(PUBLISH_SCRIPT, encoding="utf-8") as fh:
+            text = fh.read()
+
+        self.assertIn("published releases require Minisign", text)
+        self.assertIn("published releases require --sign-identity", text)
+        self.assertIn("published releases must be notarized", text)
+        self.assertIn("TeamIdentifier=$EXPECTED_APPLE_TEAM_ID", text)
+        self.assertIn("codesign --check-notarization", text)
+        self.assertIn("spctl --assess --type execute", text)
+        self.assertIn("release_args+=(--draft)", text)
+        self.assertIn("release $TAG is already published; refusing to replace verified assets", text)
+        self.assertIn("release $TAG is no longer a draft; refusing to publish or mutate it", text)
+        self.assertIn("cmp \"$REPOSITORY_MINISIGN_PUBLIC_KEY\"", text)
+        self.assertIn("minisign -V", text)
+        self.assertLess(text.rindex("verify_uploaded_release"), text.index('gh release edit "$TAG"'))
+
+    def test_legacy_brew_publisher_cannot_mutate_releases(self):
+        with open(BREW_RELEASE_SCRIPT, encoding="utf-8") as fh:
+            text = fh.read()
+
+        self.assertIn("scripts/brew-release.sh is a legacy preview and may not publish releases", text)
+        self.assertIn('if [[ "$DRY_RUN" = false ]]', text)
+
 
 if __name__ == "__main__":
     unittest.main()

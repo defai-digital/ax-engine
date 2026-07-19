@@ -1,10 +1,10 @@
 # Minisign release signing
 
 AX Engine publishes detached minisign signatures for GitHub Release and Homebrew
-assets. The release scripts (`scripts/publish-github-release.sh`,
-`scripts/brew-release.sh`) sign artifacts before upload via
-`scripts/minisign-artifact.sh`; the shared AX product signing key lives outside the
-repository in `~/signkey` by default.
+assets. The canonical `scripts/publish-github-release.sh` signs artifacts before
+upload via `scripts/minisign-artifact.sh`; the shared AX product signing key lives
+outside the repository in `~/signkey` by default. The legacy
+`scripts/brew-release.sh` is dry-run-only and cannot mutate a release.
 
 The secret key must never be committed, logged, or uploaded as a release asset.
 The public key is safe to publish so users can verify downloaded artifacts. The
