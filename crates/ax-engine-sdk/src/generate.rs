@@ -222,16 +222,18 @@ pub struct GeneratePerformanceReport {
     /// Tokens generated during `generation_time_us`. This excludes the initial
     /// autoregressive output batch and counts all block-diffusion output tokens.
     pub generation_token_count: u32,
-    /// Native prompt-evaluation time accumulated from EngineStepReport CPU
-    /// timings. This excludes time a stream consumer spends between pulls.
+    /// Native prompt-evaluation time accumulated through the step that commits
+    /// the first autoregressive output. This excludes time a stream consumer
+    /// spends between pulls. Block diffusion has no separate prompt phase.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_eval_time_us: Option<u64>,
     /// MLX runner portion of `prompt_eval_time_us`, excluding engine scheduler
     /// and request-bookkeeping work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_runner_time_us: Option<u64>,
-    /// Native output-token evaluation time accumulated from engine steps that
-    /// produced output. This is comparable to Ollama's `eval_duration`; unlike
+    /// Native output-token evaluation time after the first autoregressive
+    /// output boundary. Block diffusion includes all native generation work.
+    /// This is comparable to Ollama's `eval_duration`; unlike
     /// `generation_time_us`, it excludes tokenizer, IPC, and caller backpressure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_eval_time_us: Option<u64>,
@@ -240,8 +242,9 @@ pub struct GeneratePerformanceReport {
     /// throughput from engine and client overhead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_runner_time_us: Option<u64>,
-    /// Output tokens produced by the native steps in `model_eval_time_us`,
-    /// comparable to Ollama's `eval_count`.
+    /// Output tokens produced during `model_eval_time_us`, excluding the first
+    /// autoregressive output batch and counting the full block-diffusion output.
+    /// This is comparable to Ollama's `eval_count`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_eval_token_count: Option<u32>,
     #[serde(default)]

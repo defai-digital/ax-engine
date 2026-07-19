@@ -183,7 +183,11 @@ impl<'a> GenerateStream<'a> {
                 let has_model_work =
                     step.step.scheduled_tokens != 0 || step.step.runner_time_us != 0;
                 if has_model_work {
-                    if self.first_output_at.is_some() || has_output {
+                    // The native step that commits the first output also did
+                    // the prompt prefill which made that token possible. Keep
+                    // the complete step in prompt evaluation; output-token
+                    // evaluation starts with the next pull.
+                    if self.first_output_at.is_some() {
                         self.model_eval_time_us = self
                             .model_eval_time_us
                             .saturating_add(step.step.cpu_time_us);
@@ -199,9 +203,11 @@ impl<'a> GenerateStream<'a> {
                             .saturating_add(step.step.runner_time_us);
                     }
                 }
-                self.model_eval_token_count = self
-                    .model_eval_token_count
-                    .saturating_add(token_delta_count);
+                if self.first_output_at.is_some() {
+                    self.model_eval_token_count = self
+                        .model_eval_token_count
+                        .saturating_add(token_delta_count);
+                }
 
                 if self.first_output_at.is_none() && has_output {
                     self.first_output_at = Some(now);
@@ -229,22 +235,49 @@ impl<'a> GenerateStream<'a> {
                 } else {
                     (None, 0)
                 };
+                // Block-diffusion models finish native generation before
+                // draining the visible output block, so they have no distinct
+                // first-token prefill phase. Report all native model work as
+                // output evaluation and count the full output block.
+                let (
+                    prompt_eval_time_us,
+                    prompt_runner_time_us,
+                    model_eval_time_us,
+                    model_runner_time_us,
+                    model_eval_token_count,
+                ) = if is_block_diffusion {
+                    (
+                        0,
+                        0,
+                        self.model_prompt_eval_time_us
+                            .saturating_add(self.model_eval_time_us),
+                        self.model_prompt_runner_time_us
+                            .saturating_add(self.model_runner_time_us),
+                        output_token_count,
+                    )
+                } else {
+                    (
+                        self.model_prompt_eval_time_us,
+                        self.model_prompt_runner_time_us,
+                        self.model_eval_time_us,
+                        self.model_runner_time_us,
+                        self.model_eval_token_count,
+                    )
+                };
                 event.response.performance = GeneratePerformanceReport {
                     metrics_version: 2,
                     total_time_us,
                     time_to_first_token_us,
                     generation_time_us,
                     generation_token_count,
-                    prompt_eval_time_us: (self.model_prompt_eval_time_us != 0)
-                        .then_some(self.model_prompt_eval_time_us),
-                    prompt_runner_time_us: (self.model_prompt_runner_time_us != 0)
-                        .then_some(self.model_prompt_runner_time_us),
-                    model_eval_time_us: (self.model_eval_time_us != 0)
-                        .then_some(self.model_eval_time_us),
-                    model_runner_time_us: (self.model_runner_time_us != 0)
-                        .then_some(self.model_runner_time_us),
-                    model_eval_token_count: (self.model_eval_time_us != 0)
-                        .then_some(self.model_eval_token_count),
+                    prompt_eval_time_us: (prompt_eval_time_us != 0).then_some(prompt_eval_time_us),
+                    prompt_runner_time_us: (prompt_runner_time_us != 0)
+                        .then_some(prompt_runner_time_us),
+                    model_eval_time_us: (model_eval_time_us != 0).then_some(model_eval_time_us),
+                    model_runner_time_us: (model_runner_time_us != 0)
+                        .then_some(model_runner_time_us),
+                    model_eval_token_count: (model_eval_time_us != 0)
+                        .then_some(model_eval_token_count),
                     mtp: GenerateMtpReport::from_route(&event.response.route),
                 };
             }
