@@ -557,6 +557,7 @@ mod tests {
                 mlx_runtime: None,
                 mlx_model: None,
             },
+            performance: Default::default(),
         }
     }
 

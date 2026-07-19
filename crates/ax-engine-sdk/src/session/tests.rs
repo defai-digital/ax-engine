@@ -432,7 +432,19 @@ fn preview_session_config_factory_builds_mlx_preview_defaults() {
     assert_eq!(config.backend_policy, BackendPolicy::mlx_only());
     assert_eq!(config.resolved_backend, ResolvedBackend::mlx_preview());
     assert!(config.llama_backend.is_none());
+    assert_eq!(config.mlx_mtp_policy, MlxMtpPolicy::Auto);
     assert!(config.mlx_mtp_disable_ngram_stacking);
+}
+
+#[test]
+fn ngram_and_mtp_policies_are_independent() {
+    let ngram_disabled = EngineSessionConfig::default().without_ngram_acceleration();
+    assert!(ngram_disabled.mlx_disable_ngram_acceleration);
+    assert_eq!(ngram_disabled.mlx_mtp_policy, MlxMtpPolicy::Auto);
+
+    let direct = EngineSessionConfig::default().without_speculative_acceleration();
+    assert!(direct.mlx_disable_ngram_acceleration);
+    assert_eq!(direct.mlx_mtp_policy, MlxMtpPolicy::Disabled);
 }
 
 #[test]
@@ -706,6 +718,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         mlx_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
         mlx_model_artifacts_dir: Some(Path::new("/tmp/ax-model").to_path_buf()),
         mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
+        mlx_mtp_policy: MlxMtpPolicy::Required,
         mlx_disable_ngram_acceleration: true,
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
@@ -720,6 +733,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         KvManagerConfig::validated(CacheGroupId(7), 32, 2048)
     );
     assert!(config.multi_prefill_fair);
+    assert_eq!(config.mlx_mtp_policy, MlxMtpPolicy::Required);
     assert_eq!(config.max_prefill_tokens_per_request_per_step, 16);
     assert_eq!(config.max_inflight_prefill_requests, 3);
     assert!(!config.deterministic);

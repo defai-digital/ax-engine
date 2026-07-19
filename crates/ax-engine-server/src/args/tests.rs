@@ -1,6 +1,6 @@
 use super::*;
 use ax_engine_sdk::{
-    BackendPolicy, EngineSessionConfig, LlamaCppConfig, PreviewBackendRequest,
+    BackendPolicy, EngineSessionConfig, LlamaCppConfig, MlxMtpPolicy, PreviewBackendRequest,
     PreviewSessionConfigRequest, ResolvedBackend, SelectedBackend, SupportTier,
 };
 use std::fs;
@@ -188,6 +188,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         max_batch_tokens: 2048,
         mlx_runtime_artifacts_dir: None,
         mlx_model_artifacts_dir: None,
+        mlx_mtp_policy: MlxMtpPolicy::Auto,
         mlx_disable_ngram_acceleration: false,
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
@@ -233,6 +234,7 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         max_batch_tokens: 1024,
         mlx_runtime_artifacts_dir: None,
         mlx_model_artifacts_dir: None,
+        mlx_mtp_policy: MlxMtpPolicy::Auto,
         mlx_disable_ngram_acceleration: false,
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
@@ -353,6 +355,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
         max_batch_tokens: 2048,
         mlx_runtime_artifacts_dir: None,
         mlx_model_artifacts_dir: None,
+        mlx_mtp_policy: MlxMtpPolicy::Auto,
         mlx_disable_ngram_acceleration: false,
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,

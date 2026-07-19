@@ -22,6 +22,24 @@ use super::errors::EngineSessionError;
 const NATIVE_METAL_BUILD_DIR_ENV: &str = "AX_ENGINE_METAL_BUILD_DIR";
 const NATIVE_MODEL_DIR_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 
+/// Controls whether native MLX generation may use a packaged multi-token
+/// prediction (MTP) drafter. This is intentionally independent from n-gram
+/// speculation: callers can keep the n-gram path disabled while allowing a
+/// validated Qwen sidecar or Gemma assistant to accelerate decoding.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MlxMtpPolicy {
+    /// Use MTP when the loaded artifacts contain a validated drafter, otherwise
+    /// continue on the direct path.
+    #[default]
+    Auto,
+    /// Never use MTP. Callers that require fully direct decoding should also set
+    /// `mlx_disable_ngram_acceleration`.
+    Disabled,
+    /// Require validated MTP artifacts and fail session construction when they
+    /// are unavailable.
+    Required,
+}
+
 #[derive(Clone, Debug)]
 pub struct EngineSessionConfig {
     pub kv_config: KvManagerConfig,
@@ -35,7 +53,11 @@ pub struct EngineSessionConfig {
     pub mlx_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
-    /// When true, MLX runner disables n-gram acceleration and uses the direct path.
+    /// MTP admission policy. Kept separate from n-gram so Studio can safely use
+    /// packaged MTP while the standalone n-gram path remains disabled.
+    pub mlx_mtp_policy: MlxMtpPolicy,
+    /// When true, MLX runner disables n-gram acceleration. MTP is controlled by
+    /// `mlx_mtp_policy` and may remain active.
     pub mlx_disable_ngram_acceleration: bool,
     /// When true, MLX MTP decode keeps MTP enabled but disables the n-gram-first
     /// draft source inside the MTP verify loop.
@@ -73,7 +95,10 @@ pub struct PreviewSessionConfigRequest {
     pub backend_request: PreviewBackendRequest,
     pub mlx_runtime_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
-    /// When true, MLX runner disables n-gram acceleration and uses the direct path.
+    /// MTP admission policy for native MLX generation.
+    pub mlx_mtp_policy: MlxMtpPolicy,
+    /// When true, MLX runner disables n-gram acceleration. MTP remains governed
+    /// independently by `mlx_mtp_policy`.
     pub mlx_disable_ngram_acceleration: bool,
     /// When true, MLX MTP decode keeps MTP enabled but disables the n-gram-first
     /// draft source inside the MTP verify loop.
@@ -104,6 +129,7 @@ impl Default for PreviewSessionConfigRequest {
             backend_request: PreviewBackendRequest::default(),
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
+            mlx_mtp_policy: MlxMtpPolicy::Auto,
             mlx_disable_ngram_acceleration: false,
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
@@ -130,6 +156,7 @@ pub struct ResolvedSessionConfigRequest {
     pub mlx_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
+    pub mlx_mtp_policy: MlxMtpPolicy,
     pub mlx_disable_ngram_acceleration: bool,
     pub mlx_mtp_disable_ngram_stacking: bool,
     pub mlx_speculation_profile: Option<String>,
@@ -156,6 +183,7 @@ impl Default for ResolvedSessionConfigRequest {
             mlx_runtime_artifacts_source: default.mlx_runtime_artifacts_source,
             mlx_model_artifacts_dir: default.mlx_model_artifacts_dir,
             mlx_model_artifacts_source: default.mlx_model_artifacts_source,
+            mlx_mtp_policy: default.mlx_mtp_policy,
             mlx_disable_ngram_acceleration: default.mlx_disable_ngram_acceleration,
             mlx_mtp_disable_ngram_stacking: default.mlx_mtp_disable_ngram_stacking,
             mlx_speculation_profile: default.mlx_speculation_profile.clone(),
@@ -196,6 +224,7 @@ impl Default for EngineSessionConfig {
                 .as_ref()
                 .map(|selection| selection.dir.clone()),
             mlx_model_artifacts_source: mlx_model_artifacts.map(|selection| selection.source),
+            mlx_mtp_policy: MlxMtpPolicy::Auto,
             mlx_disable_ngram_acceleration: false,
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
@@ -218,9 +247,21 @@ impl EngineSessionConfig {
         self
     }
 
-    /// Disables n-gram speculation, forcing the direct single-token decode path.
-    /// Useful for benchmarking baseline throughput or diagnosing speculation overhead.
+    /// Disables n-gram speculation without changing MTP admission.
     pub fn without_ngram_acceleration(mut self) -> Self {
+        self.mlx_disable_ngram_acceleration = true;
+        self
+    }
+
+    /// Sets the native MLX MTP admission policy independently from n-gram.
+    pub fn with_mtp_policy(mut self, policy: MlxMtpPolicy) -> Self {
+        self.mlx_mtp_policy = policy;
+        self
+    }
+
+    /// Disables both MTP and n-gram speculation for a direct-decode baseline.
+    pub fn without_speculative_acceleration(mut self) -> Self {
+        self.mlx_mtp_policy = MlxMtpPolicy::Disabled;
         self.mlx_disable_ngram_acceleration = true;
         self
     }
@@ -305,6 +346,7 @@ impl EngineSessionConfig {
             mlx_model_artifacts_source: mlx_model_artifacts
                 .map(|selection| selection.source)
                 .or(default.mlx_model_artifacts_source),
+            mlx_mtp_policy: request.mlx_mtp_policy,
             mlx_disable_ngram_acceleration: request.mlx_disable_ngram_acceleration,
             mlx_mtp_disable_ngram_stacking: request.mlx_mtp_disable_ngram_stacking,
             mlx_speculation_profile: request.mlx_speculation_profile,
@@ -349,6 +391,7 @@ impl EngineSessionConfig {
             mlx_runtime_artifacts_source: request.mlx_runtime_artifacts_source,
             mlx_model_artifacts_dir: request.mlx_model_artifacts_dir,
             mlx_model_artifacts_source: request.mlx_model_artifacts_source,
+            mlx_mtp_policy: request.mlx_mtp_policy,
             mlx_disable_ngram_acceleration: request.mlx_disable_ngram_acceleration,
             mlx_mtp_disable_ngram_stacking: request.mlx_mtp_disable_ngram_stacking,
             mlx_speculation_profile: request.mlx_speculation_profile,

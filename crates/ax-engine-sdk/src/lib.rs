@@ -60,9 +60,9 @@ pub use delegated_http::{
     DelegatedHttpTimeouts,
 };
 pub use generate::{
-    GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
-    GenerateStatus, GenerateStreamEvent, GenerateStreamRequestEvent, GenerateStreamResponseEvent,
-    GenerateStreamStepEvent,
+    GenerateFinishReason, GenerateMtpReport, GeneratePerformanceReport, GenerateRequest,
+    GenerateResponse, GenerateRouteReport, GenerateSampling, GenerateStatus, GenerateStreamEvent,
+    GenerateStreamRequestEvent, GenerateStreamResponseEvent, GenerateStreamStepEvent,
 };
 pub use llama_cpp::{
     LlamaCppBackendError, LlamaCppChatGenerateRequest, LlamaCppChatMessage, LlamaCppCliConfig,
@@ -82,6 +82,6 @@ pub use request::{
 };
 pub use session::{
     EngineSession, EngineSessionConfig, EngineSessionError, GenerateStream, GenerateStreamState,
-    PreviewSessionConfigError, PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
-    StatelessGenerateContext,
+    MlxMtpPolicy, PreviewSessionConfigError, PreviewSessionConfigRequest,
+    ResolvedSessionConfigRequest, StatelessGenerateContext,
 };

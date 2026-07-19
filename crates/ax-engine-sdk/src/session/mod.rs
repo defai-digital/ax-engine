@@ -27,7 +27,7 @@ mod stream;
 
 use artifacts::resolve_native_model_report;
 pub use config::{
-    EngineSessionConfig, PreviewSessionConfigError, PreviewSessionConfigRequest,
+    EngineSessionConfig, MlxMtpPolicy, PreviewSessionConfigError, PreviewSessionConfigRequest,
     ResolvedSessionConfigRequest,
 };
 use delegated::{

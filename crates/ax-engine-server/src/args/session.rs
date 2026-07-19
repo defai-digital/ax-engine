@@ -1,6 +1,6 @@
 use ax_engine_sdk::{
-    DelegatedHttpTimeouts, EngineSessionConfig, PreviewBackendRequest, PreviewSessionConfigRequest,
-    SupportTier,
+    DelegatedHttpTimeouts, EngineSessionConfig, MlxMtpPolicy, PreviewBackendRequest,
+    PreviewSessionConfigRequest, SupportTier,
 };
 use std::env;
 use std::path::PathBuf;
@@ -115,6 +115,7 @@ impl ServerArgs {
             backend_request,
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir,
+            mlx_mtp_policy: MlxMtpPolicy::Auto,
             mlx_disable_ngram_acceleration: self.disable_ngram_acceleration,
             mlx_mtp_disable_ngram_stacking,
             mlx_speculation_profile: self

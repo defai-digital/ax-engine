@@ -2,7 +2,7 @@ use std::env;
 
 use ax_engine_core::EngineCore;
 
-use super::config::EngineSessionConfig;
+use super::config::{EngineSessionConfig, MlxMtpPolicy};
 use super::errors::EngineSessionError;
 
 #[cfg(feature = "mlx-native")]
@@ -114,6 +114,10 @@ fn build_mlx_core(
     .map_err(|e| {
         EngineSessionError::MetalRuntime(ax_engine_core::MetalRuntimeError::Generic(e.to_string()))
     })?;
+    if config.mlx_mtp_policy == MlxMtpPolicy::Required && !runner.has_mtp() {
+        return Err(EngineSessionError::MlxMtpRequiredButUnavailable);
+    }
+    runner.set_mtp_requested(config.mlx_mtp_policy != MlxMtpPolicy::Disabled);
     // Couple PR4 FA private pool capacity to the session logical block table
     // when the opt-in flag is engaged (default remains OFF / contiguous).
     runner.align_fa_block_pool_to_kv(

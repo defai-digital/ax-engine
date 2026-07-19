@@ -107,6 +107,7 @@ async fn populate_native_mlx_output_text_sets_decoded_content_for_unary_contract
         ttft_step: Some(1),
         route: Default::default(),
         runtime: live.runtime_report.clone(),
+        performance: Default::default(),
     };
 
     populate_native_mlx_output_text(

@@ -440,6 +440,7 @@ fn build_mlx_lm_delegated_response(
         ttft_step: None,
         route: GenerateRouteReport::with_execution_plan(execution_plan),
         runtime: runtime.clone(),
+        performance: crate::generate::GeneratePerformanceReport::default(),
     }
 }
 

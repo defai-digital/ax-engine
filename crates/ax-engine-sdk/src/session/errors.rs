@@ -44,6 +44,10 @@ pub enum EngineSessionError {
         "MLX runtime is not available; enable MLX mode support or configure a llama.cpp backend"
     )]
     MlxRuntimeUnavailable,
+    #[error(
+        "MLX MTP was required, but the loaded model package has no validated MTP head or assistant drafter"
+    )]
+    MlxMtpRequiredButUnavailable,
     #[error("request_id must be greater than zero")]
     InvalidRequestId,
     #[error("unsupported support tier cannot start an engine session")]

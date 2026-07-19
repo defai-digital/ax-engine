@@ -56,6 +56,11 @@ pub struct GenerateResponse {
     pub ttft_step: Option<u64>,
     pub route: GenerateRouteReport,
     pub runtime: RuntimeReport,
+    /// Versioned, monotonic timing and acceleration telemetry. Native streams
+    /// populate this at the SDK boundary so desktop and server clients use the
+    /// same generation-speed denominator.
+    #[serde(default)]
+    pub performance: GeneratePerformanceReport,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -166,6 +171,80 @@ impl GenerateRouteReport {
     /// Returns the number of KV growth events recorded for this request.
     pub fn kv_growth_count(&self) -> Option<u32> {
         self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT)
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GenerateMtpReport {
+    pub available: bool,
+    pub requested: bool,
+    pub active: bool,
+    pub direct_fallback_steps: u32,
+    pub draft_tokens: u32,
+    pub accepted_tokens: u32,
+    pub decode_steps: u32,
+}
+
+impl GenerateMtpReport {
+    pub fn from_route(route: &GenerateRouteReport) -> Self {
+        let decision = |key| route.decision(key).unwrap_or_default();
+        let decode_steps = decision("ax_mtp_decode_steps");
+        Self {
+            available: decision("ax_mtp_available") != 0,
+            requested: decision("ax_mtp_requested") != 0,
+            active: decode_steps != 0,
+            direct_fallback_steps: decision("ax_mtp_direct_fallback_steps"),
+            draft_tokens: decision("ax_mtp_draft_tokens"),
+            accepted_tokens: decision("ax_mtp_accepted_tokens"),
+            decode_steps,
+        }
+    }
+
+    pub fn acceptance_rate(&self) -> Option<f64> {
+        (self.draft_tokens != 0)
+            .then(|| f64::from(self.accepted_tokens) / f64::from(self.draft_tokens))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GeneratePerformanceReport {
+    pub metrics_version: u32,
+    /// Complete stream time measured with a monotonic clock at the SDK boundary.
+    pub total_time_us: u64,
+    /// Stream creation to the first committed output token or text delta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_to_first_token_us: Option<u64>,
+    /// Authoritative throughput denominator. For autoregressive generation this
+    /// starts at the first committed output boundary; block diffusion uses the
+    /// complete generation interval because work finishes before block drain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_time_us: Option<u64>,
+    /// Tokens generated during `generation_time_us`. This excludes the initial
+    /// autoregressive output batch and counts all block-diffusion output tokens.
+    pub generation_token_count: u32,
+    #[serde(default)]
+    pub mtp: GenerateMtpReport,
+}
+
+impl Default for GeneratePerformanceReport {
+    fn default() -> Self {
+        Self {
+            metrics_version: 1,
+            total_time_us: 0,
+            time_to_first_token_us: None,
+            generation_time_us: None,
+            generation_token_count: 0,
+            mtp: GenerateMtpReport::default(),
+        }
+    }
+}
+
+impl GeneratePerformanceReport {
+    pub fn generation_tokens_per_second(&self) -> Option<f64> {
+        let generation_time_us = self.generation_time_us?;
+        (generation_time_us != 0 && self.generation_token_count != 0).then(|| {
+            f64::from(self.generation_token_count) * 1_000_000.0 / generation_time_us as f64
+        })
     }
 }
 
@@ -329,6 +408,7 @@ impl GenerateResponse {
             ttft_step,
             route: GenerateRouteReport::from_route(&snapshot.route_metadata_hint),
             runtime,
+            performance: GeneratePerformanceReport::default(),
         }
     }
 
@@ -359,6 +439,7 @@ impl GenerateResponse {
             ttft_step,
             route: report.route,
             runtime,
+            performance: GeneratePerformanceReport::default(),
         }
     }
 }
@@ -728,6 +809,7 @@ mod tests {
             ttft_step: Some(1),
             route: GenerateRouteReport::default(),
             runtime: runtime_report(SelectedBackend::Mlx, CapabilityReport::mlx_preview(), None),
+            performance: GeneratePerformanceReport::default(),
         };
 
         assert_eq!(response.known_prompt_token_count(), Some(3));
@@ -757,6 +839,7 @@ mod tests {
                 CapabilityReport::llama_cpp_baseline(),
                 Some("MLX preview not ready"),
             ),
+            performance: GeneratePerformanceReport::default(),
         };
 
         assert_eq!(response.known_prompt_token_count(), Some(7));
@@ -786,6 +869,7 @@ mod tests {
                 CapabilityReport::llama_cpp_cli_baseline(),
                 Some("MLX preview not ready"),
             ),
+            performance: GeneratePerformanceReport::default(),
         };
 
         assert_eq!(response.known_prompt_token_count(), None);
@@ -811,10 +895,43 @@ mod tests {
             ttft_step: None,
             route: GenerateRouteReport::with_execution_plan("mlx.preview"),
             runtime: runtime_report(SelectedBackend::Mlx, CapabilityReport::mlx_preview(), None),
+            performance: GeneratePerformanceReport::default(),
         };
 
         assert_eq!(response.known_prompt_token_count(), Some(3));
         assert_eq!(response.known_output_token_count(), None);
         assert_eq!(response.known_usage(), None);
+    }
+
+    #[test]
+    fn mtp_report_exposes_actual_route_and_acceptance() {
+        let route = GenerateRouteReport {
+            crossover_decisions: BTreeMap::from([
+                ("ax_mtp_available".to_string(), 1),
+                ("ax_mtp_requested".to_string(), 1),
+                ("ax_mtp_decode_steps".to_string(), 7),
+                ("ax_mtp_draft_tokens".to_string(), 20),
+                ("ax_mtp_accepted_tokens".to_string(), 15),
+            ]),
+            ..GenerateRouteReport::default()
+        };
+
+        let mtp = GenerateMtpReport::from_route(&route);
+        assert!(mtp.available);
+        assert!(mtp.requested);
+        assert!(mtp.active);
+        assert_eq!(mtp.decode_steps, 7);
+        assert_eq!(mtp.acceptance_rate(), Some(0.75));
+    }
+
+    #[test]
+    fn performance_report_uses_generation_phase_denominator() {
+        let performance = GeneratePerformanceReport {
+            generation_time_us: Some(2_000_000),
+            generation_token_count: 50,
+            ..GeneratePerformanceReport::default()
+        };
+
+        assert_eq!(performance.generation_tokens_per_second(), Some(25.0));
     }
 }

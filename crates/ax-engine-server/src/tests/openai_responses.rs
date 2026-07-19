@@ -1001,5 +1001,6 @@ fn sample_generate_response(
             mlx_runtime: None,
             mlx_model: None,
         },
+        performance: Default::default(),
     }
 }

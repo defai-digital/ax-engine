@@ -590,6 +590,7 @@ fn build_llama_cpp_blocking_response(
         ttft_step: None,
         route,
         runtime: runtime.clone(),
+        performance: crate::generate::GeneratePerformanceReport::default(),
     }
 }
 

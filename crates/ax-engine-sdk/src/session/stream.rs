@@ -1,7 +1,10 @@
+use std::time::Instant;
+
 use crate::backend::{RuntimeReport, SelectedBackend};
 use crate::generate::{
-    GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateStreamEvent,
-    GenerateStreamRequestEvent, GenerateStreamResponseEvent, GenerateStreamStepEvent,
+    GenerateMtpReport, GeneratePerformanceReport, GenerateRequest, GenerateResponse,
+    GenerateRouteReport, GenerateStreamEvent, GenerateStreamRequestEvent,
+    GenerateStreamResponseEvent, GenerateStreamStepEvent,
 };
 use crate::llama_cpp::{LlamaCppPromptProgress, LlamaCppStreamChunk, LlamaCppStreamHandle};
 use crate::mlx_lm::{MlxLmStreamChunkResult, MlxLmStreamHandle, finish_reason_from_mlx_lm};
@@ -16,6 +19,9 @@ use super::{
 pub struct GenerateStream<'a> {
     pub(super) session: &'a mut EngineSession,
     pub(super) state: GenerateStreamState,
+    started_at: Instant,
+    first_output_at: Option<Instant>,
+    first_output_token_count: u32,
 }
 
 #[derive(Debug)]
@@ -132,11 +138,73 @@ pub(super) fn next_llama_cpp_stream_event(
 
 impl<'a> GenerateStream<'a> {
     pub(super) fn new(session: &'a mut EngineSession, state: GenerateStreamState) -> Self {
-        Self { session, state }
+        Self {
+            session,
+            state,
+            started_at: Instant::now(),
+            first_output_at: None,
+            first_output_token_count: 0,
+        }
     }
 
     pub fn next_event(&mut self) -> Result<Option<GenerateStreamEvent>, EngineSessionError> {
-        self.session.next_stream_event(&mut self.state)
+        let mut event = self.session.next_stream_event(&mut self.state)?;
+        if let Some(event) = event.as_mut() {
+            self.observe_performance(event);
+        }
+        Ok(event)
+    }
+
+    fn observe_performance(&mut self, event: &mut GenerateStreamEvent) {
+        let now = Instant::now();
+        match event {
+            GenerateStreamEvent::Step(step)
+                if self.first_output_at.is_none()
+                    && (!step.delta_tokens.is_empty()
+                        || step
+                            .delta_text
+                            .as_ref()
+                            .is_some_and(|text| !text.is_empty())) =>
+            {
+                self.first_output_at = Some(now);
+                self.first_output_token_count = if step.delta_tokens.is_empty() {
+                    1
+                } else {
+                    step.delta_tokens.len().min(u32::MAX as usize) as u32
+                };
+            }
+            GenerateStreamEvent::Response(event) => {
+                let total_time_us = elapsed_us(self.started_at, now);
+                let time_to_first_token_us = self
+                    .first_output_at
+                    .map(|first_output_at| elapsed_us(self.started_at, first_output_at));
+                let output_token_count = event
+                    .response
+                    .known_output_token_count()
+                    .unwrap_or_default();
+                let is_block_diffusion =
+                    event.response.route.decision("ax_mlx_generation_kind") == Some(1);
+                let (generation_time_us, generation_token_count) = if is_block_diffusion {
+                    (Some(total_time_us), output_token_count)
+                } else if let Some(first_output_at) = self.first_output_at {
+                    (
+                        Some(elapsed_us(first_output_at, now)),
+                        output_token_count.saturating_sub(self.first_output_token_count),
+                    )
+                } else {
+                    (None, 0)
+                };
+                event.response.performance = GeneratePerformanceReport {
+                    metrics_version: 1,
+                    total_time_us,
+                    time_to_first_token_us,
+                    generation_time_us,
+                    generation_token_count,
+                    mtp: GenerateMtpReport::from_route(&event.response.route),
+                };
+            }
+            GenerateStreamEvent::Request(_) | GenerateStreamEvent::Step(_) => {}
+        }
     }
 
     pub fn into_response(mut self) -> Result<GenerateResponse, EngineSessionError> {
@@ -166,6 +234,13 @@ impl<'a> GenerateStream<'a> {
         let _ = self.session.cancel_request(request_id);
         self.state.finish();
     }
+}
+
+fn elapsed_us(started_at: Instant, finished_at: Instant) -> u64 {
+    finished_at
+        .saturating_duration_since(started_at)
+        .as_micros()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 impl Drop for GenerateStream<'_> {
@@ -491,6 +566,7 @@ fn delegated_stream_response(
         ttft_step,
         route: report.route.clone(),
         runtime: runtime.clone(),
+        performance: GeneratePerformanceReport::default(),
     }
 }
 

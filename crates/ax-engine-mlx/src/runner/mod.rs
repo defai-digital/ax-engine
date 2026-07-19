@@ -715,8 +715,13 @@ pub struct MlxRunner {
     batched_session: Mutex<BatchedDecodeSession>,
     /// Dedicated GPU stream kept alive for the runner's lifetime.
     _stream: MlxStream,
-    /// When true, disable n-gram acceleration and use the direct decode path.
+    /// When true, disable n-gram acceleration. Model-based MTP is controlled
+    /// independently by `mtp_requested`.
     disable_ngram_acceleration: bool,
+    /// Whether model-based MTP may be used when compatible artifacts and
+    /// request sampling are available. Studio deliberately disables n-gram
+    /// while leaving this enabled for validated MTP packages.
+    mtp_requested: bool,
     /// When true, keep MTP enabled but do not use the n-gram-first draft source
     /// inside the MTP verify loop.
     disable_mtp_ngram_stacking: bool,
@@ -936,10 +941,23 @@ fn load_gemma4_assistant_mtp_runtime(
 }
 
 impl MlxRunner {
-    fn has_mtp(&self) -> bool {
+    /// Whether the loaded target has a validated Qwen MTP head or Gemma
+    /// assistant drafter attached.
+    pub fn has_mtp(&self) -> bool {
         self.weights.mtp.is_some()
             || self.weights.glm_mtp.is_some()
             || self.gemma4_assistant_mtp.is_some()
+    }
+
+    /// Request or suppress model-based MTP independently from the n-gram
+    /// speculation switch. The process-wide `AX_NO_SPEC` kill switch remains
+    /// authoritative and cannot be re-enabled through this setter.
+    pub fn set_mtp_requested(&mut self, requested: bool) {
+        self.mtp_requested = requested && !crate::fastpath::ngram_acceleration_disabled();
+    }
+
+    pub fn mtp_requested(&self) -> bool {
+        self.mtp_requested
     }
 
     fn mtp_max_depth(&self) -> usize {
@@ -1081,8 +1099,8 @@ impl MlxRunner {
         // the runner boundary so server and SDK paths behave the same as
         // the bench CLI, which already reads the env before constructing
         // the runner.
-        let disable_ngram_acceleration =
-            disable_ngram_acceleration || crate::fastpath::ngram_acceleration_disabled();
+        let speculation_disabled = crate::fastpath::ngram_acceleration_disabled();
+        let disable_ngram_acceleration = disable_ngram_acceleration || speculation_disabled;
         // Decide the MLX Metal buffer caps BEFORE the first MLX call below:
         // `set_wired_limit` (and the device-info query feeding it) constructs
         // the Metal device, which is when MLX reads MLX_MAX_*_PER_BUFFER once.
@@ -1378,6 +1396,7 @@ impl MlxRunner {
             batched_session,
             _stream: stream,
             disable_ngram_acceleration,
+            mtp_requested: !speculation_disabled,
             disable_mtp_ngram_stacking,
             mtp_optimistic: mtp_optimistic_from_env(),
             mtp_skip_state: mtp_skip_state_from_env(),
@@ -1912,6 +1931,10 @@ impl ExecutionRunner for MlxRunner {
                 batched_forward_rows as u32,
             ));
         }
+        route_metadata.crossover_decisions.extend([
+            ("ax_mtp_available".into(), u32::from(self.has_mtp())),
+            ("ax_mtp_requested".into(), u32::from(self.mtp_requested)),
+        ]);
 
         for (item_idx, item) in input.execution_batch.items.iter().enumerate() {
             if batched_idx.contains(&item_idx) {
@@ -6642,7 +6665,7 @@ impl MlxRunner {
         let mtp_uses_direct_pipeline = matches!(
             mtp_request_route(
                 self.has_mtp(),
-                !self.disable_ngram_acceleration,
+                self.mtp_requested,
                 exact_supported,
                 approximate_profile,
                 false,
@@ -6708,7 +6731,7 @@ impl MlxRunner {
             && mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
         match mtp_request_route(
             self.has_mtp(),
-            !self.disable_ngram_acceleration,
+            self.mtp_requested,
             exact_supported,
             approximate_profile,
             state.mtp_bypassed,
