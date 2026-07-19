@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
 
 use ax_engine_sdk::{
     EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateRequest,
@@ -66,6 +65,10 @@ impl Drop for ModelExecutionTurn<'_> {
         let mut state = self.arbiter.state.lock();
         state.held = false;
         drop(state);
+        // Wake all waiters: fairness is enforced by next_waiting_model(), but
+        // notify_one could wake the wrong model which would re-wait without
+        // waking the correct one. Model count is typically small (1-3), so the
+        // thundering herd cost is negligible.
         self.arbiter.ready.notify_all();
     }
 }
@@ -673,8 +676,8 @@ fn run_worker_loop(
                 );
             }
         }
-        let progressed = if engine_advanced {
-            true
+        if engine_advanced {
+            // Engine already advanced via command handling.
         } else if !active_streams.is_empty() {
             let _ = advance_shared_engine(
                 &mut session,
@@ -682,14 +685,10 @@ fn run_worker_loop(
                 &mut stepwise_permits,
                 state,
             );
-            true
         } else {
-            maintain_streams(&mut session, &mut active_streams, state)
-        };
-        update_stream_gauges(state, &active_streams);
-        if !progressed && !active_streams.is_empty() {
-            std::thread::sleep(Duration::from_millis(1));
+            maintain_streams(&mut session, &mut active_streams, state);
         }
+        update_stream_gauges(state, &active_streams);
     }
 }
 
@@ -1324,6 +1323,19 @@ struct WorkerExitGuard<'a>(&'a ServiceState);
 
 impl Drop for WorkerExitGuard<'_> {
     fn drop(&mut self) {
+        let pending = self.0.pending_jobs.load(Ordering::Acquire);
+        let queued = self.0.queued_commands.load(Ordering::Acquire);
+        let streams = self.0.active_streams.load(Ordering::Acquire);
+        let buffered = self.0.buffered_stream_events.load(Ordering::Acquire);
+        if pending != 0 || queued != 0 || streams != 0 || buffered != 0 {
+            tracing::warn!(
+                pending_jobs = pending,
+                queued_commands = queued,
+                active_streams = streams,
+                buffered_stream_events = buffered,
+                "native generation worker exiting with non-zero counters"
+            );
+        }
         self.0.pending_jobs.store(0, Ordering::Release);
         self.0.queued_commands.store(0, Ordering::Release);
         self.0.active_streams.store(0, Ordering::Release);

@@ -75,12 +75,13 @@ impl ClientRateLimiter {
         let mut buckets = self.buckets.lock();
         if buckets.len() >= MAX_CLIENT_BUCKETS && !buckets.contains_key(&key) {
             // Evict ~25% of entries when the map is full so a single noisy
-            // client population cannot grow memory unboundedly. Insertion
-            // order is not tracked; HashMap iteration is enough for a
-            // bounded, best-effort sweep.
+            // client population cannot grow memory unboundedly.
             let evict = (MAX_CLIENT_BUCKETS / 4).max(1);
-            let victims: Vec<String> = buckets.keys().take(evict).cloned().collect();
-            for victim in victims {
+            // Evict least-recently-used buckets to preserve active clients.
+            let mut entries: Vec<(String, Instant)> =
+                buckets.iter().map(|(k, v)| (k.clone(), v.last)).collect();
+            entries.sort_by_key(|(_, last)| *last);
+            for (victim, _) in entries.into_iter().take(evict) {
                 buckets.remove(&victim);
             }
         }
