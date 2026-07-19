@@ -547,7 +547,7 @@ fn run_worker(
     state: &ServiceState,
 ) {
     let _exit_guard = WorkerExitGuard(state);
-    let mut session = match factory() {
+    let session = match factory() {
         Ok(session) => session,
         Err(error) => {
             let _ = startup_sender.send(Err(error));
@@ -559,6 +559,47 @@ fn run_worker(
     if startup_sender.send(Ok(runtime_report)).is_err() {
         return;
     }
+    // Contain engine/MLX panics to this worker (H1): the MLX FFI turns
+    // runtime failures into Rust panics, and in unwind-capable builds
+    // (dev/test, `release-pyext`, `release-server`) an uncontained panic
+    // would otherwise take the thread down through the runtime's default
+    // hook with no structured cleanup or operator guidance. The session,
+    // streams, and permits are all owned by the closure, so an unwind
+    // drops them: response/stream channels disconnect (mapped to the
+    // existing unavailable/503 contracts), admission permits release, and
+    // a held ModelExecutionArbiter turn is returned via RAII. The session
+    // is never touched after a catch — post-panic engine state is
+    // untrusted, so the worker retires and `POST /v1/model/load` is the
+    // recovery path (same contract as a stopped worker). Under
+    // `panic = "abort"` builds this is a no-op by construction.
+    let loop_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_worker_loop(session, receiver, state);
+    }));
+    if let Err(payload) = loop_outcome {
+        tracing::error!(
+            panic = %panic_payload_message(payload.as_ref()),
+            "native generation worker panicked; this model's worker is retiring \
+             (in-flight requests fail, the process and sibling models continue). \
+             Recover with POST /v1/model/load"
+        );
+    }
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.as_str()
+    } else {
+        "<non-string panic payload>"
+    }
+}
+
+fn run_worker_loop(
+    mut session: EngineSession,
+    receiver: std::sync::mpsc::Receiver<ServiceCommand>,
+    state: &ServiceState,
+) {
     let mut active_streams: BTreeMap<u64, ActiveStream> = BTreeMap::new();
     let mut stepwise_permits: BTreeMap<u64, AdmissionPermit> = BTreeMap::new();
     let mut latency_commands = VecDeque::new();
@@ -1319,6 +1360,45 @@ mod tests {
         NativeGenerationService::spawn(delegated_config())
             .expect("service should start")
             .0
+    }
+
+    #[tokio::test]
+    async fn worker_panic_is_contained_and_marks_unavailable() {
+        let service = delegated_service();
+        assert!(service.is_ready());
+
+        let result = service
+            .execute::<(), _>(|_session| panic!("injected engine panic"))
+            .await;
+        assert!(
+            matches!(result, Err(GenerationServiceError::Unavailable)),
+            "a panicking job must fail unavailable, got {result:?}"
+        );
+
+        // The process survives; the worker retires and reports not-ready.
+        // The response channel disconnects during the unwind, before the
+        // worker's exit guard flips `alive`, so bound-poll the transition.
+        for _ in 0..200 {
+            if !service.is_ready() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(!service.is_ready());
+        let followup = service
+            .execute(|session| Ok(session.runtime_report().selected_backend))
+            .await;
+        assert!(
+            matches!(followup, Err(GenerationServiceError::Unavailable)),
+            "post-panic submissions must fail unavailable, got {followup:?}"
+        );
+
+        // The worker thread exits normally (the panic was caught), so
+        // shutdown joins cleanly instead of surfacing a panicked join.
+        service
+            .shutdown()
+            .await
+            .expect("panicked worker should shut down cleanly");
     }
 
     #[tokio::test]

@@ -96,3 +96,15 @@ inherits = "release"
 # `maturin build --profile release-pyext` (see scripts/build-pypi-wheel.sh),
 # not `--release`.
 panic = "unwind"
+
+[profile.release-server]
+inherits = "release"
+# Serving profile for `ax-engine-server`: unwind so the generation
+# worker's catch_unwind containment (generation/service.rs) can retire a
+# panicking model worker while the process and sibling models keep
+# serving. Under the plain `release` profile's `panic = "abort"`, one MLX
+# eval failure on the decode hot path (the FFI's documented
+# panic-on-error strategy) aborts the whole server. Bench/CLI binaries
+# keep `release`'s fail-fast abort. Build serving binaries with
+# `cargo build -p ax-engine-server --profile release-server`.
+panic = "unwind"

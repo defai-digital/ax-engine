@@ -99,6 +99,15 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- MLX panic containment for serving: the generation worker loop now runs
+  under `catch_unwind`, and the new `release-server` profile (inherits
+  release, `panic = "unwind"`) is the documented build for serving
+  binaries. A runtime MLX failure — the FFI reports errors by panicking,
+  reachable on the decode hot path under memory pressure — now retires
+  only the affected model's worker (in-flight requests fail unavailable,
+  sibling models keep serving, `POST /v1/model/load` recovers) instead of
+  aborting the whole server process. The plain `release` profile keeps
+  fail-fast `panic = "abort"` for bench/CLI binaries.
 - `pyproject.toml` now pins `profile = "release-pyext"` in `[tool.maturin]`,
   so every build frontend (`pip install .`, plain `maturin build --release`,
   PEP-517 builds from the sdist) produces the unwind-capable extension.

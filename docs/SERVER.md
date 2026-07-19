@@ -72,6 +72,24 @@ Current preview endpoints:
 - `POST /v1/generate/stream`
 - `POST /v1/generate`
 
+## Building for serving (panic containment)
+
+Build production serving binaries with the dedicated profile:
+
+```text
+cargo build -p ax-engine-server --profile release-server
+```
+
+`release-server` inherits the release optimizations but keeps
+`panic = "unwind"`, so an MLX runtime failure on the decode path (the FFI
+reports errors by panicking) retires only that model's generation worker:
+in-flight requests fail with the unavailable contract, `/health` reports
+the model as unavailable, sibling models keep serving, and
+`POST /v1/model/load` recovers without a process restart. The plain
+`release` profile keeps `panic = "abort"` (fail-fast, smallest binaries)
+and remains right for `ax-engine-bench` and other CLI tools — but under it
+a single MLX eval failure aborts the whole server process.
+
 ## Authentication
 
 HTTP authentication is disabled by default for local development. To require a
