@@ -28,7 +28,11 @@ The publisher performs this sequence:
    independently re-download and verify checksum / minisign / codesign /
    notarization on the uploaded bytes before flipping draft → published.
 6. Dispatch `brew-release.yml` only after the release is published and verified.
-   Homebrew refuses draft tags.
+   Homebrew refuses draft tags. That workflow updates formula metadata only; it
+   must keep the install-time `libmlx` relink
+   (`relink_release_binaries_to_tap_mlx!`). Release archives intentionally ship
+   pip/venv `@rpath/libmlx.dylib`; Homebrew rewrites load commands to the
+   tap-local `mlx` formula. See `packaging/homebrew/README.md`.
 7. Let the tag-triggered PyPI workflow promote the exact-SHA candidate wheel.
    If no candidate exists, that workflow fails over to the original macOS wheel
    build and smoke-test path.

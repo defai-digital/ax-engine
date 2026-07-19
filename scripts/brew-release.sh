@@ -481,6 +481,21 @@ fi
 echo "▶ validating formula syntax…"
 ruby -c "$FORMULA_PATH" > /dev/null
 
+# Fail closed: release archives embed pip/venv @rpath/libmlx.dylib. The
+# Homebrew formula must rewrite load commands to this tap's mlx at install.
+for required in \
+    'relink_release_binaries_to_tap_mlx!' \
+    'change_install_name' \
+    'libmlx.dylib' \
+    'defai-digital/ax-engine/mlx' \
+    'codesign'; do
+    if ! grep -qF "$required" "$FORMULA_PATH"; then
+        echo "error: formula missing required libmlx relink marker: $required" >&2
+        echo "       check $FORMULA_PATH — install must rewrite @rpath/libmlx.dylib" >&2
+        exit 1
+    fi
+done
+
 echo ""
 echo "  formula diff:"
 git diff "$TAP_FORMULA"

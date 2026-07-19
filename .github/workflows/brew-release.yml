@@ -236,47 +236,65 @@ jobs:
           apple_notarized = sys.argv[3] == "true"
           text = formula_path.read_text(encoding="utf-8")
 
+          # Shared notes: release archives link pip MLX; the formula must
+          # rewrite load commands to the tap-local mlx formula at install.
+          linkage_notes = dedent("""\
+            Install rewrites libmlx load commands on ax-engine-server and
+            ax-engine-bench to this tap's mlx formula, then ad-hoc re-signs
+            those binaries (required after Mach-O edits). Do not expect the
+            release tarball to run against pip site-packages MLX on its own.
+
+            The mlx / mlx-c dependencies build from this tap's formulas (not
+            homebrew-core bottles) so MLX NAX acceleration is not silently
+            disabled on macOS 26.x. Xcode is required for that source build;
+            an Apple Developer account is not.
+          """)
+
           if apple_notarized:
-              caveats = indent(dedent("""\
-                def caveats
-                  <<~EOS
-                    ax-engine binaries for this release are Developer ID signed and notarized.
-                  EOS
-                end"""), "  ")
+              signing = (
+                  "ax-engine binaries for this release are Developer ID signed "
+                  "and notarized by Apple."
+              )
+              gatekeeper = ""
           elif apple_signed:
-              caveats = indent(dedent("""\
-                def caveats
-                  <<~EOS
-                    ax-engine binaries for this release are Developer ID signed but not notarized by Apple.
+              signing = (
+                  "ax-engine binaries for this release are Developer ID signed "
+                  "but not notarized by Apple."
+              )
+              gatekeeper = dedent("""\
 
-                    If macOS shows "cannot be opened because Apple cannot verify it":
-                      1. Open System Settings → Privacy & Security
-                      2. Scroll to the Security section
-                      3. Click "Allow Anyway" next to the ax-engine entry
-                      4. Run the command again and click "Open" in the dialog
-                  EOS
-                end"""), "  ")
+                If macOS shows "cannot be opened because Apple cannot verify it":
+                  1. Open System Settings → Privacy & Security
+                  2. Scroll to the Security section
+                  3. Click "Allow Anyway" next to the ax-engine entry
+                  4. Run the command again and click "Open" in the dialog
+              """)
           else:
-              caveats = indent(dedent("""\
-                def caveats
-                  <<~EOS
-                    ax-engine binaries for this release are ad-hoc signed (not notarized by Apple).
+              signing = (
+                  "ax-engine binaries for this release are ad-hoc signed "
+                  "(not notarized by Apple)."
+              )
+              gatekeeper = dedent("""\
 
-                    If macOS shows "cannot be opened because Apple cannot verify it":
-                      1. Open System Settings → Privacy & Security
-                      2. Scroll to the Security section
-                      3. Click "Allow Anyway" next to the ax-engine entry
-                      4. Run the command again and click "Open" in the dialog
+                If macOS shows "cannot be opened because Apple cannot verify it":
+                  1. Open System Settings → Privacy & Security
+                  2. Scroll to the Security section
+                  3. Click "Allow Anyway" next to the ax-engine entry
+                  4. Run the command again and click "Open" in the dialog
 
-                    Or clear the quarantine flag from the terminal (one-time):
-                      sudo xattr -dr com.apple.quarantine "$(which ax-engine)"
-                      sudo xattr -dr com.apple.quarantine "$(which ax-engine-server)"
-                      sudo xattr -dr com.apple.quarantine "$(which ax-engine-bench)"
+                Or clear the quarantine flag from the terminal (one-time):
+                  sudo xattr -dr com.apple.quarantine "$(which ax-engine)"
+                  sudo xattr -dr com.apple.quarantine "$(which ax-engine-server)"
+                  sudo xattr -dr com.apple.quarantine "$(which ax-engine-bench)"
+              """)
 
-                    The mlx-c dependency installs from a pre-built Homebrew bottle.
-                    Xcode and an Apple Developer account are not required.
-                  EOS
-                end"""), "  ")
+          body = f"{signing}\n\n{linkage_notes.rstrip()}{gatekeeper.rstrip()}\n"
+          caveats = indent(
+              "def caveats\n  <<~EOS\n"
+              + indent(body, "    ")
+              + "  EOS\nend",
+              "  ",
+          )
 
           pattern = re.compile(r"^  def caveats\n    <<~EOS\n.*?^  end\n", re.MULTILINE | re.DOTALL)
           if pattern.search(text):
@@ -291,6 +309,24 @@ jobs:
             echo "error: formula does not contain canonical line: $EXPECTED_BIN_LINE" >&2
             exit 1
           fi
+
+          # Fail closed: Homebrew install must re-point release binaries at
+          # tap-local libmlx. Without this, dyld looks for the release
+          # builder's pip site-packages path and ax-engine doctor dies with
+          # empty JSON from ax-engine-bench.
+          for required in \
+            'relink_release_binaries_to_tap_mlx!' \
+            'change_install_name' \
+            'libmlx.dylib' \
+            'defai-digital/ax-engine/mlx' \
+            'codesign'; do
+            if ! grep -qF "$required" "$FORMULA_PATH"; then
+              echo "error: formula missing required libmlx relink marker: $required" >&2
+              echo "       Release archives embed pip/venv @rpath/libmlx.dylib; the" >&2
+              echo "       formula must rewrite load commands at install time." >&2
+              exit 1
+            fi
+          done
 
           ruby -c "$FORMULA_PATH" > /dev/null
           echo "Formula syntax OK"

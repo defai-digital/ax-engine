@@ -84,11 +84,11 @@ Use Homebrew when you specifically want package-manager-owned macOS arm64 CLI
 binaries on `PATH`. The pip wheel is still the preferred install path for most
 users.
 
-> [!WARNING]
-> The Homebrew path currently runs on Homebrew's `mlx` build, which compiles
-> without NAX acceleration on macOS 26.x hosts (~3-4x slower prefill; see the
-> callout under [Source](#source)). Until that formula chain is fixed, prefer
-> the pip wheel wherever prefill performance matters.
+> [!NOTE]
+> The Homebrew formula depends on this tap's own `mlx` / `mlx-c` formulas
+> (not homebrew-core bottles) so MLX NAX acceleration is not silently disabled
+> on macOS 26.x. Those deps build from source and need Xcode. The pip wheel
+> remains the preferred install path for most users.
 
 ```bash
 brew info defai-digital/ax-engine/ax-engine
@@ -97,9 +97,14 @@ brew install defai-digital/ax-engine/ax-engine
 
 Use Homebrew for this guide only when the formula reports `6.9.0` or newer.
 The current formula should install `ax-engine`, `ax-engine-server`, and
-`ax-engine-bench`; older formulae may install only the lower-level tools. The
-formula also installs the `mlx` runtime dependency used by the released
-binaries.
+`ax-engine-bench`; older formulae may install only the lower-level tools.
+
+**Linkage model:** GitHub release binaries are built against pip/venv MLX
+(for source and wheel performance parity) and therefore ship with
+`@rpath/libmlx.dylib`. The formula rewrites those load commands at install
+time to `$(brew --prefix)/opt/mlx/lib/libmlx.dylib` from this tap, then
+ad-hoc re-signs `ax-engine-server` and `ax-engine-bench`. The release tarball
+is not a standalone installer with bundled dylibs.
 
 ```bash
 ax-engine doctor
@@ -107,21 +112,17 @@ ax-engine-server --help
 ax-engine-bench doctor
 ```
 
-If `ax-engine-bench doctor` exits before printing a report with
-`Library not loaded: /opt/homebrew/opt/mlx/lib/libmlx.dylib`, repair the
-runtime dependency with:
+If `ax-engine-bench` / `ax-engine doctor` fails with
+`Library not loaded: @rpath/libmlx.dylib` (or empty doctor JSON), the formula
+is too old to rewrite linkage. Update the tap and reinstall:
 
 ```bash
-brew install mlx
+brew update
 brew reinstall defai-digital/ax-engine/ax-engine
+brew test defai-digital/ax-engine/ax-engine
 ```
 
-This repairs the linkage — the Homebrew-distributed binaries link
-`/opt/homebrew/opt/mlx` and cannot use a pip-installed `mlx` — but the
-resulting install still carries the NAX performance caveat above.
-
-The GitHub release archive is the Homebrew formula payload, not a standalone
-installer with bundled dynamic libraries. Prefer pip for normal deployment.
+Prefer pip for normal deployment.
 
 #### Gatekeeper warning on older releases
 

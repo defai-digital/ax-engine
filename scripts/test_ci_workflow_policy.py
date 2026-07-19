@@ -101,6 +101,20 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("Formula metadata only", brew)
         self.assertIn("runs-on: ubuntu-latest", brew)
         self.assertNotIn("bash scripts/build-pypi-wheel.sh", brew)
+        # Release archives embed pip/venv @rpath/libmlx.dylib; brew-release must
+        # refuse to ship a formula that skips install-time load-command rewrite.
+        for marker in (
+            "relink_release_binaries_to_tap_mlx!",
+            "change_install_name",
+            "libmlx.dylib",
+            "defai-digital/ax-engine/mlx",
+            "codesign",
+        ):
+            self.assertIn(
+                marker,
+                brew,
+                f"brew-release.yml must fail-closed on missing formula marker {marker!r}",
+            )
 
         ci = workflow_texts["ci.yml"]
         for job_name in (
