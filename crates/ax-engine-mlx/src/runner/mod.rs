@@ -419,6 +419,12 @@ struct RequestState {
     /// the primary token from these logits instead of running a fresh verify
     /// forward pass for the first token position.  Set when `AX_MLX_MTP_SKIP_STATE=1`.
     mtp_skip_logits: Option<MlxArray>,
+    /// Argmax of `mtp_skip_logits`, computed lazily at capture inside the
+    /// same async_eval batch. Greedy skip cycles read this 1-element array
+    /// for the primary token — `sample_logit_row`'s greedy shortcut trusts
+    /// its `argmax_tok` argument verbatim, so passing a placeholder emits
+    /// that placeholder as a real token (the token-0 corruption class).
+    mtp_skip_argmax: Option<MlxArray>,
     /// Skip-state hidden: post-norm hidden at the same committed position.
     /// Used as `main_hidden` for the MTP head when skip-state is active.
     mtp_skip_hidden: Option<MlxArray>,
@@ -523,6 +529,7 @@ impl RequestState {
             mtp_target_prob_workspace: MtpTargetProbWorkspace::default(),
             mtp_adaptive_max_depth: 0,
             mtp_skip_logits: None,
+            mtp_skip_argmax: None,
             mtp_skip_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
             gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry::default(),
@@ -5134,6 +5141,7 @@ impl MlxRunner {
         // Skip-state is only valid when there's no pending draft to verify
         // (otherwise we need to verify the pending draft first).
         let skip_logits = state.mtp_skip_logits.take();
+        let skip_argmax = state.mtp_skip_argmax.take();
         let skip_hidden = state.mtp_skip_hidden.take();
         let can_skip_qwen = skip_logits.is_some()
             && skip_hidden.is_some()
@@ -5154,10 +5162,9 @@ impl MlxRunner {
             let sl = skip_logits.unwrap();
             let sh = skip_hidden.unwrap();
             // Sample primary token from skip logits (shape [1, vocab]).
-            let primary_tok = sample_logit_row(
+            let primary_tok = skip_state_primary_token(
                 &sl,
-                0,
-                0,
+                skip_argmax,
                 vocab,
                 sampling,
                 &mut state.rng,
@@ -5198,10 +5205,9 @@ impl MlxRunner {
         } else if can_skip_gemma {
             let sl = skip_logits.unwrap();
             let sh = skip_hidden.unwrap();
-            let primary_tok = sample_logit_row(
+            let primary_tok = skip_state_primary_token(
                 &sl,
-                0,
-                0,
+                skip_argmax,
                 vocab,
                 sampling,
                 &mut state.rng,
@@ -5978,6 +5984,7 @@ impl MlxRunner {
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources.clear();
             state.mtp_skip_logits = None;
+            state.mtp_skip_argmax = None;
             state.mtp_skip_hidden = None;
         }
 
@@ -6268,6 +6275,7 @@ impl MlxRunner {
                         state.mtp_decode_count = 0;
                     }
                     state.mtp_skip_logits = None;
+                    state.mtp_skip_argmax = None;
                     state.mtp_skip_hidden = None;
                     state.mtp_pending_draft_distributions.clear();
                     state.mtp_telemetry.record_ngram_stack_hit(ngram_len, true);
@@ -6374,8 +6382,13 @@ impl MlxRunner {
                         None,
                     )
                 };
-                mlx_sys::async_eval(&[&sl, &draft_hidden]);
+                // Capture the row argmax alongside the logits: greedy skip
+                // cycles commit it as the primary token, and the shared
+                // async_eval batch makes it effectively free here.
+                let sl_argmax = argmax(&sl, None);
+                mlx_sys::async_eval(&[&sl, &sl_argmax, &draft_hidden]);
                 state.mtp_skip_logits = Some(sl);
+                state.mtp_skip_argmax = Some(sl_argmax);
                 state.mtp_skip_hidden = Some(draft_hidden);
             }
             mtp_timings.draft_wall_us = elapsed_us(draft_started);
@@ -6451,6 +6464,7 @@ impl MlxRunner {
         state.mtp_adaptive_max_depth =
             mtp_initial_adaptive_depth(&self.cfg.model_family, self.mtp_max_depth());
         state.mtp_skip_logits = None;
+        state.mtp_skip_argmax = None;
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
         state.mtp_bypassed = false;
@@ -7873,6 +7887,50 @@ fn request_rotating_sliding_slack(
     None
 }
 
+/// Primary token for a skip-state MTP cycle.
+///
+/// The greedy path must read a real argmax for the committed primary:
+/// `sample_logit_row`'s greedy shortcut returns its `argmax_tok` argument
+/// verbatim, so passing a placeholder there emits the placeholder as a real
+/// token (historically literal token id 0 — rendered as "!" — whenever the
+/// draft gate left `pending` empty and the skip path carried the cycle).
+/// The argmax array is captured lazily with the skip logits; if a stale
+/// state misses it, compute it on demand rather than guess.
+#[allow(clippy::too_many_arguments)]
+fn skip_state_primary_token(
+    skip_logits: &MlxArray,
+    skip_argmax: Option<MlxArray>,
+    vocab: i32,
+    sampling: MlxSamplingParams,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> u32 {
+    use crate::ngram_accel::sample_logit_row;
+    use mlx_sys::{argmax, eval};
+
+    if sampling.temperature <= 0.0 {
+        let argmax_arr = skip_argmax.unwrap_or_else(|| argmax(skip_logits, None));
+        eval(&[&argmax_arr]);
+        // argmax over a [1, vocab] (or [vocab]) row yields exactly one
+        // element; `unwrap_or_default` is unreachable and exists only to
+        // honor the no-panic rule.
+        return argmax_arr.data_u32().first().copied().unwrap_or_default();
+    }
+    sample_logit_row(
+        skip_logits,
+        0,
+        0,
+        vocab,
+        sampling,
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+    )
+}
+
 fn ngram_request_disabled_direct_fast_path(
     is_greedy: bool,
     uses_repetition_penalty: bool,
@@ -7962,6 +8020,61 @@ mod tests {
     };
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn skip_state_primary_token_reads_real_argmax_for_greedy() {
+        // Regression: the greedy skip-state cycle used to pass a literal 0
+        // through `sample_logit_row`'s argmax shortcut, emitting token id 0
+        // ("!") as the committed primary whenever the draft gate left the
+        // pending draft empty. The helper must return the row's true argmax
+        // both from the lazily-captured array and from an on-demand compute.
+        let logits = MlxArray::from_f32_slice(&[-3.0, 0.5, -1.0, 4.25, 0.0, 2.5, -0.25, 1.0]);
+        let mut rng = Xorshift64::new(7);
+        let mut probs_buf = Vec::new();
+        let mut logits_buf = Vec::new();
+        let mut candidates_buf = Vec::new();
+        let greedy = MlxSamplingParams::greedy();
+
+        let captured = mlx_sys::argmax(&logits, None);
+        let from_captured = skip_state_primary_token(
+            &logits,
+            Some(captured),
+            8,
+            greedy,
+            &mut rng,
+            &mut probs_buf,
+            &mut logits_buf,
+            &mut candidates_buf,
+        );
+        assert_eq!(from_captured, 3, "greedy must commit the captured argmax");
+
+        let on_demand = skip_state_primary_token(
+            &logits,
+            None,
+            8,
+            greedy,
+            &mut rng,
+            &mut probs_buf,
+            &mut logits_buf,
+            &mut candidates_buf,
+        );
+        assert_eq!(
+            on_demand, 3,
+            "greedy without a captured argmax must compute it"
+        );
+
+        let sampled = skip_state_primary_token(
+            &logits,
+            None,
+            8,
+            MlxSamplingParams::new(0.7, 1.0, 0),
+            &mut rng,
+            &mut probs_buf,
+            &mut logits_buf,
+            &mut candidates_buf,
+        );
+        assert!(sampled < 8, "sampled path must return an in-vocab token");
+    }
 
     #[test]
     fn batched_session_join_reclaims_private_cache() {

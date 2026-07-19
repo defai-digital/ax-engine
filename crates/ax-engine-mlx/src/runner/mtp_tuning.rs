@@ -353,21 +353,42 @@ pub(super) fn mtp_optimistic_draft_min_confidence_override() -> Option<f32> {
     })
 }
 
-/// When enabled (the default), the MTP decode path captures verify logits and
-/// hidden state as "skip state" and reuses them on the next iteration to avoid
-/// recomputing the main model forward for the first token position.  The
-/// skip_logits provides the next primary sample; the skip_hidden provides the
-/// MTP head input.  This eliminates one full-model forward pass per accepted
-/// cycle.  Disable with `AX_MLX_MTP_SKIP_STATE=0`.
+/// Experimental — **default OFF** since 2026-07-18. When enabled with
+/// `AX_MLX_MTP_SKIP_STATE=1`, the MTP decode path captures verify logits and
+/// hidden state as "skip state" and reuses them on the next cycle instead of
+/// running the main model forward for the first token position.
+///
+/// The implementation as designed is not output-correct, which is why the
+/// default flipped: a capture cycle emits its tail token but never forwards
+/// it, so every skip cycle leaves the previous tail out of the KV history —
+/// the "one forward saved per cycle" was exactly one token missing from the
+/// model's context (`.internal/bugs/2026-07-18-mtp-repetition-penalty-`
+/// `corruption.md`). On top of that, the greedy primary was committed
+/// through `sample_logit_row`'s argmax shortcut with a placeholder `0`,
+/// emitting literal token id 0 (fixed — the capture now carries the row
+/// argmax — but greedy skip cycles still duplicate the previous tail by
+/// construction). The path only engages when the draft gate leaves a cycle
+/// with no pending draft, so benchmark workloads (which draft nearly every
+/// cycle) never exercised it. Keep it off unless studying a corrected
+/// always-advance design.
 pub(super) fn mtp_skip_state_from_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
-        !matches!(
+        let enabled = matches!(
             std::env::var("AX_MLX_MTP_SKIP_STATE")
                 .unwrap_or_default()
                 .as_str(),
-            "0" | "false" | "FALSE"
-        )
+            "1" | "true" | "TRUE"
+        );
+        if enabled {
+            tracing::warn!(
+                "AX_MLX_MTP_SKIP_STATE=1: experimental MTP skip-state is \
+                 enabled; skip cycles omit the previous tail token from the \
+                 KV history and duplicate it in greedy output (see \
+                 .internal/bugs/2026-07-18-mtp-repetition-penalty-corruption.md)"
+            );
+        }
+        enabled
     })
 }
 

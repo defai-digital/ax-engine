@@ -99,6 +99,20 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- MTP skip-state (`AX_MLX_MTP_SKIP_STATE`) is now **off by default** and
+  fixed to never emit literal token id 0. The path — which only engaged
+  when the draft gate left a cycle without pending drafts — had three
+  defects: the greedy primary was committed through `sample_logit_row`'s
+  argmax shortcut with a placeholder `0`, emitting "!" tokens (fixed: the
+  skip capture now carries the row argmax inside its existing async_eval
+  batch); a correctly-computed greedy primary still duplicates the
+  previous tail by construction; and every capture-cycle tail was emitted
+  without ever being forwarded, leaving it out of the KV history for both
+  greedy and sampled requests. Benchmark workloads draft nearly every
+  cycle and never entered the path, so headline MTP numbers are
+  unaffected; flat/short prompts on the native greedy path (or OpenAI
+  requests with an explicit `repetition_penalty` of 1.0) hit it every
+  cycle. Enabling the flag now logs a warning.
 - `response_format: json_schema` fail-closed on unenforceable *values* of
   supported keywords (for example string `minimum`, non-array `required`,
   draft-04 boolean `exclusiveMinimum`, non-string `type`), not only on
