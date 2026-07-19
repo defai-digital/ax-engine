@@ -222,6 +222,28 @@ pub struct GeneratePerformanceReport {
     /// Tokens generated during `generation_time_us`. This excludes the initial
     /// autoregressive output batch and counts all block-diffusion output tokens.
     pub generation_token_count: u32,
+    /// Native prompt-evaluation time accumulated from EngineStepReport CPU
+    /// timings. This excludes time a stream consumer spends between pulls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_eval_time_us: Option<u64>,
+    /// MLX runner portion of `prompt_eval_time_us`, excluding engine scheduler
+    /// and request-bookkeeping work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_runner_time_us: Option<u64>,
+    /// Native output-token evaluation time accumulated from engine steps that
+    /// produced output. This is comparable to Ollama's `eval_duration`; unlike
+    /// `generation_time_us`, it excludes tokenizer, IPC, and caller backpressure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_eval_time_us: Option<u64>,
+    /// MLX runner portion of `model_eval_time_us`. This matches AX Engine's
+    /// low-level benchmark denominator and is useful for separating runner
+    /// throughput from engine and client overhead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_runner_time_us: Option<u64>,
+    /// Output tokens produced by the native steps in `model_eval_time_us`,
+    /// comparable to Ollama's `eval_count`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_eval_token_count: Option<u32>,
     #[serde(default)]
     pub mtp: GenerateMtpReport,
 }
@@ -229,11 +251,16 @@ pub struct GeneratePerformanceReport {
 impl Default for GeneratePerformanceReport {
     fn default() -> Self {
         Self {
-            metrics_version: 1,
+            metrics_version: 2,
             total_time_us: 0,
             time_to_first_token_us: None,
             generation_time_us: None,
             generation_token_count: 0,
+            prompt_eval_time_us: None,
+            prompt_runner_time_us: None,
+            model_eval_time_us: None,
+            model_runner_time_us: None,
+            model_eval_token_count: None,
             mtp: GenerateMtpReport::default(),
         }
     }
@@ -241,10 +268,29 @@ impl Default for GeneratePerformanceReport {
 
 impl GeneratePerformanceReport {
     pub fn generation_tokens_per_second(&self) -> Option<f64> {
+        let (token_count, time_us) = match (self.model_eval_token_count, self.model_eval_time_us) {
+            (Some(token_count), Some(time_us)) => (token_count, time_us),
+            _ => (self.generation_token_count, self.generation_time_us?),
+        };
+        (time_us != 0 && token_count != 0)
+            .then(|| f64::from(token_count) * 1_000_000.0 / time_us as f64)
+    }
+
+    /// End-to-end stream delivery speed after the first autoregressive output
+    /// boundary (or over the full block-diffusion request). This includes
+    /// consumer decoding, IPC, and backpressure between stream pulls.
+    pub fn delivery_tokens_per_second(&self) -> Option<f64> {
         let generation_time_us = self.generation_time_us?;
         (generation_time_us != 0 && self.generation_token_count != 0).then(|| {
             f64::from(self.generation_token_count) * 1_000_000.0 / generation_time_us as f64
         })
+    }
+
+    pub fn runner_tokens_per_second(&self) -> Option<f64> {
+        let time_us = self.model_runner_time_us?;
+        let token_count = self.model_eval_token_count?;
+        (time_us != 0 && token_count != 0)
+            .then(|| f64::from(token_count) * 1_000_000.0 / time_us as f64)
     }
 }
 
@@ -933,5 +979,22 @@ mod tests {
         };
 
         assert_eq!(performance.generation_tokens_per_second(), Some(25.0));
+        assert_eq!(performance.delivery_tokens_per_second(), Some(25.0));
+    }
+
+    #[test]
+    fn performance_report_prefers_native_model_eval_denominator() {
+        let performance = GeneratePerformanceReport {
+            generation_time_us: Some(4_000_000),
+            generation_token_count: 80,
+            model_eval_time_us: Some(2_000_000),
+            model_runner_time_us: Some(1_500_000),
+            model_eval_token_count: Some(60),
+            ..GeneratePerformanceReport::default()
+        };
+
+        assert_eq!(performance.generation_tokens_per_second(), Some(30.0));
+        assert_eq!(performance.delivery_tokens_per_second(), Some(20.0));
+        assert_eq!(performance.runner_tokens_per_second(), Some(40.0));
     }
 }

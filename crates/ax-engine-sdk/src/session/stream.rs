@@ -22,6 +22,11 @@ pub struct GenerateStream<'a> {
     started_at: Instant,
     first_output_at: Option<Instant>,
     first_output_token_count: u32,
+    model_prompt_eval_time_us: u64,
+    model_prompt_runner_time_us: u64,
+    model_eval_time_us: u64,
+    model_runner_time_us: u64,
+    model_eval_token_count: u32,
 }
 
 #[derive(Debug)]
@@ -144,6 +149,11 @@ impl<'a> GenerateStream<'a> {
             started_at: Instant::now(),
             first_output_at: None,
             first_output_token_count: 0,
+            model_prompt_eval_time_us: 0,
+            model_prompt_runner_time_us: 0,
+            model_eval_time_us: 0,
+            model_runner_time_us: 0,
+            model_eval_token_count: 0,
         }
     }
 
@@ -158,20 +168,45 @@ impl<'a> GenerateStream<'a> {
     fn observe_performance(&mut self, event: &mut GenerateStreamEvent) {
         let now = Instant::now();
         match event {
-            GenerateStreamEvent::Step(step)
-                if self.first_output_at.is_none()
-                    && (!step.delta_tokens.is_empty()
-                        || step
-                            .delta_text
-                            .as_ref()
-                            .is_some_and(|text| !text.is_empty())) =>
-            {
-                self.first_output_at = Some(now);
-                self.first_output_token_count = if step.delta_tokens.is_empty() {
-                    1
-                } else {
-                    step.delta_tokens.len().min(u32::MAX as usize) as u32
-                };
+            GenerateStreamEvent::Step(step) => {
+                let token_delta_count = step.delta_tokens.len().min(u32::MAX as usize) as u32;
+                let has_output = token_delta_count != 0
+                    || step
+                        .delta_text
+                        .as_ref()
+                        .is_some_and(|text| !text.is_empty());
+                // Native EngineStepReport timings stop when the runner/sampler
+                // finishes. Unlike stream wall time, they do not include time
+                // the caller spends decoding text or forwarding IPC before it
+                // pulls the next step. This is the Ollama-style model eval
+                // denominator clients need for comparable throughput.
+                let has_model_work =
+                    step.step.scheduled_tokens != 0 || step.step.runner_time_us != 0;
+                if has_model_work {
+                    if self.first_output_at.is_some() || has_output {
+                        self.model_eval_time_us = self
+                            .model_eval_time_us
+                            .saturating_add(step.step.cpu_time_us);
+                        self.model_runner_time_us = self
+                            .model_runner_time_us
+                            .saturating_add(step.step.runner_time_us);
+                    } else {
+                        self.model_prompt_eval_time_us = self
+                            .model_prompt_eval_time_us
+                            .saturating_add(step.step.cpu_time_us);
+                        self.model_prompt_runner_time_us = self
+                            .model_prompt_runner_time_us
+                            .saturating_add(step.step.runner_time_us);
+                    }
+                }
+                self.model_eval_token_count = self
+                    .model_eval_token_count
+                    .saturating_add(token_delta_count);
+
+                if self.first_output_at.is_none() && has_output {
+                    self.first_output_at = Some(now);
+                    self.first_output_token_count = token_delta_count.max(1);
+                }
             }
             GenerateStreamEvent::Response(event) => {
                 let total_time_us = elapsed_us(self.started_at, now);
@@ -195,15 +230,25 @@ impl<'a> GenerateStream<'a> {
                     (None, 0)
                 };
                 event.response.performance = GeneratePerformanceReport {
-                    metrics_version: 1,
+                    metrics_version: 2,
                     total_time_us,
                     time_to_first_token_us,
                     generation_time_us,
                     generation_token_count,
+                    prompt_eval_time_us: (self.model_prompt_eval_time_us != 0)
+                        .then_some(self.model_prompt_eval_time_us),
+                    prompt_runner_time_us: (self.model_prompt_runner_time_us != 0)
+                        .then_some(self.model_prompt_runner_time_us),
+                    model_eval_time_us: (self.model_eval_time_us != 0)
+                        .then_some(self.model_eval_time_us),
+                    model_runner_time_us: (self.model_runner_time_us != 0)
+                        .then_some(self.model_runner_time_us),
+                    model_eval_token_count: (self.model_eval_time_us != 0)
+                        .then_some(self.model_eval_token_count),
                     mtp: GenerateMtpReport::from_route(&event.response.route),
                 };
             }
-            GenerateStreamEvent::Request(_) | GenerateStreamEvent::Step(_) => {}
+            GenerateStreamEvent::Request(_) => {}
         }
     }
 
