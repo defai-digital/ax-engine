@@ -310,8 +310,27 @@ impl App {
             self.serve_focus == ServeFocus::Port,
             self.port_cursor,
         );
-        let status = match (&self.server_url, &self.server) {
-            (Some(url), Some(job)) if job.done.is_none() && self.server_ready => Line::from(vec![
+        let status = match (
+            &self.server_url,
+            &self.server,
+            self.server_ready,
+            self.external_server,
+        ) {
+            (Some(url), _, true, true) => Line::from(vec![
+                Span::styled(format!(" {} ", theme::icon::running()), theme::ok()),
+                Span::styled("running at ", theme::ok()),
+                Span::styled(
+                    url.clone(),
+                    Style::default()
+                        .fg(theme::colors().ok)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled("(external) ", theme::label()),
+                Span::styled(" Enter chat ", theme::cta()),
+                Span::styled("  c copy · x detach", theme::label()),
+            ]),
+            (Some(url), Some(job), true, _) if job.done.is_none() => Line::from(vec![
                 Span::styled(format!(" {} ", theme::icon::running()), theme::ok()),
                 Span::styled("running at ", theme::ok()),
                 Span::styled(
@@ -324,14 +343,26 @@ impl App {
                 Span::styled(" Enter chat ", theme::cta()),
                 Span::styled("  c copy · x stop", theme::label()),
             ]),
-            (Some(_), Some(job)) if job.done.is_none() => Line::from(vec![
+            (Some(url), None, true, _) => Line::from(vec![
+                Span::styled(format!(" {} ", theme::icon::running()), theme::ok()),
+                Span::styled("running at ", theme::ok()),
+                Span::styled(
+                    url.clone(),
+                    Style::default()
+                        .fg(theme::colors().ok)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(" Enter chat ", theme::cta()),
+            ]),
+            (_, Some(job), false, _) if job.done.is_none() => Line::from(vec![
                 Span::styled(format!(" {} ", theme::icon::queued()), theme::warn()),
                 Span::styled(
                     "starting… (large models can take a minute to load)",
                     theme::warn(),
                 ),
             ]),
-            (_, Some(job)) if job.done.is_some() => Line::from(vec![
+            (_, Some(job), false, _) if job.done.is_some() => Line::from(vec![
                 Span::styled(format!(" {} ", theme::icon::error()), theme::danger()),
                 Span::styled(
                     format!(
@@ -344,7 +375,10 @@ impl App {
             ]),
             _ => Line::from(vec![
                 Span::styled(format!(" {} ", theme::icon::idle()), theme::label()),
-                Span::styled("stopped — pick a model and press Enter", theme::label()),
+                Span::styled(
+                    "stopped — pick a model and press Enter (auto-detects external servers)",
+                    theme::label(),
+                ),
             ]),
         };
         let error_line = match self.host_error().or_else(|| self.port_error()) {

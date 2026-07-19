@@ -28,7 +28,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
@@ -53,6 +55,11 @@ use widgets::{DirectoryPicker, Toast};
 // Server ready detection
 // ---------------------------------------------------------------------------
 
+/// How often to probe `/health` when looking for a ready listener (or confirming
+/// an external one is still up). Kept low so Chat flips green quickly after the
+/// user starts `ax-engine-server` outside the TUI.
+const SERVER_HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(1);
+
 /// True when a captured `ax-engine-server` log line means the HTTP listener is up.
 ///
 /// Handles both the stable operator line (no tracing) and the structured
@@ -72,6 +79,65 @@ pub(crate) fn server_log_indicates_ready(line: &str) -> bool {
         return true;
     }
     false
+}
+
+/// Parsed `/health` body from a live `ax-engine-server`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ServerHealth {
+    pub model_id: Option<String>,
+}
+
+/// Parse a successful `GET /health` JSON body. Requires `"status":"ok"`.
+pub(crate) fn parse_health_body(body: &str) -> Option<ServerHealth> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    if value.get("status").and_then(|s| s.as_str()) != Some("ok") {
+        return None;
+    }
+    // Prefer the ax-engine identity field when present; older/test stubs may
+    // omit it as long as status is ok.
+    if let Some(service) = value.get("service").and_then(|s| s.as_str())
+        && service != "ax-engine-server"
+    {
+        return None;
+    }
+    let model_id = value
+        .get("model_id")
+        .and_then(|m| m.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(ServerHealth { model_id })
+}
+
+/// `http://host:port`, bracketing bare IPv6 hosts for URL parsers.
+fn format_http_base_url(host: &str, port: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("http://[{host}]:{port}")
+    } else {
+        format!("http://{host}:{port}")
+    }
+}
+
+/// Blocking one-shot health probe used off the UI thread.
+fn probe_server_health(base_url: &str) -> Option<ServerHealth> {
+    let url = format!("{}/health", base_url.trim_end_matches('/'));
+    let output = Command::new("curl")
+        .args([
+            "-sS",
+            "-m",
+            "1",
+            "--connect-timeout",
+            "1",
+            "-H",
+            "Accept: application/json",
+            &url,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    parse_health_body(&body)
 }
 
 // ---------------------------------------------------------------------------
@@ -386,12 +452,22 @@ struct App {
     pub server_url: Option<String>,
     /// Log-pane scrollback for the server job log.
     pub serve_log_scroll: LogScroll,
-    /// Set once the server job's log confirms it actually bound (not just spawned).
+    /// Set once the HTTP listener is up (child log bind line and/or `/health`).
     pub server_ready: bool,
     /// Next server-log index to scan for a bind line (avoids O(n) full rescan).
     server_ready_scan: usize,
     /// Label of the model the running server was started with (chat request body).
     pub server_model: Option<String>,
+    /// True when readiness came from a `/health` probe against a process the
+    /// TUI did not spawn (CLI `ax-engine-server`, another terminal, etc.).
+    /// Stop detaches rather than killing; Serve will not start a second bind.
+    pub external_server: bool,
+    /// In-flight background `/health` probe (never blocks the UI thread).
+    server_probe: Option<Receiver<Option<ServerHealth>>>,
+    /// Last time a health probe was launched (rate-limit).
+    last_server_probe: Option<Instant>,
+    /// Base URL the in-flight/last probe targeted (re-probe immediately on change).
+    server_probe_url: Option<String>,
 
     // Chat
     pub chat: ChatState,
@@ -464,6 +540,10 @@ impl App {
             server_ready: false,
             server_ready_scan: 0,
             server_model: None,
+            external_server: false,
+            server_probe: None,
+            last_server_probe: None,
+            server_probe_url: None,
             chat: ChatState::new(),
             focus_tabs: false,
             back_stack: Vec::new(),
@@ -606,13 +686,17 @@ impl App {
             }
         }
         self.start_next_queued_download();
-        let server_was_running = self.server_running();
+        let managed_was_alive = self.managed_server_alive();
         let mut server_material = false;
         if let Some(job) = &mut self.server {
             server_material = job.tick().material;
         }
         let was_ready = self.server_ready;
+        let was_external = self.external_server;
         self.update_server_ready();
+        // HTTP probe: discover external servers and backstop log-line readiness
+        // for managed children (structured logs, RUST_LOG, etc.).
+        server_material |= self.tick_server_health_probe();
         if self.server_ready && !was_ready {
             if self.auto_chat_after_serve {
                 self.auto_chat_after_serve = false;
@@ -622,12 +706,15 @@ impl App {
                     self.navigate_to(Screen::Chat);
                 }
                 self.toast_success("Server ready — type a message");
+            } else if self.external_server && !was_external {
+                self.toast_success("Found running server — press t Chat");
             } else {
                 self.toast_success("Server ready — press t Chat");
             }
-        } else if server_was_running && !self.server_running() && !was_ready {
-            // Died before ever binding. update_server_ready only warns on the
-            // ready→stopped crash, so this never double-toasts.
+        } else if managed_was_alive && !self.managed_server_alive() && !was_ready {
+            // Managed child died before ever binding. update_server_ready only
+            // warns on the ready→stopped crash, so this never double-toasts.
+            // External-only sessions do not use this path.
             let detail = self
                 .server_error_line()
                 .unwrap_or_else(|| "see Serve log".to_string());
@@ -671,6 +758,7 @@ impl App {
             || spinner_visible
             || server_material
             || (self.server_ready != was_ready)
+            || (self.external_server != was_external)
             || self.chat.streaming()
     }
 
@@ -1108,8 +1196,12 @@ impl App {
             },
             Modal::StopServer => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
+                    let external_only = self.external_server && !self.managed_server_alive();
                     self.stop_server();
-                    self.toast_warn("server stopped");
+                    // stop_server toasts for external detach; managed gets the stop toast here.
+                    if !external_only {
+                        self.toast_warn("server stopped");
+                    }
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
@@ -1397,8 +1489,37 @@ impl App {
         }
     }
 
-    pub fn server_running(&self) -> bool {
+    /// True when a managed child is still alive (not yet exited).
+    pub fn managed_server_alive(&self) -> bool {
         self.server.as_ref().is_some_and(|j| j.done.is_none())
+    }
+
+    /// True when a server is in play: managed child still running, or an
+    /// external listener discovered via `/health` on the configured host/port.
+    pub fn server_running(&self) -> bool {
+        self.managed_server_alive() || (self.external_server && self.server_ready)
+    }
+
+    /// Base URL for the configured Serve host/port (defaults applied).
+    pub(crate) fn configured_server_url(&self) -> Option<String> {
+        if self.host_error().is_some() || self.port_error().is_some() {
+            return None;
+        }
+        let host = if self.host.trim().is_empty() {
+            "127.0.0.1"
+        } else {
+            self.host.trim()
+        };
+        let port = if self.port.trim().is_empty() {
+            "31418"
+        } else {
+            self.port.trim()
+        };
+        // Empty fields are defaults; non-empty invalid values already rejected.
+        if port.parse::<u16>().ok().filter(|&p| p > 0).is_none() {
+            return None;
+        }
+        Some(format_http_base_url(host, port))
     }
 
     /// True when the given catalog variant is the model the running server
@@ -1504,6 +1625,10 @@ impl App {
     ) {
         self.server_ready = false;
         self.server_ready_scan = 0;
+        self.external_server = false;
+        self.server_probe = None;
+        self.last_server_probe = None;
+        self.server_probe_url = None;
         // Every path through here replaces the server job — re-pin its log.
         self.serve_log_scroll.pin_to_bottom();
         let host = if self.host.trim().is_empty() {
@@ -1553,7 +1678,7 @@ impl App {
                 job.log
                     .push(format!("spawning {bin_display} for {model_label}"));
                 self.server = Some(job);
-                self.server_url = Some(format!("http://{host}:{port}"));
+                self.server_url = Some(format_http_base_url(&host, &port));
                 self.server_model = Some(model_label.to_string());
             }
             Err(err) => {
@@ -1566,21 +1691,27 @@ impl App {
         }
     }
 
-    /// Track the server job in both directions: flip `server_ready` on once the
-    /// log confirms the bind, and back off if the process has since exited
-    /// (crash, port conflict after start) so Chat stops accepting input.
+    /// Track the managed server job in both directions: flip `server_ready` on
+    /// once the log confirms the bind, and back off if the process has since
+    /// exited so Chat stops accepting input. External (probe-only) readiness
+    /// is handled by [`Self::tick_server_health_probe`].
     pub fn update_server_ready(&mut self) {
         let Some(job) = &self.server else {
             return;
         };
         if job.done.is_some() {
-            if self.server_ready {
+            // Managed child exited. Drop managed readiness; leave external
+            // discovery to the health probe (another process may still hold
+            // the port, but that is rare after our kill).
+            if self.server_ready && !self.external_server {
                 self.server_ready = false;
                 self.toast_warn("server stopped — restart it on Serve");
             }
             return;
         }
         if self.server_ready {
+            // Managed job still alive and already ready (log or health).
+            self.external_server = false;
             return;
         }
         // Only scan lines that arrived since the last check. LOG_CAP can drain
@@ -1593,13 +1724,101 @@ impl App {
         for line in &job.log[start..] {
             if server_log_indicates_ready(line) {
                 self.server_ready = true;
+                self.external_server = false;
                 break;
             }
         }
         self.server_ready_scan = job.log.len();
     }
 
+    /// Apply a completed `/health` result. Pure state transition used by the
+    /// tick loop and unit tests (no I/O).
+    pub(crate) fn apply_server_health(&mut self, health: Option<ServerHealth>) -> bool {
+        let was_ready = self.server_ready;
+        let was_external = self.external_server;
+        let managed_alive = self.managed_server_alive();
+        match health {
+            Some(health) => {
+                let url = self.configured_server_url();
+                if let Some(url) = url {
+                    self.server_url = Some(url);
+                }
+                self.server_ready = true;
+                if managed_alive {
+                    // Our child is the listener (or shares the port); treat as
+                    // managed so Stop kills the job rather than only detaching.
+                    self.external_server = false;
+                } else {
+                    self.external_server = true;
+                    if let Some(model_id) = health.model_id {
+                        self.server_model = Some(model_id);
+                    }
+                }
+            }
+            None => {
+                if self.external_server && !managed_alive {
+                    // External listener went away.
+                    self.external_server = false;
+                    self.server_ready = false;
+                    self.server_url = None;
+                    self.server_model = None;
+                }
+                // Managed-but-not-ready: keep waiting on the child log. Managed
+                // ready is not cleared by a failed probe (health can 503 while
+                // the worker is still usable for chat, or curl can flap).
+            }
+        }
+        self.server_ready != was_ready || self.external_server != was_external
+    }
+
+    /// Non-blocking `/health` poll. Discovers servers started outside the TUI
+    /// and backstops log-line readiness for managed children.
+    fn tick_server_health_probe(&mut self) -> bool {
+        // Drain a finished probe first.
+        if let Some(rx) = &self.server_probe {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.server_probe = None;
+                    return self.apply_server_health(result);
+                }
+                Err(TryRecvError::Empty) => return false,
+                Err(TryRecvError::Disconnected) => {
+                    self.server_probe = None;
+                }
+            }
+        }
+
+        // Managed child already green via its log: job liveness is enough.
+        // Otherwise keep probing — that covers external discovery, log-line
+        // backstop while starting, and re-attach after a managed crash if
+        // something else still holds the port.
+        if self.server_ready && !self.external_server && self.managed_server_alive() {
+            return false;
+        }
+
+        let Some(url) = self.configured_server_url() else {
+            return false;
+        };
+        let url_changed = self.server_probe_url.as_deref() != Some(url.as_str());
+        let due = self
+            .last_server_probe
+            .is_none_or(|t| t.elapsed() >= SERVER_HEALTH_PROBE_INTERVAL);
+        if !due && !url_changed {
+            return false;
+        }
+
+        self.last_server_probe = Some(Instant::now());
+        self.server_probe_url = Some(url.clone());
+        let (tx, rx) = mpsc::channel();
+        self.server_probe = Some(rx);
+        thread::spawn(move || {
+            let _ = tx.send(probe_server_health(&url));
+        });
+        false
+    }
+
     fn stop_server(&mut self) {
+        let had_managed = self.managed_server_alive();
         if let Some(job) = &mut self.server {
             job.cancel();
         }
@@ -1608,7 +1827,16 @@ impl App {
         self.server_ready = false;
         self.server_ready_scan = 0;
         self.server_model = None;
+        self.external_server = false;
+        self.server_probe = None;
+        self.last_server_probe = None;
+        self.server_probe_url = None;
         self.serve_log_scroll.pin_to_bottom();
+        if !had_managed {
+            // External-only: we cannot kill the process; detach so the UI
+            // stops claiming it. User stops the real process outside.
+            self.toast_warn("detached external server — stop the process outside the TUI");
+        }
     }
 
     /// Most recent non-empty server log line, surfaced when startup fails.
@@ -1690,10 +1918,12 @@ impl App {
     }
 
     fn server_status(&self) -> ServerStatus {
-        match (&self.server_url, &self.server) {
-            (Some(_), Some(job)) if job.done.is_none() && self.server_ready => ServerStatus::Ready,
-            (Some(_), Some(job)) if job.done.is_none() => ServerStatus::Starting,
-            (_, Some(job)) if job.done.is_some() => ServerStatus::Failed,
+        if self.server_ready {
+            return ServerStatus::Ready;
+        }
+        match &self.server {
+            Some(job) if job.done.is_none() => ServerStatus::Starting,
+            Some(job) if job.done.is_some() => ServerStatus::Failed,
             _ => ServerStatus::Stopped,
         }
     }
@@ -2334,18 +2564,30 @@ impl App {
                     theme::colors().danger,
                 )
             }
-            Modal::StopServer => widgets::draw_modal_with(
-                frame,
-                area,
-                "⚠ Stop server",
-                vec![Line::raw("Stop the running server?")],
-                vec![
-                    theme::key_chip_danger("y stop"),
-                    theme::key_sep(),
-                    theme::key_chip_dim("Esc keep"),
-                ],
-                theme::colors().warn,
-            ),
+            Modal::StopServer => {
+                let (title, body, confirm) = if self.external_server && !self.managed_server_alive()
+                {
+                    (
+                        "⚠ Detach external server",
+                        "This server was started outside the TUI. Detach from it? (process keeps running)",
+                        "y detach",
+                    )
+                } else {
+                    ("⚠ Stop server", "Stop the running server?", "y stop")
+                };
+                widgets::draw_modal_with(
+                    frame,
+                    area,
+                    title,
+                    vec![Line::raw(body)],
+                    vec![
+                        theme::key_chip_danger(confirm),
+                        theme::key_sep(),
+                        theme::key_chip_dim("Esc keep"),
+                    ],
+                    theme::colors().warn,
+                )
+            }
             Modal::RestartServer {
                 family_idx,
                 variant_idx,

@@ -1906,7 +1906,11 @@ fn sse_lines_parse() {
 fn chat_without_server_shows_hint() {
     let mut app = new_app();
     app.screen = Screen::Chat;
-    assert!(render(&app).contains("No server running"));
+    let text = render(&app);
+    assert!(
+        text.contains("Looking for server") || text.contains("/health"),
+        "chat should show external probe target, got: {text}"
+    );
     // The hint screen is not an input: typing and Enter do nothing.
     for c in "hello".chars() {
         app.on_key(key(KeyCode::Char(c)));
@@ -2385,6 +2389,125 @@ fn server_ready_flips_off_when_process_exits() {
     app.server_ready = true;
     app.update_server_ready();
     assert!(!app.server_ready, "exited server must drop the ready flag");
+}
+
+#[test]
+fn parse_health_body_accepts_ok_payload() {
+    let health = super::parse_health_body(
+        r#"{"status":"ok","service":"ax-engine-server","model_id":"gemma4-e2b"}"#,
+    )
+    .expect("ok health");
+    assert_eq!(health.model_id.as_deref(), Some("gemma4-e2b"));
+    assert!(super::parse_health_body(r#"{"status":"degraded"}"#).is_none());
+    assert!(
+        super::parse_health_body(r#"{"status":"ok","service":"other"}"#).is_none(),
+        "foreign service must not attach"
+    );
+    assert!(super::parse_health_body("not-json").is_none());
+}
+
+#[test]
+fn external_health_probe_marks_server_ready_without_child_job() {
+    // User started `ax-engine-server` outside the TUI — Chat must still light up.
+    let mut app = new_app();
+    assert!(!app.server_ready);
+    assert!(!app.server_running());
+    let changed = app.apply_server_health(Some(super::ServerHealth {
+        model_id: Some("gemma4-e2b".into()),
+    }));
+    assert!(changed);
+    assert!(app.server_ready);
+    assert!(app.external_server);
+    assert!(app.server_running());
+    assert_eq!(app.server_url.as_deref(), Some("http://127.0.0.1:31418"));
+    assert_eq!(app.server_model.as_deref(), Some("gemma4-e2b"));
+
+    app.screen = Screen::Chat;
+    let text = render(&app);
+    assert!(
+        !text.contains("Looking for server"),
+        "chat empty-state must hide once external server is attached: {text}"
+    );
+    assert!(
+        text.contains("running") || app.server_ready,
+        "status should report ready"
+    );
+}
+
+#[test]
+fn external_health_loss_detaches_ready_state() {
+    let mut app = new_app();
+    app.apply_server_health(Some(super::ServerHealth {
+        model_id: Some("gemma4-e2b".into()),
+    }));
+    assert!(app.server_ready && app.external_server);
+    let changed = app.apply_server_health(None);
+    assert!(changed);
+    assert!(!app.server_ready);
+    assert!(!app.external_server);
+    assert!(app.server_url.is_none());
+    assert!(app.server_model.is_none());
+}
+
+#[test]
+fn managed_health_probe_does_not_mark_external() {
+    // Fallback readiness via /health while our child is still starting.
+    let mut app = new_app();
+    app.server = Some(Job::running_with_log(vec!["booting…".into()]));
+    app.server_url = Some("http://127.0.0.1:31418".into());
+    app.server_model = Some("local-label".into());
+    app.apply_server_health(Some(super::ServerHealth {
+        model_id: Some("from-health".into()),
+    }));
+    assert!(app.server_ready);
+    assert!(
+        !app.external_server,
+        "managed child must own Stop, not detach-only"
+    );
+    assert_eq!(
+        app.server_model.as_deref(),
+        Some("local-label"),
+        "managed label wins over health model_id"
+    );
+}
+
+#[test]
+fn stop_external_server_detaches_without_child() {
+    let mut app = new_app();
+    app.apply_server_health(Some(super::ServerHealth {
+        model_id: Some("gemma4-e2b".into()),
+    }));
+    app.screen = Screen::Serve;
+    app.on_key(key(KeyCode::Char('x')));
+    assert!(matches!(app.modal, Some(Modal::StopServer)));
+    app.on_key(key(KeyCode::Char('y')));
+    assert!(!app.server_ready);
+    assert!(!app.external_server);
+    assert!(
+        app.toasts
+            .iter()
+            .any(|t| t.text.contains("detached") || t.text.contains("external")),
+        "expected detach toast, got {:?}",
+        app.toasts
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn serve_panel_shows_external_badge_when_attached() {
+    let mut app = new_app();
+    app.apply_server_health(Some(super::ServerHealth {
+        model_id: Some("gemma4-e2b".into()),
+    }));
+    app.screen = Screen::Serve;
+    let text = render(&app);
+    assert!(text.contains("external"), "serve panel: {text}");
+    assert!(
+        text.contains("http://127.0.0.1:31418"),
+        "serve panel: {text}"
+    );
 }
 
 // ---------------------------------------------------------------------------

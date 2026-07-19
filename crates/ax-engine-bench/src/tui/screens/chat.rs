@@ -774,23 +774,28 @@ impl App {
         let server_stopped =
             !self.server_ready && self.server.as_ref().is_some_and(|job| job.done.is_some());
         if !self.server_ready && !server_stopped {
-            let starting = self.server_running();
-            // Centered info card (warn accent while the server binds).
-            let card_w = 54u16.min(area.width.saturating_sub(4));
-            let card_h = 8u16.min(area.height.saturating_sub(2));
+            let starting = self.managed_server_alive();
+            // Centered info card (warn accent while a managed child binds).
+            // When idle we still probe the Serve host/port for an external
+            // `ax-engine-server` started in another terminal — show that target.
+            let probe_url = self
+                .configured_server_url()
+                .unwrap_or_else(|| "http://127.0.0.1:31418".into());
+            let card_w = 58u16.min(area.width.saturating_sub(4));
+            let card_h = 9u16.min(area.height.saturating_sub(2));
             let card = widgets::centered_rect(card_w, card_h, area);
             let (heading, detail, heading_style) = if starting {
                 (
-                    "Server starting…",
-                    "  The model is loading; this can take a minute.",
+                    "Server starting…".to_string(),
+                    "  The model is loading; this can take a minute.".to_string(),
                     Style::default()
                         .fg(theme::colors().warn)
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
                 (
-                    "No server running",
-                    "  Start a model, then come back to chat.",
+                    "Looking for server…".to_string(),
+                    format!("  Probing {probe_url}/health (external servers OK)"),
                     Style::default()
                         .fg(theme::colors().text)
                         .add_modifier(Modifier::BOLD),
@@ -810,7 +815,7 @@ impl App {
                             .fg(theme::colors().accent)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(" for Serve", theme::label()),
+                    Span::styled(" to change host/port or start one here", theme::label()),
                 ]),
             ];
             frame.render_widget(
