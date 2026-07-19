@@ -3,22 +3,22 @@
 #
 # Hardened signer modeled on the ax-code-desktop release-signing process:
 # optional pinned-public-key enforcement, dry-run, untrusted comment, portable
-# SHA-256, and a UTC timestamp in the default trusted comment. The shared
-# ax-code signing key is the default; operators may pin its public key string
+# SHA-256, and a UTC timestamp in the default trusted comment. The shared AX
+# product signing key is the default; operators may pin its public key string
 # via AX_MINISIGN_PINNED_PUBLIC_KEY (CI secret / shell rc) so the signer fails
 # closed if the local keypair ever drifts from the expected release key.
 
 set -euo pipefail
 
-SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax-code.sec}"
-PUBLIC_KEY="${AX_MINISIGN_PUBLIC_KEY:-$HOME/signkey/ax-code.pub}"
+SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax.sec}"
+PUBLIC_KEY="${AX_MINISIGN_PUBLIC_KEY:-$HOME/signkey/ax.pub}"
 PUBLIC_KEY_STRING="${AX_MINISIGN_PUBLIC_KEY_STRING:-}"
 PINNED_PUBLIC_KEY="${AX_MINISIGN_PINNED_PUBLIC_KEY:-}"
 TRUSTED_COMMENT="${AX_MINISIGN_TRUSTED_COMMENT:-}"
 UNTRUSTED_COMMENT="${AX_MINISIGN_UNTRUSTED_COMMENT:-signature from ax-engine local signing key}"
 MINISIGN_PASSWORD="${AX_MINISIGN_PASSWORD:-}"
-MINISIGN_KEYCHAIN_SERVICE="${AX_MINISIGN_KEYCHAIN_SERVICE:-ax-code-minisign}"
-MINISIGN_KEYCHAIN_ACCOUNT="${AX_MINISIGN_KEYCHAIN_ACCOUNT:-ax-code-release}"
+MINISIGN_KEYCHAIN_SERVICE="${AX_MINISIGN_KEYCHAIN_SERVICE:-ax-minisign}"
+MINISIGN_KEYCHAIN_ACCOUNT="${AX_MINISIGN_KEYCHAIN_ACCOUNT:-ax-release}"
 SIGNATURE_DIR=""
 VERIFY=true
 FORCE=false
@@ -30,8 +30,8 @@ usage() {
 usage: scripts/minisign-artifact.sh [options] <artifact> [artifact ...]
 
 Options:
-  --secret-key <path>       Minisign secret key. Default: ~/signkey/ax-code.sec
-  --public-key <path>       Minisign public key. Default: ~/signkey/ax-code.pub
+  --secret-key <path>       Minisign secret key. Default: ~/signkey/ax.sec
+  --public-key <path>       Minisign public key. Default: ~/signkey/ax.pub
   --public-key-string <key> Minisign public key string for verification.
   --pinned-public-key <key> Fail unless the public key file matches this key.
                              Default: AX_MINISIGN_PINNED_PUBLIC_KEY (empty =
@@ -46,9 +46,9 @@ Options:
   --no-verify               Do not verify generated signatures after signing.
   --dry-run                 Print what would be signed; create nothing.
   --keychain-service <svc>  macOS Keychain service name for passphrase lookup.
-                             Default: ax-code-minisign
+                             Default: ax-minisign
   --keychain-account <acct> macOS Keychain account name for passphrase lookup.
-                             Default: ax-code-release
+                             Default: ax-release
 
 Environment:
   AX_MINISIGN_SECRET_KEY         Overrides the default secret key path.
@@ -58,11 +58,11 @@ Environment:
   AX_MINISIGN_TRUSTED_COMMENT    Default trusted comment.
   AX_MINISIGN_UNTRUSTED_COMMENT  Default untrusted comment.
   AX_MINISIGN_PASSWORD           Key passphrase (prefer Keychain over this).
-  AX_MINISIGN_KEYCHAIN_SERVICE   Keychain service name (default: ax-code-minisign).
-  AX_MINISIGN_KEYCHAIN_ACCOUNT   Keychain account name (default: ax-code-release).
+  AX_MINISIGN_KEYCHAIN_SERVICE   Keychain service name (default: ax-minisign).
+  AX_MINISIGN_KEYCHAIN_ACCOUNT   Keychain account name (default: ax-release).
 
 Keychain setup (one-time, macOS):
-  security add-generic-password -U -a ax-code-release -s ax-code-minisign -w
+  security add-generic-password -U -a ax-release -s ax-minisign -w
   # (you will be prompted for the passphrase)
 EOF
 }

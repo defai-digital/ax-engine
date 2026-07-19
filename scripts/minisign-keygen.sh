@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Generate the local minisign keypair used for ax-engine release artifacts.
-# The engine uses the shared ax-code signing key by default
-# (~/signkey/ax-code.sec / ~/signkey/ax-code.pub).
+# The engine uses the shared AX product signing key by default
+# (~/signkey/ax.sec / ~/signkey/ax.pub).
 
 set -euo pipefail
 
@@ -21,8 +21,8 @@ Generate the minisign keypair for signing ax-engine release artifacts.
 
 Options:
   --key-dir <path>          Directory for generated keys (default: ~/signkey)
-  --secret-key <path>       Secret key path (default: <key-dir>/ax-code.sec)
-  --public-key <path>       Public key path (default: <key-dir>/ax-code.pub)
+  --secret-key <path>       Secret key path (default: <key-dir>/ax.sec)
+  --public-key <path>       Public key path (default: <key-dir>/ax.pub)
   --force                   Overwrite an existing keypair
   --allow-unencrypted-test-key
                             Generate an unencrypted secret key for short-lived
@@ -106,8 +106,8 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-SECRET_KEY="${SECRET_KEY:-$KEY_DIR/ax-code.sec}"
-PUBLIC_KEY="${PUBLIC_KEY:-$KEY_DIR/ax-code.pub}"
+SECRET_KEY="${SECRET_KEY:-$KEY_DIR/ax.sec}"
+PUBLIC_KEY="${PUBLIC_KEY:-$KEY_DIR/ax.pub}"
 SECRET_KEY_DIR="$(dirname "$SECRET_KEY")"
 PUBLIC_KEY_DIR="$(dirname "$PUBLIC_KEY")"
 

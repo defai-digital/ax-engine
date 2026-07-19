@@ -64,8 +64,8 @@ def _make_fixture():
     bindir = os.path.join(tmp, "bin")
     os.makedirs(bindir)
 
-    secret_key = os.path.join(tmp, "ax-code.sec")
-    public_key = os.path.join(tmp, "ax-code.pub")
+    secret_key = os.path.join(tmp, "ax.sec")
+    public_key = os.path.join(tmp, "ax.pub")
     asset = os.path.join(tmp, "asset.tar.gz")
     stdin_log = os.path.join(tmp, "stdin.log")
     comment_log = os.path.join(tmp, "comment.log")

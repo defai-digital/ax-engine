@@ -3,7 +3,7 @@
 AX Engine publishes detached minisign signatures for GitHub Release and Homebrew
 assets. The release scripts (`scripts/publish-github-release.sh`,
 `scripts/brew-release.sh`) sign artifacts before upload via
-`scripts/minisign-artifact.sh`; the shared ax-code signing key lives outside the
+`scripts/minisign-artifact.sh`; the shared AX product signing key lives outside the
 repository in `~/signkey` by default.
 
 The secret key must never be committed, logged, or uploaded as a release asset.
@@ -11,11 +11,11 @@ The public key is safe to publish so users can verify downloaded artifacts.
 
 ## Key files
 
-Default paths (the shared ax-code signing key):
+Default paths (the shared AX product signing key):
 
 ```text
-~/signkey/ax-code.sec
-~/signkey/ax-code.pub
+~/signkey/ax.sec
+~/signkey/ax.pub
 ```
 
 Override them with `AX_MINISIGN_SECRET_KEY` / `AX_MINISIGN_PUBLIC_KEY` or the
@@ -45,15 +45,15 @@ Do **not** use an unencrypted key for releases. Use `--dry-run` to preview.
 `scripts/minisign-artifact.sh` can refuse to sign or verify unless the local
 public key matches an expected value, so a rotated, wrong, or planted key cannot
 silently produce valid-looking signatures. The pin is env-sourced because the
-shared ax-code public key material is intentionally not stored in this repo.
+shared AX public key material is intentionally not stored in this repo.
 
 Set the pin in your shell rc or CI secret:
 
 ```bash
-export AX_MINISIGN_PINNED_PUBLIC_KEY='RWS...your-shared-ax-code-public-key...'
+export AX_MINISIGN_PINNED_PUBLIC_KEY='RWS...your-shared-ax-public-key...'
 ```
 
-When set, the signer reads the public key material from `~/signkey/ax-code.pub`
+When set, the signer reads the public key material from `~/signkey/ax.pub`
 and fails closed on mismatch. When unset, pinning is not enforced (current
 behavior), which keeps unconfigured local recovery flows working.
 
@@ -84,8 +84,8 @@ the public key. Useful flags:
 --force                     Overwrite an existing .minisig.
 --no-verify                 Skip post-sign verification.
 --dry-run                   Print the plan; sign nothing.
---keychain-service <svc>    Keychain service name (default: ax-code-minisign).
---keychain-account <acct>   Keychain account name (default: ax-code-release).
+--keychain-service <svc>    Keychain service name (default: ax-minisign).
+--keychain-account <acct>   Keychain account name (default: ax-release).
 ```
 
 By default each trusted comment includes the artifact basename, SHA-256 digest,
@@ -101,7 +101,7 @@ Users verify a downloaded artifact against the published public key:
 
 ```bash
 minisign -V \
-  -P 'RWS...published ax-code public key...' \
+  -P 'RWS...published AX public key...' \
   -m ax-engine-v6.4.5-macos-arm64.tar.gz \
   -x ax-engine-v6.4.5-macos-arm64.tar.gz.minisig
 ```
@@ -113,8 +113,8 @@ disk with mode `600` and store only its passphrase in Apple Keychain:
 
 ```bash
 security add-generic-password -U \
-  -a ax-code-release \
-  -s ax-code-minisign \
+  -a ax-release \
+  -s ax-minisign \
   -w
 ```
 

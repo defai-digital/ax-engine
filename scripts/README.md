@@ -82,22 +82,22 @@ throughput baselines.
 - `brew-release.sh`: legacy local Homebrew release publisher. It packages
   `ax-engine-server` and `ax-engine-bench`; with `--sign-identity`, it
   codesigns and notarizes all packaged binaries before upload. With
-  `--minisign`, it signs the release tarball with the shared ax-code signing
-  key (`~/signkey/ax-code.sec`), verifies it with `~/signkey/ax-code.pub`, and
+  `--minisign`, it signs the release tarball with the shared AX product signing
+  key (`~/signkey/ax.sec`), verifies it with `~/signkey/ax.pub`, and
   uploads the matching `.minisig` beside the archive. Prefer
   `publish-github-release.sh` for current releases so GitHub, PyPI tag
   promotion, and the publisher-dispatched Homebrew update stay on the same
   release source.
 - `minisign-keygen.sh`: generates the minisign keypair for signing release
-  artifacts. Defaults to the shared ax-code key paths (`~/signkey/ax-code.sec`
-  / `~/signkey/ax-code.pub`), sets a private `700` directory and `600` secret
+  artifacts. Defaults to the shared AX key paths (`~/signkey/ax.sec`
+  / `~/signkey/ax.pub`), sets a private `700` directory and `600` secret
   key, and refuses to overwrite an existing keypair unless passed `--force`.
   Supports `--allow-unencrypted-test-key` (short-lived tests only) and
   `--dry-run`.
 - `minisign-artifact.sh`: signs one or more release artifacts with minisign.
-  The default key is the shared ax-code signing key at `~/signkey/ax-code.sec`
-  / `~/signkey/ax-code.pub` (Keychain service `ax-code-minisign`, account
-  `ax-code-release`). If the passphrase is already stored in the ax-code
+  The default key is the shared AX product signing key at `~/signkey/ax.sec`
+  / `~/signkey/ax.pub` (Keychain service `ax-minisign`, account
+  `ax-release`). If the passphrase is already stored in the shared AX
   Keychain entry, the release path needs no password prompt. Override key
   paths via `AX_MINISIGN_SECRET_KEY` / `AX_MINISIGN_PUBLIC_KEY` or Keychain
   lookup via `--keychain-service` / `--keychain-account`. Set

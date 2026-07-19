@@ -28,11 +28,11 @@ SKIP_TAG_PUSH=false
 SKIP_BREW_DISPATCH=false
 ALLOW_DIRTY=false
 MINISIGN=true
-MINISIGN_SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax-code.sec}"
-MINISIGN_PUBLIC_KEY="${AX_MINISIGN_PUBLIC_KEY:-$HOME/signkey/ax-code.pub}"
+MINISIGN_SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax.sec}"
+MINISIGN_PUBLIC_KEY="${AX_MINISIGN_PUBLIC_KEY:-$HOME/signkey/ax.pub}"
 MINISIGN_PUBLIC_KEY_STRING="${AX_MINISIGN_PUBLIC_KEY_STRING:-}"
 SIGN_IDENTITY="${AX_CODESIGN_IDENTITY:-}"
-NOTARY_PROFILE="${AX_NOTARY_PROFILE:-ax-engine-notary}"
+NOTARY_PROFILE="${AX_NOTARY_PROFILE:-ax-notary}"
 APPLE_API_KEY="${APPLE_API_KEY:-}"
 APPLE_API_KEY_B64="${APPLE_API_KEY_B64:-}"
 APPLE_API_KEY_ID="${APPLE_API_KEY_ID:-}"
@@ -86,12 +86,12 @@ Options:
   --prerelease               Mark the release as prerelease.
   --clobber-assets           Overwrite existing release assets when uploading.
   --no-minisign              Do not sign release artifacts.
-  --minisign-key <path>      Secret key path. Default: ~/signkey/ax-code.sec
-  --minisign-pubkey <path>   Public key file path. Default: ~/signkey/ax-code.pub
+  --minisign-key <path>      Secret key path. Default: ~/signkey/ax.sec
+  --minisign-pubkey <path>   Public key file path. Default: ~/signkey/ax.pub
   --minisign-public-key <k>  Public key string for verification.
   --sign-identity <id>       Developer ID Application identity for codesign.
                              Can also be set with AX_CODESIGN_IDENTITY.
-  --notary-profile <name>    notarytool Keychain profile. Default: ax-engine-notary.
+  --notary-profile <name>    notarytool Keychain profile. Default: ax-notary.
                              Ignored when Apple API key flags/env are provided.
   --apple-api-key <path>     App Store Connect API key path for notarytool.
                              Defaults to APPLE_API_KEY when set.

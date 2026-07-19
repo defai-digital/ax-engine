@@ -18,9 +18,9 @@
 #   --skip-test              Skip the local brew install + test after updating the formula
 #   --minisign               Sign the release archive with minisign before upload
 #   --minisign-key <path>    Secret key path for --minisign
-#                            (default: ~/signkey/ax-code.sec)
+#                            (default: ~/signkey/ax.sec)
 #   --minisign-pubkey <path> Public key path for --minisign verification
-#                            (default: ~/signkey/ax-code.pub)
+#                            (default: ~/signkey/ax.pub)
 #   --minisign-public-key <key>
 #                            Public key string for --minisign verification
 #   --sign-identity <id>     Codesign and notarize binaries with this Developer ID Application
@@ -36,8 +36,8 @@
 #
 # Additional prerequisites for --minisign:
 #   minisign  Minisign signing tool
-#   ~/signkey/ax-code.sec and ~/signkey/ax-code.pub (shared ax-code signing key)
-#   Passphrase stored in macOS Keychain: security add-generic-password -U -a ax-code-release -s ax-code-minisign -w
+#   ~/signkey/ax.sec and ~/signkey/ax.pub (shared AX product signing key)
+#   Passphrase stored in macOS Keychain: security add-generic-password -U -a ax-release -s ax-minisign -w
 #
 # Additional prerequisites for --sign-identity:
 #   codesign  Xcode Command Line Tools
@@ -73,8 +73,8 @@ SKIP_UPLOAD=false
 SKIP_TAP=false
 SKIP_TEST=false
 MINISIGN=false
-MINISIGN_SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax-code.sec}"
-MINISIGN_PUBLIC_KEY="${AX_MINISIGN_PUBLIC_KEY:-$HOME/signkey/ax-code.pub}"
+MINISIGN_SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax.sec}"
+MINISIGN_PUBLIC_KEY="${AX_MINISIGN_PUBLIC_KEY:-$HOME/signkey/ax.pub}"
 MINISIGN_PUBLIC_KEY_STRING="${AX_MINISIGN_PUBLIC_KEY_STRING:-}"
 SIGN_IDENTITY=""
 
@@ -325,10 +325,10 @@ fi
 if [[ -n "$SIGN_IDENTITY" ]]; then
     echo "▶ submitting binaries for notarization…"
     # notarytool reads credentials from the Keychain; the store-credentials
-    # profile "ax-engine-notary" must be set up once with:
-    #   xcrun notarytool store-credentials ax-engine-notary \
-    #     --apple-id <email> --team-id <TEAMID> --password <app-specific-password>
-    NOTARIZE_PROFILE="${AX_NOTARY_PROFILE:-ax-engine-notary}"
+    # profile "ax-notary" must be set up once with:
+    #   xcrun notarytool store-credentials ax-notary \
+    #     --apple-id <email> --team-id <TEAMID>
+    NOTARIZE_PROFILE="${AX_NOTARY_PROFILE:-ax-notary}"
     NOTARIZE_ZIP="/tmp/ax-engine-${TAG}-notarize.zip"
     (cd target/release && zip -j "$NOTARIZE_ZIP" "${RELEASE_BINS[@]}")
     xcrun notarytool submit "$NOTARIZE_ZIP" \
