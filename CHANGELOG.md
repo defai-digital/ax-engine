@@ -99,6 +99,15 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- Unevaluated-array readbacks in `mlx-sys` now fail with a recorded error
+  instead of a SIGSEGV: the shim checks `is_available()` before
+  `data<T>()`, `MlxArray::is_evaled` exposes the precondition, and
+  `first_u32_unchecked` panics with the reason instead of silently
+  returning token id 0 on a failed read. Manifest validators guarding
+  decode-path invariants (diffusion contract, GLM router numeric-group
+  invariants, interleaved layer_types shapes) gained direct unit tests,
+  MTP decode carries emission-accounting debug asserts, and `make_array`
+  normalizes bool payload bytes (undefined behavior for values >1).
 - MLX panic containment for serving: the generation worker loop now runs
   under `catch_unwind`, and the new `release-server` profile (inherits
   release, `panic = "unwind"`) is the documented build for serving
