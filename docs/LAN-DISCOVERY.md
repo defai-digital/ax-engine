@@ -21,7 +21,7 @@ engine HTTP endpoint?”
 ```bash
 ax-engine-server \
   --host 0.0.0.0 \
-  --port 8080 \
+  --port 31418 \
   --mlx \
   --mlx-model-artifacts-dir /absolute/path/to/artifacts \
   --api-key "$AX_ENGINE_API_KEY" \

@@ -5,7 +5,7 @@
 //
 // Requires:
 //   go get github.com/tmc/langchaingo
-//   ax-engine-server running on http://127.0.0.1:8080
+//   ax-engine-server running on http://127.0.0.1:31418
 //
 // Run:
 //   cd examples/go/langchain && go run .
@@ -25,7 +25,7 @@ func main() {
 	// Point langchaingo's OpenAI provider at ax-engine-server.
 	// ax-engine-server is OpenAI-compatible, so no custom adapter is needed.
 	llm, err := openai.New(
-		openai.WithBaseURL("http://127.0.0.1:8080/v1"),
+		openai.WithBaseURL("http://127.0.0.1:31418/v1"),
 		openai.WithToken("not-required"), // ax-engine does not check API keys
 		openai.WithModel("qwen3_dense"),
 	)

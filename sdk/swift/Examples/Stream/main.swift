@@ -1,6 +1,6 @@
 // Example: streaming with the AX Engine Swift SDK.
 //
-// Requires a running ax-engine-server on http://127.0.0.1:8080.
+// Requires a running ax-engine-server on http://127.0.0.1:31418.
 //
 // Run:
 //   cd sdk/swift && swift run StreamExample

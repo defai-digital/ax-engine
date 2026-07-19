@@ -20,7 +20,7 @@ if [[ -z "$SERVER_BIN" ]]; then
 fi
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface/hub}"
 REPORT_DIR="${REPORT_DIR:-${QA_SCRATCH:-$QA_DIR/reports/matrix}}"
-PORT="${PORT:-${QA_PORT:-8080}}"
+PORT="${PORT:-${QA_PORT:-31418}}"
 TIMEOUT="${TIMEOUT:-${QA_TIMEOUT:-120}}"
 QA_SAMPLE="${QA_SAMPLE:-12}"
 QA_SEED="${QA_SEED:-42}"

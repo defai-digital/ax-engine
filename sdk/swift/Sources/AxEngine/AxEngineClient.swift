@@ -2,7 +2,7 @@ import Foundation
 
 /// HTTP client for ax-engine-server.
 ///
-/// Connects to a running ``ax-engine-server`` instance (default: `http://127.0.0.1:8080`).
+/// Connects to a running ``ax-engine-server`` instance (default: `http://127.0.0.1:31418`).
 ///
 /// ```swift
 /// let client = AxEngineClient()
@@ -24,7 +24,7 @@ public final class AxEngineClient: @unchecked Sendable {
     private let decoder: JSONDecoder
 
     public init(
-        baseURL: URL = URL(string: "http://127.0.0.1:8080")!,
+        baseURL: URL = URL(string: "http://127.0.0.1:31418")!,
         session: URLSession = .shared
     ) {
         self.baseURL = baseURL

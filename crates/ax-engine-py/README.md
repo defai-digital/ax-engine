@@ -46,10 +46,10 @@ python -m ax_engine.openai_server \
     --model-id my-model \
     --mlx-model-artifacts-dir /path/to/model \
     --tokenizer /path/to/tokenizer.json \
-    --port 8080
+    --port 31418
 ```
 
-Then point any OpenAI client at `http://127.0.0.1:8080`.
+Then point any OpenAI client at `http://127.0.0.1:31418`.
 
 ## Optional dependencies
 

@@ -73,7 +73,7 @@ arrival rate, and latency percentiles:
 
 ```text
 python3 scripts/bench_ax_serving.py \
-  --base-url http://127.0.0.1:8080 \
+  --base-url http://127.0.0.1:31418 \
   --model-id qwen3_dense \
   --corpus benchmarks/corpora/serving/smoke.jsonl \
   --input-kind tokens \

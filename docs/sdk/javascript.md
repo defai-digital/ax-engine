@@ -56,7 +56,7 @@ npm install @langchain/core
 ```js
 import AxEngineClient from "@ax-engine/sdk";
 
-const client = new AxEngineClient({ baseUrl: "http://127.0.0.1:8080" });
+const client = new AxEngineClient({ baseUrl: "http://127.0.0.1:31418" });
 
 const runtime = await client.runtime();
 const result = await client.generate({
@@ -133,7 +133,7 @@ node examples/javascript/streaming.js  # all three streaming methods
 node examples/javascript/langchain_chat.js  # LangChain ChatAXEngine + AXEngineLLM
 ```
 
-All examples require `ax-engine-server` running on `http://127.0.0.1:8080`.
+All examples require `ax-engine-server` running on `http://127.0.0.1:31418`.
 
 ## LangChain Integration
 
@@ -148,7 +148,7 @@ import { ChatAXEngine } from "@ax-engine/sdk/langchain";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 
 const chat = new ChatAXEngine({
-  baseUrl: "http://127.0.0.1:8080",
+  baseUrl: "http://127.0.0.1:31418",
   maxTokens: 256,
   temperature: 0.7,
 });
@@ -172,7 +172,7 @@ for await (const chunk of stream) {
 ```js
 import { AXEngineLLM } from "@ax-engine/sdk/langchain";
 
-const llm = new AXEngineLLM({ baseUrl: "http://127.0.0.1:8080", maxTokens: 128 });
+const llm = new AXEngineLLM({ baseUrl: "http://127.0.0.1:31418", maxTokens: 128 });
 const text = await llm.invoke("Once upon a time");
 console.log(text);
 ```

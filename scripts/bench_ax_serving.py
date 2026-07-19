@@ -738,7 +738,7 @@ def optional_positive_float(value: str) -> float:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--base-url", default="http://127.0.0.1:31418")
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--input-kind", choices=["auto", "text", "tokens"], default="auto")

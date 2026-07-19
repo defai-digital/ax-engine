@@ -33,7 +33,7 @@ else
 fi
 OPENWEBUI_REPORT="${AX_OPENWEBUI_REPORT:-$(ax_tmp_file ax-openwebui-e2e .json)}"
 
-AX_BASE_URL="${AX_OPENWEBUI_AX_BASE_URL:-http://127.0.0.1:8080}"
+AX_BASE_URL="${AX_OPENWEBUI_AX_BASE_URL:-http://127.0.0.1:31418}"
 MODEL_ID="${AX_OPENWEBUI_MODEL_ID:-ax-engine-openwebui-smoke}"
 PROMPT="${AX_OPENWEBUI_PROMPT:-what is agi ?}"
 MAX_TOKENS="${AX_OPENWEBUI_MAX_TOKENS:-96}"

@@ -18,7 +18,7 @@ for applications that connect to a running AX Engine server.
 | [Swift](swift.md) | `sdk/swift` / `AxEngine` | You want a native Swift async/await client for macOS or iOS apps |
 | [Mojo](mojo.md) *(experimental)* | `sdk/mojo/ax_engine.mojo` | You want a thin Mojo `PythonObject` wrapper over the Python SDK — not an independent client; no test suite, not run in CI |
 
-Most SDKs talk to a running AX Engine server at `http://127.0.0.1:8080`.
+Most SDKs talk to a running AX Engine server at `http://127.0.0.1:31418`.
 Python can also run the SDK-owned in-process session directly.
 
 Related docs:

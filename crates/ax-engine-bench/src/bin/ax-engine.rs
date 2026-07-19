@@ -631,12 +631,12 @@ fn user_doctor_report(bench: &Value) -> Value {
         }
     } else if model_selected {
         if let Some(path) = model_path {
-            next_actions.push(format!("ax-engine serve {path} --port 8080"));
+            next_actions.push(format!("ax-engine serve {path} --port 31418"));
         } else {
-            next_actions.push("ax-engine serve <model-dir> --port 8080".to_string());
+            next_actions.push("ax-engine serve <model-dir> --port 31418".to_string());
         }
     } else {
-        next_actions.push("ax-engine serve qwen36-35b --download --port 8080".to_string());
+        next_actions.push("ax-engine serve qwen36-35b --download --port 31418".to_string());
         next_actions.push("ax-engine models list".to_string());
     }
 
@@ -1252,7 +1252,7 @@ fn parse_serve_args(args: &[OsString]) -> Result<ServeArgs, String> {
 
     let mut model = None;
     let mut host = "127.0.0.1".to_string();
-    let mut port = "8080".to_string();
+    let mut port = "31418".to_string();
     let mut hf_cache_root = None;
     let mut download = false;
     let mut dry_run = false;
@@ -3021,6 +3021,13 @@ mod tests {
     }
 
     #[test]
+    fn serve_defaults_to_inference_port() {
+        let args = parse_serve_args(&[OsString::from("qwen36-35b")]).unwrap();
+
+        assert_eq!(args.port, "31418");
+    }
+
+    #[test]
     fn user_doctor_text_highlights_status_checks_and_next_steps() {
         let report = json!({
             "result": "ready",
@@ -3049,7 +3056,7 @@ mod tests {
             ],
             "issues": [],
             "model_issues": [],
-            "next_actions": ["ax-engine serve qwen36-35b --download --port 8080"],
+            "next_actions": ["ax-engine serve qwen36-35b --download --port 31418"],
             "details_command": "ax-engine-bench doctor"
         });
         let output = format_user_doctor_report(&report);
@@ -3061,7 +3068,7 @@ mod tests {
         assert!(output.contains("GPU cores: 40"));
         assert!(output.contains("server_binary: pass - ax-engine-server ok"));
         assert!(output.contains("model: not_selected"));
-        assert!(output.contains("ax-engine serve qwen36-35b --download --port 8080"));
+        assert!(output.contains("ax-engine serve qwen36-35b --download --port 31418"));
         assert!(output.contains("More details: ax-engine-bench doctor"));
     }
 

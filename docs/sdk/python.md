@@ -458,7 +458,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from ax_engine.langchain import AXEngineChatModel
 
 chat = AXEngineChatModel(
-    base_url="http://127.0.0.1:8080",
+    base_url="http://127.0.0.1:31418",
     max_tokens=256,
     temperature=0.7,
 )
@@ -481,7 +481,7 @@ a raw string prompt:
 ```python
 from ax_engine.langchain import AXEngineLLM
 
-llm = AXEngineLLM(base_url="http://127.0.0.1:8080", max_tokens=128)
+llm = AXEngineLLM(base_url="http://127.0.0.1:31418", max_tokens=128)
 print(llm.invoke("Once upon a time"))
 ```
 

@@ -38,7 +38,7 @@ by the CI "Verify version consistency" check. The current version is `6.9.0`.
 ```swift
 import AxEngine
 
-let client = AxEngineClient()  // default: http://127.0.0.1:8080
+let client = AxEngineClient()  // default: http://127.0.0.1:31418
 
 let response = try await client.chatCompletion(.init(
     messages: [
@@ -55,7 +55,7 @@ print(response.choices[0].message.content ?? "")
 
 ```swift
 let client = AxEngineClient(
-    baseURL: URL(string: "http://127.0.0.1:8080")!,  // default
+    baseURL: URL(string: "http://127.0.0.1:31418")!,  // default
     session: .shared                                  // default
 )
 ```
@@ -209,7 +209,7 @@ let resp = try await client.chatCompletion(.init(
 ```bash
 cd sdk/swift
 
-# Chat completion (requires ax-engine-server on http://127.0.0.1:8080)
+# Chat completion (requires ax-engine-server on http://127.0.0.1:31418)
 swift run ChatExample
 
 # Streaming chat, completion, and native generate

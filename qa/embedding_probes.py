@@ -921,7 +921,7 @@ def run_embedding_probes(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="AX Engine embedding QA probes")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--base-url", default="http://127.0.0.1:31418")
     parser.add_argument("--model", required=True)
     parser.add_argument(
         "--tokenizer",

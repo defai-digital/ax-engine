@@ -73,7 +73,7 @@ func main() {
 
 ```go
 client := axengine.NewClient(&axengine.ClientOptions{
-    BaseURL:    "http://127.0.0.1:8080",  // default
+    BaseURL:    "http://127.0.0.1:31418",  // default
     HTTPClient: &http.Client{Timeout: 30 * time.Second},
     Headers:    http.Header{"Authorization": {"Bearer token"}},
 })
@@ -206,7 +206,7 @@ import (
 )
 
 llm, err := openai.New(
-    openai.WithBaseURL("http://127.0.0.1:8080/v1"),
+    openai.WithBaseURL("http://127.0.0.1:31418/v1"),
     openai.WithToken("not-required"),
     openai.WithModel("qwen3_dense"),
 )
@@ -250,7 +250,7 @@ go run ./stream
 cd langchain && go mod tidy && go run .
 ```
 
-All examples require `ax-engine-server` running on `http://127.0.0.1:8080`.
+All examples require `ax-engine-server` running on `http://127.0.0.1:31418`.
 
 ## Running Tests
 

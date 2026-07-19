@@ -28,7 +28,7 @@ npm install @langchain/core
 ```js
 import AxEngineClient from "@ax-engine/sdk";
 
-const client = new AxEngineClient({ baseUrl: "http://127.0.0.1:8080" });
+const client = new AxEngineClient({ baseUrl: "http://127.0.0.1:31418" });
 
 // Chat completion
 const resp = await client.chatCompletion({
@@ -117,7 +117,7 @@ console.log(resp.data[0].embedding.length);
 
 ```js
 const client = new AxEngineClient({
-  baseUrl: "http://127.0.0.1:8080",
+  baseUrl: "http://127.0.0.1:31418",
   headers: { Authorization: "Bearer token" },
   fetch: globalThis.fetch,
 });

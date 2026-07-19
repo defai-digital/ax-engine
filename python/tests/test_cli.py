@@ -165,6 +165,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
         self.assertEqual(payload["resolved"]["kind"], "local_dir")
+        self.assertEqual(payload["server"]["url"], "http://127.0.0.1:31418")
         self.assertIn("--mlx-model-artifacts-dir", payload["server"]["argv"])
         path_index = payload["server"]["argv"].index("--mlx-model-artifacts-dir") + 1
         self.assertEqual(
@@ -305,7 +306,7 @@ class AxEngineCliTests(unittest.TestCase):
             payload["source"]["schema_version"], "ax.engine_bench.doctor.v1"
         )
         self.assertEqual(
-            payload["next_actions"], ["ax-engine serve /models/gemma4-12b --port 8080"]
+            payload["next_actions"], ["ax-engine serve /models/gemma4-12b --port 31418"]
         )
         self.assertNotIn("bench_doctor", payload)
         self.assertEqual(

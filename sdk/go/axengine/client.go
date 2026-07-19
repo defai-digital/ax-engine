@@ -23,7 +23,7 @@ import (
 	"strings"
 )
 
-const defaultBaseURL = "http://127.0.0.1:8080"
+const defaultBaseURL = "http://127.0.0.1:31418"
 
 // Version is the SDK version. Kept in lockstep with the workspace version in
 // Cargo.toml by the CI "Verify version consistency" check.
@@ -32,7 +32,7 @@ const Version = "6.9.0"
 // ClientOptions configures an AxEngineClient.
 type ClientOptions struct {
 	// BaseURL is the root URL of the ax-engine-server instance.
-	// Defaults to http://127.0.0.1:8080.
+	// Defaults to http://127.0.0.1:31418.
 	BaseURL string
 
 	// HTTPClient is the underlying http.Client. Defaults to http.DefaultClient.

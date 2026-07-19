@@ -171,8 +171,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--base-url",
-        default="http://localhost:8080",
-        help="AX Engine server base URL (default: http://localhost:8080)",
+        default="http://localhost:31418",
+        help="AX Engine server base URL (default: http://localhost:31418)",
     )
     parser.add_argument(
         "--model", default=None, help="Model ID (default: auto-detect from server)"

@@ -62,7 +62,7 @@ module AxEngine
     #
     # Usage:
     #   chat = AxEngine::Langchain::ChatModel.new(
-    #     base_url: "http://127.0.0.1:8080",
+    #     base_url: "http://127.0.0.1:31418",
     #     max_tokens: 256,
     #     temperature: 0.7,
     #   )
@@ -107,7 +107,7 @@ module AxEngine
     #
     # Usage:
     #   llm = AxEngine::Langchain::LLM.new(
-    #     base_url: "http://127.0.0.1:8080",
+    #     base_url: "http://127.0.0.1:31418",
     #     max_tokens: 128,
     #   )
     #

@@ -100,7 +100,7 @@ ax-engine download-mtp qwen3.6-27b-6bit
 ```
 
 The command prints the prepared package path and a matching
-`ax-engine serve <prepared-mtp-package> --port 8080` command.
+`ax-engine serve <prepared-mtp-package> --port 31418` command.
 
 By default, packages are written as synthetic Hugging Face cache snapshots under
 the active HF cache root. Use `--output <dir>` when you need an explicit

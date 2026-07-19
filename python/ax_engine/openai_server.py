@@ -1084,7 +1084,7 @@ def main() -> None:
     parser.add_argument("--mlx-model-artifacts-dir", required=True)
     parser.add_argument("--tokenizer", required=True)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--port", type=int, default=31418)
     args = parser.parse_args()
 
     app = create_app(

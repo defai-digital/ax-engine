@@ -46,7 +46,7 @@ fn write_artifact_dir(root: &Path, model_type: &str) -> PathBuf {
 fn base_args() -> ServerArgs {
     ServerArgs {
         host: "127.0.0.1".to_string(),
-        port: 8080,
+        port: DEFAULT_INFERENCE_PORT,
         model_id: "qwen3".to_string(),
         api_key: None,
         preset: None,
@@ -165,6 +165,7 @@ fn cli_defaults_to_mlx_preview_support_tier() {
 
     let args = ServerArgs::try_parse_from(["ax-engine-server"]).expect("default args should parse");
 
+    assert_eq!(args.port, DEFAULT_INFERENCE_PORT);
     assert_eq!(args.support_tier, PreviewSupportTier::MlxPreview);
 }
 

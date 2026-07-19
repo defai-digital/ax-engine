@@ -104,7 +104,7 @@ cargo run -p ax-engine-server -- \
   --mlx \
   --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
   --api-key "$AX_ENGINE_API_KEY" \
-  --port 8080
+  --port 31418
 ```
 
 When enabled, requests to `/v1/*` routes must include:
@@ -353,7 +353,7 @@ cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
   --mlx \
   --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
-  --port 8080
+  --port 31418
 ```
 
 `--speculation-profile {auto,coding,agentic,chatbot}` (short `-s`, alias
@@ -380,7 +380,7 @@ explicit:
 cargo run -p ax-engine-server -- \
   --preset gemma4-e2b \
   --mlx-model-artifacts-dir /absolute/path/to/gemma-4-e2b-it-4bit \
-  --port 8080
+  --port 31418
 ```
 
 `--list-presets` prints the built-in preset names. Presets do not download
@@ -400,7 +400,7 @@ Hugging Face cache discovery is opt-in:
 cargo run -p ax-engine-server -- \
   --preset gemma4-e2b \
   --resolve-model-artifacts hf-cache \
-  --port 8080
+  --port 31418
 ```
 
 By default the resolver searches `HF_HUB_CACHE`, `HF_HOME/hub`, and
@@ -427,7 +427,7 @@ cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
   --llama-cli-path llama-cli \
   --llama-model-path /absolute/path/to/model.gguf \
-  --port 8080
+  --port 31418
 ```
 
 OpenAI-compatible delegated routes such as `vLLM` and `mistral.rs` are not part
@@ -439,7 +439,7 @@ cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
   --support-tier llama-cpp \
   --llama-server-url http://127.0.0.1:8081 \
-  --port 8080
+  --port 31418
 ```
 
 For the default route and the explicit llama.cpp route, choose exactly one
@@ -470,7 +470,7 @@ cargo run -p ax-engine-server -- \
   --model-id local-mlx-model \
   --support-tier mlx-lm-delegated \
   --mlx-lm-server-url http://127.0.0.1:8090 \
-  --port 8080
+  --port 31418
 ```
 
 `mlx_lm_delegated` is text-only and delegates model execution to an explicitly
@@ -547,7 +547,7 @@ python -m ax_engine.openai_server \
   --model-id qwen3_dense \
   --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
   --tokenizer /absolute/path/to/tokenizer.json \
-  --port 8080
+  --port 31418
 ```
 
 Install the optional server dependencies with `pip install 'ax-engine[openai]'`.
@@ -589,7 +589,7 @@ OpenAI-compatible AX endpoint, then opt in explicitly:
 
 ```text
 AX_OPENWEBUI_E2E=1 \
-AX_OPENWEBUI_AX_BASE_URL=http://127.0.0.1:8080/v1 \
+AX_OPENWEBUI_AX_BASE_URL=http://127.0.0.1:31418/v1 \
 AX_OPENWEBUI_MODEL_ID=qwen3_dense \
 bash scripts/check-openwebui-e2e.sh
 ```
@@ -624,7 +624,7 @@ To enable server or core diagnostics, set `AX_ENGINE_SERVER_LOG` or `RUST_LOG`
 before starting the server. For example:
 
 ```text
-AX_ENGINE_SERVER_LOG=ax_engine_server=info,ax_engine_core=debug cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
+AX_ENGINE_SERVER_LOG=ax_engine_server=info,ax_engine_core=debug cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 31418
 ```
 
 For manual throughput or latency measurements, leave tracing disabled, or use
@@ -639,13 +639,13 @@ timing.
 Inspect runtime metadata:
 
 ```text
-curl http://127.0.0.1:8080/v1/runtime
+curl http://127.0.0.1:31418/v1/runtime
 ```
 
 Run a preview generation request:
 
 ```text
-curl http://127.0.0.1:8080/v1/generate \
+curl http://127.0.0.1:31418/v1/generate \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
@@ -665,7 +665,7 @@ llama.cpp path, or an explicit llama.cpp server path, the same blocking endpoint
 accepts `input_text`:
 
 ```text
-curl http://127.0.0.1:8080/v1/generate \
+curl http://127.0.0.1:31418/v1/generate \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
@@ -679,7 +679,7 @@ also accepts pre-tokenized `input_tokens` and forwards them to
 `llama.cpp /completion` as token-array prompts:
 
 ```text
-curl http://127.0.0.1:8080/v1/generate \
+curl http://127.0.0.1:31418/v1/generate \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
@@ -693,7 +693,7 @@ endpoint and maps `llama.cpp /completion` SSE chunks back into the SDK-owned
 `request` / `step` / `response` event shape:
 
 ```text
-curl -N http://127.0.0.1:8080/v1/generate/stream \
+curl -N http://127.0.0.1:31418/v1/generate/stream \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
@@ -705,7 +705,7 @@ curl -N http://127.0.0.1:8080/v1/generate/stream \
 Stream preview lifecycle events over SSE:
 
 ```text
-curl -N http://127.0.0.1:8080/v1/generate/stream \
+curl -N http://127.0.0.1:31418/v1/generate/stream \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
@@ -718,7 +718,7 @@ To call the same llama.cpp-backed path through the preview
 OpenAI-compatible completions endpoint:
 
 ```text
-curl http://127.0.0.1:8080/v1/completions \
+curl http://127.0.0.1:31418/v1/completions \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
@@ -741,7 +741,7 @@ absolute positions in the already-expanded prompt tokens.
 To stream OpenAI-compatible completion chunks instead:
 
 ```text
-curl -N http://127.0.0.1:8080/v1/completions \
+curl -N http://127.0.0.1:31418/v1/completions \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
@@ -757,7 +757,7 @@ renders them with the configured model-family template, for example Qwen ChatML
 for Qwen model ids, before forwarding the text prompt to the delegated backend:
 
 ```text
-curl http://127.0.0.1:8080/v1/chat/completions \
+curl http://127.0.0.1:31418/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
@@ -784,7 +784,7 @@ tool path; delegated tools, persisted continuation, streaming Responses events,
 and MCP tools fail closed. Set `store=false`:
 
 ```text
-curl http://127.0.0.1:8080/v1/responses \
+curl http://127.0.0.1:31418/v1/responses \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
@@ -800,7 +800,7 @@ text batches, token arrays, or token-array batches and returns an OpenAI-shaped
 embedding response:
 
 ```text
-curl http://127.0.0.1:8080/v1/embeddings \
+curl http://127.0.0.1:31418/v1/embeddings \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_embedding",
@@ -825,7 +825,7 @@ diagnostics.
 Submit a request into the selected model's preview session:
 
 ```text
-curl http://127.0.0.1:8080/v1/requests \
+curl http://127.0.0.1:31418/v1/requests \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
@@ -838,15 +838,15 @@ Advance the default model's preview session by one engine step, or select a
 loaded model explicitly:
 
 ```text
-curl -X POST http://127.0.0.1:8080/v1/step
-curl -X POST 'http://127.0.0.1:8080/v1/step?model=gemma-4-12b-it'
+curl -X POST http://127.0.0.1:31418/v1/step
+curl -X POST 'http://127.0.0.1:31418/v1/step?model=gemma-4-12b-it'
 ```
 
 Inspect or cancel a submitted request:
 
 ```text
-curl http://127.0.0.1:8080/v1/requests/1
-curl -X POST http://127.0.0.1:8080/v1/requests/1/cancel
+curl http://127.0.0.1:31418/v1/requests/1
+curl -X POST http://127.0.0.1:31418/v1/requests/1/cancel
 ```
 
 The response includes:
@@ -943,7 +943,7 @@ stall unrelated traffic.
 
 ```text
 # Keep the current default; add a second allowlisted model
-curl -s http://127.0.0.1:8080/v1/model/load -H 'content-type: application/json' -d '{
+curl -s http://127.0.0.1:31418/v1/model/load -H 'content-type: application/json' -d '{
   "model_id": "gemma-4-12b-it",
   "model_path": "/absolute/path/to/gemma-4-12b-artifacts",
   "load_mode": "add",
@@ -951,7 +951,7 @@ curl -s http://127.0.0.1:8080/v1/model/load -H 'content-type: application/json' 
 }'
 # → { "model_id", "state":"loaded", "context_length", "load_policy", "load_mode", "default_model_id" }
 
-curl -s http://127.0.0.1:8080/v1/model/unload -H 'content-type: application/json' \
+curl -s http://127.0.0.1:31418/v1/model/unload -H 'content-type: application/json' \
   -d '{"model_id":"gemma-4-12b-it"}'
 # → { "model_id", "state":"unloaded", "default_model_id" }
 ```

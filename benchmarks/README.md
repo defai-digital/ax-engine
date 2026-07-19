@@ -162,7 +162,7 @@ For user-visible serving latency and request-mix evidence, use:
 
 ```text
 python3 scripts/bench_ax_serving.py \
-  --base-url http://127.0.0.1:8080 \
+  --base-url http://127.0.0.1:31418 \
   --model-id qwen3_dense \
   --corpus benchmarks/corpora/serving/smoke.jsonl \
   --input-kind tokens \
@@ -183,7 +183,7 @@ shared-prefix token corpus. The preferred path is the soak runner:
 
 ```text
 python3 scripts/run_disk_prefix_serving_soak.py \
-  --base-url http://127.0.0.1:8080 \
+  --base-url http://127.0.0.1:31418 \
   --model-id qwen3_dense \
   --run-id <run-id>
 ```

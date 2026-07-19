@@ -26,8 +26,8 @@ lower-level sidecar packaging/provenance tools.
 Use `serve` as the normal local-server entrypoint:
 
 ```text
-ax-engine serve /path/to/mlx-model --port 8080
-ax-engine serve qwen36-35b --download --port 8080
+ax-engine serve /path/to/mlx-model --port 31418
+ax-engine serve qwen36-35b --download --port 31418
 ax-engine serve qwen36-35b --dry-run --json
 ax-engine serve qwen36-35b -- --max-batch-tokens 1024
 ```
@@ -397,7 +397,7 @@ logprob data when present. Use `--json` for the full structured payload.
 Start the preview server with the repo-owned MLX runtime:
 
 ```text
-cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
+cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 31418
 ```
 
 For comparable repo-owned MLX inference numbers, use

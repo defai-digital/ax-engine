@@ -853,7 +853,7 @@ def main(argv: list[str] | None = None) -> int:
     from pathlib import Path
 
     parser = argparse.ArgumentParser(description="AX Engine product-surface probes")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--base-url", default="http://127.0.0.1:31418")
     parser.add_argument("--model", required=True)
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--json-output", default=None)
@@ -894,4 +894,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

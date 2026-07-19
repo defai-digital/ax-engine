@@ -15,7 +15,7 @@ Example::
     from ax_engine.langchain import AXEngineChatModel
     from langchain_core.messages import HumanMessage
 
-    chat = AXEngineChatModel(base_url="http://127.0.0.1:8080", max_tokens=256)
+    chat = AXEngineChatModel(base_url="http://127.0.0.1:31418", max_tokens=256)
     response = chat.invoke([HumanMessage(content="Hello!")])
     print(response.content)
 """
@@ -50,7 +50,7 @@ except ImportError as _e:
         "ax_engine.langchain requires langchain-core. Install it with: pip install langchain-core"
     ) from _e
 
-_DEFAULT_BASE_URL = "http://127.0.0.1:8080"
+_DEFAULT_BASE_URL = "http://127.0.0.1:31418"
 
 
 def _message_to_openai(message: BaseMessage) -> dict:
@@ -182,7 +182,7 @@ class AXEngineChatModel(BaseChatModel):
     Parameters
     ----------
     base_url : str
-        Base URL of the ax-engine-server instance (default ``http://127.0.0.1:8080``).
+        Base URL of the ax-engine-server instance (default ``http://127.0.0.1:31418``).
     model : str, optional
         Model identifier forwarded in the request body.
     max_tokens : int, optional
@@ -292,7 +292,7 @@ class AXEngineLLM(LLM):
     Parameters
     ----------
     base_url : str
-        Base URL of the ax-engine-server instance (default ``http://127.0.0.1:8080``).
+        Base URL of the ax-engine-server instance (default ``http://127.0.0.1:31418``).
     model : str, optional
     max_tokens : int, optional
     temperature : float, optional

@@ -3,7 +3,7 @@
  *
  * Requires:
  *   npm install @ax-engine/sdk   (or: npm install ./sdk/javascript)
- *   ax-engine-server running on http://127.0.0.1:8080
+ *   ax-engine-server running on http://127.0.0.1:31418
  *
  * Run:
  *   node examples/javascript/streaming.js
@@ -11,7 +11,7 @@
 
 import AxEngineClient from "@ax-engine/sdk";
 
-const client = new AxEngineClient({ baseUrl: "http://127.0.0.1:8080" });
+const client = new AxEngineClient({ baseUrl: "http://127.0.0.1:31418" });
 
 // ── Streaming chat completion (OpenAI-compat) ─────────────────────────────────
 console.log("--- stream_chat_completion ---");

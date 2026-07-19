@@ -74,8 +74,8 @@ ax-engine download gpt-oss-20b --json
 Download and serve in one command:
 
 ```text
-ax-engine serve qwen36-35b --download --port 8080
-ax-engine serve llama3.3-70b --download --port 8080
+ax-engine serve qwen36-35b --download --port 31418
+ax-engine serve llama3.3-70b --download --port 31418
 ```
 
 Raw `mlx-community` repo IDs are also accepted:
@@ -200,7 +200,7 @@ AX Engine can auto-discover them after manifest generation:
 ```text
 python -m mlx_lm.generate --model mlx-community/Qwen3-4B-4bit --prompt "x" --max-tokens 1
 ax-engine-bench generate-manifest ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
-ax-engine serve ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash> --port 8080
+ax-engine serve ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash> --port 31418
 ```
 
 ### Raw Hugging Face Checkpoints
@@ -211,7 +211,7 @@ Raw checkpoints need sanitization before AX Engine can load them:
 pip install mlx-lm
 mlx_lm.convert --hf-path <org/model> --mlx-path /path/to/dest -q --q-bits 4
 ax-engine-bench generate-manifest /path/to/dest
-ax-engine serve /path/to/dest --port 8080
+ax-engine serve /path/to/dest --port 31418
 ```
 
 ### Manifest Generation

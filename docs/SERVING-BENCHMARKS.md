@@ -42,7 +42,7 @@ Start an AX server first, then run:
 
 ```text
 python3 scripts/bench_ax_serving.py \
-  --base-url http://127.0.0.1:8080 \
+  --base-url http://127.0.0.1:31418 \
   --model-id qwen3_dense \
   --corpus benchmarks/corpora/serving/smoke.jsonl \
   --input-kind tokens \
@@ -80,7 +80,7 @@ addition to latency and corpus-shape gates:
 
 ```text
 python3 scripts/run_disk_prefix_serving_soak.py \
-  --base-url http://127.0.0.1:8080 \
+  --base-url http://127.0.0.1:31418 \
   --model-id qwen3_dense \
   --run-id <run-id>
 ```
@@ -118,10 +118,10 @@ For example:
 
 ```text
 AX_MLX_PREFIX_CACHE_DIR=/tmp/ax-prefix-cache-soak \
-  cargo run -p ax-engine-server -- --host 127.0.0.1 --port 8080
+  cargo run -p ax-engine-server -- --host 127.0.0.1 --port 31418
 
 python3 scripts/bench_ax_serving.py \
-  --base-url http://127.0.0.1:8080 \
+  --base-url http://127.0.0.1:31418 \
   --model-id qwen3_dense \
   --corpus benchmarks/results/serving/disk-prefix-cache-soak-corpus.jsonl \
   --input-kind tokens \

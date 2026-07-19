@@ -33,13 +33,13 @@ Current preview endpoints:
 Example:
 
 ```bash
-cargo run -p ax-engine-server -- --model-id qwen3 --port 8080
+cargo run -p ax-engine-server -- --model-id qwen3 --port 31418
 
 bash scripts/check-server-preview.sh
 
-curl http://127.0.0.1:8080/v1/runtime
+curl http://127.0.0.1:31418/v1/runtime
 
-curl http://127.0.0.1:8080/v1/requests \
+curl http://127.0.0.1:31418/v1/requests \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3",
@@ -47,11 +47,11 @@ curl http://127.0.0.1:8080/v1/requests \
     "max_output_tokens": 4
   }'
 
-curl -X POST http://127.0.0.1:8080/v1/step
+curl -X POST http://127.0.0.1:31418/v1/step
 
-curl http://127.0.0.1:8080/v1/requests/1
+curl http://127.0.0.1:31418/v1/requests/1
 
-curl -N http://127.0.0.1:8080/v1/generate/stream \
+curl -N http://127.0.0.1:31418/v1/generate/stream \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3",
@@ -59,7 +59,7 @@ curl -N http://127.0.0.1:8080/v1/generate/stream \
     "max_output_tokens": 4
   }'
 
-curl http://127.0.0.1:8080/v1/generate \
+curl http://127.0.0.1:31418/v1/generate \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3",
@@ -77,9 +77,9 @@ cargo run -p ax-engine-server -- \
   --model-id qwen3 \
   --support-tier llama-cpp \
   --llama-server-url http://127.0.0.1:8081 \
-  --port 8080
+  --port 31418
 
-curl http://127.0.0.1:8080/v1/generate \
+curl http://127.0.0.1:31418/v1/generate \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3",
@@ -92,9 +92,9 @@ cargo run -p ax-engine-server -- \
   --support-tier llama-cpp \
   --llama-cli-path llama-cli \
   --llama-model-path /absolute/path/to/model.gguf \
-  --port 8080
+  --port 31418
 
-curl http://127.0.0.1:8080/v1/generate \
+curl http://127.0.0.1:31418/v1/generate \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3",

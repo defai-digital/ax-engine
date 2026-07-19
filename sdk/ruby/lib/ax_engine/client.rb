@@ -13,7 +13,7 @@ module AxEngine
   #   )
   #   puts resp.dig("choices", 0, "message", "content")
   class Client
-    DEFAULT_BASE_URL = "http://127.0.0.1:8080"
+    DEFAULT_BASE_URL = "http://127.0.0.1:31418"
 
     # @param base_url [String]
     # @param headers  [Hash]  default headers added to every request

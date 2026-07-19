@@ -145,7 +145,7 @@ Fixtures are **original** (`embedding_bank.py`) — MTEB-shaped, not MTEB data.
 ```bash
 # Standard tier (default)
 python3 qa/embedding_probes.py \
-  --base-url http://127.0.0.1:8080 \
+  --base-url http://127.0.0.1:31418 \
   --model qwen3-embedding \
   --tokenizer /path/to/tokenizer.json \
   --tier standard \
@@ -164,7 +164,7 @@ python3 scripts/verify_embedding_models.py --model-dir /path/to/snapshot
 ```bash
 # Against an already-running server
 python3 qa/surface_probes.py \
-  --base-url http://127.0.0.1:8080 \
+  --base-url http://127.0.0.1:31418 \
   --model my-model \
   --json-output /tmp/surface.json
 ```
@@ -184,7 +184,7 @@ python3 qa/surface_probes.py \
 ```bash
 # Against an already-running vision model
 python3 qa/multimodal_probes.py \
-  --base-url http://127.0.0.1:8080 \
+  --base-url http://127.0.0.1:31418 \
   --model gemma-4-12B-it \
   --tier smoke \
   --json-output /tmp/mm.json
@@ -234,7 +234,7 @@ Default: stratified sample of **12** from a larger bank with seed replay.
 ```bash
 python3 qa/run_qa.py --list-categories
 python3 qa/run_qa.py --validate-bank
-python3 qa/run_qa.py --base-url http://127.0.0.1:8080 --model m --mode direct --sample 12 --seed 42
+python3 qa/run_qa.py --base-url http://127.0.0.1:31418 --model m --mode direct --sample 12 --seed 42
 ```
 
 ### Exit codes (`run_qa.py`)

@@ -3,14 +3,14 @@ LangChain chat example using AX Engine.
 
 Requires:
     pip install langchain-core
-    ax-engine-server running on http://127.0.0.1:8080
+    ax-engine-server running on http://127.0.0.1:31418
 """
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from ax_engine.langchain import AXEngineChatModel
 
 chat = AXEngineChatModel(
-    base_url="http://127.0.0.1:8080",
+    base_url="http://127.0.0.1:31418",
     max_tokens=256,
     temperature=0.7,
 )

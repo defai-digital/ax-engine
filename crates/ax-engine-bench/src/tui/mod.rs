@@ -455,9 +455,9 @@ impl App {
             serve_focus: ServeFocus::List,
             serve_idx: 0,
             host: "127.0.0.1".into(),
-            port: "8080".into(),
+            port: "31418".into(),
             host_cursor: "127.0.0.1".chars().count(),
-            port_cursor: "8080".chars().count(),
+            port_cursor: "31418".chars().count(),
             server: None,
             server_url: None,
             serve_log_scroll: LogScroll::default(),
@@ -1512,7 +1512,7 @@ impl App {
             self.host.trim().to_string()
         };
         let port = if self.port.trim().is_empty() {
-            "8080".to_string()
+            "31418".to_string()
         } else {
             self.port.trim().to_string()
         };

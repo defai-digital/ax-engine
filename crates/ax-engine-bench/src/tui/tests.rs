@@ -322,7 +322,7 @@ fn log_parser_finds_download_output_paths() {
     assert_eq!(
         parse_output_path_from_log(&[
             "Next:".to_string(),
-            "  ax-engine serve /tmp/from-next --port 8080".to_string(),
+            "  ax-engine serve /tmp/from-next --port 31418".to_string(),
         ])
         .as_deref(),
         Some(Path::new("/tmp/from-next"))
@@ -1452,6 +1452,7 @@ fn serve_screen_renders_fields() {
 #[test]
 fn port_validation_rejects_bad_values_only() {
     let mut app = new_app();
+    assert_eq!(app.port, "31418");
     assert!(app.port_error().is_none(), "default port is valid");
     app.port = "".into();
     assert!(app.port_error().is_none(), "empty falls back to default");

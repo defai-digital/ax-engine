@@ -87,7 +87,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                     "--mlx-model-artifacts-dir",
                     str(model_dir),
                     "--port",
-                    "8080",
+                    "31418",
                 ],
             )
 

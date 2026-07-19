@@ -495,7 +495,7 @@ def _print_manifest_hint(dest: Path) -> None:
         "or (from source):\n"
         f"  cargo run -p ax-engine-core --bin generate-manifest -- {dest}\n"
         "\nThen start the server:\n"
-        f"  ax-engine-server --mlx --mlx-model-artifacts-dir {dest} --port 8080"
+        f"  ax-engine-server --mlx --mlx-model-artifacts-dir {dest} --port 31418"
     )
 
 
@@ -549,7 +549,7 @@ def _server_command(dest: Path) -> list[str]:
         "--mlx-model-artifacts-dir",
         str(dest),
         "--port",
-        "8080",
+        "31418",
     ]
 
 
@@ -675,7 +675,7 @@ def main() -> int:
             _print_json(summary)
     else:
         print(f"\nReady - model artifacts at: {dest}")
-        print(f"  ax-engine-server --mlx --mlx-model-artifacts-dir {dest} --port 8080")
+        print(f"  ax-engine-server --mlx --mlx-model-artifacts-dir {dest} --port 31418")
     return 0
 
 

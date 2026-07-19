@@ -477,7 +477,7 @@ def prepare(
         "(AX_MLX_GEMMA4_ASSISTANT_MTP=1 is the default).",
         flush=True,
     )
-    print(f"Next:\n  ax-engine serve {out_dir} --port 8080", flush=True)
+    print(f"Next:\n  ax-engine serve {out_dir} --port 31418", flush=True)
     return out_dir
 
 

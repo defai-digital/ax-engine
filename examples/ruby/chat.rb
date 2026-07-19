@@ -1,6 +1,6 @@
 # Example: chat completion with the AX Engine Ruby SDK.
 #
-# Requires a running ax-engine-server on http://127.0.0.1:8080.
+# Requires a running ax-engine-server on http://127.0.0.1:31418.
 #
 # Run:
 #   ruby examples/ruby/chat.rb

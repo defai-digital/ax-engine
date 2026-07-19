@@ -36,7 +36,7 @@ gem install ax-engine-sdk
 ```ruby
 require "ax_engine"
 
-client = AxEngine::Client.new   # default: http://127.0.0.1:8080
+client = AxEngine::Client.new   # default: http://127.0.0.1:31418
 
 resp = client.chat_completion(
   messages: [{ role: "user", content: "Hello!" }],
@@ -49,7 +49,7 @@ puts resp.dig("choices", 0, "message", "content")
 
 ```ruby
 client = AxEngine::Client.new(
-  base_url: "http://127.0.0.1:8080",   # default
+  base_url: "http://127.0.0.1:31418",   # default
   headers:  { "Authorization" => "Bearer token" },
   timeout:  300                          # seconds, default 300
 )
@@ -156,7 +156,7 @@ internally — no extra HTTP gems needed.
 require "ax_engine/langchain"
 
 chat = AxEngine::Langchain::ChatModel.new(
-  base_url:    "http://127.0.0.1:8080",
+  base_url:    "http://127.0.0.1:31418",
   max_tokens:  256,
   temperature: 0.7,
 )
@@ -175,7 +175,7 @@ puts
 Text LLM:
 
 ```ruby
-llm = AxEngine::Langchain::LLM.new(base_url: "http://127.0.0.1:8080", max_tokens: 128)
+llm = AxEngine::Langchain::LLM.new(base_url: "http://127.0.0.1:31418", max_tokens: 128)
 puts llm.complete(prompt: "Once upon a time").completion
 ```
 
@@ -191,7 +191,7 @@ Both classes accept: `base_url`, `headers`, `timeout`, `max_tokens`,
 ## Running Examples
 
 ```bash
-# Requires ax-engine-server on http://127.0.0.1:8080
+# Requires ax-engine-server on http://127.0.0.1:31418
 ruby examples/ruby/chat.rb
 ruby examples/ruby/langchain_chat.rb  # requires: gem install langchainrb
 ```

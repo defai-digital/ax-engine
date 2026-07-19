@@ -260,7 +260,7 @@ checkpoints are already converted. Raw Hugging Face checkpoints need
 ax-engine tui                          # interactive: pick, download, serve, chat
 ax-engine download --list              # list aliases
 ax-engine download qwen36-35b          # download a direct alias
-ax-engine serve qwen36-35b --download --port 8080
+ax-engine serve qwen36-35b --download --port 31418
 ax-engine download-mtp gemma-4-12b-4bit
 ```
 
@@ -302,7 +302,7 @@ Raw checkpoints need sanitization before AX Engine can load them. Use
 pip install mlx-lm
 mlx_lm.convert --hf-path <org/model> --mlx-path /path/to/dest -q --q-bits 4
 ax-engine-bench generate-manifest /path/to/dest
-ax-engine-server --mlx --mlx-model-artifacts-dir /path/to/dest --port 8080
+ax-engine-server --mlx --mlx-model-artifacts-dir /path/to/dest --port 31418
 ```
 
 ### Manifest generation
@@ -493,7 +493,7 @@ bash scripts/check-bench-preview.sh
 To start the preview local server:
 
 ```text
-cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
+cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 31418
 ```
 
 To install the checked-in JavaScript client from this repository:
@@ -518,7 +518,7 @@ bash scripts/check-server-preview.sh
 To query runtime metadata from that server:
 
 ```text
-curl http://127.0.0.1:8080/v1/runtime
+curl http://127.0.0.1:31418/v1/runtime
 ```
 
 That runtime payload now includes backend-resolution metadata plus host and
@@ -527,15 +527,15 @@ Metal-toolchain diagnostics.
 To submit and inspect a request through the shared preview server session:
 
 ```text
-curl http://127.0.0.1:8080/v1/requests -H 'content-type: application/json' -d '{"model":"qwen3_dense","input_tokens":[1,2,3],"max_output_tokens":2}'
-curl -X POST http://127.0.0.1:8080/v1/step
-curl http://127.0.0.1:8080/v1/requests/1
+curl http://127.0.0.1:31418/v1/requests -H 'content-type: application/json' -d '{"model":"qwen3_dense","input_tokens":[1,2,3],"max_output_tokens":2}'
+curl -X POST http://127.0.0.1:31418/v1/step
+curl http://127.0.0.1:31418/v1/requests/1
 ```
 
 To stream preview lifecycle events from the local server:
 
 ```text
-curl -N http://127.0.0.1:8080/v1/generate/stream -H 'content-type: application/json' -d '{"model":"qwen3_dense","input_tokens":[1,2,3],"max_output_tokens":2}'
+curl -N http://127.0.0.1:31418/v1/generate/stream -H 'content-type: application/json' -d '{"model":"qwen3_dense","input_tokens":[1,2,3],"max_output_tokens":2}'
 ```
 
 To compile the current workspace:

@@ -9,6 +9,7 @@ mod session;
 pub use presets::{ServerPreset, render_presets};
 
 pub const API_KEY_ENV: &str = "AX_ENGINE_API_KEY";
+pub const DEFAULT_INFERENCE_PORT: u16 = 31_418;
 const MODEL_ARTIFACTS_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 const DEFAULT_MODEL_ID: &str = "qwen3";
 
@@ -63,7 +64,7 @@ pub struct ServerArgs {
     #[arg(long = "host", default_value = "127.0.0.1")]
     pub host: String,
 
-    #[arg(long = "port", default_value_t = 8080)]
+    #[arg(long = "port", default_value_t = DEFAULT_INFERENCE_PORT)]
     pub port: u16,
 
     #[arg(long = "model-id", default_value = "", hide_default_value = true)]

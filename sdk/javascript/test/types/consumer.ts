@@ -8,7 +8,7 @@ import AxEngineClient, {
   type StreamEvent,
 } from "../../index.js";
 
-export async function smokeTypes(client = new AxEngineClient({ baseUrl: "http://127.0.0.1:8080" })) {
+export async function smokeTypes(client = new AxEngineClient({ baseUrl: "http://127.0.0.1:31418" })) {
   const generateRequest: PreviewGenerateRequest = {
     input_text: "Hello from TypeScript",
     max_output_tokens: 16,

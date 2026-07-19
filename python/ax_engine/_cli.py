@@ -1259,9 +1259,9 @@ def _user_doctor_report(bench_report: dict) -> dict:
         else:
             next_actions.append("Pass --mlx-model-artifacts-dir <model-dir> to inspect a model.")
     elif model_selected:
-        next_actions.append(f"ax-engine serve {model_path or '<model-dir>'} --port 8080")
+        next_actions.append(f"ax-engine serve {model_path or '<model-dir>'} --port 31418")
     else:
-        next_actions.append("ax-engine serve qwen36-35b --download --port 8080")
+        next_actions.append("ax-engine serve qwen36-35b --download --port 31418")
         next_actions.append("ax-engine models list")
 
     host_detail = (
@@ -1484,7 +1484,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser("serve", help="Launch ax-engine-server for a model")
     serve_parser.add_argument("model", help="Server preset alias or local model artifact directory")
     serve_parser.add_argument("--host", default="127.0.0.1")
-    serve_parser.add_argument("--port", type=int, default=8080)
+    serve_parser.add_argument("--port", type=int, default=31418)
     serve_parser.add_argument("--hf-cache-root", default=None)
     serve_parser.add_argument(
         "--download",

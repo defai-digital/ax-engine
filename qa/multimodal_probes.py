@@ -351,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="AX Engine multimodal QA probes")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--base-url", default="http://127.0.0.1:31418")
     parser.add_argument("--model", required=True)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument(

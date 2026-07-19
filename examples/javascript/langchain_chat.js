@@ -4,7 +4,7 @@
  * Requires:
  *   npm install @langchain/core
  *   npm install @ax-engine/sdk   (or: npm install ./sdk/javascript)
- *   ax-engine-server running on http://127.0.0.1:8080
+ *   ax-engine-server running on http://127.0.0.1:31418
  *
  * Run:
  *   node examples/javascript/langchain_chat.js
@@ -14,7 +14,7 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ChatAXEngine } from "@ax-engine/sdk/langchain";
 
 const chat = new ChatAXEngine({
-  baseUrl: "http://127.0.0.1:8080",
+  baseUrl: "http://127.0.0.1:31418",
   maxTokens: 256,
   temperature: 0.7,
 });

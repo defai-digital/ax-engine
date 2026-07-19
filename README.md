@@ -52,7 +52,7 @@ ax-engine tui
 ax-engine download-mtp gemma-4-12b-4bit
 # run the `ax-engine serve ...` command printed by the downloader
 
-curl http://127.0.0.1:8080/v1/chat/completions \
+curl http://127.0.0.1:31418/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"model":"gemma-4-12b-it","messages":[{"role":"user","content":"Say hello in one sentence."}],"max_tokens":64}'
 ```
@@ -60,7 +60,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 **Option C — direct model alias** (download + serve):
 
 ```bash
-ax-engine serve qwen36-35b --download --port 8080
+ax-engine serve qwen36-35b --download --port 31418
 ```
 
 Homebrew, source builds, and troubleshooting:
@@ -94,15 +94,15 @@ scheduler while a process arbiter fair-rotates Metal turns (no fused
 cross-model batch).
 
 ```bash
-# After a first model is already serving on :8080
-curl -s http://127.0.0.1:8080/v1/model/load -H 'content-type: application/json' -d '{
+# After a first model is already serving on :31418
+curl -s http://127.0.0.1:31418/v1/model/load -H 'content-type: application/json' -d '{
   "model_id": "gemma-4-12b-it",
   "model_path": "/path/to/gemma-4-12b-artifacts",
   "load_mode": "add",
   "make_default": false
 }'
 
-curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/json' -d '{
+curl -s http://127.0.0.1:31418/v1/chat/completions -H 'content-type: application/json' -d '{
   "model": "gemma-4-12b-it",
   "messages": [{"role": "user", "content": "Hi"}],
   "max_tokens": 32
@@ -237,7 +237,7 @@ in-process session API.
 `ax-engine serve` is the normal entrypoint (see Quick Start). Inspect the route:
 
 ```bash
-curl http://127.0.0.1:8080/v1/runtime
+curl http://127.0.0.1:31418/v1/runtime
 ```
 
 Auth, streaming, embeddings, Ollama-shaped routes, and delegated backends:

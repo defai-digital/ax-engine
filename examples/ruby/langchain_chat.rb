@@ -2,7 +2,7 @@
 #
 # Requires:
 #   gem install langchainrb
-#   ax-engine-server running on http://127.0.0.1:8080
+#   ax-engine-server running on http://127.0.0.1:31418
 #
 # Run:
 #   ruby examples/ruby/langchain_chat.rb
@@ -11,7 +11,7 @@ $LOAD_PATH.unshift File.expand_path("../../sdk/ruby/lib", __dir__)
 require "ax_engine/langchain"
 
 chat = AxEngine::Langchain::ChatModel.new(
-  base_url:    "http://127.0.0.1:8080",
+  base_url:    "http://127.0.0.1:31418",
   max_tokens:  256,
   temperature: 0.7,
 )
