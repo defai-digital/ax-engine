@@ -9,6 +9,7 @@ pub(crate) mod json_schema;
 pub(crate) mod reasoning_stream;
 pub(crate) mod requests;
 pub(crate) mod responses;
+pub(crate) mod responses_api;
 pub(crate) mod schema;
 pub(crate) mod sse;
 pub(crate) mod stop;

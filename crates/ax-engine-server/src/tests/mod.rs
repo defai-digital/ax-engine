@@ -15,5 +15,6 @@ mod openai_chat;
 mod openai_compat;
 mod openai_completions;
 mod openai_responses;
+mod openai_responses_api;
 mod openai_streaming;
 mod openai_tool_names;

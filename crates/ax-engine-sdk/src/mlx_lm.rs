@@ -162,7 +162,14 @@ impl MlxLmStreamHandle {
                 }
             })?;
 
-            let choice = first_choice_for_stream(&self.endpoint, chunk.choices)?;
+            let has_usage = chunk.usage.is_some();
+            let choice = chunk.choices.into_iter().next();
+            if choice.is_none() && !has_usage {
+                return Err(MlxLmBackendError::MissingStreamChoice {
+                    endpoint: self.endpoint.clone(),
+                });
+            }
+            let choice = choice.unwrap_or_default();
 
             return Ok(Some(MlxLmStreamChunkResult {
                 text: choice
@@ -314,15 +321,6 @@ where
     })
 }
 
-fn first_choice_for_stream<T>(endpoint: &str, choices: Vec<T>) -> Result<T, MlxLmBackendError> {
-    choices
-        .into_iter()
-        .next()
-        .ok_or_else(|| MlxLmBackendError::MissingStreamChoice {
-            endpoint: endpoint.to_string(),
-        })
-}
-
 fn first_choice_for_completion<T>(endpoint: &str, choices: Vec<T>) -> Result<T, MlxLmBackendError> {
     choices
         .into_iter()
@@ -463,6 +461,9 @@ fn build_mlx_lm_completion_request<'a>(
         seed: request.sampling.seed,
         stream,
         stop: request.stop_sequences.clone(),
+        stream_options: stream.then_some(MlxLmStreamOptions {
+            include_usage: true,
+        }),
     }
 }
 
@@ -495,6 +496,9 @@ fn build_mlx_lm_chat_completion_request(
         stop: request.stop_sequences.clone(),
         metadata: request.metadata.as_deref(),
         chat_template_kwargs: request.chat_template_kwargs.as_ref(),
+        stream_options: stream.then_some(MlxLmStreamOptions {
+            include_usage: true,
+        }),
     }
 }
 
@@ -549,6 +553,8 @@ struct MlxLmCompletionRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<MlxLmStreamOptions>,
 }
 
 #[derive(Debug, Serialize)]
@@ -573,6 +579,13 @@ struct MlxLmChatCompletionRequest<'a> {
     metadata: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     chat_template_kwargs: Option<&'a serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<MlxLmStreamOptions>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct MlxLmStreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]

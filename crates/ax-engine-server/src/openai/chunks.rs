@@ -4,8 +4,25 @@ use crate::openai::responses::{openai_finish_reason, unix_timestamp_secs};
 use crate::openai::schema::{
     OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatDelta,
     OpenAiCompletionChunk, OpenAiCompletionChunkChoice, OpenAiFunctionCallDelta, OpenAiStreamKind,
-    OpenAiToolCall, OpenAiToolCallDelta,
+    OpenAiStreamUsageChunk, OpenAiToolCall, OpenAiToolCallDelta, OpenAiUsage,
 };
+
+pub(crate) fn stream_usage_chunk(
+    request_id: u64,
+    model: String,
+    stream_kind: OpenAiStreamKind,
+    usage: OpenAiUsage,
+) -> OpenAiStreamUsageChunk {
+    OpenAiStreamUsageChunk {
+        id: stream_kind.response_id(request_id),
+        object: stream_kind.stream_chunk_object(),
+        created: unix_timestamp_secs(),
+        model,
+        system_fingerprint: None,
+        choices: Vec::new(),
+        usage,
+    }
+}
 
 pub(crate) fn completion_delta_chunk(
     request_id: u64,

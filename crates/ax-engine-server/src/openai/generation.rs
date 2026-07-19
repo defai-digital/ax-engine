@@ -46,7 +46,13 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
         if response_options.parse_tool_calls {
             return Err(streaming_delegated_tool_calls_error());
         }
-        return stream_openai_llama_cpp_chat_request(state, live, chat_request).await;
+        return stream_openai_llama_cpp_chat_request(
+            state,
+            live,
+            chat_request,
+            response_options.include_stream_usage,
+        )
+        .await;
     }
 
     let request_id = state.allocate_request_id();
@@ -82,7 +88,13 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         if response_options.parse_tool_calls {
             return Err(streaming_delegated_tool_calls_error());
         }
-        return stream_openai_mlx_lm_chat_request(state, live, chat_request).await;
+        return stream_openai_mlx_lm_chat_request(
+            state,
+            live,
+            chat_request,
+            response_options.include_stream_usage,
+        )
+        .await;
     }
 
     let request_id = state.allocate_request_id();
@@ -192,6 +204,7 @@ async fn stream_buffered_openai_tool_chat_response(
         response_options.include_reasoning,
     )?;
     validate_openai_response_format(&response, &response_options)?;
+    let include_stream_usage = response_options.include_stream_usage;
 
     let chat_response = openai_chat_completion_response(
         &response,
@@ -251,6 +264,15 @@ async fn stream_buffered_openai_tool_chat_response(
         chat_final_chunk(request_id, chat_response.model, response.finish_reason)
     };
     send_openai_chunk_async(&tx, &final_chunk).await;
+    if include_stream_usage && let Some(usage) = crate::openai::responses::openai_usage(&response) {
+        let usage_chunk = crate::openai::chunks::stream_usage_chunk(
+            request_id,
+            response.model_id.clone(),
+            OpenAiStreamKind::ChatCompletion,
+            usage,
+        );
+        send_openai_chunk_async(&tx, &usage_chunk).await;
+    }
     let _ = tx.send(Ok(Event::default().data("[DONE]"))).await;
     drop(tx);
 

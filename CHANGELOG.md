@@ -9,6 +9,20 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- `mlx_lm.server` migration surface: `/chat/completions` aliases
+  `/v1/chat/completions`, `max_completion_tokens` takes precedence over
+  `max_tokens`, and `stream_options.include_usage` emits the OpenAI-standard
+  final empty-`choices` usage chunk (including delegated mlx-lm streams whose
+  usage arrives after the terminal choice).
+- Stateless `POST /v1/responses` subset for text/message input, function-call
+  history, native model-family function tools, structured text formats,
+  reasoning, and OpenAI-shaped output/usage. Delegated tools, persisted state,
+  streaming Responses events, hosted prompts, background mode, built-in tools,
+  and MCP fail closed.
+- `/v1/embeddings` accepts string and string-batch input using the loaded
+  model tokenizer (including configured EOS), in addition to token arrays.
+  Unsupported base64 encoding and dimension projection fail closed.
+
 - Multi-model serving: `POST /v1/model/load` accepts `load_mode=add` to keep
   multiple models resident (scoped to Qwen 3.5 9B, Qwen 3.6 27B/35B, and Gemma 4
   12B/26B/31B), with per-request `model` routing across the OpenAI, gRPC,

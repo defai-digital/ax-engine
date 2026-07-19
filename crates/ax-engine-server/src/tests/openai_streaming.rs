@@ -237,3 +237,66 @@ async fn openai_chat_stream_endpoint_emits_sse_for_mlx_lm_delegated() {
         Some("stop")
     );
 }
+
+#[tokio::test]
+async fn mlx_lm_chat_stream_emits_requested_usage_only_chunk() {
+    let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
+        1,
+        vec![
+            json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "hello"},
+                    "finish_reason": null
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop"
+                }]
+            }),
+            json!({
+                "choices": [],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}
+            }),
+        ],
+        |payload| {
+            assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
+            assert_eq!(
+                payload.get("stream_options"),
+                Some(&json!({"include_usage": true}))
+            );
+        },
+    );
+    let app = build_router(mlx_lm_delegated_state(server_url));
+    let request = json!({
+        "messages": [{"role": "user", "content": "hello usage"}],
+        "stream": true,
+        "stream_options": {"include_usage": true}
+    });
+    let (status, content_type, body) = text_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&request)))
+            .expect("request should build"),
+    )
+    .await;
+    server_handle
+        .join()
+        .expect("mlx-lm server thread should finish");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.starts_with("text/event-stream"));
+    let payloads = parse_openai_sse_payloads(&body);
+    let usage = payloads.last().expect("usage chunk should be last");
+    assert_eq!(usage["choices"], json!([]));
+    assert_eq!(usage["usage"]["prompt_tokens"], 4);
+    assert_eq!(usage["usage"]["completion_tokens"], 1);
+    assert_eq!(usage["usage"]["total_tokens"], 5);
+    assert!(body.contains("data: [DONE]"));
+}

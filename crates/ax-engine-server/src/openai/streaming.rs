@@ -22,12 +22,12 @@ use crate::generation::streaming::{
 use crate::openai::chunks::{
     chat_delta_chunk, chat_final_chunk, chat_reasoning_delta_chunk,
     chat_single_tool_call_delta_chunk, chat_tool_calls_final_chunk, completion_delta_chunk,
-    completion_final_chunk, next_chat_delta_role,
+    completion_final_chunk, next_chat_delta_role, stream_usage_chunk,
 };
 use crate::openai::reasoning_stream::ThinkTagScanner;
 use crate::openai::requests::OpenAiResponseOptions;
-use crate::openai::responses::finish_reason_from_llama_cpp_chat;
-use crate::openai::schema::OpenAiStreamKind;
+use crate::openai::responses::{finish_reason_from_llama_cpp_chat, openai_usage};
+use crate::openai::schema::{OpenAiStreamKind, OpenAiUsage};
 use crate::openai::sse::send_openai_stream_chunk;
 use crate::openai::stop::StopSequenceScanner;
 use crate::openai::tool_stream::{ToolCallStreamScanner, ToolScanEvent};
@@ -48,6 +48,7 @@ pub(crate) async fn stream_openai_request(
         tool_scanner: incremental_tool_chat
             .then(|| ToolCallStreamScanner::new(response_options.tool_contract.clone())),
         stop_scanner: StopSequenceScanner::new(response_options.client_stop_sequences.clone()),
+        include_usage: response_options.include_stream_usage,
     };
     let stream_context = build_stream_state(&state, &live, request).await?;
     let tokenizer = native_mlx_openai_stream_tokenizer(&live)?;
@@ -73,6 +74,7 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     state: AppState,
     live: LiveState,
     request: MlxLmChatGenerateRequest,
+    include_usage: bool,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let permit = state.try_admit(&live).map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
@@ -91,7 +93,14 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
         "openai mlx_lm chat stream",
         permit,
         move |tx, cancel| {
-            drive_openai_mlx_lm_chat_stream(tx, &cancel, request_id, model_id, stream);
+            drive_openai_mlx_lm_chat_stream(
+                tx,
+                &cancel,
+                request_id,
+                model_id,
+                stream,
+                include_usage,
+            );
         },
     );
 
@@ -102,6 +111,7 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     state: AppState,
     live: LiveState,
     request: LlamaCppChatGenerateRequest,
+    include_usage: bool,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let permit = state.try_admit(&live).map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
@@ -120,7 +130,14 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
         "openai llama.cpp chat stream",
         permit,
         move |tx, cancel| {
-            drive_openai_llama_cpp_chat_stream(tx, &cancel, request_id, model_id, stream);
+            drive_openai_llama_cpp_chat_stream(
+                tx,
+                &cancel,
+                request_id,
+                model_id,
+                stream,
+                include_usage,
+            );
         },
     );
 
@@ -135,6 +152,7 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
 pub(crate) struct OpenAiStreamPipeline {
     pub(crate) tool_scanner: Option<ToolCallStreamScanner>,
     pub(crate) stop_scanner: Option<StopSequenceScanner>,
+    pub(crate) include_usage: bool,
 }
 
 /// Which streaming-reasoning mechanism the request's model family uses.
@@ -195,6 +213,8 @@ fn drive_openai_stream_state<N>(
         pipeline,
         reasoning,
         calls_emitted: 0,
+        prompt_token_count: None,
+        output_token_count: None,
     };
 
     drive_stream_events(
@@ -217,13 +237,21 @@ struct OpenAiStreamDriver {
     reasoning: Option<StreamReasoningMode>,
     /// Tool-call deltas emitted so far; also the next call's 0-based `index`.
     calls_emitted: u32,
+    prompt_token_count: Option<u32>,
+    output_token_count: Option<u32>,
 }
 
 impl OpenAiStreamDriver {
     fn handle_event(&mut self, tx: &StreamEventSender, event: GenerateStreamEvent) -> bool {
         match event {
-            GenerateStreamEvent::Request(_) => true,
+            GenerateStreamEvent::Request(payload) => {
+                self.prompt_token_count = Some(payload.request.prompt_len);
+                self.output_token_count = Some(payload.request.output_len);
+                true
+            }
             GenerateStreamEvent::Step(payload) => {
+                self.prompt_token_count = Some(payload.request.prompt_len);
+                self.output_token_count = Some(payload.request.output_len);
                 let request_id = payload.request.request_id;
                 let model_id = payload.request.model_id.clone();
                 let decoded = match self.decode_step_text(tx, &payload) {
@@ -315,7 +343,12 @@ impl OpenAiStreamDriver {
                 if !self.flush_pipeline(tx, request_id, &model_id) {
                     return false;
                 }
-                if self.calls_emitted > 0 {
+                let usage = self
+                    .pipeline
+                    .include_usage
+                    .then(|| openai_usage(&payload.response))
+                    .flatten();
+                let final_sent = if self.calls_emitted > 0 {
                     let chunk = chat_tool_calls_final_chunk(request_id, model_id);
                     send_openai_stream_chunk(tx, &chunk)
                 } else {
@@ -337,6 +370,21 @@ impl OpenAiStreamDriver {
                             send_openai_stream_chunk(tx, &chunk)
                         }
                     }
+                };
+                if !final_sent {
+                    return false;
+                }
+                match usage {
+                    Some(usage) => {
+                        let chunk = stream_usage_chunk(
+                            request_id,
+                            payload.response.model_id.clone(),
+                            self.stream_kind,
+                            usage,
+                        );
+                        send_openai_stream_chunk(tx, &chunk)
+                    }
+                    None => true,
                 }
             }
         }
@@ -495,6 +543,17 @@ impl OpenAiStreamDriver {
                 }
             };
             if sent {
+                if !send_stream_usage_from_counts(
+                    tx,
+                    request_id,
+                    model_id,
+                    self.stream_kind,
+                    self.pipeline.include_usage,
+                    self.prompt_token_count,
+                    self.output_token_count,
+                ) {
+                    return false;
+                }
                 let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
             }
             return false;
@@ -1062,8 +1121,12 @@ fn drive_openai_mlx_lm_chat_stream(
     request_id: u64,
     model_id: String,
     mut stream: MlxLmStreamHandle,
+    include_usage: bool,
 ) {
     let mut chat_role_emitted = false;
+    let mut prompt_token_count = None;
+    let mut output_token_count = None;
+    let mut final_emitted = false;
     loop {
         if cancel.load(Ordering::Relaxed) {
             tracing::debug!("stream cancelled: client disconnected");
@@ -1071,7 +1134,9 @@ fn drive_openai_mlx_lm_chat_stream(
         }
         match stream.next_chunk() {
             Ok(Some(chunk)) => {
-                if !chunk.text.is_empty() {
+                prompt_token_count = chunk.prompt_token_count.or(prompt_token_count);
+                output_token_count = chunk.output_token_count.or(output_token_count);
+                if !final_emitted && !chunk.text.is_empty() {
                     let role = next_chat_delta_role(&mut chat_role_emitted);
                     let delta = chat_delta_chunk(request_id, model_id.clone(), role, chunk.text);
                     if !send_openai_stream_chunk(&tx, &delta) {
@@ -1079,19 +1144,51 @@ fn drive_openai_mlx_lm_chat_stream(
                     }
                 }
 
-                if let Some(finish_reason) = chunk.finish_reason {
-                    send_openai_mlx_lm_chat_final_chunk(
+                if !final_emitted && let Some(finish_reason) = chunk.finish_reason {
+                    if !send_openai_mlx_lm_chat_final_chunk(
                         &tx,
                         request_id,
                         &model_id,
                         finish_reason_from_mlx_lm(Some(finish_reason.as_str())),
-                    );
+                    ) {
+                        return;
+                    }
+                    final_emitted = true;
+                }
+                if final_emitted
+                    && (!include_usage
+                        || (prompt_token_count.is_some() && output_token_count.is_some()))
+                {
+                    if !send_stream_usage_from_counts(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        OpenAiStreamKind::ChatCompletion,
+                        include_usage,
+                        prompt_token_count,
+                        output_token_count,
+                    ) {
+                        return;
+                    }
                     let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
                     return;
                 }
             }
             Ok(None) => {
-                send_openai_mlx_lm_chat_final_chunk(&tx, request_id, &model_id, None);
+                if (!final_emitted
+                    && !send_openai_mlx_lm_chat_final_chunk(&tx, request_id, &model_id, None))
+                    || !send_stream_usage_from_counts(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        OpenAiStreamKind::ChatCompletion,
+                        include_usage,
+                        prompt_token_count,
+                        output_token_count,
+                    )
+                {
+                    return;
+                }
                 let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
                 return;
             }
@@ -1110,8 +1207,12 @@ fn drive_openai_llama_cpp_chat_stream(
     request_id: u64,
     model_id: String,
     mut stream: LlamaCppStreamHandle,
+    include_usage: bool,
 ) {
     let mut chat_role_emitted = false;
+    let mut prompt_token_count = None;
+    let mut output_token_count = None;
+    let mut final_emitted = false;
     loop {
         if cancel.load(Ordering::Relaxed) {
             tracing::debug!("stream cancelled: client disconnected");
@@ -1119,7 +1220,9 @@ fn drive_openai_llama_cpp_chat_stream(
         }
         match stream.next_chunk() {
             Ok(Some(chunk)) => {
-                if !chunk.content.is_empty() {
+                prompt_token_count = chunk.prompt_token_count.or(prompt_token_count);
+                output_token_count = chunk.output_token_count.or(output_token_count);
+                if !final_emitted && !chunk.content.is_empty() {
                     let role = next_chat_delta_role(&mut chat_role_emitted);
                     let delta = chat_delta_chunk(request_id, model_id.clone(), role, chunk.content);
                     if !send_openai_stream_chunk(&tx, &delta) {
@@ -1127,19 +1230,51 @@ fn drive_openai_llama_cpp_chat_stream(
                     }
                 }
 
-                if chunk.stop {
-                    send_openai_llama_cpp_chat_final_chunk(
+                if !final_emitted && chunk.stop {
+                    if !send_openai_llama_cpp_chat_final_chunk(
                         &tx,
                         request_id,
                         &model_id,
                         finish_reason_from_llama_cpp_chat(chunk.stop_type.as_deref()),
-                    );
+                    ) {
+                        return;
+                    }
+                    final_emitted = true;
+                }
+                if final_emitted
+                    && (!include_usage
+                        || (prompt_token_count.is_some() && output_token_count.is_some()))
+                {
+                    if !send_stream_usage_from_counts(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        OpenAiStreamKind::ChatCompletion,
+                        include_usage,
+                        prompt_token_count,
+                        output_token_count,
+                    ) {
+                        return;
+                    }
                     let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
                     return;
                 }
             }
             Ok(None) => {
-                send_openai_llama_cpp_chat_final_chunk(&tx, request_id, &model_id, None);
+                if (!final_emitted
+                    && !send_openai_llama_cpp_chat_final_chunk(&tx, request_id, &model_id, None))
+                    || !send_stream_usage_from_counts(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        OpenAiStreamKind::ChatCompletion,
+                        include_usage,
+                        prompt_token_count,
+                        output_token_count,
+                    )
+                {
+                    return;
+                }
                 let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
                 return;
             }
@@ -1150,6 +1285,36 @@ fn drive_openai_llama_cpp_chat_stream(
             }
         }
     }
+}
+
+fn send_stream_usage_from_counts(
+    tx: &StreamEventSender,
+    request_id: u64,
+    model_id: &str,
+    stream_kind: OpenAiStreamKind,
+    include_usage: bool,
+    prompt_token_count: Option<u32>,
+    output_token_count: Option<u32>,
+) -> bool {
+    if !include_usage {
+        return true;
+    }
+    let (Some(prompt_tokens), Some(completion_tokens)) = (prompt_token_count, output_token_count)
+    else {
+        return true;
+    };
+    let chunk = stream_usage_chunk(
+        request_id,
+        model_id.to_string(),
+        stream_kind,
+        OpenAiUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens.saturating_add(completion_tokens),
+            prompt_tokens_details: None,
+        },
+    );
+    send_openai_stream_chunk(tx, &chunk)
 }
 
 fn send_openai_mlx_lm_chat_final_chunk(

@@ -116,7 +116,10 @@ fn tokenizer_for_live(live: &LiveState) -> Result<EngineTokenizer, HttpErrorResp
     tokenizer_for_live_op(live, "this endpoint")
 }
 
-fn tokenizer_for_live_op(live: &LiveState, op: &str) -> Result<EngineTokenizer, HttpErrorResponse> {
+pub(crate) fn tokenizer_for_live_op(
+    live: &LiveState,
+    op: &str,
+) -> Result<EngineTokenizer, HttpErrorResponse> {
     let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return Err(error_response(
             StatusCode::BAD_REQUEST,

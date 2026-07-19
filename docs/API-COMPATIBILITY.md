@@ -19,9 +19,10 @@ tool execution policy, planner state, file editing model, or task memory.
 | `GET /v1/models` | Preview-compatible model list | All server modes | None | OpenAI-style `object=list`, **one card per loaded model** (multi-model registry), AX runtime metadata, conservative `capabilities`, `limit`, `context_length`, `max_output_tokens`, and `ax_engine` integration metadata |
 | `POST /v1/model/load` | Load or hot-swap a native MLX model | MLX-native only | `model_id`, `model_path`, optional `load_mode` (`replace` / `add`), `make_default`, `load_policy` | `{ model_id, state, context_length, load_policy, load_mode, default_model_id }`; see [Multi-model serving](SERVER.md#multi-model-serving) |
 | `POST /v1/model/unload` | Retire a non-last loaded model | Multi-model registry | `model_id` | `{ model_id, state, default_model_id }`; last model cannot be unloaded |
-| `POST /v1/completions` | Preview-compatible text completion | repo-owned MLX sessions with tokenizer artifacts, `llama_cpp`, `mlx_lm_delegated` | `prompt` as one string or one token array; string-array batch prompts are rejected until per-prompt result assembly is implemented; `max_tokens` optional, defaults to 256; `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `seed`, `stream`, `metadata`, `stop`, optional `model` for multi-model routing; non-streaming `response_format` (`json_object` / Phase A `json_schema`) is validated post-hoc — see `docs/SERVER.md` | OpenAI-style completion envelope or SSE chunks with `system_fingerprint: null`; `usage` only when backend token counts are authoritative |
-| `POST /v1/chat/completions` | Preview-compatible chat completion | repo-owned MLX sessions with tokenizer and supported chat-template artifacts, `llama_cpp`, `mlx_lm_delegated` | text messages; on Gemma 4 unified native MLX sessions also inline base64 `image_url` and `input_audio`/`audio_url` (WAV/MP3) content parts; video is rejected; roles `system`, `user`, `assistant`, `tool`, `function`; `max_tokens` optional, defaults to 256; `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `stream`, `metadata`, `stop`, optional `model` for multi-model routing; `tools`, `tool_choice`, and non-streaming `response_format` (`json_object` / Phase A `json_schema`) | OpenAI-style chat envelope or SSE chunks with `system_fingerprint: null` after AX renders messages with the selected model-family prompt template; Gemma 4 thinking-channel framing is stripped from chat content; non-streaming native Qwen and native Gemma 4 text tool spans are converted into `message.tool_calls` with `finish_reason=tool_calls` |
-| `POST /v1/embeddings` | AX embedding route with OpenAI-shaped response | repo-owned MLX embedding-capable sessions | token-array `input` or token-array batch; optional `pooling`, `normalize`, and `encoding_format` placeholder | OpenAI-style embedding list with float vectors and token usage |
+| `POST /v1/completions` | Preview-compatible text completion | repo-owned MLX sessions with tokenizer artifacts, `llama_cpp`, `mlx_lm_delegated` | `prompt` as one string or one token array; string-array batch prompts are rejected until per-prompt result assembly is implemented; `max_completion_tokens` takes precedence over legacy `max_tokens`, default 256; `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `seed`, `stream`, `stream_options.include_usage`, `metadata`, `stop`, optional `model` for multi-model routing; non-streaming `response_format` (`json_object` / Phase A `json_schema`) is validated post-hoc — see `docs/SERVER.md` | OpenAI-style completion envelope or SSE chunks with `system_fingerprint: null`; authoritative usage is returned non-streaming and as a final empty-`choices` chunk when requested for a stream |
+| `POST /v1/chat/completions`, `POST /chat/completions` | Preview-compatible chat completion; the unversioned alias matches `mlx_lm.server` | repo-owned MLX sessions with tokenizer and supported chat-template artifacts, `llama_cpp`, `mlx_lm_delegated` | text messages; on Gemma 4 unified native MLX sessions also inline base64 `image_url` and `input_audio`/`audio_url` (WAV/MP3) content parts; video is rejected; roles `system`, `user`, `assistant`, `tool`, `function`; `max_completion_tokens` takes precedence over legacy `max_tokens`, default 256; `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `stream`, `stream_options.include_usage`, `metadata`, `stop`, optional `model` for multi-model routing; `tools`, `tool_choice`, and non-streaming `response_format` (`json_object` / Phase A `json_schema`) | OpenAI-style chat envelope or SSE chunks with `system_fingerprint: null` after AX renders messages with the selected model-family prompt template; requested stream usage is a final empty-`choices` chunk; Gemma 4 thinking-channel framing is stripped from chat content; non-streaming native Qwen and native Gemma 4 text tool spans are converted into `message.tool_calls` with `finish_reason=tool_calls` |
+| `POST /v1/responses` | Stateless Responses API subset | Same text runtime paths as `/v1/chat/completions`; function tools require a native AX-rendered model-family tool path | string input or message/function-call/function-output item arrays; `instructions`, `max_output_tokens`, sampling, function tools/tool choice, reasoning, and text format are mapped to the chat contract; non-streaming only; `store` defaults to false in AX | OpenAI Responses-shaped completed/incomplete envelope, output text/function-call items, and usage; delegated tools, persisted continuation, MCP, hosted prompts, background mode, and include expansions fail closed |
+| `POST /v1/embeddings` | OpenAI-shaped embedding route | repo-owned MLX embedding-capable sessions with tokenizer artifacts for text input | string, string batch, token-array, or token-array batch `input`; AX appends a configured EOS to text input; optional `pooling` and `normalize`; `encoding_format=float` only; explicit `dimensions` fails closed | OpenAI-style embedding list with float vectors and token usage |
 | `POST /v1/embedding_records` | AX-native structured RAG ingestion batch | repo-owned MLX embedding-capable sessions with `tokenizer.json` | `records[]` with `text` or deterministic `fields` rendering, optional chunking and metadata | Chunk-level embeddings with stable record/chunk indexes and metadata |
 | `GET /api/tags` | Ollama-shaped local model list | All server modes | None | Ollama-style `models` array for the currently loaded AX model |
 | `POST /api/show` | Ollama-shaped loaded-model metadata | All server modes | Optional `model` matching the loaded model; `verbose=false` accepted; `verbose=true` and unknown fields fail closed | Ollama-style metadata, `modified_at`, details, model info, and conservative capabilities for the current AX model |
@@ -44,6 +45,9 @@ These are not in the current compatibility contract:
   prompt-side tool rendering (native Qwen ChatML and Gemma 4 chat streams
   emit incremental tool-call deltas; see `docs/SERVER.md`)
 - batch completion prompt arrays on `/v1/completions`
+- stateful Responses conversations (`store=true`, `previous_response_id`, or
+  `conversation`), streamed Responses events, background responses, hosted
+  prompts, built-in web/file/computer tools, and MCP tools
 - full OpenAI parameter parity such as penalties, logprobs, or `n`; non-default
   `n`, `best_of`, `frequency_penalty`, `presence_penalty`, and `logit_bias`
   values fail closed with an `unsupported_parameter` error instead of being
@@ -52,6 +56,8 @@ These are not in the current compatibility contract:
   generation — see `docs/SERVER.md`)
 - full tokenizer ownership or arbitrary model chat-template discovery inside
   `ax-engine-server`
+- LM Studio's native `/api/v1/*` model load/unload/download and stateful chat
+  API, or ABI compatibility with LM Studio's internal `mlx-engine` library
 - full Ollama daemon parity such as model pull/push/create/copy/delete,
   arbitrary Modelfile templates, stateful prompt context replay, thinking
   control, Ollama logprobs, or image payloads on `/api/generate`
@@ -62,6 +68,20 @@ model artifacts include tokenizer files. Chat support is limited to the
 server-owned template registry; unsupported model families fail closed instead
 of guessing chat-template behavior. Delegated text routes continue to forward
 rendered text to their configured upstream backend.
+
+## mlx-lm and LM Studio Replacement Boundary
+
+AX Engine is not a byte-for-byte replacement for either product. It is a
+drop-in candidate only where the caller stays inside the documented rows above.
+
+| Caller contract | Replacement status |
+|---|---|
+| `mlx_lm.server` basic `/v1/completions`, `/v1/chat/completions`, or `/chat/completions` text generation | Supported for the documented parameters; specify the output-token limit because mlx-lm defaults to 512 while AX defaults to 256; arbitrary Hugging Face model/template discovery and every mlx-lm sampler knob are not implied |
+| OpenAI clients using text embeddings | Supported on loaded, embedding-capable repo-owned MLX models |
+| OpenAI clients using stateless, non-streaming `/v1/responses` | Supported subset; unsupported state/tool modes return `400 unsupported_parameter` |
+| LM Studio OpenAI-compatible endpoints | Per-endpoint subset only; verify the fields the client actually sends |
+| LM Studio native `/api/v1/*`, persisted chats, model downloads, MCP/integrations | Not compatible |
+| LM Studio internal `mlx-engine` API/ABI, or third-party projects named `mlxengine` | Not compatible; these are separate contracts from OpenAI HTTP |
 
 ## JavaScript/TypeScript Surface
 

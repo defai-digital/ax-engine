@@ -21,9 +21,9 @@ The current preview server is intentionally narrow:
   allowlist, independent sessions, fair process-level Metal turn arbiter
   (see [Multi-model serving](#multi-model-serving))
 - preview generation endpoint for bring-up and integration testing
-- preview OpenAI-compatible `/v1/completions` and `/v1/chat/completions`
-  endpoints for native MLX sessions with tokenizer artifacts and delegated text
-  integration
+- preview OpenAI-compatible `/v1/completions`, `/v1/chat/completions`, and
+  stateless `/v1/responses` endpoints for native MLX sessions with tokenizer
+  artifacts and delegated text integration
 - OpenAI-shaped `/v1/embeddings` response envelopes for embedding-capable
   repo-owned MLX sessions
 - Ollama-shaped `/api/tags`, `/api/show`, `/api/ps`, `/api/version`,
@@ -65,6 +65,8 @@ Current preview endpoints:
 - `POST /v1/embeddings`
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
+- `POST /chat/completions` (`mlx_lm.server` alias)
+- `POST /v1/responses` (stateless, non-streaming subset)
 - `POST /v1/requests`
 - `GET /v1/requests/:request_id`
 - `POST /v1/requests/:request_id/cancel`
@@ -725,8 +727,9 @@ curl http://127.0.0.1:8080/v1/completions \
   }'
 ```
 
-If `max_tokens` is omitted on OpenAI-compatible completion or chat routes, the
-server applies the preview default of 256 generated tokens. `/v1/completions`
+`max_completion_tokens` takes precedence over legacy `max_tokens`; if both are
+omitted on OpenAI-compatible completion or chat routes, the server applies the
+preview default of 256 generated tokens. `/v1/completions`
 accepts one string prompt or one token-array prompt per request; string-array
 batch prompts fail closed until the server can return one independent choice per
 input prompt.
@@ -743,8 +746,9 @@ curl -N http://127.0.0.1:8080/v1/completions \
   -d '{
     "model": "qwen3_dense",
     "prompt": "Hello from OpenAI-compatible preview",
-    "max_tokens": 32,
-    "stream": true
+    "max_completion_tokens": 32,
+    "stream": true,
+    "stream_options": {"include_usage": true}
   }'
 ```
 
@@ -774,15 +778,34 @@ raw image/audio content parts, then uses the supplied prompt tokens
 directly so media spans remain aligned. Delegated chat backends reject both
 `input_tokens` and `multimodal_inputs`.
 
-For embedding-capable repo-owned MLX sessions, the server also exposes an
-OpenAI-shaped embedding response over token-array input:
+The stateless Responses subset maps text/message input onto the same chat
+builder. Function tools therefore require a native AX-rendered model-family
+tool path; delegated tools, persisted continuation, streaming Responses events,
+and MCP tools fail closed. Set `store=false`:
+
+```text
+curl http://127.0.0.1:8080/v1/responses \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "qwen3_dense",
+    "instructions": "Be concise.",
+    "input": "Say hello from the Responses API",
+    "max_output_tokens": 32,
+    "store": false
+  }'
+```
+
+For embedding-capable repo-owned MLX sessions, the server also accepts text,
+text batches, token arrays, or token-array batches and returns an OpenAI-shaped
+embedding response:
 
 ```text
 curl http://127.0.0.1:8080/v1/embeddings \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_embedding",
-    "input": [1, 2, 3, 4],
+    "input": ["first document", "second document"],
+    "encoding_format": "float",
     "pooling": "last",
     "normalize": true
   }'

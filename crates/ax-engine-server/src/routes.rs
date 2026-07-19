@@ -24,6 +24,7 @@ use super::openai::chat::openai_chat_completions;
 use super::openai::compat::{apply_template, detokenize, props, slots, tokenize};
 use super::openai::completions::openai_completions;
 use super::openai::embeddings::openai_embeddings;
+use super::openai::responses_api::openai_responses;
 use crate::rate_limit::TokenBucket;
 
 pub(crate) fn build_router(state: AppState) -> Router {
@@ -54,7 +55,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/v1/embedding_records", post(embedding_records))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/completions", post(openai_completions))
+        .route("/v1/responses", post(openai_responses))
         .route("/v1/chat/completions", post(openai_chat_completions))
+        .route("/chat/completions", post(openai_chat_completions))
         .route("/v1/step", post(step_request))
         .route("/v1/requests", post(submit_request))
         .route("/v1/requests/:request_id", get(request_snapshot))

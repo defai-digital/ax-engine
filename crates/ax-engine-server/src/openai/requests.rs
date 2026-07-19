@@ -74,6 +74,7 @@ pub(crate) struct OpenAiBuiltLlamaCppChatRequest {
 pub(crate) struct OpenAiResponseOptions {
     pub(crate) include_logprobs: bool,
     pub(crate) include_reasoning: bool,
+    pub(crate) include_stream_usage: bool,
     pub(crate) validate_json_object: bool,
     pub(crate) json_schema: Option<Arc<JsonSchemaContract>>,
     pub(crate) parse_tool_calls: bool,
@@ -206,6 +207,7 @@ impl OpenAiResponseOptions {
         Ok(Self {
             include_logprobs: request.logprobs.is_some(),
             include_reasoning: false,
+            include_stream_usage: request.stream_options.include_usage,
             validate_json_object: openai_response_format_is_json_object(
                 request.response_format.as_ref(),
             ),
@@ -230,6 +232,7 @@ impl OpenAiResponseOptions {
         Ok(Self {
             include_logprobs: request.logprobs,
             include_reasoning: openai_reasoning_is_enabled(request.reasoning.as_ref()),
+            include_stream_usage: request.stream_options.include_usage,
             validate_json_object: openai_response_format_is_json_object(
                 request.response_format.as_ref(),
             ),
@@ -332,7 +335,7 @@ pub(crate) fn build_openai_completion_request(
     live: &LiveState,
     request: OpenAiCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
-    let max_output_tokens = openai_max_tokens(request.max_tokens);
+    let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_completion_request(&request);
     let mut response_options = OpenAiResponseOptions::from_completion_request(&request)?;
     response_options.reject_unsupported_streaming_contract(request.stream, false)?;
@@ -423,7 +426,7 @@ pub(crate) fn build_openai_chat_request(
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_video_chat_content(&request.messages)?;
-    let max_output_tokens = openai_max_tokens(request.max_tokens);
+    let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     let streaming_reasoning_supported = live.runtime_report.selected_backend
@@ -539,7 +542,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
-    let max_output_tokens = openai_max_tokens(request.max_tokens);
+    let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     reject_gemma4_tools_when_ax_cannot_render_them(
@@ -581,7 +584,7 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltLlamaCppChatRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
-    let max_output_tokens = openai_max_tokens(request.max_tokens);
+    let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     reject_gemma4_tools_when_ax_cannot_render_them(
@@ -1145,15 +1148,18 @@ fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
 
 /// Resolve the requested output-token budget for an OpenAI-shaped request.
 ///
-/// An explicit `max_tokens` is honored as-is; the real upper bound is the
+/// `max_completion_tokens` takes precedence over the legacy `max_tokens`.
+/// An explicit budget is honored as-is; the real upper bound is the
 /// model's context window, enforced downstream by
 /// [`fit_openai_max_output_tokens_to_context`] (native MLX) or by the upstream
 /// server (delegated routes). When unset, fall back to the conservative
 /// [`DEFAULT_OPENAI_MAX_TOKENS`]. A previous fixed `512` ceiling silently
 /// truncated longer chat/coding completions even though the model can generate
 /// up to its full context, so it was removed.
-fn openai_max_tokens(max_tokens: Option<u32>) -> u32 {
-    max_tokens.unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
+fn openai_max_tokens(max_completion_tokens: Option<u32>, max_tokens: Option<u32>) -> u32 {
+    max_completion_tokens
+        .or(max_tokens)
+        .unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
 }
 
 #[cfg(test)]

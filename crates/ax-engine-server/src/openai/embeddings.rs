@@ -10,8 +10,10 @@ use crate::embeddings::{
 };
 use crate::errors::map_generation_service_error;
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
+use crate::openai::compat::tokenizer_for_live_op;
 use crate::openai::schema::{
-    OpenAiEmbeddingObject, OpenAiEmbeddingRequest, OpenAiEmbeddingResponse, OpenAiEmbeddingUsage,
+    EmbeddingInput, OpenAiEmbeddingObject, OpenAiEmbeddingRequest, OpenAiEmbeddingResponse,
+    OpenAiEmbeddingUsage,
 };
 use crate::openai::validation::select_model;
 
@@ -23,17 +25,35 @@ pub(crate) async fn openai_embeddings(
     Json(request): Json<OpenAiEmbeddingRequest>,
 ) -> Result<Json<OpenAiEmbeddingResponse>, (StatusCode, Json<ErrorResponse>)> {
     let live = select_model(&state, request.model.as_deref())?;
+    if request
+        .encoding_format
+        .as_deref()
+        .is_some_and(|format| format != "float")
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "encoding_format currently supports only 'float'".to_string(),
+        ));
+    }
+    if request.dimensions.is_some() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "dimensions is not supported; AX returns the model's native embedding dimension"
+                .to_string(),
+        ));
+    }
 
     let pooling = parse_embedding_pooling(request.pooling.as_deref())
         .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))?;
     let normalize = request.normalize.unwrap_or(true);
     let model_id = live.model_id.as_ref().clone();
     let was_single = request.input.is_single();
-    let batch = request.input.into_batch();
+    let batch = embedding_input_tokens(&live, request.input)?;
 
-    // Treat both `input: []` (Single empty) and `input: [[]]` / `input: []`
-    // (Batch empty / batch with empty inner) as the same user-facing
-    // error, with a per-index hint when the position is non-trivial.
+    // Treat empty single inputs, empty batches, and empty batch items as the
+    // same user-facing error, with a per-index hint for batch items.
     if batch.is_empty() || (was_single && batch[0].is_empty()) {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
@@ -141,4 +161,50 @@ pub(crate) async fn openai_embeddings(
             total_tokens: token_count,
         },
     }))
+}
+
+pub(crate) fn embedding_input_tokens(
+    live: &crate::app_state::LiveState,
+    input: EmbeddingInput,
+) -> Result<Vec<Vec<u32>>, (StatusCode, Json<ErrorResponse>)> {
+    match input {
+        EmbeddingInput::Text(text) => {
+            if text.is_empty() {
+                return Ok(vec![Vec::new()]);
+            }
+            let tokenizer = tokenizer_for_live_op(live, "text embedding input")?;
+            tokenizer
+                .encode(&text, true)
+                .map(|tokens| vec![tokens])
+                .map_err(|error| {
+                    error_response(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        format!("failed to tokenize embedding input: {error}"),
+                    )
+                })
+        }
+        EmbeddingInput::TextBatch(texts) => {
+            if texts.is_empty() {
+                return Ok(Vec::new());
+            }
+            let tokenizer = tokenizer_for_live_op(live, "text embedding input")?;
+            let text_refs = texts.iter().map(String::as_str).collect::<Vec<_>>();
+            let mut batch = tokenizer.encode_batch(&text_refs, true).map_err(|error| {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    format!("failed to tokenize embedding input: {error}"),
+                )
+            })?;
+            for (text, tokens) in texts.iter().zip(&mut batch) {
+                if text.is_empty() {
+                    tokens.clear();
+                }
+            }
+            Ok(batch)
+        }
+        EmbeddingInput::Tokens(tokens) => Ok(vec![tokens]),
+        EmbeddingInput::TokenBatch(batch) => Ok(batch),
+    }
 }

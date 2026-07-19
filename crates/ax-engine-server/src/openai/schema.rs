@@ -2,33 +2,19 @@ use ax_engine_sdk::RequestMultimodalInputs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Pre-tokenized input for the embedding endpoint. Mirrors OpenAI's
-/// `input` shape support: one sequence (`[1,2,3]`) or a batch of
-/// sequences (`[[1,2,3],[4,5,6]]`). Raw text inputs (`str` / `List[str]`)
-/// are not accepted because the server does not run a tokenizer —
-/// callers tokenize client-side and send token IDs.
+/// Text or pre-tokenized input for the embedding endpoint.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum EmbeddingInput {
-    /// A single sequence. Returns one embedding in `data[0]`.
-    Single(Vec<u32>),
-    /// A batch of sequences. Returns one embedding per input, in
-    /// `data[i]` with `index == i`. The batch is dispatched directly
-    /// to `embed_batch_flat`, bypassing the per-request microbatcher
-    /// (the batch is already coalesced by the caller).
-    Batch(Vec<Vec<u32>>),
+    Text(String),
+    TextBatch(Vec<String>),
+    Tokens(Vec<u32>),
+    TokenBatch(Vec<Vec<u32>>),
 }
 
 impl EmbeddingInput {
-    pub(crate) fn into_batch(self) -> Vec<Vec<u32>> {
-        match self {
-            Self::Single(ids) => vec![ids],
-            Self::Batch(b) => b,
-        }
-    }
-
     pub(crate) fn is_single(&self) -> bool {
-        matches!(self, Self::Single(_))
+        matches!(self, Self::Text(_) | Self::Tokens(_))
     }
 }
 
@@ -36,21 +22,23 @@ impl EmbeddingInput {
 pub(crate) struct OpenAiEmbeddingRequest {
     #[serde(default)]
     pub(crate) model: Option<String>,
-    /// Pre-tokenized input: a single sequence (`[1,2,3]`) or a batch
-    /// of sequences (`[[1,2,3],[4,5,6]]`). Raw text inputs are not
-    /// accepted; tokenize client-side and send token IDs.
+    /// Text, a list of text strings, token IDs, or a batch of token-ID lists.
     pub(crate) input: EmbeddingInput,
-    /// Ignored — always returns float32. Present for OpenAI API compatibility.
+    /// Output encoding. AX currently supports `float` only.
     #[serde(default)]
     #[serde(rename = "encoding_format")]
-    pub(crate) _encoding_format: Option<String>,
+    pub(crate) encoding_format: Option<String>,
+    /// Requested output dimensionality. The native graph currently emits its
+    /// fixed model dimension, so explicit values fail closed.
+    #[serde(default)]
+    pub(crate) dimensions: Option<u32>,
     /// Pooling strategy: "last" (default), "mean", or "cls".
     ///
     /// "last" takes the final token's hidden state, which is the standard for
     /// decoder-only embedding models (Qwen3-Embedding, Gemma Embedding, etc.).
-    /// The caller is responsible for appending an EOS token to the input when
-    /// the model expects it.  "mean" averages all positions; "cls" takes the
-    /// first token.
+    /// AX appends the configured EOS for text inputs when the model exposes
+    /// one; callers using token-array inputs remain responsible for special
+    /// tokens. "mean" averages all positions; "cls" takes the first token.
     #[serde(default)]
     pub(crate) pooling: Option<String>,
     /// Whether to L2-normalize the output vector to unit length (default true).
@@ -90,6 +78,8 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     #[serde(default)]
     pub(crate) max_tokens: Option<u32>,
     #[serde(default)]
+    pub(crate) max_completion_tokens: Option<u32>,
+    #[serde(default)]
     pub(crate) temperature: Option<f32>,
     #[serde(default)]
     pub(crate) top_p: Option<f32>,
@@ -107,6 +97,8 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     pub(crate) seed: Option<u64>,
     #[serde(default)]
     pub(crate) stream: bool,
+    #[serde(default)]
+    pub(crate) stream_options: OpenAiStreamOptions,
     /// OpenAI params AX does not implement. Deserialized so non-default
     /// values fail closed instead of being silently ignored.
     #[serde(default)]
@@ -144,6 +136,8 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     #[serde(default)]
     pub(crate) max_tokens: Option<u32>,
     #[serde(default)]
+    pub(crate) max_completion_tokens: Option<u32>,
+    #[serde(default)]
     pub(crate) temperature: Option<f32>,
     #[serde(default)]
     pub(crate) top_p: Option<f32>,
@@ -161,6 +155,8 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) seed: Option<u64>,
     #[serde(default)]
     pub(crate) stream: bool,
+    #[serde(default)]
+    pub(crate) stream_options: OpenAiStreamOptions,
     /// OpenAI params AX does not implement. Deserialized so non-default
     /// values fail closed instead of being silently ignored.
     #[serde(default)]
@@ -187,6 +183,12 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) tools: Option<Value>,
     #[serde(default)]
     pub(crate) tool_choice: Option<Value>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+pub(crate) struct OpenAiStreamOptions {
+    #[serde(default)]
+    pub(crate) include_usage: bool,
 }
 
 /// OpenAI `stop` field: either a single string or an array of strings.
@@ -384,6 +386,17 @@ pub(crate) struct OpenAiChatCompletionChunkChoice {
     pub(crate) index: u32,
     pub(crate) delta: OpenAiChatDelta,
     pub(crate) finish_reason: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OpenAiStreamUsageChunk {
+    pub(crate) id: String,
+    pub(crate) object: &'static str,
+    pub(crate) created: u64,
+    pub(crate) model: String,
+    pub(crate) system_fingerprint: Option<&'static str>,
+    pub(crate) choices: Vec<Value>,
+    pub(crate) usage: OpenAiUsage,
 }
 
 #[derive(Debug, Default, Serialize)]

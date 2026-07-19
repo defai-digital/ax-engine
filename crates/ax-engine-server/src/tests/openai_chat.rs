@@ -1856,6 +1856,45 @@ async fn openai_chat_completions_endpoint_defaults_max_tokens() {
 }
 
 #[tokio::test]
+async fn mlx_lm_chat_alias_prefers_max_completion_tokens() {
+    let (server_url, server_handle) = spawn_llama_cpp_completion_server(
+        json!({
+            "choices": [{
+                "message": {"content": "alias reply"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2}
+        })
+        .to_string(),
+        |payload| {
+            assert_eq!(payload.get("max_tokens"), Some(&json!(9)));
+            assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
+        },
+    );
+    let app = build_router(mlx_lm_delegated_state(server_url));
+    let (status, response) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "messages": [{"role": "user", "content": "hello alias"}],
+                "max_tokens": 3,
+                "max_completion_tokens": 9
+            }))))
+            .expect("request should build"),
+    )
+    .await;
+    server_handle
+        .join()
+        .expect("mlx-lm server thread should finish");
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response["choices"][0]["message"]["content"], "alias reply");
+}
+
+#[tokio::test]
 async fn openai_chat_completions_endpoint_rejects_injected_role() {
     let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
     let (status, json) = json_response(
