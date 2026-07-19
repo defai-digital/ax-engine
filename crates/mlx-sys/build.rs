@@ -148,10 +148,10 @@ fn find_pip_mlx_dirs() -> Option<MlxDirs> {
 
     // Fall back to the shell's python3 only when none of the explicit Python
     // selectors resolved a usable MLX package.
-    if explicit_python_root.is_none() {
-        if let Some(root) = mlx_root_from_python(std::ffi::OsStr::new("python3")) {
-            candidates.push(root);
-        }
+    if explicit_python_root.is_none()
+        && let Some(root) = mlx_root_from_python(std::ffi::OsStr::new("python3"))
+    {
+        candidates.push(root);
     }
 
     for base in candidates {

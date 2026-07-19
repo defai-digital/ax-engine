@@ -795,6 +795,10 @@ pub(crate) mod test_support {
     pub(crate) fn normalize_measurement_fields(value: &mut Value) {
         match value {
             Value::Object(map) => {
+                // Python response dictionaries intentionally omit the SDK's
+                // performance report, so exclude it from cross-surface test
+                // comparisons along with lower-level timing measurements.
+                map.remove("performance");
                 map.remove("cpu_time_us");
                 map.remove("runner_time_us");
                 for value in map.values_mut() {

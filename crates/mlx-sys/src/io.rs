@@ -129,15 +129,10 @@ pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, S
 
     // First 8 bytes: little-endian u64 = JSON header length.
     let header_len_u64 = u64::from_le_bytes(mmap[..8].try_into().unwrap());
-    let header_len = usize::try_from(header_len_u64).map_err(|_| {
-        format!(
-            "safetensors header length {header_len_u64} does not fit usize"
-        )
-    })?;
+    let header_len = usize::try_from(header_len_u64)
+        .map_err(|_| format!("safetensors header length {header_len_u64} does not fit usize"))?;
     let header_end = 8usize.checked_add(header_len).ok_or_else(|| {
-        format!(
-            "safetensors header length {header_len} overflows when added to prefix"
-        )
+        format!("safetensors header length {header_len} overflows when added to prefix")
     })?;
     if header_end > mmap.len() {
         return Err(format!(
@@ -216,9 +211,7 @@ pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, S
             )
         })?;
         let absolute_end = data_base.checked_add(end).ok_or_else(|| {
-            format!(
-                "tensor entry {name}: data_offsets end {end} overflows relative to data_base"
-            )
+            format!("tensor entry {name}: data_offsets end {end} overflows relative to data_base")
         })?;
         if absolute_end > mmap.len() || absolute_start > mmap.len() {
             return Err(format!(

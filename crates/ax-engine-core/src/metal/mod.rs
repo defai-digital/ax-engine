@@ -4425,10 +4425,8 @@ fn compute_token_context_ends(workload: &MetalDispatchWorkload) -> Vec<u32> {
     let n = workload.scheduled_positions.len().max(1);
     let mut ends = vec![1u32; n];
     for (token_id, &absolute_position) in workload.scheduled_positions.iter().enumerate() {
-        let batch_id = batch_id_for_token(
-            &workload.kv_metadata.scheduled_cu_seq_lens,
-            token_id as u32,
-        );
+        let batch_id =
+            batch_id_for_token(&workload.kv_metadata.scheduled_cu_seq_lens, token_id as u32);
         let context_begin = workload
             .kv_metadata
             .cu_seq_lens
@@ -4540,7 +4538,7 @@ fn project_decode_token_with_optional_native_path(
                 // Q4Km requires dequant-aware params and the (ceil(n/2), 32×2) grid.
                 encode_fused_projection(
                     encoder,
-                    &projection_pipeline,
+                    projection_pipeline,
                     &hidden_buffer,
                     &decode_projection.native_buffer,
                     0,
@@ -4672,7 +4670,7 @@ fn project_decode_logits_with_optional_native_path(
             if decode_projection.native_dtype == NativeTensorDataType::Q4Km {
                 encode_fused_projection(
                     encoder,
-                    &projection_pipeline,
+                    projection_pipeline,
                     &hidden_buffer,
                     &decode_projection.native_buffer,
                     0,
@@ -5708,7 +5706,7 @@ fn project_moe_expert_matrix_rows_with_optional_native_path(
 
             encode_fused_projection(
                 encoder,
-                &projection_pipeline,
+                projection_pipeline,
                 &hidden_buffer,
                 &binding.native_buffer,
                 row_byte_offset as u64,
@@ -7500,14 +7498,7 @@ fn dispatch_numeric_workload_macos_with_cache_seed(
         });
 
         for (trace, pipeline) in kernels.iter().zip(&ordered_pipelines) {
-            encode_numeric_kernel(
-                encoder,
-                pipeline,
-                trace,
-                workload,
-                arena,
-                attention_config,
-            );
+            encode_numeric_kernel(encoder, pipeline, trace, workload, arena, attention_config);
         }
 
         encoder.end_encoding();
@@ -8211,10 +8202,8 @@ impl MetalDispatchArena {
             device,
             &compute_token_batch_ids(&workload.kv_metadata.scheduled_cu_seq_lens),
         );
-        self.scheduled_token_context_ends = new_shared_buffer_with_data(
-            device,
-            &compute_token_context_ends(workload),
-        );
+        self.scheduled_token_context_ends =
+            new_shared_buffer_with_data(device, &compute_token_context_ends(workload));
         self.copy_block_mapping =
             new_shared_buffer_with_data(device, &workload.kv_metadata.copy_block_mapping);
         self.copy_key_target = new_zeroed_shared_buffer::<f32>(

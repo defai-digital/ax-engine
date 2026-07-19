@@ -75,8 +75,11 @@ pub(crate) struct AdmissionPermit {
 
 impl Drop for AdmissionPermit {
     fn drop(&mut self) {
-        let previous = self.controller.active_jobs.fetch_sub(1, Ordering::AcqRel);
+        // Return bounded capacity before publishing the job as inactive. This
+        // keeps active_jobs() == 0 from racing with a still-held semaphore
+        // permit and transiently reporting Saturated to the next admission.
         self.semaphore_permit.take();
+        let previous = self.controller.active_jobs.fetch_sub(1, Ordering::AcqRel);
         if previous == 1 {
             self.controller.idle_notify.notify_waiters();
         }

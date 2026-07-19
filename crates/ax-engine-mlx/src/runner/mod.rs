@@ -1449,7 +1449,7 @@ impl MlxRunner {
         // so a concurrent embed() that updates counters between size reads
         // cannot produce a half-updated counter view. Cache lengths are still
         // read under their own locks (they change independently of counters).
-        let stats = self.embed_compile_stats.lock().clone();
+        let stats = *self.embed_compile_stats.lock();
         let single_len = self.embed_compile_cache.lock().len();
         let batched_len = self.embed_batch_compile_cache.lock().len()
             + self.embed_gemma_batch_compile_cache.lock().len();

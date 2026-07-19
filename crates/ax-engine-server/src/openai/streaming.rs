@@ -168,7 +168,7 @@ pub(crate) enum StreamReasoningFamily {
 
 enum StreamReasoningMode {
     QwenThink(ThinkTagScanner),
-    Gemma4Channel(IncrementalDecoder),
+    Gemma4Channel(Box<IncrementalDecoder>),
 }
 
 fn drive_openai_stream_state<N>(
@@ -200,7 +200,9 @@ fn drive_openai_stream_state<N>(
                 filter.enable_reasoning_capture();
             }
             tokenizer.as_ref().map(|tokenizer| {
-                StreamReasoningMode::Gemma4Channel(IncrementalDecoder::new(tokenizer.clone()))
+                StreamReasoningMode::Gemma4Channel(Box::new(IncrementalDecoder::new(
+                    tokenizer.clone(),
+                )))
             })
         }
         None => None,
@@ -608,7 +610,7 @@ impl OpenAiStreamDriver {
 /// decode (filter is `None`).
 pub(crate) enum ChatChannelStreamFilter {
     Gemma4(Gemma4ChannelStreamFilter),
-    GptOss(GptOssHarmonyStreamFilter),
+    GptOss(Box<GptOssHarmonyStreamFilter>),
 }
 
 impl ChatChannelStreamFilter {
@@ -616,8 +618,8 @@ impl ChatChannelStreamFilter {
         // GPT-OSS uses `<|channel|>` (with trailing `|>`); Gemma uses
         // `<|channel>` / `<channel|>`. The two id sets do not overlap.
         if let Some(ids) = GptOssHarmonyIds::from_tokenizer(tokenizer) {
-            return Some(Self::GptOss(GptOssHarmonyStreamFilter::from_tokenizer(
-                ids, tokenizer,
+            return Some(Self::GptOss(Box::new(
+                GptOssHarmonyStreamFilter::from_tokenizer(ids, tokenizer),
             )));
         }
         let ids = Gemma4ChannelIds::from_tokenizer(tokenizer)?;
