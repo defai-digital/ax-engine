@@ -350,6 +350,41 @@ class AxEngineCliTests(unittest.TestCase):
             ],
         )
 
+    def test_doctor_reports_missing_bundled_bench_without_traceback(self) -> None:
+        missing = FileNotFoundError(2, "No such file or directory", "ax-engine-bench")
+
+        def run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
+            if command[0] == "ax-engine-bench":
+                raise missing
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        host = {
+            "os": "darwin",
+            "arch": "arm64",
+            "os_version": "26.2",
+            "os_build": "25C56",
+            "ram_bytes": 64 * 1024 * 1024 * 1024,
+            "ram_gib": 64,
+            "cpu_cores": {"physical": 16, "logical": 16},
+            "gpu_cores": 40,
+        }
+        with (
+            mock.patch.object(_cli, "_bench_bin", return_value="ax-engine-bench"),
+            mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
+            mock.patch.object(_cli, "_package_version", return_value="6.9.0"),
+            mock.patch.object(_cli, "_host_system_summary", return_value=host),
+            mock.patch.object(_cli, "_run_capture", side_effect=run_capture),
+        ):
+            code, stdout = self.capture_main(["doctor"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("Result: not ready", stdout)
+        self.assertIn("bench_binary: fail", stdout)
+        self.assertIn("ax-engine-bench", stdout)
+        self.assertIn("--force-reinstall", stdout)
+
     def test_download_alias_wraps_download_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

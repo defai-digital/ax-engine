@@ -1319,6 +1319,52 @@ def _user_doctor_report(bench_report: dict) -> dict:
     }
 
 
+def _unavailable_bench_doctor_report(
+    bench_bin: pathlib.Path | str, exc: OSError
+) -> dict:
+    path = str(bench_bin)
+    version = _package_version()
+    detail = f"{path}: {exc}"
+    return {
+        "schema_version": "ax.engine.doctor.v1",
+        "result": "not_ready",
+        "ready_for": [],
+        "install": {
+            "version": version,
+            "mode": "python_package",
+            "cwd": os.getcwd(),
+        },
+        "host": _host_system_summary(),
+        "checks": [
+            _probe_binary("server_binary", _server_bin()),
+            {"id": "bench_binary", "status": "fail", "detail": detail},
+        ],
+        "issues": [f"Required ax-engine-bench binary is unavailable: {detail}"],
+        "model_issues": [],
+        "next_actions": [
+            "Reinstall the official wheel so its bundled ax-engine-bench binary is present: "
+            f'python3 -m pip install --force-reinstall "ax-engine[download]=={version}"'
+        ],
+        "details_command": "ax-engine-bench doctor",
+        "source": {
+            "schema_version": "",
+            "status": "not_ready",
+            "details_command": "ax-engine-bench doctor --json",
+        },
+    }
+
+
+def _emit_unavailable_bench_doctor_report(
+    bench_bin: pathlib.Path | str, exc: OSError, *, as_json: bool
+) -> int:
+    report = _unavailable_bench_doctor_report(bench_bin, exc)
+    if as_json:
+        _json_dump(report)
+    else:
+        print(_format_doctor_text(report))
+    return 1
+
+
 def _default_mtp_depth_max(base_model: str, mtp_source: str) -> int:
     label = f"{base_model} {mtp_source}".lower()
     if "glm-4.7-flash" in label or "glm4.7-flash" in label or "glm47" in label:
@@ -1455,11 +1501,19 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     if args.mlx_model_artifacts_dir:
         argv.extend(["--mlx-model-artifacts-dir", args.mlx_model_artifacts_dir])
     if args.verbose:
-        os.execvp(argv[0], argv)
+        try:
+            os.execvp(argv[0], argv)
+        except OSError as exc:
+            return _emit_unavailable_bench_doctor_report(
+                bench_bin, exc, as_json=args.json
+            )
         return 0
 
     argv.append("--json")
-    result = _run_capture(argv)
+    try:
+        result = _run_capture(argv)
+    except OSError as exc:
+        return _emit_unavailable_bench_doctor_report(bench_bin, exc, as_json=args.json)
     sys.stderr.write(result.stderr)
     if result.returncode != 0:
         sys.stdout.write(result.stdout)
