@@ -99,6 +99,13 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- `pyproject.toml` now pins `profile = "release-pyext"` in `[tool.maturin]`,
+  so every build frontend (`pip install .`, plain `maturin build --release`,
+  PEP-517 builds from the sdist) produces the unwind-capable extension.
+  Previously only `scripts/build-pypi-wheel.sh` passed the profile, and
+  other paths silently inherited the workspace `panic = "abort"` release
+  profile — a reachable Rust panic would SIGABRT the host Python process
+  instead of raising `PanicException`.
 - MTP skip-state (`AX_MLX_MTP_SKIP_STATE`) is now **off by default** and
   fixed to never emit literal token id 0. The path — which only engaged
   when the draft gate left a cycle without pending drafts — had three
