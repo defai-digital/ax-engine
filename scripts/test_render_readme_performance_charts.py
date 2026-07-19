@@ -124,7 +124,9 @@ class ReadmePerformanceChartTests(unittest.TestCase):
                 + chart_rows
                 + charts.load_llama_rows_from_readme(readme),
                 gemma_decode_spec,
+                ax_engine_version=str(snapshot["engine_version"]),
             ),
+            ax_engine_version=str(snapshot["engine_version"]),
         )
         self.assertIn("AX Engine v6.9.0", boxplot)
         self.assertIn("retained mlx-lm 0.31.3", boxplot)
@@ -270,6 +272,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             charts.REPO_ROOT
             / "benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json",
         )
+        self.assertEqual(charts.MTP_PEER_AX_ENGINE_VERSION, "6.9.0")
 
     def test_mtp_approximate_summary_must_be_non_publishable(self) -> None:
         with tempfile.TemporaryDirectory() as root_name:
@@ -366,6 +369,18 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertIn(
             "benchmarks/results/embedding/embedding-scale/",
             charts.EMBEDDINGGEMMA_SCALE_AX_ARTIFACT.as_posix(),
+        )
+        self.assertEqual(
+            charts.embedding_artifact_engine_version(
+                charts.REPO_ROOT, charts.EMBEDDING_SCALE_AX_ARTIFACT
+            ),
+            "6.9.0",
+        )
+        self.assertEqual(
+            charts.embedding_artifact_engine_version(
+                charts.REPO_ROOT, charts.EMBEDDINGGEMMA_SCALE_AX_ARTIFACT
+            ),
+            "6.9.0",
         )
 
 

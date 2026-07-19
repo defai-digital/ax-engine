@@ -67,10 +67,13 @@ SERIES = [
     ("ax_engine_mlx", AX_ENGINE_CHART_LABEL, "#2eaf5f", "#176c37"),
     ("ax_engine_mlx_ngram_accel", f"AX+ngram v{AX_ENGINE_VERSION}", "#137a3d", "#0b4f28"),
 ]
-DIRECT_VERSIONS_FOOTNOTE = (
-    f"AX Engine v{AX_ENGINE_VERSION} snapshot (2026-07-14) · retained "
-    "mlx-lm 0.31.3 · retained llama.cpp b9910 · cross-run distribution"
-)
+
+
+def direct_versions_footnote(engine_version: str) -> str:
+    return (
+        f"AX Engine v{engine_version} snapshot (2026-07-14) · retained "
+        "mlx-lm 0.31.3 · retained llama.cpp b9910 · cross-run distribution"
+    )
 
 FAMILY_SLUGS: dict[str, list[str]] = {
     "gemma4": [
@@ -647,11 +650,17 @@ def load_llama_rows_from_readme(readme: Path) -> list[dict[str, Any]]:
     return list(rows.values())
 
 
-def series_for_chart(spec: ChartSpec) -> list[tuple[str, str, str, str]]:
-    series_by_engine = {
-        engine: (engine, label, color, dot_color)
-        for engine, label, color, dot_color in SERIES
-    }
+def series_for_chart(
+    spec: ChartSpec, *, ax_engine_version: str | None = None
+) -> list[tuple[str, str, str, str]]:
+    version = ax_engine_version or AX_ENGINE_VERSION
+    series_by_engine = {}
+    for engine, label, color, dot_color in SERIES:
+        if engine == "ax_engine_mlx":
+            label = f"AX Engine v{version}"
+        elif engine == "ax_engine_mlx_ngram_accel":
+            label = f"AX+ngram v{version}"
+        series_by_engine[engine] = (engine, label, color, dot_color)
     missing = [
         engine for engine in spec.series_engines if engine not in series_by_engine
     ]
@@ -818,10 +827,6 @@ def load_ax_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
 
     if len(versions) != 1 or len(commits) != 1 or len(mlx_versions) != 1:
         raise ChartError("AX-only direct snapshot has mixed benchmark provenance")
-    if versions != {AX_ENGINE_VERSION}:
-        raise ChartError(
-            f"AX-only direct snapshot version {sorted(versions)} does not match {AX_ENGINE_VERSION}"
-        )
     return {
         "rows": normalized_rows,
         "engine_version": versions.pop(),
@@ -861,13 +866,17 @@ def ax_direct_snapshot_chart_rows(
 def collect_family_values(
     rows: list[dict[str, Any]],
     spec: ChartSpec,
+    *,
+    ax_engine_version: str | None = None,
 ) -> list[EngineGroupStats]:
     family_slugs = set(FAMILY_SLUGS[spec.family])
     family_rows = [r for r in rows if r.get("_slug") in family_slugs]
     expected_count = len(FAMILY_SLUGS[spec.family])
 
     engine_groups: list[EngineGroupStats] = []
-    for engine, label, color, dot_color in series_for_chart(spec):
+    for engine, label, color, dot_color in series_for_chart(
+        spec, ax_engine_version=ax_engine_version
+    ):
         context_stats_list: list[EngineContextStats] = []
         for prompt_tokens in PROMPT_TOKENS:
             values: list[float] = []
@@ -914,7 +923,12 @@ def collect_family_values(
     return engine_groups
 
 
-def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) -> str:
+def render_family_chart(
+    spec: ChartSpec,
+    engine_groups: list[EngineGroupStats],
+    *,
+    ax_engine_version: str | None = None,
+) -> str:
     all_maxima = [cs.stats.maximum for eg in engine_groups for cs in eg.context_stats]
     axis_max = nice_axis_ceiling(max(all_maxima) * 1.05)
 
@@ -980,7 +994,7 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
         f"</text>",
         # Footnote (versions)
         f'<text x="{FAMILY_LEFT}" y="62" font-family="{FONT}"'
-        f' font-size="10" fill="#6b7280">{escape(DIRECT_VERSIONS_FOOTNOTE)}</text>',
+        f' font-size="10" fill="#6b7280">{escape(direct_versions_footnote(ax_engine_version or AX_ENGINE_VERSION))}</text>',
         # Unit pill badge (top-right)
         f'<rect x="{header_right - unit_w}" y="13" width="{unit_w}" height="22"'
         f' rx="11" fill="#eef2ff" stroke="#c7d2fe"/>',
@@ -1591,18 +1605,19 @@ MTP_PEER_COLORS = {
     "mtplx": "#f2b705",
     "lightning_mlx": "#2563eb",
 }
+MTP_PEER_AX_ENGINE_VERSION = "6.9.0"
 MTP_PEER_LABELS = {
-    "ax_engine": AX_ENGINE_CHART_LABEL,
+    "ax_engine": f"AX Engine v{MTP_PEER_AX_ENGINE_VERSION}",
     "mtplx": "MTPLX",
     "lightning_mlx": "lightning-mlx",
 }
 # Engine versions behind the peer-comparison artifacts, surfaced on each chart so the
 # run is reproducible. Update alongside any re-benchmark. Provenance:
-#   AX Engine     = [workspace.package] version in Cargo.toml
+#   AX Engine     = frozen publication label for this retained benchmark snapshot
 #   MTPLX         = /opt/homebrew/var/mtplx/venv-2.0.1 (pip: mtplx 2.0.1)
 #   lightning-mlx = .internal/reference/lightning-mlx v0.7.0 (git rev ec19b3d, incl. post-tag streaming fix #3)
 MTP_PEER_VERSIONS = {
-    "ax_engine": AX_ENGINE_VERSION,
+    "ax_engine": MTP_PEER_AX_ENGINE_VERSION,
     "mtplx": "2.0.1",
     "lightning_mlx": "0.7.0",
 }
@@ -2507,6 +2522,19 @@ def embedding_reference_key(artifact: dict[str, Any]) -> tuple[str, str]:
     return "mlx_lm", "mlx-lm"
 
 
+def embedding_artifact_engine_version(
+    repo_root: Path, artifact_relative_path: Path
+) -> str:
+    artifact_path = repo_root / artifact_relative_path
+    artifact = json.loads(artifact_path.read_text())
+    version = artifact.get("build", {}).get("engine_version")
+    if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ChartError(
+            f"embedding artifact has no semantic engine version: {artifact_path}"
+        )
+    return version
+
+
 def embedding_model_label(label: str) -> str:
     return {
         "qwen3-embedding-0.6b-8bit": "Qwen3 0.6B 8-bit",
@@ -3050,7 +3078,15 @@ def main() -> int:
                 + llama_rows
             )
             output_path = args.output_dir / chart_output_name(spec)
-            content = render_family_chart(spec, collect_family_values(rows, spec))
+            content = render_family_chart(
+                spec,
+                collect_family_values(
+                    rows,
+                    spec,
+                    ax_engine_version=str(snapshot["engine_version"]),
+                ),
+                ax_engine_version=str(snapshot["engine_version"]),
+            )
             if not write_chart(output_path, content, args.check):
                 mismatches.append(output_path)
         if mismatches:
@@ -3128,7 +3164,12 @@ def main() -> int:
             "Sources: retained 2026-07-12 mlx-lm reference + 2026-07-17 "
             "current-main AX-only refresh (0.6B/4B/8B); cross-run directional view, not B=1"
         ),
-        ax_label=AX_ENGINE_CHART_LABEL,
+        ax_label=(
+            "AX Engine v"
+            + embedding_artifact_engine_version(
+                repo_root, EMBEDDING_SCALE_AX_ARTIFACT
+            )
+        ),
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)
@@ -3148,6 +3189,12 @@ def main() -> int:
         source_label=(
             "Sources: 2026-07-02 EmbeddingGemma paired reference + "
             "2026-07-17 current-main AX-only refresh; cross-run directional view"
+        ),
+        ax_label=(
+            "AX Engine v"
+            + embedding_artifact_engine_version(
+                repo_root, EMBEDDINGGEMMA_SCALE_AX_ARTIFACT
+            )
         ),
     )
     if not write_chart(
@@ -3173,9 +3220,18 @@ def main() -> int:
                     args.readme, readme_slugs
                 ) + ax_direct_snapshot_chart_rows(ax_direct_snapshot, spec.metric)
         rows = benchmark_rows + llama_rows
-        engine_groups = collect_family_values(rows, spec)
+        snapshot_version = (
+            str(ax_direct_snapshot["engine_version"])
+            if not args.results_dir and ax_direct_snapshot is not None
+            else None
+        )
+        engine_groups = collect_family_values(
+            rows, spec, ax_engine_version=snapshot_version
+        )
         output_path = args.output_dir / chart_output_name(spec)
-        content = render_family_chart(spec, engine_groups)
+        content = render_family_chart(
+            spec, engine_groups, ax_engine_version=snapshot_version
+        )
         if not write_chart(output_path, content, args.check):
             mismatches.append(output_path)
 
