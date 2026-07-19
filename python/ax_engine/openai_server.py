@@ -2,6 +2,7 @@ import json
 import threading
 import time
 from collections.abc import Callable, Iterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -657,13 +658,15 @@ def create_app(
         session_kwargs=session_kwargs,
     )
     lock = threading.Lock()
-    app = FastAPI(title="AX Engine MLX OpenAI Shim")
 
-    @app.on_event("shutdown")
-    def close_session() -> None:
+    @asynccontextmanager
+    async def lifespan(_app: Any):
+        yield
         close = getattr(session, "close", None)
         if callable(close):
             close()
+
+    app = FastAPI(title="AX Engine MLX OpenAI Shim", lifespan=lifespan)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -912,6 +915,10 @@ def stream_completion_chunks(
     accumulated_tokens: list[int] = []
     prev_text_len = 0
     role_emitted = False
+    # Hold the lock for the full stream lifetime so a concurrent stream_generate
+    # cannot enter while this generator is still iterating. The native session
+    # also rejects concurrent streams, but Python-side serialization keeps the
+    # error surface local and avoids races around generator setup.
     with lock:
         generator = session.stream_generate(
             input_tokens,
@@ -923,65 +930,67 @@ def stream_completion_chunks(
             seed=int(payload.get("seed", 0)),
             metadata=payload.get("metadata"),
         )
-    for event in generator:
-        if event.event == "step" and event.delta_tokens:
-            accumulated_tokens.extend(event.delta_tokens)
-            # Prefer engine-provided delta_text: cumulative re-decode corrupts
-            # multi-token glyphs (ZWJ emoji) when a partial sequence yields
-            # U+FFFD that is then counted as "already sent".
-            if event.delta_text is not None:
-                new_text = event.delta_text
+        for event in generator:
+            if event.event == "step" and event.delta_tokens:
+                accumulated_tokens.extend(event.delta_tokens)
+                # Prefer engine-provided delta_text: cumulative re-decode corrupts
+                # multi-token glyphs (ZWJ emoji) when a partial sequence yields
+                # U+FFFD that is then counted as "already sent".
+                if event.delta_text is not None:
+                    new_text = event.delta_text
+                    if new_text:
+                        # Keep prev_text_len aligned for any residual flush path.
+                        prev_text_len += len(new_text)
+                else:
+                    full_text = tokenizer.decode(accumulated_tokens)
+                    new_text = full_text[prev_text_len:]
+                    prev_text_len = len(full_text)
                 if new_text:
-                    # Keep prev_text_len aligned for any residual flush path.
-                    prev_text_len += len(new_text)
-            else:
-                full_text = tokenizer.decode(accumulated_tokens)
-                new_text = full_text[prev_text_len:]
-                prev_text_len = len(full_text)
-            if new_text:
-                emit_role = kind == "chat" and not role_emitted
-                role_emitted = role_emitted or emit_role
-                yield sse_chunk(
-                    stream_id,
-                    created,
-                    model_id,
-                    new_text,
-                    None,
-                    kind,
-                    emit_role=emit_role,
-                )
-        elif event.event == "response" and event.response is not None:
-            # Flush any remaining text from incomplete UTF-8 sequences when
-            # the stream path did not supply delta_text (legacy fallback).
-            if accumulated_tokens and event.delta_text is None:
-                final_text = tokenizer.decode(accumulated_tokens)
-                remaining = final_text[prev_text_len:]
-                if remaining:
                     emit_role = kind == "chat" and not role_emitted
                     role_emitted = role_emitted or emit_role
                     yield sse_chunk(
                         stream_id,
                         created,
                         model_id,
-                        remaining,
+                        new_text,
                         None,
                         kind,
                         emit_role=emit_role,
                     )
-            # OpenAI spec: the role must appear in at least one chunk. If no
-            # content chunks were emitted (0-token completion), emit a role-only
-            # chunk before the finish_reason chunk so clients can read the role.
-            if kind == "chat" and not role_emitted:
-                yield sse_chunk(stream_id, created, model_id, "", None, kind, emit_role=True)
-            yield sse_chunk(
-                stream_id,
-                created,
-                model_id,
-                "",
-                finish_reason(event.response.finish_reason),
-                kind,
-            )
-    yield "data: [DONE]\n\n"
+            elif event.event == "response" and event.response is not None:
+                # Flush any remaining text from incomplete UTF-8 sequences when
+                # the stream path did not supply delta_text (legacy fallback).
+                if accumulated_tokens and event.delta_text is None:
+                    final_text = tokenizer.decode(accumulated_tokens)
+                    remaining = final_text[prev_text_len:]
+                    if remaining:
+                        emit_role = kind == "chat" and not role_emitted
+                        role_emitted = role_emitted or emit_role
+                        yield sse_chunk(
+                            stream_id,
+                            created,
+                            model_id,
+                            remaining,
+                            None,
+                            kind,
+                            emit_role=emit_role,
+                        )
+                # OpenAI spec: the role must appear in at least one chunk. If no
+                # content chunks were emitted (0-token completion), emit a role-only
+                # chunk before the finish_reason chunk so clients can read the role.
+                if kind == "chat" and not role_emitted:
+                    yield sse_chunk(
+                        stream_id, created, model_id, "", None, kind, emit_role=True
+                    )
+                yield sse_chunk(
+                    stream_id,
+                    created,
+                    model_id,
+                    "",
+                    finish_reason(event.response.finish_reason),
+                    kind,
+                )
+        yield "data: [DONE]\n\n"
 
 
 def sse_chunk(

@@ -12,29 +12,82 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
+	"os"
+	"strings"
 
 	pb "github.com/ax-engine/sdk/go/grpc/ax_engine_v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Client is a high-level gRPC client for ax-engine-server.
 type Client struct {
-	conn   *grpc.ClientConn
-	svc    pb.AxEngineClient
+	conn *grpc.ClientConn
+	svc  pb.AxEngineClient
 }
 
 // New dials the gRPC server at addr (e.g. "127.0.0.1:50051") and returns a Client.
-// The connection uses plain-text (no TLS); wrap with grpc.WithTransportCredentials
-// for production use.
+//
+// Transport selection:
+//   - Explicit dial options always win (callers can override credentials).
+//   - When AX_ENGINE_TLS is set to a truthy value (1/true/yes), or addr looks
+//     like a TLS endpoint (scheme https://, or host:port with AX_ENGINE_TLS),
+//     the default is TLS with the system root CAs.
+//   - Otherwise the default is plaintext (suitable for local loopback).
+//
+// Pass grpc.WithTransportCredentials(...) to force a specific credential set.
 func New(addr string, opts ...grpc.DialOption) (*Client, error) {
-	defaults := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-	conn, err := grpc.NewClient(addr, append(defaults, opts...)...)
+	target, useTLS := resolveDialTarget(addr)
+	defaults := []grpc.DialOption{defaultTransportCredentials(useTLS)}
+	conn, err := grpc.NewClient(target, append(defaults, opts...)...)
 	if err != nil {
 		return nil, err
 	}
 	return &Client{conn: conn, svc: pb.NewAxEngineClient(conn)}, nil
+}
+
+// resolveDialTarget strips optional scheme prefixes and decides whether TLS
+// should be the default transport for this address.
+func resolveDialTarget(addr string) (target string, useTLS bool) {
+	trimmed := strings.TrimSpace(addr)
+	lower := strings.ToLower(trimmed)
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		return strings.TrimPrefix(trimmed[len("https://"):], "//"), true
+	case strings.HasPrefix(lower, "http://"):
+		return strings.TrimPrefix(trimmed[len("http://"):], "//"), false
+	case strings.HasPrefix(lower, "grpcs://"):
+		return strings.TrimPrefix(trimmed[len("grpcs://"):], "//"), true
+	case strings.HasPrefix(lower, "grpc://"):
+		return strings.TrimPrefix(trimmed[len("grpc://"):], "//"), false
+	default:
+		return trimmed, envRequestsTLS()
+	}
+}
+
+func envRequestsTLS() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("AX_ENGINE_TLS")))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultTransportCredentials(useTLS bool) grpc.DialOption {
+	if useTLS {
+		// System root CAs; server name is taken from the dial target host.
+		// Callers that need custom CA bundles should pass their own
+		// TransportCredentials via opts.
+		return grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}))
+	}
+	return grpc.WithTransportCredentials(insecure.NewCredentials())
 }
 
 // Close releases the underlying gRPC connection.

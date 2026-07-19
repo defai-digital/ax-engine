@@ -227,10 +227,10 @@ pub struct ServerArgs {
     #[arg(long = "grpc-request-timeout-secs")]
     pub grpc_request_timeout_secs: Option<u64>,
 
-    /// Global request-rate limit, in requests per second, shared across all
-    /// clients (this is not a per-client/per-IP limiter — the server binds
-    /// to 127.0.0.1 by default). Unset (or non-positive) disables rate
-    /// limiting. Falls back to AX_ENGINE_RATE_LIMIT_RPS.
+    /// Per-client request-rate limit, in requests per second. Clients are
+    /// keyed by bearer token when present, otherwise by peer IP. Unset
+    /// (or non-positive) disables rate limiting. Falls back to
+    /// AX_ENGINE_RATE_LIMIT_RPS.
     #[arg(long = "rate-limit-rps")]
     pub rate_limit_rps: Option<f64>,
 
@@ -280,12 +280,19 @@ pub struct ServerArgs {
     /// detected private interface address when `--host` is unspecified.
     #[arg(long = "lan-advertise-host")]
     pub lan_advertise_host: Option<String>,
+
+    /// Allow mDNS LAN advertisement without an API key (`auth=open`).
+    /// Refused by default: keyless advertise is discoverable by anyone on
+    /// the LAN. Prefer `--api-key` / `AX_ENGINE_API_KEY`.
+    #[arg(long = "allow-open-lan", default_value_t = false)]
+    pub allow_open_lan: bool,
 }
 
 const ADVERTISE_LAN_ENV: &str = "AX_ENGINE_ADVERTISE_LAN";
 const LAN_CLUSTER_ENV: &str = "AX_ENGINE_LAN_CLUSTER";
 const LAN_INSTANCE_NAME_ENV: &str = "AX_ENGINE_LAN_INSTANCE_NAME";
 const LAN_ADVERTISE_HOST_ENV: &str = "AX_ENGINE_LAN_ADVERTISE_HOST";
+const ALLOW_OPEN_LAN_ENV: &str = "AX_ENGINE_ALLOW_OPEN_LAN";
 
 impl ServerArgs {
     pub fn resolved_api_key(&self) -> Option<String> {
@@ -302,6 +309,22 @@ impl ServerArgs {
         }
         matches!(
             std::env::var(ADVERTISE_LAN_ENV)
+                .ok()
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        )
+    }
+
+    /// Whether keyless mDNS advertise is explicitly allowed.
+    pub fn resolved_allow_open_lan(&self) -> bool {
+        if self.allow_open_lan {
+            return true;
+        }
+        matches!(
+            std::env::var(ALLOW_OPEN_LAN_ENV)
                 .ok()
                 .as_deref()
                 .map(str::trim)

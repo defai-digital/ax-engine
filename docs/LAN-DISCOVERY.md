@@ -34,6 +34,7 @@ Environment equivalents:
 | Flag | Env |
 | --- | --- |
 | `--advertise-lan` | `AX_ENGINE_ADVERTISE_LAN=1` |
+| `--allow-open-lan` | `AX_ENGINE_ALLOW_OPEN_LAN=1` |
 | `--lan-cluster` | `AX_ENGINE_LAN_CLUSTER` |
 | `--lan-instance-name` | `AX_ENGINE_LAN_INSTANCE_NAME` |
 | `--lan-advertise-host` | `AX_ENGINE_LAN_ADVERTISE_HOST` |
@@ -43,7 +44,10 @@ Environment equivalents:
 - Bind host must not be loopback-only when advertising (use `0.0.0.0` or a LAN IP).
 - Advertised address prefers private IPv4 (RFC1918). Link-local is avoided so
   AX Serving worker registration can accept the URL.
-- Prefer setting `--api-key` when advertising: TXT `auth=required`.
+- **API key required by default.** Without `--api-key` / `AX_ENGINE_API_KEY`,
+  advertise is refused so a keyless instance is not discoverable on the LAN
+  with `auth=open`. To opt in deliberately, pass `--allow-open-lan` or set
+  `AX_ENGINE_ALLOW_OPEN_LAN=1`.
 
 ## Service type
 

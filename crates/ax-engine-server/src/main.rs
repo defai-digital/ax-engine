@@ -109,6 +109,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .into());
         }
+        if api_key.is_none() && !args.resolved_allow_open_lan() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "--advertise-lan without --api-key / AX_ENGINE_API_KEY broadcasts auth=open on \
+                 the LAN; set an API key, or pass --allow-open-lan / AX_ENGINE_ALLOW_OPEN_LAN=1 \
+                 to opt in explicitly",
+            )
+            .into());
+        }
         let advertise_ip = lan_advertise::pick_advertise_ipv4(
             args.resolved_lan_advertise_host().as_deref(),
             &args.host,
@@ -116,8 +125,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
         if api_key.is_none() {
             warn!(
-                "LAN advertise is enabled without --api-key / AX_ENGINE_API_KEY; \
-                 peers will see auth=open. Prefer requiring a bearer token on non-loopback binds."
+                "LAN advertise is enabled without --api-key / AX_ENGINE_API_KEY \
+                 (--allow-open-lan); peers will see auth=open"
             );
         }
         let advertiser = std::sync::Arc::new(
@@ -165,7 +174,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let http_server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+    // ConnectInfo is required so the per-client rate limiter can key buckets
+    // by peer IP when no bearer token is present.
+    let http_server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal());
 
     if let Some(addr) = grpc_bind_address {
         let parsed: std::net::SocketAddr = addr.parse().map_err(|e| {

@@ -1458,8 +1458,11 @@ impl EngineCore {
         let pending = self.request_manager.collect_terminal_cleanup();
         let mut free_results = Vec::with_capacity(pending.len());
         for request_id in pending {
-            let free_result = self.kv_manager.free(request_id)?;
+            // Release runner-side GPU resources first so a later free() error
+            // cannot skip cleanup and leak per-request state for the process
+            // lifetime (MTP buffers, n-gram tables, sampling workspace).
             self.runner.release_request_state(request_id);
+            let free_result = self.kv_manager.free(request_id)?;
             self.request_manager.mark_terminal_cleaned(request_id)?;
             free_results.push(free_result);
         }

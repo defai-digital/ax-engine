@@ -90,6 +90,7 @@ fn base_args() -> ServerArgs {
         lan_cluster: None,
         lan_instance_name: None,
         lan_advertise_host: None,
+        allow_open_lan: false,
     }
 }
 

@@ -144,7 +144,7 @@ def prepare_gemma4_unified_multimodal_request(
             "pixel_values": image["pixel_values"],
             "pixel_position_ids": image["pixel_position_ids"],
         }
-        for span, image in zip(image_spans, processed_images, strict=False)
+        for span, image in zip(image_spans, processed_images, strict=True)
     ]
     runtime_audios = [
         {
@@ -153,10 +153,10 @@ def prepare_gemma4_unified_multimodal_request(
             "frame_count": audio["frame_count"],
             "feature_count": audio["feature_count"],
         }
-        for span, audio in zip(audio_spans, processed_audios, strict=False)
+        for span, audio in zip(audio_spans, processed_audios, strict=True)
     ]
     runtime_videos = []
-    for span, video in zip(video_spans, processed_videos, strict=False):
+    for span, video in zip(video_spans, processed_videos, strict=True):
         runtime_videos.append(
             {
                 "span": span["span"],
@@ -805,7 +805,7 @@ def _normalize_video_timestamp_ids(
         raise ValueError("Gemma4 unified video timestamp_token_ids length must match video count")
     normalized = []
     for idx, (video_timestamps, frame_count) in enumerate(
-        zip(timestamp_ids, frame_counts, strict=False)
+        zip(timestamp_ids, frame_counts, strict=True)
     ):
         if not isinstance(video_timestamps, list):
             raise ValueError(
@@ -917,7 +917,7 @@ def _expand_multimodal_placeholders(
             replacement_start = len(output)
             soft_token_ranges = []
             soft_token_count = 0
-            for frame, timestamp_tokens in zip(video["frames"], timestamps, strict=False):
+            for frame, timestamp_tokens in zip(video["frames"], timestamps, strict=True):
                 output.extend(timestamp_tokens)
                 output.append(config.boi_token_id)
                 range_start = len(output)
@@ -1028,7 +1028,7 @@ def _rgb_pixels(
             pixel = [
                 (channel - mean) / std
                 for channel, mean, std in zip(
-                    pixel, config.image_mean, config.image_std, strict=False
+                    pixel, config.image_mean, config.image_std, strict=True
                 )
             ]
         values.append((pixel[0], pixel[1], pixel[2]))

@@ -25,7 +25,7 @@ use super::openai::compat::{apply_template, detokenize, props, slots, tokenize};
 use super::openai::completions::openai_completions;
 use super::openai::embeddings::openai_embeddings;
 use super::openai::responses_api::openai_responses;
-use crate::rate_limit::TokenBucket;
+use crate::rate_limit::ClientRateLimiter;
 
 pub(crate) fn build_router(state: AppState) -> Router {
     let router = Router::new()
@@ -65,16 +65,18 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/v1/generate/stream", post(generate_stream))
         .route("/v1/generate", post(generate));
 
-    // Global rate limit (when enabled) sheds transport load before handlers.
-    // Engine concurrency is enforced inside generation/embedding handlers so
-    // its permit follows the real blocking job rather than the HTTP response.
+    // Per-client rate limit (when enabled) sheds transport load before handlers.
+    // Clients are keyed by bearer token or peer IP so one noisy client cannot
+    // starve others. Engine concurrency is enforced inside generation/embedding
+    // handlers so its permit follows the real blocking job rather than the
+    // HTTP response.
     let router = match state.limits.rate_limit {
         Some(cfg) => {
-            let bucket = Arc::new(TokenBucket::new(cfg.burst));
+            let limiter = Arc::new(ClientRateLimiter::new(cfg.burst));
             router.layer(middleware::from_fn(move |request: Request, next: Next| {
-                let bucket = Arc::clone(&bucket);
+                let limiter = Arc::clone(&limiter);
                 async move {
-                    if bucket.try_acquire(&cfg) {
+                    if limiter.try_acquire(&request, &cfg) {
                         next.run(request).await
                     } else {
                         (

@@ -806,7 +806,7 @@ pub struct EmbedCompileCacheStats {
     pub mean_pool_len: usize,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct EmbedCompileStats {
     single_hits: u64,
     single_misses: u64,
@@ -817,9 +817,28 @@ struct EmbedCompileStats {
 }
 
 /// Maximum number of compiled closures retained per embed compile cache.
-/// When exceeded, the cache is cleared and rebuilt — prevents unbounded
-/// memory growth under workloads with many distinct input shapes.
+/// When exceeded, the oldest ~25% of entries are evicted (insertion-order
+/// sweep) instead of dropping the entire working set — prevents unbounded
+/// memory growth and avoids forced recompilation of every live shape.
 const EMBED_COMPILE_CACHE_MAX_ENTRIES: usize = 256;
+
+/// Evict approximately 25% of entries when an embed compile cache is full.
+/// `HashMap` does not track true LRU access order; we drop the first keys
+/// yielded by iteration, which is enough to keep the working set warm under
+/// high-cardinality batch-shape workloads.
+fn embed_compile_cache_evict_if_full<K, V>(cache: &mut std::collections::HashMap<K, V>)
+where
+    K: Eq + std::hash::Hash + Clone,
+{
+    if cache.len() < EMBED_COMPILE_CACHE_MAX_ENTRIES {
+        return;
+    }
+    let evict = (cache.len() / 4).max(1);
+    let victims: Vec<K> = cache.keys().take(evict).cloned().collect();
+    for key in victims {
+        cache.remove(&key);
+    }
+}
 
 /// Default minimum `batch_size * max_seq_len` before the mean-pool compiled
 /// closure path is attempted. Override via `AX_EMBED_MEAN_COMPILE_THRESHOLD`.
@@ -1426,7 +1445,11 @@ impl MlxRunner {
     /// the workload's shape distribution is too wide; consider length-
     /// bucketing batches before submitting them.
     pub fn embed_compile_cache_stats(&self) -> EmbedCompileCacheStats {
-        let stats = self.embed_compile_stats.lock();
+        // Snapshot hit/miss counters and cache sizes under the stats lock first
+        // so a concurrent embed() that updates counters between size reads
+        // cannot produce a half-updated counter view. Cache lengths are still
+        // read under their own locks (they change independently of counters).
+        let stats = self.embed_compile_stats.lock().clone();
         let single_len = self.embed_compile_cache.lock().len();
         let batched_len = self.embed_batch_compile_cache.lock().len()
             + self.embed_gemma_batch_compile_cache.lock().len();
@@ -2363,9 +2386,7 @@ impl MlxRunner {
                 has_dense_head,
             ) {
                 Ok(cls) => {
-                    if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
-                        cache.clear();
-                    }
+                    embed_compile_cache_evict_if_full(&mut cache);
                     cache.insert(key, cls);
                 }
                 Err(err) => {
@@ -2548,9 +2569,7 @@ impl MlxRunner {
                 has_dense_head,
             ) {
                 Ok(cls) => {
-                    if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
-                        cache.clear();
-                    }
+                    embed_compile_cache_evict_if_full(&mut cache);
                     cache.insert(key.clone(), cls);
                 }
                 Err(err) => {
@@ -2665,9 +2684,7 @@ impl MlxRunner {
                 Arc::clone(&self.weights),
             ) {
                 Ok(cls) => {
-                    if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
-                        cache.clear();
-                    }
+                    embed_compile_cache_evict_if_full(&mut cache);
                     cache.insert(key, cls);
                 }
                 Err(err) => {
@@ -2744,9 +2761,7 @@ impl MlxRunner {
                 bidir_mask,
             ) {
                 Ok(cls) => {
-                    if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
-                        cache.clear();
-                    }
+                    embed_compile_cache_evict_if_full(&mut cache);
                     cache.insert(key.clone(), cls);
                 }
                 Err(_) => {
@@ -2842,9 +2857,7 @@ impl MlxRunner {
                 pool_scale,
             ) {
                 Ok(cls) => {
-                    if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
-                        cache.clear();
-                    }
+                    embed_compile_cache_evict_if_full(&mut cache);
                     cache.insert(key.clone(), cls);
                 }
                 Err(_) => {

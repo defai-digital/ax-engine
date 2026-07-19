@@ -112,6 +112,13 @@ impl EngineTokenizer {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let cache = guard.get_or_insert_with(HashMap::new);
+        // Re-check under the lock: another thread may have inserted the same
+        // key while we parsed, or a newer mtime for this path. Retain+insert
+        // must be atomic under the lock so two racers cannot leave two
+        // entries for the same directory.
+        if let Some(hit) = cache.get(&cache_key) {
+            return Ok(hit.clone());
+        }
         // Stale entries for the same directory (older mtime) are dropped so
         // a hot-swapped model directory does not grow the map unboundedly.
         cache.retain(|(path, _), _| path != &cache_key.0);

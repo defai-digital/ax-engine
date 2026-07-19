@@ -242,8 +242,20 @@ pub(super) fn json_request_body<T: serde::Serialize>(value: &T) -> Vec<u8> {
 pub(super) fn normalize_measurement_fields(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            map.remove("cpu_time_us");
-            map.remove("runner_time_us");
+            // Drop wall-clock and path-dependent performance counters so HTTP
+            // SSE payloads can be compared to an independent SDK stream of the
+            // same request without flaking on microsecond timing or token
+            // accounting that differs when the same mock server is hit twice.
+            for key in [
+                "cpu_time_us",
+                "runner_time_us",
+                "generation_time_us",
+                "time_to_first_token_us",
+                "total_time_us",
+                "generation_token_count",
+            ] {
+                map.remove(key);
+            }
             for value in map.values_mut() {
                 normalize_measurement_fields(value);
             }
@@ -305,6 +317,7 @@ pub(super) fn base_server_args() -> ServerArgs {
         lan_cluster: None,
         lan_instance_name: None,
         lan_advertise_host: None,
+        allow_open_lan: false,
     }
 }
 
