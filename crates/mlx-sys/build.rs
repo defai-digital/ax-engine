@@ -118,6 +118,18 @@ fn mlx_dirs_valid(dirs: &MlxDirs) -> bool {
 /// Locate a pip-installed `mlx` package that ships `lib/libmlx.dylib` + headers.
 fn find_pip_mlx_dirs() -> Option<MlxDirs> {
     let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // An explicitly selected build Python must win over ambient virtualenv or
+    // Conda paths. Studio uses PYO3_PYTHON to keep runtime preparation and the
+    // Rust link target on the same pinned MLX wheel.
+    let explicit_python_root = ["PYO3_PYTHON", "PYTHON", "PYTHON_SYS_EXECUTABLE"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .find_map(|python| mlx_root_from_python(&python));
+    if let Some(root) = &explicit_python_root {
+        candidates.push(root.clone());
+    }
+
     if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
         candidates.push(PathBuf::from(venv).join("lib"));
     }
@@ -133,33 +145,13 @@ fn find_pip_mlx_dirs() -> Option<MlxDirs> {
     if let Ok(prefix) = std::env::var("CONDA_PREFIX") {
         candidates.push(PathBuf::from(prefix).join("lib"));
     }
-    // Prefer the Python that is building us (maturin/pyo3 set PYO3_PYTHON /
-    // PYTHON). Try each candidate until one actually executes — a stale
-    // pointer to a removed venv must not mask a working `python3`.
-    let pythons = ["PYO3_PYTHON", "PYTHON", "PYTHON_SYS_EXECUTABLE"]
-        .iter()
-        .filter_map(std::env::var_os)
-        .chain(std::iter::once("python3".into()));
-    for python in pythons {
-        let Ok(out) = std::process::Command::new(&python)
-            .args([
-                "-c",
-                "import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]))",
-            ])
-            .output()
-        else {
-            continue;
-        };
-        if !out.status.success() {
-            continue;
+
+    // Fall back to the shell's python3 only when none of the explicit Python
+    // selectors resolved a usable MLX package.
+    if explicit_python_root.is_none() {
+        if let Some(root) = mlx_root_from_python(std::ffi::OsStr::new("python3")) {
+            candidates.push(root);
         }
-        if let Ok(s) = String::from_utf8(out.stdout) {
-            let p = PathBuf::from(s.trim());
-            if p.is_dir() {
-                candidates.push(p);
-            }
-        }
-        break;
     }
 
     for base in candidates {
@@ -200,6 +192,21 @@ fn find_pip_mlx_dirs() -> Option<MlxDirs> {
         }
     }
     None
+}
+
+fn mlx_root_from_python(python: &std::ffi::OsStr) -> Option<PathBuf> {
+    let out = std::process::Command::new(python)
+        .args([
+            "-c",
+            "import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]))",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let root = PathBuf::from(String::from_utf8(out.stdout).ok()?.trim());
+    root.is_dir().then_some(root)
 }
 
 /// The admitted MLX version, pinned in `mlx.version` at the repo root.
