@@ -116,7 +116,8 @@ throughput baselines.
   notarizes the three binaries with `--sign-identity`, writes a tarball,
   SHA256 file, and manifest under `target/release-artifacts/<tag>/`, signs those
   artifacts with minisign, pushes the tag, publishes and verifies the GitHub
-  assets, then dispatches the Homebrew formula update. The tag-triggered PyPI
+  assets (including the repository-pinned `ax-minisign.pub`), then dispatches
+  the Homebrew formula update. The tag-triggered PyPI
   workflow promotes the matching wheel instead of rebuilding it.
   Notarization can use the local
   `AX_NOTARY_PROFILE` / `--notary-profile` Keychain profile or the same

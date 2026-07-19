@@ -9,6 +9,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MAIN_REPO="${AX_RELEASE_REPO:-defai-digital/ax-engine}"
 RELEASE_BINS=(ax-engine ax-engine-server ax-engine-bench)
 MACOS_RELEASE_ENTITLEMENTS="$ROOT_DIR/scripts/macos-release.entitlements.plist"
+REPOSITORY_MINISIGN_PUBLIC_KEY="$ROOT_DIR/docs/ax-minisign.pub"
 RELEASE_HELPER_SOURCES=(
     "scripts/download_model.py:ax-engine-download-model.py"
     "scripts/prepare_mtp_sidecar.py:ax-engine-prepare-mtp-sidecar.py"
@@ -436,6 +437,13 @@ check_cmd tar "tar is required for release packaging"
 
 if [[ "$MINISIGN" = true ]]; then
     check_cmd minisign "install minisign: brew install minisign"
+    [[ -f "$REPOSITORY_MINISIGN_PUBLIC_KEY" ]] || {
+        die "repository Minisign public key is missing: $REPOSITORY_MINISIGN_PUBLIC_KEY"
+    }
+    PINNED_MINISIGN_PUBLIC_KEY="$(awk 'NR == 2 { print; exit }' "$REPOSITORY_MINISIGN_PUBLIC_KEY")"
+    [[ -n "$PINNED_MINISIGN_PUBLIC_KEY" ]] || {
+        die "repository Minisign public key has no key material"
+    }
 fi
 if [[ -n "$SIGN_IDENTITY" ]]; then
     check_cmd codesign "codesign is required for Apple Developer ID signing"
@@ -597,9 +605,12 @@ PY
 assets=("$ARCHIVE_PATH" "$SHA256_PATH" "$MANIFEST_PATH")
 
 if [[ "$MINISIGN" = true ]]; then
+    PUBLISHED_MINISIGN_PUBLIC_KEY="$ARTIFACT_DIR/ax-minisign.pub"
+    cp "$REPOSITORY_MINISIGN_PUBLIC_KEY" "$PUBLISHED_MINISIGN_PUBLIC_KEY"
     minisign_args=(
         --secret-key "$MINISIGN_SECRET_KEY"
         --public-key "$MINISIGN_PUBLIC_KEY"
+        --pinned-public-key "$PINNED_MINISIGN_PUBLIC_KEY"
         --signature-dir "$ARTIFACT_DIR"
         --force
     )
@@ -608,6 +619,7 @@ if [[ "$MINISIGN" = true ]]; then
     fi
     run "$SCRIPT_DIR/minisign-artifact.sh" "${minisign_args[@]}" "${assets[@]}"
     assets+=(
+        "$PUBLISHED_MINISIGN_PUBLIC_KEY"
         "$ARCHIVE_PATH.minisig"
         "$SHA256_PATH.minisig"
         "$MANIFEST_PATH.minisig"

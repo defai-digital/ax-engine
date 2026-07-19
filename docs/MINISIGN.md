@@ -7,7 +7,9 @@ assets. The release scripts (`scripts/publish-github-release.sh`,
 repository in `~/signkey` by default.
 
 The secret key must never be committed, logged, or uploaded as a release asset.
-The public key is safe to publish so users can verify downloaded artifacts.
+The public key is safe to publish so users can verify downloaded artifacts. The
+canonical public key is committed as `docs/ax-minisign.pub` and uploaded as
+`ax-minisign.pub` with every signed GitHub release.
 
 ## Key files
 
@@ -40,22 +42,25 @@ bash scripts/minisign-keygen.sh --allow-unencrypted-test-key
 
 Do **not** use an unencrypted key for releases. Use `--dry-run` to preview.
 
-## Pin the release public key (recommended)
+## Pinned release public key
 
-`scripts/minisign-artifact.sh` can refuse to sign or verify unless the local
-public key matches an expected value, so a rotated, wrong, or planted key cannot
-silently produce valid-looking signatures. The pin is env-sourced because the
-shared AX public key material is intentionally not stored in this repo.
+The canonical key ID for v6.9.0 and later is `CF42FC69BEEF0EA5`. The publisher
+pins `docs/ax-minisign.pub` and refuses to sign when the local public key differs,
+so a rotated, wrong, or planted key cannot silently produce valid-looking
+signatures.
+
+`scripts/minisign-artifact.sh` also supports an explicit environment pin for
+manual and CI signing:
 
 Set the pin in your shell rc or CI secret:
 
 ```bash
-export AX_MINISIGN_PINNED_PUBLIC_KEY='RWS...your-shared-ax-public-key...'
+export AX_MINISIGN_PINNED_PUBLIC_KEY="$(sed -n '2p' docs/ax-minisign.pub)"
 ```
 
-When set, the signer reads the public key material from `~/signkey/ax.pub`
-and fails closed on mismatch. When unset, pinning is not enforced (current
-behavior), which keeps unconfigured local recovery flows working.
+When set, the signer reads the public key material from `~/signkey/ax.pub` and
+fails closed on mismatch. Direct signer invocations remain unpinned when the
+variable and `--pinned-public-key` are both omitted.
 
 To override per-invocation:
 
@@ -97,11 +102,11 @@ ax-engine artifact ax-engine-v6.4.5-macos-arm64.tar.gz sha256=<digest> signed=20
 
 ## Verify an artifact
 
-Users verify a downloaded artifact against the published public key:
+Download `ax-minisign.pub` beside the release artifact, then verify it:
 
 ```bash
 minisign -V \
-  -P 'RWS...published AX public key...' \
+  -p ax-minisign.pub \
   -m ax-engine-v6.4.5-macos-arm64.tar.gz \
   -x ax-engine-v6.4.5-macos-arm64.tar.gz.minisig
 ```
