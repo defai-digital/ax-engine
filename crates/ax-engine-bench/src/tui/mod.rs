@@ -1516,9 +1516,7 @@ impl App {
             self.port.trim()
         };
         // Empty fields are defaults; non-empty invalid values already rejected.
-        if port.parse::<u16>().ok().filter(|&p| p > 0).is_none() {
-            return None;
-        }
+        port.parse::<u16>().ok().filter(|&p| p > 0)?;
         Some(format_http_base_url(host, port))
     }
 
