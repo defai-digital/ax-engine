@@ -1,5 +1,9 @@
 # Homebrew packaging notes
 
+**Homebrew is the primary end-user deploy path** for the `ax-engine` CLI,
+server, and bench tools on macOS Apple Silicon. The Python wheel remains the
+SDK / library channel (`import ax_engine`).
+
 The live formula lives in
 [`defai-digital/homebrew-ax-engine`](https://github.com/defai-digital/homebrew-ax-engine).
 `Formula/ax-engine.rb` here is the canonical copy used for review and as a

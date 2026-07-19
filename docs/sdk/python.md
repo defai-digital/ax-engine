@@ -86,14 +86,20 @@ ax-engine-bench generate-manifest /path/to/dest
 
 ## Install
 
-### pip (primary)
+For the **CLI / server** on macOS Apple Silicon, prefer Homebrew
+(`brew install defai-digital/ax-engine/ax-engine`) — see
+[Getting Started](../GETTING-STARTED.md#installation). Use pip when you need
+this Python package in a venv or for library embedding.
+
+### pip (Python SDK)
 
 ```text
 python3 -m pip install "ax-engine>=6.9.0,<7"
 ```
 
-The pip wheel bundles `ax-engine-server`, `ax-engine-bench`, and the Metal
-runtime assets. No Rust toolchain or Xcode is required.
+The pip wheel also bundles `ax-engine-server`, `ax-engine-bench`, and the Metal
+runtime assets when you want a wheel-only install. No Rust toolchain or Xcode is
+required for the wheel.
 
 ### From source
 

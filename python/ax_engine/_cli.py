@@ -1342,8 +1342,9 @@ def _unavailable_bench_doctor_report(
         "issues": [f"Required ax-engine-bench binary is unavailable: {detail}"],
         "model_issues": [],
         "next_actions": [
-            "Reinstall the official wheel so its bundled ax-engine-bench binary is present: "
-            f'python3 -m pip install --force-reinstall "ax-engine[download]=={version}"'
+            "Reinstall via Homebrew (primary): brew reinstall defai-digital/ax-engine/ax-engine",
+            "Or reinstall the Python wheel so its bundled ax-engine-bench is present: "
+            f'python3 -m pip install --force-reinstall "ax-engine[download]=={version}"',
         ],
         "details_command": "ax-engine-bench doctor",
         "source": {

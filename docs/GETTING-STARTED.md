@@ -47,64 +47,50 @@ paths validate compatibility and route behavior.
 
 ### Match this guide
 
-This guide documents the current `6.9.x` command surface. The Python wheel is
-the primary deployment path for end users. Released install channels can still
-lag behind the repository, so check the version before assuming the examples
-below apply:
+This guide documents the current `6.9.x` command surface. **Homebrew is the
+primary deployment path** for the `ax-engine` CLI, server, and bench tools on
+macOS Apple Silicon. Released install channels can still lag behind the
+repository, so check the version before assuming the examples below apply:
 
 ```bash
-python3 -m pip index versions ax-engine
 brew info defai-digital/ax-engine/ax-engine
+python3 -m pip index versions ax-engine   # optional: Python SDK channel
 ```
 
-If PyPI reports an older version, use the source build for this guide. If
-Homebrew reports an older version, prefer pip unless you specifically need a
-package-manager-owned native CLI install. Older packages may install
-successfully while missing the top-level `ax-engine` CLI subcommands used here.
+Use this guide only when Homebrew reports `6.9.0` or newer. If the formula is
+older, update the tap (`brew update`) or use a source build for the commands
+shown here. Prefer the Python wheel only when you need the in-process Python
+SDK (or when Homebrew is unavailable).
 
-### Python wheel (primary)
+### Homebrew (primary)
 
-For the Python SDK plus the top-level orchestration CLI:
+Install the signed macOS arm64 CLI, server, and bench binaries:
 
 ```bash
-python3 -m pip install "ax-engine[download]>=6.9.0,<7"
+brew tap defai-digital/ax-engine
+brew trust --formula \
+  defai-digital/ax-engine/ax-engine \
+  defai-digital/ax-engine/mlx \
+  defai-digital/ax-engine/mlx-c
+brew install defai-digital/ax-engine/ax-engine
 ax-engine doctor
 ```
 
-The current macOS arm64 wheel bundles `ax-engine-server` and `ax-engine-bench`
-behind the Python entrypoints. If pip cannot find `>=6.9.0` for your platform,
-use the source build below instead of silently accepting an older release.
-The wheel also bundles the AX and MLX Metal runtime assets used by normal
-serving. Xcode and Apple's Metal Toolchain are only required when you build from
-source, run developer diagnostics, or rebuild AX Metal kernels.
-
-### Homebrew (optional)
-
-Use Homebrew when you specifically want package-manager-owned macOS arm64 CLI
-binaries on `PATH`. The pip wheel is still the preferred install path for most
-users.
+That installs `ax-engine`, `ax-engine-server`, `ax-engine-bench`, and the model
+helper scripts onto your `PATH`.
 
 > [!NOTE]
-> The Homebrew formula depends on this tap's own `mlx` / `mlx-c` formulas
-> (not homebrew-core bottles) so MLX NAX acceleration is not silently disabled
-> on macOS 26.x. Those deps build from source and need Xcode. The pip wheel
-> remains the preferred install path for most users.
+> The formula depends on this tap's own `mlx` / `mlx-c` formulas (not
+> homebrew-core bottles) so MLX NAX acceleration is not silently disabled on
+> macOS 26.x. Those deps **build from source** and need **Xcode** (no Apple
+> Developer account). First install can take a while.
 
-```bash
-brew info defai-digital/ax-engine/ax-engine
-brew install defai-digital/ax-engine/ax-engine
-```
-
-Use Homebrew for this guide only when the formula reports `6.9.0` or newer.
-The current formula should install `ax-engine`, `ax-engine-server`, and
-`ax-engine-bench`; older formulae may install only the lower-level tools.
-
-**Linkage model:** GitHub release binaries are built against pip/venv MLX
-(for source and wheel performance parity) and therefore ship with
-`@rpath/libmlx.dylib`. The formula rewrites those load commands at install
-time to `$(brew --prefix)/opt/mlx/lib/libmlx.dylib` from this tap, then
-ad-hoc re-signs `ax-engine-server` and `ax-engine-bench`. The release tarball
-is not a standalone installer with bundled dylibs.
+**Linkage model:** GitHub release binaries are built against pip/venv MLX (for
+source and wheel performance parity) and ship with `@rpath/libmlx.dylib`. The
+formula rewrites those load commands at install time to
+`$(brew --prefix)/opt/mlx/lib/libmlx.dylib` from this tap, then ad-hoc re-signs
+`ax-engine-server` and `ax-engine-bench`. The release tarball is not a
+standalone installer with bundled dylibs.
 
 ```bash
 ax-engine doctor
@@ -121,8 +107,6 @@ brew update
 brew reinstall defai-digital/ax-engine/ax-engine
 brew test defai-digital/ax-engine/ax-engine
 ```
-
-Prefer pip for normal deployment.
 
 #### Gatekeeper warning on older releases
 
@@ -154,16 +138,32 @@ sudo xattr -dr com.apple.quarantine "$(which ax-engine-bench)"
 
 Run this once after `brew install`. No Apple Developer account is required.
 
-**Note on dependencies:** `mlx` installs from pre-built Homebrew bottles. It
-does not trigger an Xcode install prompt or require an Apple
-Developer account at install time.
+### Python wheel (SDK / secondary)
+
+Use the wheel when you need the **Python package** (`import ax_engine`),
+LangChain helpers, or the optional OpenAI/multimodal extras — or when you cannot
+use Homebrew.
+
+```bash
+python3 -m pip install "ax-engine[download]>=6.9.0,<7"
+ax-engine doctor
+```
+
+The current macOS arm64 wheel also bundles `ax-engine-server` and
+`ax-engine-bench` behind the Python entrypoints, so a wheel-only install can
+still serve and diagnose. If pip cannot find `>=6.9.0` for your platform, use
+the source build below instead of silently accepting an older release. The wheel
+bundles AX and MLX Metal runtime assets used by normal serving; Xcode and
+Apple's Metal Toolchain are only required when you build from source, run
+developer diagnostics, or rebuild AX Metal kernels.
 
 ### Source
 
 Use source builds for development, local examples, or changes that have not
-been tagged yet. Source is the advanced fallback when pip does not have a
-matching wheel for the current guide. Install Xcode first, open it once to
-finish Apple's setup prompts, then install the Metal Toolchain component:
+been tagged yet. Source is the advanced fallback when neither Homebrew nor pip
+has a matching `6.9.x` package for the current guide. Install Xcode first, open
+it once to finish Apple's setup prompts, then install the Metal Toolchain
+component:
 
 ```text
 brew install protobuf
@@ -324,8 +324,8 @@ cargo run -p ax-engine-core --bin generate-manifest -- /path/to/model  # from so
 
 ## First Commands
 
-If you installed with Homebrew, use `ax-engine-bench` directly. If you are
-working from source, replace `ax-engine-bench` with
+Homebrew installs put `ax-engine-bench` on your `PATH`. If you are working from
+source, replace `ax-engine-bench` with
 `cargo run -p ax-engine-bench --bin ax-engine-bench --`.
 
 To inspect the workload-contract CLI:

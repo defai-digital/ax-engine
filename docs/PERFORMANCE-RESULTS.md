@@ -85,11 +85,11 @@ packages are comparison artifacts for peer MTP engines rather than normal
 
 #### Download and serve an MTP package
 
-Install with the download extra, prepare a target, then run the serve command
+Install via Homebrew (primary), prepare a target, then run the serve command
 printed by the CLI.
 
 ```bash
-python3 -m pip install -U "ax-engine[download]>=6.9.0,<7"
+brew install defai-digital/ax-engine/ax-engine
 ax-engine download-mtp gemma-4-12b-4bit
 ```
 

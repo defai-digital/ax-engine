@@ -4,20 +4,30 @@ High-performance local inference engine for Apple Silicon — Python bindings.
 
 ## Installation
 
-This package README describes the current `6.8.x` Python package. Pip is the
-primary deployment path for end users. If your package index only shows older
-`ax-engine` versions, those wheels may not expose the top-level `ax-engine` CLI
-commands shown below.
+This package is the **Python SDK** for AX Engine. For the primary end-user
+CLI / server install on macOS Apple Silicon, use **Homebrew** instead:
 
-### Python (pip)
+```bash
+brew tap defai-digital/ax-engine
+brew install defai-digital/ax-engine/ax-engine
+ax-engine doctor
+```
+
+See the
+[Getting Started installation guide](https://github.com/defai-digital/ax-engine/blob/main/docs/GETTING-STARTED.md#installation)
+for brew trust, linkage, and troubleshooting details.
+
+### Python (pip) — SDK and library use
 
 ```bash
 python3 -m pip install "ax-engine[download]>=6.9.0,<7"
 ```
 
 Requires macOS 26+, Apple Silicon (M2 Max or newer), Python 3.10+.
-The current macOS arm64 wheel includes the `ax-engine` orchestration CLI plus
-bundled `ax-engine-server` and `ax-engine-bench` binaries.
+The current macOS arm64 wheel also includes the `ax-engine` orchestration CLI
+plus bundled `ax-engine-server` and `ax-engine-bench` binaries when you need a
+wheel-only install. If your package index only shows older `ax-engine`
+versions, those wheels may not expose the top-level CLI commands shown below.
 
 Verify the installed command surface:
 
@@ -25,9 +35,6 @@ Verify the installed command surface:
 ax-engine doctor
 ax-engine-server --help
 ```
-
-Optional Homebrew installs, source builds, and release-archive details are documented in the
-[Getting Started installation guide](https://github.com/defai-digital/ax-engine/blob/main/docs/GETTING-STARTED.md#installation).
 
 ## Quick start
 

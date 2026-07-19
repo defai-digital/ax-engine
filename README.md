@@ -1,8 +1,8 @@
 # AX Engine
 
-AX Engine is a Mac-first LLM inference runtime for Apple Silicon. Install a
-wheel, download a model, and serve OpenAI-compatible endpoints locally — with
-a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP, and
+AX Engine is a Mac-first LLM inference runtime for Apple Silicon. Install with
+Homebrew, download a model, and serve OpenAI-compatible endpoints locally —
+with a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP, and
 peer-backed benchmarks against `mlx-lm`, llama.cpp, MTPLX, and lightning-mlx.
 
 **Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 Max or newer, 32 GB+ unified
@@ -27,10 +27,20 @@ memory).**
 ## Quick Start
 
 ```bash
-python3 -m pip install --upgrade pip
-python3 -m pip install -U "ax-engine[download]>=6.9.0,<7"
+brew tap defai-digital/ax-engine
+brew trust --formula \
+  defai-digital/ax-engine/ax-engine \
+  defai-digital/ax-engine/mlx \
+  defai-digital/ax-engine/mlx-c
+brew install defai-digital/ax-engine/ax-engine
 ax-engine doctor
 ```
+
+Homebrew is the primary install path for the CLI, server, and bench tools.
+First install builds this tap's `mlx` / `mlx-c` from source (Xcode required;
+can take a while). For the Python SDK (`import ax_engine`), use
+`pip install "ax-engine[download]>=6.9.0,<7"` instead — see
+[Getting Started](docs/GETTING-STARTED.md).
 
 **Option A — interactive TUI** (pick a model, download, serve, chat):
 
@@ -63,7 +73,7 @@ curl http://127.0.0.1:31418/v1/chat/completions \
 ax-engine serve qwen36-35b --download --port 31418
 ```
 
-Homebrew, source builds, and troubleshooting:
+Python wheel, source builds, and troubleshooting:
 [Getting Started](docs/GETTING-STARTED.md).
 
 ## Models

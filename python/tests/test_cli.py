@@ -383,6 +383,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("Result: not ready", stdout)
         self.assertIn("bench_binary: fail", stdout)
         self.assertIn("ax-engine-bench", stdout)
+        self.assertIn("brew reinstall defai-digital/ax-engine/ax-engine", stdout)
         self.assertIn("--force-reinstall", stdout)
 
     def test_download_alias_wraps_download_helper(self) -> None:

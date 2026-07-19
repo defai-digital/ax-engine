@@ -75,7 +75,7 @@ history, or out of scope for a claim.
 
 ### Setup and models
 
-- [Getting Started](GETTING-STARTED.md) — pip-first install, Homebrew, source builds, first commands
+- [Getting Started](GETTING-STARTED.md) — brew-first install, Python SDK, source builds, first commands
 - [Supported Models](SUPPORTED-MODELS.md) — direct support, aliases, `download-mtp`, unsupported requests
 - [Model Support Policy](MODEL-SUPPORT-POLICY.md) — promotion, six-month activity rule, EOL
 - [FAQ](FAQ.md) — hardware, model stack, runtime paths, limitations
