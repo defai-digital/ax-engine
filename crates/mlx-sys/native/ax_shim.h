@@ -129,6 +129,11 @@ size_t mlx_array_ndim(const mlx_array arr);
 const int* mlx_array_shape(const mlx_array arr);
 mlx_dtype mlx_array_dtype(const mlx_array arr);
 size_t mlx_array_nbytes(const mlx_array arr);
+/* 1 = evaluated (data readable), 0 = not yet evaluated, -1 = invalid handle
+ * (error recorded). Data accessors below fail with a recorded error instead
+ * of crashing when the array is unevaluated; this predicate lets callers
+ * assert the precondition explicitly. */
+int ax_shim_array_is_evaled(const mlx_array arr);
 const float* mlx_array_data_float32(const mlx_array arr);
 const uint8_t* mlx_array_data_uint8(const mlx_array arr);
 const uint32_t* mlx_array_data_uint32(const mlx_array arr);

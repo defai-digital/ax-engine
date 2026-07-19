@@ -5792,6 +5792,18 @@ impl MlxRunner {
         };
         mtp_timings.tail_sample_wall_us = elapsed_us(tail_sample_started);
         result.push(tail_tok);
+        // Emission-accounting identity: every emitted token must be the skip
+        // primary, an accepted draft, or the tail — the skip-state token-0
+        // corruption entered the stream exactly through this seam, and the
+        // telemetry mismatch (emitted vs accepted/drafted) was the tell.
+        debug_assert_eq!(
+            result.len(),
+            usize::from(primary_tok_from_skip.is_some()) + accept_count + 1,
+            "MTP emitted {} tokens but primary={:?}, accepted={}, +1 tail",
+            result.len(),
+            primary_tok_from_skip,
+            accept_count
+        );
         mtp_timings.emitted_tokens = saturating_u32(result.len());
 
         // Record MTP draft/accept telemetry.
@@ -6361,6 +6373,12 @@ impl MlxRunner {
             if state.mtp_pending_draft.is_empty() {
                 state.mtp_pending_draft_sources.clear();
             }
+            debug_assert_eq!(
+                state.mtp_pending_draft.len(),
+                state.mtp_pending_draft_sources.len(),
+                "pending draft tokens and their sources must stay aligned \
+                 (a phantom token without a source bypasses accept accounting)"
+            );
             // Capture skip-state only when the next step will have no pending draft,
             // making `can_skip` true.  When pending is non-empty (the common case)
             // async_eval + slice work here is never consumed — so skip it entirely.
@@ -13072,6 +13090,125 @@ mod tests {
             .expect_err("zero sliding_window_size should fail closed");
 
         assert!(error.to_string().contains("sliding_window_size"));
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_interleaved_layer_type_shape_errors() {
+        // Length mismatch: one annotation per layer or fail closed.
+        let mut manifest = dense_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.layer_count = 2;
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec!["sliding_attention".to_string()];
+        let error = validate_gemma4_interleaved_attention(&manifest)
+            .expect_err("layer_types length mismatch should fail closed");
+        assert!(error.to_string().contains("one layer_type per layer"));
+
+        // Unknown annotation strings fail closed rather than defaulting.
+        let mut manifest = dense_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec!["chunked_attention".to_string()];
+        let error = validate_gemma4_interleaved_attention(&manifest)
+            .expect_err("unknown layer_type should fail closed");
+        assert!(error.to_string().contains("unsupported layer_type"));
+
+        // Sliding annotations with no window at all (None, not just zero).
+        let mut manifest = dense_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.sliding_window_size = None;
+        manifest.layer_types = vec!["sliding_attention".to_string()];
+        let error = validate_gemma4_interleaved_attention(&manifest)
+            .expect_err("sliding layers without a window should fail closed");
+        assert!(error.to_string().contains("require sliding_window_size"));
+    }
+
+    #[test]
+    fn mlx_manifest_validation_covers_diffusion_gemma_contract() {
+        // The diffusion validator had zero direct coverage although every
+        // release-abort in the diffusion decode path assumes it ran.
+        let mut manifest = dense_manifest();
+        manifest.model_family = "diffusion_gemma".to_string();
+        manifest.layer_types = Vec::new();
+        let error = validate_diffusion_gemma_manifest(&manifest)
+            .expect_err("diffusion without layer_types should fail closed");
+        assert!(error.to_string().contains("layer_types"));
+
+        let mut manifest = dense_manifest();
+        manifest.model_family = "diffusion_gemma".to_string();
+        manifest.layer_types = vec!["full_attention".to_string()];
+        manifest.diffusion.canvas_size = None;
+        let error = validate_diffusion_gemma_manifest(&manifest)
+            .expect_err("diffusion without canvas_size should fail closed");
+        assert!(error.to_string().contains("canvas_size"));
+
+        let mut manifest = dense_manifest();
+        manifest.model_family = "diffusion_gemma".to_string();
+        manifest.layer_types = vec!["full_attention".to_string()];
+        manifest.diffusion.canvas_size = Some(64);
+        validate_diffusion_gemma_manifest(&manifest)
+            .expect("layer_types + canvas_size should satisfy the diffusion contract");
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_glm_numeric_group_invariants() {
+        // Each case is a runtime `assert!`/`expect` source in the router path;
+        // the validator must catch it at load instead of a decode-time abort.
+        type ManifestMutation = Box<dyn Fn(&mut NativeModelManifest)>;
+        let cases: Vec<(&str, ManifestMutation, &str)> = vec![
+            (
+                "non-positive routed_scaling_factor",
+                Box::new(|m| m.glm_router.routed_scaling_factor = Some(0.0)),
+                "routed_scaling_factor",
+            ),
+            (
+                "non-finite routed_scaling_factor",
+                Box::new(|m| m.glm_router.routed_scaling_factor = Some(f32::NAN)),
+                "routed_scaling_factor",
+            ),
+            (
+                "topk_group above n_group",
+                Box::new(|m| {
+                    m.glm_router.n_group = Some(2);
+                    m.glm_router.topk_group = Some(3);
+                    m.moe.expert_count = Some(8);
+                }),
+                "topk_group",
+            ),
+            (
+                "expert_count not divisible by n_group",
+                Box::new(|m| {
+                    m.glm_router.n_group = Some(4);
+                    m.glm_router.topk_group = Some(1);
+                    m.moe.expert_count = Some(6);
+                }),
+                "divisible",
+            ),
+            (
+                "fewer than two experts per group",
+                Box::new(|m| {
+                    m.glm_router.n_group = Some(4);
+                    m.glm_router.topk_group = Some(1);
+                    m.moe.expert_count = Some(4);
+                }),
+                "at least two experts per group",
+            ),
+            (
+                "first_dense_layer_count above layer_count",
+                Box::new(|m| m.glm_router.first_dense_layer_count = Some(3)),
+                "cannot exceed layer_count",
+            ),
+        ];
+        for (label, mutate, expected) in cases {
+            let mut manifest = glm4_moe_lite_manifest();
+            mutate(&mut manifest);
+            let error = validate_mla_moe_manifest(&manifest)
+                .expect_err(&format!("{label} should fail closed"));
+            assert!(
+                error.to_string().contains(expected),
+                "{label}: unexpected error {error}"
+            );
+        }
     }
 
     #[test]

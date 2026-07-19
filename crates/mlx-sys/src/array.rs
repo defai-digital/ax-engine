@@ -300,7 +300,27 @@ impl MlxArray {
         unsafe {
             ensure_error_handler();
             let ptr = ffi::mlx_array_data_uint32(self.inner);
-            if ptr.is_null() { 0 } else { *ptr }
+            if ptr.is_null() {
+                // Silently returning 0 here would inject token id 0 into the
+                // caller's stream — the exact failure class of the skip-state
+                // corruption. The shim records why the read failed (including
+                // "array not evaluated"); surface it.
+                match take_last_error() {
+                    Some(msg) => panic!("first_u32_unchecked failed: {msg}"),
+                    None => panic!("first_u32_unchecked: null data pointer"),
+                }
+            }
+            *ptr
+        }
+    }
+
+    /// True when the array's data has been computed and is readable. The
+    /// `data_*` accessors fail with a recorded shim error (previously a
+    /// SIGSEGV inside `mx::array::data<T>()`) when this is false.
+    pub fn is_evaled(&self) -> bool {
+        unsafe {
+            ensure_error_handler();
+            ffi::ax_shim_array_is_evaled(self.inner) == 1
         }
     }
 }
@@ -431,6 +451,32 @@ mod tests {
     use crate::transforms::eval;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Reading an unevaluated array used to be a SIGSEGV inside
+    /// `mx::array::data<T>()` (null shared_ptr deref — a signal the shim's
+    /// exception barrier cannot intercept). The shim now checks
+    /// `is_available()` first and records an error, which the safe readers
+    /// surface as a panic with the reason instead of crashing the process.
+    #[test]
+    fn data_read_on_unevaluated_array_fails_with_recorded_error() {
+        // Same-dtype astype is aliased by MLX (immediately available), so
+        // use slice — a real graph node that stays lazy until eval.
+        let source = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+        let lazy = crate::ops::slice(&source, &[0], &[2], &[1], None);
+        assert!(!lazy.is_evaled(), "a fresh op result must be lazy");
+
+        let read =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lazy.data_f32().to_vec()));
+        assert!(
+            read.is_err(),
+            "reading unevaluated data must fail loudly, not segfault or \
+             return garbage"
+        );
+
+        eval(&[&lazy]);
+        assert!(lazy.is_evaled());
+        assert_eq!(lazy.data_f32(), &[1.0, 2.0]);
+    }
 
     /// Round-trip `from_raw_data` -> `astype(f32)` -> `eval` -> `data_f32`
     /// for every dtype the shim supports.  This guards against the critical

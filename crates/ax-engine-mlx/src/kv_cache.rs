@@ -1069,9 +1069,11 @@ impl MlxKVCache {
         shape: &[i32],
         dtype: MlxDtype,
     ) -> Result<MlxArray, MlxKVCacheSerializeError> {
-        // `MlxArray::from_raw_data` borrows the data buffer (MLX does not
-        // copy), so the deserializer must own the bytes for the array's
-        // lifetime via `from_managed_data` + `vec_payload_drop`.
+        // `MlxArray::from_raw_data` COPIES at construction (mlx-sys io.rs
+        // documents the copy-on-create C entry). `from_managed_data` +
+        // `vec_payload_drop` is used here to hand the buffer's ownership to
+        // MLX instead — avoiding a second full-payload copy on restore —
+        // and keeps correctness independent of MLX's copy behavior.
         let byte_count = owned.len();
         let owned: Box<Vec<u8>> = Box::new(owned);
         let data_ptr = owned.as_ptr();

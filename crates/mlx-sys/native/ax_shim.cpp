@@ -123,7 +123,17 @@ inline mx::Dtype to_dtype(mlx_dtype d) {
 
 inline mx::array make_array(const void* data, mx::Shape shape, mx::Dtype dtype) {
   switch (dtype.val()) {
-    case mx::Dtype::Val::bool_:     return mx::array(static_cast<const bool*>(data), std::move(shape), dtype);
+    case mx::Dtype::Val::bool_: {
+      // Reading arbitrary bytes through `const bool*` is UB for byte values
+      // other than 0/1; normalize into a materialized 0/1 buffer first.
+      size_t count = 1;
+      for (auto dim : shape) count *= static_cast<size_t>(dim);
+      std::vector<uint8_t> normalized(count);
+      const uint8_t* raw = static_cast<const uint8_t*>(data);
+      for (size_t i = 0; i < count; ++i) normalized[i] = raw[i] ? 1 : 0;
+      return mx::array(reinterpret_cast<const bool*>(normalized.data()),
+                       std::move(shape), dtype);
+    }
     case mx::Dtype::Val::uint8:     return mx::array(static_cast<const uint8_t*>(data), std::move(shape), dtype);
     case mx::Dtype::Val::uint16:    return mx::array(static_cast<const uint16_t*>(data), std::move(shape), dtype);
     case mx::Dtype::Val::uint32:    return mx::array(static_cast<const uint32_t*>(data), std::move(shape), dtype);
@@ -252,18 +262,44 @@ extern "C" mlx_dtype mlx_array_dtype(const mlx_array a) {
 extern "C" size_t mlx_array_nbytes(const mlx_array a) {
   AX_TRY { return aref(a).nbytes(); } AX_CATCH_SIZE_MAX
 }
+/* Reading an unevaluated array's data is a null shared_ptr dereference
+ * inside mx::array::data<T>() — a SIGSEGV, not a C++ exception, so the
+ * AX_TRY barrier cannot intercept it. Check availability first and throw,
+ * turning the uncatchable crash into the shim's normal error protocol. */
+static inline void ax_require_evaled(const mx::array& arr, const char* api) {
+  if (!arr.is_available()) {
+    throw std::runtime_error(std::string(api) +
+        ": array not evaluated; call eval()/async_eval() before reading");
+  }
+}
+
+extern "C" int ax_shim_array_is_evaled(const mlx_array a) {
+  AX_TRY { return aref(a).is_available() ? 1 : 0; }
+  catch (const std::exception&) { ax_set_current_error(); return -1; }
+  catch (...) { ax_set_current_error(); return -1; }
+}
+
 extern "C" const float* mlx_array_data_float32(const mlx_array a) {
-  AX_TRY { return aref(a).data<float>(); }
+  AX_TRY {
+    ax_require_evaled(aref(a), "mlx_array_data_float32");
+    return aref(a).data<float>();
+  }
   catch (const std::exception&) { ax_set_current_error(); return nullptr; }
   catch (...) { ax_set_current_error(); return nullptr; }
 }
 extern "C" const uint8_t* mlx_array_data_uint8(const mlx_array a) {
-  AX_TRY { return aref(a).data<uint8_t>(); }
+  AX_TRY {
+    ax_require_evaled(aref(a), "mlx_array_data_uint8");
+    return aref(a).data<uint8_t>();
+  }
   catch (const std::exception&) { ax_set_current_error(); return nullptr; }
   catch (...) { ax_set_current_error(); return nullptr; }
 }
 extern "C" const uint32_t* mlx_array_data_uint32(const mlx_array a) {
-  AX_TRY { return aref(a).data<uint32_t>(); }
+  AX_TRY {
+    ax_require_evaled(aref(a), "mlx_array_data_uint32");
+    return aref(a).data<uint32_t>();
+  }
   catch (const std::exception&) { ax_set_current_error(); return nullptr; }
   catch (...) { ax_set_current_error(); return nullptr; }
 }
