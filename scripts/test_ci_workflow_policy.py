@@ -270,5 +270,28 @@ class CiWorkflowPolicyTests(unittest.TestCase):
             )
 
 
+    def test_release_paths_build_server_with_unwind_profile(self) -> None:
+        """Shipped ax-engine-server must use release-server (panic=unwind).
+
+        Under plain --release (panic=abort), generation-worker catch_unwind is
+        a no-op and one MLX panic SIGABRTs the whole multi-model server.
+        """
+        wheel = (ROOT / "scripts" / "build-pypi-wheel.sh").read_text()
+        self.assertIn("cargo build --profile release-server -p ax-engine-server", wheel)
+        self.assertIn("target/release-server/ax-engine-server", wheel)
+        # Must not build the server with bare --release.
+        self.assertNotIn("cargo build --release -p ax-engine-server", wheel)
+
+        candidate = (ROOT / ".github" / "workflows" / "release-candidate.yml").read_text()
+        self.assertIn("target/release-server/ax-engine-server", candidate)
+        self.assertNotIn("target/release/ax-engine-server", candidate)
+
+        brew_workflow = (ROOT / ".github" / "workflows" / "brew-release.yml").read_text()
+        self.assertIn("is still a draft; refusing to update Homebrew", brew_workflow)
+
+        publish = PUBLISH_SCRIPT.read_text()
+        self.assertIn("--profile release-server", publish)
+
+
 if __name__ == "__main__":
     unittest.main()

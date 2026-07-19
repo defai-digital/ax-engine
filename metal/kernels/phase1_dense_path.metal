@@ -16,6 +16,10 @@ struct AttentionDispatchParams {
     uint num_seqs;
     uint head_count;
     uint head_dim;
+    // Softmax scale applied to Q·K (typically rsqrt(head_dim); Gemma may differ).
+    float softmax_scale;
+    // Attention logit softcap; 0 disables (Gemma family uses a positive value).
+    float softcap;
 };
 
 struct GatherDispatchParams {
@@ -184,6 +188,10 @@ kernel void paged_decode_attention(
     device float* output               [[buffer(5)]],
     constant AttentionDispatchParams& params [[buffer(6)]],
     device const uint*  token_batch_ids [[buffer(7)]],
+    // Per scheduled token: exclusive causal context end in gather index space.
+    // Must be in (cu_seq_lens[batch], cu_seq_lens[batch+1]] so token p never
+    // attends past position p (multi-token prefill was previously non-causal).
+    device const uint*  token_context_ends [[buffer(8)]],
     uint tg_pos [[threadgroup_position_in_grid]],   // token_id * head_count + head_id
     uint lid    [[thread_index_in_threadgroup]],     // 0 .. head_dim-1
     uint lane   [[thread_index_in_simdgroup]],
@@ -202,11 +210,15 @@ kernel void paged_decode_attention(
 
     uint batch_lo      = token_batch_ids[token_id];
     uint context_begin = cu_seq_lens[batch_lo];
-    uint context_end   = cu_seq_lens[batch_lo + 1];
+    uint context_limit = cu_seq_lens[batch_lo + 1];
+    uint context_end   = min(token_context_ends[token_id], context_limit);
+    if (context_end < context_begin) {
+        context_end = context_begin;
+    }
 
     uint q_base    = token_id * head_size + head_id * params.head_dim;
     float q_val    = (lid < params.head_dim) ? query[q_base + lid] : 0.0f;
-    float inv_scale = rsqrt(float(params.head_dim));
+    float scale    = params.softmax_scale;
 
     // Online softmax accumulators (per-thread, for this thread's value dimension)
     float m   = -INFINITY;
@@ -225,7 +237,10 @@ kernel void paged_decode_attention(
         float score = 0.0f;
         if (simd == 0) {
             float v = (lane < n_simd) ? smem[lane] : 0.0f;
-            score = simd_sum(v) * inv_scale;
+            score = simd_sum(v) * scale;
+            if (params.softcap > 0.0f) {
+                score = params.softcap * tanh(score / params.softcap);
+            }
             if (lane == 0) smem[0] = score;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);

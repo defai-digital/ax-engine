@@ -86,8 +86,12 @@ Options:
   --title <text>             Release title. Default: <tag>
   --notes-file <path>        Release notes file. Default: gh --generate-notes.
   --draft                    Upload and verify the release, but leave it as a draft.
+                             Re-running against an existing draft needs --clobber-assets
+                             when asset names already exist on the draft.
   --prerelease               Mark the release as prerelease.
   --clobber-assets           Overwrite existing release assets when uploading.
+                             Required when continuing a prior draft (or after a
+                             failed post-upload verify that already uploaded assets).
   --no-minisign              Do not sign release artifacts (dry-run/draft only).
   --minisign-key <path>      Secret key path. Default: ~/signkey/ax.sec
   --minisign-pubkey <path>   Public key file path. Default: ~/signkey/ax.pub
@@ -421,7 +425,9 @@ PY
                     die "uploaded $bin has the wrong Apple team"
                 }
                 if [[ "$SKIP_NOTARIZATION" = false ]]; then
-                    run codesign --check-notarization "$verify_dir/payload/$bin"
+                    # --check-notarization only modifies verification; it is not a
+                    # standalone codesign operation (see codesign(1)).
+                    run codesign --verify --strict --check-notarization --verbose=2 "$verify_dir/payload/$bin"
                     run spctl --assess --type execute --verbose=2 "$verify_dir/payload/$bin"
                 fi
             done
@@ -636,7 +642,15 @@ fi
 if [[ "$SKIP_BUILD" = true ]]; then
     echo "warning: skipping build (--skip-build)" >&2
 elif [[ "$DRY_RUN" = true || "$LOCAL_BUILD" = true ]]; then
-    run cargo build --release -p ax-engine-server -p ax-engine-bench --bins
+    # Server uses release-server (panic=unwind) so catch_unwind containment works.
+    # Bench/CLI keep plain release (panic=abort).
+    run cargo build --profile release-server -p ax-engine-server --bins
+    run cargo build --release -p ax-engine-bench --bins
+    # Stage server binary next to release-profile bench bins for packaging.
+    mkdir -p "$ROOT_DIR/target/release"
+    cp -f "$ROOT_DIR/target/release-server/ax-engine-server" \
+        "$ROOT_DIR/target/release/ax-engine-server"
+    chmod +x "$ROOT_DIR/target/release/ax-engine-server"
 else
     prepare_release_candidate
 fi
@@ -829,4 +843,8 @@ else
 fi
 
 echo
-echo "Published GitHub release: https://github.com/${MAIN_REPO}/releases/tag/${TAG}"
+if [[ "$DRAFT" = true ]]; then
+    echo "Draft GitHub release (verified, not published): https://github.com/${MAIN_REPO}/releases/tag/${TAG}"
+else
+    echo "Published GitHub release: https://github.com/${MAIN_REPO}/releases/tag/${TAG}"
+fi

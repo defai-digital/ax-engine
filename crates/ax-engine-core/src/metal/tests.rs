@@ -1516,7 +1516,13 @@ fn manual_attention_head_output(
         token_index as u32,
     );
     let context_begin = workload.kv_metadata.cu_seq_lens[batch_id] as usize;
-    let context_end = workload.kv_metadata.cu_seq_lens[batch_id + 1] as usize;
+    let context_limit = workload.kv_metadata.cu_seq_lens[batch_id + 1] as usize;
+    let absolute_position = workload
+        .scheduled_positions
+        .get(token_index)
+        .copied()
+        .unwrap_or(0) as usize;
+    let context_end = (context_begin + absolute_position + 1).min(context_limit);
     let query_base = token_index * head_size + head_index * head_dim;
     let query = &staged_inputs.query[query_base..query_base + head_dim];
 

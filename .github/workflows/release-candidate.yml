@@ -131,7 +131,9 @@ jobs:
           CANDIDATE_DIR="target/release-candidate"
           mkdir -p "$CANDIDATE_DIR/bin" "$CANDIDATE_DIR/wheel"
           cp target/release/ax-engine "$CANDIDATE_DIR/bin/ax-engine"
-          cp target/release/ax-engine-server "$CANDIDATE_DIR/bin/ax-engine-server"
+          # Server is built with --profile release-server (panic=unwind) by
+          # scripts/build-pypi-wheel.sh so worker catch_unwind containment works.
+          cp target/release-server/ax-engine-server "$CANDIDATE_DIR/bin/ax-engine-server"
           cp target/release/ax-engine-bench "$CANDIDATE_DIR/bin/ax-engine-bench"
           cp target/wheels/delocated/ax_engine-*.whl "$CANDIDATE_DIR/wheel/"
           chmod +x "$CANDIDATE_DIR"/bin/*

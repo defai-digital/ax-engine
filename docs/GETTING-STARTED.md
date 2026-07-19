@@ -171,9 +171,13 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip maturin
 python -m pip install "mlx==$(cat mlx.version)"
-cargo build --release -p ax-engine-server -p ax-engine-bench
-maturin develop --release
-export PATH="$PWD/target/release:$PATH"
+# Server needs release-server (panic=unwind) so worker panic containment works.
+# See docs/SERVER.md and Cargo.toml [profile.release-server].
+cargo build --profile release-server -p ax-engine-server
+cargo build --release -p ax-engine-bench
+# Python extension: use release-pyext (unwind), not --release (abort).
+maturin develop --profile release-pyext
+export PATH="$PWD/target/release-server:$PWD/target/release:$PATH"
 ax-engine doctor
 bash scripts/check-mlx-version.sh
 ```

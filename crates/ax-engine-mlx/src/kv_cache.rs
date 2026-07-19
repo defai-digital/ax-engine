@@ -1058,7 +1058,10 @@ impl MlxKVCache {
         let required_bytes = element_count
             .checked_mul(dtype.size_bytes())
             .ok_or(MlxKVCacheSerializeError::BadShape(ndim))?;
-        if byte_count < required_bytes {
+        // Exact match only: a larger declared count would allocate attacker-
+        // controlled sizes (e.g. 2^60) before the checksum can reject the
+        // payload; a smaller count is truncated garbage.
+        if byte_count != required_bytes {
             return Err(MlxKVCacheSerializeError::BadShape(ndim));
         }
         Ok(())
@@ -3355,6 +3358,41 @@ mod tests {
         let err = MlxKVCache::try_deserialize_from_bytes(&payload)
             .err()
             .expect("undersized byte_count must be rejected");
+        assert!(
+            matches!(err, MlxKVCacheSerializeError::BadShape(4)),
+            "expected BadShape(4), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_oversized_byte_count() {
+        // A huge declared byte_count must fail closed before allocation.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(MlxKVCache::SERIALIZE_MAGIC);
+        payload.extend_from_slice(&MlxKVCache::SERIALIZE_VERSION.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes()); // seq_len
+        payload.extend_from_slice(&0u64.to_le_bytes()); // growth_count
+        payload.extend_from_slice(&0u64.to_le_bytes()); // rope_offset
+        payload.extend_from_slice(&1u32.to_le_bytes()); // layer_count
+        payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+
+        payload.push(MlxKVCache::LAYER_KIND_FA);
+        payload.extend_from_slice(&[0u8; 7]);
+        payload.extend_from_slice(&0u64.to_le_bytes()); // rotating_window: none
+        // K tensor: f32, shape [1,1,1,1] = 4 bytes required
+        payload.push(MlxKVCache::dtype_to_tag(MlxDtype::Float32));
+        payload.push(4);
+        payload.extend_from_slice(&[0u8; 6]);
+        payload.extend_from_slice(&1i32.to_le_bytes());
+        payload.extend_from_slice(&1i32.to_le_bytes());
+        payload.extend_from_slice(&1i32.to_le_bytes());
+        payload.extend_from_slice(&1i32.to_le_bytes());
+        // Declared byte_count far larger than required (would OOM/abort without the check)
+        payload.extend_from_slice(&(1u64 << 40).to_le_bytes());
+
+        let err = MlxKVCache::try_deserialize_from_bytes(&payload)
+            .err()
+            .expect("oversized byte_count must be rejected before allocation");
         assert!(
             matches!(err, MlxKVCacheSerializeError::BadShape(4)),
             "expected BadShape(4), got {err:?}"

@@ -847,6 +847,9 @@ fn run_command_with_timeout(
     command_display: String,
     timeout: Duration,
 ) -> Result<Output, LlamaCppBackendError> {
+    // Drain stdout/stderr on background threads while waiting. Without this,
+    // any child that writes more than a pipe buffer (~64 KiB on macOS) blocks
+    // forever and we only surface a spurious timeout after `timeout` elapses.
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -856,21 +859,44 @@ fn run_command_with_timeout(
             source,
         })?;
 
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = stdout_pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = stderr_pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+
     match child
         .wait_timeout(timeout)
         .map_err(|source| LlamaCppBackendError::CommandLaunch {
             command: command_display.clone(),
             source,
         })? {
-        Some(_) => child
-            .wait_with_output()
-            .map_err(|source| LlamaCppBackendError::CommandLaunch {
-                command: command_display,
-                source,
-            }),
+        Some(status) => {
+            let stdout = stdout_handle.join().unwrap_or_default();
+            let stderr = stderr_handle.join().unwrap_or_default();
+            Ok(Output {
+                status,
+                stdout,
+                stderr,
+            })
+        }
         None => {
             let _ = child.kill();
             let _ = child.wait();
+            // Join drain threads so pipes close cleanly after kill.
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
             Err(LlamaCppBackendError::CommandTimedOut {
                 command: command_display,
                 timeout_seconds: timeout.as_secs(),
@@ -1102,6 +1128,27 @@ mod tests {
             error,
             LlamaCppBackendError::CommandTimedOut { .. }
         ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_command_with_timeout_drains_large_stdout_without_deadlock() {
+        // ~256 KiB exceeds the typical 64 KiB pipe buffer. Without concurrent
+        // drain the child blocks on write and the wait times out.
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("dd if=/dev/zero bs=1024 count=256 2>/dev/null");
+
+        let output = run_command_with_timeout(
+            command,
+            "sh -c 'dd ...'".to_string(),
+            Duration::from_secs(5),
+        )
+        .expect("large-stdout command must complete when pipes are drained");
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 256 * 1024);
     }
 
     #[test]

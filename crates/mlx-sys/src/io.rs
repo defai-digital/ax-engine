@@ -128,16 +128,26 @@ pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, S
     }
 
     // First 8 bytes: little-endian u64 = JSON header length.
-    let header_len = u64::from_le_bytes(mmap[..8].try_into().unwrap()) as usize;
-    if 8 + header_len > mmap.len() {
+    let header_len_u64 = u64::from_le_bytes(mmap[..8].try_into().unwrap());
+    let header_len = usize::try_from(header_len_u64).map_err(|_| {
+        format!(
+            "safetensors header length {header_len_u64} does not fit usize"
+        )
+    })?;
+    let header_end = 8usize.checked_add(header_len).ok_or_else(|| {
+        format!(
+            "safetensors header length {header_len} overflows when added to prefix"
+        )
+    })?;
+    if header_end > mmap.len() {
         return Err(format!(
             "safetensors header length {} exceeds file size {}",
             header_len,
             mmap.len()
         ));
     }
-    let json_bytes = &mmap[8..8 + header_len];
-    let data_base = 8 + header_len;
+    let json_bytes = &mmap[8..header_end];
+    let data_base = header_end;
 
     let header: serde_json::Value = serde_json::from_slice(json_bytes)
         .map_err(|e| format!("parse safetensors header in {}: {}", path.display(), e))?;
@@ -183,17 +193,34 @@ pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, S
                 "tensor entry {name} data_offsets must have 2 elements"
             ));
         }
-        let start = offsets[0]
+        let start_u64 = offsets[0]
             .as_u64()
-            .ok_or_else(|| format!("tensor entry {name} data_offsets[0] not u64"))?
-            as usize;
-        let end = offsets[1]
+            .ok_or_else(|| format!("tensor entry {name} data_offsets[0] not u64"))?;
+        let end_u64 = offsets[1]
             .as_u64()
-            .ok_or_else(|| format!("tensor entry {name} data_offsets[1] not u64"))?
-            as usize;
-        let absolute_start = data_base + start;
-        let absolute_end = data_base + end;
-        if absolute_end > mmap.len() {
+            .ok_or_else(|| format!("tensor entry {name} data_offsets[1] not u64"))?;
+        if start_u64 > end_u64 {
+            return Err(format!(
+                "tensor entry {name}: data_offsets [{start_u64},{end_u64}] has start > end"
+            ));
+        }
+        let start = usize::try_from(start_u64).map_err(|_| {
+            format!("tensor entry {name}: data_offsets[0]={start_u64} does not fit usize")
+        })?;
+        let end = usize::try_from(end_u64).map_err(|_| {
+            format!("tensor entry {name}: data_offsets[1]={end_u64} does not fit usize")
+        })?;
+        let absolute_start = data_base.checked_add(start).ok_or_else(|| {
+            format!(
+                "tensor entry {name}: data_offsets start {start} overflows relative to data_base"
+            )
+        })?;
+        let absolute_end = data_base.checked_add(end).ok_or_else(|| {
+            format!(
+                "tensor entry {name}: data_offsets end {end} overflows relative to data_base"
+            )
+        })?;
+        if absolute_end > mmap.len() || absolute_start > mmap.len() {
             return Err(format!(
                 "tensor entry {name}: data_offsets [{start},{end}] out of bounds (file {} bytes)",
                 mmap.len()

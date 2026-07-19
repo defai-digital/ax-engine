@@ -38,7 +38,11 @@ class ReleaseSigningTests(unittest.TestCase):
         self.assertIn("published releases require --sign-identity", text)
         self.assertIn("published releases must be notarized", text)
         self.assertIn("TeamIdentifier=$EXPECTED_APPLE_TEAM_ID", text)
-        self.assertIn("codesign --check-notarization", text)
+        # --check-notarization only modifies verification; it must ride on --verify.
+        self.assertIn(
+            "codesign --verify --strict --check-notarization --verbose=2",
+            text,
+        )
         self.assertIn("spctl --assess --type execute", text)
         self.assertIn("release_args+=(--draft)", text)
         self.assertIn("release $TAG is already published; refusing to replace verified assets", text)
@@ -46,6 +50,9 @@ class ReleaseSigningTests(unittest.TestCase):
         self.assertIn("cmp \"$REPOSITORY_MINISIGN_PUBLIC_KEY\"", text)
         self.assertIn("minisign -V", text)
         self.assertLess(text.rindex("verify_uploaded_release"), text.index('gh release edit "$TAG"'))
+        # Server ships with panic=unwind so catch_unwind containment works.
+        self.assertIn("--profile release-server", text)
+        self.assertIn("target/release-server/ax-engine-server", text)
 
     def test_legacy_brew_publisher_cannot_mutate_releases(self):
         with open(BREW_RELEASE_SCRIPT, encoding="utf-8") as fh:
@@ -53,6 +60,7 @@ class ReleaseSigningTests(unittest.TestCase):
 
         self.assertIn("scripts/brew-release.sh is a legacy preview and may not publish releases", text)
         self.assertIn('if [[ "$DRY_RUN" = false ]]', text)
+        self.assertIn("--profile release-server", text)
 
 
 if __name__ == "__main__":

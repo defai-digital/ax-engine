@@ -66,6 +66,13 @@ jobs:
           MANIFEST="ax-engine-${TAG}-macos-arm64.manifest.json"
           DOWNLOAD_URL="https://github.com/${MAIN_REPO}/releases/download/${TAG}/${ARCHIVE}"
 
+          # Refuse draft releases: draft assets must not land in the public formula.
+          is_draft="$(gh release view "$TAG" --repo "$MAIN_REPO" --json isDraft --jq .isDraft)"
+          if [[ "$is_draft" != "false" ]]; then
+            echo "error: release $TAG is still a draft; refusing to update Homebrew" >&2
+            exit 1
+          fi
+
           # Re-download and independently verify the published bytes before
           # trusting their checksum in the Homebrew formula.
           gh release download "$TAG" --repo "$MAIN_REPO" \

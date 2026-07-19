@@ -21,18 +21,24 @@ The publisher performs this sequence:
 2. Reuse an unexpired release candidate for that commit or dispatch
    `.github/workflows/release-candidate.yml` and wait for it.
 3. Verify the candidate manifest and SHA-256 digest of every standalone binary.
-4. Optionally Developer ID sign and notarize the binaries locally, then package
-   and minisign the GitHub release assets.
-5. Push the tag, create or update the GitHub release, upload the assets, and
-   verify every expected remote asset name.
-6. Dispatch `brew-release.yml` only after the signed assets exist.
+4. Developer ID sign and notarize the binaries locally (required for real
+   publishes; dry-run may skip notarization), then package and minisign the
+   GitHub release assets.
+5. Push the tag, create the GitHub release as a **draft**, upload assets, then
+   independently re-download and verify checksum / minisign / codesign /
+   notarization on the uploaded bytes before flipping draft → published.
+6. Dispatch `brew-release.yml` only after the release is published and verified.
+   Homebrew refuses draft tags.
 7. Let the tag-triggered PyPI workflow promote the exact-SHA candidate wheel.
    If no candidate exists, that workflow fails over to the original macOS wheel
    build and smoke-test path.
 
-This promotes the verified candidate without recompiling it; optional Apple
-signing and notarization are the only intended binary transforms. It also
-removes the previous tag-time rebuild from the normal path.
+This promotes the verified candidate without recompiling it; Apple signing and
+notarization are required for real publishes (fail-closed). The
+`ax-engine-server` binary is built with `--profile release-server`
+(`panic = "unwind"`) so generation-worker panic containment works; bench/CLI
+keep plain `--release`. Re-uploading to an existing draft requires
+`--clobber-assets`.
 
 ## Operator options
 

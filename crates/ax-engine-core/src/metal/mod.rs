@@ -4418,6 +4418,37 @@ fn compute_token_batch_ids(cu_seq_lens: &[u32]) -> Vec<u32> {
     ids
 }
 
+/// Per scheduled token: exclusive causal end index into the gathered KV layout.
+/// Token at absolute position `p` may attend only to gather slots
+/// `[cu_seq_lens[batch], cu_seq_lens[batch] + p + 1)`.
+fn compute_token_context_ends(workload: &MetalDispatchWorkload) -> Vec<u32> {
+    let n = workload.scheduled_positions.len().max(1);
+    let mut ends = vec![1u32; n];
+    for (token_id, &absolute_position) in workload.scheduled_positions.iter().enumerate() {
+        let batch_id = batch_id_for_token(
+            &workload.kv_metadata.scheduled_cu_seq_lens,
+            token_id as u32,
+        );
+        let context_begin = workload
+            .kv_metadata
+            .cu_seq_lens
+            .get(batch_id)
+            .copied()
+            .unwrap_or(0);
+        let context_limit = workload
+            .kv_metadata
+            .cu_seq_lens
+            .get(batch_id + 1)
+            .copied()
+            .unwrap_or(context_begin.saturating_add(1));
+        let causal_end = context_begin
+            .saturating_add(absolute_position)
+            .saturating_add(1);
+        ends[token_id] = causal_end.min(context_limit).max(context_begin);
+    }
+    ends
+}
+
 fn metal_dispatch_trace_capture_enabled() -> bool {
     if cfg!(test) {
         return true;
@@ -4505,27 +4536,43 @@ fn project_decode_token_with_optional_native_path(
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.decode_logits_argmax.compute");
 
-            encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
-            encoder.set_buffer(0, Some(&hidden_buffer), 0);
-            encoder.set_buffer(1, Some(&decode_projection.native_buffer), 0);
-            encoder.set_buffer(2, Some(&logits_buffer), 0);
-            set_logits_projection_dispatch_params(
-                encoder,
-                3,
-                saturating_usize_to_u32(vocab_rows),
-                saturating_usize_to_u32(projection_cols),
-                saturating_usize_to_u32(input_width),
-            );
-            if projection_kernel_name.contains("_sg_") {
-                encoder.dispatch_thread_groups(
-                    MTLSize::new(sg_projection_tg_count(vocab_rows.max(1)), 1, 1),
-                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+            if decode_projection.native_dtype == NativeTensorDataType::Q4Km {
+                // Q4Km requires dequant-aware params and the (ceil(n/2), 32×2) grid.
+                encode_fused_projection(
+                    encoder,
+                    &projection_pipeline,
+                    &hidden_buffer,
+                    &decode_projection.native_buffer,
+                    0,
+                    &logits_buffer,
+                    decode_projection.native_dtype,
+                    saturating_usize_to_u32(vocab_rows),
+                    saturating_usize_to_u32(projection_cols),
+                    saturating_usize_to_u32(input_width),
                 );
             } else {
-                encoder.dispatch_threads(
-                    MTLSize::new(projection_dispatch_threads(vocab_rows.max(1)), 1, 1),
-                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
+                encoder.set_buffer(0, Some(&hidden_buffer), 0);
+                encoder.set_buffer(1, Some(&decode_projection.native_buffer), 0);
+                encoder.set_buffer(2, Some(&logits_buffer), 0);
+                set_logits_projection_dispatch_params(
+                    encoder,
+                    3,
+                    saturating_usize_to_u32(vocab_rows),
+                    saturating_usize_to_u32(projection_cols),
+                    saturating_usize_to_u32(input_width),
                 );
+                if projection_kernel_name.contains("_sg_") {
+                    encoder.dispatch_thread_groups(
+                        MTLSize::new(sg_projection_tg_count(vocab_rows.max(1)), 1, 1),
+                        MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                    );
+                } else {
+                    encoder.dispatch_threads(
+                        MTLSize::new(projection_dispatch_threads(vocab_rows.max(1)), 1, 1),
+                        MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                    );
+                }
             }
 
             encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
@@ -4622,27 +4669,42 @@ fn project_decode_logits_with_optional_native_path(
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.decode_logits_projection.compute");
 
-            encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
-            encoder.set_buffer(0, Some(&hidden_buffer), 0);
-            encoder.set_buffer(1, Some(&decode_projection.native_buffer), 0);
-            encoder.set_buffer(2, Some(&logits_buffer), 0);
-            set_logits_projection_dispatch_params(
-                encoder,
-                3,
-                saturating_usize_to_u32(vocab_rows),
-                saturating_usize_to_u32(projection_cols),
-                saturating_usize_to_u32(input_width),
-            );
-            if projection_kernel_name.contains("_sg_") {
-                encoder.dispatch_thread_groups(
-                    MTLSize::new(sg_projection_tg_count(vocab_rows.max(1)), 1, 1),
-                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+            if decode_projection.native_dtype == NativeTensorDataType::Q4Km {
+                encode_fused_projection(
+                    encoder,
+                    &projection_pipeline,
+                    &hidden_buffer,
+                    &decode_projection.native_buffer,
+                    0,
+                    &logits_buffer,
+                    decode_projection.native_dtype,
+                    saturating_usize_to_u32(vocab_rows),
+                    saturating_usize_to_u32(projection_cols),
+                    saturating_usize_to_u32(input_width),
                 );
             } else {
-                encoder.dispatch_threads(
-                    MTLSize::new(projection_dispatch_threads(vocab_rows.max(1)), 1, 1),
-                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
+                encoder.set_buffer(0, Some(&hidden_buffer), 0);
+                encoder.set_buffer(1, Some(&decode_projection.native_buffer), 0);
+                encoder.set_buffer(2, Some(&logits_buffer), 0);
+                set_logits_projection_dispatch_params(
+                    encoder,
+                    3,
+                    saturating_usize_to_u32(vocab_rows),
+                    saturating_usize_to_u32(projection_cols),
+                    saturating_usize_to_u32(input_width),
                 );
+                if projection_kernel_name.contains("_sg_") {
+                    encoder.dispatch_thread_groups(
+                        MTLSize::new(sg_projection_tg_count(vocab_rows.max(1)), 1, 1),
+                        MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                    );
+                } else {
+                    encoder.dispatch_threads(
+                        MTLSize::new(projection_dispatch_threads(vocab_rows.max(1)), 1, 1),
+                        MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                    );
+                }
             }
 
             encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
@@ -5615,11 +5677,14 @@ fn project_moe_expert_matrix_rows_with_optional_native_path(
         return None;
     }
 
-    let row_byte_offset = expert_index
+    // Q4Km (and other non-linear layouts) must use fused_weight_byte_offset;
+    // native_dtype_size_bytes(Q4Km) is 0 by design and would collapse every
+    // expert onto offset 0.
+    let flattened_row_offset = expert_index
         .checked_mul(rows_per_expert)?
-        .checked_add(row_offset)?
-        .checked_mul(cols)?
-        .checked_mul(native_dtype_size_bytes(binding.native_dtype))?;
+        .checked_add(row_offset)?;
+    let row_byte_offset =
+        fused_weight_byte_offset(flattened_row_offset, cols, binding.native_dtype)?;
 
     let output = find_optional_pipeline_handle_by_index(
         &bringup.state,
@@ -5641,20 +5706,17 @@ fn project_moe_expert_matrix_rows_with_optional_native_path(
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.project_moe_expert_rows.compute");
 
-            encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
-            encoder.set_buffer(0, Some(&hidden_buffer), 0);
-            encoder.set_buffer(1, Some(&binding.native_buffer), row_byte_offset as u64);
-            encoder.set_buffer(2, Some(&output_buffer), 0);
-            set_logits_projection_dispatch_params(
+            encode_fused_projection(
                 encoder,
-                3,
+                &projection_pipeline,
+                &hidden_buffer,
+                &binding.native_buffer,
+                row_byte_offset as u64,
+                &output_buffer,
+                binding.native_dtype,
                 saturating_usize_to_u32(output_dim),
                 saturating_usize_to_u32(cols),
                 saturating_usize_to_u32(input.len()),
-            );
-            encoder.dispatch_threads(
-                MTLSize::new(projection_dispatch_threads(output_dim.max(1)), 1, 1),
-                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
 
             encoder.end_encoding();
@@ -5753,109 +5815,115 @@ fn project_batched_moe_expert_matrix_rows_with_tally(
         ));
     }
 
+    // Batched projection kernels exist for float dtypes only. Q4Km (and any
+    // missing batched plan entry) must fall through to split/single/CPU rather
+    // than hard-fail the whole prefill batch via `?`.
     if let Some(bringup) = bringup {
-        let (projection_kernel_name, projection_pipeline_index) = bringup
+        if let Some((projection_kernel_name, projection_pipeline_index)) = bringup
             .state
             .optional_kernel_dispatch_plan
-            .batched_projection_kernel(binding.native_dtype)?;
-        let row_count = input_rows.len();
-        let feedback_key = batched_projection_feedback_key(
-            projection_kernel_name,
-            row_count,
-            output_dim,
-            input_width,
-            input_width,
-            cols,
-        );
-        if optional_kernel_allowed(bringup, &feedback_key) {
-            let flattened_row_offset = expert_index
-                .checked_mul(rows_per_expert)?
-                .checked_add(row_offset)?;
-            let row_byte_offset = flattened_row_offset
-                .checked_mul(cols)?
-                .checked_mul(native_dtype_size_bytes(binding.native_dtype))?;
-            let output_element_count = row_count.checked_mul(output_dim)?;
-            let mut flattened_input = Vec::with_capacity(row_count.checked_mul(input_width)?);
-            for row in input_rows {
-                flattened_input.extend_from_slice(row.get(..input_width)?);
-            }
-
-            let output = find_optional_pipeline_handle_by_index(
-                &bringup.state,
-                &bringup.metallib.path,
+            .batched_projection_kernel(binding.native_dtype)
+        {
+            let row_count = input_rows.len();
+            let feedback_key = batched_projection_feedback_key(
                 projection_kernel_name,
-                projection_pipeline_index,
-            )
-            .ok()
-            .and_then(|projection_pipeline| {
-                autoreleasepool(|| {
-                    let hidden_buffer =
-                        new_shared_buffer_with_data(&bringup.state.device, &flattened_input);
-                    let output_buffer = new_zeroed_shared_buffer::<f32>(
-                        &bringup.state.device,
-                        saturating_usize_to_u32(output_element_count),
-                    );
+                row_count,
+                output_dim,
+                input_width,
+                input_width,
+                cols,
+            );
+            if optional_kernel_allowed(bringup, &feedback_key) {
+                let flattened_row_offset = expert_index
+                    .checked_mul(rows_per_expert)?
+                    .checked_add(row_offset)?;
+                let row_byte_offset =
+                    fused_weight_byte_offset(flattened_row_offset, cols, binding.native_dtype)?;
+                let output_element_count = row_count.checked_mul(output_dim)?;
+                let mut flattened_input = Vec::with_capacity(row_count.checked_mul(input_width)?);
+                for row in input_rows {
+                    flattened_input.extend_from_slice(row.get(..input_width)?);
+                }
 
-                    let command_buffer = bringup.state.command_queue.new_command_buffer();
-                    command_buffer.set_label("ax.phase1.project_moe_expert_rows_batched");
-                    let encoder = command_buffer.new_compute_command_encoder();
-                    encoder.set_label("ax.phase1.project_moe_expert_rows_batched.compute");
+                let output = find_optional_pipeline_handle_by_index(
+                    &bringup.state,
+                    &bringup.metallib.path,
+                    projection_kernel_name,
+                    projection_pipeline_index,
+                )
+                .ok()
+                .and_then(|projection_pipeline| {
+                    autoreleasepool(|| {
+                        let hidden_buffer =
+                            new_shared_buffer_with_data(&bringup.state.device, &flattened_input);
+                        let output_buffer = new_zeroed_shared_buffer::<f32>(
+                            &bringup.state.device,
+                            saturating_usize_to_u32(output_element_count),
+                        );
 
-                    encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
-                    encoder.set_buffer(0, Some(&hidden_buffer), 0);
-                    encoder.set_buffer(1, Some(&binding.native_buffer), row_byte_offset as u64);
-                    encoder.set_buffer(2, Some(&output_buffer), 0);
-                    set_batched_logits_projection_dispatch_params(
-                        encoder,
-                        3,
-                        saturating_usize_to_u32(row_count),
-                        saturating_usize_to_u32(output_dim),
-                        saturating_usize_to_u32(cols),
-                        saturating_usize_to_u32(input_width),
-                        saturating_usize_to_u32(input_width),
-                    );
-                    encoder.dispatch_threads(
-                        MTLSize::new(
-                            projection_dispatch_threads(output_element_count.max(1)),
-                            1,
-                            1,
+                        let command_buffer = bringup.state.command_queue.new_command_buffer();
+                        command_buffer.set_label("ax.phase1.project_moe_expert_rows_batched");
+                        let encoder = command_buffer.new_compute_command_encoder();
+                        encoder.set_label("ax.phase1.project_moe_expert_rows_batched.compute");
+
+                        encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
+                        encoder.set_buffer(0, Some(&hidden_buffer), 0);
+                        encoder.set_buffer(1, Some(&binding.native_buffer), row_byte_offset as u64);
+                        encoder.set_buffer(2, Some(&output_buffer), 0);
+                        set_batched_logits_projection_dispatch_params(
+                            encoder,
+                            3,
+                            saturating_usize_to_u32(row_count),
+                            saturating_usize_to_u32(output_dim),
+                            saturating_usize_to_u32(cols),
+                            saturating_usize_to_u32(input_width),
+                            saturating_usize_to_u32(input_width),
+                        );
+                        encoder.dispatch_threads(
+                            MTLSize::new(
+                                projection_dispatch_threads(output_element_count.max(1)),
+                                1,
+                                1,
+                            ),
+                            MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                        );
+
+                        encoder.end_encoding();
+                        command_buffer.commit();
+                        command_buffer.wait_until_completed();
+
+                        let command_buffer_status = command_buffer_status(command_buffer.status());
+                        if command_buffer_status != MetalCommandBufferStatus::Completed {
+                            return None;
+                        }
+
+                        let output = read_shared_buffer_prefix(
+                            &output_buffer,
+                            saturating_usize_to_u32(output_element_count),
+                        );
+                        if output.len() != output_element_count
+                            || output.iter().any(|value| !value.is_finite())
+                        {
+                            return None;
+                        }
+                        Some(
+                            output
+                                .chunks_exact(output_dim)
+                                .map(|chunk| chunk.to_vec())
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                });
+                record_optional_kernel_result(bringup, &feedback_key, output.is_some());
+                if let Some(output_rows) = output {
+                    return Some((
+                        output_rows,
+                        DirectDecodeNativeDenseTally::default().record_projection_rows(
+                            input_rows.len().checked_mul(output_dim)?,
+                            true,
                         ),
-                        MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
-                    );
-
-                    encoder.end_encoding();
-                    command_buffer.commit();
-                    command_buffer.wait_until_completed();
-
-                    let command_buffer_status = command_buffer_status(command_buffer.status());
-                    if command_buffer_status != MetalCommandBufferStatus::Completed {
-                        return None;
-                    }
-
-                    let output = read_shared_buffer_prefix(
-                        &output_buffer,
-                        saturating_usize_to_u32(output_element_count),
-                    );
-                    if output.len() != output_element_count
-                        || output.iter().any(|value| !value.is_finite())
-                    {
-                        return None;
-                    }
-                    Some(
-                        output
-                            .chunks_exact(output_dim)
-                            .map(|chunk| chunk.to_vec())
-                            .collect::<Vec<_>>(),
-                    )
-                })
-            });
-            record_optional_kernel_result(bringup, &feedback_key, output.is_some());
-            if let Some(output_rows) = output {
-                return Some((
-                    output_rows,
-                    DirectDecodeNativeDenseTally::default()
-                        .record_projection_rows(input_rows.len().checked_mul(output_dim)?, true),
-                ));
+                    ));
+                }
             }
         }
     }
@@ -7432,7 +7500,14 @@ fn dispatch_numeric_workload_macos_with_cache_seed(
         });
 
         for (trace, pipeline) in kernels.iter().zip(&ordered_pipelines) {
-            encode_numeric_kernel(encoder, pipeline, trace, workload, arena);
+            encode_numeric_kernel(
+                encoder,
+                pipeline,
+                trace,
+                workload,
+                arena,
+                attention_config,
+            );
         }
 
         encoder.end_encoding();
@@ -7977,6 +8052,8 @@ struct MetalDispatchArena {
     copy_value_target: Buffer,
     context_token_batch_ids: Buffer,
     scheduled_token_batch_ids: Buffer,
+    /// Per scheduled token: exclusive causal context end in gather index space.
+    scheduled_token_context_ends: Buffer,
 }
 
 #[cfg(target_os = "macos")]
@@ -8077,6 +8154,10 @@ impl MetalDispatchArena {
                 device,
                 requirements.token_capacity,
             ),
+            scheduled_token_context_ends: new_zeroed_shared_buffer::<u32>(
+                device,
+                requirements.token_capacity,
+            ),
         }
     }
 
@@ -8129,6 +8210,10 @@ impl MetalDispatchArena {
         self.scheduled_token_batch_ids = new_shared_buffer_with_data(
             device,
             &compute_token_batch_ids(&workload.kv_metadata.scheduled_cu_seq_lens),
+        );
+        self.scheduled_token_context_ends = new_shared_buffer_with_data(
+            device,
+            &compute_token_context_ends(workload),
         );
         self.copy_block_mapping =
             new_shared_buffer_with_data(device, &workload.kv_metadata.copy_block_mapping);
@@ -13983,6 +14068,7 @@ fn encode_numeric_kernel(
     trace: &MetalDispatchKernelTrace,
     workload: &MetalDispatchWorkload,
     arena: &MetalDispatchArena,
+    attention_config: Option<ReferenceAttentionConfig>,
 ) {
     encoder.set_compute_pipeline_state(&pipeline.pipeline);
 
@@ -14007,15 +14093,28 @@ fn encode_numeric_kernel(
             encoder.set_buffer(3, Some(&arena.cu_seq_lens), 0);
             encoder.set_buffer(4, Some(&arena.scheduled_cu_seq_lens), 0);
             encoder.set_buffer(5, Some(&arena.attention_output), 0);
+            let head_dim = workload.numeric_layout.head_dim;
+            let default_scale = if head_dim > 0 {
+                1.0 / (head_dim as f32).sqrt()
+            } else {
+                1.0
+            };
+            let (softmax_scale, softcap) = match attention_config {
+                Some(config) => (config.softmax_scale, config.softcap.unwrap_or(0.0)),
+                None => (default_scale, 0.0),
+            };
             set_attention_dispatch_params(
                 encoder,
                 6,
                 trace.element_count,
                 workload.kv_metadata.seq_lens.len() as u32,
                 workload.numeric_layout.head_count,
-                workload.numeric_layout.head_dim,
+                head_dim,
+                softmax_scale,
+                softcap,
             );
             encoder.set_buffer(7, Some(&arena.scheduled_token_batch_ids), 0);
+            encoder.set_buffer(8, Some(&arena.scheduled_token_context_ends), 0);
         }
         "gather_kv_cache" => {
             encoder.set_buffer(0, Some(&arena.key_cache), 0);

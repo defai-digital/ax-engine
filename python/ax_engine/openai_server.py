@@ -926,9 +926,18 @@ def stream_completion_chunks(
     for event in generator:
         if event.event == "step" and event.delta_tokens:
             accumulated_tokens.extend(event.delta_tokens)
-            full_text = tokenizer.decode(accumulated_tokens)
-            new_text = full_text[prev_text_len:]
-            prev_text_len = len(full_text)
+            # Prefer engine-provided delta_text: cumulative re-decode corrupts
+            # multi-token glyphs (ZWJ emoji) when a partial sequence yields
+            # U+FFFD that is then counted as "already sent".
+            if event.delta_text is not None:
+                new_text = event.delta_text
+                if new_text:
+                    # Keep prev_text_len aligned for any residual flush path.
+                    prev_text_len += len(new_text)
+            else:
+                full_text = tokenizer.decode(accumulated_tokens)
+                new_text = full_text[prev_text_len:]
+                prev_text_len = len(full_text)
             if new_text:
                 emit_role = kind == "chat" and not role_emitted
                 role_emitted = role_emitted or emit_role
@@ -942,8 +951,9 @@ def stream_completion_chunks(
                     emit_role=emit_role,
                 )
         elif event.event == "response" and event.response is not None:
-            # Flush any remaining text from incomplete UTF-8 sequences
-            if accumulated_tokens:
+            # Flush any remaining text from incomplete UTF-8 sequences when
+            # the stream path did not supply delta_text (legacy fallback).
+            if accumulated_tokens and event.delta_text is None:
                 final_text = tokenizer.decode(accumulated_tokens)
                 remaining = final_text[prev_text_len:]
                 if remaining:

@@ -209,7 +209,12 @@ cd "$ROOT_DIR"
 
 if [[ "$SKIP_BUILD" = false ]]; then
     echo "▶ building release binaries…"
-    cargo build --release -p ax-engine-server -p ax-engine-bench --bins
+    # Server: release-server (panic=unwind). Bench: plain release (panic=abort).
+    cargo build --profile release-server -p ax-engine-server --bins
+    cargo build --release -p ax-engine-bench --bins
+    mkdir -p target/release
+    cp -f target/release-server/ax-engine-server target/release/ax-engine-server
+    chmod +x target/release/ax-engine-server
 else
     echo "▶ skipping build (--skip-build)"
     for bin in "${RELEASE_BINS[@]}"; do

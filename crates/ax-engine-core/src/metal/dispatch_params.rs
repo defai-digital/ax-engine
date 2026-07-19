@@ -32,6 +32,10 @@ struct AttentionDispatchParams {
     num_seqs: u32,
     head_count: u32,
     head_dim: u32,
+    /// Softmax scale applied to Q·K (typically 1/sqrt(head_dim)).
+    softmax_scale: f32,
+    /// Attention logit softcap; 0.0 disables softcap.
+    softcap: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -285,12 +289,16 @@ pub(super) fn set_attention_dispatch_params(
     num_seqs: u32,
     head_count: u32,
     head_dim: u32,
+    softmax_scale: f32,
+    softcap: f32,
 ) {
     let params = AttentionDispatchParams {
         element_count,
         num_seqs,
         head_count,
         head_dim,
+        softmax_scale,
+        softcap,
     };
     set_dispatch_params(encoder, buffer_index, &params);
 }

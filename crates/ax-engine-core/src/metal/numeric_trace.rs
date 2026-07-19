@@ -111,7 +111,14 @@ pub(super) fn reference_numeric_path_with_inputs_and_cache_seed_and_attention_co
         let batch_id =
             batch_id_for_token(&workload.kv_metadata.scheduled_cu_seq_lens, token_id as u32);
         let context_begin = workload.kv_metadata.cu_seq_lens[batch_id] as usize;
-        let context_end = workload.kv_metadata.cu_seq_lens[batch_id + 1] as usize;
+        let context_limit = workload.kv_metadata.cu_seq_lens[batch_id + 1] as usize;
+        // Causal bound: token at absolute position p may only attend to 0..=p.
+        let absolute_position = workload
+            .scheduled_positions
+            .get(token_id)
+            .copied()
+            .unwrap_or(0) as usize;
+        let context_end = (context_begin + absolute_position + 1).min(context_limit);
         let query_base = token_id * head_size;
 
         for head in 0..head_count {

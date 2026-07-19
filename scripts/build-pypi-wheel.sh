@@ -125,10 +125,15 @@ rm -f "${DELOCATED_OUT}"/ax_engine-*.whl
 mkdir -p "$WHEEL_OUT" "$DELOCATED_OUT"
 
 # ── 3. Build ax-engine-server and ax-engine-bench; stage into wheel data dir ─
-echo "==> Building ax-engine-server and ax-engine-bench binaries..."
-cargo build --release -p ax-engine-server -p ax-engine-bench
+# Server uses --profile release-server (inherits release opts, panic=unwind) so
+# the generation worker's catch_unwind containment can retire a panicking
+# model without SIGABRTing the whole process. Bench/CLI keep plain --release
+# (panic=abort). See Cargo.toml [profile.release-server] and docs/SERVER.md.
+echo "==> Building ax-engine-server (release-server) and ax-engine-bench (release)..."
+cargo build --profile release-server -p ax-engine-server
+cargo build --release -p ax-engine-bench
 
-SERVER_BIN="$REPO_ROOT/target/release/ax-engine-server"
+SERVER_BIN="$REPO_ROOT/target/release-server/ax-engine-server"
 if [[ ! -f "$SERVER_BIN" ]]; then
     echo "error: expected binary at $SERVER_BIN after cargo build"
     exit 1
