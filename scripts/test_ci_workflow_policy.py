@@ -175,6 +175,7 @@ class CiWorkflowPolicyTests(unittest.TestCase):
 
         self.assertRegex(toolchain, r'channel = "\d+\.\d+\.\d+"')
         self.assertNotIn('channel = "stable"', toolchain)
+        self.assertIn('components = ["clippy", "rustfmt"]', toolchain)
 
     def test_supply_chain_checks_run_on_linux(self) -> None:
         workflow = CI_WORKFLOW.read_text()
