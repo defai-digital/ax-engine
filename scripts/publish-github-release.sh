@@ -159,15 +159,20 @@ find_candidate_run() {
 validate_candidate_run() {
     local candidate_run_id="$1"
     local run_info
-    local workflow_name
+    local workflow_path
     local conclusion
+    local run_sha
+    local event
 
     run_info="$(gh api \
         "repos/${MAIN_REPO}/actions/runs/${candidate_run_id}" \
-        --jq '[.name, .conclusion] | @tsv')"
-    IFS=$'\t' read -r workflow_name conclusion <<<"$run_info"
-    [[ "$workflow_name" == "Build Release Candidate" && "$conclusion" == "success" ]] || {
-        die "artifact came from invalid candidate run $candidate_run_id ($workflow_name, $conclusion)"
+        --jq '[.path, .conclusion, .head_sha, .event] | @tsv')"
+    IFS=$'\t' read -r workflow_path conclusion run_sha event <<<"$run_info"
+    [[ "$workflow_path" == ".github/workflows/$CANDIDATE_WORKFLOW" \
+        && "$conclusion" == "success" \
+        && "$run_sha" == "$head_commit" \
+        && "$event" == "workflow_dispatch" ]] || {
+        die "artifact came from invalid candidate run $candidate_run_id ($workflow_path, $conclusion, $run_sha, $event)"
     }
 }
 
