@@ -62,11 +62,14 @@ jobs:
           fi
           RUN_INFO="$(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
-            --jq '[.name, .conclusion] | @tsv')"
-          IFS=$'\t' read -r WORKFLOW_NAME CONCLUSION <<< "$RUN_INFO"
-          if [[ "$WORKFLOW_NAME" != "Build Release Candidate" || "$CONCLUSION" != "success" ]]; then
+            --jq '[.path, .conclusion, .head_sha, .event] | @tsv')"
+          IFS=$'\t' read -r WORKFLOW_PATH CONCLUSION RUN_SHA EVENT <<< "$RUN_INFO"
+          if [[ "$WORKFLOW_PATH" != ".github/workflows/release-candidate.yml" \
+              || "$CONCLUSION" != "success" \
+              || "$RUN_SHA" != "$RELEASE_SHA" \
+              || "$EVENT" != "workflow_dispatch" ]]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "Ignoring artifact from invalid candidate run $RUN_ID ($WORKFLOW_NAME, $CONCLUSION)."
+            echo "Ignoring artifact from invalid candidate run $RUN_ID ($WORKFLOW_PATH, $CONCLUSION, $RUN_SHA, $EVENT)."
             exit 0
           fi
           echo "found=true" >> "$GITHUB_OUTPUT"
