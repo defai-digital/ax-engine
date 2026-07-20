@@ -2168,6 +2168,8 @@ mod tests {
         let key = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
         let _env_lock = ENV_LOCK.lock().expect("env lock");
         let _env_guard = EnvVarGuard::capture(&[key]);
+        // SAFETY: ENV_LOCK is held for this test's whole scope, and the
+        // EnvVarGuard restores the captured vars on drop.
         unsafe {
             env::set_var(key, "4096");
         }
@@ -2180,6 +2182,8 @@ mod tests {
         let key = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
         let _env_lock = ENV_LOCK.lock().expect("env lock");
         let _env_guard = EnvVarGuard::capture(&[key]);
+        // SAFETY: ENV_LOCK is held for this test's whole scope, and the
+        // EnvVarGuard restores the captured vars on drop.
         unsafe {
             env::set_var(key, "42");
         }
@@ -2193,6 +2197,8 @@ mod tests {
         let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
         let _env_lock = ENV_LOCK.lock().expect("env lock");
         let _env_guard = EnvVarGuard::capture(&[key_bytes, key_entries]);
+        // SAFETY: ENV_LOCK is held for this test's whole scope, and the
+        // EnvVarGuard restores the captured vars on drop.
         unsafe {
             env::set_var(key_bytes, "8192");
             env::set_var(key_entries, "7");
@@ -2208,6 +2214,8 @@ mod tests {
         let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
         let _env_lock = ENV_LOCK.lock().expect("env lock");
         let _env_guard = EnvVarGuard::capture(&[key_bytes, key_entries]);
+        // SAFETY: ENV_LOCK is held for this test's whole scope, and the
+        // EnvVarGuard restores the captured vars on drop.
         unsafe {
             env::remove_var(key_bytes);
             env::remove_var(key_entries);
@@ -2229,6 +2237,8 @@ mod tests {
         let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
         let _env_lock = ENV_LOCK.lock().expect("env lock");
         let _env_guard = EnvVarGuard::capture(&[key_bytes, key_entries]);
+        // SAFETY: ENV_LOCK is held for this test's whole scope, and the
+        // EnvVarGuard restores the captured vars on drop.
         unsafe {
             env::set_var(key_bytes, "not-a-number");
             env::set_var(key_entries, "xyz");
@@ -2254,6 +2264,8 @@ mod tests {
         let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
         let _env_lock = ENV_LOCK.lock().expect("env lock");
         let _env_guard = EnvVarGuard::capture(&[key_bytes, key_entries]);
+        // SAFETY: ENV_LOCK is held for this test's whole scope, and the
+        // EnvVarGuard restores the captured vars on drop.
         unsafe {
             env::set_var(key_bytes, "0");
             env::set_var(key_entries, "0");
@@ -2263,6 +2275,8 @@ mod tests {
         assert_eq!(policy.max_entries, 0, "zero max_entries must be preserved");
         assert!(!policy.enabled(), "zero budgets disable the disk tier");
 
+        // SAFETY: ENV_LOCK is held for this test's whole scope, and the
+        // EnvVarGuard restores the captured vars on drop.
         unsafe {
             env::remove_var(key_bytes);
             env::remove_var(key_entries);

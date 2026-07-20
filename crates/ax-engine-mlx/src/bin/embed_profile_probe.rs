@@ -49,6 +49,8 @@ fn parse_optional_positive(
 
 fn run() -> Result<(), String> {
     // Set before the first `embed_profile_enabled()` read (it caches via OnceLock).
+    // SAFETY: `run()` is `main`'s first call and nothing has spawned threads yet,
+    // so no concurrent env access can race this mutation.
     unsafe { std::env::set_var("AX_MLX_EMBED_PROFILE", "1") };
 
     let mut args = std::env::args().skip(1);

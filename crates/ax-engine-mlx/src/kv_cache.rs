@@ -499,6 +499,8 @@ unsafe extern "C" fn vec_payload_drop(payload: *mut std::ffi::c_void) {
     if payload.is_null() {
         return;
     }
+    // SAFETY: per the function contract above — `payload` came from
+    // `Box::into_raw(Box::new(Vec<u8>))` and is recovered exactly once.
     unsafe {
         let _ = Box::from_raw(payload as *mut Vec<u8>);
     }

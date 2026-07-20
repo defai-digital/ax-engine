@@ -728,6 +728,11 @@ fn build_compiled_mtp_draft(
     let head_addr = head as *const MtpWeights as usize;
     let vocab = cfg.vocab_size as i32;
 
+    // SAFETY: The closure captures raw pointers to `cfg`, `weights`, and `head`
+    // because `MlxClosure::new_dyn()` requires `'static` captures. The referenced
+    // objects outlive every invocation: the sole caller (`run_compiled_mtp_draft`)
+    // borrows all three for its whole scope, applies the returned closure
+    // synchronously, and drops it before returning.
     let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
         let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
         let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
