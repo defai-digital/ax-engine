@@ -379,6 +379,80 @@ fn openai_chat_prompt_renderer_ministral_available_tools_and_last_user_system() 
 }
 
 #[test]
+fn openai_chat_prompt_renderer_ministral_tools_roundtrip_matches_hub() {
+    // Hub requires 9-char tool call ids and TOOL_CALLS / TOOL_RESULTS markers.
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "callABC12",
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": {"query": "AX", "limit": 2}
+                }
+            }]
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "callABC12",
+            "content": "AX Engine"
+        }
+    ]))
+    .expect("roundtrip messages");
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Lookup docs",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    }]);
+    let prompt = render_openai_chat_prompt_with_tools(
+        "ministral-8b-instruct",
+        &messages,
+        Some(&tools),
+        Some(&json!("auto")),
+    )
+    .expect("ministral tools roundtrip");
+
+    assert!(
+        prompt.starts_with("<s>[AVAILABLE_TOOLS] "),
+        "tools before last user: {prompt}"
+    );
+    assert!(
+        prompt.contains("[/AVAILABLE_TOOLS][INST]Look up AX[/INST]"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("[TOOL_CALLS] [")
+            && prompt.contains("\"name\":\"lookup\"")
+            && prompt.contains("\"arguments\":")
+            && prompt.contains(", \"id\": \"callABC12\"}]</s>"),
+        "TOOL_CALLS with 9-char id and function payload: {prompt}"
+    );
+    assert!(
+        prompt.contains(
+            "[TOOL_RESULTS] {\"content\": AX Engine, \"call_id\": \"callABC12\"}[/TOOL_RESULTS]"
+        ),
+        "TOOL_RESULTS raw content + call_id: {prompt}"
+    );
+    assert!(
+        !prompt.contains("[INST]AX Engine[/INST]"),
+        "tool results must not be framed as INST: {prompt}"
+    );
+}
+
+#[test]
 fn openai_chat_prompt_renderer_llama4_injects_tools_into_user_turn() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "Look up AX"}
@@ -412,6 +486,76 @@ fn openai_chat_prompt_renderer_llama4_injects_tools_into_user_turn() {
     assert!(prompt.contains("Look up AX<|eot|>"));
     assert!(prompt.ends_with("<|header_start|>assistant<|header_end|>\n\n"));
     assert!(!prompt.contains("<|start_header_id|>"));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_llama4_tools_roundtrip_uses_python_and_ipython() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": {"query": "AX", "limit": 2}
+                }
+            }]
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_123",
+            "content": "AX Engine"
+        }
+    ]))
+    .expect("roundtrip messages");
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Lookup docs",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    }]);
+    let prompt = render_openai_chat_prompt_with_tools(
+        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        &messages,
+        Some(&tools),
+        Some(&json!("auto")),
+    )
+    .expect("llama4 tools roundtrip");
+
+    assert!(
+        prompt.contains("<|python_start|><|python_end|>"),
+        "empty assistant content still opens python wrappers: {prompt}"
+    );
+    assert!(
+        prompt.contains("{\"name\":\"lookup\",\"parameters\":{\"limit\":2,\"query\":\"AX\"}}")
+            || prompt
+                .contains("{\"name\":\"lookup\",\"parameters\":{\"query\":\"AX\",\"limit\":2}}"),
+        "tool call uses parameters not arguments: {prompt}"
+    );
+    assert!(
+        prompt.contains("<|header_start|>ipython<|header_end|>\n\n\"AX Engine\"<|eot|>"),
+        "tool results use ipython header + JSON string content: {prompt}"
+    );
+    assert!(
+        !prompt.contains("<|header_start|>user<|header_end|>\n\nAX Engine"),
+        "tool results must not be framed as user: {prompt}"
+    );
+    assert!(
+        prompt.ends_with("<|header_start|>assistant<|header_end|>\n\n"),
+        "generation prompt after tool result: {prompt}"
+    );
 }
 
 #[test]

@@ -146,10 +146,11 @@ fn render_glm_openai_chat_prompt(
     chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
 }
 
-/// Ministral hub `chat_template.jinja`: optional
-/// `[AVAILABLE_TOOLS] [tool_json,…][/AVAILABLE_TOOLS]` then classic `[INST]`
-/// turns, with system folded into the last user turn and assistant
-/// ` content</s>`.
+/// Ministral hub template:
+/// - `[AVAILABLE_TOOLS] […][/AVAILABLE_TOOLS]` only before the **last** user turn
+/// - assistant tool calls: `[TOOL_CALLS] [{…function…, "id": "XXXXXXXXX"}]</s>`
+/// - tool results: `[TOOL_RESULTS] {"content": …, "call_id": "XXXXXXXXX"}[/TOOL_RESULTS]`
+/// - system folds into the last user `[INST]`; plain assistant is ` content</s>`
 fn render_ministral_openai_chat_prompt(
     messages: &[OpenAiChatMessage],
     tools: Option<&Value>,
@@ -157,31 +158,41 @@ fn render_ministral_openai_chat_prompt(
     if messages.is_empty() {
         return Err(empty_chat_messages_error());
     }
-    let mut prompt = String::from("<s>");
-    if let Some(tools) = tools
-        && openai_value_is_present(tools)
-    {
-        prompt.push_str("[AVAILABLE_TOOLS] ");
-        // Hub emits a JSON array of tool objects after a single space.
-        prompt.push_str(&pretty_tools_json_array(tools));
-        prompt.push_str("[/AVAILABLE_TOOLS]");
-    }
-
+    let tools = tools.filter(|value| openai_value_is_present(value));
     let last_user_idx = messages.iter().rposition(|message| {
-        matches!(
-            chat::normalize_role(&message.role),
-            Ok("user")
-        )
+        matches!(chat::normalize_role(&message.role), Ok("user"))
     });
+    let mut prompt = String::from("<s>");
     let mut system: Option<String> = None;
     for (index, message) in messages.iter().enumerate() {
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        let has_tool_calls = message
+            .tool_calls
+            .as_ref()
+            .is_some_and(openai_value_is_present);
+
+        if has_tool_calls && role == "assistant" {
+            // Hub: [TOOL_CALLS] [ {function…, "id": "9chars"} ]</s>
+            prompt.push_str("[TOOL_CALLS] ");
+            prompt.push_str(&ministral_tool_calls_array(message.tool_calls.as_ref())?);
+            prompt.push_str("</s>");
+            continue;
+        }
+
         match role {
             "system" => {
                 system = Some(render_openai_chat_content(message.content.as_ref())?);
             }
             "user" => {
                 let content = render_openai_chat_content(message.content.as_ref())?;
+                // AVAILABLE_TOOLS only on the last user message (hub condition).
+                if Some(index) == last_user_idx
+                    && let Some(tools) = tools
+                {
+                    prompt.push_str("[AVAILABLE_TOOLS] ");
+                    prompt.push_str(&ministral_available_tools_array(tools));
+                    prompt.push_str("[/AVAILABLE_TOOLS]");
+                }
                 prompt.push_str("[INST]");
                 if Some(index) == last_user_idx
                     && let Some(system_text) = system.take()
@@ -189,7 +200,7 @@ fn render_ministral_openai_chat_prompt(
                     prompt.push_str(system_text.trim());
                     prompt.push_str("\n\n");
                 }
-                prompt.push_str(content.trim());
+                prompt.push_str(&content);
                 prompt.push_str("[/INST]");
             }
             "assistant" => {
@@ -199,16 +210,30 @@ fn render_ministral_openai_chat_prompt(
                 prompt.push_str("</s>");
             }
             "tool" | "function" => {
+                // Hub: [TOOL_RESULTS] {"content": <raw>, "call_id": "XXXXXXXXX"}[/TOOL_RESULTS]
                 let content = render_openai_chat_content(message.content.as_ref())?;
-                prompt.push_str("[INST]");
-                prompt.push_str(content.trim());
-                prompt.push_str("[/INST]");
+                let call_id = message
+                    ._tool_call_id
+                    .as_deref()
+                    .filter(|id| id.len() == 9)
+                    .ok_or_else(|| {
+                        chat_error_response(
+                            "Ministral tool results require tool_call_id of length 9 \
+                             (hub chat_template.jinja)"
+                                .to_string(),
+                        )
+                    })?;
+                // Match hub string concatenation (content is not JSON-escaped).
+                prompt.push_str("[TOOL_RESULTS] {\"content\": ");
+                prompt.push_str(&content);
+                prompt.push_str(", \"call_id\": \"");
+                prompt.push_str(call_id);
+                prompt.push_str("\"}[/TOOL_RESULTS]");
             }
             _ => {}
         }
     }
     if let Some(system_text) = system {
-        // System-only chat: still emit an INST so generation has a role frame.
         prompt.push_str("[INST]");
         prompt.push_str(system_text.trim());
         prompt.push_str("[/INST]");
@@ -216,8 +241,10 @@ fn render_ministral_openai_chat_prompt(
     Ok(prompt)
 }
 
-/// Llama 4 hub template: tools are injected into the first user turn with a
-/// JSON function-call instruction (not a separate tools system block).
+/// Llama 4 hub template with tools:
+/// - first user turn carries function schemas + instruction
+/// - assistant tool_calls: `<|python_start|>…content…<|python_end|>{"name", "parameters"}`
+/// - tool results: `<|header_start|>ipython` with content as JSON string
 fn render_llama4_openai_chat_prompt(
     messages: &[OpenAiChatMessage],
     tools: Option<&Value>,
@@ -229,7 +256,8 @@ fn render_llama4_openai_chat_prompt(
         "<|header_start|>",
         "<|header_end|>\n\n",
         "<|eot|>",
-        false,
+        /* environment_ipython_in_system */ false,
+        /* python_tool_call_wrappers */ true,
     )
 }
 
@@ -245,7 +273,8 @@ fn render_llama3_openai_chat_prompt(
         "<|start_header_id|>",
         "<|end_header_id|>\n\n",
         "<|eot_id|>",
-        true,
+        /* environment_ipython_in_system */ true,
+        /* python_tool_call_wrappers */ true,
     )
 }
 
@@ -257,6 +286,7 @@ fn render_llama_family_tools_prompt(
     header_close: &str,
     eot: &str,
     environment_ipython: bool,
+    python_tool_call_wrappers: bool,
 ) -> Result<String, HttpErrorResponse> {
     if messages.is_empty() {
         return Err(empty_chat_messages_error());
@@ -273,17 +303,7 @@ fn render_llama_family_tools_prompt(
         }
     }
 
-    if tools.is_some() && environment_ipython {
-        // Llama 3 hub marks tool environments with Environment: ipython in system.
-        prompt.push_str(header_open);
-        prompt.push_str("system");
-        prompt.push_str(header_close);
-        prompt.push_str("Environment: ipython\n");
-        if !system_text.trim().is_empty() {
-            prompt.push_str(system_text.trim());
-        }
-        prompt.push_str(eot);
-    } else if !system_text.trim().is_empty() {
+    if !system_text.trim().is_empty() {
         prompt.push_str(header_open);
         prompt.push_str("system");
         prompt.push_str(header_close);
@@ -292,27 +312,63 @@ fn render_llama_family_tools_prompt(
         }
         prompt.push_str(system_text.trim());
         prompt.push_str(eot);
-    } else if tools.is_some() && !environment_ipython {
-        // Llama 4: no automatic system when tools are in the user message.
+    } else if tools.is_some() && environment_ipython {
+        // Llama 3 always emits a system block with Environment: ipython when tools are set.
+        prompt.push_str(header_open);
+        prompt.push_str("system");
+        prompt.push_str(header_close);
+        prompt.push_str("Environment: ipython\n");
+        prompt.push_str(eot);
     }
 
-    // First remaining user message receives the tools preamble.
     let mut injected_tools = false;
     while index < messages.len() {
         let message = &messages[index];
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        let has_tool_calls = message
+            .tool_calls
+            .as_ref()
+            .is_some_and(openai_value_is_present);
+
         if role == "tool" || role == "function" {
-            // Fold tool results as user content (hub uses ipython/tool roles;
-            // AX accepts OpenAI tool messages).
+            // Hub: <|header_start|>ipython … content|tojson … <|eot|>
             let content = render_openai_chat_content(message.content.as_ref())?;
             prompt.push_str(header_open);
-            prompt.push_str("user");
+            prompt.push_str("ipython");
             prompt.push_str(header_close);
-            prompt.push_str(content.trim());
+            // Jinja `content | tojson` for strings yields a quoted JSON string.
+            prompt.push_str(&serde_json::to_string(&content).unwrap_or_else(|_| {
+                format!("\"{}\"", content.replace('\\', "\\\\").replace('"', "\\\""))
+            }));
             prompt.push_str(eot);
             index += 1;
             continue;
         }
+
+        if role == "assistant" && has_tool_calls {
+            let content = render_openai_chat_content(message.content.as_ref())?;
+            prompt.push_str(header_open);
+            prompt.push_str("assistant");
+            prompt.push_str(header_close);
+            if python_tool_call_wrappers {
+                // Hub Llama 4:
+                // <|python_start|>{content}<|python_end|>{"name":…,"parameters":…}<|eot|>
+                prompt.push_str("<|python_start|>");
+                if !content.trim().is_empty() {
+                    prompt.push_str(&content);
+                }
+                prompt.push_str("<|python_end|>");
+            } else if !content.trim().is_empty() {
+                prompt.push_str(content.trim());
+            }
+            for call in llama_tool_call_payloads(message.tool_calls.as_ref()) {
+                prompt.push_str(&call);
+            }
+            prompt.push_str(eot);
+            index += 1;
+            continue;
+        }
+
         if role == "user" && !injected_tools && tools.is_some() {
             let content = render_openai_chat_content(message.content.as_ref())?;
             prompt.push_str(header_open);
@@ -336,38 +392,20 @@ fn render_llama_family_tools_prompt(
             index += 1;
             continue;
         }
-        if role == "assistant" {
-            let content = render_openai_chat_content(message.content.as_ref())?;
-            prompt.push_str(header_open);
-            prompt.push_str("assistant");
-            prompt.push_str(header_close);
-            if let Some(tool_calls) = message.tool_calls.as_ref() {
-                // Replay prior tool calls as JSON function-call lines when present.
-                for call in llama_tool_calls(tool_calls) {
-                    prompt.push_str(&call);
-                    prompt.push('\n');
-                }
-            }
-            if !content.trim().is_empty() {
-                prompt.push_str(content.trim());
-            }
-            prompt.push_str(eot);
-            index += 1;
-            continue;
-        }
-        // Regular user (no tools left to inject) or residual system.
+
+        // Regular user/assistant without tool surface.
         let content = render_openai_chat_content(message.content.as_ref())?;
-        let header_role = if role == "assistant" {
-            "assistant"
-        } else if role == "system" {
-            "system"
-        } else {
-            "user"
+        let header_role = match role {
+            "assistant" => "assistant",
+            "system" => "system",
+            _ => "user",
         };
         prompt.push_str(header_open);
         prompt.push_str(header_role);
         prompt.push_str(header_close);
-        prompt.push_str(content.trim());
+        if !content.trim().is_empty() {
+            prompt.push_str(content.trim());
+        }
         prompt.push_str(eot);
         index += 1;
     }
@@ -378,11 +416,54 @@ fn render_llama_family_tools_prompt(
     Ok(prompt)
 }
 
-fn pretty_tools_json_array(tools: &Value) -> String {
+/// Hub Ministral AVAILABLE_TOOLS array: OpenAI tool objects with compact JSON.
+fn ministral_available_tools_array(tools: &Value) -> String {
     match tools {
-        Value::Array(_) => serde_json::to_string(tools).unwrap_or_else(|_| "[]".to_string()),
+        Value::Array(items) => {
+            let parts: Vec<String> = items.iter().map(compact_json).collect();
+            format!("[{}]", parts.join(", "))
+        }
         other => format!("[{}]", compact_json(other)),
     }
+}
+
+/// Hub: `[TOOL_CALLS] [ {function_json without trailing }, "id": "XXXXXXXXX"} ]`
+fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, HttpErrorResponse> {
+    let Some(tool_calls) = tool_calls else {
+        return Ok("[]".to_string());
+    };
+    let calls = match tool_calls {
+        Value::Array(calls) => calls.as_slice(),
+        Value::Object(_) => std::slice::from_ref(tool_calls),
+        _ => return Ok("[]".to_string()),
+    };
+    let mut parts = Vec::new();
+    for call in calls {
+        let object = call.as_object().ok_or_else(|| {
+            chat_error_response("Ministral tool_calls entries must be objects".to_string())
+        })?;
+        let function = object.get("function").ok_or_else(|| {
+            chat_error_response("Ministral tool_calls require function".to_string())
+        })?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| id.len() == 9)
+            .ok_or_else(|| {
+                chat_error_response(
+                    "Ministral tool call ids must be alphanumeric length 9 \
+                     (hub chat_template.jinja)"
+                        .to_string(),
+                )
+            })?;
+        // function|tojson without final `}`, then append `, "id": "…"}`
+        let function_json = compact_json(function);
+        let without_close = function_json
+            .strip_suffix('}')
+            .unwrap_or(function_json.as_str());
+        parts.push(format!("{without_close}, \"id\": \"{id}\"}}"));
+    }
+    Ok(format!("[{}]", parts.join(", ")))
 }
 
 fn pretty_tool_json_lines(tools: &Value) -> Vec<String> {
@@ -393,14 +474,20 @@ fn pretty_tool_json_lines(tools: &Value) -> Vec<String> {
                 serde_json::to_string_pretty(item).unwrap_or_else(|_| compact_json(item))
             })
             .collect(),
-        other => vec![serde_json::to_string_pretty(other).unwrap_or_else(|_| compact_json(other))],
+        other => {
+            vec![serde_json::to_string_pretty(other).unwrap_or_else(|_| compact_json(other))]
+        }
     }
 }
 
-fn llama_tool_calls(value: &Value) -> Vec<String> {
-    let calls = match value {
+/// Hub Llama tool-call payload: `{"name": "…", "parameters": {…}}` (parameters, not arguments).
+fn llama_tool_call_payloads(tool_calls: Option<&Value>) -> Vec<String> {
+    let Some(tool_calls) = tool_calls else {
+        return Vec::new();
+    };
+    let calls = match tool_calls {
         Value::Array(calls) => calls.as_slice(),
-        Value::Object(_) => std::slice::from_ref(value),
+        Value::Object(_) => std::slice::from_ref(tool_calls),
         _ => return Vec::new(),
     };
     calls
@@ -409,7 +496,6 @@ fn llama_tool_calls(value: &Value) -> Vec<String> {
             let function = call.get("function")?.as_object()?;
             let name = function.get("name")?.as_str()?;
             let arguments = normalize_tool_arguments(function.get("arguments"));
-            // Hub Llama tool-call format uses name + parameters.
             let payload = serde_json::json!({
                 "name": name,
                 "parameters": arguments,
