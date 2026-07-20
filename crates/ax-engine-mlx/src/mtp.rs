@@ -1057,7 +1057,13 @@ pub fn mtp_draft_tokens_gated(
     let dropped = appended.saturating_sub(gated.3);
     if dropped > 0 {
         let target = cache.seq_len().saturating_sub(dropped);
-        let _ = cache.trim_to(target);
+        if !cache.trim_to(target) {
+            // The `cache.seq_len() == added` invariant breaks if the trim is
+            // refused; the next step's draft head then attends over gated-out
+            // rows at inflated offsets. Output stays correct (every draft is
+            // verified), so warn rather than fail.
+            tracing::warn!(target, "MTP confidence-gate trim refused");
+        }
     }
     gated
 }
@@ -1739,7 +1745,13 @@ pub fn glm_mtp_draft_tokens_gated(
     let dropped = appended.saturating_sub(gated.3);
     if dropped > 0 {
         let target = cache.seq_len().saturating_sub(dropped);
-        let _ = cache.trim_to(target);
+        if !cache.trim_to(target) {
+            // The `cache.seq_len() == added` invariant breaks if the trim is
+            // refused; the next step's draft head then attends over gated-out
+            // rows at inflated offsets. Output stays correct (every draft is
+            // verified), so warn rather than fail.
+            tracing::warn!(target, "MTP confidence-gate trim refused");
+        }
     }
     gated
 }

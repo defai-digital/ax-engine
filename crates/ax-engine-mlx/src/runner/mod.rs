@@ -5413,7 +5413,9 @@ impl MlxRunner {
                 eval(&targets);
                 mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
                 let rollback_started = Instant::now();
-                let _ = state.cache.trim_to(token_offset + 1 + ac);
+                let committed_len = token_offset + 1 + ac;
+                let trimmed = state.cache.trim_to(committed_len);
+                debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let predicted: Vec<u32> = predicted_arr
                     .as_ref()
@@ -5542,10 +5544,18 @@ impl MlxRunner {
                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
                 let rollback_started = Instant::now();
-                if all_accepted {
-                    let _ = verify_cache.trim_to(token_offset + 1 + ac);
+                if all_accepted && verify_cache.trim_to(token_offset + 1 + ac) {
                     state.cache = verify_cache;
                 } else {
+                    if all_accepted {
+                        // The rotated ring refused the trim: adopting
+                        // `verify_cache` would leave the extra verify position
+                        // attendable. Rebuild the committed prefix on the
+                        // untouched pre-verify cache instead.
+                        tracing::warn!(
+                            "speculative verify-cache trim refused; recomputing committed prefix"
+                        );
+                    }
                     recompute_committed_prefix(
                         &self.cfg,
                         &self.weights,
@@ -5734,13 +5744,28 @@ impl MlxRunner {
                 let committed_len = token_offset + 1 + ac;
                 let trimmed = state.cache.trim_to(committed_len);
                 debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
+                if !trimmed {
+                    // Ring slack is sized to absorb a full draft-depth
+                    // rollback; a refusal means rejected-draft KV stays
+                    // attendable. There is no cheap recovery at this point —
+                    // surface it instead of silently degrading output.
+                    tracing::error!(
+                        committed_len,
+                        "speculative rollback trim refused by rotated KV ring"
+                    );
+                }
 
                 // Trim MTP KV cache: remove rejected draft entries.
                 let rejected_count = pending.len() - ac;
                 if rejected_count > 0 {
                     let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
-                    if let Some(ref mut c) = state.mtp_cache {
-                        let _ = c.trim_to(new_mtp_len);
+                    if let Some(ref mut c) = state.mtp_cache
+                        && !c.trim_to(new_mtp_len)
+                    {
+                        tracing::warn!(
+                            new_mtp_len,
+                            "MTP head cache trim refused; draft quality may degrade"
+                        );
                     }
                     state.mtp_decode_count = new_mtp_len;
                 }
