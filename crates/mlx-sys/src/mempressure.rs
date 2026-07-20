@@ -68,6 +68,9 @@ pub fn host_resident_bytes() -> Option<u64> {
 /// non-zero (e.g., MLX not initialized) or if the runtime is CPU-only.
 pub fn device_active_bytes() -> Option<u64> {
     let mut bytes: usize = 0;
+    // Expected-failure probe (e.g., CPU-only runtime); polled on a cadence,
+    // so capture quietly instead of printing `mlx error:` on every tick.
+    let _quiet = crate::error::QuietErrorCapture::new();
     let rc = unsafe { ffi::mlx_get_active_memory(&mut bytes as *mut usize) };
     if rc != 0 {
         // Swallowed probe failure: drain the handler slot so the message is
@@ -83,6 +86,8 @@ pub fn device_active_bytes() -> Option<u64> {
 /// Calls `mlx_get_peak_memory`. Returns `None` if the FFI call fails.
 pub fn device_peak_bytes() -> Option<u64> {
     let mut bytes: usize = 0;
+    // Expected-failure probe; see device_active_bytes.
+    let _quiet = crate::error::QuietErrorCapture::new();
     let rc = unsafe { ffi::mlx_get_peak_memory(&mut bytes as *mut usize) };
     if rc != 0 {
         // Swallowed probe failure: drain the handler slot so the message is
@@ -98,6 +103,8 @@ pub fn device_peak_bytes() -> Option<u64> {
 /// Calls `mlx_get_cache_memory`. Returns `None` if the FFI call fails.
 pub fn device_cache_bytes() -> Option<u64> {
     let mut bytes: usize = 0;
+    // Expected-failure probe; see device_active_bytes.
+    let _quiet = crate::error::QuietErrorCapture::new();
     let rc = unsafe { ffi::mlx_get_cache_memory(&mut bytes as *mut usize) };
     if rc != 0 {
         // Swallowed probe failure: drain the handler slot so the message is

@@ -49,7 +49,9 @@ pub mod ffi {
 
 pub use array::{MlxArray, MlxDtype};
 pub use closure::{MlxClosure, MlxVectorArray};
-pub use error::{install_recoverable_error_handler, runtime_version, take_last_error};
+pub use error::{
+    QuietErrorCapture, install_recoverable_error_handler, runtime_version, take_last_error,
+};
 pub use fast::{
     ScaledDotProductAttentionMask, rms_norm, rope, rope_dynamic, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,

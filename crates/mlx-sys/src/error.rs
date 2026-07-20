@@ -7,7 +7,7 @@
 //! codes that wrappers such as [`crate::transforms::try_eval`] and
 //! [`crate::metal::MlxMetalKernel::try_apply_with_template`] check.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
 use std::sync::Once;
@@ -23,6 +23,37 @@ static INSTALL: Once = Once::new();
 // this thread's not-yet-read error message.
 thread_local! {
     static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    static QUIET_CAPTURE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// RAII scope that suppresses the handler's stderr echo on this thread while
+/// keeping error capture (the slot read by [`take_last_error`]) intact. Wrap
+/// calls whose failure is expected and handled — feature probes, optional
+/// fast paths with fallbacks — so a persistently failing probe does not spam
+/// `mlx error:` lines on every call.
+pub struct QuietErrorCapture {
+    previous: bool,
+}
+
+impl QuietErrorCapture {
+    #[must_use = "the quiet scope ends when this guard drops"]
+    pub fn new() -> Self {
+        let previous = QUIET_CAPTURE.with(|quiet| quiet.replace(true));
+        Self { previous }
+    }
+}
+
+impl Default for QuietErrorCapture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for QuietErrorCapture {
+    fn drop(&mut self) {
+        let previous = self.previous;
+        let _ = QUIET_CAPTURE.try_with(|quiet| quiet.set(previous));
+    }
 }
 
 unsafe extern "C" fn recording_error_handler(msg: *const c_char, _data: *mut c_void) {
@@ -37,9 +68,14 @@ unsafe extern "C" fn recording_error_handler(msg: *const c_char, _data: *mut c_v
             .to_string_lossy()
             .into_owned()
     };
-    // Keep the message visible like the default handler did, minus the exit.
-    use std::io::Write;
-    let _ = writeln!(std::io::stderr(), "mlx error: {message}");
+    // Keep the message visible like the default handler did, minus the exit —
+    // unless a `QuietErrorCapture` scope marked this thread's current call as
+    // an expected, handled failure.
+    let quiet = QUIET_CAPTURE.try_with(Cell::get).unwrap_or(false);
+    if !quiet {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "mlx error: {message}");
+    }
     let _ = LAST_ERROR.try_with(|slot| *slot.borrow_mut() = Some(message));
 }
 
