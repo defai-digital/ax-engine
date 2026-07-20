@@ -2,6 +2,12 @@ use mlx_sys::{MlxArray, eval};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
+fn lock_profile<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Gemma4MoeProfileSnapshot {
     pub enabled: u32,
@@ -326,7 +332,7 @@ pub(super) fn saturating_profile_us(started: Instant) -> u32 {
 }
 
 pub(super) fn record_gemma4_moe_decode_layer(topk_selections: usize, sorted_gather: bool) {
-    let mut profile = gemma4_moe_profile().lock().unwrap();
+    let mut profile = lock_profile(gemma4_moe_profile());
     profile.enabled = 1;
     profile.decode_layers = profile.decode_layers.saturating_add(1);
     profile.topk_selections = profile
@@ -340,7 +346,7 @@ pub(super) fn record_gemma4_moe_decode_layer(topk_selections: usize, sorted_gath
 }
 
 pub(super) fn record_gemma4_moe_profile_stage(stage: Gemma4MoeProfileStage, wall_us: u32) {
-    let mut profile = gemma4_moe_profile().lock().unwrap();
+    let mut profile = lock_profile(gemma4_moe_profile());
     profile.enabled = 1;
     let target = match stage {
         Gemma4MoeProfileStage::Attention => &mut profile.attention_wall_us,
@@ -353,112 +359,112 @@ pub(super) fn record_gemma4_moe_profile_stage(stage: Gemma4MoeProfileStage, wall
 }
 
 pub(super) fn record_linear_attention_profile_layer(tokens: i32) {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.enabled = 1;
     profile.layers = profile.layers.saturating_add(1);
     profile.tokens = profile.tokens.saturating_add(tokens.max(0) as u32);
 }
 
 pub(super) fn record_linear_attention_direct_cpp_inputs_attempt() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.direct_cpp_inputs_attempts = profile.direct_cpp_inputs_attempts.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_direct_cpp_inputs_hit() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.direct_cpp_inputs_hits = profile.direct_cpp_inputs_hits.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_direct_cpp_inputs_fallback() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.direct_cpp_inputs_fallbacks = profile.direct_cpp_inputs_fallbacks.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_direct_cpp_inputs_profile_blocked() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.direct_cpp_inputs_profile_blocked =
         profile.direct_cpp_inputs_profile_blocked.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_direct_cpp_post_input_attempt() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.direct_cpp_post_input_attempts =
         profile.direct_cpp_post_input_attempts.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_direct_cpp_post_input_hit() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.direct_cpp_post_input_hits = profile.direct_cpp_post_input_hits.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_direct_cpp_post_input_fallback() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.direct_cpp_post_input_fallbacks =
         profile.direct_cpp_post_input_fallbacks.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_direct_cpp_post_input_profile_blocked() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.direct_cpp_post_input_profile_blocked = profile
         .direct_cpp_post_input_profile_blocked
         .saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_decode_post_input_metal_attempt() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.decode_post_input_metal_attempts =
         profile.decode_post_input_metal_attempts.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_decode_post_input_metal_hit() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.decode_post_input_metal_hits = profile.decode_post_input_metal_hits.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_decode_post_input_metal_fallback() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.decode_post_input_metal_fallbacks =
         profile.decode_post_input_metal_fallbacks.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_decode_post_input_metal_profile_blocked() {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.decode_post_input_metal_profile_blocked = profile
         .decode_post_input_metal_profile_blocked
         .saturating_add(1);
 }
 
 pub(crate) fn record_qwen_dense_ffn_gate_up_matvec_metal_attempt() {
-    let mut profile = dense_ffn_fastpath_profile().lock().unwrap();
+    let mut profile = lock_profile(dense_ffn_fastpath_profile());
     profile.qwen_gate_up_matvec_metal_attempts =
         profile.qwen_gate_up_matvec_metal_attempts.saturating_add(1);
 }
 
 pub(crate) fn record_qwen_dense_ffn_gate_up_matvec_metal_hit() {
-    let mut profile = dense_ffn_fastpath_profile().lock().unwrap();
+    let mut profile = lock_profile(dense_ffn_fastpath_profile());
     profile.qwen_gate_up_matvec_metal_hits =
         profile.qwen_gate_up_matvec_metal_hits.saturating_add(1);
 }
 
 pub(crate) fn record_qwen_dense_ffn_gate_up_matvec_metal_fallback() {
-    let mut profile = dense_ffn_fastpath_profile().lock().unwrap();
+    let mut profile = lock_profile(dense_ffn_fastpath_profile());
     profile.qwen_gate_up_matvec_metal_fallbacks = profile
         .qwen_gate_up_matvec_metal_fallbacks
         .saturating_add(1);
 }
 
 pub(crate) fn record_moe_router_fused_attempt() {
-    let mut profile = moe_router_fused_profile().lock().unwrap();
+    let mut profile = lock_profile(moe_router_fused_profile());
     profile.attempts = profile.attempts.saturating_add(1);
 }
 
 pub(crate) fn record_moe_router_fused_hit() {
-    let mut profile = moe_router_fused_profile().lock().unwrap();
+    let mut profile = lock_profile(moe_router_fused_profile());
     profile.hits = profile.hits.saturating_add(1);
 }
 
 pub(crate) fn record_moe_router_fused_fallback() {
-    let mut profile = moe_router_fused_profile().lock().unwrap();
+    let mut profile = lock_profile(moe_router_fused_profile());
     profile.fallbacks = profile.fallbacks.saturating_add(1);
 }
 
@@ -466,7 +472,7 @@ pub(super) fn record_linear_attention_profile_stage(
     stage: LinearAttentionProfileStage,
     wall_us: u32,
 ) {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     profile.enabled = 1;
     let target = match stage {
         LinearAttentionProfileStage::Projection => &mut profile.projection_wall_us,
@@ -485,7 +491,7 @@ pub(super) fn record_linear_attention_profile_stage(
 }
 
 pub(super) fn record_prefill_profile_stage(stage: DecodeProfileStage, wall_us: u32) {
-    let mut profile = prefill_profile().lock().unwrap();
+    let mut profile = lock_profile(prefill_profile());
     profile.enabled = 1;
     let target = match stage {
         DecodeProfileStage::PerLayerInput => &mut profile.per_layer_input_wall_us,
@@ -514,7 +520,7 @@ pub(super) fn record_prefill_profile_stage(stage: DecodeProfileStage, wall_us: u
 }
 
 pub(super) fn record_decode_profile_stage(stage: DecodeProfileStage, wall_us: u32) {
-    let mut profile = decode_profile().lock().unwrap();
+    let mut profile = lock_profile(decode_profile());
     profile.enabled = 1;
     let target = match stage {
         DecodeProfileStage::PerLayerInput => &mut profile.per_layer_input_wall_us,
@@ -543,7 +549,7 @@ pub(super) fn record_decode_profile_stage(stage: DecodeProfileStage, wall_us: u3
 }
 
 pub(super) fn record_prefill_profile_step(layers: u32, tokens: u32) {
-    let mut profile = prefill_profile().lock().unwrap();
+    let mut profile = lock_profile(prefill_profile());
     profile.enabled = 1;
     profile.prefill_steps = profile.prefill_steps.saturating_add(1);
     profile.layers = profile.layers.saturating_add(layers);
@@ -551,7 +557,7 @@ pub(super) fn record_prefill_profile_step(layers: u32, tokens: u32) {
 }
 
 pub(super) fn record_decode_profile_step(layers: u32) {
-    let mut profile = decode_profile().lock().unwrap();
+    let mut profile = lock_profile(decode_profile());
     profile.enabled = 1;
     profile.decode_steps = profile.decode_steps.saturating_add(1);
     profile.layers = profile.layers.saturating_add(layers);
@@ -572,7 +578,7 @@ pub(crate) fn record_moe_profile_layer() {
     if !moe_profile_enabled() {
         return;
     }
-    let mut profile = moe_profile().lock().unwrap();
+    let mut profile = lock_profile(moe_profile());
     profile.enabled = 1;
     profile.moe_layers = profile.moe_layers.saturating_add(1);
 }
@@ -581,7 +587,7 @@ pub(crate) fn record_moe_profile_stage(stage: MoeProfileStage, wall_us: u32) {
     if !moe_profile_enabled() {
         return;
     }
-    let mut profile = moe_profile().lock().unwrap();
+    let mut profile = lock_profile(moe_profile());
     profile.enabled = 1;
     let target = match stage {
         MoeProfileStage::Router => &mut profile.router_us,
@@ -598,7 +604,7 @@ pub(crate) fn record_moe_profile_total(wall_us: u32) {
     if !moe_profile_enabled() {
         return;
     }
-    let mut profile = moe_profile().lock().unwrap();
+    let mut profile = lock_profile(moe_profile());
     profile.total_us = profile.total_us.saturating_add(wall_us);
 }
 
@@ -658,28 +664,28 @@ pub fn take_gemma4_moe_profile_snapshot() -> Gemma4MoeProfileSnapshot {
     if !gemma4_moe_profile_enabled() {
         return Gemma4MoeProfileSnapshot::default();
     }
-    let mut profile = gemma4_moe_profile().lock().unwrap();
+    let mut profile = lock_profile(gemma4_moe_profile());
     let snapshot = *profile;
     *profile = Gemma4MoeProfileSnapshot::default();
     snapshot
 }
 
 pub fn take_linear_attention_profile_snapshot() -> LinearAttentionProfileSnapshot {
-    let mut profile = linear_attention_profile().lock().unwrap();
+    let mut profile = lock_profile(linear_attention_profile());
     let snapshot = *profile;
     *profile = LinearAttentionProfileSnapshot::default();
     snapshot
 }
 
 pub fn take_moe_router_fused_snapshot() -> MoeRouterFusedSnapshot {
-    let mut profile = moe_router_fused_profile().lock().unwrap();
+    let mut profile = lock_profile(moe_router_fused_profile());
     let snapshot = *profile;
     *profile = MoeRouterFusedSnapshot::default();
     snapshot
 }
 
 pub fn take_dense_ffn_fastpath_snapshot() -> DenseFfnFastpathSnapshot {
-    let mut profile = dense_ffn_fastpath_profile().lock().unwrap();
+    let mut profile = lock_profile(dense_ffn_fastpath_profile());
     let snapshot = *profile;
     *profile = DenseFfnFastpathSnapshot::default();
     snapshot
@@ -689,7 +695,7 @@ pub fn take_prefill_profile_snapshot() -> PrefillProfileSnapshot {
     if !prefill_profile_enabled() {
         return PrefillProfileSnapshot::default();
     }
-    let mut profile = prefill_profile().lock().unwrap();
+    let mut profile = lock_profile(prefill_profile());
     let snapshot = *profile;
     *profile = PrefillProfileSnapshot::default();
     snapshot
@@ -699,7 +705,7 @@ pub fn take_decode_profile_snapshot() -> DecodeProfileSnapshot {
     if !decode_profile_enabled() {
         return DecodeProfileSnapshot::default();
     }
-    let mut profile = decode_profile().lock().unwrap();
+    let mut profile = lock_profile(decode_profile());
     let snapshot = *profile;
     *profile = DecodeProfileSnapshot::default();
     snapshot
@@ -709,7 +715,7 @@ pub fn take_moe_profile_snapshot() -> MoeProfileSnapshot {
     if !moe_profile_enabled() {
         return MoeProfileSnapshot::default();
     }
-    let mut profile = moe_profile().lock().unwrap();
+    let mut profile = lock_profile(moe_profile());
     let snapshot = *profile;
     *profile = MoeProfileSnapshot::default();
     snapshot
@@ -798,7 +804,7 @@ fn embed_profile() -> &'static Mutex<EmbedProfileSnapshot> {
 }
 
 pub(crate) fn record_embed_profile_stage(stage: EmbedProfileStage, wall_us: u32) {
-    let mut profile = embed_profile().lock().unwrap();
+    let mut profile = lock_profile(embed_profile());
     profile.enabled = 1;
     let target = match stage {
         EmbedProfileStage::EmbedTokens => &mut profile.embed_tokens_wall_us,
@@ -816,7 +822,7 @@ pub(crate) fn record_embed_profile_stage(stage: EmbedProfileStage, wall_us: u32)
 }
 
 pub(crate) fn record_embed_profile_call(layers: u32, batch: u32, tokens: u32) {
-    let mut profile = embed_profile().lock().unwrap();
+    let mut profile = lock_profile(embed_profile());
     profile.enabled = 1;
     profile.calls = profile.calls.saturating_add(1);
     profile.layers = profile.layers.saturating_add(layers);
@@ -840,8 +846,29 @@ pub(crate) fn embed_profile_eval_elapsed(
 /// decode takers this does not gate on the enable flag, so a probe can read the
 /// accumulated breakdown directly after driving the instrumented path.
 pub fn take_embed_profile_snapshot() -> EmbedProfileSnapshot {
-    let mut profile = embed_profile().lock().unwrap();
+    let mut profile = lock_profile(embed_profile());
     let snapshot = *profile;
     *profile = EmbedProfileSnapshot::default();
     snapshot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lock_profile;
+    use std::sync::Mutex;
+
+    #[test]
+    fn profile_lock_recovers_from_poisoning() {
+        let profile = Mutex::new(0_u32);
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                let _guard = profile.lock().unwrap_or_else(|error| error.into_inner());
+                panic!("poison the test profile lock");
+            });
+            assert!(handle.join().is_err());
+        });
+
+        *lock_profile(&profile) = 1;
+        assert_eq!(*lock_profile(&profile), 1);
+    }
 }

@@ -139,7 +139,7 @@ impl Session {
     }
 
     fn runtime<'py>(&self, py: Python<'py>) -> PyResult<Py<PyDict>> {
-        self.with_session_ref(|session| Ok(runtime_dict(py, &session.runtime_report())))
+        self.with_session_ref(|session| runtime_dict(py, &session.runtime_report()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -189,7 +189,7 @@ impl Session {
             session.generate(request).map_err(to_py_runtime_error)
         })?;
 
-        Ok(generate_response_dict(py, &response))
+        generate_response_dict(py, &response)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -247,14 +247,15 @@ impl Session {
             session.step_report().map_err(to_py_runtime_error)
         })?;
 
-        Ok(step_report_dict(py, &report))
+        step_report_dict(py, &report)
     }
 
     fn snapshot<'py>(&self, py: Python<'py>, request_id: u64) -> PyResult<Option<Py<PyDict>>> {
         self.with_session_ref(|session| {
-            Ok(session
+            session
                 .request_report(request_id)
-                .map(|report| request_report_dict(py, &report)))
+                .map(|report| request_report_dict(py, &report))
+                .transpose()
         })
     }
 

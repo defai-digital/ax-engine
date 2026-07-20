@@ -139,6 +139,10 @@ impl KvManagerConfig {
         })
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "validated is reserved for compile-time configuration constants"
+    )]
     pub fn validated(
         cache_group_id: CacheGroupId,
         block_size_tokens: u32,

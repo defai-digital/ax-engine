@@ -97,10 +97,13 @@ pub(crate) async fn openai_embeddings(
     // since the caller already pre-batched; double-batching with the
     // microbatcher would just add a queueing delay.
     let embeddings: Vec<Vec<f32>> = if was_single {
-        let single = batch
-            .into_iter()
-            .next()
-            .expect("batch.len() == 1 because input was Single");
+        let Some(single) = batch.into_iter().next() else {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "input must not be empty".into(),
+            ));
+        };
         vec![
             tokio::time::timeout(
                 timeout,

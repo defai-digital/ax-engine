@@ -47,9 +47,11 @@ impl GenerateStreamIterator {
                     // Clear state before restore so we do not cancel a finished
                     // request (cancel is only for abandon/error paths).
                     self.state = None;
+                }
+                if is_terminal || payload.is_err() {
                     self.restore_session();
                 }
-                Ok(Some(payload))
+                payload.map(Some)
             }
             Ok(None) => {
                 // No more events. Leave `state` in place so restore_session can

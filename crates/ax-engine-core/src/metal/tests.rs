@@ -60,6 +60,44 @@ fn direct_decode_token_indices_use_checked_arithmetic() {
     assert!(advance_direct_decode_attention_index(usize::MAX, 1).is_none());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn prefix_attention_commit_replaces_a_poisoned_layer_cache() {
+    let layer_cache = Mutex::new(MetalPersistentLayerKvCache::default());
+    std::thread::scope(|scope| {
+        let join_result = scope
+            .spawn(|| {
+                let Ok(_guard) = layer_cache.lock() else {
+                    return;
+                };
+                std::panic::resume_unwind(Box::new("poison layer cache"));
+            })
+            .join();
+        assert!(join_result.is_err());
+    });
+
+    let updated_layer_cache = MetalPersistentLayerKvCache {
+        block_size_tokens: 17,
+        initialized_slots: vec![true],
+        ..MetalPersistentLayerKvCache::default()
+    };
+    let mut attempt = PrefixAttentionDispatchAttempt {
+        attention_output: Vec::new(),
+        used_native_dispatch: false,
+        updated_layer_cache: Some(updated_layer_cache),
+    };
+
+    commit_prefix_attention_dispatch_attempt(Some(&layer_cache), &mut attempt);
+
+    let committed = match layer_cache.lock() {
+        Ok(committed) => committed,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    assert_eq!(committed.block_size_tokens, 17);
+    assert_eq!(committed.initialized_slots, vec![true]);
+    assert!(attempt.updated_layer_cache.is_none());
+}
+
 fn simulated_numeric_trace(reference: &SimulatedNumericPath) -> MetalDispatchNumericTrace {
     MetalDispatchNumericTrace {
         attention_output_bits: reference

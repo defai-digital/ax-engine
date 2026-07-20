@@ -721,13 +721,11 @@ impl fmt::Debug for MetalRuntimeBringup {
                 let _ = &self.state.command_queue;
                 true
             };
-            let dispatch_arena = self
-                .state
-                .dispatch_arena
-                .lock()
-                .expect("metal dispatch arena mutex should not be poisoned")
-                .as_ref()
-                .map(|arena| arena.requirements.info(true, false));
+            let dispatch_arena = self.state.dispatch_arena.lock().ok().and_then(|arena| {
+                arena
+                    .as_ref()
+                    .map(|arena| arena.requirements.info(true, false))
+            });
 
             debug
                 .field("runtime_device_name", &self.state.device.name())
@@ -2200,8 +2198,8 @@ impl MetalBringupRunner {
     pub fn last_dispatch(&self) -> Option<MetalDispatchTrace> {
         self.last_dispatch
             .lock()
-            .expect("metal bring-up runner dispatch mutex should not be poisoned")
-            .clone()
+            .ok()
+            .and_then(|dispatch| dispatch.clone())
     }
 
     pub fn model_artifacts(&self) -> Option<&NativeModelArtifacts> {
@@ -2479,12 +2477,10 @@ impl ExecutionRunner for MetalBringupRunner {
                     execution_tally,
                     direct_decode_result.native_dense_tally,
                 );
-                if metal_dispatch_trace_capture_enabled() {
-                    *self
-                        .last_dispatch
-                        .lock()
-                        .expect("metal bring-up runner dispatch mutex should not be poisoned") =
-                        Some(trace.clone());
+                if metal_dispatch_trace_capture_enabled()
+                    && let Ok(mut last_dispatch) = self.last_dispatch.lock()
+                {
+                    *last_dispatch = Some(trace.clone());
                 }
                 annotate_successful_dispatch(&mut output.route_metadata, &trace);
                 annotate_bringup_execution_flags(
@@ -2505,12 +2501,10 @@ impl ExecutionRunner for MetalBringupRunner {
                 output
             }
             Err(error) => {
-                if metal_dispatch_trace_capture_enabled() {
-                    *self
-                        .last_dispatch
-                        .lock()
-                        .expect("metal bring-up runner dispatch mutex should not be poisoned") =
-                        None;
+                if metal_dispatch_trace_capture_enabled()
+                    && let Ok(mut last_dispatch) = self.last_dispatch.lock()
+                {
+                    *last_dispatch = None;
                 }
                 let runtime = self.dispatch_runtime_info_for_source(staged_inputs.source);
                 failed_runner_output_from_input(
@@ -7441,42 +7435,30 @@ fn dispatch_numeric_workload_macos_with_cache_seed(
     let validation_cache_seed = transformed_cache_seed.as_ref().map(|seed| seed.as_seed());
 
     autoreleasepool(|| {
-        let (mut ephemeral_arena, arena_info) = match arena_mode {
-            MetalDispatchArenaMode::Persistent => (None, None),
+        let mut ephemeral_arena = None;
+        let mut persistent_guard: Option<std::sync::MutexGuard<'_, Option<MetalDispatchArena>>> =
+            None;
+        let (arena, arena_info) = match arena_mode {
+            MetalDispatchArenaMode::Persistent => {
+                let guard = bringup.state.dispatch_arena.lock().map_err(|_| {
+                    MetalRuntimeError::Generic("metal dispatch arena mutex is poisoned".to_string())
+                })?;
+                ensure_dispatch_arena(
+                    &bringup.state.device,
+                    &bringup.state.command_queue,
+                    persistent_guard.insert(guard),
+                    workload,
+                )
+            }
             MetalDispatchArenaMode::Ephemeral => {
                 let requirements = MetalDispatchArenaRequirements::from_workload(workload);
                 let arena_info = requirements.info(false, false);
                 (
-                    Some(MetalDispatchArena::new(&bringup.state.device, requirements)),
-                    Some(arena_info),
+                    ephemeral_arena
+                        .insert(MetalDispatchArena::new(&bringup.state.device, requirements)),
+                    arena_info,
                 )
             }
-        };
-        let mut persistent_guard = match arena_mode {
-            MetalDispatchArenaMode::Persistent => Some(
-                bringup
-                    .state
-                    .dispatch_arena
-                    .lock()
-                    .expect("metal dispatch arena mutex should not be poisoned"),
-            ),
-            MetalDispatchArenaMode::Ephemeral => None,
-        };
-        let (arena, arena_info) = match arena_mode {
-            MetalDispatchArenaMode::Persistent => ensure_dispatch_arena(
-                &bringup.state.device,
-                &bringup.state.command_queue,
-                persistent_guard
-                    .as_mut()
-                    .expect("persistent arena guard should exist"),
-                workload,
-            ),
-            MetalDispatchArenaMode::Ephemeral => (
-                ephemeral_arena
-                    .as_mut()
-                    .expect("ephemeral arena should be initialized"),
-                arena_info.expect("ephemeral arena info should exist"),
-            ),
         };
         let persistent_validation_seed = match arena_mode {
             MetalDispatchArenaMode::Persistent => cache_seed_from_arena(workload, arena),
@@ -10175,9 +10157,7 @@ fn advance_hidden_states_through_linear_attention_layer(
     let dims = resolved_linear_attention_dims(artifacts, linear_attention, buffers, hidden_width)?;
     let ephemeral_request_states = Mutex::new(BTreeMap::new());
     let request_states = linear_request_states.unwrap_or(&ephemeral_request_states);
-    let mut request_states = request_states
-        .lock()
-        .expect("linear attention request state mutex should not be poisoned");
+    let mut request_states = request_states.lock().ok()?;
     let mut next_hidden_states = Vec::with_capacity(hidden_states.len());
     let mut tally = PrefixAttentionExecutionTally::default();
     for segment in linear_attention_unique_request_segments(&input.execution_batch.items) {
@@ -12729,19 +12709,14 @@ fn try_native_attention_output_from_model_layer(
 ) -> Option<PrefixAttentionDispatchAttempt> {
     let bringup = bringup?;
     if let Some(layer_cache) = layer_cache {
-        let cached_state = layer_cache
-            .lock()
-            .expect("metal prefix layer cache mutex should not be poisoned")
-            .clone();
+        let cached_state = layer_cache.lock().ok()?.clone();
         let trial_cache = Mutex::new(cached_state);
         let numeric_workload = workload.with_numeric_layout(staged_inputs.layout);
         let attention_config = native_model_reference_attention_config(
             artifacts,
             staged_inputs.layout.head_dim as usize,
         );
-        let mut trial_cache_state = trial_cache
-            .lock()
-            .expect("trial prefix layer cache mutex should not be poisoned");
+        let mut trial_cache_state = trial_cache.lock().ok()?;
         let workload_is_self_contained =
             workload_supports_native_prefix_attention(&numeric_workload, None);
         let native_trace = {
@@ -12764,11 +12739,7 @@ fn try_native_attention_output_from_model_layer(
                 return Some(PrefixAttentionDispatchAttempt {
                     attention_output,
                     used_native_dispatch: true,
-                    updated_layer_cache: Some(
-                        trial_cache
-                            .into_inner()
-                            .expect("trial prefix layer cache mutex should not be poisoned"),
-                    ),
+                    updated_layer_cache: Some(trial_cache.into_inner().ok()?),
                 });
             }
         }
@@ -12789,11 +12760,7 @@ fn try_native_attention_output_from_model_layer(
                     return Some(PrefixAttentionDispatchAttempt {
                         attention_output,
                         used_native_dispatch: true,
-                        updated_layer_cache: Some(
-                            trial_cache
-                                .into_inner()
-                                .expect("trial prefix layer cache mutex should not be poisoned"),
-                        ),
+                        updated_layer_cache: Some(trial_cache.into_inner().ok()?),
                     });
                 }
             }
@@ -12829,10 +12796,7 @@ fn resolve_attention_output_from_model_layer(
     allow_native_retry: bool,
 ) -> Option<PrefixAttentionDispatchAttempt> {
     if let Some(layer_cache) = layer_cache {
-        let cached_state = layer_cache
-            .lock()
-            .expect("metal prefix layer cache mutex should not be poisoned")
-            .clone();
+        let cached_state = layer_cache.lock().ok()?.clone();
         let trial_cache = Mutex::new(cached_state);
         let (attention_output, used_native_dispatch) = attention_output_from_model_layer(
             artifacts,
@@ -12845,11 +12809,7 @@ fn resolve_attention_output_from_model_layer(
         return Some(PrefixAttentionDispatchAttempt {
             attention_output,
             used_native_dispatch,
-            updated_layer_cache: Some(
-                trial_cache
-                    .into_inner()
-                    .expect("trial prefix layer cache mutex should not be poisoned"),
-            ),
+            updated_layer_cache: Some(trial_cache.into_inner().ok()?),
         });
     }
 
@@ -12879,9 +12839,10 @@ fn commit_prefix_attention_dispatch_attempt(
     let Some(layer_cache) = layer_cache else {
         return;
     };
-    let mut layer_cache = layer_cache
-        .lock()
-        .expect("metal prefix layer cache mutex should not be poisoned");
+    let mut layer_cache = match layer_cache.lock() {
+        Ok(layer_cache) => layer_cache,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     *layer_cache = updated_layer_cache;
 }
 
@@ -13300,11 +13261,7 @@ fn fused_layer_continuation_on_gpu(
     }
 
     // Ensure arena is allocated and large enough.
-    let mut arena_guard = bringup
-        .state
-        .fused_layer_arena
-        .lock()
-        .expect("fused layer arena mutex should not be poisoned");
+    let mut arena_guard = bringup.state.fused_layer_arena.lock().ok()?;
     if arena_guard
         .as_ref()
         .is_none_or(|a| !a.fits(hidden_dim_u32, intermediate_dim_u32))
@@ -13567,11 +13524,7 @@ fn fused_ffn_only_on_gpu(
         return None;
     }
 
-    let mut arena_guard = bringup
-        .state
-        .fused_layer_arena
-        .lock()
-        .expect("fused layer arena mutex should not be poisoned");
+    let mut arena_guard = bringup.state.fused_layer_arena.lock().ok()?;
     if arena_guard
         .as_ref()
         .is_none_or(|a| !a.fits(hidden_dim_u32, intermediate_dim_u32))
@@ -13730,9 +13683,7 @@ fn attention_output_from_model_layer(
     let workload_is_self_contained =
         workload_supports_native_prefix_attention(&numeric_workload, None);
     if let Some(layer_cache) = layer_cache {
-        let mut layer_cache = layer_cache
-            .lock()
-            .expect("metal prefix layer cache mutex should not be poisoned");
+        let mut layer_cache = layer_cache.lock().ok()?;
         let seeded_native_retry_viable = allow_native_retry
             && gathered_slots_for_workload(&numeric_workload).is_some_and(|gathered_slots| {
                 gathered_slots_support_native_prefix_attention_with_cache_state(
@@ -13837,9 +13788,9 @@ fn workload_supports_native_prefix_attention(
         return false;
     };
     if let Some(layer_cache) = layer_cache {
-        let layer_cache = layer_cache
-            .lock()
-            .expect("metal prefix layer cache mutex should not be poisoned");
+        let Ok(layer_cache) = layer_cache.lock() else {
+            return false;
+        };
         return gathered_slots_support_native_prefix_attention_with_cache_state(
             workload,
             &gathered_slots,
@@ -14039,14 +13990,8 @@ fn ensure_dispatch_arena<'a>(
         }
     };
 
-    let info = arena_slot
-        .as_ref()
-        .expect("dispatch arena should exist after ensure")
-        .requirements
-        .info(reused_existing, grew_existing);
-    let arena = arena_slot
-        .as_mut()
-        .expect("dispatch arena should exist after ensure");
+    let arena = arena_slot.get_or_insert_with(|| MetalDispatchArena::new(device, required));
+    let info = arena.requirements.info(reused_existing, grew_existing);
     (arena, info)
 }
 

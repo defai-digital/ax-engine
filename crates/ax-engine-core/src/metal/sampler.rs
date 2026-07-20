@@ -63,8 +63,8 @@ impl MetalBringupSampler {
             .sample_argmax_logprob_f32?;
 
         let feedback_key = logits_argmax_feedback_key(kernel_name, logits.len());
-        let argmax_guard = self.argmax_out.lock().expect("argmax_out mutex poisoned");
-        let logprob_guard = self.logprob_out.lock().expect("logprob_out mutex poisoned");
+        let argmax_guard = self.argmax_out.lock().ok()?;
+        let logprob_guard = self.logprob_out.lock().ok()?;
 
         let output = find_optional_pipeline_handle_by_index(
             &self.bringup.state,
@@ -253,9 +253,8 @@ impl TokenSampler for MetalBringupSampler {
                                 requests
                                     .get(*index)
                                     .and_then(|request| request.logits.as_deref())
-                                    .expect("grouped sampler request should retain logits")
                             })
-                            .collect::<Vec<_>>();
+                            .collect::<Option<Vec<_>>>()?;
                         let output = self
                             .sample_argmax_logprob_batched_with_optional_native_path(&logits_rows);
                         let (output, success) =

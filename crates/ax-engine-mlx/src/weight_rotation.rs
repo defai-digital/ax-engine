@@ -407,7 +407,9 @@ fn cached_rotation_matrix(dim: usize) -> mlx_sys::MlxArray {
     static CACHE: OnceLock<Mutex<std::collections::HashMap<usize, mlx_sys::MlxArray>>> =
         OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-    let mut map = cache.lock().expect("rotation matrix cache poisoned");
+    let mut map = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     map.entry(dim)
         .or_insert_with(|| build_rotation_matrix(dim, 0xA5A5_A5A5_A5A5_A5A5_u64))
         .clone()
