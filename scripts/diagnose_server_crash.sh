@@ -64,16 +64,16 @@ if ! curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     exit 3
 fi
 
-# Send a small chat-completion request — mimics what the bench does
-echo "[diag] sending /v1/generate request (MLX preview endpoint)" | tee -a "$DIAG_LOG"
+# Send a small text completion. The OpenAI-compatible surface owns text
+# tokenization for native MLX; /v1/generate intentionally requires token IDs.
+echo "[diag] sending /v1/completions request" | tee -a "$DIAG_LOG"
 RESPONSE=$(curl -sS -m 120 -w "\nHTTPSTATUS:%{http_code}" \
-    "http://127.0.0.1:$PORT/v1/generate" \
+    "http://127.0.0.1:$PORT/v1/completions" \
     -H "Content-Type: application/json" \
     -d '{
         "prompt": "Write a short paragraph about why fall leaves change color.",
         "max_tokens": 32,
-        "temperature": 0.0,
-        "stream": false
+        "temperature": 0.0
     }' 2>&1) || {
     EXIT=$?
     echo "[diag] FAIL_TYPE=curl_failed (exit=$EXIT)" | tee -a "$DIAG_LOG"
@@ -105,9 +105,9 @@ fi
 # Try a second request
 echo "[diag] sending second request to test stability" | tee -a "$DIAG_LOG"
 STATUS2=$(curl -sS -m 120 -o /dev/null -w "%{http_code}" \
-    "http://127.0.0.1:$PORT/v1/generate" \
+    "http://127.0.0.1:$PORT/v1/completions" \
     -H "Content-Type: application/json" \
-    -d '{"prompt": "Say hi.", "max_tokens": 8, "temperature": 0.0, "stream": false}' \
+    -d '{"prompt": "Say hi.", "max_tokens": 8, "temperature": 0.0}' \
     2>&1) || STATUS2="curl_fail"
 echo "[diag] second request status: $STATUS2" | tee -a "$DIAG_LOG"
 

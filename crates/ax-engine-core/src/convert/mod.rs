@@ -7,14 +7,15 @@
 //!
 //! # OptiQ / mlx-lm mixed-precision quantization
 //!
-//! mlx-optiq (and stock mlx-lm) affine quants store a global default under
+//! mlx-optiq (and stock mlx-lm) mixed-precision quants store a global default under
 //! `quantization` or `quantization_config` (`bits`, `group_size`, `mode`) plus
 //! nested **per-tensor overrides** keyed by module path without the `.weight`
-//! suffix (for example `language_model.model.layers.0.mlp.gate_proj`). OptiQ
-//! mixed-precision checkpoints use predominant 4-bit with 8-bit on sensitive
-//! layers. Convert applies those overrides onto U32 weight tensors so the
-//! runtime load path keeps the intended bit-width; packing skips mixed-bit
-//! fusions when sibling projections disagree.
+//! suffix (for example `language_model.model.layers.0.mlp.gate_proj`). mlx-lm
+//! passes each override dictionary directly to MLX, so omitted fields use the
+//! override mode's defaults rather than inheriting the global settings. This
+//! matters for OptiQ checkpoints that mix global MXFP4 with affine 8-bit
+//! sensitive layers. Convert applies those overrides onto U32 weight tensors;
+//! packing skips mixed-precision fusions when sibling projections disagree.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -485,8 +486,7 @@ fn tensor_quantization(
 ) -> Option<NativeTensorQuantization> {
     let global = config_quantization(config).unwrap_or_default();
     let mut quantization = global.clone();
-    if let Some(override_quantization) = tensor_quantization_override(config, tensor_name, &global)
-    {
+    if let Some(override_quantization) = tensor_quantization_override(config, tensor_name) {
         quantization = override_quantization;
     }
     // mlx-lm's Gemma4 quantization predicate keeps router.proj at 8-bit while
@@ -499,7 +499,7 @@ fn tensor_quantization(
 
 fn config_quantization(config: &serde_json::Value) -> Option<NativeTensorQuantization> {
     let obj = quantization_root(config)?;
-    parse_quantization_value(obj, /*defaults*/ None)
+    parse_quantization_value(obj, false)
 }
 
 /// Top-level mlx-lm / OptiQ quant block. Prefer `quantization`, then
@@ -513,48 +513,46 @@ fn quantization_root(config: &serde_json::Value) -> Option<&serde_json::Value> {
 fn tensor_quantization_override(
     config: &serde_json::Value,
     tensor_name: &str,
-    global: &NativeTensorQuantization,
 ) -> Option<NativeTensorQuantization> {
     let obj = quantization_root(config)?;
+    let module_name = tensor_name.strip_suffix(".weight").unwrap_or(tensor_name);
+    let unprefixed_name = tensor_name
+        .strip_prefix("language_model.")
+        .unwrap_or(tensor_name);
+    let unprefixed_module_name = unprefixed_name
+        .strip_suffix(".weight")
+        .unwrap_or(unprefixed_name);
     let candidates = [
         tensor_name,
-        tensor_name.strip_suffix(".weight").unwrap_or(tensor_name),
-        tensor_name
-            .strip_prefix("language_model.")
-            .unwrap_or(tensor_name),
-        tensor_name
-            .strip_prefix("language_model.")
-            .unwrap_or(tensor_name)
-            .strip_suffix(".weight")
-            .unwrap_or(tensor_name),
+        module_name,
+        unprefixed_name,
+        unprefixed_module_name,
     ];
     candidates
         .iter()
         .find_map(|key| obj.get(*key))
-        // OptiQ overrides often omit `mode` / `group_size`; inherit globals.
-        .and_then(|value| parse_quantization_value(value, Some(global)))
+        .and_then(|value| parse_quantization_value(value, true))
 }
 
 fn parse_quantization_value(
     value: &serde_json::Value,
-    defaults: Option<&NativeTensorQuantization>,
+    require_quantization_field: bool,
 ) -> Option<NativeTensorQuantization> {
     let object = value.as_object()?;
-    // Nested override objects are only valid when they carry quant fields (or
-    // are themselves a quant block). Skip non-object siblings already via
-    // as_object. Global blocks always have bits/group_size; overrides may
-    // only set `bits`.
-    let default_mode = defaults
-        .map(|d| d.mode.as_str())
-        .filter(|m| !m.is_empty())
-        .unwrap_or("affine");
-    let default_group = defaults.map(|d| d.group_size).unwrap_or(64);
-    let default_bits = defaults.map(|d| d.bits).unwrap_or(4);
+    // A class-predicate dictionary is forwarded straight to MLX's
+    // `to_quantized`, rather than merged with nn.quantize's global arguments.
+    // Match MLX's per-mode defaults for any fields the dictionary omits.
     let mode = object
         .get("mode")
         .and_then(|v| v.as_str())
-        .unwrap_or(default_mode)
+        .unwrap_or("affine")
         .to_string();
+    let (default_group, default_bits) = match mode.as_str() {
+        "mxfp4" => (32, 4),
+        "nvfp4" => (16, 4),
+        "mxfp8" => (32, 8),
+        _ => (64, 4),
+    };
     let group_size = object
         .get("group_size")
         .and_then(|v| v.as_u64())
@@ -565,11 +563,9 @@ fn parse_quantization_value(
         .and_then(|v| v.as_u64())
         .and_then(u64_to_u32)
         .unwrap_or(default_bits);
-    // Reject plain nested noise (e.g. accidental non-quant dict) that has
-    // neither bits nor group_size keys when defaults are for an override path
-    // that only matched a non-quant object — require at least one quant field
-    // when we are parsing a candidate override (defaults is Some).
-    if defaults.is_some()
+    // Reject a plain nested object that happened to match a tensor path but
+    // carries no quantization settings. Top-level blocks may rely on defaults.
+    if require_quantization_field
         && object.get("bits").is_none()
         && object.get("group_size").is_none()
         && object.get("mode").is_none()

@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use super::{
     ConvertError, NativeTensorDataType, NativeTensorRole, compute_attention_value_from_key_layers,
-    convert_hf_model_dir, llama4_no_rope_layer_interval, match_tensor, model_family_for_type,
-    moe_config, parse_layer_types, parse_rope_params, validate_glm4_moe_lite_rope_scaling,
-    validate_qwen_rope_scaling, with_real_model_manifest_lock, write_manifest,
+    config_quantization, convert_hf_model_dir, llama4_no_rope_layer_interval, match_tensor,
+    model_family_for_type, moe_config, parse_layer_types, parse_rope_params,
+    tensor_quantization_override, validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling,
+    with_real_model_manifest_lock, write_manifest,
 };
 
 fn write_fake_safetensors(dir: &Path, filename: &str, tensors: &[(&str, &str, &[u64])]) {
@@ -3601,6 +3602,54 @@ fn converts_optiq_mixed_precision_under_quantization_config_key() {
     assert_optiq_qwen35_mixed_bits(&manifest);
 
     let _ = fs::remove_dir_all(dir);
+}
+
+/// mlx-lm passes a per-layer quantization dictionary directly to
+/// `to_quantized`; omitted fields therefore use that layer's mode defaults
+/// rather than the top-level quantizer settings. OptiQ GPT-OSS checkpoints
+/// rely on this to mix global MXFP4 experts with affine 8-bit attention and
+/// router projections whose override dictionaries omit `mode`.
+#[test]
+fn parses_optiq_mxfp4_global_with_affine_layer_overrides() {
+    let config = serde_json::json!({
+        "quantization": {
+            "group_size": 32,
+            "bits": 4,
+            "mode": "mxfp4",
+            "model.layers.0.self_attn.q_proj": {
+                "bits": 8,
+                "group_size": 64
+            },
+            "model.layers.0.self_attn.k_proj": {
+                "bits": 8
+            },
+            "model.layers.0.mlp.experts": {
+                "mode": "mxfp4"
+            }
+        }
+    });
+    let global = config_quantization(&config).expect("global quantization");
+    assert_eq!(global.mode, "mxfp4");
+    assert_eq!(global.group_size, 32);
+    assert_eq!(global.bits, 4);
+
+    let q_proj = tensor_quantization_override(&config, "model.layers.0.self_attn.q_proj.weight")
+        .expect("q_proj override");
+    assert_eq!(q_proj.mode, "affine");
+    assert_eq!(q_proj.group_size, 64);
+    assert_eq!(q_proj.bits, 8);
+
+    let k_proj = tensor_quantization_override(&config, "model.layers.0.self_attn.k_proj.weight")
+        .expect("k_proj override");
+    assert_eq!(k_proj.mode, "affine");
+    assert_eq!(k_proj.group_size, 64);
+    assert_eq!(k_proj.bits, 8);
+
+    let experts = tensor_quantization_override(&config, "model.layers.0.mlp.experts.weight")
+        .expect("experts override");
+    assert_eq!(experts.mode, "mxfp4");
+    assert_eq!(experts.group_size, 32);
+    assert_eq!(experts.bits, 4);
 }
 
 /// Resolve a local HF hub snapshot dir for `repo_id` (`org/name`).

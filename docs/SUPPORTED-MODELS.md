@@ -251,7 +251,7 @@ Current direct-support LLM families:
 | --- | --- | --- | --- |
 | Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters; processed/token-aligned Gemma4 unified image/audio tensors on server routes when the manifest contains the required media roles | Dense, unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention; K=V full-attention layers; logit softcapping |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
-| Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` / `qwen3.5-9b` preset | Repo-owned MLX runtime; MLX affine 4-bit weights | GatedDeltaNet linear attention + dense SwiGLU FFN; `attn_output_gate` per-head interleaving |
+| Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` / `qwen3.5-9b` preset | Repo-owned MLX runtime; MLX affine 4-bit and OptiQ mixed 4/8-bit weights | GatedDeltaNet linear attention + dense SwiGLU FFN; `attn_output_gate` per-head interleaving |
 | Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
 | GLM 4.7 Flash | `glm4_moe_lite` / `glm4.7-flash-4bit` | Repo-owned MLX runtime; MLX affine 4-bit weights | Flash MLA attention, sigmoid-routed MoE with dense+MoE layer split, shared expert; post-attention RMS norm |
 
@@ -262,7 +262,7 @@ Current direct-support LLM families:
 | Llama 3.x | `llama3.1-8b`, `llama3.3-70b` | Preview direct; MLX affine 4-bit; `llama3` / standard dense path | Research and enterprise baseline; Llama 3 chat template |
 | Llama 4 | `llama4-scout` | Preview direct; MLX affine 4-bit; `llama4` MoE path | Fits ~128 GB class; Maverick full 4-bit is out of scope for that class |
 | Mistral | `mistral-small`, `ministral-8b`, `devstral-small` | Preview direct; MLX affine 4-bit; `mistral3` / standard path | European market chat + coding; Instruct `[INST]` chat fallback |
-| GPT-OSS | `gpt-oss-20b`, `gpt-oss-120b` | Preview direct; MXFP4 MoE experts **kept packed** at load (`gather_qmm` mode=`mxfp4`) | MoE decoder with 128 experts (top-4), SwiGLU, alternating full/sliding-128 attention, per-head learned attention sinks, YaRN RoPE (128K), GQA (64q/8k heads). Prefer MXFP4-Q4 downloads. Expert residency stays ~4-bit so 120B is practical on 128 GB class hosts; attention/router tensors remain higher precision |
+| GPT-OSS | `gpt-oss-20b`, `gpt-oss-120b` | Preview direct; MXFP4 MoE experts **kept packed** at load (`gather_qmm` mode=`mxfp4`), including OptiQ mixed MXFP4/affine overrides | MoE decoder with 128 experts (top-4), SwiGLU, alternating full/sliding-128 attention, per-head learned attention sinks, YaRN RoPE (128K), GQA (64q/8k heads). Prefer MXFP4-Q4 downloads. Expert residency stays ~4-bit so 120B is practical on 128 GB class hosts; attention/router tensors remain higher precision |
 
 Experimental direct-support model families:
 
