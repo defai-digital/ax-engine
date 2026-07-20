@@ -6,7 +6,7 @@ pub(crate) fn percentile_f64(values: &[f64], quantile: f64) -> Option<f64> {
         return None;
     }
     let mut values = values.to_vec();
-    values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    values.sort_by(f64::total_cmp);
     let quantile = quantile.clamp(0.0, 1.0);
     let index = ((values.len() - 1) as f64 * quantile).round() as usize;
     values.get(index).copied()

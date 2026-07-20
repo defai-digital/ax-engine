@@ -17,6 +17,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
@@ -34,21 +35,34 @@ const BATCHES: [usize; 4] = [1, 2, 4, 8];
 const STEPS: usize = 64;
 const WARMUP: usize = 8;
 
-fn main() {
-    let model_dir = env::args()
-        .nth(1)
-        .expect("Usage: batched-decode-ceiling-probe <dense_model_dir> [prefill_len]");
+fn run() -> Result<(), String> {
+    let mut args = env::args().skip(1);
+    let model_dir = args.next().ok_or_else(|| {
+        "usage: batched-decode-ceiling-probe <dense_model_dir> [prefill_len]".to_string()
+    })?;
     // Prefill length controls the KV size per row, i.e. how much of the step is
     // the per-request attention/KV path (which does NOT amortize across batch)
     // vs the weight-bound matmuls (which do). Sweep it to attribute the gap.
-    let prefill_len: u32 = env::args()
-        .nth(2)
-        .and_then(|s| s.parse().ok())
+    let prefill_len = args
+        .next()
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|_| format!("prefill_len must be a positive integer, got {value:?}"))
+        })
+        .transpose()?
         .unwrap_or(32);
-    let artifacts =
-        NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("load model artifacts");
+    if prefill_len == 0 {
+        return Err("prefill_len must be greater than zero".to_string());
+    }
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights = load_weights(&artifacts).expect("load weights");
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
 
     // One batch=1 prefill; every slot is seeded from this same cache.
     let prompt: Vec<u32> = (1..=prefill_len).collect();
@@ -128,4 +142,15 @@ fn main() {
         "interpretation: agg_tok_s scaling toward Nx proves batched decode amortizes the \
          weight read / graph encoding; per_req_tok_s staying flat means no per-request penalty."
     );
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

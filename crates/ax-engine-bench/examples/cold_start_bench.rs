@@ -16,31 +16,37 @@
 //! disk.
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::CacheGroupId;
+use ax_engine_mlx::weights::mmap_weights_enabled;
 use ax_engine_sdk::{
     EngineSession, EngineSessionConfig, PreviewBackendRequest, PreviewSessionConfigRequest,
 };
 
-fn parse_args() -> PathBuf {
+fn parse_args() -> Result<PathBuf, String> {
     let mut args = std::env::args().skip(1);
     let mut model_dir: Option<PathBuf> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--model-dir" => model_dir = args.next().map(PathBuf::from),
+            "--model-dir" => {
+                model_dir = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| "--model-dir requires a path".to_string())?,
+                ));
+            }
             other => {
-                eprintln!("unexpected argument: {other}");
-                std::process::exit(2);
+                return Err(format!("unexpected argument: {other}"));
             }
         }
     }
-    model_dir.expect("--model-dir <path> required")
+    model_dir.ok_or_else(|| "--model-dir <path> is required".to_string())
 }
 
-fn main() {
-    let model_dir = parse_args();
-    let mmap = std::env::var("AX_MMAP_WEIGHTS").is_ok();
+fn run() -> Result<(), String> {
+    let model_dir = parse_args()?;
+    let mmap = mmap_weights_enabled();
     eprintln!(
         "[cold-start-bench] model={} loader={}",
         model_dir.display(),
@@ -62,10 +68,22 @@ fn main() {
         mlx_prefill_chunk: None,
         ..PreviewSessionConfigRequest::default()
     })
-    .expect("config");
+    .map_err(|error| format!("invalid session configuration: {error}"))?;
 
     let t0 = Instant::now();
-    let _session = EngineSession::new(config).expect("session");
+    let _session = EngineSession::new(config)
+        .map_err(|error| format!("failed to create engine session: {error}"))?;
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("session_new_ms {:.2}", ms);
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

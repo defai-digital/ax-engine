@@ -23,6 +23,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
@@ -41,42 +42,67 @@ use mlx_sys::{argmax, clear_cache, eval};
 /// B distinct but equal-length prompts (equal length ⇒ uniform decode position,
 /// the 2a constraint). Distinct content ⇒ distinct streams ⇒ the oracle checks
 /// real per-row independence, not a trivial all-rows-identical case.
-fn build_prompts(batch: usize, len: usize, vocab: usize) -> Vec<Vec<u32>> {
-    let base: usize = env::var("AX_SEED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let row_stride: usize = env::var("AX_ROW_STRIDE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(17);
-    let token_stride: usize = env::var("AX_TOKEN_STRIDE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
-    let prompt_bias: usize = env::var("AX_PROMPT_BIAS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3);
+fn optional_env(name: &str) -> Result<Option<String>, String> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(format!("failed to read {name}: {error}")),
+    }
+}
+
+fn env_usize(name: &str, default: usize) -> Result<usize, String> {
+    optional_env(name)?
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("{name} must be a non-negative integer, got {value:?}"))
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(default))
+}
+
+fn build_prompts(batch: usize, len: usize, vocab: usize) -> Result<Vec<Vec<u32>>, String> {
+    if vocab <= 1 || vocab > u32::MAX as usize {
+        return Err(format!(
+            "model vocabulary size must be between 2 and {}, got {vocab}",
+            u32::MAX
+        ));
+    }
+    let base = env_usize("AX_SEED", 0)?;
+    let row_stride = env_usize("AX_ROW_STRIDE", 17)?;
+    let token_stride = env_usize("AX_TOKEN_STRIDE", 5)?;
+    let prompt_bias = env_usize("AX_PROMPT_BIAS", 3)?;
+    if row_stride == 0 {
+        return Err("AX_ROW_STRIDE must be greater than zero so batch rows differ".to_string());
+    }
     // AX_RAGGED: give each row a different prompt length (row r → len - 3*r,
     // floored at len/2) so the cohort decodes at ragged sequence positions.
-    let ragged = env::var("AX_RAGGED").is_ok();
+    let ragged = env::var_os("AX_RAGGED").is_some();
+    let ragged_ascending = env::var_os("AX_RAGGED_ASCENDING").is_some();
+    let modulus = (vocab - 1) as u128;
     (0..batch)
         .map(|r| {
-            let row_len = if env::var("AX_RAGGED_ASCENDING").is_ok() {
-                len.saturating_sub(5 * (batch - 1 - r)).max(1)
+            let row_len = if ragged_ascending {
+                len.saturating_sub(5usize.saturating_mul(batch - 1 - r))
+                    .max(1)
             } else if ragged {
-                (len.saturating_sub(3 * r)).max(len / 2).max(1)
+                len.saturating_sub(3usize.saturating_mul(r))
+                    .max(len / 2)
+                    .max(1)
             } else {
                 len
             };
             (0..row_len)
                 .map(|i| {
-                    (((base + r) * row_stride + i * token_stride + prompt_bias) % (vocab - 1))
-                        as u32
-                        + 1
+                    let value = (((base as u128 + r as u128) * row_stride as u128)
+                        + i as u128 * token_stride as u128
+                        + prompt_bias as u128)
+                        % modulus
+                        + 1;
+                    u32::try_from(value)
+                        .map_err(|_| "generated prompt token exceeds u32".to_string())
                 })
-                .collect()
+                .collect::<Result<Vec<_>, _>>()
         })
         .collect()
 }
@@ -154,18 +180,20 @@ fn seed_batched(
     w: &ModelWeights,
     prompts: &[Vec<u32>],
     layers: usize,
-) -> (BatchedKvCache, Vec<u32>) {
+) -> Result<(BatchedKvCache, Vec<u32>), String> {
     let mut bcache = BatchedKvCache::new(layers, prompts.len());
     let mut cur = Vec::with_capacity(prompts.len());
     for (r, prompt) in prompts.iter().enumerate() {
         let (cache, tok0) = prefill(cfg, w, prompt);
         for layer in 0..layers {
-            let (k, v) = cache.peek_layer_kv(layer).expect("prefilled layer KV");
+            let (k, v) = cache.peek_layer_kv(layer).ok_or_else(|| {
+                format!("prefill did not produce KV state for row {r}, layer {layer}")
+            })?;
             bcache.seed_row_layer(layer, r, &k, &v);
         }
         cur.push(tok0);
     }
-    (bcache, cur)
+    Ok((bcache, cur))
 }
 
 /// Continuous-batching oracle: requests of ragged length join and leave a
@@ -181,11 +209,12 @@ fn continuous_oracle(
 ) -> bool {
     let n_requests = max_batch + 2;
     let vocab = cfg.vocab_size;
+    let modulus = (vocab - 1) as u128;
     let prompts: Vec<Vec<u32>> = (0..n_requests)
         .map(|r| {
             let len = 16 + (r % 3) * 5; // ragged lengths
             (0..len)
-                .map(|i| ((r * 29 + i * 7 + 5) % (vocab - 1)) as u32 + 1)
+                .map(|i| ((r as u128 * 29 + i as u128 * 7 + 5) % modulus) as u32 + 1)
                 .collect()
         })
         .collect();
@@ -251,34 +280,45 @@ fn continuous_oracle(
     ok
 }
 
-fn main() {
-    let model_dir = env::args().nth(1).unwrap_or_else(|| {
-        eprintln!("usage: batched_decode_2a_probe <dense_model_dir>");
-        std::process::exit(2);
-    });
-    let batch: usize = env::var("AX_BATCH")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(4);
-    let prompt_len: usize = env::var("AX_PROMPT_LEN")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(32);
-    let gen_len: usize = env::var("AX_GEN")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(32);
+fn run() -> Result<ExitCode, String> {
+    let mut args = env::args().skip(1);
+    let model_dir = args
+        .next()
+        .ok_or_else(|| "usage: batched_decode_2a_probe <dense_model_dir>".to_string())?;
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
+    let batch = env_usize("AX_BATCH", 4)?;
+    let prompt_len = env_usize("AX_PROMPT_LEN", 32)?;
+    let gen_len = env_usize("AX_GEN", 32)?;
+    if batch == 0 {
+        return Err("AX_BATCH must be greater than zero".to_string());
+    }
+    if prompt_len == 0 {
+        return Err("AX_PROMPT_LEN must be greater than zero".to_string());
+    }
+    if gen_len == 0 {
+        return Err("AX_GEN must be greater than zero".to_string());
+    }
+    let _ = batch
+        .checked_add(2)
+        .ok_or_else(|| "AX_BATCH is too large".to_string())?;
+    let _ = batch
+        .checked_mul(gen_len)
+        .ok_or_else(|| "AX_BATCH * AX_GEN overflows usize".to_string())?;
 
-    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("load artifacts");
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights = load_weights(&artifacts).expect("load weights");
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
     let layers = cfg.layer_count;
     // Hybrid = has gated-delta linear-attention layers (Qwen3-Next). Those carry
     // per-row recurrent state that only the `BatchedDecodeSession` seeds/advances,
     // so hybrid models certify + benchmark through the session, not the raw
     // `decode_batched_forward(None)` manual path (which handles full-attention KV).
     let hybrid = weights.layers.iter().any(|w| w.linear_attn.is_some());
-    let prompts = build_prompts(batch, prompt_len, cfg.vocab_size);
+    let prompts = build_prompts(batch, prompt_len, cfg.vocab_size)?;
 
     println!("# batched decode 2a probe");
     println!(
@@ -297,7 +337,7 @@ fn main() {
     let batched_streams: Vec<Vec<u32>> = if hybrid {
         batched_streams_via_session(&cfg, &weights, &prompts, batch, gen_len)
     } else {
-        let (mut bcache, mut cur) = seed_batched(&cfg, &weights, &prompts, layers);
+        let (mut bcache, mut cur) = seed_batched(&cfg, &weights, &prompts, layers)?;
         let mut streams: Vec<Vec<u32>> = cur.iter().map(|&t| vec![t]).collect();
         for _ in 0..gen_len {
             let logits = decode_batched_forward(&cfg, &weights, &cur, &mut bcache, None);
@@ -315,7 +355,7 @@ fn main() {
     for r in 0..batch {
         if batched_streams[r] != ref_streams[r] {
             mismatches += 1;
-            let first = (0..batched_streams[r].len())
+            let first = (0..batched_streams[r].len().max(ref_streams[r].len()))
                 .find(|&i| batched_streams[r].get(i) != ref_streams[r].get(i));
             eprintln!(
                 "  row {r} MISMATCH at pos {first:?}: batched {:?} ref {:?}",
@@ -327,11 +367,11 @@ fn main() {
         println!("TOKEN-EXACT: PASS ({batch}/{batch} rows identical to single-sequence decode)");
     } else {
         println!("TOKEN-EXACT: FAIL ({mismatches}/{batch} rows differ)");
-        std::process::exit(1);
+        return Ok(ExitCode::from(1));
     }
 
     // Continuous batching: dynamic join/leave over a BatchedDecodeSession.
-    if env::var("AX_CONTINUOUS").is_ok() {
+    if env::var_os("AX_CONTINUOUS").is_some() {
         let ok = continuous_oracle(&cfg, &weights, layers, batch, gen_len);
         if ok {
             println!(
@@ -340,7 +380,7 @@ fn main() {
             );
         } else {
             println!("CONTINUOUS: FAIL");
-            std::process::exit(1);
+            return Ok(ExitCode::from(1));
         }
     }
 
@@ -353,7 +393,7 @@ fn main() {
         println!(
             "# hybrid model: run `batched-decode-ceiling-probe {model_dir}` for aggregate tok/s"
         );
-        return;
+        return Ok(ExitCode::SUCCESS);
     }
     let time_single = || {
         let mut caches: Vec<(MlxKVCache, u32)> =
@@ -365,28 +405,28 @@ fn main() {
         }
         t0.elapsed().as_secs_f64()
     };
-    let time_batched = || {
-        let (mut bc, mut cur) = seed_batched(&cfg, &weights, &prompts, layers);
+    let time_batched = || -> Result<f64, String> {
+        let (mut bc, mut cur) = seed_batched(&cfg, &weights, &prompts, layers)?;
         clear_cache();
         let t0 = Instant::now();
         for _ in 0..gen_len {
             let logits = decode_batched_forward(&cfg, &weights, &cur, &mut bc, None);
             cur.copy_from_slice(&argmax_batched(&logits));
         }
-        t0.elapsed().as_secs_f64()
+        Ok(t0.elapsed().as_secs_f64())
     };
 
     // 1 warmup + 3 measured (median), interleaved to share thermal conditions.
     let _ = time_single();
-    let _ = time_batched();
+    let _ = time_batched()?;
     let mut single = Vec::new();
     let mut batched = Vec::new();
     for _ in 0..3 {
         single.push(time_single());
-        batched.push(time_batched());
+        batched.push(time_batched()?);
     }
-    single.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    batched.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    single.sort_by(f64::total_cmp);
+    batched.sort_by(f64::total_cmp);
     let (single_s, batched_s) = (single[1], batched[1]);
     let toks = (batch * gen_len) as f64;
     println!();
@@ -412,4 +452,15 @@ fn main() {
     println!(
         "# per-row KV reads, seed copy (excluded from the timed loop), per-row RoPE, and argmax."
     );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(exit_code) => exit_code,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

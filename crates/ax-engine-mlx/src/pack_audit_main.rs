@@ -11,18 +11,26 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 
 use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::weights::load_weights;
 
-fn main() {
-    let model_dir = env::args().nth(1).expect("Usage: pack-audit <model_dir>");
+fn run() -> Result<(), String> {
+    let mut args = env::args().skip(1);
+    let model_dir = args
+        .next()
+        .ok_or_else(|| "usage: pack-audit <model_dir>".to_string())?;
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
     let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
-        .expect("failed to load model artifacts");
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let manifest = artifacts.manifest();
     let model_family = manifest.model_family.clone();
     let layer_count = manifest.layer_count;
-    let weights = load_weights(&artifacts).expect("failed to load weights");
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
 
     let mut la_packed = 0u32;
     let mut la_split = 0u32;
@@ -108,4 +116,15 @@ fn main() {
     println!("  split_gate_up_layers:  {ffn_split}");
     println!("  partial_layers:        {ffn_partial}");
     println!("  absent_layers:         {ffn_absent}");
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

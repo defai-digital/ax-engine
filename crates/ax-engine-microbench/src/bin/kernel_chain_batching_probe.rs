@@ -42,6 +42,10 @@ fn build_input() -> Vec<f32> {
     vec![0.0f32; N]
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the one-output kernel specification fixes the output vector length"
+)]
 fn apply_once(kernel: &MlxMetalKernel, input: &MlxArray) -> MlxArray {
     // Grid = N threads, rounded up to the nearest THREADS_PER_GROUP. The
     // kernel's `i >= SIZE` guard makes the rounding safe.

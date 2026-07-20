@@ -344,9 +344,10 @@ fn main() -> ExitCode {
             Some(v) => v,
             None => continue,
         };
-        let warm_view = warm_cache
-            .glm_mla_layer_state(layer)
-            .expect("warm cache must have the same MLA layers as cold");
+        let Some(warm_view) = warm_cache.glm_mla_layer_state(layer) else {
+            eprintln!("error: warm cache is missing cold-cache MLA layer {layer}");
+            return ExitCode::from(1);
+        };
 
         let cold_kv = host_slice_f32(cold_view.kv_latent, seq_len, cold_view.latent_dim);
         let warm_kv = host_slice_f32(warm_view.kv_latent, seq_len, warm_view.latent_dim);
@@ -427,10 +428,14 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(1);
     }
-    if let Err(e) = fs::write(
-        &args.output,
-        serde_json::to_string_pretty(&payload).unwrap(),
-    ) {
+    let serialized_payload = match serde_json::to_string_pretty(&payload) {
+        Ok(serialized_payload) => serialized_payload,
+        Err(error) => {
+            eprintln!("error: failed to serialize drift report: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(e) = fs::write(&args.output, serialized_payload) {
         eprintln!(
             "error: failed to write output {}: {e}",
             args.output.display()
@@ -452,10 +457,19 @@ fn main() -> ExitCode {
         "divergent" => {
             println!("  DIVERGENT");
             if let Some(d) = &first_divergence {
-                println!("  first divergence: {}", serde_json::to_string(d).unwrap());
+                match serde_json::to_string(d) {
+                    Ok(serialized) => println!("  first divergence: {serialized}"),
+                    Err(error) => {
+                        eprintln!("error: failed to serialize first divergence: {error}");
+                        return ExitCode::from(1);
+                    }
+                }
             }
         }
-        _ => unreachable!(),
+        _ => {
+            eprintln!("error: unknown drift verdict {verdict:?}");
+            return ExitCode::from(1);
+        }
     }
     ExitCode::SUCCESS
 }

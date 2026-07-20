@@ -743,7 +743,7 @@ fn cmd_doctor(args: &[OsString]) -> Result<u8, String> {
     }
     let report = user_doctor_report(&bench_report);
     if args.json {
-        print_json(&report);
+        print_json(&report)?;
     } else {
         println!("{}", format_user_doctor_report(&report));
     }
@@ -1468,7 +1468,7 @@ fn cmd_serve(args: &[OsString]) -> Result<u8, String> {
     });
 
     if args.json {
-        print_json(&plan);
+        print_json(&plan)?;
     } else {
         println!("AX Engine server: http://{}:{}", args.host, args.port);
         println!("Command:");
@@ -1595,7 +1595,7 @@ fn cmd_models_list(args: &[OsString]) -> Result<u8, String> {
 
     let payload = models_list_payload(models_dir.as_deref());
     if json_output {
-        print_json(&payload);
+        print_json(&payload)?;
     } else {
         println!("{}", format_models_list(&payload));
     }
@@ -1624,7 +1624,7 @@ fn cmd_models_info(args: &[OsString]) -> Result<u8, String> {
     let target = target.ok_or_else(|| "models info requires an alias or path".to_string())?;
     let payload = model_info_payload(&target)?;
     if json_output {
-        print_json(&payload);
+        print_json(&payload)?;
     } else {
         println!("{}", format_model_info(&payload));
     }
@@ -1676,7 +1676,7 @@ fn cmd_models_rm(args: &[OsString]) -> Result<u8, String> {
         "safety": report,
     });
     if json_output {
-        print_json(&payload);
+        print_json(&payload)?;
     } else if !effective_dry_run {
         println!("Removed {}", path.display());
     } else {
@@ -1946,7 +1946,7 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
     let args = parse_download_args(args)?;
     if args.list {
         if args.json {
-            print_json(&download_options_payload());
+            print_json(&download_options_payload())?;
         } else {
             println!("{}", format_download_options());
         }
@@ -1954,7 +1954,7 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
     }
     let Some(model) = args.model else {
         if args.json {
-            print_json(&download_options_payload());
+            print_json(&download_options_payload())?;
         } else {
             println!("missing model alias or repo id\n");
             println!("{}", format_download_options());
@@ -1973,7 +1973,7 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
     )?;
     if args.json {
         if !summary.is_null() {
-            print_json(&summary);
+            print_json(&summary)?;
         }
         if !stderr.is_empty() {
             eprint!("{stderr}");
@@ -2010,7 +2010,7 @@ fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
                 "repo_id": target.repo_id,
                 "download": download_summary,
                 "status": "download_failed",
-            }));
+            }))?;
             return Ok(download_code);
         }
         if !download_summary.is_null() {
@@ -2069,7 +2069,7 @@ fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
                     "output_dir": base_dir,
                     "reason": reason,
                     "download": download_summary,
-                }));
+                }))?;
             } else {
                 println!("MTP status: direct-only");
                 println!("{reason}");
@@ -2315,7 +2315,7 @@ fn run_download_gemma_assistant_mtp(
                 "assistant_repo_id": assistant_repo_id,
                 "download": target_download,
                 "assistant_download": assistant_summary,
-            }));
+            }))?;
             return Ok(assistant_code);
         }
         if !assistant_summary.is_null() {
@@ -2395,7 +2395,7 @@ fn run_download_gemma_assistant_mtp(
             "output_dir": output_dir,
             "download": target_download,
             "assistant_download": assistant_summary,
-        }));
+        }))?;
     }
     Ok(0)
 }
@@ -2542,7 +2542,7 @@ fn run_convert_mtplx(
         if let Some(download_summary) = download_summary {
             summary["download"] = download_summary;
         }
-        print_json(&summary);
+        print_json(&summary)?;
     }
     Ok(0)
 }
@@ -2970,11 +2970,11 @@ fn require_value(args: &[OsString], index: usize, flag: &str) -> Result<String, 
         .ok_or_else(|| format!("{flag} requires a value"))
 }
 
-fn print_json(value: &Value) {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(value).expect("JSON serialization cannot fail")
-    );
+fn print_json(value: &Value) -> Result<(), String> {
+    let rendered = serde_json::to_string_pretty(value)
+        .map_err(|error| format!("failed to serialize JSON output: {error}"))?;
+    println!("{rendered}");
+    Ok(())
 }
 
 fn parse_output_dir(stdout: &str, explicit: Option<&str>) -> Option<String> {

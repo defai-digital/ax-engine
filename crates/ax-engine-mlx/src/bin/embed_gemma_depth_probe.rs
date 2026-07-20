@@ -22,6 +22,7 @@
 
 use std::io::{BufRead, Write};
 use std::path::Path;
+use std::process::ExitCode;
 
 use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::{
@@ -30,34 +31,52 @@ use ax_engine_mlx::{
 };
 use mlx_sys::{MlxDtype, astype, eval};
 
-fn main() {
-    let model_dir = std::env::args()
-        .nth(1)
-        .expect("usage: embed_gemma_depth_probe <model_dir>");
+fn read_batch() -> Result<Vec<Vec<u32>>, String> {
+    let stdin = std::io::stdin();
+    let mut batch = Vec::new();
+    for (line_index, line) in stdin.lock().lines().enumerate() {
+        let line = line.map_err(|error| format!("failed to read stdin: {error}"))?;
+        let ids = line
+            .split_whitespace()
+            .map(|token| {
+                token.parse::<u32>().map_err(|_| {
+                    format!(
+                        "stdin line {} contains invalid token id {token:?}",
+                        line_index + 1
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !ids.is_empty() {
+            batch.push(ids);
+        }
+    }
+    if batch.is_empty() {
+        return Err("stdin must contain at least one token-id sequence".to_string());
+    }
+    Ok(batch)
+}
+
+fn run() -> Result<(), String> {
+    let mut args = std::env::args().skip(1);
+    let model_dir = args
+        .next()
+        .ok_or_else(|| "usage: embed_gemma_depth_probe <model_dir>".to_string())?;
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
     mlx_sys::enable_compile();
-    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("load artifacts");
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights: ModelWeights = load_weights(&artifacts).expect("load weights");
+    let weights: ModelWeights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
     eprintln!(
         "embed_gemma_depth_probe: family={} layers={} hidden={}",
         cfg.model_family, cfg.layer_count, cfg.hidden_size,
     );
 
-    let stdin = std::io::stdin();
-    let batch: Vec<Vec<u32>> = stdin
-        .lock()
-        .lines()
-        .map(|line| {
-            line.expect("read stdin")
-                .split_whitespace()
-                .filter_map(|t| t.parse().ok())
-                .collect::<Vec<u32>>()
-        })
-        .filter(|ids| !ids.is_empty())
-        .collect();
-    if batch.is_empty() {
-        return;
-    }
+    let batch = read_batch()?;
 
     let (checkpoints, _lens) = forward_for_embedding_gemma3_depth_probe(&cfg, &weights, &batch);
 
@@ -80,6 +99,18 @@ fn main() {
             "final".to_string()
         };
         let vals: Vec<String> = v.iter().map(|x| format!("{x:.6}")).collect();
-        writeln!(out, "{label} {}", vals.join(" ")).expect("write stdout");
+        writeln!(out, "{label} {}", vals.join(" "))
+            .map_err(|error| format!("failed to write stdout: {error}"))?;
+    }
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
     }
 }

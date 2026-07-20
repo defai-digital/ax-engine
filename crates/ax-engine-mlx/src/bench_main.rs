@@ -7,6 +7,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
@@ -21,7 +22,7 @@ use ax_engine_mlx::{
 use mlx_sys::clear_cache;
 
 fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.sort_by(f64::total_cmp);
     let n = v.len();
     if n.is_multiple_of(2) {
         (v[n / 2 - 1] + v[n / 2]) / 2.0
@@ -30,14 +31,21 @@ fn median(mut v: Vec<f64>) -> f64 {
     }
 }
 
-fn main() {
-    let model_dir = env::args().nth(1).expect("Usage: mlx-bench <model_dir>");
+fn run() -> Result<(), String> {
+    let mut args = env::args().skip(1);
+    let model_dir = args
+        .next()
+        .ok_or_else(|| "usage: mlx-bench <model_dir>".to_string())?;
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
 
     println!("Loading model from {model_dir}...");
     let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
-        .expect("Failed to load model artifacts");
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights = load_weights(&artifacts).expect("Failed to load weights");
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
     let weights = std::sync::Arc::new(weights);
 
     println!("JIT warm-up...");
@@ -203,7 +211,9 @@ fn main() {
             draft_attempts_run += attempted_drafts;
             tokens_generated += emitted.len();
             steps_run += 1;
-            tok = *emitted.last().unwrap();
+            tok = *emitted
+                .last()
+                .ok_or_else(|| "n-gram decode emitted no tokens".to_string())?;
         }
 
         let elapsed_s = t0.elapsed().as_secs_f64();
@@ -256,4 +266,15 @@ fn main() {
         overall_accept * 100.0,
         ngram_med_tps / decode_tps,
     );
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

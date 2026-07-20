@@ -23,6 +23,7 @@
 //!   cargo run --release --bin embed_ab_probe -- <model_dir> [trials]
 
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
@@ -36,7 +37,7 @@ use mlx_sys::{
 };
 
 fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.sort_by(f64::total_cmp);
     v[v.len() / 2]
 }
 
@@ -59,14 +60,26 @@ fn time_once(cfg: &ModelConfig, weights: &ModelWeights, batch: &[Vec<u32>], pos:
     started.elapsed().as_secs_f64()
 }
 
-fn main() {
-    let model_dir = std::env::args()
-        .nth(1)
-        .expect("usage: embed_ab_probe <model_dir> [trials]");
-    let trials: usize = std::env::args()
-        .nth(2)
-        .and_then(|s| s.parse().ok())
+fn run() -> Result<(), String> {
+    let mut args = std::env::args().skip(1);
+    let model_dir = args
+        .next()
+        .ok_or_else(|| "usage: embed_ab_probe <model_dir> [trials]".to_string())?;
+    let trials = args
+        .next()
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("trials must be a positive integer, got {value:?}"))
+        })
+        .transpose()?
         .unwrap_or(8);
+    if trials == 0 {
+        return Err("trials must be greater than zero".to_string());
+    }
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
     let warmups = 3usize;
 
     if std::env::var("AX_PROBE_NO_COMPILE").is_err() {
@@ -90,10 +103,11 @@ fn main() {
         "mlx cache limit: mlx-c default was {mlx_c_default} bytes; running with {applied} bytes (wired_cap={wired})"
     );
 
-    let artifacts =
-        NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("load model artifacts");
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights = load_weights(&artifacts).expect("load weights");
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
 
     eprintln!(
         "embed_ab_probe: family={} layers={} hidden={} heads={}/{} | trials={trials} (+{warmups} warmup)",
@@ -171,5 +185,16 @@ fn main() {
             ts.push(time_once(&cfg, &weights, &ids, &pos));
         }
         eprintln!("b{batch} s{seq:<8} {:>13.0}", tokens / median(ts));
+    }
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
     }
 }

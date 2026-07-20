@@ -186,6 +186,10 @@ fn quantize_weights(w_src: &[f32], dtype: MlxDtype) -> Quant {
 }
 
 // Baseline current path: MLX gather_qmm -> weighted-sum kernel.
+#[allow(
+    clippy::unwrap_used,
+    reason = "the one-output kernel specification fixes the output vector length"
+)]
 fn run_current(
     ws_kernel: &MlxMetalKernel,
     x_exp: &MlxArray,
@@ -244,6 +248,10 @@ fn run_current(
 }
 
 // Fused single-kernel path.
+#[allow(
+    clippy::unwrap_used,
+    reason = "the one-output kernel specification fixes the output vector length"
+)]
 fn run_fused(
     kernel: &MlxMetalKernel,
     x_flat: &MlxArray,

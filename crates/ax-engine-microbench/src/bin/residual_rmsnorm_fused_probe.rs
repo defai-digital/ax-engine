@@ -112,6 +112,10 @@ fn build_random_input(seed: u64, mean: f32, scale: f32) -> Vec<f32> {
     data
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the two-output kernel specification fixes the output vector length"
+)]
 fn run_custom_kernel(
     kernel: &MlxMetalKernel,
     x: &MlxArray,

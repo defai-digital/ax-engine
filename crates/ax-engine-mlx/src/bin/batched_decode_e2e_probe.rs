@@ -41,6 +41,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::{
@@ -73,13 +74,18 @@ struct SamplingCfg {
 }
 
 impl SamplingCfg {
-    fn from_env() -> Self {
-        let seed_base = env::var("AX_SEED_BASE")
-            .ok()
-            .and_then(|s| s.parse().ok())
+    fn from_env() -> Result<Self, String> {
+        let seed_base = optional_env("AX_SEED_BASE")?
+            .map(|value| {
+                value.parse::<u64>().map_err(|_| {
+                    format!("AX_SEED_BASE must be a non-negative integer, got {value:?}")
+                })
+            })
+            .transpose()?
             .unwrap_or(1);
-        match env::var("AX_SAMPLING").as_deref() {
-            Ok("topp") => Self {
+        let sampling = optional_env("AX_SAMPLING")?;
+        let config = match sampling.as_deref().unwrap_or("greedy") {
+            "topp" => Self {
                 deterministic: false,
                 temperature: 0.7,
                 top_p: 0.9,
@@ -88,7 +94,7 @@ impl SamplingCfg {
                 seed_base,
                 label: "topp(temp0.7,p0.9)",
             },
-            Ok("topk") => Self {
+            "topk" => Self {
                 deterministic: false,
                 temperature: 0.7,
                 top_p: 1.0,
@@ -97,7 +103,7 @@ impl SamplingCfg {
                 seed_base,
                 label: "topk(temp0.7,k40)",
             },
-            Ok("rep") => Self {
+            "rep" => Self {
                 deterministic: false,
                 temperature: 0.0,
                 top_p: 1.0,
@@ -106,7 +112,7 @@ impl SamplingCfg {
                 seed_base,
                 label: "rep(penalty1.3)",
             },
-            _ => Self {
+            "greedy" => Self {
                 deterministic: true,
                 temperature: 0.0,
                 top_p: 1.0,
@@ -115,7 +121,13 @@ impl SamplingCfg {
                 seed_base,
                 label: "greedy",
             },
-        }
+            other => {
+                return Err(format!(
+                    "AX_SAMPLING must be one of greedy, topp, topk, or rep; got {other:?}"
+                ));
+            }
+        };
+        Ok(config)
     }
 
     /// Greedy scenarios can be checked against the model::forward oracle; any
@@ -216,7 +228,7 @@ fn run_outputs_with_batched_forward_rows(
         .iter()
         .filter(|(name, _)| name == "ax_mlx_batched_decode_forward_rows")
         .map(|(_, rows)| *rows)
-        .sum();
+        .fold(0u32, u32::saturating_add);
     let tokens = out
         .request_updates
         .iter()
@@ -267,7 +279,7 @@ fn decode_sequential(
     prompts: &[Vec<u32>],
     sampling: &SamplingCfg,
     gen_len: usize,
-) -> Vec<Vec<u32>> {
+) -> Result<Vec<Vec<u32>>, String> {
     let mut streams = Vec::with_capacity(prompts.len());
     let mut step_id = 1_000_000u64; // distinct step-id space from the batched run
     for (r, prompt) in prompts.iter().enumerate() {
@@ -282,7 +294,7 @@ fn decode_sequential(
             .iter()
             .find(|(id, _)| *id == req)
             .map(|(_, t)| *t)
-            .expect("sequential prefill token");
+            .ok_or_else(|| format!("sequential prefill returned no token for request {req}"))?;
         let mut stream = vec![tok];
         for s in 0..gen_len {
             let generated_len = s + 1;
@@ -301,74 +313,135 @@ fn decode_sequential(
                 .iter()
                 .find(|(id, _)| *id == req)
                 .map(|(_, t)| *t)
-                .expect("sequential decode token");
+                .ok_or_else(|| {
+                    format!("sequential decode returned no token for request {req} at step {s}")
+                })?;
             stream.push(tok);
         }
         streams.push(stream);
     }
-    streams
+    Ok(streams)
 }
 
-fn build_prompts(batch: usize, len: usize, vocab: usize) -> Vec<Vec<u32>> {
-    let prompt_seed = env::var("AX_PROMPT_SEED")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
+fn optional_env(name: &str) -> Result<Option<String>, String> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(format!("failed to read {name}: {error}")),
+    }
+}
+
+fn env_usize(name: &str, default: usize) -> Result<usize, String> {
+    optional_env(name)?
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("{name} must be a non-negative integer, got {value:?}"))
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(default))
+}
+
+fn build_prompts(batch: usize, len: usize, vocab: usize) -> Result<Vec<Vec<u32>>, String> {
+    if vocab <= 1 || vocab > u32::MAX as usize {
+        return Err(format!(
+            "model vocabulary size must be between 2 and {}, got {vocab}",
+            u32::MAX
+        ));
+    }
+    let prompt_seed = env_usize("AX_PROMPT_SEED", 0)?;
     let ragged = env::var_os("AX_RAGGED").is_some();
+    let modulus = (vocab - 1) as u128;
     (0..batch)
         .map(|r| {
             let row_len = if ragged {
-                len.saturating_sub(3 * r).max(len / 2).max(1)
+                len.saturating_sub(3usize.saturating_mul(r))
+                    .max(len / 2)
+                    .max(1)
             } else {
                 len
             };
             (0..row_len)
-                .map(|i| ((prompt_seed + r * 31 + i * 7 + 3) % (vocab - 1)) as u32 + 1)
-                .collect()
+                .map(|i| {
+                    let value =
+                        (prompt_seed as u128 + r as u128 * 31 + i as u128 * 7 + 3) % modulus + 1;
+                    u32::try_from(value)
+                        .map_err(|_| "generated prompt token exceeds u32".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()
         })
         .collect()
 }
 
-fn main() {
-    let args = env::args().skip(1).collect::<Vec<_>>();
-    let model_dir = args.first().cloned().unwrap_or_else(|| {
-        eprintln!("usage: batched_decode_e2e_probe <dense_model_dir>");
-        std::process::exit(2);
-    });
-    let certification_context_json = args
-        .iter()
-        .any(|argument| argument == "--certification-context-json");
-    let batch: usize = env::var("AX_BATCH")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3);
-    let prompt_len: usize = env::var("AX_PROMPT_LEN")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(24);
-    let gen_len: usize = env::var("AX_GEN")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(16);
+fn run() -> Result<ExitCode, String> {
+    let mut model_dir: Option<String> = None;
+    let mut certification_context_json = false;
+    for argument in env::args().skip(1) {
+        if argument == "--certification-context-json" {
+            certification_context_json = true;
+        } else if model_dir.is_none() {
+            model_dir = Some(argument);
+        } else {
+            return Err(format!("unexpected argument: {argument}"));
+        }
+    }
+    let model_dir =
+        model_dir.ok_or_else(|| "usage: batched_decode_e2e_probe <dense_model_dir>".to_string())?;
 
-    let sampling = SamplingCfg::from_env();
-
-    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("artifacts");
-    let cfg = ModelConfig::from_manifest(artifacts.manifest());
     if certification_context_json {
+        let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+            .map_err(|error| format!("failed to load model artifacts: {error}"))?;
         let context =
             ax_engine_mlx::batched_decode_certification::batched_decode_certification_context(
                 &artifacts,
             )
-            .expect("certification context");
+            .map_err(|error| format!("failed to build certification context: {error:?}"))?;
         println!(
             "{}",
-            serde_json::to_string_pretty(&context).expect("serialize certification context")
+            serde_json::to_string_pretty(&context)
+                .map_err(|error| format!("failed to serialize certification context: {error}"))?
         );
-        return;
+        return Ok(ExitCode::SUCCESS);
     }
-    let weights = load_weights(&artifacts).expect("weights");
-    let prompts = build_prompts(batch, prompt_len, cfg.vocab_size);
+
+    let batch = env_usize("AX_BATCH", 3)?;
+    let prompt_len = env_usize("AX_PROMPT_LEN", 24)?;
+    let gen_len = env_usize("AX_GEN", 16)?;
+    if batch < 2 {
+        return Err("AX_BATCH must be at least 2 to exercise a shared decode forward".to_string());
+    }
+    if prompt_len == 0 {
+        return Err("AX_PROMPT_LEN must be greater than zero".to_string());
+    }
+    if gen_len == 0 {
+        return Err("AX_GEN must be greater than zero".to_string());
+    }
+    let max_output = gen_len
+        .checked_add(4)
+        .ok_or_else(|| "AX_GEN is too large".to_string())?;
+    let maximum_position = prompt_len
+        .checked_add(gen_len)
+        .ok_or_else(|| "AX_PROMPT_LEN + AX_GEN overflows usize".to_string())?;
+    for (name, value) in [
+        ("AX_BATCH", batch),
+        ("AX_PROMPT_LEN + AX_GEN", maximum_position),
+        ("max_output_tokens", max_output),
+    ] {
+        if u32::try_from(value).is_err() {
+            return Err(format!("{name} exceeds the u32 runner contract"));
+        }
+    }
+    let _ = batch
+        .checked_mul(gen_len)
+        .ok_or_else(|| "AX_BATCH * AX_GEN overflows usize".to_string())?;
+
+    let sampling = SamplingCfg::from_env()?;
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
+    let prompts = build_prompts(batch, prompt_len, cfg.vocab_size)?;
 
     let batched_flag = ax_engine_mlx::batched_decode_session::batched_decode_enabled();
     let uncertified_override =
@@ -402,8 +475,8 @@ fn main() {
     });
 
     // Build a runner. run() uses interior mutability, so one runner drives all.
-    let runner =
-        MlxRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK, true).expect("runner");
+    let runner = MlxRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK, true)
+        .map_err(|error| format!("failed to create batched runner: {error}"))?;
 
     // Prefill every request (one run() per prefill item); record the first token.
     let mut cur: Vec<u32> = Vec::with_capacity(batch);
@@ -421,7 +494,7 @@ fn main() {
             .iter()
             .find(|(id, _)| *id == r as u64)
             .map(|(_, t)| *t)
-            .expect("prefill token");
+            .ok_or_else(|| format!("prefill returned no token for request {r}"))?;
         cur.push(tok0);
         streams.push(vec![tok0]);
     }
@@ -463,10 +536,25 @@ fn main() {
             batched_forward_row_mismatch |= batched_forward_rows != batch as u32;
         }
         step_id += 1;
+        let mut seen = vec![false; batch];
         for (id, tok) in outs {
             let r = id as usize;
+            if r >= batch {
+                return Err(format!("decode returned unexpected request id {id}"));
+            }
+            if seen[r] {
+                return Err(format!(
+                    "decode returned duplicate output for request {id} at step {s}"
+                ));
+            }
+            seen[r] = true;
             streams[r].push(tok);
             cur[r] = tok;
+        }
+        if let Some(missing) = seen.iter().position(|seen| !seen) {
+            return Err(format!(
+                "decode returned no output for request {missing} at step {s}"
+            ));
         }
     }
     let decode_s = decode_started.elapsed().as_secs_f64();
@@ -523,8 +611,8 @@ fn main() {
     // batched sampler is token-exact with the single-sequence sampler, RNG and
     // tie-break included. A second runner keeps its own per-request KV/RNG state.
     let seq_runner = MlxRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK, true)
-        .expect("sequential runner");
-    let seq_streams = decode_sequential(&seq_runner, &prompts, &sampling, gen_len);
+        .map_err(|error| format!("failed to create sequential runner: {error}"))?;
+    let seq_streams = decode_sequential(&seq_runner, &prompts, &sampling, gen_len)?;
     let mut ok = true;
     for r in 0..batch {
         if streams[r] != seq_streams[r] {
@@ -548,6 +636,17 @@ fn main() {
     }
 
     if failed {
-        std::process::exit(1);
+        return Ok(ExitCode::from(1));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(exit_code) => exit_code,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
     }
 }

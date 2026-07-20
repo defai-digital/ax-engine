@@ -48,6 +48,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
@@ -81,7 +82,11 @@ fn qmm(x: &MlxArray, w: &QuantizedWeight) -> Option<MlxArray> {
 fn input_dim(w: &QuantizedWeight) -> Option<i64> {
     let shape = w.weight.shape();
     let packed_in = *shape.get(1)? as i64;
-    Some(packed_in * 32 / w.bits as i64)
+    let bits = i64::from(w.bits);
+    (bits > 0)
+        .then_some(())
+        .and_then(|()| packed_in.checked_mul(32))
+        .and_then(|value| value.checked_div(bits))
 }
 
 fn elem_count(a: &MlxArray) -> i64 {
@@ -132,35 +137,76 @@ fn median_step_secs<F: Fn() -> f64>(warmup: usize, measured: usize, step: F) -> 
         step();
     }
     let mut samples: Vec<f64> = (0..measured).map(|_| step()).collect();
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    samples.sort_by(f64::total_cmp);
     samples[samples.len() / 2]
 }
 
-fn main() {
-    let model_dir = env::args().nth(1).unwrap_or_else(|| {
-        eprintln!(
-            "usage: decode_batch_amortization_probe <model_dir>\n\
-             (a dense MLX model artifact directory, e.g. Qwen3-4B-4bit)"
-        );
-        std::process::exit(2);
-    });
+fn parse_batches(spec: Option<&str>) -> Result<Vec<i64>, String> {
+    let mut batches = match spec {
+        Some(spec) => spec
+            .split(',')
+            .map(|part| {
+                let part = part.trim();
+                let batch = part
+                    .parse::<i64>()
+                    .map_err(|_| format!("invalid AX_BATCHES entry {part:?}"))?;
+                if batch <= 0 || batch > i64::from(i32::MAX) {
+                    return Err(format!(
+                        "AX_BATCHES entries must be between 1 and {}, got {part:?}",
+                        i32::MAX
+                    ));
+                }
+                Ok(batch)
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        None => vec![1, 2, 4, 8, 16, 32],
+    };
+    batches.sort_unstable();
+    batches.dedup();
+    if batches.first() != Some(&1) {
+        return Err("AX_BATCHES must include batch 1 as the amortization baseline".to_string());
+    }
+    Ok(batches)
+}
 
-    let batches: Vec<i64> = env::var("AX_BATCHES")
-        .ok()
-        .map(|s| {
-            s.split(',')
-                .filter_map(|t| t.trim().parse::<i64>().ok())
-                .collect()
-        })
-        .filter(|v: &Vec<i64>| !v.is_empty())
-        .unwrap_or_else(|| vec![1, 2, 4, 8, 16, 32]);
+fn optional_env(name: &str) -> Result<Option<String>, String> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(format!("failed to read {name}: {error}")),
+    }
+}
 
-    let artifacts =
-        NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("load model artifacts");
+fn run() -> Result<(), String> {
+    let mut args = env::args().skip(1);
+    let model_dir = args.next().ok_or_else(|| {
+        "usage: decode_batch_amortization_probe <model_dir>\n\
+         (a dense MLX model artifact directory, e.g. Qwen3-4B-4bit)"
+            .to_string()
+    })?;
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
+
+    let batches = parse_batches(optional_env("AX_BATCHES")?.as_deref())?;
+
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights = load_weights(&artifacts).expect("load weights");
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
 
     let projections = decode_projection_weights(&weights);
+    let input_dims = projections
+        .iter()
+        .enumerate()
+        .map(|(index, weight)| {
+            input_dim(weight)
+                .and_then(|value| i32::try_from(value).ok())
+                .filter(|&value| value > 0)
+                .ok_or_else(|| format!("projection {index} has an invalid packed input dimension"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let total_weight_bytes: i64 = projections.iter().map(|w| weight_bytes(w)).sum();
 
     // Precompute per-weight (input_dim, unique bf16 input template) so the timed
@@ -205,10 +251,8 @@ fn main() {
         // measurement is matmul + eval only, not input allocation.
         let inputs: Vec<MlxArray> = projections
             .iter()
-            .map(|w| {
-                let in_dim = input_dim(w).expect("packed weight has rank-2 shape") as i32;
-                zeros(&[b as i32, in_dim], MlxDtype::Bfloat16, None)
-            })
+            .zip(input_dims.iter().copied())
+            .map(|(_weight, in_dim)| zeros(&[b as i32, in_dim], MlxDtype::Bfloat16, None))
             .collect();
         eval(&inputs.iter().collect::<Vec<_>>());
 
@@ -256,4 +300,15 @@ fn main() {
         "# eff_vs_B is amort_mult/B: the fraction of ideal linear throughput \
          scaling retained at that batch."
     );
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

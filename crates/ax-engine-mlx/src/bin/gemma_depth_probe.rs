@@ -40,6 +40,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -311,38 +312,98 @@ fn assistant_draft_safe(
 /// per-depth confidence gate list. Schedule length = draft depth. E.g.
 /// "0.999;0.9,0.99;0.97,0.995;0.9,0.99,0.999" sweeps depth-1 g0.999, depth-2
 /// [0.9,0.99] and [0.97,0.995], depth-3 [0.9,0.99,0.999].
-fn parse_schedules(s: &str, default: &[&str]) -> Vec<Vec<f32>> {
+fn parse_schedules(s: &str, default: &[&str]) -> Result<Vec<Vec<f32>>, String> {
     let raw: Vec<&str> = if s.trim().is_empty() {
         default.to_vec()
     } else {
         s.split(';').collect()
     };
-    raw.iter()
-        .map(|sched| {
-            sched
-                .split(',')
-                .filter_map(|p| p.trim().parse::<f32>().ok())
-                .collect::<Vec<f32>>()
-        })
-        .filter(|v: &Vec<f32>| !v.is_empty())
-        .collect()
+    let mut schedules = Vec::with_capacity(raw.len());
+    for schedule in raw {
+        if schedule.trim().is_empty() {
+            return Err("AX_GEMMA_SCHEDULES contains an empty schedule".to_string());
+        }
+        let gates = schedule
+            .split(',')
+            .map(|part| {
+                let part = part.trim();
+                let gate = part
+                    .parse::<f32>()
+                    .map_err(|_| format!("invalid confidence gate {part:?}"))?;
+                if !gate.is_finite() || !(0.0..=1.0).contains(&gate) {
+                    return Err(format!(
+                        "confidence gate must be finite and between 0 and 1, got {part:?}"
+                    ));
+                }
+                Ok(gate)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if gates.is_empty() || gates.len() > 8 {
+            return Err("each AX_GEMMA_SCHEDULES entry must have 1 to 8 gates".to_string());
+        }
+        schedules.push(gates);
+    }
+    if schedules.is_empty() {
+        return Err("AX_GEMMA_SCHEDULES must contain at least one schedule".to_string());
+    }
+    Ok(schedules)
 }
 
-fn main() {
-    let model_dir = env::args()
-        .nth(1)
-        .expect("Usage: gemma_depth_probe <target_model_dir> [committed_tokens]");
-    let target_tokens: usize = env::args()
-        .nth(2)
-        .and_then(|s| s.parse().ok())
+fn parse_positive_usize(label: &str, value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("{label} must be a positive integer, got {value:?}"))?;
+    if parsed == 0 {
+        return Err(format!("{label} must be greater than zero"));
+    }
+    Ok(parsed)
+}
+
+fn parse_token_ids(raw: &str) -> Result<Vec<u32>, String> {
+    let ids = raw
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .filter(|token| !token.trim().is_empty())
+        .map(|token| {
+            token
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| format!("invalid prompt token id {token:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if ids.is_empty() {
+        return Err("prompt token list must not be empty".to_string());
+    }
+    Ok(ids)
+}
+
+fn optional_env(name: &str) -> Result<Option<String>, String> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(format!("failed to read {name}: {error}")),
+    }
+}
+
+fn run() -> Result<(), String> {
+    let mut args = env::args().skip(1);
+    let model_dir = args.next().ok_or_else(|| {
+        "usage: gemma_depth_probe <target_model_dir> [committed_tokens]".to_string()
+    })?;
+    let target_tokens = args
+        .next()
+        .map(|value| parse_positive_usize("committed_tokens", &value))
+        .transpose()?
         .unwrap_or(256);
-    let prompt_len: usize = env::var("AX_GEMMA_PROMPT_LEN")
-        .ok()
-        .and_then(|s| s.parse().ok())
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
+    let prompt_len = optional_env("AX_GEMMA_PROMPT_LEN")?
+        .map(|value| parse_positive_usize("AX_GEMMA_PROMPT_LEN", &value))
+        .transpose()?
         .unwrap_or(48);
     // Default sweep: depth-1 baseline + symmetric and asymmetric depth-2/3 gates.
     let schedules = parse_schedules(
-        &env::var("AX_GEMMA_SCHEDULES").unwrap_or_default(),
+        optional_env("AX_GEMMA_SCHEDULES")?.as_deref().unwrap_or(""),
         &[
             "0.999",
             "0.99,0.99",
@@ -352,45 +413,56 @@ fn main() {
             "0.9,0.99,0.999",
             "0.97,0.99,0.999",
         ],
-    );
+    )?;
 
     println!("Loading target model from {model_dir}...");
-    let target_artifacts =
-        NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("load target artifacts");
+    let target_artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load target artifacts: {error}"))?;
     let target_cfg = ModelConfig::from_manifest(target_artifacts.manifest());
-    let target_weights = Arc::new(load_weights(&target_artifacts).expect("load target weights"));
+    let target_weights = Arc::new(
+        load_weights(&target_artifacts)
+            .map_err(|error| format!("failed to load target weights: {error}"))?,
+    );
 
     // Resolve + load the assistant drafter via the production contract loader.
     let status =
         load_gemma4_assistant_mtp_status(Path::new(&model_dir), target_artifacts.manifest());
-    let config = status
-        .config
-        .expect("no gemma4 assistant MTP contract found next to target model");
+    let config = status.config.ok_or_else(|| {
+        format!(
+            "no usable gemma4 assistant MTP contract found next to target model ({:?})",
+            status.disable_reason
+        )
+    })?;
     println!(
         "assistant: {} (path {}), contract max_depth={}",
         config.assistant_model_id,
         config.assistant_path.display(),
         config.max_depth
     );
-    let assistant_artifacts =
-        NativeModelArtifacts::from_dir(&config.assistant_path).expect("load assistant artifacts");
+    let assistant_artifacts = NativeModelArtifacts::from_dir(&config.assistant_path)
+        .map_err(|error| format!("failed to load assistant artifacts: {error}"))?;
     let assistant_cfg = ModelConfig::from_manifest(assistant_artifacts.manifest());
-    let assistant_weights =
-        Arc::new(load_weights(&assistant_artifacts).expect("load assistant weights"));
+    let assistant_weights = Arc::new(
+        load_weights(&assistant_artifacts)
+            .map_err(|error| format!("failed to load assistant weights: {error}"))?,
+    );
     let shared_layers = target_cfg.gemma4_assistant_shared_kv_layers();
 
     enable_compile();
 
-    let prompt: Vec<u32> = match env::var("AX_GEMMA_PROMPT_FILE") {
-        Ok(path) => {
-            let raw = std::fs::read_to_string(&path).expect("read AX_GEMMA_PROMPT_FILE");
-            raw.split(|c: char| c == ',' || c.is_whitespace())
-                .filter_map(|t| t.trim().parse::<u32>().ok())
-                .collect()
+    let prompt: Vec<u32> = match optional_env("AX_GEMMA_PROMPT_FILE")? {
+        Some(path) => {
+            let raw = std::fs::read_to_string(&path).map_err(|error| {
+                format!("failed to read AX_GEMMA_PROMPT_FILE {path:?}: {error}")
+            })?;
+            parse_token_ids(&raw)?
         }
-        Err(_) => (1..=(prompt_len as u32)).collect(),
+        None => {
+            let upper = u32::try_from(prompt_len)
+                .map_err(|_| "AX_GEMMA_PROMPT_LEN exceeds the u32 token range".to_string())?;
+            (1..=upper).collect()
+        }
     };
-    assert!(!prompt.is_empty(), "empty prompt");
     println!(
         "prompt_tokens={}  target_committed={target_tokens}  schedules={schedules:?}\n",
         prompt.len()
@@ -475,4 +547,15 @@ fn main() {
         println!("  >> no schedule held acc_rate>0.95");
     }
     println!("  tok/s is thermally noisy; rank on tok/fwd.");
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

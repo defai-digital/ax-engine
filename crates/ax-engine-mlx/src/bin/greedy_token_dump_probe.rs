@@ -12,6 +12,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
@@ -26,33 +27,68 @@ use ax_engine_mlx::{
     weights::load_weights,
 };
 
-fn main() {
+fn parse_token_ids(spec: &str) -> Result<Vec<u32>, String> {
+    let ids = spec
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .filter(|token| !token.trim().is_empty())
+        .map(|token| {
+            token
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| format!("invalid token id {token:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if ids.is_empty() {
+        return Err("token id list must not be empty".to_string());
+    }
+    Ok(ids)
+}
+
+fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
-    let model_dir = args
+    let model_dir = args.next().ok_or_else(|| {
+        "usage: greedy_token_dump_probe <model_dir> <id,id,...> [steps]".to_string()
+    })?;
+    let ids = parse_token_ids(&args.next().ok_or_else(|| {
+        "usage: greedy_token_dump_probe <model_dir> <id,id,...> [steps]".to_string()
+    })?)?;
+    let steps = args
         .next()
-        .expect("usage: greedy_token_dump_probe <model_dir> <id,id,...> [steps]");
-    let ids: Vec<u32> = args
-        .next()
-        .expect("usage: greedy_token_dump_probe <model_dir> <id,id,...> [steps]")
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter_map(|t| t.trim().parse::<u32>().ok())
-        .collect();
-    let steps: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(64);
-    assert!(!ids.is_empty(), "empty token ids");
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("steps must be a positive integer, got {value:?}"))
+        })
+        .transpose()?
+        .unwrap_or(64);
+    if steps == 0 {
+        return Err("steps must be greater than zero".to_string());
+    }
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
 
     eprintln!("loading {model_dir}");
     let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
-        .expect("failed to load model artifacts");
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights = load_weights(&artifacts).expect("failed to load weights");
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
 
     // Optional prefill timing reps (for windowed-view A/B): each rep prefills
     // into a fresh cache; the last rep's cache is used for decode.
-    let prefill_reps: usize = env::var("AX_PROBE_PREFILL_REPS")
+    let prefill_reps = env::var("AX_PROBE_PREFILL_REPS")
         .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1)
-        .max(1);
+        .map(|value| {
+            value.parse::<usize>().map_err(|_| {
+                format!("AX_PROBE_PREFILL_REPS must be a positive integer, got {value:?}")
+            })
+        })
+        .transpose()?
+        .unwrap_or(1);
+    if prefill_reps == 0 {
+        return Err("AX_PROBE_PREFILL_REPS must be greater than zero".to_string());
+    }
     let mut cache = MlxKVCache::new(cfg.layer_count);
     let mut bootstrap_tok = 0u32;
     for rep in 0..prefill_reps {
@@ -87,4 +123,15 @@ fn main() {
 
     let rendered: Vec<String> = generated.iter().map(|t| t.to_string()).collect();
     println!("{}", rendered.join(","));
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

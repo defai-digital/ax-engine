@@ -10,6 +10,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
@@ -41,15 +42,26 @@ fn spin_host_us(dur_us: u64) {
     }
 }
 
-fn main() {
+fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let model_dir = args
         .next()
-        .expect("Usage: decode-trace <model_dir> [steps]");
-    let decode_steps: usize = args
+        .ok_or_else(|| "usage: decode-trace <model_dir> [steps]".to_string())?;
+    let decode_steps = args
         .next()
-        .map(|s| s.parse().expect("steps must be a positive integer"))
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("steps must be a positive integer, got {value:?}"))
+        })
+        .transpose()?
         .unwrap_or(64);
+    if decode_steps == 0 {
+        return Err("steps must be greater than zero".to_string());
+    }
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
     let warmup_steps: usize = 8;
     let host_spin_us: u64 = env::var("AX_DECODE_TRACE_HOST_SPIN_US")
         .ok()
@@ -66,9 +78,10 @@ fn main() {
 
     println!("loading {model_dir}");
     let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
-        .expect("failed to load model artifacts");
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights = load_weights(&artifacts).expect("failed to load weights");
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
 
     // Short, deterministic random-style prompt to mimic readme bench shape.
     let prompt: Vec<u32> = (1..=128u32).collect();
@@ -233,4 +246,15 @@ fn main() {
         "decode tok/s = {:.2}",
         1_000_000.0 * decode_steps as f64 / total_us as f64
     );
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

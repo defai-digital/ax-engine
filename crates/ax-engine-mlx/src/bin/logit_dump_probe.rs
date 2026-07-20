@@ -20,6 +20,7 @@ use std::env;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use ax_engine_core::NativeModelArtifacts;
@@ -30,7 +31,24 @@ use ax_engine_mlx::{
 };
 use mlx_sys::eval;
 
-fn main() {
+fn parse_token_ids(spec: &str) -> Result<Vec<u32>, String> {
+    let ids = spec
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .filter(|token| !token.trim().is_empty())
+        .map(|token| {
+            token
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| format!("invalid token id {token:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if ids.is_empty() {
+        return Err("token id list must not be empty".to_string());
+    }
+    Ok(ids)
+}
+
+fn run() -> Result<(), String> {
     // Separate `--dump=PATH` from the positional args so the existing
     // <model_dir> <ids> [topk] ordering is preserved.
     let mut dump_path: Option<String> = None;
@@ -46,24 +64,38 @@ fn main() {
         })
         .collect();
 
-    let model_dir = positional
-        .first()
-        .cloned()
-        .expect("usage: logit_dump_probe <model_dir> <id,id,...> [topk] [--dump=PATH]");
-    let ids: Vec<u32> = positional
-        .get(1)
-        .expect("usage: logit_dump_probe <model_dir> <id,id,...> [topk] [--dump=PATH]")
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter_map(|t| t.trim().parse::<u32>().ok())
-        .collect();
-    let topk: usize = positional.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
-    assert!(!ids.is_empty(), "empty token ids");
+    let model_dir = positional.first().cloned().ok_or_else(|| {
+        "usage: logit_dump_probe <model_dir> <id,id,...> [topk] [--dump=PATH]".to_string()
+    })?;
+    let ids = parse_token_ids(positional.get(1).ok_or_else(|| {
+        "usage: logit_dump_probe <model_dir> <id,id,...> [topk] [--dump=PATH]".to_string()
+    })?)?;
+    let topk = positional
+        .get(2)
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("topk must be a positive integer, got {value:?}"))
+        })
+        .transpose()?
+        .unwrap_or(10);
+    if topk == 0 {
+        return Err("topk must be greater than zero".to_string());
+    }
+    if let Some(unexpected) = positional.get(3) {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
+    if dump_path.as_deref() == Some("") {
+        return Err("--dump requires a non-empty path".to_string());
+    }
 
     println!("Loading model from {model_dir} ...");
-    let artifacts =
-        NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("load model artifacts");
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights: Arc<ModelWeights> = Arc::new(load_weights(&artifacts).expect("load weights"));
+    let weights: Arc<ModelWeights> = Arc::new(
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?,
+    );
 
     // Prefill the whole prompt; `forward` returns the last token's logits [vocab].
     // `AX_PROBE_CHUNKED=1` routes the prefix through production chunked prefill
@@ -97,6 +129,9 @@ fn main() {
     };
     eval(&[&logits]);
     let lg = logits.data_f32();
+    if lg.is_empty() || lg.iter().any(|value| !value.is_finite()) {
+        return Err("model produced empty or non-finite logits".to_string());
+    }
 
     // log-softmax: logp[i] = logit[i] - logsumexp(logits)
     let maxv = lg.iter().copied().fold(f32::NEG_INFINITY, f32::max);
@@ -107,11 +142,7 @@ fn main() {
     let lse = maxv as f64 + sum.ln();
 
     let mut idx: Vec<usize> = (0..lg.len()).collect();
-    idx.sort_unstable_by(|&a, &b| {
-        lg[b]
-            .partial_cmp(&lg[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    idx.sort_unstable_by(|&a, &b| lg[b].total_cmp(&lg[a]));
 
     println!(
         "=== AX first-token top-{topk} (logprob)  [prompt = {} ids: {:?}] ===",
@@ -124,12 +155,26 @@ fn main() {
     }
 
     if let Some(path) = dump_path {
-        let f = File::create(&path).expect("create dump file");
+        let f = File::create(&path)
+            .map_err(|error| format!("failed to create dump file {path:?}: {error}"))?;
         let mut w = BufWriter::new(f);
         for &v in lg {
-            w.write_all(&v.to_le_bytes()).expect("write logit");
+            w.write_all(&v.to_le_bytes())
+                .map_err(|error| format!("failed to write dump file {path:?}: {error}"))?;
         }
-        w.flush().expect("flush dump file");
+        w.flush()
+            .map_err(|error| format!("failed to flush dump file {path:?}: {error}"))?;
         println!("Wrote {} f32 logits to {path}", lg.len());
+    }
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
     }
 }

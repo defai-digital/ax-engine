@@ -59,6 +59,10 @@ fn probe_kernel() -> &'static MlxMetalKernel {
     })
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the one-output kernel specification fixes the output vector length"
+)]
 fn apply_probe_kernel(x: &MlxArray) -> MlxArray {
     let tpg = 256usize;
     let grid = GQ_H.div_ceil(tpg) * tpg;
@@ -214,6 +218,10 @@ struct GatherChain {
     const_idx: MlxArray,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "MLX affine quantization has a fixed weight, scale, and bias output contract"
+)]
 fn build_gather_chain() -> GatherChain {
     let host: Vec<f32> = (0..GQ_EXPERTS * GQ_H * GQ_H)
         .map(|i| ((i % 173) as f32 - 86.0) * 1.0e-4)

@@ -89,6 +89,10 @@ pub(crate) fn build_environment_json(
     }))
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the metrics field is an object literal created in this function"
+)]
 pub(crate) fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
     let mut metrics_json = json!({
         "schema_version": "ax.engine_bench.metrics.v1",
@@ -701,6 +705,10 @@ pub(crate) fn build_contract_failure_summary_markdown(
     )
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "BenchmarkManifest has a controlled JSON-compatible Serialize implementation"
+)]
 pub(crate) fn serialize_contract_failure_runtime(manifest: &BenchmarkManifest) -> Value {
     match runtime_config_from_manifest(manifest) {
         Ok(runtime) => serialize_runtime_metadata(&runtime, None),
@@ -821,6 +829,10 @@ pub(crate) fn contract_failure_tool_mode(manifest: &BenchmarkManifest) -> &'stat
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the mutated fields are object literals created in this function"
+)]
 pub(crate) fn build_regression_json(
     baseline_metrics: &Value,
     candidate_metrics: &Value,

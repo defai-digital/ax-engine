@@ -1525,6 +1525,10 @@ impl StepTraceEntry {
         }
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "the trace is an object literal and MetalDispatchStepTrace is JSON-compatible"
+    )]
     pub(crate) fn json(&self) -> Value {
         let mut value = json!({
             "t_ms": self.t_ms,

@@ -45,6 +45,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -61,6 +62,9 @@ use ax_engine_mlx::{
     weights::{ModelWeights, load_weights},
 };
 use mlx_sys::{MlxArray, argmax, clear_cache, enable_compile, eval, slice};
+
+const MAX_DRAFT_DEPTH: usize = 32;
+const MAX_TREE_LEAVES: usize = 4096;
 
 /// One root-to-leaf candidate draft path plus the per-depth head confidence
 /// (probability the head assigned to each chosen token, for optional gating).
@@ -192,11 +196,15 @@ fn topk_tokens(logits: &MlxArray, k: usize, vocab: usize) -> Vec<u32> {
     eval(&[logits]);
     let data = logits.data_f32();
     let n = vocab.min(data.len());
+    if n == 0 {
+        return Vec::new();
+    }
+    let keep = k.min(n);
     // Partial selection of the k largest, returned in descending-logit order.
     let mut idx: Vec<usize> = (0..n).collect();
-    idx.select_nth_unstable_by(k - 1, |&a, &b| data[b].partial_cmp(&data[a]).unwrap());
-    idx.truncate(k);
-    idx.sort_by(|&a, &b| data[b].partial_cmp(&data[a]).unwrap());
+    idx.select_nth_unstable_by(keep - 1, |&a, &b| data[b].total_cmp(&data[a]));
+    idx.truncate(keep);
+    idx.sort_by(|&a, &b| data[b].total_cmp(&data[a]));
     idx.into_iter().map(|i| i as u32).collect()
 }
 
@@ -658,51 +666,140 @@ fn run_linear_adaptive(
     }
 }
 
-fn parse_branch(s: &str) -> Vec<usize> {
-    s.split(',')
-        .filter_map(|p| p.trim().parse::<usize>().ok())
-        .map(|v| v.max(1))
+fn parse_positive_usize(label: &str, value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("{label} must be a positive integer, got {value:?}"))?;
+    if parsed == 0 {
+        return Err(format!("{label} must be greater than zero"));
+    }
+    Ok(parsed)
+}
+
+fn parse_branch(spec: &str) -> Result<Vec<usize>, String> {
+    if spec.trim().is_empty() {
+        return Err("tree schedule must not be empty".to_string());
+    }
+    let branch = spec
+        .split(',')
+        .map(|part| parse_positive_usize("tree branch factor", part.trim()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if branch.len() > MAX_DRAFT_DEPTH {
+        return Err(format!(
+            "tree schedule depth {} exceeds safety limit {MAX_DRAFT_DEPTH}",
+            branch.len()
+        ));
+    }
+    let leaves = branch.iter().try_fold(1usize, |product, &width| {
+        product
+            .checked_mul(width)
+            .ok_or_else(|| format!("tree schedule leaf count overflows usize: {spec:?}"))
+    })?;
+    if leaves > MAX_TREE_LEAVES {
+        return Err(format!(
+            "tree schedule expands to {leaves} leaves; maximum is {MAX_TREE_LEAVES}"
+        ));
+    }
+    Ok(branch)
+}
+
+fn parse_depth_sweep(spec: &str) -> Result<Vec<usize>, String> {
+    if spec.trim().is_empty() {
+        return Err("AX_DEPTH_SWEEP must not be empty".to_string());
+    }
+    spec.split(',')
+        .map(|part| {
+            let depth = parse_positive_usize("AX_DEPTH_SWEEP depth", part.trim())?;
+            if depth > MAX_DRAFT_DEPTH {
+                return Err(format!(
+                    "AX_DEPTH_SWEEP depth {depth} exceeds safety limit {MAX_DRAFT_DEPTH}"
+                ));
+            }
+            Ok(depth)
+        })
         .collect()
 }
 
-fn main() {
-    let model_dir = env::args()
-        .nth(1)
-        .expect("Usage: tree_draft_probe <model_dir> [committed_tokens]");
-    let target_tokens: usize = env::args()
-        .nth(2)
-        .and_then(|s| s.parse().ok())
+fn parse_token_ids(raw: &str) -> Result<Vec<u32>, String> {
+    let ids = raw
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .filter(|token| !token.trim().is_empty())
+        .map(|token| {
+            token
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| format!("invalid prompt token id {token:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if ids.is_empty() {
+        return Err("prompt token list must not be empty".to_string());
+    }
+    Ok(ids)
+}
+
+fn optional_env(name: &str) -> Result<Option<String>, String> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(format!("failed to read {name}: {error}")),
+    }
+}
+
+fn run() -> Result<(), String> {
+    let mut args = env::args().skip(1);
+    let model_dir = args
+        .next()
+        .ok_or_else(|| "usage: tree_draft_probe <model_dir> [committed_tokens]".to_string())?;
+    let target_tokens = args
+        .next()
+        .map(|value| parse_positive_usize("committed_tokens", &value))
+        .transpose()?
         .unwrap_or(256);
-    let prompt_len: usize = env::var("AX_TREE_PROMPT_LEN")
-        .ok()
-        .and_then(|s| s.parse().ok())
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
+    let prompt_len = optional_env("AX_TREE_PROMPT_LEN")?
+        .map(|value| parse_positive_usize("AX_TREE_PROMPT_LEN", &value))
+        .transpose()?
         .unwrap_or(48);
     // One or more tree schedules to sweep, ';'-separated (each comma-separated
     // per-depth branch factors). Each is compared against a linear chain of the
     // same depth.
-    let schedules: Vec<Vec<usize>> = env::var("AX_TREE_SCHEDULES")
-        .unwrap_or_else(|_| env::var("AX_TREE_BRANCH").unwrap_or_else(|_| "2,2,1,1,1".to_string()))
+    let schedule_spec = optional_env("AX_TREE_SCHEDULES")?
+        .or(optional_env("AX_TREE_BRANCH")?)
+        .unwrap_or_else(|| "2,2,1,1,1".to_string());
+    let schedules: Vec<Vec<usize>> = schedule_spec
         .split(';')
         .map(parse_branch)
-        .filter(|s| !s.is_empty())
-        .collect();
+        .collect::<Result<_, _>>()?;
+    if schedules.is_empty() {
+        return Err("at least one tree schedule is required".to_string());
+    }
 
     println!("Loading model from {model_dir}...");
-    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("load artifacts");
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let mut weights_owned = load_weights(&artifacts).expect("load weights");
-    assert!(
-        weights_owned.mtp.is_some(),
-        "model has no MTP head — tree-draft probe requires an MTP sidecar"
-    );
+    let mut weights_owned =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
+    if weights_owned.mtp.is_none() {
+        return Err("model has no MTP head; tree-draft probe requires an MTP sidecar".to_string());
+    }
     let sidecar_depth = weights_owned.mtp.as_ref().map(|m| m.max_depth).unwrap_or(0);
     // The sidecar caps depth at its tuned `mtp_depth_max` (3 for 27B). The head is
     // a single recurrent module, so it can be applied deeper — raise the ceiling so
     // the depth sweep can probe past the conservative default.
-    if let Ok(raw) = env::var("AX_PROBE_HEAD_MAX_DEPTH")
-        && let Ok(d) = raw.trim().parse::<usize>()
-        && let Some(mtp) = weights_owned.mtp.as_mut()
-    {
+    if let Some(raw) = optional_env("AX_PROBE_HEAD_MAX_DEPTH")? {
+        let d = parse_positive_usize("AX_PROBE_HEAD_MAX_DEPTH", raw.trim())?;
+        if d > MAX_DRAFT_DEPTH {
+            return Err(format!(
+                "AX_PROBE_HEAD_MAX_DEPTH {d} exceeds safety limit {MAX_DRAFT_DEPTH}"
+            ));
+        }
+        let mtp = weights_owned
+            .mtp
+            .as_mut()
+            .ok_or_else(|| "model MTP sidecar disappeared while loading".to_string())?;
         mtp.max_depth = d;
         println!("raised head.max_depth {sidecar_depth} -> {d}");
     }
@@ -713,16 +810,18 @@ fn main() {
     // separated u32 token ids) when set — needed to land in the realistic
     // high-acceptance regime. Otherwise a synthetic id ramp (only valid for a
     // relative cross-check, NOT for absolute acceptance).
-    let prompt: Vec<u32> = match env::var("AX_TREE_PROMPT_FILE") {
-        Ok(path) => {
-            let raw = std::fs::read_to_string(&path).expect("read AX_TREE_PROMPT_FILE");
-            raw.split(|c: char| c == ',' || c.is_whitespace())
-                .filter_map(|t| t.trim().parse::<u32>().ok())
-                .collect()
+    let prompt: Vec<u32> = match optional_env("AX_TREE_PROMPT_FILE")? {
+        Some(path) => {
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|error| format!("failed to read AX_TREE_PROMPT_FILE {path:?}: {error}"))?;
+            parse_token_ids(&raw)?
         }
-        Err(_) => (1..=(prompt_len as u32)).collect(),
+        None => {
+            let upper = u32::try_from(prompt_len)
+                .map_err(|_| "AX_TREE_PROMPT_LEN exceeds the u32 token range".to_string())?;
+            (1..=upper).collect()
+        }
     };
-    assert!(!prompt.is_empty(), "empty prompt");
     println!(
         "prompt_tokens={}  target_committed={target_tokens}",
         prompt.len()
@@ -733,9 +832,10 @@ fn main() {
     // gates {0.80, 0.85, 0.90, 0.98} at the same depth, to check the controller
     // auto-lands at/above the per-suite fixed optimum.
     if env::var("AX_ADAPTIVE_GATE").is_ok() {
-        let depth: usize = env::var("AX_DEPTH_SWEEP")
-            .ok()
-            .and_then(|s| s.split(',').next().and_then(|x| x.trim().parse().ok()))
+        let depth = optional_env("AX_DEPTH_SWEEP")?
+            .map(|spec| parse_depth_sweep(&spec))
+            .transpose()?
+            .and_then(|depths| depths.into_iter().next())
             .unwrap_or(2);
         println!("\n=== Adaptive-gate vs fixed gates (depth {depth}) ===");
         let _ = run_linear_realistic(&cfg, &weights, &prompt, 8, depth); // warmup
@@ -769,18 +869,14 @@ fn main() {
             a.min_gate_seen,
             a.max_gate_seen,
         );
-        return;
+        return Ok(());
     }
 
     // ── Depth-throughput sweep (the workable solution) ──────────────────────
     // AX_DEPTH_SWEEP="2,3,4,5,6" measures real tok/s for the production-faithful
     // linear MTP chain at each depth, to find the throughput-optimal draft depth.
-    if let Ok(spec) = env::var("AX_DEPTH_SWEEP") {
-        let sweep: Vec<usize> = spec
-            .split(',')
-            .filter_map(|s| s.trim().parse::<usize>().ok())
-            .filter(|&d| d >= 1)
-            .collect();
+    if let Some(spec) = optional_env("AX_DEPTH_SWEEP")? {
+        let sweep = parse_depth_sweep(&spec)?;
         println!("\n=== Depth-throughput sweep (production-faithful linear MTP) ===");
         // Warm up JIT (not measured).
         let _ = run_linear_realistic(
@@ -818,11 +914,9 @@ fn main() {
         let best = results
             .iter()
             .max_by(|a, b| {
-                (a.committed as f64 / a.wall_s)
-                    .partial_cmp(&(b.committed as f64 / b.wall_s))
-                    .unwrap()
+                (a.committed as f64 / a.wall_s).total_cmp(&(b.committed as f64 / b.wall_s))
             })
-            .unwrap();
+            .ok_or_else(|| "AX_DEPTH_SWEEP produced no results".to_string())?;
         println!(
             "\n  throughput-optimal depth = {} ({:.2} tok/s){}",
             best.depth,
@@ -834,7 +928,7 @@ fn main() {
                 ))
                 .unwrap_or_default(),
         );
-        return;
+        return Ok(());
     }
 
     let depths: Vec<usize> = {
@@ -901,4 +995,15 @@ fn main() {
     println!();
     println!("  vs_lin = projected single-forward tree tok/fwd ÷ same-depth linear tok/fwd.");
     println!("  Phase A pays `leaves` real forwards/step; projected assumes Phase B tree-mask.");
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

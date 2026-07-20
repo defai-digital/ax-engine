@@ -213,6 +213,10 @@ pub(crate) fn matrix_overall_status(members: &[MatrixMemberResult]) -> &'static 
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "each matrix member is an object literal created in the mapping closure"
+)]
 pub(crate) fn build_matrix_json(
     run_id: &str,
     matrix_manifest_path: &Path,

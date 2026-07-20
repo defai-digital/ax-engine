@@ -19,6 +19,7 @@
 //! cell is `batch=8 seq=256`; pass `1 256` / `8 64` to contrast.
 
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
@@ -29,30 +30,45 @@ use ax_engine_mlx::{
 };
 use mlx_sys::{enable_compile, eval};
 
-fn arg_usize(idx: usize, default: usize) -> usize {
-    std::env::args()
-        .nth(idx)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(default)
+fn parse_optional_positive(
+    args: &mut impl Iterator<Item = String>,
+    name: &str,
+    default: usize,
+) -> Result<usize, String> {
+    let Some(value) = args.next() else {
+        return Ok(default);
+    };
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("{name} must be a positive integer, got {value:?}"))?;
+    if parsed == 0 {
+        return Err(format!("{name} must be greater than zero"));
+    }
+    Ok(parsed)
 }
 
-fn main() {
+fn run() -> Result<(), String> {
     // Set before the first `embed_profile_enabled()` read (it caches via OnceLock).
     unsafe { std::env::set_var("AX_MLX_EMBED_PROFILE", "1") };
 
-    let model_dir = std::env::args()
-        .nth(1)
-        .expect("usage: embed_profile_probe <model_dir> [batch] [seq] [calls]");
-    let batch = arg_usize(2, 8);
-    let seq = arg_usize(3, 256);
-    let calls = arg_usize(4, 5);
+    let mut args = std::env::args().skip(1);
+    let model_dir = args.next().ok_or_else(|| {
+        "usage: embed_profile_probe <model_dir> [batch] [seq] [calls]".to_string()
+    })?;
+    let batch = parse_optional_positive(&mut args, "batch", 8)?;
+    let seq = parse_optional_positive(&mut args, "seq", 256)?;
+    let calls = parse_optional_positive(&mut args, "calls", 5)?;
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
     let warmups = 2usize;
 
     enable_compile();
-    let artifacts =
-        NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("load model artifacts");
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights = load_weights(&artifacts).expect("load weights");
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
 
     // Synthetic deterministic token ids; compute time does not depend on values.
     // Keep ids well inside the vocab range.
@@ -156,5 +172,16 @@ fn main() {
             0.0
         };
         eprintln!("{name:<16} {ms_per_call:>12.3} {:>14} {pct:>8.1}%", "-");
+    }
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
     }
 }

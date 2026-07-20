@@ -14,6 +14,7 @@
 //! PyO3 + wrapper overhead per call.
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::{CacheGroupId, EmbeddingPooling};
@@ -34,7 +35,16 @@ struct CliArgs {
     warmup: usize,
 }
 
-fn parse_args() -> CliArgs {
+fn parse_usize_arg(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<usize, String> {
+    let value = args
+        .next()
+        .ok_or_else(|| format!("{flag} requires a value"))?;
+    value
+        .parse::<usize>()
+        .map_err(|_| format!("{flag} requires a non-negative integer, got {value:?}"))
+}
+
+fn parse_args() -> Result<CliArgs, String> {
     let mut args = std::env::args().skip(1);
     let mut model_dir: Option<PathBuf> = None;
     let mut seq: usize = 10;
@@ -44,51 +54,87 @@ fn parse_args() -> CliArgs {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--model-dir" => {
-                model_dir = args.next().map(PathBuf::from);
+                model_dir = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| "--model-dir requires a path".to_string())?,
+                ));
             }
             "--seq" => {
-                seq = args
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .expect("--seq <usize>");
+                seq = parse_usize_arg(&mut args, "--seq")?;
             }
             "--batch" => {
-                let spec = args.next().expect("--batch <a,b,c,...>");
-                let lens: Vec<usize> = spec
+                let spec = args
+                    .next()
+                    .ok_or_else(|| "--batch requires a comma-separated list".to_string())?;
+                let lens = spec
                     .split(',')
-                    .map(|s| s.trim().parse().expect("--batch list of usize"))
-                    .collect();
+                    .map(|value| {
+                        value.trim().parse::<usize>().map_err(|_| {
+                            format!("--batch entries must be non-negative integers, got {value:?}")
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if lens.contains(&0) {
+                    return Err("--batch sequence lengths must be greater than zero".to_string());
+                }
                 batch = Some(lens);
             }
             "--trials" => {
-                trials = args
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .expect("--trials <usize>");
+                trials = parse_usize_arg(&mut args, "--trials")?;
             }
             "--warmup" => {
-                warmup = args
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .expect("--warmup <usize>");
+                warmup = parse_usize_arg(&mut args, "--warmup")?;
             }
             other => {
-                eprintln!("unexpected argument: {other}");
-                std::process::exit(2);
+                return Err(format!("unexpected argument: {other}"));
             }
         }
     }
-    CliArgs {
-        model_dir: model_dir.expect("--model-dir <path> is required"),
+    if seq == 0 {
+        return Err("--seq must be greater than zero".to_string());
+    }
+    if trials == 0 {
+        return Err("--trials must be greater than zero".to_string());
+    }
+    let max_token_count = u32::MAX as usize;
+    if seq > max_token_count
+        || batch
+            .as_ref()
+            .is_some_and(|lens| lens.iter().any(|&len| len > max_token_count))
+    {
+        return Err(format!(
+            "sequence lengths must not exceed {max_token_count} tokens"
+        ));
+    }
+    Ok(CliArgs {
+        model_dir: model_dir.ok_or_else(|| "--model-dir <path> is required".to_string())?,
         seq,
         batch,
         trials,
         warmup,
+    })
+}
+
+fn embed_once(
+    session: &EngineSession,
+    args: &CliArgs,
+    single_input: &[u32],
+    batch_input: &[Vec<u32>],
+) -> Result<(), String> {
+    match &args.batch {
+        Some(_) => session
+            .embed_batch_flat(batch_input, EmbeddingPooling::Last, true)
+            .map(|_| ())
+            .map_err(|error| format!("batch embedding failed: {error}")),
+        None => session
+            .embed(single_input, EmbeddingPooling::Last, true)
+            .map(|_| ())
+            .map_err(|error| format!("embedding failed: {error}")),
     }
 }
 
-fn main() {
-    let args = parse_args();
+fn run() -> Result<(), String> {
+    let args = parse_args()?;
     eprintln!(
         "[embed-rust-bench] model={} {}",
         args.model_dir.display(),
@@ -122,8 +168,9 @@ fn main() {
         mlx_prefill_chunk: None,
         ..PreviewSessionConfigRequest::default()
     })
-    .expect("config");
-    let session = EngineSession::new(config).expect("session");
+    .map_err(|error| format!("invalid session configuration: {error}"))?;
+    let session = EngineSession::new(config)
+        .map_err(|error| format!("failed to create engine session: {error}"))?;
 
     // Total token count is needed for tok/s — same accounting as the Python
     // bench script (sum of all sequence lengths in the batch / wall time).
@@ -147,44 +194,19 @@ fn main() {
 
     eprintln!("[embed-rust-bench] warmup × {}", args.warmup);
     for _ in 0..args.warmup {
-        match &args.batch {
-            Some(_) => {
-                // R1: embed_batch_flat returns one contiguous [B*H] Vec<f32>
-                // instead of Vec<Vec<f32>>. Saves B-1 heap allocations per
-                // call and matches what numpy / faiss / HNSW consume.
-                let _ = session
-                    .embed_batch_flat(&batch_input, EmbeddingPooling::Last, true)
-                    .expect("embed_batch_flat");
-            }
-            None => {
-                let _ = session
-                    .embed(&single_input, EmbeddingPooling::Last, true)
-                    .expect("embed");
-            }
-        }
+        embed_once(&session, &args, &single_input, &batch_input)?;
     }
 
     let mut ms_samples: Vec<f64> = Vec::with_capacity(args.trials);
     for i in 0..args.trials {
         let t0 = Instant::now();
-        match &args.batch {
-            Some(_) => {
-                let _ = session
-                    .embed_batch_flat(&batch_input, EmbeddingPooling::Last, true)
-                    .expect("embed_batch_flat");
-            }
-            None => {
-                let _ = session
-                    .embed(&single_input, EmbeddingPooling::Last, true)
-                    .expect("embed");
-            }
-        }
+        embed_once(&session, &args, &single_input, &batch_input)?;
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         ms_samples.push(ms);
         eprintln!("  trial {:>2}: {:.3} ms", i + 1, ms);
     }
 
-    ms_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ms_samples.sort_by(f64::total_cmp);
     let n = ms_samples.len();
     let median = ms_samples[n / 2];
     let min = ms_samples[0];
@@ -199,4 +221,15 @@ fn main() {
         min, median, max, mean
     );
     println!("ms/sentence  {:.3}    tok/s {:.1}", ms_per_sentence, tps);
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

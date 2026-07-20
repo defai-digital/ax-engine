@@ -132,6 +132,10 @@ fn bf16_array(data: &[f32], shape: &[i32]) -> MlxArray {
     astype(&f32_array(data, shape), MlxDtype::Bfloat16, None)
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the one-output kernel specification fixes the output vector length"
+)]
 fn run_weighted_sum(
     kernel: &MlxMetalKernel,
     down_out: &MlxArray,
@@ -172,6 +176,10 @@ fn run_weighted_sum(
         .expect("weighted-sum kernel must produce output")
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the one-output kernel specification fixes the output vector length"
+)]
 fn run_weighted_sum_residual(
     kernel: &MlxMetalKernel,
     down_out: &MlxArray,

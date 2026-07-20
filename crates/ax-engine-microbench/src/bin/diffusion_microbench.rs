@@ -722,14 +722,22 @@ where
         let _ = f();
         durations.push(start.elapsed());
     }
+    if durations.is_empty() {
+        let start = Instant::now();
+        let _ = f();
+        durations.push(start.elapsed());
+    }
     durations.sort();
     let median = durations[MEASURE / 2];
-    (warmup_result.unwrap(), median, durations)
+    let result = warmup_result.unwrap_or_else(f);
+    (result, median, durations)
 }
 
 fn print_timing(median: Duration, all: &[Duration]) {
-    let min = all.iter().min().unwrap();
-    let max = all.iter().max().unwrap();
+    let (Some(min), Some(max)) = (all.iter().min(), all.iter().max()) else {
+        println!("    no timing samples");
+        return;
+    };
     println!(
         "    min={min_us:>8}us  median={med_us:>8}us  max={max_us:>8}us  ({MEASURE} runs)",
         min_us = min.as_micros(),

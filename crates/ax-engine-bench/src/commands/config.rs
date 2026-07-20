@@ -219,6 +219,10 @@ pub(crate) fn annotate_route_json_with_decode_batching_opportunity(
     );
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "runtime metadata uses controlled object literals and infallible report serializers"
+)]
 pub(crate) fn serialize_runtime_metadata(
     runtime: &RuntimeConfig,
     actual_runtime: Option<&RuntimeReport>,

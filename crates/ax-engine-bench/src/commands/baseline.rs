@@ -1,5 +1,9 @@
 use super::*;
 
+#[allow(
+    clippy::expect_used,
+    reason = "the mutated fields are object literals created in this function"
+)]
 pub(crate) fn build_trusted_baseline_json(
     name: &str,
     slug: &str,

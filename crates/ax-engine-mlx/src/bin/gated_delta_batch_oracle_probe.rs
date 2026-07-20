@@ -36,6 +36,7 @@
 
 use std::env;
 use std::path::Path;
+use std::process::ExitCode;
 
 use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::linear_attention_ops::{
@@ -128,39 +129,73 @@ fn check(name: &'static str, batched: &[MlxArray], singles: &[Vec<MlxArray>], to
 }
 
 #[allow(clippy::too_many_lines)]
-fn main() {
-    let model_dir = env::args().nth(1).unwrap_or_else(|| {
-        eprintln!("usage: gated_delta_batch_oracle_probe <linear-attention model_dir>");
-        std::process::exit(2);
-    });
-    let b: usize = env::var("AX_ORACLE_BATCH")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(4);
+fn run() -> Result<ExitCode, String> {
+    let mut args = env::args().skip(1);
+    let model_dir = args.next().ok_or_else(|| {
+        "usage: gated_delta_batch_oracle_probe <linear-attention model_dir>".to_string()
+    })?;
+    if let Some(unexpected) = args.next() {
+        return Err(format!("unexpected argument: {unexpected}"));
+    }
+    let b = match env::var("AX_ORACLE_BATCH") {
+        Ok(value) => value
+            .parse::<usize>()
+            .map_err(|_| format!("AX_ORACLE_BATCH must be a positive integer, got {value:?}"))?,
+        Err(env::VarError::NotPresent) => 4,
+        Err(error) => return Err(format!("failed to read AX_ORACLE_BATCH: {error}")),
+    };
+    if !(1..=256).contains(&b) {
+        return Err("AX_ORACLE_BATCH must be between 1 and 256".to_string());
+    }
 
-    let artifacts =
-        NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("load model artifacts");
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
     let lin: &LinearAttentionConfig = cfg
         .linear_attention
         .as_ref()
-        .expect("model must have gated-delta linear attention");
-    let weights = load_weights(&artifacts).expect("load weights");
+        .ok_or_else(|| "model must have gated-delta linear attention".to_string())?;
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
     let linear_layers: Vec<&LinearAttentionWeights> = weights
         .layers
         .iter()
         .filter_map(|l| l.linear_attn.as_ref())
         .collect();
-    assert!(!linear_layers.is_empty(), "no linear-attention layers");
+    if linear_layers.is_empty() {
+        return Err("model has no linear-attention layer weights".to_string());
+    }
     // First, middle, last linear layers — kernel behavior is weight-dependent
     // only through shapes + a_log/dt_bias, but cover the spread anyway.
     let picks = [0usize, linear_layers.len() / 2, linear_layers.len() - 1];
 
-    let (hk, hv) = (lin.num_key_heads as i32, lin.num_value_heads as i32);
-    let (dk, dv) = (lin.key_head_dim as i32, lin.value_head_dim as i32);
-    let conv_dim = (lin.num_key_heads * lin.key_head_dim * 2
-        + lin.num_value_heads * lin.value_head_dim) as i32;
-    let tail = lin.conv_kernel_dim as i32 - 1;
+    let to_shape = |name: &str, value: usize| {
+        i32::try_from(value)
+            .ok()
+            .filter(|&value| value > 0)
+            .ok_or_else(|| format!("{name} does not fit the positive MLX shape range"))
+    };
+    let (hk, hv) = (
+        to_shape("num_key_heads", lin.num_key_heads)?,
+        to_shape("num_value_heads", lin.num_value_heads)?,
+    );
+    let (dk, dv) = (
+        to_shape("key_head_dim", lin.key_head_dim)?,
+        to_shape("value_head_dim", lin.value_head_dim)?,
+    );
+    let conv_dim = lin
+        .num_key_heads
+        .checked_mul(lin.key_head_dim)
+        .and_then(|value| value.checked_mul(2))
+        .and_then(|value| {
+            lin.num_value_heads
+                .checked_mul(lin.value_head_dim)
+                .and_then(|other| value.checked_add(other))
+        })
+        .ok_or_else(|| "linear-attention convolution dimension overflowed".to_string())?;
+    let conv_dim = to_shape("linear-attention convolution dimension", conv_dim)?;
+    let kernel_dim = to_shape("conv_kernel_dim", lin.conv_kernel_dim)?;
+    let tail = kernel_dim - 1;
 
     println!("# gated-delta batched row-correctness oracle (ADR-037 P1)");
     println!("model_dir            {model_dir}");
@@ -219,9 +254,9 @@ fn main() {
         );
         match fused_b {
             Some((qb, kb, vb, nsb)) if pick_no == 0 => {
-                let singles: Vec<Vec<MlxArray>> = (0..b)
+                let singles: Option<Vec<Vec<MlxArray>>> = (0..b)
                     .map(|r| {
-                        let (q, k, v, ns) = linear_attention_decode_post_input_metal(
+                        linear_attention_decode_post_input_metal(
                             lin,
                             &qkv_rows[r],
                             &lw.conv1d_dense,
@@ -230,16 +265,24 @@ fn main() {
                             lin.k_scale,
                             cfg.rms_norm_eps,
                         )
-                        .expect("fused post-input accepted batch=1");
-                        vec![q, k, v, ns]
+                        .map(|(q, k, v, ns)| vec![q, k, v, ns])
                     })
                     .collect();
-                verdicts.push(check(
-                    "decode post-input (Metal fused)",
-                    &[qb, kb, vb, nsb],
-                    &singles,
-                    0.0,
-                ));
+                if let Some(singles) = singles {
+                    verdicts.push(check(
+                        "decode post-input (Metal fused)",
+                        &[qb, kb, vb, nsb],
+                        &singles,
+                        0.0,
+                    ));
+                } else {
+                    verdicts.push(Verdict {
+                        name: "decode post-input (Metal fused)",
+                        max_diff: f32::INFINITY,
+                        pass: false,
+                        note: "batched kernel eligible but a batch-1 row was ineligible".into(),
+                    });
+                }
             }
             Some(_) => {}
             None if pick_no == 0 => {
@@ -430,5 +473,15 @@ fn main() {
         "P1 gated-delta verdict: {}",
         if hard_fail { "FAIL" } else { "PASS" }
     );
-    std::process::exit(if hard_fail { 1 } else { 0 });
+    Ok(ExitCode::from(u8::from(hard_fail)))
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(exit_code) => exit_code,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

@@ -39,6 +39,7 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
@@ -51,30 +52,70 @@ use mlx_sys::{MlxArray, MlxDtype, clear_cache, eval, gather_qmm, multiply, sigmo
 /// One decode step of one traced request: per-MoE-layer top-k expert ids.
 type TraceStep = Vec<Vec<u32>>;
 
-fn parse_trace(path: &str, n_moe_layers: usize, top_k: usize) -> Vec<TraceStep> {
-    let text = fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("cannot read trace {path}: {e}");
-        std::process::exit(2);
-    });
+fn parse_trace(
+    path: &str,
+    n_moe_layers: usize,
+    top_k: usize,
+    expert_count: usize,
+) -> Result<Vec<TraceStep>, String> {
+    let text =
+        fs::read_to_string(path).map_err(|error| format!("cannot read trace {path:?}: {error}"))?;
     // Keep only single-token decode router calls, in order.
-    let calls: Vec<Vec<u32>> = text
-        .lines()
-        .filter_map(|line| {
-            let (seq, rest) = line.split_once(';')?;
-            if seq.trim() != "1" {
-                return None;
-            }
-            let ids: Vec<u32> = rest
-                .split(',')
-                .filter_map(|t| t.trim().parse::<u32>().ok())
-                .collect();
-            (ids.len() == top_k).then_some(ids)
-        })
-        .collect();
-    calls
+    let mut calls = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (seq, rest) = line
+            .split_once(';')
+            .ok_or_else(|| format!("trace {path:?} line {} is missing ';'", line_index + 1))?;
+        let seq = seq.trim().parse::<usize>().map_err(|_| {
+            format!(
+                "trace {path:?} line {} has invalid sequence length {seq:?}",
+                line_index + 1
+            )
+        })?;
+        if seq != 1 {
+            continue;
+        }
+        let ids = rest
+            .split(',')
+            .map(|token| {
+                let token = token.trim();
+                let id = token.parse::<u32>().map_err(|_| {
+                    format!(
+                        "trace {path:?} line {} has invalid expert id {token:?}",
+                        line_index + 1
+                    )
+                })?;
+                if id as usize >= expert_count {
+                    return Err(format!(
+                        "trace {path:?} line {} expert id {id} exceeds model range 0..{expert_count}",
+                        line_index + 1
+                    ));
+                }
+                Ok(id)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if ids.len() != top_k {
+            return Err(format!(
+                "trace {path:?} line {} has {} expert ids; expected {top_k}",
+                line_index + 1,
+                ids.len()
+            ));
+        }
+        calls.push(ids);
+    }
+    if calls.len() % n_moe_layers != 0 {
+        return Err(format!(
+            "trace {path:?} has {} decode router calls, not a multiple of {n_moe_layers} MoE layers",
+            calls.len()
+        ));
+    }
+    Ok(calls
         .chunks_exact(n_moe_layers)
         .map(|chunk| chunk.to_vec())
-        .collect()
+        .collect())
 }
 
 /// Expert projections of one MoE layer: either a packed `[gate; up]` weight
@@ -123,73 +164,127 @@ fn per_expert_bytes(w: &QuantizedWeight) -> f64 {
 }
 
 fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).expect("finite timings"));
+    v.sort_by(f64::total_cmp);
     v[v.len() / 2]
 }
 
-fn main() {
+fn parse_batches(spec: Option<&str>) -> Result<Vec<usize>, String> {
+    let mut batches = match spec {
+        Some(spec) => spec
+            .split(',')
+            .map(|part| {
+                let part = part.trim();
+                let batch = part
+                    .parse::<usize>()
+                    .map_err(|_| format!("invalid AX_BATCHES entry {part:?}"))?;
+                if batch == 0 || batch > i32::MAX as usize {
+                    return Err(format!(
+                        "AX_BATCHES entries must be between 1 and {}, got {part:?}",
+                        i32::MAX
+                    ));
+                }
+                Ok(batch)
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        None => vec![1, 2, 4, 8],
+    };
+    batches.sort_unstable();
+    batches.dedup();
+    if batches.first() != Some(&1) {
+        return Err("AX_BATCHES must include batch 1 as the amortization baseline".to_string());
+    }
+    Ok(batches)
+}
+
+fn optional_env(name: &str) -> Result<Option<String>, String> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(format!("failed to read {name}: {error}")),
+    }
+}
+
+fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.len() < 2 {
-        eprintln!(
+        return Err(
             "usage: moe_gather_amortization_probe <model_dir> <trace_1> [trace_2 ...]\n\
              (traces from AX_MLX_MOE_ROUTER_TRACE, one file per request/prompt)"
+                .to_string(),
         );
-        std::process::exit(2);
     }
     let model_dir = &args[0];
     let trace_paths = &args[1..];
 
-    let batches: Vec<usize> = env::var("AX_BATCHES")
-        .ok()
-        .map(|s| {
-            s.split(',')
-                .filter_map(|t| t.trim().parse::<usize>().ok())
-                .collect()
-        })
-        .filter(|v: &Vec<usize>| !v.is_empty())
-        .unwrap_or_else(|| vec![1, 2, 4, 8]);
+    let batches = parse_batches(optional_env("AX_BATCHES")?.as_deref())?;
 
-    let artifacts =
-        NativeModelArtifacts::from_dir(Path::new(model_dir)).expect("load model artifacts");
+    let artifacts = NativeModelArtifacts::from_dir(Path::new(model_dir))
+        .map_err(|error| format!("failed to load model artifacts: {error}"))?;
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights = load_weights(&artifacts).expect("load weights");
+    let weights =
+        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
     let layers = moe_layers(&weights);
     let n_moe = layers.len();
     let top_k = cfg.moe_experts_per_token;
-    let hidden = cfg.hidden_size as i32;
-    assert!(n_moe > 0, "model has no packed MoE expert layers");
+    let hidden = i32::try_from(cfg.hidden_size)
+        .ok()
+        .filter(|&value| value > 0)
+        .ok_or_else(|| "model hidden size does not fit the MLX shape range".to_string())?;
+    if n_moe == 0 {
+        return Err("model has no packed MoE expert layers".to_string());
+    }
+    if top_k == 0 || cfg.moe_expert_count == 0 {
+        return Err("model has invalid zero MoE expert routing dimensions".to_string());
+    }
+    for (index, layer) in layers.iter().enumerate() {
+        let mut required = vec![layer.down];
+        if let Some(packed) = layer.gate_up_packed {
+            required.push(packed);
+        } else if let (Some(gate), Some(up)) = (layer.gate, layer.up) {
+            required.extend([gate, up]);
+        } else {
+            return Err(format!("MoE layer {index} is missing gate/up weights"));
+        }
+        if required.iter().any(|weight| weight.scales.is_none()) {
+            return Err(format!("MoE layer {index} is missing quantization scales"));
+        }
+    }
 
     let traces: Vec<Vec<TraceStep>> = trace_paths
         .iter()
-        .map(|p| parse_trace(p, n_moe, top_k))
-        .collect();
+        .map(|p| parse_trace(p, n_moe, top_k, cfg.moe_expert_count))
+        .collect::<Result<_, _>>()?;
     for (path, t) in trace_paths.iter().zip(&traces) {
-        assert!(
-            t.len() >= 8,
-            "trace {path} has only {} complete decode steps (need >= 8)",
-            t.len()
-        );
+        if t.len() < 8 {
+            return Err(format!(
+                "trace {path:?} has only {} complete decode steps (need at least 8)",
+                t.len()
+            ));
+        }
     }
-    let max_b = *batches.iter().max().expect("non-empty batches");
-    assert!(
-        traces.len() >= max_b,
-        "need at least {max_b} trace files for the largest batch, got {}",
-        traces.len()
-    );
-    let common_steps = traces.iter().map(Vec::len).min().expect("non-empty");
+    let max_b = batches.iter().copied().max().unwrap_or(1);
+    if traces.len() < max_b {
+        return Err(format!(
+            "need at least {max_b} trace files for the largest batch, got {}",
+            traces.len()
+        ));
+    }
+    let common_steps = traces.iter().map(Vec::len).min().unwrap_or(0);
     // Skip the first two steps (prompt-tail transients) and cycle the rest.
     let usable: Vec<usize> = (2..common_steps).collect();
-    assert!(usable.len() >= 4, "need >= 4 usable common steps");
+    if usable.len() < 4 {
+        return Err("need at least 4 usable common trace steps".to_string());
+    }
 
     let expert_bytes: f64 = layers
         .iter()
         .map(|l| {
             let gate_up: f64 = match l.gate_up_packed {
                 Some(w) => per_expert_bytes(w),
-                None => {
-                    per_expert_bytes(l.gate.expect("split gate"))
-                        + per_expert_bytes(l.up.expect("split up"))
-                }
+                None => match (l.gate, l.up) {
+                    (Some(gate), Some(up)) => per_expert_bytes(gate) + per_expert_bytes(up),
+                    _ => 0.0,
+                },
             };
             gate_up + per_expert_bytes(l.down)
         })
@@ -218,11 +313,15 @@ fn main() {
     clear_cache();
 
     // One gather with transpose=true: x @ w[idx].T for each selected expert.
-    let gq = |x: &MlxArray, w: &QuantizedWeight, idx: &MlxArray| -> MlxArray {
-        gather_qmm(
+    let gq = |x: &MlxArray, w: &QuantizedWeight, idx: &MlxArray| -> Result<MlxArray, String> {
+        let scales = w
+            .scales
+            .as_ref()
+            .ok_or_else(|| "expert weight is missing quantization scales".to_string())?;
+        Ok(gather_qmm(
             x,
             &w.weight,
-            w.scales.as_ref().expect("expert weight scales"),
+            scales,
             w.biases.as_ref(),
             idx,
             true,
@@ -230,7 +329,7 @@ fn main() {
             Some(w.bits),
             false,
             None,
-        )
+        ))
     };
 
     let mut baseline = 0.0_f64;
@@ -269,12 +368,12 @@ fn main() {
                 .collect::<Vec<_>>(),
         );
 
-        let run_pass = |indices_for_step: &[MlxArray]| -> f64 {
+        let run_pass = |indices_for_step: &[MlxArray]| -> Result<f64, String> {
             let started = Instant::now();
             let mut outputs: Vec<MlxArray> = Vec::with_capacity(n_moe);
             for (layer, idx) in layers.iter().zip(indices_for_step) {
                 let act = if let Some(packed) = layer.gate_up_packed {
-                    let gu = gq(&x, packed, idx);
+                    let gu = gq(&x, packed, idx)?;
                     let shape = gu.shape();
                     let (r, c) = (shape[3], shape[4]);
                     let inter = c / 2;
@@ -295,29 +394,35 @@ fn main() {
                     );
                     multiply(&multiply(&gate, &sigmoid(&gate, None), None), &up, None)
                 } else {
-                    let gate = gq(&x, layer.gate.expect("split gate"), idx);
-                    let up = gq(&x, layer.up.expect("split up"), idx);
+                    let gate_weight = layer
+                        .gate
+                        .ok_or_else(|| "MoE layer is missing split gate weights".to_string())?;
+                    let up_weight = layer
+                        .up
+                        .ok_or_else(|| "MoE layer is missing split up weights".to_string())?;
+                    let gate = gq(&x, gate_weight, idx)?;
+                    let up = gq(&x, up_weight, idx)?;
                     multiply(&multiply(&gate, &sigmoid(&gate, None), None), &up, None)
                 };
-                outputs.push(gq(&act, layer.down, idx));
+                outputs.push(gq(&act, layer.down, idx)?);
             }
             eval(&outputs.iter().collect::<Vec<_>>());
-            started.elapsed().as_secs_f64()
+            Ok(started.elapsed().as_secs_f64())
         };
 
         // One iteration = mean over every usable step (expert sets vary per
         // step exactly as they did in the source generations).
-        let iteration = || {
+        let iteration = || -> Result<f64, String> {
             let mut total = 0.0;
             for per_layer in &step_indices {
-                total += run_pass(per_layer);
+                total += run_pass(per_layer)?;
             }
-            total / step_indices.len() as f64
+            Ok(total / step_indices.len() as f64)
         };
         for _ in 0..2 {
-            iteration();
+            iteration()?;
         }
-        let secs = median((0..5).map(|_| iteration()).collect());
+        let secs = median((0..5).map(|_| iteration()).collect::<Result<_, _>>()?);
         if bi == 0 {
             baseline = secs;
         }
@@ -334,5 +439,16 @@ fn main() {
             mean_distinct,
             gbps
         );
+    }
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
     }
 }

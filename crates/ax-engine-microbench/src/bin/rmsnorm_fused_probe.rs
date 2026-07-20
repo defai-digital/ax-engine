@@ -110,6 +110,10 @@ fn build_weight_data() -> Vec<f32> {
     data
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the one-output kernel specification fixes the output vector length"
+)]
 fn run_custom_kernel(kernel: &MlxMetalKernel, x: &MlxArray, w: &MlxArray) -> MlxArray {
     let outputs = kernel.apply_with_template(
         &[x, w],
