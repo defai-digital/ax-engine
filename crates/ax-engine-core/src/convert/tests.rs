@@ -3335,3 +3335,321 @@ fn parse_think_token_ids_reads_added_tokens() {
     let empty = unique_test_dir("think-token-ids-none");
     assert_eq!(super::parse_think_token_ids(&empty), (None, None));
 }
+
+/// OptiQ / mlx-lm mixed-precision fixture: global 4-bit + named 8-bit overrides
+/// under both `quantization` and `quantization_config`, keys without `.weight`.
+fn optiq_qwen35_fixture_config(quant_key: &str) -> serde_json::Value {
+    let overrides = serde_json::json!({
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine",
+        // Module paths as mlx-optiq writes them (no `.weight` suffix).
+        "language_model.model.embed_tokens": { "bits": 8, "group_size": 64 },
+        "language_model.model.layers.0.linear_attn.in_proj_qkv": { "bits": 8, "group_size": 64 },
+        "language_model.model.layers.0.linear_attn.in_proj_z": { "bits": 8, "group_size": 64 },
+        "language_model.model.layers.0.linear_attn.in_proj_a": { "bits": 4, "group_size": 64 },
+        "language_model.model.layers.0.linear_attn.in_proj_b": { "bits": 4, "group_size": 64 },
+        "language_model.model.layers.0.linear_attn.out_proj": { "bits": 8, "group_size": 64 },
+        // Mixed FFN: gate/up disagree so packing must stay split.
+        "language_model.model.layers.0.mlp.gate_proj": { "bits": 8 },
+        "language_model.model.layers.0.mlp.up_proj": { "bits": 4 },
+        "language_model.model.layers.0.mlp.down_proj": { "bits": 4 },
+        "language_model.lm_head": { "bits": 8, "group_size": 64 },
+    });
+    let mut config = serde_json::json!({
+        "model_type": "qwen3_5",
+        "vocab_size": 32,
+        "text_config": {
+            "hidden_size": 8,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 4,
+            "num_hidden_layers": 1,
+            "vocab_size": 32,
+            "linear_num_value_heads": 2,
+            "linear_num_key_heads": 1,
+            "linear_key_head_dim": 4,
+            "linear_value_head_dim": 2,
+            "linear_conv_kernel_dim": 4,
+            "full_attention_interval": 4,
+            "intermediate_size": 16
+        }
+    });
+    config
+        .as_object_mut()
+        .expect("config object")
+        .insert(quant_key.to_string(), overrides);
+    config
+}
+
+fn write_optiq_qwen35_fake_weights(dir: &Path) {
+    // U32 for quantized projections; BF16 for norms / dense sidecars.
+    write_fake_safetensors(
+        dir,
+        "model.safetensors",
+        &[
+            ("language_model.model.embed_tokens.weight", "U32", &[32, 2]),
+            ("language_model.model.embed_tokens.scales", "BF16", &[32, 1]),
+            ("language_model.model.norm.weight", "BF16", &[8]),
+            ("language_model.lm_head.weight", "U32", &[32, 2]),
+            ("language_model.lm_head.scales", "BF16", &[32, 1]),
+            (
+                "language_model.model.layers.0.input_layernorm.weight",
+                "BF16",
+                &[8],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_qkv.weight",
+                "U32",
+                &[12, 2],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_qkv.scales",
+                "BF16",
+                &[12, 1],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_z.weight",
+                "U32",
+                &[4, 2],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_z.scales",
+                "BF16",
+                &[4, 1],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_a.weight",
+                "U32",
+                &[2, 2],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_a.scales",
+                "BF16",
+                &[2, 1],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_b.weight",
+                "U32",
+                &[2, 2],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_b.scales",
+                "BF16",
+                &[2, 1],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.conv1d.weight",
+                "BF16",
+                &[12, 1, 4],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.dt_bias",
+                "F32",
+                &[2],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.A_log",
+                "F32",
+                &[2],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.norm.weight",
+                "BF16",
+                &[2],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.out_proj.weight",
+                "U32",
+                &[8, 1],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.out_proj.scales",
+                "BF16",
+                &[8, 1],
+            ),
+            (
+                "language_model.model.layers.0.post_attention_layernorm.weight",
+                "BF16",
+                &[8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.gate_proj.weight",
+                "U32",
+                &[16, 2],
+            ),
+            (
+                "language_model.model.layers.0.mlp.gate_proj.scales",
+                "BF16",
+                &[16, 1],
+            ),
+            (
+                "language_model.model.layers.0.mlp.up_proj.weight",
+                "U32",
+                &[16, 2],
+            ),
+            (
+                "language_model.model.layers.0.mlp.up_proj.scales",
+                "BF16",
+                &[16, 1],
+            ),
+            (
+                "language_model.model.layers.0.mlp.down_proj.weight",
+                "U32",
+                &[8, 4],
+            ),
+            (
+                "language_model.model.layers.0.mlp.down_proj.scales",
+                "BF16",
+                &[8, 1],
+            ),
+        ],
+    );
+}
+
+fn assert_optiq_qwen35_mixed_bits(manifest: &crate::model::NativeModelManifest) {
+    assert_eq!(manifest.model_family, "qwen3_5");
+    let bits_for = |name: &str| -> Option<u32> {
+        manifest
+            .tensors
+            .iter()
+            .find(|t| t.name == name)
+            .and_then(|t| t.quantization.as_ref().map(|q| q.bits))
+    };
+    assert_eq!(
+        bits_for("language_model.model.embed_tokens.weight"),
+        Some(8),
+        "OptiQ embed override must stay 8-bit"
+    );
+    assert_eq!(
+        bits_for("language_model.lm_head.weight"),
+        Some(8),
+        "OptiQ lm_head override must stay 8-bit"
+    );
+    assert_eq!(
+        bits_for("language_model.model.layers.0.linear_attn.in_proj_qkv.weight"),
+        Some(8)
+    );
+    assert_eq!(
+        bits_for("language_model.model.layers.0.linear_attn.in_proj_z.weight"),
+        Some(8)
+    );
+    assert_eq!(
+        bits_for("language_model.model.layers.0.linear_attn.in_proj_a.weight"),
+        Some(4)
+    );
+    assert_eq!(
+        bits_for("language_model.model.layers.0.linear_attn.in_proj_b.weight"),
+        Some(4)
+    );
+    assert_eq!(
+        bits_for("language_model.model.layers.0.mlp.gate_proj.weight"),
+        Some(8),
+        "gate_proj override (bits-only) must inherit group_size and stay 8"
+    );
+    assert_eq!(
+        bits_for("language_model.model.layers.0.mlp.up_proj.weight"),
+        Some(4)
+    );
+    assert_eq!(
+        bits_for("language_model.model.layers.0.mlp.down_proj.weight"),
+        Some(4)
+    );
+    // Dense norms must not get forced quant metadata.
+    let norm = manifest
+        .tensors
+        .iter()
+        .find(|t| t.name == "language_model.model.layers.0.input_layernorm.weight")
+        .expect("norm");
+    assert!(!norm.source_quantized);
+    assert!(norm.quantization.is_none());
+
+    let gate = manifest
+        .tensors
+        .iter()
+        .find(|t| t.name.ends_with("mlp.gate_proj.weight"))
+        .expect("gate");
+    assert_eq!(gate.quantization.as_ref().map(|q| q.group_size), Some(64));
+    assert_eq!(
+        gate.quantization.as_ref().map(|q| q.mode.as_str()),
+        Some("affine")
+    );
+}
+
+#[test]
+fn converts_optiq_mixed_precision_under_quantization_key() {
+    let dir = unique_test_dir("optiq_quantization");
+    write_config(&dir, optiq_qwen35_fixture_config("quantization"));
+    write_optiq_qwen35_fake_weights(&dir);
+
+    let manifest = convert_hf_model_dir(&dir).expect("OptiQ quantization convert");
+    assert_optiq_qwen35_mixed_bits(&manifest);
+    // Fake packed shapes are intentionally tiny; real-shape validation is covered
+    // by converts_real_optiq_qwen35_from_hf_cache_when_present when cache exists.
+    write_manifest(&dir, &manifest).expect("write");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn converts_optiq_mixed_precision_under_quantization_config_key() {
+    let dir = unique_test_dir("optiq_quantization_config");
+    write_config(&dir, optiq_qwen35_fixture_config("quantization_config"));
+    write_optiq_qwen35_fake_weights(&dir);
+
+    let manifest = convert_hf_model_dir(&dir).expect("OptiQ quantization_config convert");
+    assert_optiq_qwen35_mixed_bits(&manifest);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// When a local HF-cache OptiQ snapshot is present, convert it and assert the
+/// override bit histogram is non-uniform (not collapsed to a single global).
+#[test]
+fn converts_real_optiq_qwen35_from_hf_cache_when_present() {
+    let hub = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        .join(".cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-OptiQ-4bit");
+    let snap = match fs::read_dir(&hub).ok().and_then(|entries| {
+        entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.file_name().is_some_and(|n| n == "snapshots"))
+            .and_then(|snapshots| {
+                fs::read_dir(snapshots).ok().and_then(|s| {
+                    s.filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .find(|p| p.join("config.json").is_file())
+                })
+            })
+    }) {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "skipping: no local OptiQ Qwen3.5 HF cache under {}",
+                hub.display()
+            );
+            return;
+        }
+    };
+
+    let manifest = convert_hf_model_dir(&snap).expect("real OptiQ convert should succeed");
+    assert_eq!(manifest.model_family, "qwen3_5");
+    let mut bits_4 = 0usize;
+    let mut bits_8 = 0usize;
+    for t in &manifest.tensors {
+        match t.quantization.as_ref().map(|q| q.bits) {
+            Some(4) => bits_4 += 1,
+            Some(8) => bits_8 += 1,
+            _ => {}
+        }
+    }
+    assert!(
+        bits_4 > 0 && bits_8 > 0,
+        "OptiQ manifest must keep mixed 4/8-bit tensors; got 4={bits_4} 8={bits_8}"
+    );
+    eprintln!(
+        "✓ real OptiQ convert: tensors={} 4-bit={bits_4} 8-bit={bits_8} family={}",
+        manifest.tensors.len(),
+        manifest.model_family
+    );
+}

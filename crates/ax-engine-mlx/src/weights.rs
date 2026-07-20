@@ -4774,6 +4774,103 @@ mod tests {
         ));
     }
 
+    /// OptiQ often keeps ba at 8-bit and qkvz at 4-bit as separate pairs —
+    /// each pack group is uniform, so packing remains valid.
+    #[test]
+    fn linear_attention_projection_packing_accepts_optiq_uniform_pairs() {
+        let qkv = glm_quantized_weight(64, 4, true);
+        let z = glm_quantized_weight(64, 4, true);
+        let a = glm_quantized_weight(64, 8, true);
+        let b = glm_quantized_weight(64, 8, true);
+
+        assert!(
+            linear_attention_projection_packing_supported(&qkv, &z, &a, &b),
+            "uniform-within-pair OptiQ layouts should still pack"
+        );
+    }
+
+    /// Dense FFN gate/up with OptiQ 8+4 bits must not pack (and must not error
+    /// on the supported check — load keeps split projections).
+    #[test]
+    fn dense_ffn_gate_up_packing_skips_optiq_mixed_bits_on_gemma() {
+        let gate = glm_quantized_weight(64, 8, true);
+        let up = glm_quantized_weight(64, 4, true);
+        assert!(!dense_ffn_gate_up_packing_supported("gemma4", &gate, &up));
+        assert!(!dense_ffn_gate_up_packing_supported(
+            "gemma4_unified",
+            &gate,
+            &up
+        ));
+        // Qwen never packs non-6-bit dense FFN, including OptiQ 4/8.
+        assert!(!dense_ffn_gate_up_packing_supported("qwen3_5", &gate, &up));
+        assert!(!dense_ffn_gate_up_packing_supported(
+            "qwen3_5",
+            &glm_quantized_weight(64, 4, true),
+            &glm_quantized_weight(64, 4, true),
+        ));
+    }
+
+    #[test]
+    fn take_weight_loads_optiq_override_bits_on_gate_and_up() {
+        let mut gate = spec(NativeTensorRole::FfnGate);
+        gate.name = "language_model.model.layers.0.mlp.gate_proj.weight".into();
+        gate.dtype = NativeTensorDataType::U32;
+        gate.source_quantized = true;
+        gate.quantization = Some(NativeTensorQuantization {
+            mode: "affine".into(),
+            group_size: 64,
+            bits: 8,
+        });
+        let mut up = spec(NativeTensorRole::FfnUp);
+        up.name = "language_model.model.layers.0.mlp.up_proj.weight".into();
+        up.dtype = NativeTensorDataType::U32;
+        up.source_quantized = true;
+        up.quantization = Some(NativeTensorQuantization {
+            mode: "affine".into(),
+            group_size: 64,
+            bits: 4,
+        });
+        let specs = vec![gate, up];
+        let mut name_map = HashMap::from([
+            (
+                "language_model.model.layers.0.mlp.gate_proj.weight".into(),
+                zeros(&[16, 2], MlxDtype::Uint32, None),
+            ),
+            (
+                "language_model.model.layers.0.mlp.gate_proj.scales".into(),
+                zeros(&[16, 1], MlxDtype::Bfloat16, None),
+            ),
+            (
+                "language_model.model.layers.0.mlp.up_proj.weight".into(),
+                zeros(&[16, 2], MlxDtype::Uint32, None),
+            ),
+            (
+                "language_model.model.layers.0.mlp.up_proj.scales".into(),
+                zeros(&[16, 1], MlxDtype::Bfloat16, None),
+            ),
+        ]);
+
+        let g = take_weight(
+            &specs,
+            &mut name_map,
+            NativeTensorRole::FfnGate,
+            Some(0),
+            "gate",
+        )
+        .expect("gate");
+        let u = take_weight(
+            &specs,
+            &mut name_map,
+            NativeTensorRole::FfnUp,
+            Some(0),
+            "up",
+        )
+        .expect("up");
+        assert_eq!(g.bits, 8);
+        assert_eq!(u.bits, 4);
+        assert!(!dense_ffn_gate_up_packing_supported("gemma4", &g, &u));
+    }
+
     #[test]
     fn pack_glm_mla_qa_kva_projection_concatenates_and_materializes_rows() {
         let q_a = glm_quantized_weight(64, 4, true);
