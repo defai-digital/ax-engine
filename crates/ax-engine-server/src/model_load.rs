@@ -5,7 +5,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use ax_engine_sdk::{
-    KvManagerConfig, NativeDiffusionConfig, NativeLinearAttentionConfig, NativeMlaAttentionConfig,
+    EngineSessionConfig, KvManagerConfig, NativeDiffusionConfig, NativeLinearAttentionConfig,
+    NativeMlaAttentionConfig,
 };
 use axum::Json;
 use axum::extract::State;
@@ -219,7 +220,14 @@ pub(crate) async fn load_model(
     // orphan request IDs. The loading flag already blocks new submissions.
     ensure_no_active_stepwise_for_all(&state).await?;
     let live = validate_load_preflight(&state, &model_id, &model_path, load_mode, load_policy)?;
-    let drain_guard = state.admission.begin_drain();
+    // Replace swaps live state and MemoryConstrained shuts the previous
+    // service down first — both must drain existing traffic. A plain
+    // availability-first Add builds the new model on the blocking pool and
+    // publishes it atomically, so admission stays open and resident models
+    // keep serving instead of returning 503 for the whole weight load.
+    let disruptive =
+        load_mode == LoadModelMode::Replace || load_policy == LoadModelPolicy::MemoryConstrained;
+    let drain_guard = disruptive.then(|| state.admission.begin_drain());
     let response_model_id = model_id.clone();
 
     // Run load + swap in a detached task: axum drops handler futures when the
@@ -229,13 +237,26 @@ pub(crate) async fn load_model(
     let load_task = tokio::spawn(async move {
         let _drain_guard = drain_guard;
         let _loading_guard = loading_guard;
-        ensure_no_active_stepwise_for_all(&state_clone).await?;
+        if disruptive {
+            ensure_no_active_stepwise_for_all(&state_clone).await?;
+        }
+        // MemoryConstrained retires the previous service before the build; a
+        // failed build would otherwise leave the registry pointing at a dead
+        // LiveState, so keep what a rollback respawn needs.
+        let rollback = (load_policy == LoadModelPolicy::MemoryConstrained).then(|| {
+            (
+                live.model_id.as_ref().clone(),
+                Arc::clone(&live.session_config),
+            )
+        });
         // Clone the current config and swap in the new model artifacts dir.
         // Only MLX-native consumes this field; delegated backends would keep
         // serving the old model under a new identifier.
         let new_config =
             Arc::unwrap_or_clone(live.session_config).with_mlx_model_artifacts_dir(model_path);
-        wait_for_idle_without_stepwise(&state_clone).await?;
+        if disruptive {
+            wait_for_idle_without_stepwise(&state_clone).await?;
+        }
         if load_policy == LoadModelPolicy::MemoryConstrained {
             live.generation_service
                 .shutdown()
@@ -271,16 +292,24 @@ pub(crate) async fn load_model(
                 }
                 Ok(ctx_len)
             }
-            Ok(Err(e)) => Err(error_response(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "load_failed",
-                format!("failed to load model: {e}"),
-            )),
-            Err(e) => Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                format!("load task panicked: {e}"),
-            )),
+            Ok(Err(e)) => {
+                let note =
+                    rollback_after_failed_memory_constrained_build(&state_clone, rollback).await;
+                Err(error_response(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "load_failed",
+                    format!("failed to load model: {e}{note}"),
+                ))
+            }
+            Err(e) => {
+                let note =
+                    rollback_after_failed_memory_constrained_build(&state_clone, rollback).await;
+                Err(error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    format!("load task panicked: {e}{note}"),
+                ))
+            }
         }
     });
 
@@ -314,7 +343,7 @@ pub(crate) async fn unload_model(
             "model_id must not be empty".to_string(),
         ));
     }
-    perform_unload(&state, model_id.clone()).await?;
+    perform_unload(&state, model_id.clone(), UnloadWaitPolicy::WaitForIdle).await?;
     Ok(Json(UnloadModelResponse {
         model_id,
         state: "unloaded",
@@ -322,10 +351,85 @@ pub(crate) async fn unload_model(
     }))
 }
 
+/// Best-effort recovery after a failed MemoryConstrained replacement build:
+/// the previous generation service was already shut down, so without a
+/// respawn the registry keeps pointing at a dead `LiveState` and every
+/// request 503s until an operator reloads. Returns a note appended to the
+/// load error message.
+async fn rollback_after_failed_memory_constrained_build(
+    state: &AppState,
+    rollback: Option<(String, Arc<EngineSessionConfig>)>,
+) -> String {
+    let Some((model_id, session_config)) = rollback else {
+        return String::new();
+    };
+    let respawn_model_id = model_id.clone();
+    let respawned = tokio::task::spawn_blocking(move || {
+        build_replacement_live_state(respawn_model_id, Arc::unwrap_or_clone(session_config))
+    })
+    .await;
+    match respawned {
+        Ok(Ok(live)) => {
+            // The dead previous entry is still registered as default; swap the
+            // respawned service in and retire the dead one (best-effort — its
+            // service is already shut down).
+            let previous = state.swap_live(live);
+            if let Err(error) = previous.retire().await {
+                tracing::warn!(
+                    model_id,
+                    error = ?error,
+                    "retiring dead previous LiveState after rollback"
+                );
+            }
+            tracing::info!(
+                model_id,
+                "restored previous model after failed memory-constrained load"
+            );
+            format!("; previous model {model_id} was restored")
+        }
+        Ok(Err(error)) => {
+            tracing::error!(
+                model_id,
+                error = ?error,
+                "rollback respawn failed; server degraded until a successful load"
+            );
+            format!(
+                "; rollback respawn of previous model {model_id} also failed — server is degraded until a successful load"
+            )
+        }
+        Err(join_error) => {
+            tracing::error!(
+                model_id,
+                error = ?join_error,
+                "rollback respawn panicked; server degraded until a successful load"
+            );
+            format!(
+                "; rollback respawn of previous model {model_id} panicked — server is degraded until a successful load"
+            )
+        }
+    }
+}
+
+/// How an unload behaves when requests are in flight after admission closes.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum UnloadWaitPolicy {
+    /// Operator-initiated unload: drain admission and wait for in-flight
+    /// work (bounded by `DRAIN_IDLE_TIMEOUT`).
+    WaitForIdle,
+    /// Background housekeeping: a request admitted between the caller's idle
+    /// check and the drain flag aborts the unload immediately instead of
+    /// holding all traffic behind the drain.
+    AbortIfBusy,
+}
+
 /// Shared unload flow used by the HTTP handler and the idle evictor: takes
 /// the loading flag, validates, drains admission, and retires the model on a
 /// detached task so a caller disconnect cannot abort cleanup.
-async fn perform_unload(state: &AppState, model_id: String) -> Result<(), HttpErrorResponse> {
+async fn perform_unload(
+    state: &AppState,
+    model_id: String,
+    wait_policy: UnloadWaitPolicy,
+) -> Result<(), HttpErrorResponse> {
     if state
         .loading
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -342,6 +446,17 @@ async fn perform_unload(state: &AppState, model_id: String) -> Result<(), HttpEr
     let loading_guard = LoadingFlagGuard(state.clone());
     validate_unload_preflight(state, &model_id)?;
     let drain_guard = state.admission.begin_drain();
+    if wait_policy == UnloadWaitPolicy::AbortIfBusy && state.admission.active_jobs() != 0 {
+        // Admission is closed above, so the count can only fall — but a
+        // request that slipped in before the drain flag must not wait behind
+        // background housekeeping. Reopen admission immediately (guards drop
+        // on return) and retry on a later sweep.
+        return Err(error_response(
+            StatusCode::CONFLICT,
+            "model_busy",
+            format!("model {model_id} eviction skipped: requests are in flight"),
+        ));
+    }
     let state_clone = state.clone();
     let unload_model_id = model_id;
     let task = tokio::spawn(async move {
@@ -378,9 +493,10 @@ async fn perform_unload(state: &AppState, model_id: String) -> Result<(), HttpEr
 
 /// Background idle evictor (opt-in via `--model-idle-timeout-secs`): retires
 /// non-default resident models that have not admitted a request within the
-/// timeout. The default model is never evicted, and a sweep only runs while
-/// the server is otherwise idle — the unload flow drains global admission, so
-/// evicting during active traffic would stall unrelated requests.
+/// timeout. The default model is never evicted, a sweep only runs while the
+/// server is otherwise idle, and the unload aborts (reopening admission)
+/// instead of draining if a request slips in between the idle check and the
+/// drain flag — background housekeeping must never stall user traffic.
 pub(crate) fn spawn_model_idle_evictor(state: AppState, idle_timeout: Duration) {
     let tick = Duration::from_secs((idle_timeout.as_secs() / 4).clamp(10, 60));
     tokio::spawn(async move {
@@ -402,7 +518,8 @@ pub(crate) fn spawn_model_idle_evictor(state: AppState, idle_timeout: Duration) 
                 .map(|live| live.model_id.as_ref().clone())
                 .collect::<Vec<_>>();
             for model_id in idle_candidates {
-                match perform_unload(&state, model_id.clone()).await {
+                match perform_unload(&state, model_id.clone(), UnloadWaitPolicy::AbortIfBusy).await
+                {
                     Ok(()) => {
                         tracing::info!(model_id, "idle-evicted resident model");
                     }
