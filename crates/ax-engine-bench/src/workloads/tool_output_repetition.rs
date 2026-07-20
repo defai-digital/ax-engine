@@ -91,6 +91,7 @@ impl ToolOutputRepetition {
                 self.prompt_tokens,
                 Some(&format!("tool_output_repetition/seed={seed}")),
                 None,
+                0,
                 None,
                 0,
             ),

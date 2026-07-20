@@ -114,8 +114,8 @@ use crate::stats::{
     elapsed_ms_since, percentage_delta, proportional_time_us, tokens_per_second_from_micros,
 };
 use crate::synthetic::{
-    replay_prompt_target, synthetic_prompt_text, synthetic_prompt_tokens,
-    synthetic_text_output_tokens,
+    replay_prompt_target, scenario_shared_prefix_target, synthetic_prompt_text,
+    synthetic_prompt_tokens, synthetic_text_output_tokens,
 };
 use crate::token_sources::{output_token_count_source, prompt_token_count_source};
 

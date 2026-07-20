@@ -418,6 +418,11 @@ pub(crate) fn replay_events_from_manifest(
                             prompt_len,
                             Some(prompt_ref),
                             prefix_group,
+                            // Replay fixtures are frozen: keep the historical
+                            // 64-token shared prefix so replayed token streams
+                            // and their determinism digests stay comparable
+                            // with recorded baselines.
+                            64,
                             body_group,
                             request_id.0 as u32,
                         ),

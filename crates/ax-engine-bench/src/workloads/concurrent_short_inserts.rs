@@ -90,6 +90,7 @@ impl ConcurrentShortInserts {
                 self.long_prefill_tokens,
                 Some(&format!("concurrent_short_inserts/long/seed={seed}")),
                 None,
+                0,
                 None,
                 0,
             ),
@@ -111,6 +112,7 @@ impl ConcurrentShortInserts {
                     "concurrent_short_inserts/short_{ordinal}/seed={seed}"
                 )),
                 None,
+                0,
                 None,
                 ordinal,
             ),

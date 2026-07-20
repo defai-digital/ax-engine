@@ -65,6 +65,7 @@ pub(crate) fn scenario_specs_from_manifest(
                 shape.input_tokens_target,
                 Some("scenario"),
                 prefix_group,
+                scenario_shared_prefix_target(shape.input_tokens_target),
                 None,
                 ordinal,
             ),
@@ -126,6 +127,7 @@ pub(crate) fn execute_llama_cpp_blocking_scenario_once(
                 spec.prompt_token_target,
                 Some(&spec.external_id),
                 spec.metadata.as_deref(),
+                scenario_shared_prefix_target(spec.prompt_token_target),
                 None,
                 spec.request_id.0 as u32,
             );
@@ -152,7 +154,6 @@ pub(crate) fn run_llama_cpp_scenario_workload(
     runtime: RuntimeConfig,
     specs: Vec<SyntheticRequestSpec>,
 ) -> Result<RuntimeObservation, CliError> {
-    let started = Instant::now();
     let prefill_tokens = specs
         .iter()
         .map(|spec| spec.input_tokens.len() as u64)
@@ -165,6 +166,9 @@ pub(crate) fn run_llama_cpp_scenario_workload(
     let request_ids = specs.iter().map(|spec| spec.request_id).collect::<Vec<_>>();
     let max_steps = workload_step_guard_from_specs(&specs);
     let mut session = build_session(&runtime, &specs)?;
+    // Session build performs the backend spawn/handshake; start the clock
+    // after it so TTFT/e2e measure serving, not backend startup.
+    let started = Instant::now();
     observation.runtime_report = Some(session.runtime_report());
 
     for spec in &specs {
@@ -236,10 +240,12 @@ pub(crate) fn run_llama_cpp_blocking_scenario_workload(
     runtime: RuntimeConfig,
     specs: Vec<SyntheticRequestSpec>,
 ) -> Result<RuntimeObservation, CliError> {
-    let started = Instant::now();
     let mut observation = RuntimeObservation::default();
     let mut session = build_session(&runtime, &specs)?;
     observation.runtime_report = Some(session.runtime_report());
+    // Session build performs the backend spawn/handshake; start the clock
+    // after it so e2e measures serving, not backend startup.
+    let started = Instant::now();
 
     let mut final_reports = Vec::new();
     for spec in specs {
@@ -506,9 +512,11 @@ pub(crate) fn run_scenario_workload(
     runtime: RuntimeConfig,
     specs: Vec<SyntheticRequestSpec>,
 ) -> Result<RuntimeObservation, CliError> {
-    let started = Instant::now();
     let max_steps = workload_step_guard_from_specs(&specs);
     let mut session = build_session(&runtime, &specs)?;
+    // Session build performs the weight load and backend init; start the
+    // clock after it so TTFT/e2e measure serving, not model loading.
+    let started = Instant::now();
     let mut submitted_request_ids = Vec::new();
     let mut external_ids = BTreeMap::new();
     let shared_prefix_staging = should_stage_shared_prefix_scenario(&specs);

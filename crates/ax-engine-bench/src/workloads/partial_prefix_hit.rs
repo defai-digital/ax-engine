@@ -92,6 +92,7 @@ impl PartialPrefixHit {
                 total,
                 Some(&format!("partial_prefix_hit/request_{ordinal}/seed={seed}")),
                 Some("partial_prefix_hit/shared"),
+                self.shared_prefix_tokens,
                 Some(&format!("partial_prefix_hit/variant_{ordinal}")),
                 ordinal,
             ),
@@ -234,9 +235,9 @@ mod tests {
         let b = f.build_request(0, 1);
         // Same total length.
         assert_eq!(a.input_tokens.len(), b.input_tokens.len());
-        // Same prefix region (synthetic_prompt_tokens uses shared_prefix len
-        // = min(target_len, 64); for default target=528 the prefix region is 64).
-        let prefix_len = f.shared_prefix_tokens.min(64) as usize;
+        // Same prefix region: the workload passes shared_prefix_tokens as the
+        // shared-prefix target, so the whole configured prefix is shared.
+        let prefix_len = f.shared_prefix_tokens as usize;
         assert_eq!(&a.input_tokens[..prefix_len], &b.input_tokens[..prefix_len]);
         // Body region differs.
         assert_ne!(&a.input_tokens[prefix_len..], &b.input_tokens[prefix_len..]);

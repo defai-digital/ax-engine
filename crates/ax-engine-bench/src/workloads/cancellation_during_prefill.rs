@@ -89,6 +89,7 @@ impl CancellationDuringPrefill {
                 self.prefill_tokens,
                 Some(&format!("cancellation_during_prefill/seed={seed}")),
                 None,
+                0,
                 None,
                 0,
             ),
