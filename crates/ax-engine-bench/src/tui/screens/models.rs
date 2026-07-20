@@ -1,5 +1,5 @@
 //! Models wizard: split-panel layout with family list on the left and
-//! precision/options/confirm on the right.  The left panel is always visible
+//! size/confirm steps on the right.  The left panel is always visible
 //! so the user never loses context when navigating between wizard steps.
 
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListItem, Paragraph, Wrap};
 
 use crate::tui::catalog::{self, RamFit};
-use crate::tui::jobs::{DownloadMode, DownloadTask};
+use crate::tui::jobs::DownloadTask;
 use crate::tui::theme;
 use crate::tui::widgets::{self, DirectoryPicker};
 use crate::tui::{App, Modal, PendingDownload, Screen, WizardStage};
@@ -81,16 +81,13 @@ impl App {
                 }
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                     let variant = &self.families[self.family_idx].variants[self.precision_idx];
-                    if variant.mtp_alias.is_some() {
-                        self.mtp_idx = 0;
-                        self.stage = WizardStage::Options;
-                    } else if variant.installed {
+                    if variant.installed {
                         self.modal = Some(Modal::ServeInstalled {
                             family_idx: self.family_idx,
                             variant_idx: self.precision_idx,
                         });
                     } else {
-                        self.begin_confirm(false);
+                        self.begin_confirm();
                     }
                 }
                 KeyCode::Char('x') => {
@@ -108,27 +105,6 @@ impl App {
                 }
                 _ => {}
             },
-            WizardStage::Options => match code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if self.mtp_idx == 0 {
-                        self.focus_tab_bar();
-                    } else {
-                        self.mtp_idx = 0;
-                    }
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.mtp_idx = 1;
-                }
-                KeyCode::Char('y') => self.begin_confirm(true),
-                KeyCode::Char('n') => self.begin_confirm(false),
-                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                    self.begin_confirm(self.mtp_idx == 0)
-                }
-                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
-                    self.stage = WizardStage::Precision
-                }
-                _ => {}
-            },
             WizardStage::Confirm => match code {
                 KeyCode::Up | KeyCode::Char('k') => self.focus_tab_bar(),
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.confirm_download(),
@@ -140,16 +116,7 @@ impl App {
                     self.toast("using the shared HF cache");
                 }
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
-                    let back_to_options = self.pending.is_some_and(|pending| {
-                        self.families[pending.family_idx].variants[pending.precision_idx]
-                            .mtp_alias
-                            .is_some()
-                    });
-                    self.stage = if back_to_options {
-                        WizardStage::Options
-                    } else {
-                        WizardStage::Precision
-                    };
+                    self.stage = WizardStage::Precision;
                 }
                 _ => {}
             },
@@ -166,14 +133,6 @@ impl App {
             }
             WizardStage::Precision if idx < self.families[self.family_idx].variants.len() => {
                 self.precision_idx = idx;
-                self.on_key_models(KeyCode::Enter);
-            }
-            WizardStage::Options => {
-                if idx == 0 {
-                    self.mtp_idx = 0;
-                } else if idx == 1 {
-                    self.mtp_idx = 1;
-                }
                 self.on_key_models(KeyCode::Enter);
             }
             _ => {}
@@ -269,42 +228,24 @@ impl App {
     // -- confirm / enqueue --------------------------------------------------------
 
     /// Enter the confirm step for the current family/precision selection.
-    pub(crate) fn begin_confirm(&mut self, with_mtp: bool) {
+    pub(crate) fn begin_confirm(&mut self) {
         self.pending = Some(PendingDownload {
             family_idx: self.family_idx,
             precision_idx: self.precision_idx,
-            with_mtp,
         });
         self.confirm_dest = None;
         self.stage = WizardStage::Confirm;
         self.screen = Screen::Models;
     }
 
-    /// (subcmd, target alias, base repo id, total size estimate) for a pending download.
-    fn pending_plan(
-        &self,
-        pending: PendingDownload,
-    ) -> (&'static str, &'static str, &'static str, Option<u64>) {
+    /// (target alias, repo id, total size estimate) for a pending download.
+    fn pending_plan(&self, pending: PendingDownload) -> (&'static str, &'static str, Option<u64>) {
         let variant = &self.families[pending.family_idx].variants[pending.precision_idx];
-        if pending.with_mtp {
-            let alias = variant.mtp_alias.unwrap_or(variant.profile.label);
-            if let Some(target) = crate::mtp_download_target_for_model(alias) {
-                let total = match (target.approx_base_bytes, target.approx_extra_bytes) {
-                    (Some(base), Some(extra)) => Some(base + extra),
-                    (Some(base), None) => Some(base),
-                    _ => None,
-                };
-                return ("download-mtp", alias, target.repo_id, total);
-            }
-            ("download-mtp", alias, variant.profile.repo_id, None)
-        } else {
-            (
-                "download",
-                variant.profile.label,
-                variant.profile.repo_id,
-                variant.profile.approx_size_bytes,
-            )
-        }
+        (
+            variant.profile.label,
+            variant.profile.repo_id,
+            variant.profile.approx_size_bytes,
+        )
     }
 
     fn confirm_download(&mut self) {
@@ -318,16 +259,12 @@ impl App {
             self.toast_error(err);
             return;
         }
-        let (subcmd, target, repo_id, total_bytes) = self.pending_plan(pending);
+        let (target, repo_id, total_bytes) = self.pending_plan(pending);
         let variant = &self.families[pending.family_idx].variants[pending.precision_idx];
-        let dest = self.confirm_dest.as_ref().map(|parent| {
-            explicit_destination_path(
-                parent,
-                variant.profile.label,
-                variant.mtp_alias,
-                pending.with_mtp,
-            )
-        });
+        let dest = self
+            .confirm_dest
+            .as_ref()
+            .map(|parent| explicit_destination_path(parent, variant.profile.label));
         let watch_dir = dest
             .clone()
             .unwrap_or_else(|| catalog::repo_cache_dir(repo_id));
@@ -336,17 +273,10 @@ impl App {
             self.families[pending.family_idx].display_name(),
             variant.precision()
         );
-        let mode = if pending.with_mtp {
-            DownloadMode::Mtp
-        } else {
-            DownloadMode::Direct
-        };
         let task = DownloadTask {
             label: label.clone(),
             repo_id,
             preset: variant.profile.preset,
-            mode,
-            subcmd,
             target: target.to_string(),
             dest,
             watch_dir,
@@ -390,28 +320,13 @@ impl App {
 
     // -- rendering ------------------------------------------------------------
 
-    /// Wizard steps for the header: Options only exists for MTP-capable variants.
+    /// Fixed direct-download flow. AutomatosX MTP artifacts are already bundled.
     fn wizard_steps(&self) -> Vec<(&'static str, WizardStage)> {
-        let has_options = self
-            .families
-            .get(self.family_idx)
-            .map(|family| match self.stage {
-                WizardStage::Families => family.has_mtp(),
-                _ => family
-                    .variants
-                    .get(self.precision_idx)
-                    .is_some_and(|v| v.mtp_alias.is_some()),
-            })
-            .unwrap_or(false);
-        let mut steps = vec![
+        vec![
             ("Model", WizardStage::Families),
             ("Size", WizardStage::Precision),
-        ];
-        if has_options {
-            steps.push(("Speed-up", WizardStage::Options));
-        }
-        steps.push(("Confirm", WizardStage::Confirm));
-        steps
+            ("Confirm", WizardStage::Confirm),
+        ]
     }
 
     /// Split-panel layout: left panel (40%) is the family list, right panel
@@ -433,7 +348,6 @@ impl App {
                 self.draw_right_hint(frame, right[1]);
             }
             WizardStage::Precision => self.draw_precision(frame, right[1]),
-            WizardStage::Options => self.draw_options(frame, right[1]),
             WizardStage::Confirm => self.draw_confirm(frame, right[1]),
         }
     }
@@ -516,7 +430,7 @@ impl App {
         );
     }
 
-    /// Compact step header: `Step 2 of 4 — Model › Precision › Options › Confirm`
+    /// Compact step header: `Step 2 of 3 — Model › Size › Confirm`
     fn draw_step_header(&self, frame: &mut Frame, area: Rect) {
         self.step_header_rect.set(area);
         let steps = self.wizard_steps();
@@ -550,18 +464,6 @@ impl App {
         if self.stage != WizardStage::Families {
             selection.push(self.families[self.family_idx].display_name());
             selection.push(self.families[self.family_idx].variants[self.precision_idx].precision());
-        }
-        if matches!(self.stage, WizardStage::Confirm)
-            && let Some(pending) = self.pending
-            && self.families[pending.family_idx].variants[pending.precision_idx]
-                .mtp_alias
-                .is_some()
-        {
-            selection.push(if pending.with_mtp {
-                "with speed-up".into()
-            } else {
-                "no speed-up".into()
-            });
         }
         if !selection.is_empty() {
             spans.push(Span::raw("   "));
@@ -667,7 +569,7 @@ impl App {
                     v.size_estimate(),
                     self.hardware.total_ram_bytes,
                 ));
-                let mtp = if v.mtp_alias.is_some() {
+                let mtp = if v.mtp_included {
                     Span::styled(format!(" {}", theme::icon::speed()), theme::feature())
                 } else {
                     Span::raw("  ")
@@ -714,62 +616,6 @@ impl App {
         );
     }
 
-    fn draw_options(&self, frame: &mut Frame, area: Rect) {
-        let family = &self.families[self.family_idx];
-        let variant = &family.variants[self.precision_idx];
-        let yes = self.mtp_idx == 0;
-        let extra = variant
-            .mtp_size_estimate()
-            .map(|(_, extra)| catalog::format_approx_bytes(extra))
-            .unwrap_or_else(|| "size varies".into());
-        let opt = |label: &str, sel: bool| {
-            let style = if sel { theme::cta() } else { theme::body_dim() };
-            let marker = if sel {
-                format!("{} ", theme::icon::select())
-            } else {
-                "  ".into()
-            };
-            Line::from(Span::styled(format!("  {marker}{label}  "), style))
-        };
-        let text = vec![
-            Line::from(vec![
-                Span::styled(
-                    format!("{} {}", family.display_name(), variant.precision()),
-                    Style::default()
-                        .fg(theme::colors().text)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" can run faster with an optional package.", theme::body()),
-            ]),
-            Line::raw(""),
-            Line::from(Span::styled(
-                format!("Faster generation downloads a small extra package ({extra})"),
-                theme::body_dim(),
-            )),
-            Line::from(Span::styled(
-                "and speeds up replies. Quality stays the same.",
-                theme::body_dim(),
-            )),
-            Line::raw(""),
-            Line::from(Span::styled(
-                "Include the speed-up?",
-                Style::default()
-                    .fg(theme::colors().text)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::raw(""),
-            opt("Yes — faster generation (recommended)", yes),
-            opt("No — base model only", !yes),
-        ];
-        let block = widgets::active_block(&format!(" {} Optional speed-up ", theme::icon::speed()));
-        frame.render_widget(
-            Paragraph::new(text)
-                .block(block.border_style(Style::default().fg(theme::colors().feature)))
-                .wrap(Wrap { trim: false }),
-            area,
-        );
-    }
-
     fn draw_confirm(&self, frame: &mut Frame, area: Rect) {
         let Some(pending) = self.pending else {
             frame.render_widget(
@@ -781,20 +627,15 @@ impl App {
         };
         let family = &self.families[pending.family_idx];
         let variant = &family.variants[pending.precision_idx];
-        let (_, _, _, total) = self.pending_plan(pending);
+        let (_, _, total) = self.pending_plan(pending);
         let fit = catalog::ram_fit(
             total.or(variant.size_estimate()),
             self.hardware.total_ram_bytes,
         );
         let dest_text = match &self.confirm_dest {
-            Some(parent) => explicit_destination_path(
-                parent,
-                variant.profile.label,
-                variant.mtp_alias,
-                pending.with_mtp,
-            )
-            .display()
-            .to_string(),
+            Some(parent) => explicit_destination_path(parent, variant.profile.label)
+                .display()
+                .to_string(),
             None => format!(
                 "{} (default cache)",
                 crate::default_hf_cache_root().display()
@@ -824,13 +665,11 @@ impl App {
                 format!("{} {}", family.display_name(), variant.precision()),
             ),
             row(
-                "Speed-up",
-                if variant.mtp_alias.is_none() {
-                    "not available".into()
-                } else if pending.with_mtp {
-                    format!("{} included", theme::icon::speed())
+                "MTP",
+                if variant.mtp_included {
+                    format!("{} included in snapshot", theme::icon::speed())
                 } else {
-                    "no".into()
+                    "not applicable".into()
                 },
             ),
             row("Download", catalog::format_approx_bytes(total)),
@@ -890,7 +729,7 @@ impl App {
                 Span::styled("Not enough free disk space.", theme::danger()),
             ]));
         }
-        if variant.installed && !pending.with_mtp {
+        if variant.installed {
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {} ", theme::icon::ok()),
@@ -998,21 +837,7 @@ fn compact_quant_summary(family: &crate::tui::catalog::Family) -> String {
     }
 }
 
-/// Leaf directory a custom-destination download lands in: `<parent>/<label>`
-/// (or `<parent>/<mtp-alias>-mtp` for MTP packages).
-pub(crate) fn explicit_destination_path(
-    parent: &std::path::Path,
-    label: &str,
-    mtp_alias: Option<&str>,
-    with_mtp: bool,
-) -> PathBuf {
-    let leaf = if with_mtp {
-        format!(
-            "{}-mtp",
-            widgets::sanitize_path_segment(mtp_alias.unwrap_or(label))
-        )
-    } else {
-        widgets::sanitize_path_segment(label)
-    };
-    parent.join(leaf)
+/// Leaf directory a custom-destination download lands in: `<parent>/<label>`.
+pub(crate) fn explicit_destination_path(parent: &std::path::Path, label: &str) -> PathBuf {
+    parent.join(widgets::sanitize_path_segment(label))
 }

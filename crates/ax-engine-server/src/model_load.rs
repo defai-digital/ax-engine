@@ -59,10 +59,19 @@ enum MultiModelTarget {
     Qwen35_9b,
     Qwen36_35b,
     Qwen36_27b,
+    Qwen3CoderNext,
     Gemma4_12b,
     Gemma4_26b,
     Gemma4_31b,
+    EmbeddingGemma300m,
+    Qwen3Embedding0_6b,
+    Qwen3Embedding4b,
+    Qwen3Embedding8b,
 }
+
+/// One-line product scope used by every multi-model rejection message.
+const MULTI_MODEL_SCOPE: &str = "Qwen 3.5 9B, Qwen 3.6 35B/27B, Qwen3-Coder-Next, \
+     Gemma 4 12B/26B/31B, EmbeddingGemma 300M, and Qwen3-Embedding 0.6B/4B/8B";
 
 impl MultiModelTarget {
     const fn as_str(self) -> &'static str {
@@ -70,9 +79,14 @@ impl MultiModelTarget {
             Self::Qwen35_9b => "qwen3.5-9b",
             Self::Qwen36_35b => "qwen3.6-35b",
             Self::Qwen36_27b => "qwen3.6-27b",
+            Self::Qwen3CoderNext => "qwen3-coder-next",
             Self::Gemma4_12b => "gemma-4-12b",
             Self::Gemma4_26b => "gemma-4-26b",
             Self::Gemma4_31b => "gemma-4-31b",
+            Self::EmbeddingGemma300m => "embeddinggemma-300m",
+            Self::Qwen3Embedding0_6b => "qwen3-embedding-0.6b",
+            Self::Qwen3Embedding4b => "qwen3-embedding-4b",
+            Self::Qwen3Embedding8b => "qwen3-embedding-8b",
         }
     }
 }
@@ -461,7 +475,7 @@ fn validate_load_preflight(
             // Replacing the sole model preserves the historical unrestricted
             // hot-swap contract. Once another model is retained, the result is
             // multi-model serving and every surviving/new model must remain in
-            // the five-model product scope.
+            // the multi-model product scope.
             if loaded_model_ids.len() > 1 {
                 validate_multi_model_target(model_id, model_path)?;
                 let retained = loaded_model_ids
@@ -810,7 +824,7 @@ fn validate_multi_model_target(
         StatusCode::UNPROCESSABLE_ENTITY,
         "unsupported_model",
         format!(
-            "multi-model loading is limited to Qwen 3.5 9B, Qwen 3.6 35B/27B, and Gemma 4 12B/26B/31B; requested model_id={model_id}, inferred_artifact_model={}",
+            "multi-model loading is limited to {MULTI_MODEL_SCOPE}; requested model_id={model_id}, inferred_artifact_model={}",
             artifact_target.map_or("unknown", MultiModelTarget::as_str)
         ),
     ))
@@ -847,7 +861,7 @@ fn validate_retained_multi_model_ids(model_ids: &[String]) -> Result<(), HttpErr
             StatusCode::UNPROCESSABLE_ENTITY,
             "unsupported_model",
             format!(
-                "multi-model loading is limited to Qwen 3.5 9B, Qwen 3.6 35B/27B, and Gemma 4 12B/26B/31B; retained model_id={model_id} is outside that scope"
+                "multi-model loading is limited to {MULTI_MODEL_SCOPE}; retained model_id={model_id} is outside that scope"
             ),
         ));
     }
@@ -861,18 +875,39 @@ fn is_supported_multi_model_id(model_id: &str) -> bool {
 
 fn multi_model_target_key(model_id: &str) -> Option<MultiModelTarget> {
     let normalized = normalize_model_label(model_id);
-    if target_label_matches(&normalized, &["qwen3-5-9b", "qwen35-9b"]) {
+    // AutomatosX publishes the product models under an `AX-` brand prefix
+    // (e.g. `AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP`); the branded id
+    // names the same target as the bare family label, so match both forms.
+    // The manifest signature check stays authoritative either way, and any
+    // other prefix keeps failing closed.
+    std::iter::once(normalized.as_str())
+        .chain(normalized.strip_prefix("ax-"))
+        .find_map(multi_model_target_for_label)
+}
+
+fn multi_model_target_for_label(label: &str) -> Option<MultiModelTarget> {
+    if target_label_matches(label, &["qwen3-5-9b", "qwen35-9b"]) {
         Some(MultiModelTarget::Qwen35_9b)
-    } else if target_label_matches(&normalized, &["qwen3-6-35b", "qwen36-35b"]) {
+    } else if target_label_matches(label, &["qwen3-6-35b", "qwen36-35b"]) {
         Some(MultiModelTarget::Qwen36_35b)
-    } else if target_label_matches(&normalized, &["qwen3-6-27b", "qwen36-27b"]) {
+    } else if target_label_matches(label, &["qwen3-6-27b", "qwen36-27b"]) {
         Some(MultiModelTarget::Qwen36_27b)
-    } else if target_label_matches(&normalized, &["gemma-4-12b", "gemma4-12b"]) {
+    } else if target_label_matches(label, &["qwen3-coder-next", "qwen3-next-80b"]) {
+        Some(MultiModelTarget::Qwen3CoderNext)
+    } else if target_label_matches(label, &["gemma-4-12b", "gemma4-12b"]) {
         Some(MultiModelTarget::Gemma4_12b)
-    } else if target_label_matches(&normalized, &["gemma-4-26b", "gemma4-26b"]) {
+    } else if target_label_matches(label, &["gemma-4-26b", "gemma4-26b"]) {
         Some(MultiModelTarget::Gemma4_26b)
-    } else if target_label_matches(&normalized, &["gemma-4-31b", "gemma4-31b"]) {
+    } else if target_label_matches(label, &["gemma-4-31b", "gemma4-31b"]) {
         Some(MultiModelTarget::Gemma4_31b)
+    } else if target_label_matches(label, &["embeddinggemma", "embedding-gemma"]) {
+        Some(MultiModelTarget::EmbeddingGemma300m)
+    } else if target_label_matches(label, &["qwen3-embedding-0-6b", "qwen3-embedding-06b"]) {
+        Some(MultiModelTarget::Qwen3Embedding0_6b)
+    } else if target_label_matches(label, &["qwen3-embedding-4b"]) {
+        Some(MultiModelTarget::Qwen3Embedding4b)
+    } else if target_label_matches(label, &["qwen3-embedding-8b"]) {
+        Some(MultiModelTarget::Qwen3Embedding8b)
     } else {
         None
     }
@@ -954,6 +989,12 @@ fn multi_model_target_from_manifest(
         ("qwen3_5", 40, 2048, 0, 16, 256, 2, 248320, Some(256), Some(8), Some(512)) => {
             Some(MultiModelTarget::Qwen36_35b)
         }
+        // Qwen3-Coder-Next (hybrid GatedDeltaNet + sparse MoE on the
+        // Qwen3-Next 80B-A3B geometry); signature read from the published
+        // AutomatosX pack's config (AX-Qwen3-Coder-Next-MLX-4bit).
+        ("qwen3_next", 48, 2048, 5120, 16, 256, 2, 151936, Some(512), Some(10), Some(512)) => {
+            Some(MultiModelTarget::Qwen3CoderNext)
+        }
         ("gemma4", 48, 3840, 15360, 16, 256, 8, 262144, None, None, None) => {
             Some(MultiModelTarget::Gemma4_12b)
         }
@@ -962,6 +1003,23 @@ fn multi_model_target_from_manifest(
         }
         ("gemma4", 60, 5376, 21504, 32, 256, 16, 262144, None, None, None) => {
             Some(MultiModelTarget::Gemma4_31b)
+        }
+        // Embedding co-residency targets: signatures read from the shipped
+        // AutomatosX pack manifests (AX-EmbeddingGemma-300M-MLX-8bit,
+        // AX-Qwen3-Embedding-{0.6B,4B,8B}). Qwen3-Embedding serves on the
+        // standard qwen3 decoder with last-token pooling; EmbeddingGemma is
+        // the encoder+mean-pooling family.
+        ("embeddinggemma", 24, 768, 1152, 3, 256, 1, 262144, None, None, None) => {
+            Some(MultiModelTarget::EmbeddingGemma300m)
+        }
+        ("qwen3", 28, 1024, 3072, 16, 128, 8, 151669, None, None, None) => {
+            Some(MultiModelTarget::Qwen3Embedding0_6b)
+        }
+        ("qwen3", 36, 2560, 9728, 32, 128, 8, 151665, None, None, None) => {
+            Some(MultiModelTarget::Qwen3Embedding4b)
+        }
+        ("qwen3", 36, 4096, 12288, 32, 128, 8, 151665, None, None, None) => {
+            Some(MultiModelTarget::Qwen3Embedding8b)
         }
         _ => None,
     }
@@ -1087,6 +1145,27 @@ mod tests {
             "gemma-4-12b-it",
             "gemma-4-26b-a4b-it",
             "gemma-4-31b-it",
+            "qwen3-coder-next",
+            "qwen3-next-80b-a3b",
+            "embeddinggemma-300m",
+            "embeddinggemma",
+            "qwen3-embedding-0.6b",
+            "qwen3-embedding-4b",
+            "qwen3-embedding-8b",
+            // AutomatosX org packages (https://huggingface.co/AutomatosX):
+            // the AX- brand prefix names the same product targets.
+            "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
+            "AX-Qwen3.5-9B-MLX-6bit-MTP",
+            "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+            "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+            "AutomatosX/AX-Qwen3-Coder-Next-MLX-6bit",
+            "AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP",
+            "AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-OptiQ-4bit-Assistant-MTP",
+            "AutomatosX/AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP",
+            "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
+            "AX-Qwen3-Embedding-0.6B-MLX-8bit",
+            "AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ",
+            "AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ",
         ] {
             assert!(is_supported_multi_model_id(model_id), "{model_id}");
         }
@@ -1094,13 +1173,21 @@ mod tests {
             "qwen3.5-0.8b",
             "qwen3.55-9b",
             "prefix-qwen3.5-9b",
-            "qwen3-coder-next",
             "prefix-qwen3.6-35b",
             "qwen3.65-35b",
+            "qwen3-coder-nextgen",
+            "qwen3-embedding-1b",
+            "embeddinggemma2-300m",
             "gemma-4-e2b-it",
             "gemma-4-e4b-it",
             "gemma-40-12b-it",
             "llama3.3-70b",
+            // The brand strip is exact: only a leading `ax-` label segment
+            // may be dropped, and the remainder must still be a product id.
+            "AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+            "axe-qwen3.5-9b",
+            "max-qwen3.5-9b",
+            "ax-llama3.3-70b",
         ] {
             assert!(!is_supported_multi_model_id(model_id), "{model_id}");
         }
@@ -1218,10 +1305,106 @@ mod tests {
                 }),
                 MultiModelTarget::Gemma4_31b,
             ),
+            (
+                serde_json::json!({
+                    "model_family": "qwen3_next", "layer_count": 48, "hidden_size": 2048,
+                    "intermediate_size": 5120, "attention_head_count": 16,
+                    "attention_head_dim": 256, "kv_head_count": 2, "vocab_size": 151936,
+                    "moe": {"expert_count": 512, "experts_per_token": 10,
+                            "expert_intermediate_size": 512}
+                }),
+                MultiModelTarget::Qwen3CoderNext,
+            ),
+            (
+                serde_json::json!({
+                    "model_family": "embeddinggemma", "layer_count": 24, "hidden_size": 768,
+                    "intermediate_size": 1152, "attention_head_count": 3,
+                    "attention_head_dim": 256, "kv_head_count": 1, "vocab_size": 262144
+                }),
+                MultiModelTarget::EmbeddingGemma300m,
+            ),
+            (
+                serde_json::json!({
+                    "model_family": "qwen3", "layer_count": 28, "hidden_size": 1024,
+                    "intermediate_size": 3072, "attention_head_count": 16,
+                    "attention_head_dim": 128, "kv_head_count": 8, "vocab_size": 151669
+                }),
+                MultiModelTarget::Qwen3Embedding0_6b,
+            ),
+            (
+                serde_json::json!({
+                    "model_family": "qwen3", "layer_count": 36, "hidden_size": 2560,
+                    "intermediate_size": 9728, "attention_head_count": 32,
+                    "attention_head_dim": 128, "kv_head_count": 8, "vocab_size": 151665
+                }),
+                MultiModelTarget::Qwen3Embedding4b,
+            ),
+            (
+                serde_json::json!({
+                    "model_family": "qwen3", "layer_count": 36, "hidden_size": 4096,
+                    "intermediate_size": 12288, "attention_head_count": 32,
+                    "attention_head_dim": 128, "kv_head_count": 8, "vocab_size": 151665
+                }),
+                MultiModelTarget::Qwen3Embedding8b,
+            ),
         ];
         for (identity, expected) in identities {
             let identity = serde_json::from_value(identity).expect("identity should parse");
             assert_eq!(multi_model_target_from_manifest(&identity), Some(expected));
+        }
+    }
+
+    /// The four AutomatosX pack manifests that ship with the org models
+    /// (https://huggingface.co/AutomatosX) resolve to the label the org
+    /// publishes them under, id-side and artifact-side agreeing.
+    #[test]
+    fn automatosx_pack_ids_agree_with_shipped_manifest_identities() {
+        let cases = [
+            (
+                "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit",
+                serde_json::json!({
+                    "model_family": "qwen3", "layer_count": 28, "hidden_size": 1024,
+                    "intermediate_size": 3072, "attention_head_count": 16,
+                    "attention_head_dim": 128, "kv_head_count": 8, "vocab_size": 151669
+                }),
+            ),
+            (
+                "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
+                serde_json::json!({
+                    "model_family": "embeddinggemma", "layer_count": 24, "hidden_size": 768,
+                    "intermediate_size": 1152, "attention_head_count": 3,
+                    "attention_head_dim": 256, "kv_head_count": 1, "vocab_size": 262144
+                }),
+            ),
+            (
+                "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
+                serde_json::json!({
+                    "model_family": "qwen3_next", "layer_count": 48, "hidden_size": 2048,
+                    "intermediate_size": 5120, "attention_head_count": 16,
+                    "attention_head_dim": 256, "kv_head_count": 2, "vocab_size": 151936,
+                    "moe": {"expert_count": 512, "experts_per_token": 10,
+                            "expert_intermediate_size": 512}
+                }),
+            ),
+            (
+                "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+                serde_json::json!({
+                    "model_family": "qwen3_5", "layer_count": 40, "hidden_size": 2048,
+                    "intermediate_size": 0, "attention_head_count": 16,
+                    "attention_head_dim": 256, "kv_head_count": 2, "vocab_size": 248320,
+                    "moe": {"expert_count": 256, "experts_per_token": 8,
+                            "expert_intermediate_size": 512}
+                }),
+            ),
+        ];
+        for (model_id, identity) in cases {
+            let identity = serde_json::from_value(identity).expect("identity should parse");
+            assert_eq!(
+                multi_model_target_key(model_id),
+                multi_model_target_from_manifest(&identity),
+                "{model_id}"
+            );
+            assert!(multi_model_target_key(model_id).is_some(), "{model_id}");
         }
     }
 

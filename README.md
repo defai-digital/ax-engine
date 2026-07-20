@@ -10,17 +10,20 @@ memory).**
 
 ## Why AX Engine
 
-- **Faster speculative decode** — one-command MTP packages
-  (`ax-engine download-mtp`) with measured speedups vs same-package direct, and
-  peer decode wins vs MTPLX and lightning-mlx on Qwen3.6
+- **Faster speculative decode** — AutomatosX chat snapshots bundle their MTP
+  sidecar or assistant weights, so one standard download is serve-ready; AX
+  shows measured speedups vs same-package direct and peer decode wins vs MTPLX
+  and lightning-mlx on Qwen3.6
 - **Strong direct decode on Apple Silicon** — Gemma and Qwen paths compete with
   `mlx-lm` and llama.cpp Metal on published decode charts
 - **You own the stack you serve** — AX runs the MLX graph, KV/runtime, and
   OpenAI-compatible server for Gemma / Qwen / GLM; `mlx-lm` and `llama.cpp` stay
   optional compatibility adapters
-- **Multi-model serving** — keep a scoped set of Qwen 3.6 / Gemma 4 models
-  resident (`load_mode=add`), route with request `model`, optional idle eviction
-  and memory preflight; see [Server: Multi-model](docs/SERVER.md#multi-model-serving)
+- **Multi-model serving** — keep a scoped set of Qwen 3.5/3.6, Qwen3-Coder-Next,
+  Gemma 4, and embedding models resident (`load_mode=add`), route with request
+  `model` — including chat + embeddings from one process — with optional idle
+  eviction and memory preflight; see
+  [Server: Multi-model](docs/SERVER.md#multi-model-serving)
 - **Claims you can audit** — public rows ship with checked-in artifacts (route,
   model snapshot, sampler, accept rate, provenance)
 
@@ -56,21 +59,21 @@ ax-engine tui
   >
 </p>
 
-**Option B — one-command MTP serve**, then request from another terminal:
+**Option B — download and serve an MTP-ready snapshot**, then request from
+another terminal:
 
 ```bash
-ax-engine download-mtp gemma-4-12b-4bit
-# run the `ax-engine serve ...` command printed by the downloader
+ax-engine serve ax-gemma4-12b --download --port 31418
 
 curl http://127.0.0.1:31418/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"model":"gemma-4-12b-it","messages":[{"role":"user","content":"Say hello in one sentence."}],"max_tokens":64}'
 ```
 
-**Option C — direct model alias** (download + serve):
+**Option C — coding model** (download + serve):
 
 ```bash
-ax-engine serve qwen36-35b --download --port 31418
+ax-engine serve ax-qwen3-coder-next --download --port 31418
 ```
 
 Python wheel, source builds, and troubleshooting:
@@ -78,19 +81,40 @@ Python wheel, source builds, and troubleshooting:
 
 ## Models
 
-Primary families use AX-owned MLX graphs. Secondary families ship as preview
-direct support. Prefer `ax-engine download` / `download-mtp` for pre-sanitized
-packages.
+The managed download catalog is the complete public
+[AutomatosX model collection](https://huggingface.co/AutomatosX/models?sort=alphabetical).
+The TUI and `ax-engine download --list` expose these reviewed snapshots only.
+Qwen 3.5, Qwen 3.6, and Gemma 4 are supported across every variant currently
+published there: plain 4-bit/6-bit, QAT, and OptiQ where available.
 
-| Family | Role | Notes |
+Repositories ending in `-MTP` or `-Assistant-MTP` already contain the prepared
+sidecar or assistant artifacts and `model-manifest.json`. Download them with
+the standard flow; do **not** run `download-mtp` afterward.
+
+| Family | Role | Supported AutomatosX snapshots |
 | --- | --- | --- |
-| Gemma 4 | Primary chat | Affine 4/5/6-bit; assistant-MTP |
-| Qwen 3.6 | Primary agent | Fused sidecar MTP |
-| Qwen3-Coder-Next | Primary coding agent | Coding-first architecture |
-| Qwen 3 / 3.5, GLM 4.7 Flash | Supported direct | Dense / linear-attn / Flash MLA |
-| Llama, Mistral, GPT-OSS | Secondary preview | One-command download/serve |
+| Qwen 3.5 9B | Chat / agent | [`AX-Qwen3.5-9B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP)<br>[`AX-Qwen3.5-9B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP)<br>[`AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP) |
+| Qwen 3.6 27B | Chat / agent | [`AX-Qwen3.6-27B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-4bit-MTP)<br>[`AX-Qwen3.6-27B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP)<br>[`AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP) |
+| Qwen 3.6 35B-A3B | Chat / agent | [`AX-Qwen3.6-35B-A3B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP)<br>[`AX-Qwen3.6-35B-A3B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP)<br>[`AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP) |
+| Gemma 4 12B | Chat / multimodal | [`AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP)<br>[`AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP)<br>[`AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP) |
+| Gemma 4 26B-A4B | Chat / multimodal | [`AX-Gemma-4-26B-A4B-IT-MLX-6bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-6bit-Assistant-MTP)<br>[`AX-Gemma-4-26B-A4B-IT-MLX-OptiQ-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-OptiQ-4bit-Assistant-MTP)<br>[`AX-Gemma-4-26B-A4B-IT-MLX-QAT-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-QAT-4bit-Assistant-MTP) |
+| Gemma 4 31B | Chat / multimodal | [`AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP)<br>[`AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP)<br>[`AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP) |
+| Qwen3-Coder-Next | Coding agent | [`AX-Qwen3-Coder-Next-MLX-4bit`](https://huggingface.co/AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit)<br>[`AX-Qwen3-Coder-Next-MLX-6bit`](https://huggingface.co/AutomatosX/AX-Qwen3-Coder-Next-MLX-6bit) |
+| DiffusionGemma 26B-A4B | Diffusion language model | [`AX-DiffusionGemma-26B-A4B-IT-MLX-4bit`](https://huggingface.co/AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit) |
+| EmbeddingGemma 300M | Embeddings | [`AX-EmbeddingGemma-300M-MLX-8bit`](https://huggingface.co/AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit) |
+| Qwen3-Embedding 0.6B | Embeddings | [`AX-Qwen3-Embedding-0.6B-MLX-8bit`](https://huggingface.co/AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit) |
+| Qwen3-Embedding 4B / 8B | Embeddings | [`AX-Qwen3-Embedding-4B-MLX-4bit-DWQ`](https://huggingface.co/AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ)<br>[`AX-Qwen3-Embedding-8B-MLX-4bit-DWQ`](https://huggingface.co/AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ) |
 
-Aliases, hardware sizing, and MTP targets:
+The default Hugging Face cache layout is
+`models--AutomatosX--<repository>/snapshots/<revision>`. Use the shorter
+`ax-*` aliases shown by `ax-engine download --list`; for example:
+
+```bash
+ax-engine download ax-qwen3.6-27b
+ax-engine serve ax-qwen3.6-27b --download --port 31418
+```
+
+Aliases, hardware sizing, and legacy MTP packaging targets:
 [Supported Models](docs/SUPPORTED-MODELS.md) ·
 [Hardware FAQ](docs/FAQ.md#what-hardware-does-ax-engine-support) ·
 [CLI](docs/CLI.md).
@@ -99,9 +123,11 @@ Aliases, hardware sizing, and MTP targets:
 
 One process can keep several **allowlisted** models loaded and route each
 request by `model` (OpenAI, gRPC, Ollama, Anthropic). Add mode is limited to
-Qwen 3.6 27B/35B and Gemma 4 12B/26B/31B; each model owns its own session and
-scheduler while a process arbiter fair-rotates Metal turns (no fused
-cross-model batch).
+Qwen 3.5 9B, Qwen 3.6 27B/35B, Qwen3-Coder-Next, Gemma 4 12B/26B/31B, and the
+EmbeddingGemma 300M / Qwen3-Embedding 0.6B–8B embedding models (chat +
+embeddings from one process); AutomatosX `AX-` package names resolve to the
+same targets. Each model owns its own session and scheduler while a process
+arbiter fair-rotates Metal turns (no fused cross-model batch).
 
 ```bash
 # After a first model is already serving on :31418

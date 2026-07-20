@@ -56,21 +56,23 @@ Coding agent:
 Qwen3-Coder-Next 6-bit + 16K
 ```
 
-Optional secondary stacks (same 128 GB class; one large model at a time):
+Optional secondary stacks (same 128 GB class; one large model at a time).
+Secondary families are outside the managed AutomatosX download catalog, so
+fetch them by raw repo id and serve with their legacy aliases:
 
 ```text
 Research / enterprise Llama:
-ax-engine download llama3.3-70b   # or llama3.1-8b for smoke/draft
-ax-engine download llama4-scout  # next-gen MoE when memory allows
+ax-engine download mlx-community/Llama-3.3-70B-Instruct-4bit
+ax-engine download mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit
 
 European market:
-ax-engine download mistral-small
-ax-engine download ministral-8b
-ax-engine download devstral-small
+ax-engine download mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit
+ax-engine download mlx-community/Ministral-8B-Instruct-2410-4bit
+ax-engine download mlx-community/Devstral-Small-2505-4bit
 
 Open reasoner:
-ax-engine download gpt-oss-20b
-ax-engine download gpt-oss-120b  # prefer 128 GB+; experts stay MXFP4-packed
+ax-engine download mlx-community/gpt-oss-20b-MXFP4-Q4
+ax-engine download mlx-community/gpt-oss-120b-MXFP4-Q4  # prefer 128 GB+
 ```
 
 | Use case | Best pick |

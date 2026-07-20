@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 pub(super) struct Variant {
     pub profile: &'static crate::ModelProfile,
     pub bits: Option<u32>,
-    /// `download-mtp` alias when this variant has an MTP accelerator.
-    pub mtp_alias: Option<&'static str>,
+    /// The published Hugging Face snapshot already includes its MTP package.
+    pub mtp_included: bool,
     pub installed: bool,
     /// On-disk size when installed, 0 otherwise.
     pub size: u64,
@@ -23,9 +23,28 @@ impl Variant {
             }
             return "MXFP4".into();
         }
-        self.bits
+        let base = self
+            .bits
             .map(|b| format!("{b}-bit"))
-            .unwrap_or_else(|| self.profile.label.to_string())
+            .unwrap_or_else(|| self.profile.label.to_string());
+        // AutomatosX pack recipe tags: same bit width can ship as a plain
+        // quant, a QAT build, mixed-precision OptiQ, or DWQ — surface the
+        // recipe so equal-bit variants stay distinguishable in lists.
+        let mut tags = Vec::new();
+        if lower.contains("-qat-") {
+            tags.push("QAT");
+        }
+        if lower.contains("optiq") {
+            tags.push("OptiQ");
+        }
+        if lower.contains("-dwq") {
+            tags.push("DWQ");
+        }
+        if tags.is_empty() {
+            base
+        } else {
+            format!("{} {base}", tags.join(" "))
+        }
     }
 
     /// Best size estimate for display: real on-disk bytes when installed,
@@ -37,15 +56,6 @@ impl Variant {
             self.profile.approx_size_bytes
         }
     }
-
-    /// (base, extra) download estimate for the MTP package of this variant.
-    /// The MTP path may fetch a different-precision base repo than the direct
-    /// variant, so this reads the `download-mtp` target's own numbers.
-    pub fn mtp_size_estimate(&self) -> Option<(Option<u64>, Option<u64>)> {
-        let alias = self.mtp_alias?;
-        let target = crate::mtp_download_target_for_model(alias)?;
-        Some((target.approx_base_bytes, target.approx_extra_bytes))
-    }
 }
 
 /// A model and the precision variants it is published in.
@@ -56,7 +66,7 @@ pub(super) struct Family {
 
 impl Family {
     pub fn has_mtp(&self) -> bool {
-        self.variants.iter().any(|v| v.mtp_alias.is_some())
+        self.variants.iter().any(|v| v.mtp_included)
     }
 
     /// Human-readable family name for UI (alias `key` stays for filter/CLI).
@@ -74,10 +84,21 @@ impl Family {
     }
 }
 
-/// Primary catalog families (deepest performance + product focus).
+/// Primary catalog families (deepest performance + product focus). The
+/// AutomatosX packs (`ax-` prefix) are branded builds of the same primary
+/// stack, embeddings included.
 pub(super) fn is_primary_family_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    k.starts_with("gemma") || k.starts_with("qwen") || k.starts_with("glm")
+    let k = k.strip_prefix("ax-").unwrap_or(&k);
+    k.starts_with("gemma")
+        || k.starts_with("qwen")
+        || k.starts_with("glm")
+        || k.starts_with("embeddinggemma")
+}
+
+/// Embedding-only catalog families (served via /v1/embeddings, not chat).
+pub(super) fn is_embedding_family_key(key: &str) -> bool {
+    key.to_ascii_lowercase().contains("embedding")
 }
 
 /// Friendly display name for a catalog family key.
@@ -99,6 +120,18 @@ pub(super) fn family_display_name(key: &str) -> String {
         "devstral-small" => "Devstral Small".into(),
         "gpt-oss-20b" => "GPT-OSS 20B".into(),
         "gpt-oss-120b" => "GPT-OSS 120B".into(),
+        "ax-qwen3.5-9b" => "AX Qwen 3.5 9B".into(),
+        "ax-qwen3.6-27b" => "AX Qwen 3.6 27B".into(),
+        "ax-qwen3.6-35b" => "AX Qwen 3.6 35B".into(),
+        "ax-gemma4-12b" => "AX Gemma 4 12B".into(),
+        "ax-gemma4-26b" => "AX Gemma 4 26B".into(),
+        "ax-gemma4-31b" => "AX Gemma 4 31B".into(),
+        "ax-qwen3-coder-next" => "AX Qwen3 Coder Next".into(),
+        "ax-embeddinggemma-300m" => "AX EmbeddingGemma 300M".into(),
+        "ax-qwen3-embedding-0.6b" => "AX Qwen3 Embedding 0.6B".into(),
+        "ax-qwen3-embedding-4b" => "AX Qwen3 Embedding 4B".into(),
+        "ax-qwen3-embedding-8b" => "AX Qwen3 Embedding 8B".into(),
+        "ax-diffusiongemma-26b" => "AX DiffusionGemma 26B".into(),
         other => {
             // Fallback: turn `foo-bar` into title-ish text without inventing facts.
             other
@@ -160,22 +193,6 @@ pub(super) fn family_key(label: &str) -> String {
         return label[..idx].to_string();
     }
     label.to_string()
-}
-
-/// `download-mtp` trigger alias for a model label.
-///
-/// Mirrors the Python catalog's per-variant `mtp_target` exactly.
-pub(super) fn mtp_trigger_alias(label: &str) -> Option<&'static str> {
-    match label {
-        "gemma4-12b" => Some("gemma-4-12b-4bit"),
-        "gemma4-12b-6bit" => Some("gemma-4-12b"),
-        "gemma4-26b" => Some("gemma-4-26b"),
-        "gemma4-31b" => Some("gemma-4-31b"),
-        "qwen3.6-27b" => Some("qwen3.6-27b-6bit"),
-        "qwen3.6-27b-6bit" => Some("qwen3.6-27b-6bit"),
-        "qwen3.6-35b" => Some("qwen3.6-35b-a3b"),
-        _ => None,
-    }
 }
 
 /// HF hub cache directory for a repo id (`.../models--org--name`).
@@ -278,7 +295,10 @@ pub(super) fn dir_size(dir: &Path) -> u64 {
 
 pub(super) fn build_families() -> Vec<Family> {
     let mut families: Vec<Family> = Vec::new();
-    for profile in crate::MODEL_PROFILES.iter().filter(|p| p.downloadable) {
+    for profile in crate::MODEL_PROFILES
+        .iter()
+        .filter(|profile| profile.is_downloadable())
+    {
         let key = family_key(profile.label);
         let cache = repo_cache_dir(profile.repo_id);
         // Require a usable snapshot (config/manifest/safetensors), not merely
@@ -287,7 +307,7 @@ pub(super) fn build_families() -> Vec<Family> {
         let variant = Variant {
             profile,
             bits: quant_bits(profile.repo_id),
-            mtp_alias: mtp_trigger_alias(profile.label),
+            mtp_included: profile.repo_id.to_ascii_lowercase().contains("-mtp"),
             installed,
             size: if installed { dir_size(&cache) } else { 0 },
         };

@@ -836,11 +836,22 @@ class WrapperContractTests(unittest.TestCase):
         ):
             self.ax_engine.Session(model_id="qwen3_dense", mlx=True)
 
-    def test_download_model_rejects_embedding_repos(self) -> None:
-        with self.assertRaisesRegex(
-            RuntimeError, "embedding model downloads are not managed"
-        ):
-            self.ax_engine.download_model("mlx-community/Qwen3-Embedding-0.6B-8bit")
+    def test_download_model_accepts_embedding_repos(self) -> None:
+        # Embedding repos go through the ordinary download + manifest flow
+        # (they serve natively via /v1/embeddings); the readiness gate is the
+        # manifest check, not the repo name. An incomplete dest fails on the
+        # normal AX-ready validation instead of a name-based rejection.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "model.safetensors").write_bytes(b"placeholder")
+
+            with self.assertRaisesRegex(RuntimeError, "config.json missing"):
+                self.ax_engine.download_model(
+                    "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit",
+                    dest=model_dir,
+                )
 
     def test_download_model_rejects_incomplete_existing_dest(self) -> None:
         import tempfile
@@ -954,6 +965,45 @@ class WrapperContractTests(unittest.TestCase):
             self.assertEqual(manifest_calls, [dest])
             self.assertEqual(
                 (dest / "model-manifest.json").read_text(), '{"fresh":true}'
+            )
+
+    def test_download_model_force_preserves_published_manifest(self) -> None:
+        import tempfile
+
+        repo_id = "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP"
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "dest"
+            dest.mkdir()
+            (dest / "model-manifest.json").write_text('{"stale":true}')
+            snapshot = Path(tmp) / "snapshot"
+
+            def fake_download(actual_repo_id: str) -> Path:
+                self.assertEqual(actual_repo_id, repo_id)
+                snapshot.mkdir()
+                (snapshot / "config.json").write_text('{"model_type":"qwen3_5"}')
+                (snapshot / "model.safetensors").write_bytes(b"new")
+                (snapshot / "model-manifest.json").write_text('{"published":true}')
+                return snapshot
+
+            with (
+                patch.object(
+                    self.ax_engine, "_run_hf_snapshot_download", fake_download
+                ),
+                patch.object(
+                    self.ax_engine,
+                    "_default_mlx_lm_cache_root",
+                    return_value=Path(tmp) / "cache",
+                ),
+                patch.object(self.ax_engine, "_try_generate_manifest") as generate,
+            ):
+                resolved = self.ax_engine.download_model(
+                    repo_id, dest=dest, force=True
+                )
+
+            self.assertEqual(resolved, dest)
+            generate.assert_not_called()
+            self.assertEqual(
+                (dest / "model-manifest.json").read_text(), '{"published":true}'
             )
 
     def test_try_generate_manifest_prefers_bundled_binary_over_path(self) -> None:

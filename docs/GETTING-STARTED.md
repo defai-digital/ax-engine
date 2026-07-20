@@ -254,9 +254,11 @@ pretending support exists.
 
 ## Getting a Model
 
-AX Engine requires pre-sanitized MLX weights. Prefer
-[mlx-community](https://huggingface.co/mlx-community) on Hugging Face — those
-checkpoints are already converted. Raw Hugging Face checkpoints need
+AX Engine requires pre-sanitized MLX weights. Prefer the curated
+[AutomatosX catalog](https://huggingface.co/AutomatosX) — those snapshots ship
+`model-manifest.json` plus their MTP/assistant extras, so one download is
+serve-ready. [mlx-community](https://huggingface.co/mlx-community) checkpoints
+work via raw `org/repo` ids; raw Hugging Face checkpoints need
 `mlx_lm.convert` first. Full alias lists live in
 [Supported Models](SUPPORTED-MODELS.md).
 
@@ -264,15 +266,17 @@ checkpoints are already converted. Raw Hugging Face checkpoints need
 
 ```text
 ax-engine tui                          # interactive: pick, download, serve, chat
-ax-engine download --list              # list aliases
-ax-engine download qwen36-35b          # download a direct alias
-ax-engine serve qwen36-35b --download --port 31418
-ax-engine download-mtp gemma-4-12b-4bit
+ax-engine download --list              # list managed aliases
+ax-engine download ax-qwen3.6-35b      # MTP-ready AutomatosX snapshot
+ax-engine serve ax-qwen3.6-35b --download --port 31418
+ax-engine download ax-embeddinggemma-300m   # embedding sibling for /v1/embeddings
 ```
 
 To keep a second allowlisted model resident while that server runs, use
-`POST /v1/model/load` with `load_mode=add` (Qwen 3.6 27B/35B and Gemma 4
-12B/26B/31B only). Details: [Multi-model serving](SERVER.md#multi-model-serving).
+`POST /v1/model/load` with `load_mode=add` (Qwen 3.5 9B, Qwen 3.6 27B/35B,
+Qwen3-Coder-Next, Gemma 4 12B/26B/31B, and the EmbeddingGemma 300M /
+Qwen3-Embedding 0.6B/4B/8B embedding models — chat + embeddings from one
+process). Details: [Multi-model serving](SERVER.md#multi-model-serving).
 
 ### Path B — Python API
 

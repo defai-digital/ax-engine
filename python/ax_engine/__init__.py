@@ -1306,15 +1306,6 @@ def _slug_repo_id(repo_id: str) -> str:
     return repo_id.replace("/", "--")
 
 
-def _reject_non_llm_repo(repo_id: str) -> None:
-    lowered = repo_id.lower()
-    if "embedding" in lowered or "embed" in lowered:
-        raise RuntimeError(
-            "embedding model downloads are not managed by ax-engine. "
-            "Download embedding model artifacts manually and pass the local model directory."
-        )
-
-
 def _default_mlx_lm_cache_root() -> Path:
     import os
 
@@ -1416,8 +1407,6 @@ def download_model(
     Raises:
         RuntimeError: if the download is incomplete or the manifest cannot be generated.
     """
-    _reject_non_llm_repo(repo_id)
-
     if force:
         import shutil
 
@@ -1444,10 +1433,12 @@ def download_model(
             return dest
 
     snapshot = _run_hf_snapshot_download(repo_id)
+    snapshot_has_manifest = (snapshot / _MODEL_MANIFEST_FILE).is_file()
     _copy_mlx_lm_snapshot(snapshot, dest)
-    if force:
+    if force and not snapshot_has_manifest:
         # Weights were refreshed; drop any manifest left from a prior model so it is
-        # regenerated against the new weights rather than reused stale.
+        # regenerated against the new weights rather than reused stale. Preserve a
+        # manifest shipped by the freshly downloaded AutomatosX snapshot.
         (dest / _MODEL_MANIFEST_FILE).unlink(missing_ok=True)
     _validate_downloaded_model_dir(dest)
     _ensure_manifest(dest)

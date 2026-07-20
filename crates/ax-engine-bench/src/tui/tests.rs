@@ -5,8 +5,7 @@
 use super::catalog::{self, RamFit, build_families, family_key, most_recent_subdir, quant_bits};
 use super::hardware::{HardwareInfo, parse_df_available_kib};
 use super::jobs::{
-    DownloadMode, DownloadStatus, DownloadTask, Job, format_eta, parse_output_path_from_log,
-    parse_progress_event,
+    DownloadStatus, DownloadTask, Job, format_eta, parse_output_path_from_log, parse_progress_event,
 };
 use super::metrics::{
     parse_loadavg_1m, parse_ps_cpu_percent, parse_ps_top_rss, parse_vm_stat_free_bytes,
@@ -27,7 +26,17 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 fn new_app() -> App {
-    App::with_hardware(HardwareInfo::for_tests())
+    let mut app = App::with_hardware(HardwareInfo::for_tests());
+    // Hermetic fixture: the developer machine may have real HF-cache
+    // installs of catalog repos (the AutomatosX packs especially). Tests
+    // that need install state set it explicitly.
+    for family in &mut app.families {
+        for variant in &mut family.variants {
+            variant.installed = false;
+            variant.size = 0;
+        }
+    }
+    app
 }
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -83,8 +92,6 @@ fn test_task(job: Option<Job>) -> DownloadTask {
         label: "gemma4-e2b 4-bit".into(),
         repo_id: "mlx-community/gemma-4-e2b-it-4bit",
         preset: Some("gemma4-e2b"),
-        mode: DownloadMode::Direct,
-        subcmd: "download",
         target: "gemma4-e2b".into(),
         dest: Some(PathBuf::from("/tmp/gemma4-e2b")),
         watch_dir: PathBuf::from("/tmp/gemma4-e2b"),
@@ -114,7 +121,7 @@ fn grouping_collapses_variants_into_families() {
     );
     let flat = crate::MODEL_PROFILES
         .iter()
-        .filter(|p| p.downloadable)
+        .filter(|p| p.is_downloadable())
         .count();
     assert!(
         families.len() < flat,
@@ -122,10 +129,15 @@ fn grouping_collapses_variants_into_families() {
         families.len()
     );
 
-    let e2b = families.iter().find(|f| f.key == "gemma4-e2b").unwrap();
-    assert_eq!(e2b.variants.len(), 4); // 4/5/6/8-bit
-    assert!(!e2b.has_mtp());
-    let g12 = families.iter().find(|f| f.key == "gemma4-12b").unwrap();
+    let q9 = families.iter().find(|f| f.key == "ax-qwen3.5-9b").unwrap();
+    assert_eq!(q9.variants.len(), 3); // OptiQ-4bit / 4-bit / 6-bit
+    assert!(q9.has_mtp(), "AX Qwen packs bundle mtp.safetensors");
+    let embed = families
+        .iter()
+        .find(|f| f.key == "ax-embeddinggemma-300m")
+        .unwrap();
+    assert!(!embed.has_mtp());
+    let g12 = families.iter().find(|f| f.key == "ax-gemma4-12b").unwrap();
     assert!(g12.has_mtp());
     // Recommended (first) variant is the lowest bit-width.
     assert_eq!(g12.variants[0].bits, Some(4));
@@ -137,14 +149,100 @@ fn quant_and_family_parsing() {
     assert_eq!(quant_bits("mlx-community/Qwen3.6-27B-8bit"), Some(8));
     assert_eq!(quant_bits("mlx-community/gpt-oss-20b-MXFP4-Q4"), Some(4));
     assert_eq!(quant_bits("mlx-community/gpt-oss-120b-MXFP4-Q4"), Some(4));
+    assert_eq!(
+        quant_bits("AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP"),
+        Some(4)
+    );
+    assert_eq!(
+        quant_bits("AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP"),
+        Some(4)
+    );
+    assert_eq!(
+        quant_bits("AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ"),
+        Some(4)
+    );
     assert_eq!(family_key("gemma4-e2b-8bit"), "gemma4-e2b");
     assert_eq!(family_key("glm4.7-flash-4bit"), "glm4.7-flash");
     assert_eq!(family_key("qwen3.6-35b"), "qwen3.6-35b");
     assert_eq!(family_key("gpt-oss-20b"), "gpt-oss-20b");
+    assert_eq!(family_key("ax-qwen3.6-27b-6bit"), "ax-qwen3.6-27b");
+    assert_eq!(
+        family_key("ax-embeddinggemma-300m"),
+        "ax-embeddinggemma-300m"
+    );
 }
 
 #[test]
-fn secondary_and_gpt_oss_profiles_are_downloadable() {
+fn automatosx_packs_are_primary_families_with_recipe_precisions() {
+    let families = build_families();
+    for key in [
+        "ax-qwen3.5-9b",
+        "ax-qwen3.6-27b",
+        "ax-qwen3.6-35b",
+        "ax-gemma4-12b",
+        "ax-gemma4-26b",
+        "ax-gemma4-31b",
+        "ax-qwen3-coder-next",
+        "ax-embeddinggemma-300m",
+        "ax-qwen3-embedding-0.6b",
+        "ax-qwen3-embedding-4b",
+        "ax-qwen3-embedding-8b",
+    ] {
+        let family = families
+            .iter()
+            .find(|f| f.key == key)
+            .unwrap_or_else(|| panic!("missing TUI family {key}"));
+        assert!(family.is_primary(), "{key} must group as primary");
+        assert!(
+            family.variants.iter().all(|v| v.profile.downloadable),
+            "{key} variants must be downloadable"
+        );
+        assert!(
+            family
+                .variants
+                .iter()
+                .all(|v| v.profile.approx_size_bytes.is_some()),
+            "{key} variants must carry size estimates"
+        );
+        assert!(
+            family
+                .variants
+                .iter()
+                .all(|v| v.profile.repo_id.starts_with("AutomatosX/")),
+            "{key} variants must resolve to AutomatosX repos"
+        );
+    }
+
+    let q27 = families
+        .iter()
+        .find(|f| f.key == "ax-qwen3.6-27b")
+        .expect("ax-qwen3.6-27b family");
+    // OptiQ flagship sorts first among equal-bit variants and keeps its
+    // recipe tag distinguishable from the plain 4-bit build.
+    assert_eq!(q27.variants[0].precision(), "OptiQ 4-bit");
+    assert!(
+        q27.variants
+            .iter()
+            .any(|v| v.precision() == "4-bit" && v.bits == Some(4)),
+        "plain 4-bit variant should stay distinguishable"
+    );
+    let g12 = families
+        .iter()
+        .find(|f| f.key == "ax-gemma4-12b")
+        .expect("ax-gemma4-12b family");
+    assert_eq!(g12.variants[0].precision(), "QAT OptiQ 4-bit");
+    let e8 = families
+        .iter()
+        .find(|f| f.key == "ax-qwen3-embedding-8b")
+        .expect("ax-qwen3-embedding-8b family");
+    assert_eq!(e8.variants[0].precision(), "DWQ 4-bit");
+}
+
+#[test]
+fn legacy_profiles_stay_serve_aliases_but_leave_the_download_catalog() {
+    // Managed downloads are restricted to the AutomatosX org; the older
+    // mlx-community-backed profiles disappear from the TUI catalog but keep
+    // resolving as serve aliases for already-downloaded artifacts.
     let families = build_families();
     for key in [
         "qwen3.5-9b",
@@ -158,23 +256,25 @@ fn secondary_and_gpt_oss_profiles_are_downloadable() {
         "gpt-oss-20b",
         "gpt-oss-120b",
     ] {
-        let family = families
-            .iter()
-            .find(|f| f.key == key)
-            .unwrap_or_else(|| panic!("missing TUI family {key}"));
         assert!(
-            !family.variants.is_empty(),
-            "{key} must expose at least one downloadable variant"
-        );
-        assert!(
-            family.variants.iter().all(|v| v.profile.downloadable),
-            "{key} variants must be downloadable"
+            !families.iter().any(|f| f.key == key),
+            "legacy family {key} must not appear in the download catalog"
         );
     }
-    let gpt20 = families.iter().find(|f| f.key == "gpt-oss-20b").unwrap();
-    assert!(!gpt20.is_primary());
-    assert_eq!(gpt20.variants[0].precision(), "MXFP4-Q4");
-    assert!(gpt20.variants[0].profile.approx_size_bytes.is_some());
+    for alias in ["qwen3.5-9b", "gpt-oss-20b", "llama3.3-70b"] {
+        let profile = crate::profile_for_model(alias)
+            .unwrap_or_else(|| panic!("legacy serve alias {alias} must keep resolving"));
+        assert!(
+            !profile.is_downloadable(),
+            "{alias} must not be download-managed"
+        );
+    }
+    assert!(
+        families
+            .iter()
+            .all(|f| f.variants.iter().all(|v| v.profile.is_downloadable())),
+        "every catalog variant must be an AutomatosX-managed download"
+    );
 }
 
 #[test]
@@ -353,11 +453,15 @@ fn artifact_dir_usable_requires_real_model_files() {
 }
 
 #[test]
-fn mtp_serve_without_package_path_fails_closed() {
+fn serve_without_resolved_package_path_fails_closed() {
     let mut app = new_app();
     let mut task = test_task(Some(Job::failed("ok".into())));
-    task.mode = DownloadMode::Mtp;
-    task.subcmd = "download-mtp";
+    // Hermetic: a repo that can never be in this machine's HF cache, so the
+    // snapshot-dir fallback cannot resolve a real path. AutomatosX pack
+    // tasks carry no preset either — without a package path there is no
+    // legitimate way to serve.
+    task.repo_id = "ax-tests/does-not-exist-anywhere";
+    task.preset = None;
     task.dest = None;
     task.resolved_path = None;
     if let Some(job) = &mut task.job {
@@ -373,8 +477,10 @@ fn mtp_serve_without_package_path_fails_closed() {
         "must not spawn real server without path"
     );
     assert!(
-        job.log.iter().any(|line| line.contains("MTP package path")),
-        "error should mention MTP package path: {:?}",
+        job.log
+            .iter()
+            .any(|line| line.contains("no server artifact path could be resolved")),
+        "error should explain the unresolved artifact path: {:?}",
         job.log
     );
 }
@@ -898,8 +1004,11 @@ fn quick_start_targets_smallest_fitting_model() {
     }
     let (fi, vi) = app.quick_start_target().expect("catalog is not empty");
     let family = &app.families[fi];
-    assert_eq!(family.key, "gemma4-e2b");
+    // Smallest fitting chat model: the plain 4-bit Qwen 3.5 9B pack —
+    // embedding and diffusion families never win the chat quick start.
+    assert_eq!(family.key, "ax-qwen3.5-9b");
     assert_eq!(family.variants[vi].bits, Some(4));
+    assert_eq!(family.variants[vi].size_estimate(), Some(6_463_848_363));
 }
 
 // ---------------------------------------------------------------------------
@@ -912,8 +1021,8 @@ fn family_list_renders_with_sizes_and_mtp_badge() {
     app.screen = Screen::Models;
     let text = render(&app);
     assert!(text.contains("Models"));
-    assert!(text.contains("Gemma 4 E2B"));
-    assert!(text.contains("Qwen 3.6 35B"));
+    assert!(text.contains("AX Qwen 3.5 9B"));
+    assert!(text.contains("AX Qwen 3.6 35B"));
     assert!(text.contains("bit"), "family rows show quant bits");
     assert!(text.contains('⚡'), "MTP badge should render");
     assert!(text.contains("Step 1 of"), "step header present");
@@ -923,7 +1032,7 @@ fn family_list_renders_with_sizes_and_mtp_badge() {
 fn precision_screen_lists_quants_with_fit_badges() {
     let mut app = new_app();
     app.screen = Screen::Models;
-    app.family_idx = family_index(&app, "gemma4-12b");
+    app.family_idx = family_index(&app, "ax-gemma4-12b");
     app.on_key_models(KeyCode::Enter);
     assert_eq!(app.stage, WizardStage::Precision);
     let text = render(&app);
@@ -934,83 +1043,80 @@ fn precision_screen_lists_quants_with_fit_badges() {
         text.contains("fits"),
         "fit badge rendered for 64GB test RAM"
     );
-    // Recommended star only marks the Quick start pick (smallest fit), not
-    // every family's first variant — gemma4-12b is not Quick start.
-    assert!(
-        text.contains("Step 2 of 4"),
-        "gemma4-12b has a speed-up step"
-    );
-    assert!(text.contains("Speed-up") || text.contains("Size"));
+    // The wizard is three steps for every family now — AutomatosX packs
+    // bundle their MTP artifacts, so there is no separate speed-up step.
+    assert!(text.contains("Step 2 of 3"));
+    assert!(text.contains("Size"));
 }
 
 #[test]
-fn mtp_options_step_appears_only_for_mtp_variants() {
+fn uninstalled_variant_enter_goes_straight_to_confirm() {
+    // The Options (MTP yes/no) step is gone: AutomatosX packs bundle their
+    // MTP artifacts, so the wizard is Model › Size › Confirm.
     let mut app = new_app();
     app.screen = Screen::Models;
-    app.family_idx = family_index(&app, "gemma4-12b");
+    app.family_idx = family_index(&app, "ax-gemma4-12b");
     app.on_key_models(KeyCode::Enter); // -> Precision
-    app.precision_idx = 0; // 4-bit has an MTP accelerator
-    app.on_key_models(KeyCode::Enter); // -> Options
-    assert_eq!(app.stage, WizardStage::Options);
+    app.precision_idx = 0;
+    app.on_key_models(KeyCode::Enter); // -> Confirm (no Options stage)
+    assert_eq!(app.stage, WizardStage::Confirm);
     let text = render(&app);
-    assert!(text.contains("Optional speed-up"));
-    assert!(text.contains("Include the speed-up"));
-    assert!(text.contains("Step 3 of 4"));
-
-    let app2 = new_app();
-    let e2b = family_index(&app2, "gemma4-e2b");
-    assert!(app2.families[e2b].variants[0].mtp_alias.is_none());
+    assert!(text.contains("Step 3 of 3"));
+    assert!(
+        text.contains("included in snapshot"),
+        "bundled MTP is reported in the summary"
+    );
 }
 
 #[test]
 fn confirm_step_shows_summary_and_default_destination() {
     let mut app = new_app();
     app.screen = Screen::Models;
-    app.family_idx = family_index(&app, "gemma4-e2b");
+    app.family_idx = family_index(&app, "ax-qwen3.5-9b");
     app.precision_idx = 0;
-    app.begin_confirm(false);
+    app.begin_confirm();
     assert_eq!(app.stage, WizardStage::Confirm);
     let text = render(&app);
     assert!(text.contains("Confirm download"));
-    assert!(text.contains("Gemma 4 E2B"));
+    assert!(text.contains("AX Qwen 3.5 9B"));
     assert!(text.contains("default cache"));
     assert!(text.contains("Free disk"));
-    assert!(
-        text.contains("Step 3 of 3"),
-        "no speed-up step for gemma4-e2b"
-    );
+    assert!(text.contains("Step 3 of 3"));
 }
 
 #[test]
 fn confirm_enqueues_and_jumps_to_downloads() {
     let mut app = new_app();
     app.screen = Screen::Models;
-    app.family_idx = family_index(&app, "gemma4-e2b");
+    app.family_idx = family_index(&app, "ax-qwen3.5-9b");
     app.precision_idx = 0;
-    app.begin_confirm(false);
+    app.begin_confirm();
     app.on_key_models(KeyCode::Enter);
     assert_eq!(app.screen, Screen::Downloads);
     assert_eq!(app.downloads.len(), 1);
     let task = &app.downloads[0];
-    assert_eq!(task.subcmd, "download");
+    assert!(
+        task.repo_id.starts_with("AutomatosX/"),
+        "managed downloads target the AutomatosX org: {}",
+        task.repo_id
+    );
     assert!(task.dest.is_none(), "default destination is the HF cache");
     assert!(!app.toasts.is_empty(), "queueing raises a toast");
 }
 
 #[test]
-fn mtp_confirm_uses_mtp_target_repo_and_combined_size() {
+fn bundled_mtp_confirm_uses_pack_repo_and_size() {
     let mut app = new_app();
     app.screen = Screen::Models;
-    // qwen3.6-27b 4-bit maps to the 6-bit MTP target — the plan must follow
-    // the target repo, not the selected variant's repo.
-    app.family_idx = family_index(&app, "qwen3.6-27b");
-    app.precision_idx = 0;
-    app.begin_confirm(true);
+    // The AX pack ships MTP in the same repo, so the plan is simply the
+    // selected variant's repo and size — no separate MTP target lookup.
+    app.family_idx = family_index(&app, "ax-qwen3.6-27b");
+    app.precision_idx = 0; // OptiQ 4-bit flagship sorts first
+    app.begin_confirm();
     app.on_key_models(KeyCode::Enter);
     let task = &app.downloads[0];
-    assert_eq!(task.subcmd, "download-mtp");
-    assert_eq!(task.repo_id, "mlx-community/Qwen3.6-27B-6bit");
-    assert_eq!(task.total_bytes, Some(22_804_828_230 + 4_503_752_416));
+    assert_eq!(task.repo_id, "AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP");
+    assert_eq!(task.total_bytes, Some(20_239_552_902));
 }
 
 #[test]
@@ -1029,15 +1135,15 @@ fn click_on_family_row_drills_into_precision() {
 fn click_on_completed_step_header_navigates_back() {
     let mut app = new_app();
     app.screen = Screen::Models;
-    app.family_idx = family_index(&app, "gemma4-12b");
+    app.family_idx = family_index(&app, "ax-gemma4-12b");
     app.on_key_models(KeyCode::Enter);
     app.precision_idx = 0;
     app.on_key_models(KeyCode::Enter);
-    assert_eq!(app.stage, WizardStage::Options);
+    assert_eq!(app.stage, WizardStage::Confirm);
 
     let _ = render(&app);
     let rect = app.step_header_rect.get();
-    let model_offset = "Step 3 of 4 — ".chars().count();
+    let model_offset = "Step 3 of 3 — ".chars().count();
     app.on_click(rect.x + model_offset as u16, rect.y);
 
     assert_eq!(app.stage, WizardStage::Families);
@@ -1062,19 +1168,19 @@ fn filter_narrows_family_list_and_drill_in_maps_back() {
     app.clamp_family_idx_to_filter();
     let indices = app.filtered_family_indices();
     assert_eq!(indices.len(), 1);
-    assert_eq!(app.families[indices[0]].key, "gemma4-12b");
+    assert_eq!(app.families[indices[0]].key, "ax-gemma4-12b");
     assert_eq!(app.family_idx, indices[0]);
 
     let text = render(&app);
     assert!(text.contains("filter: gemma4-12b"));
     assert!(
-        !text.contains("Gemma 4 E2B") && !text.contains("gemma4-e2b"),
+        !text.contains("AX Qwen 3.5 9B") && !text.contains("ax-qwen3.5-9b"),
         "non-matching family should be hidden"
     );
 
     app.on_key_models(KeyCode::Enter);
     assert_eq!(app.stage, WizardStage::Precision);
-    assert_eq!(app.families[app.family_idx].key, "gemma4-12b");
+    assert_eq!(app.families[app.family_idx].key, "ax-gemma4-12b");
 }
 
 #[test]
@@ -1096,11 +1202,11 @@ fn paste_in_filter_mode_appends_and_clamps_selection() {
     let mut app = new_app();
     app.screen = Screen::Models;
     app.filtering = true;
-    app.family_idx = family_index(&app, "gemma4-12b");
-    app.on_paste("gemma4-e2b");
-    assert_eq!(app.filter, "gemma4-e2b");
+    app.family_idx = family_index(&app, "ax-gemma4-12b");
+    app.on_paste("ax-qwen3.5-9b");
+    assert_eq!(app.filter, "ax-qwen3.5-9b");
     assert_eq!(
-        app.families[app.family_idx].key, "gemma4-e2b",
+        app.families[app.family_idx].key, "ax-qwen3.5-9b",
         "selection snaps back into the filtered set"
     );
 }
@@ -1141,12 +1247,10 @@ fn right_key_advances_through_wizard_steps() {
     // Right on Families advances to Precision.
     app.on_key_models(KeyCode::Right);
     assert_eq!(app.stage, WizardStage::Precision);
-    // Right on Precision advances to Options (gemma4-12b has MTP).
-    app.family_idx = family_index(&app, "gemma4-12b");
+    // Right on Precision advances straight to Confirm (no Options stage:
+    // AutomatosX packs bundle their MTP artifacts).
+    app.family_idx = family_index(&app, "ax-gemma4-12b");
     app.precision_idx = 0;
-    app.on_key_models(KeyCode::Right);
-    assert_eq!(app.stage, WizardStage::Options);
-    // Right on Options advances to Confirm.
     app.on_key_models(KeyCode::Right);
     assert_eq!(app.stage, WizardStage::Confirm);
 }
@@ -1155,18 +1259,14 @@ fn right_key_advances_through_wizard_steps() {
 fn left_key_steps_back_through_wizard() {
     let mut app = new_app();
     app.screen = Screen::Models;
-    app.family_idx = family_index(&app, "gemma4-12b");
+    app.family_idx = family_index(&app, "ax-gemma4-12b");
     app.precision_idx = 0;
     app.stage = WizardStage::Confirm;
     app.pending = Some(super::PendingDownload {
         family_idx: app.family_idx,
         precision_idx: 0,
-        with_mtp: true,
     });
-    // Left on Confirm with MTP variant goes back to Options.
-    app.on_key_models(KeyCode::Left);
-    assert_eq!(app.stage, WizardStage::Options);
-    // Left on Options goes back to Precision.
+    // Left on Confirm goes back to Precision.
     app.on_key_models(KeyCode::Left);
     assert_eq!(app.stage, WizardStage::Precision);
     // Left on Precision goes back to Families.
@@ -1181,9 +1281,9 @@ fn left_key_steps_back_through_wizard() {
 fn right_key_on_confirm_triggers_download() {
     let mut app = new_app();
     app.screen = Screen::Models;
-    app.family_idx = family_index(&app, "gemma4-e2b");
+    app.family_idx = family_index(&app, "ax-qwen3.5-9b");
     app.precision_idx = 0;
-    app.begin_confirm(false);
+    app.begin_confirm();
     assert_eq!(app.stage, WizardStage::Confirm);
     // Right on Confirm confirms the download (same as Enter).
     app.on_key_models(KeyCode::Right);
@@ -1192,32 +1292,10 @@ fn right_key_on_confirm_triggers_download() {
 }
 
 #[test]
-fn click_on_options_selects_and_advances() {
-    let mut app = new_app();
-    app.screen = Screen::Models;
-    app.family_idx = family_index(&app, "gemma4-12b");
-    app.precision_idx = 0;
-    app.stage = WizardStage::Options;
-    // Click row 0 (Yes with MTP).
-    app.on_click_models(0);
-    assert_eq!(app.mtp_idx, 0);
-    assert_eq!(app.stage, WizardStage::Confirm);
-    assert!(app.pending.is_some_and(|p| p.with_mtp));
-
-    // Reset and click row 1 (No MTP).
-    app.stage = WizardStage::Options;
-    app.pending = None;
-    app.on_click_models(1);
-    assert_eq!(app.mtp_idx, 1);
-    assert_eq!(app.stage, WizardStage::Confirm);
-    assert!(app.pending.is_some_and(|p| !p.with_mtp));
-}
-
-#[test]
 fn click_on_precision_row_selects_and_advances() {
     let mut app = new_app();
     app.screen = Screen::Models;
-    app.family_idx = family_index(&app, "gemma4-e2b");
+    app.family_idx = family_index(&app, "ax-qwen3.5-9b");
     app.stage = WizardStage::Precision;
     let _ = render(&app);
     let rect = app.content_list_rect.get();
@@ -2519,7 +2597,7 @@ fn serve_panel_shows_external_badge_when_attached() {
 /// variant 1 "installed" (flag-only; nothing touches the disk or a process).
 fn serve_app_with_two_installed() -> (App, usize) {
     let mut app = new_app();
-    let fi = family_index(&app, "gemma4-e2b");
+    let fi = family_index(&app, "ax-qwen3.5-9b");
     app.families[fi].variants[0].installed = true;
     app.families[fi].variants[1].installed = true;
     app.server = Some(Job::running_with_log(vec![]));

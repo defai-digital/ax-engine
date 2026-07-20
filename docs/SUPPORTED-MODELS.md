@@ -35,8 +35,16 @@ allowlist, not “any downloaded model”:
 
 | Allowlisted multi-model targets | Notes |
 | --- | --- |
-| Qwen 3.6 27B / 35B | Manifest family + architecture signature must match the requested `model_id` |
+| Qwen 3.5 9B, Qwen 3.6 27B / 35B | Manifest family + architecture signature must match the requested `model_id` |
+| Qwen3-Coder-Next | Same manifest-authoritative check (`qwen3_next` 512-expert signature) |
 | Gemma 4 12B / 26B / 31B | Same manifest-authoritative check |
+| EmbeddingGemma 300M, Qwen3-Embedding 0.6B / 4B / 8B | Embedding co-residency: serve `/v1/chat/completions` and `/v1/embeddings` from one process, routed by `model` |
+
+The [AutomatosX org packages](https://huggingface.co/AutomatosX) publish these
+targets under `AX-`-branded names (for example
+`AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP`); the branded id and the bare
+family label resolve to the same allowlist target, and the retained
+`model-manifest.json` stays authoritative either way.
 
 Other families remain single-model hot-swap (`load_mode=replace` with only one
 resident model) or fail closed when `add` would leave a multi-model registry.
@@ -46,36 +54,51 @@ Routing, memory preflight, idle eviction, and arbiter behavior:
 ## Getting Model Artifacts
 
 AX Engine requires pre-sanitized MLX safetensors plus a `model-manifest.json`.
-The recommended source is [mlx-community](https://huggingface.co/mlx-community)
-because those snapshots are already converted and validated. `ax-engine
-download`, `download_model()`, and `scripts/download_model.py` download weights
-and auto-generate the manifest in one step.
+Two recommended sources:
 
-List direct-download aliases:
+- [AutomatosX](https://huggingface.co/AutomatosX) — AX-branded packs built for
+  this engine. Chat packs bundle the speculative-decode extras in one repo
+  (Qwen: fused `mtp.safetensors` sidecar; Gemma: `assistant/` weights plus the
+  `ax_gemma4_assistant_mtp.json` contract) and ship a pre-generated
+  `model-manifest.json`, so one download produces a serve-ready MTP directory
+  with no separate `download-mtp` step. OptiQ variants carry mixed 4/8-bit
+  per-tensor quantization; embedding packs cover EmbeddingGemma 300M and
+  Qwen3-Embedding 0.6B/4B/8B. The managed catalog contains all 25 public
+  repositories in the organization; every currently published Qwen 3.5,
+  Qwen 3.6, and Gemma 4 variant is supported.
+- [mlx-community](https://huggingface.co/mlx-community) — community MLX
+  snapshots, already converted and validated. **Not download-managed**: their
+  aliases below stay serve aliases for artifacts you already have, and
+  downloads take the explicit raw `org/repo` form; two-repo MTP packaging
+  uses the `download-mtp` flow below.
+
+`ax-engine download`, `download_model()`, and `scripts/download_model.py`
+download weights and auto-generate the manifest when a repo does not ship one.
+
+List managed download aliases:
 
 ```text
 ax-engine download --list
 ```
 
-Download by alias:
+Download by managed alias:
 
 ```text
-ax-engine download qwen3.5-9b --json
-ax-engine download qwen36-35b --json
-ax-engine download qwen36-27b --json
-ax-engine download gemma4-e2b --json
-ax-engine download gemma4-12b --json
-ax-engine download gemma4-31b --json
-ax-engine download llama3.3-70b --json
-ax-engine download mistral-small --json
-ax-engine download gpt-oss-20b --json
+ax-engine download ax-qwen3.5-9b --json
+ax-engine download ax-qwen3.6-35b --json
+ax-engine download ax-qwen3.6-27b --json
+ax-engine download ax-gemma4-12b --json
+ax-engine download ax-gemma4-31b --json
+ax-engine download ax-qwen3-coder-next --json
+ax-engine download ax-embeddinggemma-300m --json
+ax-engine download ax-qwen3-embedding-4b --json
 ```
 
 Download and serve in one command:
 
 ```text
-ax-engine serve qwen36-35b --download --port 31418
-ax-engine serve llama3.3-70b --download --port 31418
+ax-engine serve ax-qwen3.6-35b --download --port 31418
+ax-engine serve ax-qwen3-coder-next --download --port 31418
 ```
 
 Raw `mlx-community` repo IDs are also accepted:
@@ -90,7 +113,7 @@ ax-engine download mlx-community/gpt-oss-20b-MXFP4-Q4 --json
 Copy a snapshot to an explicit directory only when needed:
 
 ```text
-ax-engine download qwen36-35b --dest /Volumes/Models/qwen36-35b
+ax-engine download ax-qwen3.6-35b --dest /Volumes/Models/ax-qwen3.6-35b
 ```
 
 Python SDK:
@@ -101,9 +124,11 @@ from ax_engine import download_model
 path = download_model("mlx-community/Qwen3.6-35B-A3B-4bit")
 ```
 
-Built-in direct-download aliases:
+Built-in aliases. The AutomatosX tables are the managed download catalog; the
+mlx-community-backed tables are **serve aliases** — they resolve presets and
+already-downloaded artifacts, while their downloads take the raw repo id form:
 
-**Primary productivity (Gemma / Qwen / GLM)**
+**Serve aliases — primary productivity (Gemma / Qwen / GLM)**
 
 | Alias | Repo |
 | --- | --- |
@@ -116,7 +141,30 @@ Built-in direct-download aliases:
 | `qwen3.5-9b` | `mlx-community/Qwen3.5-9B-MLX-4bit` |
 | `glm4.7-flash-4bit` | `mlx-community/GLM-4.7-Flash-4bit` |
 
-**Secondary — research / enterprise Llama**
+**Managed download aliases — AutomatosX packs (MTP / assistant bundled,
+manifest included)**
+
+The bare alias selects the flagship OptiQ (Qwen/Gemma 4-bit) or DWQ
+(embeddings) build; `-4bit` / `-6bit` variants select the plain quants. These
+aliases promise the exact AutomatosX repo, so serve them through the
+idempotent download flow: `ax-engine serve ax-qwen3.6-27b --download`.
+
+| Alias | Repo |
+| --- | --- |
+| `ax-qwen3.5-9b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.5-9B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
+| `ax-qwen3.6-27b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-27B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
+| `ax-qwen3.6-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
+| `ax-gemma4-12b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-12B-IT-MLX-{QAT-OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
+| `ax-gemma4-26b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
+| `ax-gemma4-31b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-31B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
+| `ax-qwen3-coder-next`[`-6bit`] | `AutomatosX/AX-Qwen3-Coder-Next-MLX-{4,6}bit` |
+| `ax-diffusiongemma-26b` | `AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit` |
+| `ax-embeddinggemma-300m` | `AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit` |
+| `ax-qwen3-embedding-0.6b` | `AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit` |
+| `ax-qwen3-embedding-4b` | `AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ` |
+| `ax-qwen3-embedding-8b` | `AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ` |
+
+**Serve aliases — secondary research / enterprise Llama**
 
 | Alias | Repo |
 | --- | --- |
@@ -124,7 +172,7 @@ Built-in direct-download aliases:
 | `llama3.3-70b` | `mlx-community/Llama-3.3-70B-Instruct-4bit` |
 | `llama4-scout` | `mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit` |
 
-**Secondary — European market Mistral**
+**Serve aliases — secondary European market Mistral**
 
 | Alias | Repo |
 | --- | --- |
@@ -132,7 +180,7 @@ Built-in direct-download aliases:
 | `ministral-8b` | `mlx-community/Ministral-8B-Instruct-2410-4bit` |
 | `devstral-small` | `mlx-community/Devstral-Small-2505-4bit` |
 
-**Secondary — open reasoner GPT-OSS (MXFP4)**
+**Serve aliases — secondary open reasoner GPT-OSS (MXFP4)**
 
 | Alias | Repo | Notes |
 | --- | --- | --- |
@@ -146,9 +194,14 @@ cache.
 
 ### MTP Downloads
 
-`ax-engine download-mtp` is the one-command path for supported local-agent MTP
-targets. It downloads the base model and prepares AX MTP artifacts when the
-model family has a repo-owned packaging path. The CLI command accepts the
+The AutomatosX packs above bundle their MTP artifacts in the direct download —
+`ax-engine download ax-qwen3.6-27b` already produces an MTP-ready directory,
+so `download-mtp` is not needed for them.
+
+For the mlx-community bases, `ax-engine download-mtp` is the one-command path
+for supported local-agent MTP targets. It downloads the base model and
+prepares AX MTP artifacts when the model family has a repo-owned packaging
+path. The CLI command accepts the
 canonical target names below plus their aliases; see the
 [CLI reference](CLI.md#ax-engine) for optional flags such as `--output`,
 `--force`, and `--json`:
@@ -255,7 +308,7 @@ Current direct-support LLM families:
 | Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
 | GLM 4.7 Flash | `glm4_moe_lite` / `glm4.7-flash-4bit` | Repo-owned MLX runtime; MLX affine 4-bit weights | Flash MLA attention, sigmoid-routed MoE with dense+MoE layer split, shared expert; post-attention RMS norm |
 
-**Secondary (preview direct — download aliases + server presets; share standard / family graphs)**
+**Secondary (preview direct — serve aliases + server presets; share standard / family graphs)**
 
 | Family | Direct model IDs / aliases | Current scope | Notes |
 | --- | --- | --- | --- |

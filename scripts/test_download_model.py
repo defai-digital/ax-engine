@@ -267,9 +267,70 @@ class DownloadModelScriptTest(unittest.TestCase):
             self.assertFalse((dest / "model-manifest.json").exists())
             self.assertTrue((dest / "model.safetensors").exists())
 
-    def test_embedding_repos_are_rejected(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "embedding model downloads are not managed"):
-            download_model.download("mlx-community/Qwen3-Embedding-0.6B-8bit", None, quiet=True)
+    def test_force_preserves_manifest_shipped_by_snapshot(self) -> None:
+        repo_id = "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / "dest"
+            dest.mkdir()
+            (dest / "model-manifest.json").write_text('{"stale":true}')
+            snapshot = root / "snapshot"
+
+            def fake_hf_download(
+                model,
+                *,
+                quiet=False,
+                progress_json=False,
+                progress_bar=False,
+            ):
+                self.assertEqual(model, repo_id)
+                snapshot.mkdir(parents=True)
+                (snapshot / "config.json").write_text('{"model_type":"qwen3_5"}')
+                (snapshot / "model.safetensors").write_bytes(b"new")
+                (snapshot / "model-manifest.json").write_text('{"published":true}')
+                return snapshot
+
+            with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
+                download_model, "_run_hf_snapshot_download", fake_hf_download
+            ):
+                resolved = download_model.download(repo_id, dest, force=True, quiet=True)
+
+            self.assertEqual(resolved, dest)
+            self.assertEqual(
+                (dest / "model-manifest.json").read_text(), '{"published":true}'
+            )
+
+    def test_embedding_repos_use_standard_download_flow(self) -> None:
+        repo_id = "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit"
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "snapshot"
+
+            def fake_hf_download(
+                model,
+                *,
+                quiet=False,
+                progress_json=False,
+                progress_bar=False,
+            ):
+                self.assertEqual(model, repo_id)
+                snapshot.mkdir()
+                (snapshot / "config.json").write_text('{"model_type":"qwen3"}')
+                (snapshot / "model.safetensors").write_bytes(b"weights")
+                return snapshot
+
+            with (
+                # Hermetic: the developer machine may have this AutomatosX
+                # repo in its real HF cache; force the fetch path.
+                patch.object(
+                    download_model, "_latest_mlx_lm_snapshot", lambda repo: None
+                ),
+                patch.object(
+                    download_model, "_run_hf_snapshot_download", fake_hf_download
+                ),
+            ):
+                resolved = download_model.download(repo_id, None, quiet=True)
+
+            self.assertEqual(resolved, snapshot)
 
     def test_manifest_generation_uses_local_release_binary_before_cargo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

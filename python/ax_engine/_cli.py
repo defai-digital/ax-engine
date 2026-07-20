@@ -23,10 +23,6 @@ class ModelProfile:
     repo_id: str
     aliases: tuple[str, ...]
     downloadable: bool = True
-    # When set, the model family has an MTP acceleration package reachable via
-    # `ax-engine download-mtp <mtp_target>`. The interactive picker offers a
-    # Direct-vs-MTP choice for these; --list flags them.
-    mtp_target: str | None = None
 
 
 MODEL_PROFILES = (
@@ -59,14 +55,12 @@ MODEL_PROFILES = (
         preset="gemma4-12b",
         repo_id="mlx-community/gemma-4-12B-it-4bit",
         aliases=("gemma4-12b", "gemma-4-12b", "gemma-4-12b-it", "gemma4-12b-4bit"),
-        mtp_target="gemma-4-12b-4bit",
     ),
     ModelProfile(
         label="gemma4-12b-6bit",
         preset=None,
         repo_id="mlx-community/gemma-4-12B-it-6bit",
         aliases=("gemma4-12b-6bit", "gemma-4-12b-6bit", "gemma-4-12b-it-6bit"),
-        mtp_target="gemma-4-12b",
     ),
     ModelProfile(
         label="gemma4-26b",
@@ -78,14 +72,12 @@ MODEL_PROFILES = (
             "gemma-4-26b-a4b-it",
             "gemma4-26b-4bit",
         ),
-        mtp_target="gemma-4-26b",
     ),
     ModelProfile(
         label="gemma4-31b",
         preset="gemma4-31b",
         repo_id="mlx-community/gemma-4-31b-it-4bit",
         aliases=("gemma4-31b", "gemma-4-31b", "gemma-4-31b-it", "gemma4-31b-4bit"),
-        mtp_target="gemma-4-31b",
     ),
     ModelProfile(
         label="glm4.7-flash-4bit",
@@ -123,7 +115,6 @@ MODEL_PROFILES = (
             "qwen3.6-27b-4bit",
             "qwen36-27b-4bit",
         ),
-        mtp_target="qwen3.6-27b-6bit",
     ),
     ModelProfile(
         label="qwen3.6-27b-5bit",
@@ -144,7 +135,6 @@ MODEL_PROFILES = (
             "qwen36-27b-6bit",
             "qwen3-6-27b-6bit",
         ),
-        mtp_target="qwen3.6-27b-6bit",
     ),
     ModelProfile(
         label="qwen3.6-27b-8bit",
@@ -167,7 +157,6 @@ MODEL_PROFILES = (
             "qwen3.6-35b-a3b",
             "qwen36-35b-a3b",
         ),
-        mtp_target="qwen3.6-35b-a3b",
     ),
     # --- Secondary: research / enterprise Llama (standard graph) ---
     ModelProfile(
@@ -268,6 +257,149 @@ MODEL_PROFILES = (
 )
 
 
+def _automatosx_profile(
+    label: str, repo_name: str, aliases: tuple[str, ...] = ()
+) -> ModelProfile:
+    """Build one exact-repository alias from the curated AutomatosX catalog."""
+    return ModelProfile(
+        label=label,
+        preset=None,
+        repo_id=f"AutomatosX/{repo_name}",
+        aliases=(label, *aliases),
+    )
+
+
+# Authoritative downloadable catalog: every public repository shown at
+# https://huggingface.co/AutomatosX/models on 2026-07-20. MTP repositories are
+# complete snapshots; downloading them never invokes the legacy MTP packager.
+AUTOMATOSX_MODEL_PROFILES = (
+    _automatosx_profile(
+        "ax-diffusiongemma-26b",
+        "AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+        ("ax-diffusiongemma-26b-4bit", "ax-diffusiongemma-26b-a4b-it-4bit"),
+    ),
+    _automatosx_profile(
+        "ax-embeddinggemma-300m",
+        "AX-EmbeddingGemma-300M-MLX-8bit",
+        ("ax-embeddinggemma", "ax-embeddinggemma-300m-8bit"),
+    ),
+    _automatosx_profile(
+        "ax-gemma4-12b-6bit",
+        "AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
+    ),
+    _automatosx_profile(
+        "ax-gemma4-12b-4bit",
+        "AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP",
+        ("ax-gemma4-12b-qat-4bit",),
+    ),
+    _automatosx_profile(
+        "ax-gemma4-12b",
+        "AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP",
+        ("ax-gemma-4-12b", "ax-gemma4-12b-qat-optiq-4bit"),
+    ),
+    _automatosx_profile(
+        "ax-gemma4-26b-6bit",
+        "AX-Gemma-4-26B-A4B-IT-MLX-6bit-Assistant-MTP",
+    ),
+    _automatosx_profile(
+        "ax-gemma4-26b",
+        "AX-Gemma-4-26B-A4B-IT-MLX-OptiQ-4bit-Assistant-MTP",
+        ("ax-gemma-4-26b", "ax-gemma4-26b-optiq-4bit"),
+    ),
+    _automatosx_profile(
+        "ax-gemma4-26b-4bit",
+        "AX-Gemma-4-26B-A4B-IT-MLX-QAT-4bit-Assistant-MTP",
+        ("ax-gemma4-26b-qat-4bit",),
+    ),
+    _automatosx_profile(
+        "ax-gemma4-31b-6bit",
+        "AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP",
+    ),
+    _automatosx_profile(
+        "ax-gemma4-31b",
+        "AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP",
+        ("ax-gemma-4-31b", "ax-gemma4-31b-optiq-4bit"),
+    ),
+    _automatosx_profile(
+        "ax-gemma4-31b-4bit",
+        "AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP",
+        ("ax-gemma4-31b-qat-4bit",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-coder-next",
+        "AX-Qwen3-Coder-Next-MLX-4bit",
+        ("ax-qwen3-coder", "ax-qwen3-coder-next-4bit"),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-coder-next-6bit",
+        "AX-Qwen3-Coder-Next-MLX-6bit",
+        ("ax-qwen3-coder-6bit",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-embedding-0.6b",
+        "AX-Qwen3-Embedding-0.6B-MLX-8bit",
+        ("ax-qwen3-embedding-0.6b-8bit",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-embedding-4b",
+        "AX-Qwen3-Embedding-4B-MLX-4bit-DWQ",
+        ("ax-qwen3-embedding-4b-dwq",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-embedding-8b",
+        "AX-Qwen3-Embedding-8B-MLX-4bit-DWQ",
+        ("ax-qwen3-embedding-8b-dwq",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.5-9b-4bit",
+        "AX-Qwen3.5-9B-MLX-4bit-MTP",
+        ("ax-qwen35-9b-4bit",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.5-9b-6bit",
+        "AX-Qwen3.5-9B-MLX-6bit-MTP",
+        ("ax-qwen35-9b-6bit",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.5-9b",
+        "AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
+        ("ax-qwen35-9b", "ax-qwen3.5-9b-optiq-4bit"),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.6-27b-4bit",
+        "AX-Qwen3.6-27B-MLX-4bit-MTP",
+        ("ax-qwen36-27b-4bit",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.6-27b-6bit",
+        "AX-Qwen3.6-27B-MLX-6bit-MTP",
+        ("ax-qwen36-27b-6bit",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.6-27b",
+        "AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
+        ("ax-qwen36-27b", "ax-qwen3.6-27b-optiq-4bit"),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.6-35b-4bit",
+        "AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
+        ("ax-qwen36-35b-4bit",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.6-35b-6bit",
+        "AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
+        ("ax-qwen36-35b-6bit",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.6-35b",
+        "AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+        ("ax-qwen36-35b", "ax-qwen3.6-35b-a3b", "ax-qwen3.6-35b-optiq-4bit"),
+    ),
+)
+
+MODEL_PROFILES = (*MODEL_PROFILES, *AUTOMATOSX_MODEL_PROFILES)
+
+
 def _server_bin() -> pathlib.Path | str:
     bundled = _bundled_binary("ax-engine-server")
     if bundled is not None:
@@ -335,8 +467,13 @@ def _profile_for_model(value: str) -> ModelProfile | None:
     return None
 
 
+def _is_managed_download_profile(profile: ModelProfile) -> bool:
+    """Only curated AutomatosX snapshots belong in product download surfaces."""
+    return profile.downloadable and profile.repo_id.startswith("AutomatosX/")
+
+
 def _downloadable_profiles() -> list[ModelProfile]:
-    return [profile for profile in MODEL_PROFILES if profile.downloadable]
+    return [profile for profile in MODEL_PROFILES if _is_managed_download_profile(profile)]
 
 
 # ---------------------------------------------------------------------------
@@ -391,10 +528,6 @@ class ModelFamily:
         return self.key
 
     @property
-    def has_mtp(self) -> bool:
-        return any(variant.mtp_target for variant in self.variants)
-
-    @property
     def quant_summary(self) -> str:
         bits = [b for b in (_profile_quant_bits(v) for v in self.variants) if b is not None]
         return ", ".join(f"{b}-bit" for b in bits) if bits else "--"
@@ -431,39 +564,40 @@ def _download_options_payload() -> dict:
                 "repo_id": profile.repo_id,
                 "preset": profile.preset,
                 "aliases": list(profile.aliases),
-                "mtp_target": profile.mtp_target,
+                "mtp_target": None,
+                "mtp_included": "-mtp" in profile.repo_id.lower(),
             }
             for profile in _downloadable_profiles()
         ],
         "examples": [
-            "ax-engine download qwen36-35b",
-            "ax-engine download gemma4-12b",
-            "ax-engine download llama3.3-70b",
-            "ax-engine download mistral-small",
-            "ax-engine download gpt-oss-20b",
-            "ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json",
+            "ax-engine download ax-qwen3.5-9b",
+            "ax-engine download ax-qwen3.6-35b",
+            "ax-engine download ax-gemma4-12b",
+            "ax-engine download ax-qwen3-coder-next",
+            "ax-engine download ax-embeddinggemma-300m",
+            "ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json",
         ],
     }
 
 
 def _format_download_options() -> str:
     lines = [
-        "Available direct-mode MLX download targets",
-        "(primary: Gemma 4 / Qwen 3.x; secondary: Llama, Mistral, GPT-OSS):",
+        "Available AX-ready AutomatosX snapshots",
+        "(MTP/assistant artifacts are already included where published):",
     ]
     for profile in _downloadable_profiles():
-        mtp = f"  [MTP: download-mtp {profile.mtp_target}]" if profile.mtp_target else ""
+        mtp = "  [MTP included]" if "-mtp" in profile.repo_id.lower() else ""
         lines.append(f"  {profile.label:<20} {profile.repo_id}{mtp}")
     lines.extend(
         [
             "",
             "Examples:",
-            "  ax-engine download qwen36-35b",
-            "  ax-engine download gemma4-12b",
-            "  ax-engine download llama3.3-70b",
-            "  ax-engine download mistral-small",
-            "  ax-engine download gpt-oss-20b",
-            "  ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json",
+            "  ax-engine download ax-qwen3.5-9b",
+            "  ax-engine download ax-qwen3.6-35b",
+            "  ax-engine download ax-gemma4-12b",
+            "  ax-engine download ax-qwen3-coder-next",
+            "  ax-engine download ax-embeddinggemma-300m",
+            "  ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json",
             "",
             "Destination:",
             "  Default: Hugging Face Hub cache shared by mlx-lm and huggingface_hub.",
@@ -485,7 +619,7 @@ SERVER_PRESET_ALIASES = {
 def _download_repo_id(value: str) -> tuple[str, ModelProfile | None]:
     profile = _profile_for_model(value)
     if profile is not None:
-        if not profile.downloadable:
+        if not _is_managed_download_profile(profile):
             raise SystemExit(
                 f"{profile.label} is not managed by ax-engine download; "
                 "use an explicit repo id or one of these targets:\n"
@@ -629,10 +763,10 @@ def _wizard_input(prompt: str) -> str:
 def _select_profile_interactive() -> ModelProfile | None:
     profiles = _downloadable_profiles()
     print("AX Engine — download a model\n")
-    print(f"  {'#':>2}  {'Model':<22} {'MTP':<5} Repo")
+    print(f"  {'#':>2}  {'Model':<28} {'MTP':<9} Repo")
     for index, profile in enumerate(profiles, start=1):
-        mtp = "yes" if profile.mtp_target else "—"
-        print(f"  {index:>2}  {profile.label:<22} {mtp:<5} {profile.repo_id}")
+        mtp = "included" if "-mtp" in profile.repo_id.lower() else "—"
+        print(f"  {index:>2}  {profile.label:<28} {mtp:<9} {profile.repo_id}")
     print()
     while True:
         raw = _wizard_input(f"Select a model [1-{len(profiles)}] (q to cancel): ").strip().lower()
@@ -671,23 +805,6 @@ def _confirm_interactive(prompt: str) -> bool:
     return raw in {"", "y", "yes"}
 
 
-def _select_variant_interactive(profile: ModelProfile) -> str | None:
-    """For an MTP-capable model, choose 'direct' or 'mtp'. None means cancel."""
-    print(f"\n{profile.label} has an MTP acceleration package.")
-    print("Download which variant?")
-    print(f"  1  Direct download   {profile.repo_id}")
-    print(f"  2  MTP package       ax-engine download-mtp {profile.mtp_target}")
-    while True:
-        raw = _wizard_input("Select [1-2] (q to cancel): ").strip().lower()
-        if raw in {"q", "quit", "exit"}:
-            return None
-        if raw == "1":
-            return "direct"
-        if raw == "2":
-            return "mtp"
-        print("  invalid selection; enter 1, 2, or q to cancel")
-
-
 def _run_interactive_direct_download(profile: ModelProfile, force: bool) -> int:
     dest = _select_dest_interactive()
     if dest is not None:
@@ -708,37 +825,11 @@ def _run_interactive_direct_download(profile: ModelProfile, force: bool) -> int:
     return code
 
 
-def _run_interactive_mtp_download(profile: ModelProfile, force: bool) -> int:
-    if not _confirm_interactive(
-        f"\nPrepare MTP package for {profile.label} (ax-engine download-mtp {profile.mtp_target})?"
-    ):
-        print("Cancelled.")
-        return 130
-
-    bench_bin = str(_bench_bin())
-    argv = [bench_bin, "download-mtp", profile.mtp_target]
-    if force:
-        argv.append("--force")
-    env = os.environ.copy()
-    env.update(_download_mtp_helper_env())
-    print(f"\nPreparing MTP package: ax-engine download-mtp {profile.mtp_target}\n")
-    # Inherit stdio so the bench binary's own progress/output is shown live.
-    return subprocess.run(argv, env=env).returncode
-
-
 def _run_interactive_download(force: bool) -> int:
     profile = _select_profile_interactive()
     if profile is None:
         print("Cancelled.")
         return 130
-
-    if profile.mtp_target:
-        variant = _select_variant_interactive(profile)
-        if variant is None:
-            print("Cancelled.")
-            return 130
-        if variant == "mtp":
-            return _run_interactive_mtp_download(profile, force)
 
     return _run_interactive_direct_download(profile, force)
 

@@ -9,6 +9,35 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- All 25 public AutomatosX model packs
+  (https://huggingface.co/AutomatosX/models) are first-class managed downloads:
+  `ax-engine download` / `serve` aliases for Qwen 3.5/3.6, Gemma 4,
+  Qwen3-Coder-Next, DiffusionGemma, EmbeddingGemma, and Qwen3-Embedding. The
+  TUI shows only these reviewed snapshots, distinguishes QAT/OptiQ/DWQ recipes,
+  and downloads bundled MTP/assistant artifacts directly without a separate
+  packaging step. Multi-model `load_mode=add` accepts supported `AX-`-branded
+  model ids while keeping manifest signatures authoritative.
+- Multi-model allowlist extends to Qwen3-Coder-Next and to embedding
+  co-residency targets (EmbeddingGemma 300M, Qwen3-Embedding 0.6B/4B/8B), so
+  one process can serve `/v1/chat/completions` and `/v1/embeddings` side by
+  side, routed by `model`.
+- `qwen3-coder-next` server preset (`--preset qwen3-coder-next`, model_type
+  `qwen3_next`).
+- Embedding repos download through the standard `ax-engine download` /
+  `download_model()` flow; the AX-ready manifest check replaces the previous
+  name-based rejection.
+
+### Changed
+
+- Managed downloads are restricted to the curated AutomatosX catalog:
+  `ax-engine download --list`, the TUI catalog, and `download <alias>` cover
+  the `ax-*` aliases only. Legacy mlx-community aliases (`qwen36-35b`,
+  `gemma4-12b`, `gpt-oss-20b`, …) remain serve aliases for already-downloaded
+  artifacts, and raw `org/repo` ids stay an explicit download escape hatch.
+- The TUI Models wizard is three steps (family → size → confirm): AutomatosX
+  snapshots bundle their MTP/assistant extras, so the separate speed-up
+  download step is gone and bundled MTP is reported on the confirm summary.
+
 - `mlx_lm.server` migration surface: `/chat/completions` aliases
   `/v1/chat/completions`, `max_completion_tokens` takes precedence over
   `max_tokens`, and `stream_options.include_usage` emits the OpenAI-standard

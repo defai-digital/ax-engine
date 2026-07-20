@@ -236,21 +236,6 @@ impl Job {
 // Download tasks
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum DownloadMode {
-    Direct,
-    Mtp,
-}
-
-impl DownloadMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Direct => "direct",
-            Self::Mtp => "mtp",
-        }
-    }
-}
-
 /// Result of advancing a download task by one tick.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DownloadOutcome {
@@ -278,8 +263,6 @@ pub(super) struct DownloadTask {
     pub label: String,
     pub repo_id: &'static str,
     pub preset: Option<&'static str>,
-    pub mode: DownloadMode,
-    pub subcmd: &'static str,
     pub target: String,
     pub dest: Option<PathBuf>,
     pub watch_dir: PathBuf,
@@ -410,16 +393,9 @@ impl DownloadTask {
         }
         let mut cmd_result = std::env::current_exe().map(Command::new);
         if let Ok(cmd) = &mut cmd_result {
-            cmd.arg(self.subcmd)
-                .arg(&self.target)
-                .arg("--progress-json");
+            cmd.arg("download").arg(&self.target).arg("--progress-json");
             if let Some(dest) = &self.dest {
-                let flag = if self.mode == DownloadMode::Mtp {
-                    "--output"
-                } else {
-                    "--dest"
-                };
-                cmd.arg(flag).arg(dest);
+                cmd.arg("--dest").arg(dest);
             }
         }
         self.job = Some(match cmd_result {
@@ -446,13 +422,8 @@ impl DownloadTask {
         }
         let finished_ok = before.is_none() && job.done == Some(0);
         if finished_ok && self.resolved_path.is_none() {
-            self.resolved_path = parse_output_path_from_log(&job.log).or_else(|| {
-                if self.mode == DownloadMode::Direct {
-                    catalog::repo_snapshot_dir(self.repo_id)
-                } else {
-                    None
-                }
-            });
+            self.resolved_path = parse_output_path_from_log(&job.log)
+                .or_else(|| catalog::repo_snapshot_dir(self.repo_id));
         }
         let outcome = match (before, job.done) {
             (None, Some(0)) => DownloadOutcome::Finished,

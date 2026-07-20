@@ -118,6 +118,9 @@ pub(crate) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String
             Some(infer_gemma4_model_id(&path_label))
         }
         "diffusion_gemma" => Some("diffusiongemma".to_string()),
+        // EmbeddingGemma ships HF model_type `gemma3_text`; the only product
+        // artifact on this family is the 300M embedding model.
+        "gemma3_text" | "embeddinggemma" => Some("embeddinggemma-300m".to_string()),
         value if value.starts_with("qwen3") => Some(infer_qwen_model_id(&path_label, value)),
         _ => None,
     })
@@ -140,7 +143,13 @@ fn infer_gemma4_model_id(path_label: &str) -> String {
 }
 
 fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
-    let mut model_id = if path_label.contains("qwen3-coder-next") {
+    let mut model_id = if path_label.contains("qwen3-embedding-0-6b") {
+        "qwen3-embedding-0.6b".to_string()
+    } else if path_label.contains("qwen3-embedding-4b") {
+        "qwen3-embedding-4b".to_string()
+    } else if path_label.contains("qwen3-embedding-8b") {
+        "qwen3-embedding-8b".to_string()
+    } else if path_label.contains("qwen3-coder-next") {
         "qwen3-coder-next".to_string()
     } else if path_label.contains("qwen3-6-35b") || path_label.contains("qwen36-35b") {
         "qwen3.6-35b".to_string()

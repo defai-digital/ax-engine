@@ -957,12 +957,32 @@ curl -s http://127.0.0.1:31418/v1/model/unload -H 'content-type: application/jso
 ```
 
 **Allowlist (`load_mode=add`, and `replace` once more than one model is
-resident):** Qwen 3.5 9B, Qwen 3.6 35B/27B, and Gemma 4 12B/26B/31B only.
-The retained
+resident):** Qwen 3.5 9B, Qwen 3.6 35B/27B, Qwen3-Coder-Next,
+Gemma 4 12B/26B/31B, EmbeddingGemma 300M, and Qwen3-Embedding 0.6B/4B/8B only.
+[AutomatosX](https://huggingface.co/AutomatosX) `AX-`-branded package names
+(e.g. `AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP`) resolve to the same targets. The
+retained
 `model-manifest.json` is authoritative — AX checks exact family and
 architecture signature against the requested id. Directory names, HF config
 hints, and substring matches cannot admit a mismatched model. A sole-model
 `replace` remains the unrestricted historical hot-swap.
+
+The embedding targets make chat + embeddings co-residency a first-class
+setup: keep a chat model as the default and add an embedding model (or the
+reverse), then route per request by `model`:
+
+```text
+# Chat default already serving on :31418; add an embedding sibling
+curl -s http://127.0.0.1:31418/v1/model/load -H 'content-type: application/json' -d '{
+  "model_id": "qwen3-embedding-0.6b",
+  "model_path": "/absolute/path/to/AX-Qwen3-Embedding-0.6B-artifacts",
+  "load_mode": "add",
+  "make_default": false
+}'
+
+curl -s http://127.0.0.1:31418/v1/embeddings -H 'content-type: application/json' \
+  -d '{"model":"qwen3-embedding-0.6b","input":"retrieval query"}'
+```
 
 Other rules:
 

@@ -1,7 +1,7 @@
 //! ratatui terminal UI for `ax-engine tui`.
 //!
 //! A guided launcher over the existing CLI subcommands: pick a model in a
-//! split-panel wizard (family -> precision -> options -> confirm), watch the
+//! split-panel wizard (family -> size -> confirm), watch the
 //! download queue with real progress, serve an installed model, and talk to it
 //! on the Chat screen.  All work runs as background child processes
 //! (`ax-engine download`, `ax-engine-server`, `curl`) streamed into the UI, so
@@ -46,7 +46,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use catalog::{Family, build_families, installed_variants};
 use hardware::HardwareInfo;
-use jobs::{DownloadMode, DownloadOutcome, DownloadTask, Job};
+use jobs::{DownloadOutcome, DownloadTask, Job};
 use metrics::LiveMetrics;
 use screens::chat::ChatState;
 use widgets::{DirectoryPicker, Toast};
@@ -150,8 +150,9 @@ pub(crate) fn cmd_tui(args: &[OsString]) -> Result<u8, String> {
             "ax-engine tui — guided model downloader, server launcher, and chat.\n\n\
              Screens: 1 Home · 2 Models · 3 Downloads · 4 Serve · 5 Chat.\n\
              Home shows your hardware and a Quick start action.  The Models\n\
-             wizard walks family -> size (with RAM-fit info) -> optional\n\
-             speed-up -> a confirm summary before anything is downloaded.\n\
+             wizard walks family -> size (with RAM-fit info) -> a confirm\n\
+             summary before anything is downloaded. Published MTP/assistant\n\
+             artifacts are already included in the selected snapshot.\n\
              Downloads run in a background queue with live progress; Serve\n\
              launches ax-engine-server; Chat streams replies with markdown,\n\
              live tok/s stats, prompt history (↑), and /clear /copy /retry.\n\
@@ -248,7 +249,6 @@ fn screen_index(screen: Screen) -> usize {
 pub(super) enum WizardStage {
     Families,
     Precision,
-    Options,
     Confirm,
 }
 
@@ -336,7 +336,6 @@ impl LogScroll {
 pub(super) struct PendingDownload {
     pub family_idx: usize,
     pub precision_idx: usize,
-    pub with_mtp: bool,
 }
 
 /// Overlay that captures all input while open.  Exactly one may be open.
@@ -426,7 +425,6 @@ struct App {
     pub stage: WizardStage,
     pub family_idx: usize,
     pub precision_idx: usize,
-    pub mtp_idx: usize, // 0 = yes, 1 = no
     pub pending: Option<PendingDownload>,
     /// Custom destination chosen on the confirm step (None = shared HF cache).
     pub confirm_dest: Option<PathBuf>,
@@ -520,7 +518,6 @@ impl App {
             stage: WizardStage::Families,
             family_idx: 0,
             precision_idx: 0,
-            mtp_idx: 0,
             pending: None,
             confirm_dest: None,
             filter: String::new(),
@@ -1025,8 +1022,7 @@ impl App {
         self.family_idx = fi;
         self.precision_idx = vi;
         let installed = self.families[fi].variants[vi].installed;
-        let has_mtp = self.families[fi].variants[vi].mtp_alias.is_some();
-        if installed && !has_mtp {
+        if installed {
             self.auto_chat_after_serve = true;
             self.modal = Some(Modal::ServeInstalled {
                 family_idx: fi,
@@ -1037,12 +1033,7 @@ impl App {
         // Guided chain: after confirm, download → serve → chat.
         self.enable_auto_chain();
         self.navigate_to(Screen::Models);
-        if has_mtp {
-            self.mtp_idx = 0;
-            self.stage = WizardStage::Options;
-        } else {
-            self.begin_confirm(false);
-        }
+        self.begin_confirm();
     }
 
     /// Handle keys while the tab bar owns focus. Returns true if consumed.
@@ -1589,29 +1580,12 @@ impl App {
         if !task.is_ready() {
             return;
         }
-        // Prefer the path the download process reported. For direct HF-cache
-        // downloads, fall back to the usable snapshot dir. Never silently fall
-        // back to base-model HF resolve for MTP packages — that would serve the
-        // base weights without the MTP package.
-        let artifacts_dir = task.output_path().or_else(|| {
-            if task.mode == DownloadMode::Direct {
-                catalog::repo_snapshot_dir(task.repo_id)
-            } else {
-                None
-            }
-        });
-        if task.mode == DownloadMode::Mtp && artifacts_dir.is_none() {
-            self.server = Some(Job::failed(
-                "MTP package path could not be resolved from the download log; re-run download-mtp or serve the package directory directly".into(),
-            ));
-            self.server_url = None;
-            self.serve_log_scroll.pin_to_bottom();
-            self.toast_error("could not find MTP package path to serve");
-            return;
-        }
+        // Prefer the path reported by the direct Hub download, then resolve
+        // its usable cache snapshot. AutomatosX MTP packs are self-contained.
+        let artifacts_dir = task
+            .output_path()
+            .or_else(|| catalog::repo_snapshot_dir(task.repo_id));
         let label = task.label.clone();
-        // MTP packages are self-contained dirs; still pass the base preset when
-        // present so chat template / model_id hints stay available.
         self.spawn_server(task.preset, artifacts_dir, &label);
     }
 
@@ -2134,16 +2108,6 @@ impl App {
                         key_hint("Esc"),
                         key_label(" back"),
                     ],
-                    WizardStage::Options => vec![
-                        key_hint("y"),
-                        key_label(" yes"),
-                        key_sep(),
-                        key_hint("n"),
-                        key_label(" no"),
-                        key_sep(),
-                        key_hint("Esc"),
-                        key_label(" back"),
-                    ],
                     WizardStage::Confirm => vec![
                         key_hint("Enter"),
                         key_label(" download"),
@@ -2340,7 +2304,7 @@ impl App {
             Line::raw(""),
             Line::raw("Screens: 1-5 (or click tabs). While typing, use Ctrl+1-5."),
             Line::raw("  1 Home        this Mac + quick start"),
-            Line::raw("  2 Models      pick family → size → optional speed-up → confirm"),
+            Line::raw("  2 Models      pick family → size → confirm"),
             Line::raw("  3 Downloads   queue with live progress"),
             Line::raw("  4 Serve       start/stop the local server"),
             Line::raw("  5 Chat        talk to the running model"),

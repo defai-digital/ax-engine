@@ -26,6 +26,35 @@ if os.environ.get("AX_ENGINE_RUN_INSTALLED_TESTS") != "1":
 from ax_engine import _cli
 
 
+EXPECTED_AUTOMATOSX_REPOS = {
+    "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+    "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
+    "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
+    "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP",
+    "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP",
+    "AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-6bit-Assistant-MTP",
+    "AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-OptiQ-4bit-Assistant-MTP",
+    "AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-QAT-4bit-Assistant-MTP",
+    "AutomatosX/AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP",
+    "AutomatosX/AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP",
+    "AutomatosX/AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP",
+    "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
+    "AutomatosX/AX-Qwen3-Coder-Next-MLX-6bit",
+    "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit",
+    "AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ",
+    "AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ",
+    "AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP",
+    "AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP",
+    "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.6-27B-MLX-4bit-MTP",
+    "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+    "AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+}
+
+
 class AxEngineCliTests(unittest.TestCase):
     def capture_main(self, argv: list[str]) -> tuple[int, str]:
         out = io.StringIO()
@@ -43,22 +72,11 @@ class AxEngineCliTests(unittest.TestCase):
             payload["default_destination"]["kind"], "huggingface_hub_cache"
         )
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
-        aliases = {target["alias"] for target in payload["targets"]}
-        self.assertIn("qwen3.5-9b", aliases)
-        self.assertIn("qwen3.6-35b", aliases)
-        self.assertIn("qwen3.6-27b-8bit", aliases)
-        self.assertIn("gemma4-e2b-6bit", aliases)
-        self.assertIn("gemma4-12b", aliases)
-        self.assertIn("gemma4-12b-6bit", aliases)
-        # Secondary direct-mode catalog (Llama / Mistral / GPT-OSS).
-        self.assertIn("llama3.1-8b", aliases)
-        self.assertIn("llama3.3-70b", aliases)
-        self.assertIn("llama4-scout", aliases)
-        self.assertIn("mistral-small", aliases)
-        self.assertIn("ministral-8b", aliases)
-        self.assertIn("devstral-small", aliases)
-        self.assertIn("gpt-oss-20b", aliases)
-        self.assertIn("gpt-oss-120b", aliases)
+        targets = payload["targets"]
+        self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
+        self.assertEqual(len(targets), 25)
+        self.assertTrue(all(target["alias"].startswith("ax-") for target in targets))
+        self.assertNotIn("mlx-community/Qwen3.6-27B-8bit", EXPECTED_AUTOMATOSX_REPOS)
 
     def test_secondary_profile_aliases_resolve_repos(self) -> None:
         cases = {
@@ -97,18 +115,27 @@ class AxEngineCliTests(unittest.TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn("missing model alias or repo id", stdout)
-        self.assertIn("qwen3.6-35b", stdout)
-        self.assertIn("gemma4-12b", stdout)
-        self.assertIn("gemma4-e2b-8bit", stdout)
+        self.assertIn("ax-qwen3.6-35b", stdout)
+        self.assertIn("ax-gemma4-12b", stdout)
+        self.assertIn("ax-diffusiongemma-26b", stdout)
 
     def test_download_unknown_alias_shows_targets(self) -> None:
         with self.assertRaises(SystemExit) as raised:
             self.capture_main(["download", "unknown-model"])
 
         self.assertIn("unknown model alias", str(raised.exception))
-        self.assertIn("qwen3.6-27b-8bit", str(raised.exception))
-        self.assertIn("gemma4-12b", str(raised.exception))
-        self.assertIn("gemma4-e2b-6bit", str(raised.exception))
+        self.assertIn("ax-qwen3.6-27b-6bit", str(raised.exception))
+        self.assertIn("ax-gemma4-12b", str(raised.exception))
+        self.assertIn("ax-embeddinggemma-300m", str(raised.exception))
+
+    def test_legacy_alias_is_serve_only_not_managed_download(self) -> None:
+        profile = _cli._profile_for_model("qwen36-35b")
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertEqual(profile.preset, "qwen3.6-35b")
+
+        with self.assertRaisesRegex(SystemExit, "not managed by ax-engine download"):
+            _cli._download_repo_id("qwen36-35b")
 
     def test_serve_dry_run_json_uses_server_preset(self) -> None:
         with mock.patch.object(
@@ -426,16 +453,21 @@ class AxEngineCliTests(unittest.TestCase):
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
-                code, stdout = self.capture_main(["download", "qwen36-35b", "--json"])
+                code, stdout = self.capture_main(
+                    ["download", "ax-qwen3.6-35b", "--json"]
+                )
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
         self.assertEqual(payload["schema_version"], "ax.download_model.v1")
-        self.assertEqual(payload["repo_id"], "mlx-community/Qwen3.6-35B-A3B-4bit")
-        self.assertEqual(payload["alias"], "qwen3.6-35b")
-        self.assertEqual(payload["preset"], "qwen3.6-35b")
+        self.assertEqual(
+            payload["repo_id"],
+            "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+        )
+        self.assertEqual(payload["alias"], "ax-qwen3.6-35b")
+        self.assertNotIn("preset", payload)
 
-    def test_download_qwen36_27b_bit_alias_uses_mlx_target(self) -> None:
+    def test_download_qwen36_27b_bit_alias_uses_automatosx_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             scripts = root / "scripts"
@@ -472,16 +504,18 @@ class AxEngineCliTests(unittest.TestCase):
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
                 code, stdout = self.capture_main(
-                    ["download", "qwen36-27b-8bit", "--json"]
+                    ["download", "ax-qwen36-27b-6bit", "--json"]
                 )
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        self.assertEqual(payload["repo_id"], "mlx-community/Qwen3.6-27B-8bit")
-        self.assertEqual(payload["alias"], "qwen3.6-27b-8bit")
+        self.assertEqual(
+            payload["repo_id"], "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP"
+        )
+        self.assertEqual(payload["alias"], "ax-qwen3.6-27b-6bit")
         self.assertNotIn("preset", payload)
 
-    def test_download_gemma4_e2b_bit_alias_uses_mlx_target(self) -> None:
+    def test_download_diffusiongemma_alias_uses_automatosx_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             scripts = root / "scripts"
@@ -518,16 +552,19 @@ class AxEngineCliTests(unittest.TestCase):
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
                 code, stdout = self.capture_main(
-                    ["download", "gemma4-e2b-6bit", "--json"]
+                    ["download", "ax-diffusiongemma-26b", "--json"]
                 )
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        self.assertEqual(payload["repo_id"], "mlx-community/gemma-4-e2b-it-6bit")
-        self.assertEqual(payload["alias"], "gemma4-e2b-6bit")
+        self.assertEqual(
+            payload["repo_id"],
+            "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+        )
+        self.assertEqual(payload["alias"], "ax-diffusiongemma-26b")
         self.assertNotIn("preset", payload)
 
-    def test_download_gemma4_12b_alias_uses_mlx_target(self) -> None:
+    def test_download_gemma4_12b_aliases_use_automatosx_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             scripts = root / "scripts"
@@ -563,26 +600,34 @@ class AxEngineCliTests(unittest.TestCase):
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
-                code, stdout = self.capture_main(["download", "gemma4-12b", "--json"])
+                code, stdout = self.capture_main(
+                    ["download", "ax-gemma4-12b", "--json"]
+                )
 
             self.assertEqual(code, 0)
             payload = json.loads(stdout)
-            self.assertEqual(payload["repo_id"], "mlx-community/gemma-4-12B-it-4bit")
-            self.assertEqual(payload["alias"], "gemma4-12b")
-            self.assertEqual(payload["preset"], "gemma4-12b")
+            self.assertEqual(
+                payload["repo_id"],
+                "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP",
+            )
+            self.assertEqual(payload["alias"], "ax-gemma4-12b")
+            self.assertNotIn("preset", payload)
 
             with mock.patch.dict(
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
                 code, stdout = self.capture_main(
-                    ["download", "gemma4-12b-6bit", "--json"]
+                    ["download", "ax-gemma4-12b-6bit", "--json"]
                 )
 
             self.assertEqual(code, 0)
             payload = json.loads(stdout)
-            self.assertEqual(payload["repo_id"], "mlx-community/gemma-4-12B-it-6bit")
-            self.assertEqual(payload["alias"], "gemma4-12b-6bit")
+            self.assertEqual(
+                payload["repo_id"],
+                "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
+            )
+            self.assertEqual(payload["alias"], "ax-gemma4-12b-6bit")
             self.assertNotIn("preset", payload)
 
     def test_serve_download_uses_ready_downloaded_artifacts(self) -> None:
@@ -632,38 +677,17 @@ class AxEngineCliTests(unittest.TestCase):
                 mock.patch.object(
                     _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
                 ),
-            ):
-                code, stdout = self.capture_main(
-                    ["serve", "qwen36-35b", "--download", "--dry-run", "--json"]
-                )
-
-            self.assertEqual(code, 0)
-            payload = json.loads(stdout)
-            self.assertEqual(payload["resolved"]["kind"], "preset")
-            self.assertEqual(payload["resolved"]["download"]["dry_run"], True)
-            self.assertEqual(payload["server"]["argv"][0], "/opt/bin/ax-engine-server")
-
-            with (
-                mock.patch.dict(
-                    os.environ,
-                    {
-                        "AX_ENGINE_REPO_ROOT": str(root),
-                        "FAKE_MODEL_DIR": str(model_dir),
-                    },
-                ),
-                mock.patch.object(
-                    _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
-                ),
                 mock.patch.object(
                     os, "execvp", side_effect=RuntimeError("stop")
                 ) as execvp,
             ):
                 with self.assertRaisesRegex(RuntimeError, "stop"):
-                    self.capture_main(["serve", "qwen36-35b", "--download"])
+                    self.capture_main(
+                        ["serve", "ax-qwen3.6-35b", "--download"]
+                    )
 
             argv = execvp.call_args.args[1]
-            self.assertIn("--preset", argv)
-            self.assertIn("qwen3.6-35b", argv)
+            self.assertNotIn("--preset", argv)
             path_index = argv.index("--mlx-model-artifacts-dir") + 1
             self.assertEqual(argv[path_index], str(model_dir.resolve()))
 
@@ -809,16 +833,15 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
             code = _cli.main(argv)
         return code, out.getvalue()
 
-    def test_download_list_json_includes_mtp_target(self) -> None:
+    def test_download_list_marks_bundled_mtp_without_packaging_target(self) -> None:
         code, stdout = self.capture_main(["download", "--list", "--json"])
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        targets = {target["alias"]: target for target in payload["targets"]}
-        self.assertEqual(targets["gemma4-12b"]["mtp_target"], "gemma-4-12b-4bit")
-        self.assertEqual(targets["qwen3.6-35b"]["mtp_target"], "qwen3.6-35b-a3b")
-        self.assertIsNone(targets["glm4.7-flash-4bit"]["mtp_target"])
-        self.assertIsNone(targets["gemma4-e2b"]["mtp_target"])
+        targets = payload["targets"]
+        self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
+        self.assertTrue(all(target["mtp_target"] is None for target in targets))
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 18)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.
@@ -860,7 +883,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         summary = {
             "schema_version": "ax.download_model.v1",
             "status": "ready",
-            "repo_id": "mlx-community/gemma-4-e2b-it-4bit",
+            "repo_id": "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
             "dest": "/tmp/model",
         }
         inputs = iter(["1", "", "y"])  # select first model, default path, confirm
@@ -886,34 +909,19 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
                 return index
         raise AssertionError(f"profile not found: {label}")
 
-    def test_wizard_mtp_variant_runs_download_mtp(self) -> None:
-        idx = self._index_of("gemma4-12b")
-        inputs = iter([str(idx), "2", "y"])  # select gemma4-12b, MTP variant, confirm
-        completed = mock.Mock(returncode=0)
-        with (
-            mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            mock.patch.object(_cli, "_bench_bin", return_value="/fake/ax-engine-bench"),
-            mock.patch.object(_cli.subprocess, "run", return_value=completed) as run,
-        ):
-            code, _ = self.capture_main(["ui-downloader"])
-
-        self.assertEqual(code, 0)
-        run.assert_called_once()
-        argv = run.call_args[0][0]
-        self.assertEqual(
-            argv[:3], ["/fake/ax-engine-bench", "download-mtp", "gemma-4-12b-4bit"]
-        )
-
-    def test_wizard_direct_variant_on_mtp_model(self) -> None:
+    def test_wizard_mtp_snapshot_uses_standard_download(self) -> None:
         summary = {
             "schema_version": "ax.download_model.v1",
             "status": "ready",
-            "repo_id": "mlx-community/gemma-4-12B-it-4bit",
+            "repo_id": (
+                "AutomatosX/"
+                "AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP"
+            ),
             "dest": "/tmp/model",
         }
-        idx = self._index_of("gemma4-12b")
-        inputs = iter([str(idx), "1", "", "y"])  # select, Direct variant, default path, confirm
+        idx = self._index_of("ax-gemma4-12b")
+        # There is no Direct-vs-MTP prompt: select, accept cache, confirm.
+        inputs = iter([str(idx), "", "y"])
         with (
             mock.patch.object(_cli, "_supports_interactive", return_value=True),
             mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
@@ -924,9 +932,33 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
             code, stdout = self.capture_main(["ui-downloader"])
 
         self.assertEqual(code, 0)
-        download.assert_called_once()
-        _, kwargs = download.call_args
-        self.assertTrue(kwargs["progress"])
+        download.assert_called_once_with(
+            "ax-gemma4-12b", dest=None, force=False, progress=True
+        )
+        self.assertIn("Status: ready", stdout)
+
+    def test_wizard_non_mtp_snapshot_uses_standard_download(self) -> None:
+        summary = {
+            "schema_version": "ax.download_model.v1",
+            "status": "ready",
+            "repo_id": "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
+            "dest": "/tmp/model",
+        }
+        idx = self._index_of("ax-qwen3-coder-next")
+        inputs = iter([str(idx), "", "y"])
+        with (
+            mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
+            mock.patch.object(
+                _cli, "_download_summary", return_value=(0, summary, "")
+            ) as download,
+        ):
+            code, stdout = self.capture_main(["ui-downloader"])
+
+        self.assertEqual(code, 0)
+        download.assert_called_once_with(
+            "ax-qwen3-coder-next", dest=None, force=False, progress=True
+        )
         self.assertIn("Status: ready", stdout)
 
     def test_wizard_cancel_returns_130(self) -> None:

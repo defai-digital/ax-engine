@@ -72,10 +72,17 @@ impl App {
         actions
     }
 
-    /// Smallest catalog variant that fits in RAM.
+    /// Smallest catalog variant that fits in RAM. Quick start promises a
+    /// chat-ready server, so embedding-only families never win the pick
+    /// even though they are the smallest downloads in the catalog.
     pub(crate) fn quick_start_target(&self) -> Option<(usize, usize)> {
         let mut best: Option<(usize, usize, u64, RamFit)> = None;
         for (fi, family) in self.families.iter().enumerate() {
+            if catalog::is_embedding_family_key(&family.key)
+                || family.key.to_ascii_lowercase().contains("diffusiongemma")
+            {
+                continue;
+            }
             for (vi, variant) in family.variants.iter().enumerate() {
                 let Some(size) = variant.size_estimate() else {
                     continue;

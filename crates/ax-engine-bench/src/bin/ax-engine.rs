@@ -15,10 +15,19 @@ struct ModelProfile {
     repo_id: &'static str,
     aliases: &'static [&'static str],
     downloadable: bool,
-    /// Total repo download size summed from the Hugging Face API (`?blobs=true`)
-    /// on 2026-07-10. A point-in-time estimate for previews and progress totals,
+    /// Total repo download size summed from Hugging Face file metadata.
+    /// A point-in-time estimate for previews and progress totals,
     /// not a contract — repos can republish with different shard sizes.
     approx_size_bytes: Option<u64>,
+}
+
+impl ModelProfile {
+    /// Product-managed downloads are intentionally restricted to the curated
+    /// AutomatosX Hub organization. Other profiles remain available as legacy
+    /// serve aliases for already-downloaded artifacts.
+    fn is_downloadable(self) -> bool {
+        self.downloadable && self.repo_id.starts_with("AutomatosX/")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,13 +54,6 @@ struct MtpDownloadTarget {
     repo_id: &'static str,
     aliases: &'static [&'static str],
     kind: MtpDownloadKind,
-    /// Size of the base `repo_id` download plus the extra MTP package
-    /// (assistant repo or the source shards holding `mtp.*` tensors), both
-    /// summed from the Hugging Face API on 2026-07-10. `None` when the extra
-    /// source is gated or has no statically knowable size. Estimates for
-    /// previews only.
-    approx_base_bytes: Option<u64>,
-    approx_extra_bytes: Option<u64>,
 }
 
 const MODEL_PROFILES: &[ModelProfile] = &[
@@ -220,6 +222,259 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         downloadable: true,
         approx_size_bytes: Some(20_429_169_263),
     },
+    // --- AutomatosX packs (https://huggingface.co/AutomatosX) ---
+    // AX-branded builds of the primary product families. Chat packs bundle
+    // their speculative-decode extras in one repo (Qwen: `mtp.safetensors`
+    // sidecar; Gemma: `assistant/` weights + `ax_gemma4_assistant_mtp.json`
+    // contract) plus a pre-generated `model-manifest.json`, so a single
+    // `ax-engine download <alias>` produces a serve-ready MTP directory —
+    // no separate `download-mtp` step. `preset` stays `None` on purpose:
+    // these aliases promise the exact AutomatosX repo, so serve resolves
+    // through the downloaded artifacts dir (`--download`, idempotent when
+    // cached) instead of loose hf-cache preset matching that could pick a
+    // different org's snapshot. Sizes: summed HF API file metadata, 2026-07-20.
+    ModelProfile {
+        label: "ax-qwen3.5-9b",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
+        aliases: &[
+            "ax-qwen3.5-9b",
+            "ax-qwen35-9b",
+            "ax-qwen3.5-9b-optiq-4bit",
+            "ax-qwen3.5-9b-mlx-optiq-4bit-mtp",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(8_355_172_323),
+    },
+    ModelProfile {
+        label: "ax-qwen3.5-9b-4bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP",
+        aliases: &["ax-qwen3.5-9b-4bit", "ax-qwen35-9b-4bit"],
+        downloadable: true,
+        approx_size_bytes: Some(6_463_848_363),
+    },
+    ModelProfile {
+        label: "ax-qwen3.5-9b-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP",
+        aliases: &["ax-qwen3.5-9b-6bit", "ax-qwen35-9b-6bit"],
+        downloadable: true,
+        approx_size_bytes: Some(8_702_033_839),
+    },
+    ModelProfile {
+        label: "ax-qwen3.6-27b",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
+        aliases: &[
+            "ax-qwen3.6-27b",
+            "ax-qwen36-27b",
+            "ax-qwen3.6-27b-optiq-4bit",
+            "ax-qwen3.6-27b-mlx-optiq-4bit-mtp",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(20_239_552_902),
+    },
+    ModelProfile {
+        label: "ax-qwen3.6-27b-4bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.6-27B-MLX-4bit-MTP",
+        aliases: &["ax-qwen3.6-27b-4bit", "ax-qwen36-27b-4bit"],
+        downloadable: true,
+        approx_size_bytes: Some(16_931_255_394),
+    },
+    ModelProfile {
+        label: "ax-qwen3.6-27b-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+        aliases: &["ax-qwen3.6-27b-6bit", "ax-qwen36-27b-6bit"],
+        downloadable: true,
+        approx_size_bytes: Some(23_654_593_521),
+    },
+    ModelProfile {
+        label: "ax-qwen3.6-35b",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+        aliases: &[
+            "ax-qwen3.6-35b",
+            "ax-qwen36-35b",
+            "ax-qwen3.6-35b-a3b",
+            "ax-qwen3.6-35b-optiq-4bit",
+            "ax-qwen3.6-35b-a3b-mlx-optiq-4bit-mtp",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(26_327_314_611),
+    },
+    ModelProfile {
+        label: "ax-qwen3.6-35b-4bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
+        aliases: &["ax-qwen3.6-35b-4bit", "ax-qwen36-35b-4bit"],
+        downloadable: true,
+        approx_size_bytes: Some(22_118_783_082),
+    },
+    ModelProfile {
+        label: "ax-qwen3.6-35b-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
+        aliases: &["ax-qwen3.6-35b-6bit", "ax-qwen36-35b-6bit"],
+        downloadable: true,
+        approx_size_bytes: Some(30_778_381_769),
+    },
+    ModelProfile {
+        label: "ax-gemma4-12b",
+        preset: None,
+        repo_id: "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP",
+        aliases: &[
+            "ax-gemma4-12b",
+            "ax-gemma-4-12b",
+            "ax-gemma4-12b-qat-optiq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(9_306_791_577),
+    },
+    ModelProfile {
+        label: "ax-gemma4-12b-4bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP",
+        aliases: &["ax-gemma4-12b-4bit", "ax-gemma4-12b-qat-4bit"],
+        downloadable: true,
+        approx_size_bytes: Some(11_290_537_445),
+    },
+    ModelProfile {
+        label: "ax-gemma4-12b-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
+        aliases: &["ax-gemma4-12b-6bit"],
+        downloadable: true,
+        approx_size_bytes: Some(12_260_440_732),
+    },
+    ModelProfile {
+        label: "ax-gemma4-26b",
+        preset: None,
+        repo_id: "AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-OptiQ-4bit-Assistant-MTP",
+        aliases: &[
+            "ax-gemma4-26b",
+            "ax-gemma-4-26b",
+            "ax-gemma4-26b-optiq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(19_679_734_219),
+    },
+    ModelProfile {
+        label: "ax-gemma4-26b-4bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-QAT-4bit-Assistant-MTP",
+        aliases: &["ax-gemma4-26b-4bit", "ax-gemma4-26b-qat-4bit"],
+        downloadable: true,
+        approx_size_bytes: Some(15_909_874_490),
+    },
+    ModelProfile {
+        label: "ax-gemma4-26b-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-6bit-Assistant-MTP",
+        aliases: &["ax-gemma4-26b-6bit"],
+        downloadable: true,
+        approx_size_bytes: Some(22_685_574_172),
+    },
+    ModelProfile {
+        label: "ax-gemma4-31b",
+        preset: None,
+        repo_id: "AutomatosX/AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP",
+        aliases: &[
+            "ax-gemma4-31b",
+            "ax-gemma-4-31b",
+            "ax-gemma4-31b-optiq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(24_519_926_135),
+    },
+    ModelProfile {
+        label: "ax-gemma4-31b-4bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP",
+        aliases: &["ax-gemma4-31b-4bit", "ax-gemma4-31b-qat-4bit"],
+        downloadable: true,
+        approx_size_bytes: Some(29_145_665_562),
+    },
+    ModelProfile {
+        label: "ax-gemma4-31b-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP",
+        aliases: &["ax-gemma4-31b-6bit"],
+        downloadable: true,
+        approx_size_bytes: Some(27_091_575_156),
+    },
+    ModelProfile {
+        label: "ax-qwen3-coder-next",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
+        aliases: &[
+            "ax-qwen3-coder-next",
+            "ax-qwen3-coder",
+            "ax-qwen3-coder-next-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(44_855_983_937),
+    },
+    ModelProfile {
+        label: "ax-qwen3-coder-next-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-Coder-Next-MLX-6bit",
+        aliases: &["ax-qwen3-coder-next-6bit", "ax-qwen3-coder-6bit"],
+        downloadable: true,
+        approx_size_bytes: Some(64_761_627_099),
+    },
+    ModelProfile {
+        label: "ax-diffusiongemma-26b",
+        preset: None,
+        repo_id: "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+        aliases: &[
+            "ax-diffusiongemma-26b",
+            "ax-diffusiongemma-26b-4bit",
+            "ax-diffusiongemma-26b-a4b-it-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(16_575_490_802),
+    },
+    // AutomatosX embedding packs: served natively via /v1/embeddings and
+    // co-residable with chat models (multi-model `load_mode=add`).
+    ModelProfile {
+        label: "ax-embeddinggemma-300m",
+        preset: None,
+        repo_id: "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
+        aliases: &[
+            "ax-embeddinggemma-300m",
+            "ax-embeddinggemma",
+            "ax-embeddinggemma-300m-8bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(366_371_330),
+    },
+    ModelProfile {
+        label: "ax-qwen3-embedding-0.6b",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit",
+        aliases: &["ax-qwen3-embedding-0.6b", "ax-qwen3-embedding-0.6b-8bit"],
+        downloadable: true,
+        approx_size_bytes: Some(649_219_787),
+    },
+    ModelProfile {
+        label: "ax-qwen3-embedding-4b",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ",
+        aliases: &["ax-qwen3-embedding-4b", "ax-qwen3-embedding-4b-dwq"],
+        downloadable: true,
+        approx_size_bytes: Some(2_278_744_068),
+    },
+    ModelProfile {
+        label: "ax-qwen3-embedding-8b",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ",
+        aliases: &["ax-qwen3-embedding-8b", "ax-qwen3-embedding-8b-dwq"],
+        downloadable: true,
+        approx_size_bytes: Some(4_273_261_843),
+    },
     // --- Secondary: research / enterprise Llama ---
     ModelProfile {
         label: "llama3.1-8b",
@@ -349,8 +604,6 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
         kind: MtpDownloadKind::QwenSidecar {
             mtp_source: "Qwen/Qwen3.6-27B",
         },
-        approx_base_bytes: Some(22_804_828_230),
-        approx_extra_bytes: Some(4_503_752_416),
     },
     MtpDownloadTarget {
         label: "qwen3.6-35b-a3b",
@@ -365,8 +618,6 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
         kind: MtpDownloadKind::QwenSidecar {
             mtp_source: "Qwen/Qwen3.6-35B-A3B",
         },
-        approx_base_bytes: Some(29_088_768_041),
-        approx_extra_bytes: Some(6_064_305_104),
     },
     MtpDownloadTarget {
         label: "gemma-4-12b",
@@ -384,8 +635,6 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             assistant_model_id: "gemma-4-12b-it-assistant",
             max_depth: 2,
         },
-        approx_base_bytes: Some(9_760_954_674),
-        approx_extra_bytes: Some(375_787_073),
     },
     MtpDownloadTarget {
         label: "gemma-4-12b-4bit",
@@ -397,8 +646,6 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             assistant_model_id: "gemma-4-12b-it-assistant",
             max_depth: 2,
         },
-        approx_base_bytes: Some(6_773_372_848),
-        approx_extra_bytes: Some(270_077_496),
     },
     MtpDownloadTarget {
         label: "gemma-4-26b",
@@ -417,8 +664,6 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             assistant_model_id: "gemma-4-26b-a4b-it-assistant",
             max_depth: 1,
         },
-        approx_base_bytes: Some(21_679_806_248),
-        approx_extra_bytes: None,
     },
     MtpDownloadTarget {
         label: "gemma-4-31b",
@@ -436,8 +681,6 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             assistant_model_id: "gemma-4-31b-it-assistant",
             max_depth: 1,
         },
-        approx_base_bytes: Some(26_119_973_860),
-        approx_extra_bytes: None,
     },
 ];
 
@@ -1167,11 +1410,15 @@ fn cmd_serve(args: &[OsString]) -> Result<u8, String> {
             })
         } else {
             let Some(preset) = preset else {
-                let hint = if target.contains('/') {
-                    format!(" or run: ax-engine serve {target} --download")
-                } else {
-                    String::new()
-                };
+                // A downloadable no-preset alias (e.g. the AutomatosX packs)
+                // serves through its exact downloaded artifacts dir, so point
+                // at the idempotent --download flow instead of a preset.
+                let hint =
+                    if target.contains('/') || profile.is_some_and(ModelProfile::is_downloadable) {
+                        format!(" or run: ax-engine serve {target} --download")
+                    } else {
+                        String::new()
+                    };
                 return Err(format!(
                     "unknown model alias or missing local directory: {target:?}; pass a model directory or one of {}{hint}",
                     server_preset_labels().join(", ")
@@ -1459,7 +1706,7 @@ fn model_profile_payload(profile: &ModelProfile) -> Value {
         "label": profile.label,
         "repo_id": profile.repo_id,
         "preset": profile.preset,
-        "downloadable": profile.downloadable,
+        "downloadable": profile.is_downloadable(),
         "aliases": profile.aliases,
     })
 }
@@ -2367,7 +2614,7 @@ fn download_repo_id(
     profile: Option<ModelProfile>,
 ) -> Result<(&'static str, Option<ModelProfile>), String> {
     if let Some(profile) = profile {
-        if !profile.downloadable {
+        if !profile.is_downloadable() {
             return Err(format!(
                 "{} is not managed by ax-engine download; use an explicit repo id or one of these targets:\n{}",
                 profile.label,
@@ -2431,31 +2678,36 @@ fn download_options_payload() -> Value {
             "env": ["HF_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"],
             "dest_semantics": "--dest copies the resolved snapshot to an explicit directory",
         },
-        "targets": MODEL_PROFILES.iter().filter(|profile| profile.downloadable).map(|profile| {
+        "targets": MODEL_PROFILES.iter().copied().filter(|profile| profile.is_downloadable()).map(|profile| {
             json!({
                 "alias": profile.label,
                 "repo_id": profile.repo_id,
                 "preset": profile.preset,
                 "aliases": profile.aliases,
+                "mtp_included": profile.repo_id.to_ascii_lowercase().contains("-mtp"),
             })
         }).collect::<Vec<_>>(),
         "examples": [
-            "ax-engine download qwen36-35b",
-            "ax-engine download gemma4-12b",
-            "ax-engine download llama3.3-70b",
-            "ax-engine download mistral-small",
-            "ax-engine download gpt-oss-20b",
-            "ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json",
+            "ax-engine download ax-qwen3.5-9b",
+            "ax-engine download ax-qwen3.6-35b",
+            "ax-engine download ax-gemma4-12b",
+            "ax-engine download ax-qwen3-coder-next",
+            "ax-engine download ax-embeddinggemma-300m",
+            "ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json",
         ],
     })
 }
 
 fn format_download_options() -> String {
     let mut lines = vec![
-        "Available direct-mode MLX download targets".to_string(),
-        "(primary: Gemma 4 / Qwen 3.x / GLM; secondary: Llama, Mistral, GPT-OSS):".to_string(),
+        "Available AX-ready AutomatosX snapshots".to_string(),
+        "(MTP/assistant artifacts are already included where published):".to_string(),
     ];
-    for profile in MODEL_PROFILES.iter().filter(|profile| profile.downloadable) {
+    for profile in MODEL_PROFILES
+        .iter()
+        .copied()
+        .filter(|profile| profile.is_downloadable())
+    {
         let aliases = profile.aliases.join(", ");
         lines.push(format!(
             "  - {} -> {} (aliases: {})",
@@ -2463,12 +2715,12 @@ fn format_download_options() -> String {
         ));
     }
     lines.push("Examples:".into());
-    lines.push("  ax-engine download qwen36-35b".into());
-    lines.push("  ax-engine download gemma4-12b".into());
-    lines.push("  ax-engine download llama3.3-70b".into());
-    lines.push("  ax-engine download mistral-small".into());
-    lines.push("  ax-engine download gpt-oss-20b".into());
-    lines.push("  ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json".into());
+    lines.push("  ax-engine download ax-qwen3.5-9b".into());
+    lines.push("  ax-engine download ax-qwen3.6-35b".into());
+    lines.push("  ax-engine download ax-gemma4-12b".into());
+    lines.push("  ax-engine download ax-qwen3-coder-next".into());
+    lines.push("  ax-engine download ax-embeddinggemma-300m".into());
+    lines.push("  ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json".into());
     lines.join("\n")
 }
 
@@ -2785,16 +3037,55 @@ fn _os_str(value: &str) -> &OsStr {
 mod tests {
     use super::*;
 
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 25] = [
+        "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+        "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
+        "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
+        "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP",
+        "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP",
+        "AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-6bit-Assistant-MTP",
+        "AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-OptiQ-4bit-Assistant-MTP",
+        "AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-QAT-4bit-Assistant-MTP",
+        "AutomatosX/AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP",
+        "AutomatosX/AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP",
+        "AutomatosX/AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP",
+        "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
+        "AutomatosX/AX-Qwen3-Coder-Next-MLX-6bit",
+        "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit",
+        "AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ",
+        "AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ",
+        "AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP",
+        "AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP",
+        "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
+        "AutomatosX/AX-Qwen3.6-27B-MLX-4bit-MTP",
+        "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+        "AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
+        "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
+        "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
+        "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+    ];
+
     #[test]
     fn download_options_json_matches_contract() {
         let payload = download_options_payload();
         assert_eq!(payload["schema_version"], "ax.download_options.v1");
-        assert!(
-            payload["targets"]
-                .as_array()
-                .unwrap()
+        let targets = payload["targets"].as_array().unwrap();
+        let actual = targets
+            .iter()
+            .map(|target| target["repo_id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = EXPECTED_AUTOMATOSX_REPOS
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, expected);
+        assert_eq!(targets.len(), EXPECTED_AUTOMATOSX_REPOS.len());
+        assert!(targets.iter().all(|target| target["alias"] != "gemma4-12b"));
+        assert_eq!(
+            targets
                 .iter()
-                .any(|target| target["alias"] == "gemma4-12b")
+                .filter(|target| target["mtp_included"] == true)
+                .count(),
+            18
         );
     }
 

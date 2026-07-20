@@ -534,6 +534,58 @@ fn explicit_qwen36_mtp_artifacts_infer_model_id_when_omitted() {
 }
 
 #[test]
+fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
+    // AutomatosX org packs (https://huggingface.co/AutomatosX) resolve to
+    // the same product model ids as the unbranded artifact layouts.
+    let cases = [
+        (
+            "models--AutomatosX--AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
+            "qwen3_5",
+            "qwen3.6-27b-mtp",
+        ),
+        (
+            "models--AutomatosX--AX-Qwen3-Coder-Next-MLX-4bit",
+            "qwen3_next",
+            "qwen3-coder-next",
+        ),
+        (
+            "models--AutomatosX--AX-EmbeddingGemma-300M-MLX-8bit",
+            "gemma3_text",
+            "embeddinggemma-300m",
+        ),
+        (
+            "models--AutomatosX--AX-Qwen3-Embedding-0.6B-MLX-8bit",
+            "qwen3",
+            "qwen3-embedding-0.6b",
+        ),
+        (
+            "models--AutomatosX--AX-Qwen3-Embedding-8B-MLX-4bit-DWQ",
+            "qwen3",
+            "qwen3-embedding-8b",
+        ),
+    ];
+    for (cache_dir, model_type, expected) in cases {
+        let root = unique_test_dir("infer-automatosx-pack");
+        let artifact_dir = root.join(cache_dir).join("snapshots").join("v1");
+        write_artifact_dir(&artifact_dir, model_type);
+        let args = ServerArgs {
+            model_id: String::new(),
+            mlx: true,
+            mlx_model_artifacts_dir: Some(artifact_dir.clone()),
+            ..base_args()
+        };
+
+        assert_eq!(
+            args.effective_model_id()
+                .expect("model id should infer from AutomatosX pack path"),
+            expected,
+            "{cache_dir}"
+        );
+        fs::remove_dir_all(root).expect("test dir should clean up");
+    }
+}
+
+#[test]
 fn omitted_model_id_without_explicit_artifacts_keeps_qwen_default() {
     let args = ServerArgs {
         model_id: String::new(),
@@ -683,6 +735,32 @@ fn qwen36_35b_preset_selects_mlx_preview_defaults() {
 }
 
 #[test]
+fn qwen3_coder_next_preset_selects_mlx_preview_defaults() {
+    let mlx_model_artifacts_dir = PathBuf::from("/tmp/AX-Qwen3-Coder-Next-MLX-4bit");
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Qwen3CoderNext),
+        mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(args.effective_model_id().unwrap(), "qwen3-coder-next");
+    assert_eq!(
+        args.effective_support_tier(),
+        PreviewSupportTier::MlxPreview
+    );
+    assert_eq!(
+        actual.resolved_backend.selected_backend,
+        SelectedBackend::Mlx
+    );
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(mlx_model_artifacts_dir.as_path())
+    );
+}
+
+#[test]
 fn glm_preset_selects_native_mlx_by_default() {
     // GLM 4.7 Flash is a direct-support model: the preset selects the native
     // MLX tier by default. Delegation requires an explicit delegated tier.
@@ -708,6 +786,7 @@ fn render_presets_lists_glm_preset() {
     assert!(presets.contains("gemma4-12b\tmodel_id=gemma4-12b"));
     assert!(presets.contains("qwen3.5-9b\tmodel_id=qwen3.5-9b"));
     assert!(presets.contains("qwen3.6-27b\tmodel_id=qwen36-27b"));
+    assert!(presets.contains("qwen3-coder-next\tmodel_id=qwen3-coder-next"));
     assert!(presets.contains("glm4.7-flash-4bit\tmodel_id=glm4_moe_lite"));
     assert!(presets.contains("llama3.3-70b\tmodel_id=llama3.3-70b"));
     assert!(presets.contains("mistral-small\tmodel_id=mistral-small"));

@@ -299,7 +299,7 @@ impl App {
                                 .fg(theme::colors().text)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("{:<4}", task.mode.label()), theme::body_dim()),
+                        Span::styled(format!("{:<4}", "hub"), theme::body_dim()),
                         Span::styled(dest_short, theme::label()),
                     ]))
                 })

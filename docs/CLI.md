@@ -27,7 +27,7 @@ Use `serve` as the normal local-server entrypoint:
 
 ```text
 ax-engine serve /path/to/mlx-model --port 31418
-ax-engine serve qwen36-35b --download --port 31418
+ax-engine serve ax-qwen3.6-35b --download --port 31418
 ax-engine serve qwen36-35b --dry-run --json
 ax-engine serve qwen36-35b -- --max-batch-tokens 1024
 ```
@@ -39,25 +39,26 @@ wins over alias lookup. Extra flags after `--` are passed through to
 or raw Hugging Face repo ids before launch, and fails closed if the downloader
 does not return ready AX artifacts.
 
-Use `download` when you want model acquisition as a separate step:
+Use `download` when you want model acquisition as a separate step. Managed
+aliases cover the curated [AutomatosX catalog](https://huggingface.co/AutomatosX)
+(MTP/assistant extras and `model-manifest.json` ship in the snapshot); legacy
+aliases such as `qwen36-35b` stay serve-only, and raw `org/repo` ids remain an
+explicit escape hatch:
 
 ```text
 ax-engine download --list
-ax-engine download qwen3.5-9b
-ax-engine download qwen36-35b
-ax-engine download qwen36-27b
-ax-engine download qwen36-27b-5bit
-ax-engine download qwen36-27b-6bit
-ax-engine download qwen36-27b-8bit
-ax-engine download gemma4-e2b
-ax-engine download gemma4-e2b-5bit
-ax-engine download gemma4-e2b-6bit
-ax-engine download gemma4-e2b-8bit
-ax-engine download gemma4-12b
-ax-engine download gemma4-12b-6bit
-ax-engine download gemma4-31b
+ax-engine download ax-qwen3.5-9b
+ax-engine download ax-qwen3.6-27b
+ax-engine download ax-qwen3.6-27b-6bit
+ax-engine download ax-qwen3.6-35b
+ax-engine download ax-gemma4-12b
+ax-engine download ax-gemma4-26b
+ax-engine download ax-gemma4-31b
+ax-engine download ax-qwen3-coder-next
+ax-engine download ax-embeddinggemma-300m
+ax-engine download ax-qwen3-embedding-4b
 ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
-ax-engine download qwen36-35b --dest /path/to/explicit-copy
+ax-engine download ax-qwen3.6-35b --dest /path/to/explicit-copy
 ```
 
 For an interactive flow, run `ax-engine tui`. The TUI has five screens
@@ -67,11 +68,11 @@ large utilization chart aligned to live values from `vm_stat`/`ps`/`ioreg`,
 process strip, installed-model
 headroom vs RAM, top memory processes — only metrics macOS can provide without
 privileged GPU tooling), plus Quick start actions and installed models;
-Models is a four-step wizard — family → size (estimate and RAM-fit badge per
-variant) → optional speed-up (plain language, with the extra package size) →
-a confirm summary before anything downloads. The destination defaults to the
-shared Hugging Face Hub cache and can be changed on the confirm step; direct
-downloads use `--dest`, and MTP packages use `--output`. Downloads run in a
+Models is a three-step wizard — family → size (estimate and RAM-fit badge per
+variant) → a confirm summary before anything downloads; AutomatosX snapshots
+bundle their MTP/assistant extras, so there is no separate speed-up step. The
+destination defaults to the shared Hugging Face Hub cache and can be changed
+on the confirm step with `--dest`. Downloads run in a
 background queue with a progress bar, speed, ETA, and phase labels (driven by
 `--progress-json`); Serve launches `ax-engine-server` and shows the URL with a
 copyable curl example; Chat streams replies from the running server over

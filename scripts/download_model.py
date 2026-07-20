@@ -40,14 +40,6 @@ def _slug(repo_id: str) -> str:
     return repo_id.replace("/", "--")
 
 
-def _reject_non_llm_repo(repo_id: str) -> None:
-    if "embedding" in repo_id.lower() or "embed" in repo_id.lower():
-        raise RuntimeError(
-            "embedding model downloads are not managed by ax-engine. "
-            "Download embedding model artifacts manually and pass the local model directory."
-        )
-
-
 def default_mlx_lm_cache_root() -> Path:
     """Return the shared Hugging Face Hub cache root for model snapshots."""
     if hf_hub_cache := os.environ.get("HF_HUB_CACHE"):
@@ -354,8 +346,6 @@ def download(
     progress_json: bool = False,
     progress_bar: bool = False,
 ) -> Path:
-    _reject_non_llm_repo(repo_id)
-
     if dest is not None:
         dest = Path(dest)
 
@@ -402,10 +392,12 @@ def download(
     if dest is None:
         return snapshot
 
+    snapshot_has_manifest = (snapshot / MODEL_MANIFEST_FILE).is_file()
     _copy_snapshot_to_dest(snapshot, dest)
-    if force:
+    if force and not snapshot_has_manifest:
         # Weights were refreshed; drop any manifest left from a prior model so it is
-        # regenerated against the new weights rather than served stale.
+        # regenerated against the new weights rather than served stale. Preserve a
+        # manifest shipped by the freshly downloaded AutomatosX snapshot.
         (dest / MODEL_MANIFEST_FILE).unlink(missing_ok=True)
     return dest
 

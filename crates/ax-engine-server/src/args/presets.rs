@@ -24,6 +24,8 @@ pub enum ServerPreset {
     Qwen36_27b,
     #[value(name = "qwen3.6-35b", alias = "qwen36-35b")]
     Qwen36_35b,
+    #[value(name = "qwen3-coder-next", alias = "qwen3-coder")]
+    Qwen3CoderNext,
     // Secondary: research / enterprise Llama
     #[value(name = "llama3.1-8b", alias = "llama31-8b")]
     Llama31_8b,
@@ -172,6 +174,24 @@ impl ServerPreset {
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
+            // Qwen3-Coder-Next direct-support preset: hybrid GatedDeltaNet
+            // linear attention + sparse MoE on the qwen3_next family (same
+            // repo-owned graph as Qwen 3.6), coder chat template.
+            Self::Qwen3CoderNext => PresetDefinition {
+                preset: self,
+                label: "qwen3-coder-next",
+                model_id: "qwen3-coder-next",
+                aliases: &[
+                    "qwen3-coder-next",
+                    "qwen3-coder",
+                    "qwen3-coder-next-4bit",
+                    "qwen3-coder-next-6bit",
+                    "ax-qwen3-coder-next",
+                ],
+                model_types: &["qwen3_next"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
             Self::Llama31_8b => PresetDefinition {
                 preset: self,
                 label: "llama3.1-8b",
@@ -303,6 +323,7 @@ pub fn render_presets() -> String {
         ServerPreset::Qwen35_9b,
         ServerPreset::Qwen36_27b,
         ServerPreset::Qwen36_35b,
+        ServerPreset::Qwen3CoderNext,
         ServerPreset::Llama31_8b,
         ServerPreset::Llama33_70b,
         ServerPreset::Llama4Scout,
