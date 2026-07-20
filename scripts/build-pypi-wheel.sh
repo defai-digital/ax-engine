@@ -275,35 +275,71 @@ if [[ "$(basename "$DELOCATED")" != *"-${EXPECTED_PLAT_TAG}.whl" ]]; then
 fi
 echo "    verified platform tag: ${EXPECTED_PLAT_TAG}"
 
-# ── 5c. Guard every bundled binary's actual minos ──────────────────────────
+# ── 5c. Guard ax-engine product binaries' actual minos ─────────────────────
 # The wheel tag can't express our real requirement (see 5b), so verify it
-# directly: every Mach-O file actually bundled in the wheel must have
-# LC_BUILD_VERSION minos >= MACOSX_DEPLOYMENT_TARGET. This is what actually
-# protects users — a regression here (e.g. a future dependency silently
-# reintroducing a <26.2 build) means the wheel "installs but doesn't run" on
-# older macOS 26.x, or worse, silently loses NAX acceleration with no error.
-echo "==> Verifying bundled binaries' minos..."
+# directly on the Mach-O we compile: extension modules and `_bin/*` must have
+# LC_BUILD_VERSION minos >= MACOSX_DEPLOYMENT_TARGET. Delocate also vendors
+# the admitted pip MLX runtime (`libmlx.dylib`, `libjaccl.dylib`) into
+# `ax_engine.dylibs/`; those currently ship minos 15.0 with NAX present and
+# must NOT be held to the product floor (same rationale as check-mlx-version).
+#
+# is_ax_engine_product_macho REL_PATH — 0 if REL_PATH is an ax-engine binary
+# we built and must meet MACOSX_DEPLOYMENT_TARGET; 1 for vendored runtime.
+is_ax_engine_product_macho() {
+    local rel="${1#./}"
+    case "$rel" in
+        */libmlx.dylib|libmlx.dylib|*/libjaccl.dylib|libjaccl.dylib)
+            return 1
+            ;;
+        ax_engine/_bin/*|*/ax_engine/_bin/*)
+            return 0
+            ;;
+        ax_engine/_ax_engine*|*/ax_engine/_ax_engine*)
+            return 0
+            ;;
+        ax_engine/*.so|*/ax_engine/*.so)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+echo "==> Verifying ax-engine product binaries' minos..."
 INSPECT_DIR="$(mktemp -d)"
 trap 'rm -rf "$INSPECT_DIR"' EXIT
 unzip -q "$DELOCATED" -d "$INSPECT_DIR"
 bad_binaries=()
+skipped_vendor=()
 while IFS= read -r -d '' f; do
     if file "$f" | grep -q "Mach-O"; then
+        rel="${f#"$INSPECT_DIR"/}"
         minos="$(otool -l "$f" | awk '/LC_BUILD_VERSION/{f=1} f && /minos/{print $2; exit}')"
         [[ -z "$minos" ]] && continue
+        if ! is_ax_engine_product_macho "$rel"; then
+            if ! version_ge "$minos" "$MACOSX_DEPLOYMENT_TARGET"; then
+                skipped_vendor+=("$rel (minos $minos, vendored)")
+            fi
+            continue
+        fi
         if ! version_ge "$minos" "$MACOSX_DEPLOYMENT_TARGET"; then
-            bad_binaries+=("${f#"$INSPECT_DIR"/} (minos $minos)")
+            bad_binaries+=("$rel (minos $minos)")
         fi
     fi
 done < <(find "$INSPECT_DIR" -type f -print0)
+if [[ ${#skipped_vendor[@]} -gt 0 ]]; then
+    echo "    note: vendored MLX runtime below product floor (expected for pip pin):"
+    printf '       %s\n' "${skipped_vendor[@]}"
+fi
 if [[ ${#bad_binaries[@]} -gt 0 ]]; then
-    echo "error: bundled binaries with minos below ${MACOSX_DEPLOYMENT_TARGET}:"
+    echo "error: ax-engine product binaries with minos below ${MACOSX_DEPLOYMENT_TARGET}:"
     printf '       %s\n' "${bad_binaries[@]}"
-    echo "       refusing to ship a wheel that installs but silently loses NAX"
-    echo "       acceleration (or fails to load) on some macOS 26.x hosts"
+    echo "       refusing to ship a wheel whose own binaries fall below the"
+    echo "       product macOS floor (MACOSX_DEPLOYMENT_TARGET)"
     exit 1
 fi
-echo "    verified: all bundled Mach-O binaries have minos >= ${MACOSX_DEPLOYMENT_TARGET}"
+echo "    verified: ax-engine product Mach-O binaries have minos >= ${MACOSX_DEPLOYMENT_TARGET}"
 
 # ── 6. Optionally publish ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--publish" ]]; then
