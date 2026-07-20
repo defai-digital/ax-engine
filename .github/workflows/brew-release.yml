@@ -223,8 +223,10 @@ jobs:
 
             The mlx / mlx-c dependencies build from this tap's formulas (not
             homebrew-core bottles) so MLX NAX acceleration is not silently
-            disabled on macOS 26.x. Xcode is required for that source build;
-            an Apple Developer account is not.
+            disabled on macOS 26.x. Xcode -- including its Metal Toolchain
+            component, a separate download since Xcode 26
+            (xcodebuild -downloadComponent MetalToolchain) -- is required for
+            that source build; an Apple Developer account is not.
           """)
 
           if apple_notarized:

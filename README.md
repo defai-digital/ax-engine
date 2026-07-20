@@ -40,8 +40,10 @@ ax-engine doctor
 ```
 
 Homebrew is the primary install path for the CLI, server, and bench tools.
-First install builds this tap's `mlx` / `mlx-c` from source (Xcode required;
-can take a while). For the Python SDK (`import ax_engine`), use
+First install builds this tap's `mlx` / `mlx-c` from source (can take a
+while) and needs Xcode plus its Metal Toolchain component — a separate
+download since Xcode 26: `xcodebuild -downloadComponent MetalToolchain`.
+For the Python SDK (`import ax_engine`), use
 `pip install "ax-engine[download]>=6.9.0,<7"` instead — see
 [Getting Started](docs/GETTING-STARTED.md).
 
