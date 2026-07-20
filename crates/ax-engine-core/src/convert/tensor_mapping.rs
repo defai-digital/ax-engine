@@ -482,6 +482,91 @@ pub(crate) const HF_STANDARD_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// Nemotron-H (`nemotron_h`) tensors under `backbone.layers.{N}.mixer.*`.
+///
+/// Each layer is a single residual mixer (Mamba-2 / attention / MoE), not an
+/// attn+FFN sandwich. Global embeddings / final norm are matched separately via
+/// the backbone prefix path in `match_tensor`.
+pub(crate) const NEMOTRON_H_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    // Pre-mixer RMSNorm (shared role name used as the layer residual norm).
+    (
+        "norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionNorm),
+    ),
+    // Full-attention mixer (*).
+    (
+        "mixer.q_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQ),
+    ),
+    (
+        "mixer.k_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionK),
+    ),
+    (
+        "mixer.v_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionV),
+    ),
+    (
+        "mixer.o_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionO),
+    ),
+    // Mamba-2 mixer (M). Packed in_proj → LinearAttentionInProjQkvz; D reuses
+    // LayerScalar so we do not grow NativeTensorRole for a one-family residual.
+    (
+        "mixer.in_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionInProjQkvz),
+    ),
+    (
+        "mixer.conv1d.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionConv1d),
+    ),
+    (
+        "mixer.dt_bias",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionDtBias),
+    ),
+    (
+        "mixer.A_log",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionALog),
+    ),
+    (
+        "mixer.D",
+        TensorMapping::PerLayer(NativeTensorRole::LayerScalar),
+    ),
+    (
+        "mixer.norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionNorm),
+    ),
+    (
+        "mixer.out_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionOutProj),
+    ),
+    // MoE mixer (E): ReLU² experts (fc1/fc2) + shared expert up/down only.
+    (
+        "mixer.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "mixer.gate.e_score_correction_bias",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpCorrectionBias),
+    ),
+    (
+        "mixer.switch_mlp.fc1.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "mixer.switch_mlp.fc2.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    (
+        "mixer.shared_experts.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "mixer.shared_experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
+    ),
+];
+
 pub(crate) const QWEN35_LINEAR_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "linear_attn.in_proj_qkv.weight",

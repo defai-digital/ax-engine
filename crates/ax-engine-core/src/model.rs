@@ -1289,6 +1289,8 @@ fn validate_native_model_manifest(
         )?;
     }
 
+    let is_nemotron_h = manifest.model_family == "nemotron_h";
+
     for layer_index in 0..manifest.layer_count {
         let roles =
             layer_roles
@@ -1302,6 +1304,15 @@ fn validate_native_model_manifest(
             layer_index,
             "attention_norm",
         )?;
+
+        // Nemotron-H layers are single residual mixers (Mamba / attention / MoE)
+        // without a classic attn+FFN sandwich — skip FFN/post-norm requirements
+        // and validate the mixer kind from layer_types / tensor roles below.
+        if is_nemotron_h {
+            validate_nemotron_h_layer(manifest, layer_index, roles)?;
+            continue;
+        }
+
         // ffn_norm is optional when attention_post_norm serves as the FFN norm
         // (e.g. Qwen3.5 linear attention layers).
         if !roles.contains(&NativeTensorRole::FfnNorm)
@@ -1704,6 +1715,117 @@ fn has_any_glm_mla_attention_role(roles: &[NativeTensorRole]) -> bool {
         || roles.contains(&NativeTensorRole::AttentionUnembedOut)
 }
 
+/// Validate one Nemotron-H residual mixer layer (Mamba / attention / MoE).
+fn validate_nemotron_h_layer(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+    roles: &[NativeTensorRole],
+) -> Result<(), NativeModelError> {
+    let layer_kind = manifest
+        .layer_types
+        .get(layer_index as usize)
+        .map(|s| s.as_str())
+        .unwrap_or("");
+
+    let has_attn = roles.contains(&NativeTensorRole::AttentionQ)
+        && roles.contains(&NativeTensorRole::AttentionK)
+        && roles.contains(&NativeTensorRole::AttentionV)
+        && roles.contains(&NativeTensorRole::AttentionO);
+    // Packed Mamba-2 in_proj is mapped to LinearAttentionInProjQkvz (no ba).
+    let has_mamba = roles.contains(&NativeTensorRole::LinearAttentionInProjQkvz)
+        && roles.contains(&NativeTensorRole::LinearAttentionConv1d)
+        && roles.contains(&NativeTensorRole::LinearAttentionDtBias)
+        && roles.contains(&NativeTensorRole::LinearAttentionALog)
+        && roles.contains(&NativeTensorRole::LinearAttentionNorm)
+        && roles.contains(&NativeTensorRole::LinearAttentionOutProj);
+    let has_moe = roles.contains(&NativeTensorRole::FfnGateInp)
+        && roles.contains(&NativeTensorRole::FfnUpExps)
+        && roles.contains(&NativeTensorRole::FfnDownExps);
+
+    match layer_kind {
+        "mamba" | "M" | "m" => {
+            if !has_mamba {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "nemotron_h layer {layer_index} is mamba but missing Mamba-2 mixer tensors"
+                    ),
+                });
+            }
+            if !manifest.linear_attention.is_enabled() {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "nemotron_h layer {layer_index} is mamba but linear_attention is not configured"
+                    ),
+                });
+            }
+        }
+        "attention" | "*" | "full_attention" => {
+            if !has_attn {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "nemotron_h layer {layer_index} is attention but missing Q/K/V/O projections"
+                    ),
+                });
+            }
+        }
+        "moe" | "E" | "e" => {
+            if !has_moe {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "nemotron_h layer {layer_index} is moe but missing router/expert tensors"
+                    ),
+                });
+            }
+            if !manifest.moe.is_enabled() {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "nemotron_h layer {layer_index} is moe but manifest.moe is not configured"
+                    ),
+                });
+            }
+            // Shared expert is ReLU² up+down only (no SwiGLU gate).
+            if roles.contains(&NativeTensorRole::FfnSharedExpertUp)
+                != roles.contains(&NativeTensorRole::FfnSharedExpertDown)
+            {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "nemotron_h layer {layer_index} shared expert must provide both up and down"
+                    ),
+                });
+            }
+        }
+        "mlp" | "-" => {
+            let has_mlp = roles.contains(&NativeTensorRole::FfnUp)
+                && roles.contains(&NativeTensorRole::FfnDown);
+            if !has_mlp {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "nemotron_h layer {layer_index} is mlp but missing up/down projections"
+                    ),
+                });
+            }
+        }
+        other if other.is_empty() => {
+            // Fall back to tensor-role inference when layer_types is empty.
+            if !(has_mamba || has_attn || has_moe) {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "nemotron_h layer {layer_index} has no mamba, attention, or moe mixer tensors"
+                    ),
+                });
+            }
+        }
+        other => {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "nemotron_h layer {layer_index} has unknown layer_types entry {other:?}"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn moe_requires_shared_expert(manifest: &NativeModelManifest) -> bool {
     manifest.moe.is_enabled() && matches!(manifest.model_family.as_str(), "qwen3_5" | "qwen3_next")
 }
@@ -1798,6 +1920,22 @@ fn validate_native_model_tensor_shapes(
         )?;
     }
     validate_per_layer_input_tensor_shapes(manifest, hidden_size, vocab_size)?;
+
+    // Nemotron-H reuses linear_attention / MoE roles with Mamba-2 and ReLU²
+    // shapes that differ from Qwen gated-delta / SwiGLU contracts. Role presence
+    // is already enforced in validate_nemotron_h_layer; skip Qwen-shaped checks.
+    if manifest.model_family == "nemotron_h" {
+        for layer_index in 0..manifest.layer_count {
+            let attention_norm = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::AttentionNorm,
+                "attention_norm",
+            )?;
+            expect_vector_shape(attention_norm, hidden_size, "attention_norm")?;
+        }
+        return Ok(());
+    }
 
     for layer_index in 0..manifest.layer_count {
         let attention_norm = required_layer_tensor_spec(
@@ -2750,8 +2888,15 @@ fn validate_interleaved_attention_metadata(
                 ),
             });
         }
+        let allow_nemotron_kinds = manifest.model_family == "nemotron_h";
         for (idx, layer_type) in manifest.layer_types.iter().enumerate() {
-            if layer_type != "sliding_attention" && layer_type != "full_attention" {
+            let ok = matches!(layer_type.as_str(), "sliding_attention" | "full_attention")
+                || (allow_nemotron_kinds
+                    && matches!(
+                        layer_type.as_str(),
+                        "mamba" | "attention" | "moe" | "mlp" | "M" | "E" | "*" | "-"
+                    ));
+            if !ok {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
                         "layer_types[{idx}] must be sliding_attention or full_attention, got {layer_type:?}"

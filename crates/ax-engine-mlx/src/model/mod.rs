@@ -201,6 +201,12 @@ pub fn layer_forward(
     per_layer_input: Option<&MlxArray>, // [1, seq, per_layer_dim] or None
     shared_mask: Option<&Option<MlxArray>>,
 ) -> MlxArray {
+    // Nemotron-H owns all of its hybrid mixers (Mamba-2 / attention / MoE);
+    // dispatch before the Qwen linear-attention short-circuit.
+    if cfg.model_family == "nemotron_h" {
+        return families::nemotron_h::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset);
+    }
+
     // Linear-attention layers dispatch before the family route because the same
     // model (qwen3_5 / qwen3_next) has both linear and full-attention layers
     // and the family string alone is not enough to disambiguate per-layer type.
@@ -261,6 +267,9 @@ pub fn layer_forward(
         Some(LayerForwardRoute::GptOss) => {
             families::gpt_oss::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset)
         }
+        Some(LayerForwardRoute::NemotronH) => {
+            families::nemotron_h::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset)
+        }
         None => panic!(
             "unknown model_family in layer_forward (not in architecture registry): {}",
             cfg.model_family
@@ -306,6 +315,11 @@ pub fn layer_forward_last_only(
     shared_mask: Option<&Option<MlxArray>>,
     skip_post_attention_ffn: bool,
 ) -> MlxArray {
+    if cfg.model_family == "nemotron_h" {
+        // Nemotron mixers are residual-only; last-only FFN does not apply.
+        let _ = skip_post_attention_ffn;
+        return families::nemotron_h::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset);
+    }
     if cfg.is_linear_attention_layer(layer_idx) {
         // Linear-attention layers support last-position-only and skip-FFN:
         // the recurrent state is committed to cache before the FFN path.
@@ -3849,6 +3863,8 @@ mod tests {
                 ])),
                 in_proj_qkvz: None,
                 in_proj_ba: None,
+                conv1d_bias: None,
+                d: None,
                 conv1d_dense: zeros(
                     &[cfg.conv_dim() as i32, cfg.conv_kernel_dim as i32, 1_i32],
                     MlxDtype::Float32,
@@ -5257,6 +5273,8 @@ mod tests {
             )),
             in_proj_qkvz: None,
             in_proj_ba: None,
+            conv1d_bias: None,
+            d: None,
             conv1d_dense: array_f32(
                 &pat(
                     (conv_dim * cfg.conv_kernel_dim as i32) as usize,

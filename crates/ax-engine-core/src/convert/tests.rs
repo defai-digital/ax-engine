@@ -3899,3 +3899,207 @@ fn converts_real_automatosx_optiq_qwen35_from_hf_cache_when_present() {
         manifest.tensors.len(),
     );
 }
+
+#[test]
+fn converts_nemotron_h_hybrid_mamba_attention_moe() {
+    let dir = unique_test_dir("nemotron_h_hybrid");
+    // Tiny hybrid: M * E  (mamba, attention, moe)
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "nemotron_h",
+            "vocab_size": 32,
+            "hidden_size": 8,
+            "intermediate_size": 16,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 4,
+            "num_hidden_layers": 3,
+            "hybrid_override_pattern": "M*E",
+            "mamba_num_heads": 2,
+            "mamba_head_dim": 4,
+            "n_groups": 1,
+            "ssm_state_size": 4,
+            "conv_kernel": 4,
+            "moe_intermediate_size": 16,
+            "n_routed_experts": 4,
+            "num_experts_per_tok": 2,
+            "n_shared_experts": 1,
+            "moe_shared_expert_intermediate_size": 16,
+            "n_group": 1,
+            "topk_group": 1,
+            "norm_topk_prob": true,
+            "routed_scaling_factor": 2.5,
+            "layer_norm_epsilon": 1e-5,
+            "quantization": { "group_size": 32, "bits": 6, "mode": "affine" }
+        }),
+    );
+    // intermediate = 2*4 = 8; conv_dim = 8 + 2*1*4 = 16; in_proj = 8+16+2 = 26
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[
+            ("backbone.embeddings.weight", "BF16", &[32, 8]),
+            ("backbone.norm_f.weight", "BF16", &[8]),
+            ("lm_head.weight", "BF16", &[32, 8]),
+            // layer 0 mamba
+            ("backbone.layers.0.norm.weight", "BF16", &[8]),
+            ("backbone.layers.0.mixer.in_proj.weight", "U32", &[26, 8]),
+            ("backbone.layers.0.mixer.in_proj.scales", "BF16", &[26, 1]),
+            ("backbone.layers.0.mixer.in_proj.biases", "BF16", &[26, 1]),
+            ("backbone.layers.0.mixer.conv1d.weight", "BF16", &[16, 4, 1]),
+            ("backbone.layers.0.mixer.dt_bias", "F32", &[2]),
+            ("backbone.layers.0.mixer.A_log", "F32", &[2]),
+            ("backbone.layers.0.mixer.D", "F32", &[2]),
+            ("backbone.layers.0.mixer.norm.weight", "BF16", &[8]),
+            ("backbone.layers.0.mixer.out_proj.weight", "U32", &[8, 8]),
+            ("backbone.layers.0.mixer.out_proj.scales", "BF16", &[8, 1]),
+            ("backbone.layers.0.mixer.out_proj.biases", "BF16", &[8, 1]),
+            // layer 1 attention
+            ("backbone.layers.1.norm.weight", "BF16", &[8]),
+            ("backbone.layers.1.mixer.q_proj.weight", "U32", &[8, 8]),
+            ("backbone.layers.1.mixer.q_proj.scales", "BF16", &[8, 1]),
+            ("backbone.layers.1.mixer.q_proj.biases", "BF16", &[8, 1]),
+            ("backbone.layers.1.mixer.k_proj.weight", "U32", &[4, 8]),
+            ("backbone.layers.1.mixer.k_proj.scales", "BF16", &[4, 1]),
+            ("backbone.layers.1.mixer.k_proj.biases", "BF16", &[4, 1]),
+            ("backbone.layers.1.mixer.v_proj.weight", "U32", &[4, 8]),
+            ("backbone.layers.1.mixer.v_proj.scales", "BF16", &[4, 1]),
+            ("backbone.layers.1.mixer.v_proj.biases", "BF16", &[4, 1]),
+            ("backbone.layers.1.mixer.o_proj.weight", "U32", &[8, 8]),
+            ("backbone.layers.1.mixer.o_proj.scales", "BF16", &[8, 1]),
+            ("backbone.layers.1.mixer.o_proj.biases", "BF16", &[8, 1]),
+            // layer 2 moe
+            ("backbone.layers.2.norm.weight", "BF16", &[8]),
+            ("backbone.layers.2.mixer.gate.weight", "BF16", &[4, 8]),
+            (
+                "backbone.layers.2.mixer.gate.e_score_correction_bias",
+                "F32",
+                &[4],
+            ),
+            (
+                "backbone.layers.2.mixer.switch_mlp.fc1.weight",
+                "U32",
+                &[4, 16, 8],
+            ),
+            (
+                "backbone.layers.2.mixer.switch_mlp.fc1.scales",
+                "BF16",
+                &[4, 16, 1],
+            ),
+            (
+                "backbone.layers.2.mixer.switch_mlp.fc1.biases",
+                "BF16",
+                &[4, 16, 1],
+            ),
+            (
+                "backbone.layers.2.mixer.switch_mlp.fc2.weight",
+                "U32",
+                &[4, 8, 16],
+            ),
+            (
+                "backbone.layers.2.mixer.switch_mlp.fc2.scales",
+                "BF16",
+                &[4, 8, 1],
+            ),
+            (
+                "backbone.layers.2.mixer.switch_mlp.fc2.biases",
+                "BF16",
+                &[4, 8, 1],
+            ),
+            (
+                "backbone.layers.2.mixer.shared_experts.up_proj.weight",
+                "U32",
+                &[16, 8],
+            ),
+            (
+                "backbone.layers.2.mixer.shared_experts.up_proj.scales",
+                "BF16",
+                &[16, 1],
+            ),
+            (
+                "backbone.layers.2.mixer.shared_experts.up_proj.biases",
+                "BF16",
+                &[16, 1],
+            ),
+            (
+                "backbone.layers.2.mixer.shared_experts.down_proj.weight",
+                "U32",
+                &[8, 16],
+            ),
+            (
+                "backbone.layers.2.mixer.shared_experts.down_proj.scales",
+                "BF16",
+                &[8, 1],
+            ),
+            (
+                "backbone.layers.2.mixer.shared_experts.down_proj.biases",
+                "BF16",
+                &[8, 1],
+            ),
+        ],
+    );
+
+    let manifest = convert_hf_model_dir(&dir).expect("nemotron_h conversion should succeed");
+    assert_eq!(manifest.model_family, "nemotron_h");
+    assert_eq!(manifest.layer_count, 3);
+    assert_eq!(
+        manifest.layer_types,
+        vec![
+            "mamba".to_string(),
+            "attention".to_string(),
+            "moe".to_string()
+        ]
+    );
+    assert!(manifest.moe.is_enabled());
+    assert!(manifest.moe.sigmoid_routing);
+    assert_eq!(manifest.moe.expert_count, Some(4));
+    assert_eq!(manifest.moe.experts_per_token, Some(2));
+    assert!(manifest.linear_attention.is_enabled());
+    assert_eq!(manifest.linear_attention.num_value_heads, Some(2));
+    assert_eq!(manifest.linear_attention.num_key_heads, Some(1));
+    assert_eq!(manifest.linear_attention.key_head_dim, Some(4));
+    assert_eq!(manifest.linear_attention.value_head_dim, Some(4));
+    assert_eq!(manifest.linear_attention.conv_kernel_dim, Some(4));
+
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::LinearAttentionInProjQkvz
+                && t.layer_index == Some(0))
+    );
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::AttentionQ && t.layer_index == Some(1))
+    );
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::FfnUpExps && t.layer_index == Some(2))
+    );
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::FfnSharedExpertUp && t.layer_index == Some(2))
+    );
+
+    write_manifest(&dir, &manifest).expect("write should succeed");
+    crate::model::NativeModelArtifacts::from_dir(&dir)
+        .expect("nemotron_h manifest should validate");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn parse_nemotron_hybrid_pattern_from_string() {
+    let config = serde_json::json!({
+        "hybrid_override_pattern": "MEM*"
+    });
+    let types = parse_layer_types(&config, "nemotron_h", 4);
+    assert_eq!(types, vec!["mamba", "moe", "mamba", "attention"]);
+}

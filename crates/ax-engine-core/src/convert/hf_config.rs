@@ -10,10 +10,53 @@ pub(crate) fn load_hf_config(model_dir: &Path) -> Result<serde_json::Value, Conv
         path: config_path.clone(),
         source,
     })?;
-    serde_json::from_slice(&bytes).map_err(|source| ConvertError::ParseJson {
+    // Some HF / mlx-community configs emit non-JSON tokens (Infinity, NaN) for
+    // time_step_limit and similar fields. Sanitize before serde_json parse.
+    let text = String::from_utf8_lossy(&bytes);
+    let sanitized = sanitize_nonstandard_json_numbers(&text);
+    serde_json::from_str(&sanitized).map_err(|source| ConvertError::ParseJson {
         path: config_path,
         source,
     })
+}
+
+/// Replace bare `Infinity` / `-Infinity` / `NaN` tokens with null so serde_json
+/// can parse HF configs that use Python-style float literals.
+pub(crate) fn sanitize_nonstandard_json_numbers(text: &str) -> String {
+    // Word-boundary replacements avoid touching strings that merely contain
+    // those substrings as identifiers.
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if matches_token(bytes, i, b"-Infinity") {
+            out.push_str("null");
+            i += b"-Infinity".len();
+        } else if matches_token(bytes, i, b"Infinity") {
+            out.push_str("null");
+            i += b"Infinity".len();
+        } else if matches_token(bytes, i, b"NaN") {
+            out.push_str("null");
+            i += b"NaN".len();
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn matches_token(bytes: &[u8], i: usize, token: &[u8]) -> bool {
+    if i + token.len() > bytes.len() {
+        return false;
+    }
+    if &bytes[i..i + token.len()] != token {
+        return false;
+    }
+    let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+    let after = i + token.len();
+    let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
+    before_ok && after_ok
 }
 
 pub(crate) fn resolve_model_type(config: &serde_json::Value) -> Result<String, ConvertError> {
@@ -97,6 +140,11 @@ pub(crate) fn is_qwen_family_model_type(model_type: &str) -> bool {
 
 pub(crate) fn is_glm4_moe_lite(model_type: &str) -> bool {
     model_type == "glm4_moe_lite"
+}
+
+/// NVIDIA Nemotron-H hybrid (`model_type: nemotron_h`): Mamba-2 + GQA + MoE.
+pub(crate) fn is_nemotron_h(model_type: &str) -> bool {
+    model_type == "nemotron_h"
 }
 
 /// Parse diffusion-specific config fields from config.json.
@@ -220,7 +268,8 @@ pub(crate) fn defaults_attn_output_gate(model_type: &str) -> bool {
 }
 
 pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
-    is_qwen3_5_family(model_type)
+    // Nemotron-H defaults norm_topk_prob to true in config; keep true when omitted.
+    is_qwen3_5_family(model_type) || is_nemotron_h(model_type)
 }
 
 pub(crate) fn runtime_status_for_model_type(_model_type: &str) -> NativeRuntimeStatus {
@@ -279,6 +328,26 @@ pub(crate) fn linear_attention_config(
     config: &serde_json::Value,
     model_type: &str,
 ) -> NativeLinearAttentionConfig {
+    // Nemotron-H Mamba-2 reuses the linear_attention config block for SSM dims.
+    // full_attention_interval=1 makes is_linear_attention_layer() always false so
+    // the Qwen gated-delta path never steals Nemotron layers; layer kind comes
+    // from hybrid_override_pattern → layer_types instead.
+    if is_nemotron_h(model_type) {
+        let mamba_num_heads = arch_u64(config, model_type, "mamba_num_heads").and_then(u64_to_u32);
+        let mamba_head_dim = arch_u64(config, model_type, "mamba_head_dim").and_then(u64_to_u32);
+        let n_groups = arch_u64(config, model_type, "n_groups").and_then(u64_to_u32);
+        let ssm_state_size = arch_u64(config, model_type, "ssm_state_size").and_then(u64_to_u32);
+        let conv_kernel = arch_u64(config, model_type, "conv_kernel").and_then(u64_to_u32);
+        return NativeLinearAttentionConfig {
+            full_attention_interval: Some(1),
+            num_value_heads: mamba_num_heads,
+            num_key_heads: n_groups,
+            key_head_dim: ssm_state_size,
+            value_head_dim: mamba_head_dim,
+            conv_kernel_dim: conv_kernel,
+        };
+    }
+
     if !is_qwen_gated_delta_family(model_type) {
         return NativeLinearAttentionConfig::default();
     }
@@ -349,6 +418,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
     let is_llama4 = model_type == "llama4";
     // GPT-OSS is always MoE (num_local_experts + num_experts_per_tok).
     let is_gpt_oss = model_type == "gpt_oss";
+    let is_nemotron = is_nemotron_h(model_type);
     if !is_gemma4_moe
         && !is_diffusion_gemma_moe
         && !is_qwen3_moe
@@ -358,6 +428,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         && !is_deepseek_v3
         && !is_llama4
         && !is_gpt_oss
+        && !is_nemotron
     {
         return NativeMoeConfig::default();
     }
@@ -385,7 +456,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         None
     };
 
-    let shared_expert_count = if is_deepseek_v3 {
+    let shared_expert_count = if is_deepseek_v3 || is_nemotron {
         arch_u64(config, model_type, "n_shared_experts").and_then(u64_to_u32)
     } else if is_llama4 {
         // LLaMA 4 always has 1 shared expert when MoE is active
@@ -413,18 +484,19 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         layer_freq,
         first_dense_layers,
         shared_expert_count,
-        sigmoid_routing: is_deepseek_v3,
-        routed_scaling_factor: if is_deepseek_v3 {
+        // Nemotron-H MoE gate matches DeepSeek-style sigmoid + correction bias.
+        sigmoid_routing: is_deepseek_v3 || is_nemotron,
+        routed_scaling_factor: if is_deepseek_v3 || is_nemotron {
             arch_f64(config, model_type, "routed_scaling_factor").map(|v| v as f32)
         } else {
             None
         },
-        n_group: if is_deepseek_v3 {
+        n_group: if is_deepseek_v3 || is_nemotron {
             arch_u64(config, model_type, "n_group").and_then(u64_to_u32)
         } else {
             None
         },
-        topk_group: if is_deepseek_v3 {
+        topk_group: if is_deepseek_v3 || is_nemotron {
             arch_u64(config, model_type, "topk_group").and_then(u64_to_u32)
         } else {
             None
@@ -570,9 +642,11 @@ pub(crate) fn parse_layer_types(
     layer_count: u32,
 ) -> Vec<String> {
     let is_gpt_oss = model_type == "gpt_oss";
+    let is_nemotron = is_nemotron_h(model_type);
     if !is_gemma4_text_model_type(model_type)
         && !is_embeddinggemma_model_type(model_type)
         && !is_gpt_oss
+        && !is_nemotron
     {
         return Vec::new();
     }
@@ -595,6 +669,12 @@ pub(crate) fn parse_layer_types(
         })
     {
         return layer_types;
+    }
+
+    // Nemotron-H: hybrid_override_pattern is a string like "MEMEM*EMEM…" or a
+    // char list. Map M→mamba, E→moe, *→attention, -→mlp.
+    if is_nemotron {
+        return parse_nemotron_hybrid_pattern(config, layer_count);
     }
 
     if is_gpt_oss {
@@ -622,6 +702,66 @@ pub(crate) fn parse_layer_types(
             }
         })
         .collect()
+}
+
+/// Expand Nemotron-H `hybrid_override_pattern` / `layers_block_type` into
+/// layer_types strings (`mamba` / `attention` / `moe` / `mlp`).
+pub(crate) fn parse_nemotron_hybrid_pattern(
+    config: &serde_json::Value,
+    layer_count: u32,
+) -> Vec<String> {
+    let chars: Option<Vec<char>> = if let Some(s) = config
+        .get("hybrid_override_pattern")
+        .and_then(|v| v.as_str())
+    {
+        Some(s.chars().filter(|c| !c.is_whitespace()).collect())
+    } else if let Some(arr) = config
+        .get("hybrid_override_pattern")
+        .and_then(|v| v.as_array())
+    {
+        Some(
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .flat_map(|s| s.chars())
+                .filter(|c| !c.is_whitespace())
+                .collect(),
+        )
+    } else if let Some(arr) = config.get("layers_block_type").and_then(|v| v.as_array()) {
+        Some(
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| match s {
+                    "mamba" => 'M',
+                    "attention" => '*',
+                    "moe" => 'E',
+                    "mlp" => '-',
+                    other => other.chars().next().unwrap_or('?'),
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+
+    let Some(chars) = chars else {
+        return Vec::new();
+    };
+    let mapped: Vec<String> = chars
+        .into_iter()
+        .map(|c| match c {
+            'M' | 'm' => "mamba".to_string(),
+            'E' | 'e' => "moe".to_string(),
+            '*' => "attention".to_string(),
+            '-' => "mlp".to_string(),
+            other => other.to_string(),
+        })
+        .collect();
+    if layer_count > 0 && mapped.len() != layer_count as usize {
+        // Prefer the pattern length when it disagrees with num_hidden_layers
+        // (mlx-lm overrides layer count from the pattern).
+        return mapped;
+    }
+    mapped
 }
 
 /// Compute the KV-source mapping for KV-shared layers (Gemma4).
@@ -733,7 +873,14 @@ pub(crate) fn resolve_architecture(
             .map(|v| v as u32)
             .unwrap_or_else(|| hidden_size.checked_div(attention_head_count).unwrap_or(0))
     };
-    let layer_count = require_arch_u64(config, model_type, "num_hidden_layers")? as u32;
+    let mut layer_count = require_arch_u64(config, model_type, "num_hidden_layers")? as u32;
+    // Nemotron-H: hybrid pattern length is the authoritative layer count (mlx-lm).
+    if is_nemotron_h(model_type) {
+        let pattern_len = parse_nemotron_hybrid_pattern(config, layer_count).len() as u32;
+        if pattern_len > 0 {
+            layer_count = pattern_len;
+        }
+    }
     let vocab_size = require_arch_u64(config, model_type, "vocab_size")? as u32;
     let intermediate_size = arch_u64(config, model_type, "intermediate_size")
         .map(|v| v as u32)

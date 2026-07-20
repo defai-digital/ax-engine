@@ -704,6 +704,8 @@ mod tests {
             in_proj_b: None,
             in_proj_qkvz: None,
             in_proj_ba: None,
+            conv1d_bias: None,
+            d: None,
             conv1d_dense: zeros(&[1, 1, 1], MlxDtype::Float32, None),
             dt_bias: zeros(&[1], MlxDtype::Float32, None),
             a_log: zeros(&[1], MlxDtype::Float32, None),

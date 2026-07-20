@@ -28,7 +28,10 @@ pub(super) fn validate_mlx_supported_manifest(
     if manifest.model_family == "glm4_moe_lite" || has_glm_mla_tensors(artifacts) {
         validate_mla_moe_manifest(manifest)?;
     }
-    if manifest.linear_attention.is_enabled() || has_linear_attention_tensors(artifacts) {
+    if manifest.model_family != "nemotron_h"
+        && (manifest.linear_attention.is_enabled() || has_linear_attention_tensors(artifacts))
+    {
+        // Nemotron-H reuses linear_attention dims for Mamba-2; skip Qwen gated-delta contract.
         validate_qwen_gated_delta_linear_attention(manifest)?;
     }
     if manifest.model_family == "llama4" {
@@ -37,11 +40,13 @@ pub(super) fn validate_mlx_supported_manifest(
     // Interleaved SWA validation (Gemma3/4): triggered by layer_types, KV sharing,
     // a separate global head dim, or a separate SWA rope theta. Families with
     // uniform SWA (mistral3, mixtral) use only sliding_window_size with no
-    // layer_types, so they skip this gate.
-    if !manifest.layer_types.is_empty()
-        || !manifest.kv_shared_source_layers.is_empty()
-        || manifest.global_head_dim.is_some()
-        || manifest.rope_theta_swa.is_some()
+    // layer_types, so they skip this gate. Nemotron-H also uses layer_types for
+    // hybrid mixer kinds (mamba/attention/moe) and must not enter this path.
+    if manifest.model_family != "nemotron_h"
+        && (!manifest.layer_types.is_empty()
+            || !manifest.kv_shared_source_layers.is_empty()
+            || manifest.global_head_dim.is_some()
+            || manifest.rope_theta_swa.is_some())
     {
         validate_gemma4_interleaved_attention(manifest)?;
     }
@@ -79,6 +84,8 @@ pub(super) fn is_mlx_supported_model_family(model_family: &str) -> bool {
             | "gpt_oss"
             // Multimodal text backbone (same Standard route as gemma4).
             | "gemma4_unified"
+            // Nemotron-H hybrid Mamba-2 + GQA + ReLU² MoE (Nemotron 3 Nano).
+            | "nemotron_h"
     )
 }
 
