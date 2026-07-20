@@ -331,6 +331,106 @@ fn openai_chat_prompt_renderer_diffusiongemma_matches_hub_generation_prefill() {
 }
 
 #[test]
+fn openai_chat_prompt_renderer_ministral_available_tools_and_last_user_system() {
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Lookup docs",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    }]);
+
+    let tools_user: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"}
+    ]))
+    .expect("messages");
+    let prompt = render_openai_chat_prompt_with_tools(
+        "ministral-8b-instruct",
+        &tools_user,
+        Some(&tools),
+        Some(&json!("auto")),
+    )
+    .expect("ministral tools");
+    assert!(prompt.starts_with("<s>[AVAILABLE_TOOLS] "));
+    assert!(prompt.contains("[/AVAILABLE_TOOLS][INST]Look up AX[/INST]"));
+    assert!(prompt.contains("\"name\":\"lookup\"") || prompt.contains("\"name\": \"lookup\""));
+
+    let multi: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello there"},
+        {"role": "user", "content": "Again"}
+    ]))
+    .expect("multi");
+    let multi_prompt =
+        render_openai_chat_prompt("ministral-8b-instruct", &multi).expect("ministral multi");
+    assert_eq!(
+        multi_prompt,
+        "<s>[INST]Hi[/INST] Hello there</s>[INST]Be concise.\n\nAgain[/INST]"
+    );
+}
+
+#[test]
+fn openai_chat_prompt_renderer_llama4_injects_tools_into_user_turn() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"}
+    ]))
+    .expect("messages");
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Lookup docs",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    }]);
+    let prompt = render_openai_chat_prompt_with_tools(
+        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        &messages,
+        Some(&tools),
+        Some(&json!("auto")),
+    )
+    .expect("llama4 tools");
+    assert!(prompt.starts_with("<|begin_of_text|><|header_start|>user<|header_end|>\n\n"));
+    assert!(prompt.contains("Given the following functions, please respond with a JSON"));
+    assert!(prompt.contains("\"name\": \"lookup\"") || prompt.contains("\"name\":\"lookup\""));
+    assert!(prompt.contains("Look up AX<|eot|>"));
+    assert!(prompt.ends_with("<|header_start|>assistant<|header_end|>\n\n"));
+    assert!(!prompt.contains("<|start_header_id|>"));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_devstral_multi_turn_with_eos() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello there"},
+        {"role": "user", "content": "Again"}
+    ]))
+    .expect("messages");
+    let prompt = render_openai_chat_prompt("devstral-small", &messages).expect("devstral");
+    assert_eq!(
+        prompt,
+        "<s>[SYSTEM_PROMPT]Be concise.[/SYSTEM_PROMPT][INST]Hi[/INST]Hello there</s>[INST]Again[/INST]"
+    );
+}
+
+#[test]
 fn openai_chat_prompt_renderer_preserves_qwen_coder_tool_schema_metadata() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "Read README.md"}

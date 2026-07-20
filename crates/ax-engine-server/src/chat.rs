@@ -396,7 +396,13 @@ fn render_prompt_internal(
     let mut mistral_system: Option<&str> = None;
     let mut ministral_system: Option<&str> = None;
     let mut gpt_oss_system: Option<&str> = None;
-    for (role, content) in messages {
+    // Ministral hub template folds system into the *last* user turn, not the first.
+    let ministral_last_user_idx = if matches!(template, ChatPromptTemplate::MinistralInstruct) {
+        messages.iter().rposition(|(role, _)| matches!(normalize_role(role), Ok("user")))
+    } else {
+        None
+    };
+    for (msg_index, (role, content)) in messages.iter().enumerate() {
         let role = normalize_role(role)?;
         match template {
             ChatPromptTemplate::QwenChatMl => {
@@ -471,8 +477,8 @@ fn render_prompt_internal(
                 }
             }
             ChatPromptTemplate::MistralInstruct => {
-                // Devstral / Mistral: [SYSTEM_PROMPT]…[/SYSTEM_PROMPT][INST]…[/INST].
-                // Hub templates do not insert </s> between multi-turn turns.
+                // Devstral hub: [SYSTEM_PROMPT]…[/SYSTEM_PROMPT][INST]…[/INST]
+                // assistant turns append eos_token (`</s>`).
                 match role {
                     "system" => {
                         mistral_system = Some(content.as_str());
@@ -489,6 +495,7 @@ fn render_prompt_internal(
                     }
                     "assistant" => {
                         prompt.push_str(content);
+                        prompt.push_str("</s>");
                     }
                     "tool" | "function" => {
                         prompt.push_str("[INST]");
@@ -499,14 +506,17 @@ fn render_prompt_internal(
                 }
             }
             ChatPromptTemplate::MinistralInstruct => {
-                // Ministral hub template folds system into the first [INST] body.
+                // Ministral hub: system folds into the *last* user [INST];
+                // assistant is ` ` + content + eos_token (`</s>`).
                 match role {
                     "system" => {
                         ministral_system = Some(content.as_str());
                     }
                     "user" => {
                         prompt.push_str("[INST]");
-                        if let Some(system) = ministral_system.take() {
+                        if ministral_last_user_idx == Some(msg_index)
+                            && let Some(system) = ministral_system.take()
+                        {
                             prompt.push_str(system);
                             prompt.push_str("\n\n");
                         }
@@ -514,9 +524,9 @@ fn render_prompt_internal(
                         prompt.push_str("[/INST]");
                     }
                     "assistant" => {
-                        // Hub multi-turn: `[/INST] answer[INST]` (no </s>).
                         prompt.push(' ');
-                        prompt.push_str(content);
+                        prompt.push_str(content.trim());
+                        prompt.push_str("</s>");
                     }
                     "tool" | "function" => {
                         prompt.push_str("[INST]");
@@ -1107,7 +1117,8 @@ mod tests {
     }
 
     #[test]
-    fn devstral_multi_turn_omits_eos_between_turns() {
+    fn devstral_multi_turn_appends_eos_after_assistant() {
+        // Hub Devstral: assistant content + eos_token (`</s>`).
         let messages = vec![
             ("system".to_string(), "Be concise.".to_string()),
             ("user".to_string(), "Hi".to_string()),
@@ -1117,18 +1128,37 @@ mod tests {
         let prompt = render_prompt("devstral-small", &messages).expect("devstral");
         assert_eq!(
             prompt,
-            "<s>[SYSTEM_PROMPT]Be concise.[/SYSTEM_PROMPT][INST]Hi[/INST]Hello there[INST]Again[/INST]"
+            "<s>[SYSTEM_PROMPT]Be concise.[/SYSTEM_PROMPT][INST]Hi[/INST]Hello there</s>[INST]Again[/INST]"
         );
     }
 
     #[test]
-    fn ministral_folds_system_into_first_inst() {
-        let messages = vec![
-            ("system".to_string(), "Be concise.".to_string()),
-            ("user".to_string(), "Hello".to_string()),
-        ];
-        let prompt = render_prompt("ministral-8b", &messages).expect("ministral");
-        assert_eq!(prompt, "<s>[INST]Be concise.\n\nHello[/INST]");
+    fn ministral_folds_system_into_last_user_inst() {
+        // Hub Ministral: system is applied on the *last* user turn only.
+        let simple = render_prompt(
+            "ministral-8b",
+            &[
+                ("system".to_string(), "Be concise.".to_string()),
+                ("user".to_string(), "Hello".to_string()),
+            ],
+        )
+        .expect("ministral simple");
+        assert_eq!(simple, "<s>[INST]Be concise.\n\nHello[/INST]");
+
+        let multi = render_prompt(
+            "ministral-8b",
+            &[
+                ("system".to_string(), "Be concise.".to_string()),
+                ("user".to_string(), "Hi".to_string()),
+                ("assistant".to_string(), "Hello there".to_string()),
+                ("user".to_string(), "Again".to_string()),
+            ],
+        )
+        .expect("ministral multi");
+        assert_eq!(
+            multi,
+            "<s>[INST]Hi[/INST] Hello there</s>[INST]Be concise.\n\nAgain[/INST]"
+        );
     }
 
     #[test]

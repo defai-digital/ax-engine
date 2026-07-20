@@ -32,11 +32,13 @@ and this project adheres to Semantic Versioning.
 - Hub chat-template fidelity audit for every distinct `chat_template.jinja`
   under the primary model hub: DiffusionGemma no longer pre-fills Gemma IT's
   empty thought channel; Llama 4 uses `<|header_start|>` / `<|eot|>` (not Llama
-  3 markers); Ministral folds system into the first `[INST]` while Devstral
-  keeps `[SYSTEM_PROMPT]`; Mistral multi-turn no longer inserts `</s>` between
-  turns; Qwen3.6 tools match Qwen3.5 function-XML + JSON schemas (Coder-Next
-  keeps XML declarations). Intentional deltas remain for GPT-OSS final-channel
-  prefill and Llama 3 omitting the default knowledge-date system preamble.
+  3 markers) and injects tool schemas into the first user turn; Ministral folds
+  system into the *last* `[INST]`, emits ` content</s>` for assistants, and
+  prefixes `[AVAILABLE_TOOLS]` when tools are present; Devstral/Mistral append
+  `</s>` after assistant turns; Qwen3.6 tools match Qwen3.5 function-XML + JSON
+  schemas (Coder-Next keeps XML declarations). Intentional deltas remain for
+  GPT-OSS final-channel prefill and Llama 3 omitting the default knowledge-date
+  system preamble.
 - Gemma 4 chat prompt rendering aligns with Google's 2026-07-09 canonical
   chat template: multi-turn tool loops keep tool_call, tool_response, and the
   follow-up answer in one model turn; prior assistant thinking channels are

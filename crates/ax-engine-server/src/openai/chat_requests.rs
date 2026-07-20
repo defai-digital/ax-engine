@@ -42,11 +42,8 @@ pub(crate) struct ChatPromptRenderOptions {
     pub(crate) enable_thinking: bool,
 }
 
-/// Tools-free convenience wrapper. Production callers all render tools when
-/// present (see `openai/requests.rs` and `apply_template` in
-/// `openai/compat.rs`, which forward `tools`/`tool_choice` into
-/// `render_openai_chat_prompt_with_tools` directly); this now exists only
-/// for tests that don't care about tool rendering.
+/// Tools-free convenience wrapper for tests that don't care about tool
+/// rendering.
 #[cfg(test)]
 pub(crate) fn render_openai_chat_prompt(
     model_id: &str,
@@ -55,6 +52,8 @@ pub(crate) fn render_openai_chat_prompt(
     render_openai_chat_prompt_with_tools(model_id, messages, None, None)
 }
 
+/// Test convenience wrapper for the default prompt-rendering options.
+#[cfg(test)]
 pub(crate) fn render_openai_chat_prompt_with_tools(
     model_id: &str,
     messages: &[OpenAiChatMessage],
@@ -99,6 +98,28 @@ pub(crate) fn render_openai_chat_prompt_with_options(
     ) {
         return render_glm_openai_chat_prompt(model_id, messages, tools, tool_choice);
     }
+    let template = chat::ChatPromptTemplate::for_model_id(model_id);
+    // Ministral hub: `[AVAILABLE_TOOLS] [json…][/AVAILABLE_TOOLS]` before the
+    // first [INST] when tools are present.
+    if matches!(template, chat::ChatPromptTemplate::MinistralInstruct)
+        && tools.map(openai_value_is_present).unwrap_or(false)
+    {
+        return render_ministral_openai_chat_prompt(messages, tools);
+    }
+    // Llama 4 hub: inject function schemas into the first user turn (not a
+    // Qwen-style system tools block).
+    if matches!(template, chat::ChatPromptTemplate::Llama4)
+        && tools.map(openai_value_is_present).unwrap_or(false)
+    {
+        return render_llama4_openai_chat_prompt(messages, tools);
+    }
+    // Llama 3 hub: tools go into the first user turn with a short JSON-call
+    // instruction (AX still omits the default knowledge-date system preamble).
+    if matches!(template, chat::ChatPromptTemplate::Llama3)
+        && tools.map(openai_value_is_present).unwrap_or(false)
+    {
+        return render_llama3_openai_chat_prompt(messages, tools);
+    }
     let tool_contract_style = qwen_tool_contract_style(model_id);
     let rendered_messages = render_openai_chat_message_pairs(messages, tool_contract_style)?;
     let rendered_messages =
@@ -123,6 +144,279 @@ fn render_glm_openai_chat_prompt(
     let rendered_messages = render_glm_chat_message_pairs(messages)?;
     let rendered_messages = prepend_glm_tool_contract(rendered_messages, tools, tool_choice);
     chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
+}
+
+/// Ministral hub `chat_template.jinja`: optional
+/// `[AVAILABLE_TOOLS] [tool_json,…][/AVAILABLE_TOOLS]` then classic `[INST]`
+/// turns, with system folded into the last user turn and assistant
+/// ` content</s>`.
+fn render_ministral_openai_chat_prompt(
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+) -> Result<String, HttpErrorResponse> {
+    if messages.is_empty() {
+        return Err(empty_chat_messages_error());
+    }
+    let mut prompt = String::from("<s>");
+    if let Some(tools) = tools
+        && openai_value_is_present(tools)
+    {
+        prompt.push_str("[AVAILABLE_TOOLS] ");
+        // Hub emits a JSON array of tool objects after a single space.
+        prompt.push_str(&pretty_tools_json_array(tools));
+        prompt.push_str("[/AVAILABLE_TOOLS]");
+    }
+
+    let last_user_idx = messages.iter().rposition(|message| {
+        matches!(
+            chat::normalize_role(&message.role),
+            Ok("user")
+        )
+    });
+    let mut system: Option<String> = None;
+    for (index, message) in messages.iter().enumerate() {
+        let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        match role {
+            "system" => {
+                system = Some(render_openai_chat_content(message.content.as_ref())?);
+            }
+            "user" => {
+                let content = render_openai_chat_content(message.content.as_ref())?;
+                prompt.push_str("[INST]");
+                if Some(index) == last_user_idx
+                    && let Some(system_text) = system.take()
+                {
+                    prompt.push_str(system_text.trim());
+                    prompt.push_str("\n\n");
+                }
+                prompt.push_str(content.trim());
+                prompt.push_str("[/INST]");
+            }
+            "assistant" => {
+                let content = render_openai_chat_content(message.content.as_ref())?;
+                prompt.push(' ');
+                prompt.push_str(content.trim());
+                prompt.push_str("</s>");
+            }
+            "tool" | "function" => {
+                let content = render_openai_chat_content(message.content.as_ref())?;
+                prompt.push_str("[INST]");
+                prompt.push_str(content.trim());
+                prompt.push_str("[/INST]");
+            }
+            _ => {}
+        }
+    }
+    if let Some(system_text) = system {
+        // System-only chat: still emit an INST so generation has a role frame.
+        prompt.push_str("[INST]");
+        prompt.push_str(system_text.trim());
+        prompt.push_str("[/INST]");
+    }
+    Ok(prompt)
+}
+
+/// Llama 4 hub template: tools are injected into the first user turn with a
+/// JSON function-call instruction (not a separate tools system block).
+fn render_llama4_openai_chat_prompt(
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+) -> Result<String, HttpErrorResponse> {
+    render_llama_family_tools_prompt(
+        messages,
+        tools,
+        "<|begin_of_text|>",
+        "<|header_start|>",
+        "<|header_end|>\n\n",
+        "<|eot|>",
+        false,
+    )
+}
+
+/// Llama 3 hub tools path (AX omits the default knowledge-date system).
+fn render_llama3_openai_chat_prompt(
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+) -> Result<String, HttpErrorResponse> {
+    render_llama_family_tools_prompt(
+        messages,
+        tools,
+        "<|begin_of_text|>",
+        "<|start_header_id|>",
+        "<|end_header_id|>\n\n",
+        "<|eot_id|>",
+        true,
+    )
+}
+
+fn render_llama_family_tools_prompt(
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    bos: &str,
+    header_open: &str,
+    header_close: &str,
+    eot: &str,
+    environment_ipython: bool,
+) -> Result<String, HttpErrorResponse> {
+    if messages.is_empty() {
+        return Err(empty_chat_messages_error());
+    }
+    let tools = tools.filter(|value| openai_value_is_present(value));
+    let mut prompt = String::from(bos);
+    let mut index = 0usize;
+    let mut system_text = String::new();
+    if let Some(first) = messages.first() {
+        let role = chat::normalize_role(&first.role).map_err(chat_error_response)?;
+        if role == "system" {
+            system_text = render_openai_chat_content(first.content.as_ref())?;
+            index = 1;
+        }
+    }
+
+    if tools.is_some() && environment_ipython {
+        // Llama 3 hub marks tool environments with Environment: ipython in system.
+        prompt.push_str(header_open);
+        prompt.push_str("system");
+        prompt.push_str(header_close);
+        prompt.push_str("Environment: ipython\n");
+        if !system_text.trim().is_empty() {
+            prompt.push_str(system_text.trim());
+        }
+        prompt.push_str(eot);
+    } else if !system_text.trim().is_empty() {
+        prompt.push_str(header_open);
+        prompt.push_str("system");
+        prompt.push_str(header_close);
+        if tools.is_some() {
+            prompt.push_str("Environment: ipython\n");
+        }
+        prompt.push_str(system_text.trim());
+        prompt.push_str(eot);
+    } else if tools.is_some() && !environment_ipython {
+        // Llama 4: no automatic system when tools are in the user message.
+    }
+
+    // First remaining user message receives the tools preamble.
+    let mut injected_tools = false;
+    while index < messages.len() {
+        let message = &messages[index];
+        let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        if role == "tool" || role == "function" {
+            // Fold tool results as user content (hub uses ipython/tool roles;
+            // AX accepts OpenAI tool messages).
+            let content = render_openai_chat_content(message.content.as_ref())?;
+            prompt.push_str(header_open);
+            prompt.push_str("user");
+            prompt.push_str(header_close);
+            prompt.push_str(content.trim());
+            prompt.push_str(eot);
+            index += 1;
+            continue;
+        }
+        if role == "user" && !injected_tools && tools.is_some() {
+            let content = render_openai_chat_content(message.content.as_ref())?;
+            prompt.push_str(header_open);
+            prompt.push_str("user");
+            prompt.push_str(header_close);
+            prompt.push_str(
+                "Given the following functions, please respond with a JSON for a function call \
+                 with its proper arguments that best answers the given prompt.\n\n\
+                 Respond in the format {\"name\": function name, \"parameters\": dictionary of argument name and its value}.\
+                 Do not use variables.\n\n",
+            );
+            if let Some(tools) = tools {
+                for tool_json in pretty_tool_json_lines(tools) {
+                    prompt.push_str(&tool_json);
+                    prompt.push_str("\n\n");
+                }
+            }
+            prompt.push_str(content.trim());
+            prompt.push_str(eot);
+            injected_tools = true;
+            index += 1;
+            continue;
+        }
+        if role == "assistant" {
+            let content = render_openai_chat_content(message.content.as_ref())?;
+            prompt.push_str(header_open);
+            prompt.push_str("assistant");
+            prompt.push_str(header_close);
+            if let Some(tool_calls) = message.tool_calls.as_ref() {
+                // Replay prior tool calls as JSON function-call lines when present.
+                for call in llama_tool_calls(tool_calls) {
+                    prompt.push_str(&call);
+                    prompt.push('\n');
+                }
+            }
+            if !content.trim().is_empty() {
+                prompt.push_str(content.trim());
+            }
+            prompt.push_str(eot);
+            index += 1;
+            continue;
+        }
+        // Regular user (no tools left to inject) or residual system.
+        let content = render_openai_chat_content(message.content.as_ref())?;
+        let header_role = if role == "assistant" {
+            "assistant"
+        } else if role == "system" {
+            "system"
+        } else {
+            "user"
+        };
+        prompt.push_str(header_open);
+        prompt.push_str(header_role);
+        prompt.push_str(header_close);
+        prompt.push_str(content.trim());
+        prompt.push_str(eot);
+        index += 1;
+    }
+
+    prompt.push_str(header_open);
+    prompt.push_str("assistant");
+    prompt.push_str(header_close);
+    Ok(prompt)
+}
+
+fn pretty_tools_json_array(tools: &Value) -> String {
+    match tools {
+        Value::Array(_) => serde_json::to_string(tools).unwrap_or_else(|_| "[]".to_string()),
+        other => format!("[{}]", compact_json(other)),
+    }
+}
+
+fn pretty_tool_json_lines(tools: &Value) -> Vec<String> {
+    match tools {
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                serde_json::to_string_pretty(item).unwrap_or_else(|_| compact_json(item))
+            })
+            .collect(),
+        other => vec![serde_json::to_string_pretty(other).unwrap_or_else(|_| compact_json(other))],
+    }
+}
+
+fn llama_tool_calls(value: &Value) -> Vec<String> {
+    let calls = match value {
+        Value::Array(calls) => calls.as_slice(),
+        Value::Object(_) => std::slice::from_ref(value),
+        _ => return Vec::new(),
+    };
+    calls
+        .iter()
+        .filter_map(|call| {
+            let function = call.get("function")?.as_object()?;
+            let name = function.get("name")?.as_str()?;
+            let arguments = normalize_tool_arguments(function.get("arguments"));
+            // Hub Llama tool-call format uses name + parameters.
+            let payload = serde_json::json!({
+                "name": name,
+                "parameters": arguments,
+            });
+            Some(compact_json(&payload))
+        })
+        .collect()
 }
 
 fn render_glm_chat_message_pairs(
