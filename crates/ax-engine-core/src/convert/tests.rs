@@ -3603,36 +3603,92 @@ fn converts_optiq_mixed_precision_under_quantization_config_key() {
     let _ = fs::remove_dir_all(dir);
 }
 
-/// When a local HF-cache OptiQ snapshot is present, convert it and assert the
+/// Resolve a local HF hub snapshot dir for `repo_id` (`org/name`).
+///
+/// Searches `HF_HUB_CACHE`, `HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, and the
+/// default `~/.cache/huggingface/hub` roots so AutomatosX OptiQ quants land
+/// wherever the operator's hub is configured.
+fn hf_hub_snapshot_for_repo(repo_id: &str) -> Option<PathBuf> {
+    let encoded = format!("models--{}", repo_id.replace('/', "--"));
+    let mut roots = Vec::new();
+    for key in ["HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"] {
+        if let Ok(v) = std::env::var(key) {
+            let p = PathBuf::from(v);
+            if p.is_dir() {
+                roots.push(p);
+            }
+        }
+    }
+    if let Ok(hf_home) = std::env::var("HF_HOME") {
+        let p = PathBuf::from(hf_home).join("hub");
+        if p.is_dir() {
+            roots.push(p);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join(".cache/huggingface/hub"));
+    }
+    // Common operator override used for large AutomatosX packs on this host.
+    let ext = PathBuf::from("/Volumes/Ext4T/models/hub");
+    if ext.is_dir() {
+        roots.push(ext);
+    }
+
+    for root in roots {
+        let snapshots = root.join(&encoded).join("snapshots");
+        if !snapshots.is_dir() {
+            continue;
+        }
+        if let Ok(entries) = fs::read_dir(&snapshots) {
+            for entry in entries.flatten() {
+                let snap = entry.path();
+                if snap.join("config.json").is_file()
+                    && (snap.join("model.safetensors").is_file()
+                        || snap.join("model.safetensors.index.json").is_file()
+                        || snap
+                            .read_dir()
+                            .ok()
+                            .into_iter()
+                            .flatten()
+                            .flatten()
+                            .any(|e| e.path().extension().is_some_and(|ext| ext == "safetensors")))
+                {
+                    return Some(snap);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// When a local AutomatosX OptiQ snapshot is present, convert it and assert the
 /// override bit histogram is non-uniform (not collapsed to a single global).
+///
+/// Primary: `AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP` (org models page).
+/// Fallbacks: other AutomatosX OptiQ Qwen3.5 packs if the primary is absent.
 #[test]
-fn converts_real_optiq_qwen35_from_hf_cache_when_present() {
-    let hub = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-OptiQ-4bit");
-    let snap = match fs::read_dir(&hub).ok().and_then(|entries| {
-        entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .find(|p| p.file_name().is_some_and(|n| n == "snapshots"))
-            .and_then(|snapshots| {
-                fs::read_dir(snapshots).ok().and_then(|s| {
-                    s.filter_map(|e| e.ok())
-                        .map(|e| e.path())
-                        .find(|p| p.join("config.json").is_file())
-                })
-            })
-    }) {
-        Some(p) => p,
+fn converts_real_automatosx_optiq_qwen35_from_hf_cache_when_present() {
+    const CANDIDATES: &[&str] = &[
+        "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
+        "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit",
+    ];
+    let (repo, snap) = match CANDIDATES
+        .iter()
+        .find_map(|repo| hf_hub_snapshot_for_repo(repo).map(|snap| (*repo, snap)))
+    {
+        Some(pair) => pair,
         None => {
             eprintln!(
-                "skipping: no local OptiQ Qwen3.5 HF cache under {}",
-                hub.display()
+                "skipping: no local AutomatosX OptiQ Qwen3.5 HF cache \
+                 (tried {}); download from https://huggingface.co/AutomatosX",
+                CANDIDATES.join(", ")
             );
             return;
         }
     };
 
-    let manifest = convert_hf_model_dir(&snap).expect("real OptiQ convert should succeed");
+    let manifest = convert_hf_model_dir(&snap)
+        .unwrap_or_else(|err| panic!("AutomatosX OptiQ convert failed for {repo}: {err}"));
     assert_eq!(manifest.model_family, "qwen3_5");
     let mut bits_4 = 0usize;
     let mut bits_8 = 0usize;
@@ -3645,11 +3701,53 @@ fn converts_real_optiq_qwen35_from_hf_cache_when_present() {
     }
     assert!(
         bits_4 > 0 && bits_8 > 0,
-        "OptiQ manifest must keep mixed 4/8-bit tensors; got 4={bits_4} 8={bits_8}"
+        "AutomatosX OptiQ ({repo}) must keep mixed 4/8-bit tensors; got 4={bits_4} 8={bits_8}"
     );
+
+    // Cross-check config overrides against manifest bits (shipped convert path).
+    let config: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(snap.join("config.json")).expect("read AutomatosX config.json"),
+    )
+    .expect("parse AutomatosX config.json");
+    let quant = config
+        .get("quantization")
+        .or_else(|| config.get("quantization_config"))
+        .expect("AutomatosX OptiQ config must expose quantization");
+    let mut checked = 0usize;
+    let mut mismatches = Vec::new();
+    for (key, value) in quant.as_object().expect("quant object") {
+        if key == "bits" || key == "group_size" || key == "mode" {
+            continue;
+        }
+        let Some(expected) = value.get("bits").and_then(|b| b.as_u64()) else {
+            continue;
+        };
+        let expected = expected as u32;
+        let name_weight = format!("{key}.weight");
+        if let Some(tensor) = manifest
+            .tensors
+            .iter()
+            .find(|t| t.name == name_weight || t.name == *key)
+        {
+            checked += 1;
+            let got = tensor.quantization.as_ref().map(|q| q.bits);
+            if got != Some(expected) {
+                mismatches.push((tensor.name.clone(), expected, got));
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "expected to match at least one AutomatosX override key in the manifest"
+    );
+    assert!(
+        mismatches.is_empty(),
+        "AutomatosX OptiQ bit overrides must round-trip; mismatches={mismatches:?}"
+    );
+
     eprintln!(
-        "✓ real OptiQ convert: tensors={} 4-bit={bits_4} 8-bit={bits_8} family={}",
+        "✓ AutomatosX OptiQ convert ({repo}): tensors={} 4-bit={bits_4} 8-bit={bits_8} \
+         overrides_checked={checked} mismatches=0",
         manifest.tensors.len(),
-        manifest.model_family
     );
 }
