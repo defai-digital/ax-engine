@@ -1434,6 +1434,15 @@ def download_model(
 
     snapshot = _run_hf_snapshot_download(repo_id)
     snapshot_has_manifest = (snapshot / _MODEL_MANIFEST_FILE).is_file()
+    if force and dest.exists():
+        # A forced refresh must not merge fresh weights into a stale directory:
+        # shard names differ across models, so leftovers from a previous model
+        # would survive the copy, pass validation (some safetensors exist), and
+        # poison the regenerated manifest. Drop old weight shards and their
+        # index before copying.
+        for stale in dest.glob("*.safetensors"):
+            stale.unlink()
+        (dest / "model.safetensors.index.json").unlink(missing_ok=True)
     _copy_mlx_lm_snapshot(snapshot, dest)
     if force and not snapshot_has_manifest:
         # Weights were refreshed; drop any manifest left from a prior model so it is
