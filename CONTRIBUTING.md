@@ -85,7 +85,7 @@ issue, wishlist, benchmark artifact, or reproduction evidence first.
 
 These commands are useful for maintainers and for invited changes:
 
-- Rust stable toolchain with Rust 1.85 or newer
+- Rust stable toolchain with Rust 1.88 or newer
 - Python 3.10+ (for Python bindings, optional)
 - macOS 26 (Tahoe) or later with Apple M2 Max-or-newer Silicon and 32 GB RAM minimum (for full runtime testing)
 

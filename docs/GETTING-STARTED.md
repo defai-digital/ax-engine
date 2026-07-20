@@ -274,7 +274,7 @@ For the current crate layering and dependency-boundary guidance, see
 
 - macOS 26 (Tahoe) or later
 - Apple Silicon M2 Max or newer with 32 GB RAM minimum
-- Rust 1.85+ for source builds
+- Rust 1.88+ for source builds
 - `mlx` for source-built MLX runtime binaries
 - a running `mlx_lm.server` for `mlx_lm_delegated`
 - a llama.cpp server or CLI target for `llama_cpp`
