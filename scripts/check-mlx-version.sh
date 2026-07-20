@@ -37,9 +37,28 @@ if [[ -z "$PIN" ]]; then
 fi
 echo "==> admitted MLX pin: ${PIN}"
 
-# 1. The Python that builds resolve from must have the pinned mlx wheel with
-#    the bundled dylib (wheel layout, not a Homebrew site-packages shadow).
-RESOLVED="$("$PYTHON_BIN" - <<'PY'
+# 1. Resolve the same build selected by mlx-sys. An explicit MLX_LIB_DIR wins;
+#    otherwise the canonical repo Python must provide the pinned wheel.
+if [[ -n "${MLX_LIB_DIR:-}" ]]; then
+    MLX_INCLUDE_DIR="${MLX_INCLUDE_DIR:-$MLX_LIB_DIR/../include}"
+    DYLIB="$MLX_LIB_DIR/libmlx.dylib"
+    VERSION_HEADER="$MLX_INCLUDE_DIR/mlx/version.h"
+    if [[ ! -f "$DYLIB" ]]; then
+        echo "error: MLX_LIB_DIR has no libmlx.dylib: $MLX_LIB_DIR" >&2
+        exit 1
+    fi
+    if [[ ! -f "$VERSION_HEADER" ]]; then
+        echo "error: MLX_INCLUDE_DIR has no mlx/version.h: $MLX_INCLUDE_DIR" >&2
+        exit 1
+    fi
+    mlx_version_field() {
+        awk -v field="$1" '$1 == "#define" && $2 == field {print $3; exit}' \
+            "$VERSION_HEADER"
+    }
+    RESOLVED_VERSION="$(mlx_version_field MLX_VERSION_MAJOR).$(mlx_version_field MLX_VERSION_MINOR).$(mlx_version_field MLX_VERSION_PATCH)"
+    RESOLVED="$RESOLVED_VERSION $MLX_LIB_DIR dylib=yes explicit=yes"
+else
+    RESOLVED="$("$PYTHON_BIN" - <<'PY'
 import pathlib
 import sys
 
@@ -56,6 +75,8 @@ version = getattr(core, "__version__", "unknown")
 print(f"{version} {root} dylib={'yes' if dylib.is_file() else 'no'}")
 PY
 )"
+    DYLIB="$("$PYTHON_BIN" -c 'import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]) / "lib" / "libmlx.dylib")')"
+fi
 echo "==> resolved: ${RESOLVED}"
 
 case "$RESOLVED" in
@@ -81,7 +102,6 @@ fi
 # 2. Refuse Homebrew-resolved dylibs (matches mlx-sys/build.rs). Report minos
 #    for operators, but do not treat it as a NAX gate — pip wheels for the
 #    admitted pin currently ship minos 15.0 with NAX present.
-DYLIB="$("$PYTHON_BIN" -c 'import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]) / "lib" / "libmlx.dylib")')"
 echo "==> libmlx.dylib: ${DYLIB}"
 if command -v otool >/dev/null 2>&1; then
     MINOS="$(otool -l "$DYLIB" | awk '/LC_BUILD_VERSION/{f=1} f && /minos/{print $2; exit}')"
@@ -89,19 +109,34 @@ if command -v otool >/dev/null 2>&1; then
 fi
 
 is_homebrew_mlx_path() {
-    local path="$1"
-    case "$path" in
-        */Cellar/mlx/*|*/opt/mlx/*|*/homebrew/opt/mlx/*|*/linuxbrew/opt/mlx/*)
-            return 0
-            ;;
-    esac
-    if command -v brew >/dev/null 2>&1; then
-        local brew_mlx
-        brew_mlx="$(brew --prefix mlx 2>/dev/null || true)"
-        if [[ -n "$brew_mlx" && "$path" == "$brew_mlx"* ]]; then
-            return 0
+    local original_path="$1"
+    local canonical_path="$original_path"
+    if [[ -e "$original_path" ]]; then
+        if command -v realpath >/dev/null 2>&1; then
+            canonical_path="$(realpath "$original_path")"
+        elif [[ -n "${PYTHON_BIN:-}" ]]; then
+            canonical_path="$("$PYTHON_BIN" -c \
+                'import os, sys; print(os.path.realpath(sys.argv[1]))' "$original_path")"
+        else
+            canonical_path="$(python3 -c \
+                'import os, sys; print(os.path.realpath(sys.argv[1]))' "$original_path")"
         fi
     fi
+    local path
+    for path in "$original_path" "$canonical_path"; do
+        case "$path" in
+            */Cellar/mlx/*|*/opt/mlx/*|*/homebrew/opt/mlx/*|*/linuxbrew/opt/mlx/*)
+                return 0
+                ;;
+        esac
+        if command -v brew >/dev/null 2>&1; then
+            local brew_mlx
+            brew_mlx="$(brew --prefix mlx 2>/dev/null || true)"
+            if [[ -n "$brew_mlx" && "$path" == "$brew_mlx"* ]]; then
+                return 0
+            fi
+        fi
+    done
     return 1
 }
 

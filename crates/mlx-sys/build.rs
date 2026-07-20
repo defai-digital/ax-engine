@@ -1,5 +1,9 @@
 use std::path::PathBuf;
 
+mod build_provenance;
+
+use build_provenance::is_homebrew_mlx_path;
+
 fn homebrew_prefix() -> String {
     std::process::Command::new("brew")
         .arg("--prefix")
@@ -8,6 +12,17 @@ fn homebrew_prefix() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "/opt/homebrew".to_string())
+}
+
+fn homebrew_mlx_prefix() -> Option<PathBuf> {
+    std::process::Command::new("brew")
+        .args(["--prefix", "mlx"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| PathBuf::from(value.trim()))
+        .filter(|path| !path.as_os_str().is_empty())
 }
 
 /// Resolve the MLX C++ include and library directories.
@@ -49,12 +64,20 @@ fn find_mlx_dirs() -> (MlxDirs, MlxProvenance) {
                 .map(|p| p.join("include").display().to_string())
                 .unwrap_or_else(|| format!("{lib_dir}/../include"))
         });
+        let provenance = if is_homebrew_mlx_path(
+            PathBuf::from(&lib_dir).as_path(),
+            homebrew_mlx_prefix().as_deref(),
+        ) {
+            MlxProvenance::Homebrew
+        } else {
+            MlxProvenance::Explicit
+        };
         return (
             MlxDirs {
                 mlx_include_dir: include_dir,
                 mlx_lib_dir: lib_dir,
             },
-            MlxProvenance::Explicit,
+            provenance,
         );
     }
 
@@ -69,19 +92,12 @@ fn find_mlx_dirs() -> (MlxDirs, MlxProvenance) {
     // `brew --prefix mlx` succeeds and prints the opt path even when the
     // formula is NOT installed, so validate the directories before trusting
     // them; otherwise fall through to the generic prefix.
-    let mlx_prefix = std::process::Command::new("brew")
-        .args(["--prefix", "mlx"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let mlx_prefix = homebrew_mlx_prefix();
 
     if let Some(p) = mlx_prefix {
         let dirs = MlxDirs {
-            mlx_include_dir: format!("{p}/include"),
-            mlx_lib_dir: format!("{p}/lib"),
+            mlx_include_dir: p.join("include").display().to_string(),
+            mlx_lib_dir: p.join("lib").display().to_string(),
         };
         if mlx_dirs_valid(&dirs) {
             return (dirs, MlxProvenance::Homebrew);

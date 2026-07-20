@@ -16,7 +16,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "check-mlx-version.sh"
 
@@ -72,6 +71,18 @@ class CheckMlxVersionPathTests(unittest.TestCase):
             "/Users/dev/.venv/lib/python3.12/site-packages/mlx/lib/libmlx.dylib"
         )
         self.assertEqual(self._classify(pip_path), 1)
+
+    def test_file_symlink_cannot_disguise_homebrew_dylib(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cellar_dylib = root / "Cellar" / "mlx" / "0.32.0" / "lib" / "libmlx.dylib"
+            cellar_dylib.parent.mkdir(parents=True)
+            cellar_dylib.touch()
+            custom_dylib = root / "custom" / "lib" / "libmlx.dylib"
+            custom_dylib.parent.mkdir(parents=True)
+            custom_dylib.symlink_to(cellar_dylib)
+
+            self.assertEqual(self._classify(str(custom_dylib)), 0)
 
 
 class CheckMlxVersionScriptTests(unittest.TestCase):
@@ -172,6 +183,76 @@ class CheckMlxVersionScriptTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("mlx.version is empty", result.stderr + result.stdout)
+
+    def test_script_rejects_explicit_homebrew_override(self) -> None:
+        venv_python = REPO_ROOT / ".venv" / "bin" / "python3"
+        if not venv_python.is_file():
+            self.skipTest("repo .venv python not present")
+        probe = subprocess.run(
+            [
+                str(venv_python),
+                "-c",
+                "import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]))",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        if probe.returncode != 0:
+            self.skipTest(f"repo .venv cannot import mlx: {probe.stderr}")
+        mlx_root = Path(probe.stdout.strip())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            formula = Path(tmp) / "Cellar" / "mlx" / "0.32.0"
+            formula.mkdir(parents=True)
+            (formula / "lib").symlink_to(mlx_root / "lib", target_is_directory=True)
+            (formula / "include").symlink_to(mlx_root / "include", target_is_directory=True)
+            env = os.environ.copy()
+            env["MLX_LIB_DIR"] = str(formula / "lib")
+            env["MLX_INCLUDE_DIR"] = str(formula / "include")
+
+            result = subprocess.run(
+                ["bash", str(SCRIPT)],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=REPO_ROOT,
+                env=env,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("under Homebrew", result.stderr + result.stdout)
+
+    def test_script_checks_explicit_override_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lib = root / "lib"
+            include = root / "include" / "mlx"
+            lib.mkdir()
+            include.mkdir(parents=True)
+            (lib / "libmlx.dylib").touch()
+            (include / "version.h").write_text(
+                "#define MLX_VERSION_MAJOR 9\n"
+                "#define MLX_VERSION_MINOR 8\n"
+                "#define MLX_VERSION_PATCH 7\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["MLX_LIB_DIR"] = str(lib)
+            env["MLX_INCLUDE_DIR"] = str(root / "include")
+
+            result = subprocess.run(
+                ["bash", str(SCRIPT)],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=REPO_ROOT,
+                env=env,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match the pin", result.stderr + result.stdout)
 
 
 if __name__ == "__main__":
