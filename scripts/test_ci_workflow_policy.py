@@ -170,6 +170,8 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn("push:\n    tags:", brew)
         self.assertIn("workflow_dispatch:", brew)
         self.assertIn("scripts/update_homebrew_bin_install.py", brew)
+        self.assertIn("github.workflow_sha", brew)
+        self.assertIn("?ref=${TOOLING_SHA}", brew)
         self.assertNotIn("for attempt in $(seq 1 30)", brew)
         self.assertLess(
             publisher.rindex("verify_uploaded_release"),

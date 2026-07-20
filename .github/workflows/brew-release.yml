@@ -195,8 +195,10 @@ jobs:
           done
 
           read -r -a release_payloads <<< "$RELEASE_PAYLOADS"
-          python3 "$GITHUB_WORKSPACE/scripts/update_homebrew_bin_install.py" \
-            "$FORMULA_PATH" "${release_payloads[@]}"
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/scripts/update_homebrew_bin_install.py?ref=${TOOLING_SHA}" \
+            | python3 - "$FORMULA_PATH" "${release_payloads[@]}"
 
           python3 - "$FORMULA_PATH" "$APPLE_SIGNED" "$APPLE_NOTARIZED" <<'PY'
           from __future__ import annotations
@@ -319,7 +321,9 @@ jobs:
           git push origin main
           echo "Tap updated: ${TAP_REPO}"
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAP_PUSH_TOKEN: ${{ secrets.TAP_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}
+          TOOLING_SHA: ${{ github.workflow_sha }}
 
       - name: Step summary
         if: always()
