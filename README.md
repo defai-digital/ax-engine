@@ -339,7 +339,7 @@ generally not accepted — open an issue first. See [CONTRIBUTING.md](CONTRIBUTI
 ## Community
 
 - Website: [automatosx.com](https://automatosx.com)
-- Discord: [Join us](https://discord.gg/aDhhburqJg)
+- Discord: [Join us](https://discord.gg/MECsKdA6zF)
 - Email: [enquiry@defai.digital](mailto:enquiry@defai.digital)
 
 ## Acknowledgments

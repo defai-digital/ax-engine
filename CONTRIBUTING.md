@@ -111,6 +111,6 @@ Apache License, Version 2.0 unless you clearly state otherwise.
 ## Contact
 
 - Website: <https://automatosx.com>
-- Discord: <https://discord.gg/aDhhburqJg>
+- Discord: <https://discord.gg/MECsKdA6zF>
 - Email: <enquiry@defai.digital>
 - Company: DEFAI Private Limited (<https://defai.digital>)
