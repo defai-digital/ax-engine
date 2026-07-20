@@ -59,7 +59,7 @@ unsafe_code = "forbid"
 # Set to "warn" workspace-wide; escalate to "deny" in core hot paths
 # (kv.rs, engine.rs, request_manager.rs) after audit.
 # Test modules use #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))].
-# See ax-internal/ADR-001-clippy-restriction-lints.md for rationale.
+# See .internal/adr/ADR-004-CLIPPY-RESTRICTION-LINTS.md for rationale.
 unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"

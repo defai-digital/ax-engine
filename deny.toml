@@ -1,6 +1,6 @@
 # cargo-deny configuration
 # See: https://embarkstudios.github.io/cargo-deny/
-# Rationale: ax-internal/ADR-002-supply-chain-security.md
+# Rationale: .internal/adr/ADR-005-SUPPLY-CHAIN-SECURITY.md
 
 [advisories]
 version = 2

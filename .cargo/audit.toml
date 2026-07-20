@@ -1,6 +1,6 @@
 # cargo-audit configuration
 # See: https://github.com/rustsec/rustsec/tree/main/cargo-audit
-# Rationale: ax-internal/ADR-002-supply-chain-security.md
+# Rationale: .internal/adr/ADR-005-SUPPLY-CHAIN-SECURITY.md
 
 [advisories]
 ignore = [

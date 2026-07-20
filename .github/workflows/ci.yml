@@ -50,7 +50,7 @@ jobs:
         run: cargo test --quiet --no-fail-fast
 
       - name: Run workspace clippy
-        # ADR-001 restriction lints are warn-first: --force-warn keeps them
+        # ADR-004 restriction lints are warn-first: --force-warn keeps them
         # visible without letting -D warnings escalate them to errors.
         run: >-
           cargo clippy --all-targets --all-features -- -D warnings
