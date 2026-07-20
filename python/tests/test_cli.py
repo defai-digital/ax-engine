@@ -73,10 +73,14 @@ class AxEngineCliTests(unittest.TestCase):
         )
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
-        self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
+        self.assertEqual(
+            {target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS
+        )
         self.assertEqual(len(targets), 25)
         self.assertTrue(all(target["alias"].startswith("ax-") for target in targets))
-        self.assertNotIn("mlx-community/Qwen3.6-27B-8bit", EXPECTED_AUTOMATOSX_REPOS)
+        self.assertTrue(
+            all(not target["repo_id"].startswith("mlx-community/") for target in targets)
+        )
 
     def test_secondary_profile_aliases_resolve_repos(self) -> None:
         cases = {
@@ -839,7 +843,9 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
         targets = payload["targets"]
-        self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
+        self.assertEqual(
+            {target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS
+        )
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
         self.assertEqual(sum(target["mtp_included"] for target in targets), 18)
 
