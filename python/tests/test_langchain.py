@@ -2,7 +2,7 @@
 Unit tests for ax_engine.langchain.
 
 Uses a real embedded HTTP server (no mocks) to validate the full request/
-response cycle without needing a running ax-engine-server or langchain-core.
+response cycle without needing a running ax-engine-server.
 
 langchain-core is an optional dependency. Tests are skipped if it is not
 installed, so the suite remains runnable in minimal environments.
@@ -10,15 +10,14 @@ installed, so the suite remains runnable in minimal environments.
 
 from __future__ import annotations
 
-import importlib
 import json
 import sys
 import threading
+import time
 import types
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
 
 # The Python source tree (parent of this test file).
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +27,13 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 # Guard: skip entire module if langchain-core is absent
 # ---------------------------------------------------------------------------
 try:
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from langchain_core.messages import (
+        AIMessage,
+        FunctionMessage,
+        HumanMessage,
+        SystemMessage,
+        ToolMessage,
+    )
     _LANGCHAIN_AVAILABLE = True
 except ImportError:
     _LANGCHAIN_AVAILABLE = False
@@ -79,6 +84,12 @@ def _remove_ax_engine_stub() -> None:
 # Minimal embedded HTTP server
 # ---------------------------------------------------------------------------
 
+class _HeldOpenSse:
+    def __init__(self, first_frame):
+        self.first_frame = first_frame
+        self.release = threading.Event()
+
+
 class _Handler(BaseHTTPRequestHandler):
     """Serves canned responses configured by the test."""
 
@@ -97,13 +108,19 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        if isinstance(response, str):
+        if isinstance(response, (str, _HeldOpenSse)):
             # SSE stream
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            self.wfile.write(response.encode())
+            if isinstance(response, _HeldOpenSse):
+                self.wfile.write(response.first_frame.encode())
+                self.wfile.flush()
+                response.release.wait(timeout=2)
+                self.wfile.write(b"data: [DONE]\n\n")
+            else:
+                self.wfile.write(response.encode())
             self.wfile.flush()
         else:
             # JSON response
@@ -192,6 +209,41 @@ def _chat_sse(*deltas, finish_reason="stop"):
     return "".join(lines)
 
 
+def _chat_tool_sse():
+    deltas = [
+        {
+            "tool_calls": [{
+                "index": 0,
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "weather", "arguments": '{"city":'},
+            }]
+        },
+        {
+            "tool_calls": [{
+                "index": 0,
+                "function": {"arguments": '"Toronto"}'},
+            }]
+        },
+    ]
+    lines = []
+    for delta in deltas:
+        chunk = {
+            "id": "chatcmpl-tool",
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+        }
+        lines.append(f"data: {json.dumps(chunk)}\n\n")
+    terminal = {
+        "id": "chatcmpl-tool",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+    }
+    lines.append(f"data: {json.dumps(terminal)}\n\n")
+    lines.append("data: [DONE]\n\n")
+    return "".join(lines)
+
+
 def _completion_sse(*texts):
     lines = []
     for text in texts:
@@ -246,6 +298,41 @@ class TestAXEngineChatModel(unittest.TestCase):
         result = chat.invoke([HumanMessage(content="x")])
         self.assertEqual(result.content, "")
 
+    def test_response_preserves_tool_calls(self):
+        self.srv.set_response({
+            "id": "chatcmpl-tool",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "weather",
+                            "arguments": '{"city":"Toronto"}',
+                        },
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+        })
+        chat = self._make_chat()
+        result = chat.invoke([HumanMessage(content="What is the weather?")])
+        self.assertEqual(result.content, "")
+        self.assertEqual(
+            result.tool_calls,
+            [{
+                "name": "weather",
+                "args": {"city": "Toronto"},
+                "id": "call-1",
+                "type": "tool_call",
+            }],
+        )
+        self.assertEqual(result.additional_kwargs["tool_calls"][0]["id"], "call-1")
+
     def test_request_path(self):
         self.srv.set_response(_chat_response())
         chat = self._make_chat()
@@ -263,6 +350,73 @@ class TestAXEngineChatModel(unittest.TestCase):
         self.assertEqual(len(body["messages"]), 2)
         self.assertEqual(body["messages"][0]["role"], "system")
         self.assertEqual(body["messages"][1]["role"], "user")
+
+    def test_request_body_preserves_tool_history(self):
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat()
+        chat.invoke([
+            HumanMessage(content="What is the weather?"),
+            AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "weather",
+                    "args": {"city": "Toronto"},
+                    "id": "call-1",
+                    "type": "tool_call",
+                }],
+            ),
+            ToolMessage(content="sunny", tool_call_id="call-1", name="weather"),
+            FunctionMessage(content="legacy result", name="legacy_weather"),
+        ])
+
+        messages = self.srv.last_body["messages"]
+        assistant_call = messages[1]["tool_calls"][0]
+        self.assertEqual(assistant_call["id"], "call-1")
+        self.assertEqual(assistant_call["function"]["name"], "weather")
+        self.assertEqual(
+            json.loads(assistant_call["function"]["arguments"]),
+            {"city": "Toronto"},
+        )
+        self.assertEqual(
+            messages[2],
+            {
+                "role": "tool",
+                "name": "weather",
+                "tool_call_id": "call-1",
+                "content": "sunny",
+            },
+        )
+        self.assertEqual(
+            messages[3],
+            {"role": "function", "name": "legacy_weather", "content": "legacy result"},
+        )
+
+    def test_bind_tools_forwards_openai_contract_and_specific_choice(self):
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat()
+        bound = chat.bind_tools(
+            [{
+                "name": "weather",
+                "description": "Get the weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }],
+            tool_choice="weather",
+        )
+        bound.invoke([HumanMessage(content="What is the weather?")])
+
+        self.assertEqual(self.srv.last_body["tools"][0]["type"], "function")
+        self.assertEqual(
+            self.srv.last_body["tools"][0]["function"]["name"],
+            "weather",
+        )
+        self.assertEqual(
+            self.srv.last_body["tool_choice"],
+            {"type": "function", "function": {"name": "weather"}},
+        )
 
     def test_sampling_params_forwarded(self):
         self.srv.set_response(_chat_response())
@@ -291,12 +445,51 @@ class TestAXEngineChatModel(unittest.TestCase):
         chat.invoke([HumanMessage(content="x")])
         self.assertEqual(self.srv.last_body["stop"], ["<|end|>"])
 
+    def test_empty_per_call_stop_overrides_constructor_default(self):
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat(stop=["<|end|>"])
+        chat.invoke([HumanMessage(content="x")], stop=[])
+        self.assertEqual(self.srv.last_body["stop"], [])
+
     def test_stream_yields_chunks(self):
         self.srv.set_response(_chat_sse("Hello", " world"))
         chat = self._make_chat()
         chunks = list(chat.stream([HumanMessage(content="x")]))
         text = "".join(c.content for c in chunks)
         self.assertEqual(text, "Hello world")
+
+    def test_stream_yields_before_connection_closes(self):
+        first = {
+            "choices": [{"index": 0, "delta": {"content": "now"}, "finish_reason": None}]
+        }
+        response = _HeldOpenSse(f"data: {json.dumps(first)}\n\n")
+        self.srv.set_response(response)
+        chat = self._make_chat()
+        stream = chat.stream([HumanMessage(content="x")])
+
+        started = time.monotonic()
+        first_chunk = next(stream)
+        elapsed = time.monotonic() - started
+        response.release.set()
+        list(stream)
+
+        self.assertEqual(first_chunk.content, "now")
+        self.assertLess(elapsed, 0.5, "first SSE event was buffered until the response closed")
+
+    def test_stream_preserves_fragmented_tool_calls(self):
+        self.srv.set_response(_chat_tool_sse())
+        chat = self._make_chat()
+        chunks = list(chat.stream([HumanMessage(content="What is the weather?")]))
+        combined = sum(chunks[1:], chunks[0])
+        self.assertEqual(
+            combined.tool_calls,
+            [{
+                "name": "weather",
+                "args": {"city": "Toronto"},
+                "id": "call-1",
+                "type": "tool_call",
+            }],
+        )
 
     def test_stream_flushes_trailing_event_without_blank_line(self):
         # Server closes without a final \n\n after the last data frame.
@@ -309,6 +502,22 @@ class TestAXEngineChatModel(unittest.TestCase):
         chunks = list(chat.stream([HumanMessage(content="x")]))
         text = "".join(c.content for c in chunks)
         self.assertEqual(text, "tail")
+
+    def test_stream_keeps_mixed_line_ending_events_separate(self):
+        first = {
+            "choices": [{"index": 0, "delta": {"content": "one"}, "finish_reason": None}]
+        }
+        second = {
+            "choices": [{"index": 0, "delta": {"content": "two"}, "finish_reason": "stop"}]
+        }
+        self.srv.set_response(
+            f"data: {json.dumps(first)}\n\n"
+            f"data: {json.dumps(second)}\r\n\r\n"
+            "data: [DONE]\n\n"
+        )
+        chat = self._make_chat()
+        chunks = list(chat.stream([HumanMessage(content="x")]))
+        self.assertEqual("".join(chunk.content for chunk in chunks), "onetwo")
 
     def test_stream_request_has_stream_true(self):
         self.srv.set_response(_chat_sse("ok"))
@@ -336,7 +545,7 @@ class TestAXEngineChatModel(unittest.TestCase):
         # server returns empty/invalid JSON → will raise
         self.srv.set_response(None)
         chat = self._make_chat()
-        with self.assertRaises(Exception):
+        with self.assertRaises(RuntimeError):
             chat.invoke([HumanMessage(content="x")])
 
 
@@ -397,6 +606,12 @@ class TestAXEngineLLM(unittest.TestCase):
         self.assertEqual(body["max_tokens"], 32)
         self.assertAlmostEqual(body["temperature"], 0.8)
         self.assertEqual(body["seed"], 7)
+
+    def test_empty_per_call_stop_overrides_constructor_default(self):
+        self.srv.set_response(_completion_response())
+        llm = self._make_llm(stop=["<|end|>"])
+        llm.invoke("x", stop=[])
+        self.assertEqual(self.srv.last_body["stop"], [])
 
     def test_stream_yields_text(self):
         self.srv.set_response(_completion_sse("Hello", " there"))

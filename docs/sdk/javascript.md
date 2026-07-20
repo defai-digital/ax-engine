@@ -167,6 +167,27 @@ for await (const chunk of stream) {
 }
 ```
 
+Tool calling uses LangChain's standard `bindTools()` contract. AX forwards the
+OpenAI tool schema and returns parsed calls on `AIMessage.tool_calls`, including
+for streamed calls:
+
+```js
+const withTools = chat.bindTools([{
+  type: "function",
+  function: {
+    name: "weather",
+    description: "Get the weather for a city",
+    parameters: {
+      type: "object",
+      properties: { city: { type: "string" } },
+      required: ["city"],
+    },
+  },
+}]);
+const response = await withTools.invoke("What is the weather in Toronto?");
+console.log(response.tool_calls);
+```
+
 ### `AXEngineLLM`
 
 ```js
@@ -178,7 +199,9 @@ console.log(text);
 ```
 
 Both classes accept: `baseUrl`, `model`, `maxTokens`, `temperature`, `topP`,
-`topK`, `minP`, `repetitionPenalty`, `stop`, `seed`, plus any standard
-LangChain base params (`callbacks`, `tags`, `metadata`, etc.).
+`topK`, `minP`, `repetitionPenalty`, `stop`, `seed`, and `requestMetadata`,
+plus any standard LangChain base params (`callbacks`, `tags`, `metadata`,
+etc.). `requestMetadata` is the string sent to AX Engine; LangChain's
+object-valued `metadata` remains reserved for tracing and callbacks.
 
 A runnable example is at `examples/javascript/langchain_chat.js`.

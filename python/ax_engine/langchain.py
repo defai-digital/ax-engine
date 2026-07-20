@@ -7,7 +7,8 @@ Provides two classes:
   ax-engine-server ``/v1/chat/completions`` endpoint.
 - ``AXEngineLLM``: a LangChain ``LLM`` backed by ``/v1/completions``.
 
-Both classes require ``langchain-core`` (``pip install langchain-core``) and
+Both classes require ``langchain-core>=0.3.11``
+(``pip install "langchain-core>=0.3.11"``) and
 a running ``ax-engine-server`` instance.
 
 Example::
@@ -22,10 +23,11 @@ Example::
 
 from __future__ import annotations
 
+import contextlib
 import json
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 try:
@@ -36,8 +38,7 @@ try:
         AIMessage,
         AIMessageChunk,
         BaseMessage,
-        HumanMessage,
-        SystemMessage,
+        convert_to_openai_messages,
     )
     from langchain_core.outputs import (
         ChatGeneration,
@@ -45,24 +46,58 @@ try:
         ChatResult,
         GenerationChunk,
     )
+    from langchain_core.utils.function_calling import convert_to_openai_tool
 except ImportError as _e:
     raise ImportError(
-        "ax_engine.langchain requires langchain-core. Install it with: pip install langchain-core"
+        "ax_engine.langchain requires langchain-core>=0.3.11. Install it with: "
+        'pip install "langchain-core>=0.3.11"'
     ) from _e
 
 _DEFAULT_BASE_URL = "http://127.0.0.1:31418"
 
 
-def _message_to_openai(message: BaseMessage) -> dict:
-    if isinstance(message, SystemMessage):
-        role = "system"
-    elif isinstance(message, HumanMessage):
-        role = "user"
-    elif isinstance(message, AIMessage):
-        role = "assistant"
-    else:
-        role = getattr(message, "role", "user")
-    return {"role": role, "content": message.content}
+def _normalize_tool_choice(tool_choice: Any) -> Any:
+    if not isinstance(tool_choice, str):
+        return tool_choice
+    if tool_choice == "any":
+        return "required"
+    if tool_choice in {"auto", "none", "required"}:
+        return tool_choice
+    return {"type": "function", "function": {"name": tool_choice}}
+
+
+def _message_additional_kwargs(message: dict[str, Any]) -> dict[str, Any]:
+    additional_kwargs: dict[str, Any] = {}
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        additional_kwargs["tool_calls"] = tool_calls
+    function_call = message.get("function_call")
+    if isinstance(function_call, dict):
+        additional_kwargs["function_call"] = function_call
+    return additional_kwargs
+
+
+def _tool_call_chunks(message: dict[str, Any]) -> list[Any]:
+    raw_tool_calls = message.get("tool_calls")
+    if not isinstance(raw_tool_calls, list):
+        return []
+    chunks: list[Any] = []
+    for raw_tool_call in raw_tool_calls:
+        if not isinstance(raw_tool_call, dict):
+            continue
+        function = raw_tool_call.get("function")
+        if not isinstance(function, dict):
+            function = {}
+        chunks.append(
+            {
+                "name": function.get("name"),
+                "args": function.get("arguments"),
+                "id": raw_tool_call.get("id"),
+                "index": raw_tool_call.get("index"),
+                "type": "tool_call_chunk",
+            }
+        )
+    return chunks
 
 
 def _post_json(url: str, payload: dict, timeout: int) -> dict:
@@ -91,8 +126,8 @@ def _parse_sse_block(block: bytes) -> tuple[str | None, str] | None:
     # concatenated with a newline; keeping only the last one would drop content.
     data_lines: list[str] = []
     event_type: str | None = None
-    for line in block.splitlines():
-        line = line.decode()
+    for raw_line in block.splitlines():
+        line = raw_line.decode()
         if line.startswith("data:"):
             data_lines.append(line[len("data:") :].lstrip())
         elif line.startswith("event:"):
@@ -129,18 +164,23 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         buffer = b""
         while True:
-            chunk = resp.read(4096)
+            # HTTPResponse.read(n) waits for n bytes or EOF, which can buffer a
+            # live SSE stream indefinitely. read1() performs at most one socket
+            # read and returns as soon as an event frame is available.
+            chunk = resp.read1(4096)
             if not chunk:
                 break
             buffer += chunk
-            while b"\n\n" in buffer or b"\r\n\r\n" in buffer:
-                for sep in (b"\r\n\r\n", b"\n\n"):
-                    idx = buffer.find(sep)
-                    if idx != -1:
-                        block, buffer = buffer[:idx], buffer[idx + len(sep) :]
-                        break
-                else:
+            while True:
+                separators = [
+                    (idx, separator)
+                    for separator in (b"\r\n\r\n", b"\n\n")
+                    if (idx := buffer.find(separator)) != -1
+                ]
+                if not separators:
                     break
+                idx, separator = min(separators, key=lambda match: match[0])
+                block, buffer = buffer[:idx], buffer[idx + len(separator) :]
                 parsed = _parse_sse_block(block)
                 if parsed is None:
                     continue
@@ -169,10 +209,8 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
                     raise RuntimeError(
                         f"ax-engine stream error: {_sse_error_message(raw_data)}"
                     )
-                try:
+                with contextlib.suppress(json.JSONDecodeError):
                     yield json.loads(raw_data)
-                except json.JSONDecodeError:
-                    pass
 
 
 class AXEngineChatModel(BaseChatModel):
@@ -214,8 +252,25 @@ class AXEngineChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "ax-engine"
 
-    def _build_request(self, messages: list[BaseMessage], stop: list[str] | None = None) -> dict:
-        req: dict = {"messages": [_message_to_openai(m) for m in messages]}
+    def bind_tools(
+        self,
+        tools: Sequence[Any],
+        *,
+        tool_choice: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
+        if tool_choice is not None:
+            kwargs["tool_choice"] = _normalize_tool_choice(tool_choice)
+        return self.bind(tools=formatted_tools, **kwargs)
+
+    def _build_request(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        req: dict = {"messages": convert_to_openai_messages(messages)}
         if self.model is not None:
             req["model"] = self.model
         if self.max_tokens is not None:
@@ -230,11 +285,15 @@ class AXEngineChatModel(BaseChatModel):
             req["min_p"] = self.min_p
         if self.repetition_penalty is not None:
             req["repetition_penalty"] = self.repetition_penalty
-        effective_stop = stop or self.stop
+        effective_stop = stop if stop is not None else self.stop
         if effective_stop is not None:
             req["stop"] = effective_stop
         if self.seed is not None:
             req["seed"] = self.seed
+        if kwargs.get("tools") is not None:
+            req["tools"] = kwargs["tools"]
+        if kwargs.get("tool_choice") is not None:
+            req["tool_choice"] = kwargs["tool_choice"]
         return req
 
     def _generate(
@@ -245,18 +304,22 @@ class AXEngineChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         url = self.base_url.rstrip("/") + "/v1/chat/completions"
-        resp = _post_json(url, self._build_request(messages, stop), self.timeout)
+        resp = _post_json(url, self._build_request(messages, stop, **kwargs), self.timeout)
         choices = resp.get("choices", [])
         if not choices:
             raise RuntimeError("Server returned empty choices array")
         choice = choices[0]
         # JSON null content (e.g. tool-call turns) must become "", not None.
-        content = (choice.get("message") or {}).get("content")
+        response_message = choice.get("message") or {}
+        content = response_message.get("content")
         text = "" if content is None else content
         return ChatResult(
             generations=[
                 ChatGeneration(
-                    message=AIMessage(content=text),
+                    message=AIMessage(
+                        content=text,
+                        additional_kwargs=_message_additional_kwargs(response_message),
+                    ),
                     generation_info={"finish_reason": choice.get("finish_reason")},
                 )
             ],
@@ -271,13 +334,17 @@ class AXEngineChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         url = self.base_url.rstrip("/") + "/v1/chat/completions"
-        req = {**self._build_request(messages, stop), "stream": True}
+        req = {**self._build_request(messages, stop, **kwargs), "stream": True}
         for chunk_data in _stream_sse(url, req, self.timeout):
             choice = (chunk_data.get("choices") or [{}])[0]
             delta = choice.get("delta", {})
             text = delta.get("content") or ""
             chunk = ChatGenerationChunk(
-                message=AIMessageChunk(content=text),
+                message=AIMessageChunk(
+                    content=text,
+                    additional_kwargs=_message_additional_kwargs(delta),
+                    tool_call_chunks=_tool_call_chunks(delta),
+                ),
                 generation_info={"finish_reason": choice.get("finish_reason")},
             )
             if run_manager:
@@ -338,7 +405,7 @@ class AXEngineLLM(LLM):
             req["min_p"] = self.min_p
         if self.repetition_penalty is not None:
             req["repetition_penalty"] = self.repetition_penalty
-        effective_stop = stop or self.stop
+        effective_stop = stop if stop is not None else self.stop
         if effective_stop is not None:
             req["stop"] = effective_stop
         if self.seed is not None:

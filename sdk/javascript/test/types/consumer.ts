@@ -7,6 +7,24 @@ import AxEngineClient, {
   type PreviewGenerateStreamEvent,
   type StreamEvent,
 } from "../../index.js";
+import { ChatAXEngine } from "../../langchain.js";
+
+const langChainClient = new ChatAXEngine({
+  metadata: { traceId: "trace-1" },
+  requestMetadata: "ax-request-1",
+});
+const langChainWithTools = langChainClient.bindTools(
+  [{
+    type: "function",
+    function: {
+      name: "weather",
+      parameters: { type: "object", properties: { city: { type: "string" } } },
+    },
+  }],
+  { tool_choice: "weather" },
+);
+void langChainClient;
+void langChainWithTools;
 
 export async function smokeTypes(client = new AxEngineClient({ baseUrl: "http://127.0.0.1:31418" })) {
   const generateRequest: PreviewGenerateRequest = {

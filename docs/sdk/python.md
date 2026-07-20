@@ -451,7 +451,7 @@ endpoints. The module has no extra dependencies beyond `langchain-core` and the
 Python standard library — no separate HTTP library is required.
 
 ```bash
-pip install langchain-core
+pip install "langchain-core>=0.3.11"
 ```
 
 ### `AXEngineChatModel`
@@ -477,6 +477,22 @@ print(response.content)
 
 for chunk in chat.stream([HumanMessage(content="Count from 1 to 5.")]):
     print(chunk.content, end="", flush=True)
+```
+
+Tool calling uses LangChain's standard `bind_tools()` contract. AX forwards the
+OpenAI tool schema and returns parsed calls on `AIMessage.tool_calls`, including
+for streamed calls:
+
+```python
+from langchain_core.tools import tool
+
+@tool
+def weather(city: str) -> str:
+    """Get the weather for a city."""
+    return "sunny"
+
+response = chat.bind_tools([weather]).invoke("What is the weather in Toronto?")
+print(response.tool_calls)
 ```
 
 ### `AXEngineLLM`

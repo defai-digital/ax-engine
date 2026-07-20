@@ -17,7 +17,8 @@ export interface AXEngineLangChainParams {
   repetitionPenalty?: number;
   stop?: string | string[];
   seed?: number;
-  metadata?: string;
+  /** String metadata forwarded to the AX Engine request payload. */
+  requestMetadata?: string;
 }
 
 export interface ChatAXEngineParams extends AXEngineLangChainParams, BaseChatModelParams {}
@@ -27,6 +28,10 @@ export interface AXEngineLLMParams extends AXEngineLangChainParams, BaseLLMParam
 export declare class ChatAXEngine extends BaseChatModel {
   constructor(fields?: ChatAXEngineParams);
   _llmType(): string;
+  bindTools(
+    tools: unknown[],
+    kwargs?: Record<string, unknown>,
+  ): ReturnType<BaseChatModel["withConfig"]>;
   _generate(
     messages: BaseMessage[],
     options: this["ParsedCallOptions"],
