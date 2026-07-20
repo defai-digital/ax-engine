@@ -814,9 +814,13 @@ impl EngineCore {
         let runner_started = Instant::now();
         let runner_output = self.runner.run(runner_input);
         let runner_time_us = runner_started.elapsed().as_micros() as u64;
-        if cfg!(debug_assertions) || validation_enabled() {
-            self.validate_runner_output(&execution_batch, &runner_output)?;
-        }
+        // Contract checks run unconditionally: a scheduled request whose
+        // update never arrives stays `Running` forever and leaks its KV
+        // blocks with no signal, and release builds were previously blind to
+        // that. The structural checks are O(batch) map work — negligible next
+        // to a runner dispatch; only the per-value logits scan inside remains
+        // debug/env gated.
+        self.validate_runner_output(&execution_batch, &runner_output)?;
         let sampled_tokens = self.sample_runner_output(&execution_batch, &runner_output)?;
         let sampled_request_ids = sampled_tokens
             .iter()
@@ -1140,6 +1144,10 @@ impl EngineCore {
             }
         }
         let mut seen_logits_outputs = HashSet::new();
+        // The per-value finiteness scan is O(vocab × batch) — too heavy for
+        // every release step. The structural checks around it stay
+        // unconditional.
+        let deep_logits_scan = cfg!(debug_assertions) || validation_enabled();
         for output in &runner_output.logits_outputs {
             if !decode_request_ids.contains(&output.request_id)
                 && !prefill_completion_request_ids.contains(&output.request_id)
@@ -1149,7 +1157,9 @@ impl EngineCore {
                     message: "runner emitted logits payload for non-sampleable request",
                 });
             }
-            if output.logits.is_empty() || output.logits.iter().any(|value| !value.is_finite()) {
+            if output.logits.is_empty()
+                || (deep_logits_scan && output.logits.iter().any(|value| !value.is_finite()))
+            {
                 return Err(EngineCoreError::RunnerContractViolation {
                     step_id: execution_batch.step_id,
                     message: "runner emitted invalid logits payload",
