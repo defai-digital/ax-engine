@@ -1,6 +1,10 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::SystemTime;
 
 use ax_engine_sdk::{EngineTokenizer, EngineTokenizerError};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 // Gemma 4 closes every conversational turn with this token. Instruction-tuned
@@ -199,7 +203,40 @@ pub(crate) fn validate_native_chat_artifact(
     // emit garbage that never stops (it never produces `<turn|>`, so requests
     // run to max_tokens). Confirm the artifact is genuinely instruction-tuned by
     // requiring its `generation_config.json` to stop on the turn terminator.
-    validate_gemma4_instruct_eos(artifacts_dir)
+    validate_gemma4_instruct_eos_cached(artifacts_dir)
+}
+
+// `tokenizer.json` is tens of MB and was previously re-read and re-parsed on
+// every chat request, synchronously on the async executor. The verdict only
+// depends on `tokenizer.json` + `generation_config.json`, so cache it per
+// artifacts dir and revalidate when either file's identity (size, mtime)
+// changes — which also keeps re-downloads into the same directory honest.
+type Gemma4ArtifactFingerprint = (Option<(u64, SystemTime)>, Option<(u64, SystemTime)>);
+
+fn gemma4_artifact_fingerprint(artifacts_dir: &Path) -> Gemma4ArtifactFingerprint {
+    let stat = |name: &str| {
+        std::fs::metadata(artifacts_dir.join(name))
+            .ok()
+            .and_then(|meta| Some((meta.len(), meta.modified().ok()?)))
+    };
+    (stat("tokenizer.json"), stat("generation_config.json"))
+}
+
+fn validate_gemma4_instruct_eos_cached(artifacts_dir: &Path) -> Result<(), String> {
+    type VerdictCache = HashMap<PathBuf, (Gemma4ArtifactFingerprint, Result<(), String>)>;
+    static VERDICTS: OnceLock<Mutex<VerdictCache>> = OnceLock::new();
+    let cache = VERDICTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let fingerprint = gemma4_artifact_fingerprint(artifacts_dir);
+    if let Some((cached_fingerprint, verdict)) = cache.lock().get(artifacts_dir)
+        && *cached_fingerprint == fingerprint
+    {
+        return verdict.clone();
+    }
+    let verdict = validate_gemma4_instruct_eos(artifacts_dir);
+    cache
+        .lock()
+        .insert(artifacts_dir.to_path_buf(), (fingerprint, verdict.clone()));
+    verdict
 }
 
 // Returns Ok only when `generation_config.json` lists the Gemma 4 turn
