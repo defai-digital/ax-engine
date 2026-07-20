@@ -2641,10 +2641,34 @@ mod tests {
             vec![batch, seq, num_value_heads, value_head_dim]
         );
         assert_eq!(direct_state.shape(), vec![batch, tail_len, conv_dim]);
-        assert_close_f32(direct_q.data_f32(), portable_q.data_f32(), 1.0e-6);
-        assert_close_f32(direct_k.data_f32(), portable_k.data_f32(), 1.0e-6);
-        assert_close_f32(direct_v.data_f32(), portable_v.data_f32(), 1.0e-6);
-        assert_close_f32(direct_state.data_f32(), portable_state.data_f32(), 1.0e-6);
+        // Raw data reads require dense row-major layout; some outputs are
+        // strided views (e.g. the V split), so materialize each side and
+        // compare logical values rather than raw buffer prefixes.
+        let dense = |arr: &MlxArray| {
+            let materialized = contiguous(arr, None);
+            eval(&[&materialized]);
+            materialized
+        };
+        assert_close_f32(
+            dense(&direct_q).data_f32(),
+            dense(&portable_q).data_f32(),
+            1.0e-6,
+        );
+        assert_close_f32(
+            dense(&direct_k).data_f32(),
+            dense(&portable_k).data_f32(),
+            1.0e-6,
+        );
+        assert_close_f32(
+            dense(&direct_v).data_f32(),
+            dense(&portable_v).data_f32(),
+            1.0e-6,
+        );
+        assert_close_f32(
+            dense(&direct_state).data_f32(),
+            dense(&portable_state).data_f32(),
+            1.0e-6,
+        );
     }
 
     #[test]

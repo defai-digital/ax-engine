@@ -273,6 +273,32 @@ static inline void ax_require_evaled(const mx::array& arr, const char* api) {
   }
 }
 
+// Row-contiguity up to size-1 axes: a unit axis contributes no element
+// ordering, so e.g. a trailing slice of shape [1, T, C] stays linearly
+// readable even though its axis-0 stride makes the row_contiguous flag
+// false. Non-unit axes must still carry dense row-major strides.
+static bool ax_effectively_row_contiguous(const mx::array& arr) {
+  if (arr.flags().row_contiguous) return true;
+  int64_t expected = 1;
+  for (int i = static_cast<int>(arr.ndim()) - 1; i >= 0; --i) {
+    int64_t dim = arr.shape(i);
+    if (dim == 1) continue;
+    if (arr.strides()[i] != expected) return false;
+    expected *= dim;
+  }
+  return true;
+}
+
+// data<T>() returns buffer().raw_ptr() + offset with no layout awareness:
+// reading a transposed/strided/broadcast view as a dense slice silently
+// reorders elements. Fail loudly instead of returning wrong data.
+static void ax_require_row_contiguous(const mx::array& arr, const char* api) {
+  if (!ax_effectively_row_contiguous(arr)) {
+    throw std::runtime_error(std::string(api) +
+        ": array is not row-contiguous; materialize a contiguous copy before reading raw data");
+  }
+}
+
 extern "C" int ax_shim_array_is_evaled(const mlx_array a) {
   AX_TRY { return aref(a).is_available() ? 1 : 0; }
   catch (const std::exception&) { ax_set_current_error(); return -1; }
@@ -282,6 +308,7 @@ extern "C" int ax_shim_array_is_evaled(const mlx_array a) {
 extern "C" const float* mlx_array_data_float32(const mlx_array a) {
   AX_TRY {
     ax_require_evaled(aref(a), "mlx_array_data_float32");
+    ax_require_row_contiguous(aref(a), "mlx_array_data_float32");
     return aref(a).data<float>();
   }
   catch (const std::exception&) { ax_set_current_error(); return nullptr; }
@@ -290,6 +317,7 @@ extern "C" const float* mlx_array_data_float32(const mlx_array a) {
 extern "C" const uint8_t* mlx_array_data_uint8(const mlx_array a) {
   AX_TRY {
     ax_require_evaled(aref(a), "mlx_array_data_uint8");
+    ax_require_row_contiguous(aref(a), "mlx_array_data_uint8");
     return aref(a).data<uint8_t>();
   }
   catch (const std::exception&) { ax_set_current_error(); return nullptr; }
@@ -298,6 +326,7 @@ extern "C" const uint8_t* mlx_array_data_uint8(const mlx_array a) {
 extern "C" const uint32_t* mlx_array_data_uint32(const mlx_array a) {
   AX_TRY {
     ax_require_evaled(aref(a), "mlx_array_data_uint32");
+    ax_require_row_contiguous(aref(a), "mlx_array_data_uint32");
     return aref(a).data<uint32_t>();
   }
   catch (const std::exception&) { ax_set_current_error(); return nullptr; }
