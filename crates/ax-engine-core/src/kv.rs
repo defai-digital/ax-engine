@@ -283,8 +283,20 @@ impl KvManager {
                 candidate_prompt_tokens,
                 (candidate_table.full_block_count as usize).min(candidate_prompt_full_block_count),
             )?;
-            let matched_block_count =
+            let hash_matched_block_count =
                 common_prefix_block_count(&candidate_block_keys, &target_block_keys);
+            // Block keys are FNV-style 64-bit hashes over prompt-derived data,
+            // so key equality is necessary but not sufficient: a collision
+            // would map another request's KV blocks into this one (wrong
+            // output plus cross-request context exposure). Mirror the
+            // retained-cache path and share only blocks whose tokens are
+            // identical.
+            let matched_block_count = token_verified_block_count(
+                candidate_prompt_tokens,
+                prompt_tokens,
+                hash_matched_block_count,
+                self.config.block_size_tokens,
+            );
             let matched_token_count = matched_block_count as u32 * self.config.block_size_tokens;
             if matched_token_count == 0 || matched_token_count <= best_match.matched_token_count {
                 continue;
@@ -1033,6 +1045,31 @@ fn common_prefix_block_count(left: &[CachedBlockKey], right: &[CachedBlockKey]) 
         .count()
 }
 
+/// Number of leading blocks whose tokens are identical between two prompts,
+/// capped at `hash_matched_block_count`. Hash-equal blocks may still collide;
+/// only token-verified blocks are safe to share.
+fn token_verified_block_count(
+    candidate_prompt_tokens: &[u32],
+    target_prompt_tokens: &[u32],
+    hash_matched_block_count: usize,
+    block_size_tokens: u32,
+) -> usize {
+    let block_size = block_size_tokens as usize;
+    (0..hash_matched_block_count)
+        .take_while(|&block_index| {
+            let start = block_index * block_size;
+            let end = start + block_size;
+            matches!(
+                (
+                    candidate_prompt_tokens.get(start..end),
+                    target_prompt_tokens.get(start..end),
+                ),
+                (Some(candidate), Some(target)) if candidate == target
+            )
+        })
+        .count()
+}
+
 fn parent_cache_key(
     cache_group_id: CacheGroupId,
     parent_block_hash: Option<u64>,
@@ -1525,6 +1562,50 @@ mod tests {
         assert_eq!(second_free.released_blocks, vec![BlockId(1)]);
         assert_eq!(manager.used_block_count(), 1);
         assert_eq!(manager.available_block_count(), 3);
+    }
+
+    #[test]
+    fn token_verified_block_count_rejects_collision_token_mismatch() {
+        // A hash collision claims 2 matching blocks; only the first has
+        // identical tokens, so only it may be shared.
+        assert_eq!(
+            token_verified_block_count(&[1, 2, 3, 4, 9, 9, 9, 9], &[1, 2, 3, 4, 5, 6, 7, 8], 2, 4),
+            1
+        );
+        // First-block mismatch shares nothing.
+        assert_eq!(
+            token_verified_block_count(&[9, 9, 9, 9], &[1, 2, 3, 4], 1, 4),
+            0
+        );
+        // Identical prefixes verify fully.
+        assert_eq!(
+            token_verified_block_count(&[1, 2, 3, 4, 5, 6, 7, 8], &[1, 2, 3, 4, 5, 6, 7, 8], 2, 4),
+            2
+        );
+        // Claims past either prompt's end are rejected, not read out of bounds.
+        assert_eq!(
+            token_verified_block_count(&[1, 2, 3, 4], &[1, 2, 3, 4], 2, 4),
+            1
+        );
+    }
+
+    #[test]
+    fn live_prefix_lookup_shares_token_verified_prefix() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        assert!(lookup.hit);
+        assert!(!lookup.retained_cache_hit);
+        assert_eq!(lookup.matched_token_count, 8);
     }
 
     #[test]
