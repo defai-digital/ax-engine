@@ -86,6 +86,8 @@ pub enum GgufError {
     UnknownArch(String),
     #[error("invalid manifest after GGUF parse: {0}")]
     InvalidManifest(String),
+    #[error("malformed GGUF metadata: {0}")]
+    Malformed(&'static str),
 }
 
 // ---------------------------------------------------------------------------
@@ -192,9 +194,14 @@ fn f64_to_u32(value: f64) -> Option<u32> {
     }
 }
 
+/// Deepest permitted array-in-array nesting in KV metadata. Real GGUF files
+/// use flat arrays; the recursion in `read_kv_value` must not let a crafted
+/// file overflow the stack.
+const MAX_KV_ARRAY_DEPTH: u32 = 4;
+
 /// Read one KV value of the given type; return Some(KvValue) for types we
 /// care about, None for skipped types (arrays of complex elements, etc.).
-fn read_kv_value(r: &mut impl Read, typ: u32) -> io::Result<Option<KvValue>> {
+fn read_kv_value(r: &mut impl Read, typ: u32, depth: u32) -> io::Result<Option<KvValue>> {
     match typ {
         GGUF_TYPE_UINT8 => Ok(Some(KvValue::UInt(read_u8(r)? as u64))),
         GGUF_TYPE_INT8 => Ok(Some(KvValue::Int(read_u8(r)? as i8 as i64))),
@@ -206,11 +213,17 @@ fn read_kv_value(r: &mut impl Read, typ: u32) -> io::Result<Option<KvValue>> {
         GGUF_TYPE_BOOL => Ok(Some(KvValue::UInt(read_u8(r)? as u64))),
         GGUF_TYPE_STRING => Ok(Some(KvValue::Str(read_gguf_string(r)?))),
         GGUF_TYPE_ARRAY => {
+            if depth >= MAX_KV_ARRAY_DEPTH {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "GGUF KV array nesting exceeds supported depth",
+                ));
+            }
             let arr_type = read_u32(r)?;
             let n = read_u64(r)?;
             // Skip all array elements; we don't use any array KV for architecture metadata.
             for _ in 0..n {
-                read_kv_value(r, arr_type)?;
+                read_kv_value(r, arr_type, depth + 1)?;
             }
             Ok(None)
         }
@@ -238,41 +251,45 @@ struct GgufTensorInfo {
 }
 
 impl GgufTensorInfo {
-    /// Total number of elements.
-    fn n_elements(&self) -> u64 {
-        self.dims.iter().product()
+    /// Total number of elements; `None` when the untrusted dimension product
+    /// overflows u64 (a wrapped product would otherwise feed `byte_length`).
+    fn n_elements(&self) -> Option<u64> {
+        self.dims
+            .iter()
+            .try_fold(1u64, |acc, dim| acc.checked_mul(*dim))
     }
 
-    /// Byte length of tensor data.
+    /// Byte length of tensor data; `None` on unknown type, misaligned block
+    /// count, or arithmetic overflow.
     fn byte_length(&self) -> Option<u64> {
-        let n = self.n_elements();
+        let n = self.n_elements()?;
         match self.ggml_type {
-            GGML_TYPE_F32 | GGML_TYPE_I32 => Some(n * 4),
-            GGML_TYPE_F16 => Some(n * 2),
-            GGML_TYPE_BF16 => Some(n * 2),
+            GGML_TYPE_F32 | GGML_TYPE_I32 => n.checked_mul(4),
+            GGML_TYPE_F16 => n.checked_mul(2),
+            GGML_TYPE_BF16 => n.checked_mul(2),
             GGML_TYPE_Q8_0 => {
                 if !n.is_multiple_of(QK8_0) {
                     return None;
                 }
-                Some((n / QK8_0) * Q8_0_BLOCK_BYTES)
+                (n / QK8_0).checked_mul(Q8_0_BLOCK_BYTES)
             }
             GGML_TYPE_Q4_K => {
                 if !n.is_multiple_of(QK_K) {
                     return None;
                 }
-                Some((n / QK_K) * Q4_K_BLOCK_BYTES)
+                (n / QK_K).checked_mul(Q4_K_BLOCK_BYTES)
             }
             GGML_TYPE_Q5_K => {
                 if !n.is_multiple_of(QK_K) {
                     return None;
                 }
-                Some((n / QK_K) * Q5_K_BLOCK_BYTES)
+                (n / QK_K).checked_mul(Q5_K_BLOCK_BYTES)
             }
             GGML_TYPE_Q6_K => {
                 if !n.is_multiple_of(QK_K) {
                     return None;
                 }
-                Some((n / QK_K) * Q6_K_BLOCK_BYTES)
+                (n / QK_K).checked_mul(Q6_K_BLOCK_BYTES)
             }
             _ => None,
         }
@@ -346,6 +363,19 @@ fn parse_gguf_header(path: &Path) -> Result<GgufHeader, GgufError> {
         path: path.to_owned(),
         source: e,
     })?;
+    // Untrusted counts drive allocation below: cap them so a corrupt 24-byte
+    // header cannot force a huge `Vec::with_capacity` (which aborts the
+    // process) before any read has a chance to fail.
+    const MAX_GGUF_TENSORS: u64 = 262_144;
+    const MAX_GGUF_KV: u64 = 1_048_576;
+    if n_tensors > MAX_GGUF_TENSORS {
+        return Err(GgufError::Malformed("tensor count exceeds supported limit"));
+    }
+    if n_kv > MAX_GGUF_KV {
+        return Err(GgufError::Malformed(
+            "metadata KV count exceeds supported limit",
+        ));
+    }
 
     // KV pairs
     let mut kv: HashMap<String, KvValue> = HashMap::new();
@@ -358,7 +388,7 @@ fn parse_gguf_header(path: &Path) -> Result<GgufHeader, GgufError> {
             path: path.to_owned(),
             source: e,
         })?;
-        match read_kv_value(&mut f, typ) {
+        match read_kv_value(&mut f, typ, 0) {
             Ok(Some(val)) => {
                 kv.insert(key, val);
             }
@@ -386,6 +416,15 @@ fn parse_gguf_header(path: &Path) -> Result<GgufHeader, GgufError> {
             path: path.to_owned(),
             source: e,
         })?;
+        // GGML tensors carry at most 4 dims; a corrupt count would otherwise
+        // drive `Vec::with_capacity` straight from the file (u32::MAX dims is
+        // a ~34 GB allocation attempt).
+        const MAX_GGUF_DIMS: u32 = 8;
+        if n_dims > MAX_GGUF_DIMS {
+            return Err(GgufError::Malformed(
+                "tensor dimension count exceeds supported limit",
+            ));
+        }
         let mut dims = Vec::with_capacity(n_dims as usize);
         for _ in 0..n_dims {
             dims.push(read_u64(&mut f).map_err(|e| GgufError::Io {
@@ -611,10 +650,14 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                 ));
             }
         };
-        if dtype == NativeTensorDataType::Q4Km && info.n_elements() % QK_K != 0 {
+        if dtype == NativeTensorDataType::Q4Km
+            && info
+                .n_elements()
+                .is_none_or(|elements| elements % QK_K != 0)
+        {
             return Err(GgufError::UnalignedQ4K {
                 name: info.name.clone(),
-                elements: info.n_elements(),
+                elements: info.n_elements().unwrap_or(u64::MAX),
             });
         }
 
@@ -860,5 +903,64 @@ fn ggml_type_name(t: u32) -> &'static str {
         GGML_TYPE_Q5_K => "q5_k",
         GGML_TYPE_Q6_K => "q6_k",
         _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn kv_array_nesting_is_bounded() {
+        // A crafted file nesting arrays inside arrays must trip the depth cap
+        // instead of overflowing the stack through read_kv_value's recursion.
+        let mut payload = Vec::new();
+        for _ in 0..=MAX_KV_ARRAY_DEPTH {
+            payload.extend_from_slice(&GGUF_TYPE_ARRAY.to_le_bytes());
+            payload.extend_from_slice(&1u64.to_le_bytes());
+        }
+        let error = read_kv_value(&mut Cursor::new(payload), GGUF_TYPE_ARRAY, 0)
+            .expect_err("deep nesting must error, not recurse unbounded");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn flat_kv_array_still_parses() {
+        // [arr_type=u32][n=3][3 x u32 payload] — skipped, but must not error.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
+        payload.extend_from_slice(&3u64.to_le_bytes());
+        for value in [7u32, 8, 9] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        let parsed = read_kv_value(&mut Cursor::new(payload), GGUF_TYPE_ARRAY, 0)
+            .expect("flat array must parse");
+        assert!(parsed.is_none(), "arrays are skipped, not stored");
+    }
+
+    #[test]
+    fn tensor_element_product_overflow_is_detected() {
+        let info = GgufTensorInfo {
+            name: "t".to_string(),
+            dims: vec![u64::MAX, 2],
+            ggml_type: GGML_TYPE_F32,
+            data_offset: 0,
+        };
+        assert_eq!(info.n_elements(), None);
+        assert_eq!(info.byte_length(), None);
+    }
+
+    #[test]
+    fn byte_length_checks_the_final_multiply() {
+        // The element count itself fits u64, but bytes = n * 4 would wrap.
+        let info = GgufTensorInfo {
+            name: "t".to_string(),
+            dims: vec![u64::MAX / 2],
+            ggml_type: GGML_TYPE_F32,
+            data_offset: 0,
+        };
+        assert_eq!(info.n_elements(), Some(u64::MAX / 2));
+        assert_eq!(info.byte_length(), None);
     }
 }
