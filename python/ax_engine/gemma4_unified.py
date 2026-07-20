@@ -794,7 +794,7 @@ def _flatten_audio_values(waveform: Any) -> list[float]:
 
 
 def _normalize_video_timestamp_ids(
-    timestamp_ids: list[list[list[int]]] | None,
+    timestamp_ids: list[list[list[Any]]] | None,
     frame_counts: list[int],
 ) -> list[list[list[int]]]:
     if timestamp_ids is None:

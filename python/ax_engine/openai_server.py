@@ -325,7 +325,10 @@ def render_xml_tool_blocks(tools: Any) -> list[str]:
 def render_xml_tool_block(tool: Any) -> str | None:
     if not isinstance(tool, dict):
         return None
-    function = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    function_candidate = tool.get("function")
+    function: dict[Any, Any] = (
+        function_candidate if isinstance(function_candidate, dict) else tool
+    )
     name = function.get("name")
     if not isinstance(name, str):
         return None
@@ -852,15 +855,18 @@ def build_session(
     session_factory: Callable[..., Any] | None,
     session_kwargs: dict[str, Any] | None,
 ) -> Any:
+    factory: Callable[..., Any]
     if session_factory is None:
         from . import Session
 
-        session_factory = Session
-    kwargs = {"model_id": model_id, "mlx": True}
+        factory = Session
+    else:
+        factory = session_factory
+    kwargs: dict[str, Any] = {"model_id": model_id, "mlx": True}
     if mlx_model_artifacts_dir is not None:
         kwargs["mlx_model_artifacts_dir"] = mlx_model_artifacts_dir
     kwargs.update(session_kwargs or {})
-    return session_factory(**kwargs)
+    return factory(**kwargs)
 
 
 def validate_model(payload: dict[str, Any], model_id: str) -> tuple[int, str] | None:

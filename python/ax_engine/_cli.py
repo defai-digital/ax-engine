@@ -12,6 +12,7 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from . import _bundled_binary
 
@@ -25,7 +26,7 @@ class ModelProfile:
     downloadable: bool = True
 
 
-MODEL_PROFILES = (
+MODEL_PROFILES: tuple[ModelProfile, ...] = (
     ModelProfile(
         label="gemma4-e2b",
         preset="gemma4-e2b",
@@ -855,12 +856,13 @@ def _cmd_tui(args: argparse.Namespace) -> int:
     return 0
 
 
-def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict]:
+def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
     server_bin = str(_server_bin())
     target = args.model
     target_path = pathlib.Path(target).expanduser()
     argv = [server_bin, "--host", args.host, "--port", str(args.port)]
 
+    resolved: dict[str, Any]
     if target_path.exists():
         resolved = {
             "kind": "local_dir",
@@ -1364,7 +1366,9 @@ def _user_doctor_report(bench_report: dict) -> dict:
     if metal_toolchain_ready:
         metal_detail = "Metal compiler and metallib available"
     elif runtime_assets_ready:
-        metal_detail = "Bundled runtime assets available; Metal compiler only needed for kernel rebuilds"
+        metal_detail = (
+            "Bundled runtime assets available; Metal compiler only needed for kernel rebuilds"
+        )
     else:
         metal_detail = "Metal compiler or metallib missing"
     return {
