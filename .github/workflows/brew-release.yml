@@ -195,33 +195,8 @@ jobs:
           done
 
           read -r -a release_payloads <<< "$RELEASE_PAYLOADS"
-          python3 - "$FORMULA_PATH" "${release_payloads[@]}" <<'PY'
-          from __future__ import annotations
-
-          import re
-          import sys
-          from pathlib import Path
-
-          formula_path = Path(sys.argv[1])
-          payloads = sys.argv[2:]
-          text = formula_path.read_text(encoding="utf-8")
-
-          bin_re = re.compile(r'^(?P<indent>[ \t]*)bin\.install\b(?P<rest>[^\n]*)$', re.MULTILINE)
-          matches = list(bin_re.finditer(text))
-          if not matches:
-              raise SystemExit("formula has no bin.install lines — cannot update automatically")
-          indent = matches[0].group("indent")
-          combined = indent + "bin.install " + ", ".join(f'"{item}"' for item in payloads)
-          counter = [0]
-
-          def replace_bin(match: re.Match[str]) -> str:
-              counter[0] += 1
-              return combined if counter[0] == 1 else ""
-
-          text = bin_re.sub(replace_bin, text)
-          text = re.sub(r'\n{3,}', '\n\n', text)
-          formula_path.write_text(text, encoding="utf-8")
-          PY
+          python3 "$GITHUB_WORKSPACE/scripts/update_homebrew_bin_install.py" \
+            "$FORMULA_PATH" "${release_payloads[@]}"
 
           python3 - "$FORMULA_PATH" "$APPLE_SIGNED" "$APPLE_NOTARIZED" <<'PY'
           from __future__ import annotations

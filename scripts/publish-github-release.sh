@@ -428,7 +428,10 @@ PY
                     # --check-notarization only modifies verification; it is not a
                     # standalone codesign operation (see codesign(1)).
                     run codesign --verify --strict --check-notarization --verbose=2 "$verify_dir/payload/$bin"
-                    run spctl --assess --type execute --verbose=2 "$verify_dir/payload/$bin"
+                    # Release payloads are raw Mach-O command-line tools, not app
+                    # bundles. Verify Apple's notarized code requirement directly;
+                    # spctl rejects this packaging form as "not an app".
+                    run codesign --verify --strict --verbose=2 -R="notarized" "$verify_dir/payload/$bin"
                 fi
             done
         fi
@@ -576,9 +579,6 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
             die "xcrun notarytool is not available - install current Xcode Command Line Tools"
         fi
     fi
-fi
-if [[ "$DRY_RUN" = false && -n "$SIGN_IDENTITY" && "$SKIP_NOTARIZATION" = false ]]; then
-    check_cmd spctl "spctl is required for Gatekeeper verification"
 fi
 resolve_notary_args
 

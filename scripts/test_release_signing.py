@@ -43,7 +43,8 @@ class ReleaseSigningTests(unittest.TestCase):
             "codesign --verify --strict --check-notarization --verbose=2",
             text,
         )
-        self.assertIn("spctl --assess --type execute", text)
+        self.assertIn('codesign --verify --strict --verbose=2 -R="notarized"', text)
+        self.assertNotIn("spctl --assess", text)
         self.assertIn("release_args+=(--draft)", text)
         self.assertIn("release $TAG is already published; refusing to replace verified assets", text)
         self.assertIn("release $TAG is no longer a draft; refusing to publish or mutate it", text)
