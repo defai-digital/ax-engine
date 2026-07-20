@@ -1,6 +1,7 @@
 use crate::chat;
 use crate::openai::chat_requests::{
-    render_openai_chat_prompt, render_openai_chat_prompt_with_tools,
+    ChatPromptRenderOptions, render_openai_chat_prompt, render_openai_chat_prompt_with_options,
+    render_openai_chat_prompt_with_tools,
 };
 use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
@@ -424,18 +425,231 @@ fn openai_chat_prompt_renderer_uses_gemma4_ollama_tool_dsl() {
     )
     .expect("gemma4 tool prompt should render");
 
-    assert!(prompt.starts_with("<bos><|turn>system\n<|tool>declaration:lookup"));
-    assert!(prompt.contains("description:<|\"|>Lookup docs<|\"|>"));
-    assert!(
-        prompt.contains("query:{description:<|\"|>Search query<|\"|>,type:<|\"|>STRING<|\"|>}")
+    // Golden string against Google Gemma 4 Canonical Chat Template (2026-07-09).
+    let expected = concat!(
+        "<bos><|turn>system\n",
+        "<|tool>declaration:lookup{description:<|\"|>Lookup docs<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},query:{description:<|\"|>Search query<|\"|>,type:<|\"|>STRING<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n",
+        "<|turn>user\nLook up AX<turn|>\n",
+        "<|turn>model\n",
+        "<|tool_call>call:lookup{limit:2,query:<|\"|>AX<|\"|>}<tool_call|>",
+        "<|tool_response>response:lookup{value:<|\"|>AX Engine<|\"|>}<tool_response|>",
     );
-    assert!(prompt.contains("required:[<|\"|>query<|\"|>]"));
-    assert!(prompt.contains("<tool|><turn|>\n<|turn>user\nLook up AX<turn|>\n"));
-    assert!(prompt.contains("<|tool_call>call:lookup{limit:2,query:<|\"|>AX<|\"|>}<tool_call|>"));
+    assert_eq!(prompt, expected);
+}
+
+#[test]
+fn openai_gemma4_keeps_tool_answer_in_same_model_turn() {
+    // Official template: tool_call + tool_response + follow-up assistant text
+    // stay in one <|turn>model … <turn|> (no second model open before answer).
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"},
+        {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": {"query": "AX", "limit": 2}
+                }
+            }]
+        },
+        {"role": "tool", "tool_call_id": "call_123", "content": "AX Engine"},
+        {"role": "assistant", "content": "AX Engine is a local runtime."}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Lookup docs",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    }]);
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "gemma4-e2b",
+        &messages,
+        Some(&tools),
+        Some(&json!("auto")),
+    )
+    .expect("gemma4 tool+answer prompt should render");
+
+    let expected = concat!(
+        "<bos><|turn>system\n",
+        "<|tool>declaration:lookup{description:<|\"|>Lookup docs<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},query:{description:<|\"|>Search query<|\"|>,type:<|\"|>STRING<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n",
+        "<|turn>user\nLook up AX<turn|>\n",
+        "<|turn>model\n",
+        "<|tool_call>call:lookup{limit:2,query:<|\"|>AX<|\"|>}<tool_call|>",
+        "<|tool_response>response:lookup{value:<|\"|>AX Engine<|\"|>}<tool_response|>",
+        "AX Engine is a local runtime.<turn|>\n",
+        "<|turn>model\n<|channel>thought\n<channel|>",
+    );
+    assert_eq!(prompt, expected);
+    // Explicitly guard against the pre-fix double model-turn bug.
     assert!(
-        prompt.contains(
-            "<|tool_response>response:lookup{value:<|\"|>AX Engine<|\"|>}<tool_response|>"
-        )
+        !prompt.contains("<tool_response|><|turn>model\nAX Engine"),
+        "follow-up answer must continue the same model turn, not open a new one"
+    );
+}
+
+#[test]
+fn openai_gemma4_strips_thinking_channels_from_history() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "<|channel>thought\nplan\n<channel|>Hello there"},
+        {"role": "user", "content": "Again"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt("gemma4-e2b", &messages).expect("gemma4 history");
+    assert_eq!(
+        prompt,
+        "<bos><|turn>user\nHi<turn|>\n<|turn>model\nHello there<turn|>\n<|turn>user\nAgain<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    );
+    assert!(
+        !prompt.contains("<|channel>thought\nplan"),
+        "prior thinking channels must be stripped from prefill"
+    );
+}
+
+#[test]
+fn openai_gemma4_enable_thinking_matches_canonical_template() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Hello"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt_with_options(
+        "gemma4-e2b",
+        &messages,
+        None,
+        None,
+        ChatPromptRenderOptions {
+            enable_thinking: true,
+        },
+    )
+    .expect("thinking-on gemma4 prompt");
+
+    assert_eq!(
+        prompt,
+        "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n"
+    );
+}
+
+#[test]
+fn openai_gemma4_pending_tool_call_opens_tool_response_slot() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"},
+        {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": {"query": "AX", "limit": 2}
+                }
+            }]
+        }
+    ]))
+    .expect("sample messages should deserialize");
+
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Lookup docs",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    }]);
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "gemma4-e2b",
+        &messages,
+        Some(&tools),
+        Some(&json!("auto")),
+    )
+    .expect("pending tool prompt");
+
+    assert!(prompt.ends_with(
+        "<|tool_call>call:lookup{limit:2,query:<|\"|>AX<|\"|>}<tool_call|><|tool_response>"
+    ));
+}
+
+#[test]
+fn openai_gemma4_tool_roundtrip_with_thinking_opens_thought_channel() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"},
+        {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": {"query": "AX", "limit": 2}
+                }
+            }]
+        },
+        {"role": "tool", "tool_call_id": "call_123", "content": "AX Engine"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Lookup docs",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    }]);
+
+    let prompt = render_openai_chat_prompt_with_options(
+        "gemma4-e2b",
+        &messages,
+        Some(&tools),
+        Some(&json!("auto")),
+        ChatPromptRenderOptions {
+            enable_thinking: true,
+        },
+    )
+    .expect("thinking tool roundtrip");
+
+    assert!(
+        prompt.ends_with(
+            "<|tool_response>response:lookup{value:<|\"|>AX Engine<|\"|>}<tool_response|><|channel>thought\n"
+        ),
+        "after tool response with thinking on, open thought channel: {prompt}"
+    );
+    assert!(
+        prompt.contains("<|think|>\n"),
+        "thinking on injects <|think|> in the system turn"
     );
 }
 
@@ -605,7 +819,11 @@ fn openai_chat_template_kwargs_disable_thinking_for_qwen_and_glm() {
         chat_template_kwargs_for_model_id("mlx-community/GLM-4.7-Flash-4bit"),
         Some(json!({"enable_thinking": false}))
     );
-    assert_eq!(chat_template_kwargs_for_model_id("gemma4-e2b"), None);
+    // Gemma 4 also defaults thinking off for delegated backends (mlx_lm).
+    assert_eq!(
+        chat_template_kwargs_for_model_id("gemma4-e2b"),
+        Some(json!({"enable_thinking": false}))
+    );
     assert_eq!(
         chat_template_kwargs_for_model_id("deepseek-ai/DeepSeek-V3"),
         None

@@ -29,6 +29,12 @@ and this project adheres to Semantic Versioning.
 
 ### Changed
 
+- Gemma 4 chat prompt rendering aligns with Google's 2026-07-09 canonical
+  chat template: multi-turn tool loops keep tool_call, tool_response, and the
+  follow-up answer in one model turn; prior assistant thinking channels are
+  stripped from prefill history; optional `reasoning` enables official
+  thinking (`<|think|>` + open thought channel). Default remains thinking-off
+  with an empty thought prefill for short OpenAI-compatible answers.
 - Managed downloads are restricted to the curated AutomatosX catalog:
   `ax-engine download --list`, the TUI catalog, and `download <alias>` cover
   the `ax-*` aliases only. Legacy mlx-community aliases (`qwen36-35b`,

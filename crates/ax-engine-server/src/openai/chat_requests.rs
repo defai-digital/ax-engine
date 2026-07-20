@@ -33,6 +33,15 @@ pub(crate) struct Gemma4UnifiedChatPrompt {
     pub(crate) runtime_inputs: Gemma4UnifiedRuntimeInputs,
 }
 
+/// Options for OpenAI chat prompt rendering beyond tools/messages.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ChatPromptRenderOptions {
+    /// When true, Gemma 4 injects `<|think|>` and leaves the thought channel
+    /// open for generation (Google `enable_thinking=true`). Default false
+    /// pre-fills an empty thought channel so short answers skip CoT.
+    pub(crate) enable_thinking: bool,
+}
+
 /// Tools-free convenience wrapper. Production callers all render tools when
 /// present (see `openai/requests.rs` and `apply_template` in
 /// `openai/compat.rs`, which forward `tools`/`tool_choice` into
@@ -52,13 +61,32 @@ pub(crate) fn render_openai_chat_prompt_with_tools(
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
 ) -> Result<String, HttpErrorResponse> {
+    render_openai_chat_prompt_with_options(
+        model_id,
+        messages,
+        tools,
+        tool_choice,
+        ChatPromptRenderOptions::default(),
+    )
+}
+
+pub(crate) fn render_openai_chat_prompt_with_options(
+    model_id: &str,
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+    options: ChatPromptRenderOptions,
+) -> Result<String, HttpErrorResponse> {
     validate_openai_tool_names(messages, tools, tool_choice)?;
+    // Always use the dedicated Gemma 4 renderer so multi-turn history,
+    // tool-call turn continuation, and enable_thinking stay aligned with
+    // Google's 2026-07-09 canonical chat template (not only when tools are
+    // present).
     if matches!(
         chat::ChatPromptTemplate::for_model_id(model_id),
         chat::ChatPromptTemplate::Gemma4
-    ) && gemma4_tool_surface_is_present(messages, tools, tool_choice)
-    {
-        return render_gemma4_openai_chat_prompt(messages, tools);
+    ) {
+        return render_gemma4_openai_chat_prompt(messages, tools, options.enable_thinking);
     }
     if matches!(
         chat::ChatPromptTemplate::for_model_id(model_id),
@@ -420,27 +448,21 @@ fn render_openai_chat_content(
     }
 }
 
-fn gemma4_tool_surface_is_present(
-    messages: &[OpenAiChatMessage],
-    tools: Option<&Value>,
-    tool_choice: Option<&Value>,
-) -> bool {
-    tools.map(openai_value_is_present).unwrap_or(false)
-        || tool_choice
-            .map(tool_choice_forces_tool_call)
-            .unwrap_or(false)
-        || messages.iter().any(|message| {
-            matches!(message.role.as_str(), "tool" | "function")
-                || message
-                    .tool_calls
-                    .as_ref()
-                    .is_some_and(openai_value_is_present)
-        })
+/// Tracked message kind for Gemma 4 generation-prompt decisions.
+///
+/// Mirrors the official template's `prev_message_type` used to decide whether
+/// to open a new model turn, leave a bare `<|tool_response>`, or open a
+/// thinking channel after a tool result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Gemma4PrevMessageType {
+    ToolCall,
+    ToolResponse,
 }
 
 fn render_gemma4_openai_chat_prompt(
     messages: &[OpenAiChatMessage],
     tools: Option<&Value>,
+    enable_thinking: bool,
 ) -> Result<String, HttpErrorResponse> {
     if messages.is_empty() {
         return Err(empty_chat_messages_error());
@@ -454,8 +476,12 @@ fn render_gemma4_openai_chat_prompt(
         .map(|message| message.role.trim())
         .unwrap_or_default();
 
-    if has_tools || matches!(first_role, "system" | "developer") {
+    // Official template: system/tools/thinking share the first system turn.
+    if enable_thinking || has_tools || matches!(first_role, "system" | "developer") {
         prompt.push_str("<|turn>system\n");
+        if enable_thinking {
+            prompt.push_str("<|think|>\n");
+        }
         if matches!(first_role, "system" | "developer") {
             let content = render_openai_chat_content(messages[0].content.as_ref())?;
             prompt.push_str(content.trim());
@@ -473,22 +499,38 @@ fn render_gemma4_openai_chat_prompt(
         prompt.push_str("<turn|>\n");
     }
 
-    let mut suppress_generation_prompt = false;
+    // prev_message_type drives generation prompt; prev_non_tool_role detects
+    // consecutive assistant messages that must stay in one model turn
+    // (tool-call → tool-response → answer).
+    let mut prev_message_type: Option<Gemma4PrevMessageType> = None;
+    let mut prev_non_tool_role: Option<&'static str> = None;
+
     while index < messages.len() {
         let message = &messages[index];
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
         if matches!(role, "tool" | "function") {
+            // Tool messages are consumed as followers of the preceding
+            // assistant tool_calls; standalone tool rows are skipped.
             index += 1;
             continue;
         }
 
+        // Official template resets prev_message_type at each non-tool message.
+        prev_message_type = None;
         let turn = if role == "assistant" { "model" } else { role };
-        prompt.push_str("<|turn>");
-        prompt.push_str(turn);
-        prompt.push('\n');
+        let continue_same_model_turn =
+            role == "assistant" && prev_non_tool_role == Some("assistant");
+        if !continue_same_model_turn {
+            prompt.push_str("<|turn>");
+            prompt.push_str(turn);
+            prompt.push('\n');
+        }
+
+        let mut rendered_tool_call = false;
+        let mut tool_response_count = 0usize;
+        let mut next_index = index + 1;
 
         if role == "assistant" {
-            let mut rendered_tool_call = false;
             let mut tool_names_by_id = BTreeMap::new();
             if let Some(tool_calls) = message.tool_calls.as_ref() {
                 for call in gemma4_tool_calls(tool_calls) {
@@ -501,44 +543,89 @@ fn render_gemma4_openai_chat_prompt(
                     prompt.push_str(&format_gemma4_arguments_object(&call.arguments));
                     prompt.push_str("}<tool_call|>");
                     rendered_tool_call = true;
+                    prev_message_type = Some(Gemma4PrevMessageType::ToolCall);
                 }
             }
 
-            let (tool_response_count, next_index) = render_following_gemma4_tool_responses(
+            let (response_count, after_tools) = render_following_gemma4_tool_responses(
                 messages,
                 index + 1,
                 &tool_names_by_id,
                 &mut prompt,
             )?;
-            let content = render_openai_chat_content(message.content.as_ref())?;
-            if !content.trim().is_empty() {
-                prompt.push_str(strip_gemma4_thinking_from_history(&content).trim());
+            tool_response_count = response_count;
+            next_index = after_tools;
+            if tool_response_count > 0 {
+                prev_message_type = Some(Gemma4PrevMessageType::ToolResponse);
             }
-
-            if rendered_tool_call && tool_response_count == 0 {
-                prompt.push_str("<|tool_response>");
-                suppress_generation_prompt = true;
-            } else if !(tool_response_count > 0 && content.trim().is_empty()) {
-                prompt.push_str("<turn|>\n");
-                suppress_generation_prompt = false;
-            } else {
-                suppress_generation_prompt = true;
-            }
-            index = next_index;
-            continue;
         }
 
         let content = render_openai_chat_content(message.content.as_ref())?;
-        prompt.push_str(content.trim());
-        prompt.push_str("<turn|>\n");
-        suppress_generation_prompt = false;
-        index += 1;
+        let content_for_prompt = if role == "assistant" {
+            chat::strip_gemma4_thinking_from_history(&content)
+        } else {
+            content.trim().to_string()
+        };
+        let has_content = !content_for_prompt.is_empty();
+        if has_content {
+            prompt.push_str(&content_for_prompt);
+        }
+
+        let next_non_tool_role = next_non_tool_role(messages, next_index);
+        // Keep the model turn open when another assistant message follows
+        // (agent loop: call → response → final answer in one turn).
+        let continues_into_next = role == "assistant"
+            && next_non_tool_role == Some("assistant")
+            && (!rendered_tool_call || tool_response_count > 0);
+
+        if rendered_tool_call && tool_response_count == 0 {
+            // Pending tool call: open the response slot for the client/model.
+            prompt.push_str("<|tool_response>");
+            prev_message_type = Some(Gemma4PrevMessageType::ToolCall);
+        } else if continues_into_next {
+            // Do not close the model turn yet.
+        } else if !(tool_response_count > 0 && !has_content && next_non_tool_role.is_none()) {
+            // Close the turn unless this is a terminal tool_response with no
+            // answer content (generation continues in-turn after the result).
+            prompt.push_str("<turn|>\n");
+        }
+
+        prev_non_tool_role = Some(role);
+        index = next_index;
     }
 
-    if !suppress_generation_prompt {
-        prompt.push_str("<|turn>model\n<|channel>thought\n<channel|>");
+    // Generation prompt — matches official add_generation_prompt block.
+    match prev_message_type {
+        Some(Gemma4PrevMessageType::ToolCall) => {
+            // Already opened <|tool_response>; model continues there.
+        }
+        Some(Gemma4PrevMessageType::ToolResponse) => {
+            if enable_thinking {
+                prompt.push_str("<|channel>thought\n");
+            }
+            // Thinking off: continue generation immediately after the response
+            // (no new model turn, no empty thought prefill).
+        }
+        None => {
+            prompt.push_str("<|turn>model\n");
+            if !enable_thinking {
+                prompt.push_str("<|channel>thought\n<channel|>");
+            }
+        }
     }
     Ok(prompt)
+}
+
+fn next_non_tool_role(messages: &[OpenAiChatMessage], start: usize) -> Option<&'static str> {
+    for message in messages.iter().skip(start) {
+        let Ok(role) = chat::normalize_role(&message.role) else {
+            continue;
+        };
+        if !matches!(role, "tool" | "function") {
+            return Some(role);
+        }
+    }
+    None
 }
 
 #[derive(Debug)]
@@ -629,9 +716,10 @@ fn render_gemma4_tool_declaration(tool: &Value) -> Option<String> {
     if let Some(parameters) = function.get("parameters").and_then(Value::as_object) {
         rendered.push_str(",parameters:{");
         if let Some(properties) = parameters.get("properties").and_then(Value::as_object) {
-            rendered.push_str("properties:{ ");
+            // Match official template spacing: properties:{...},
+            rendered.push_str("properties:{");
             rendered.push_str(&format_gemma4_parameters(properties));
-            rendered.push_str(" },");
+            rendered.push_str("},");
         }
         if let Some(required) = parameters.get("required") {
             rendered.push_str("required:");
@@ -651,14 +739,12 @@ fn render_gemma4_tool_declaration(tool: &Value) -> Option<String> {
 }
 
 fn format_gemma4_parameters(properties: &serde_json::Map<String, Value>) -> String {
-    let standard_keys = ["description", "type", "properties", "required", "nullable"];
+    // Official template iterates every property name (dictsort); parameter
+    // names that collide with schema keywords are still valid tool params.
     let mut rendered = Vec::new();
     let mut keys = properties.keys().collect::<Vec<_>>();
     keys.sort();
     for key in keys {
-        if standard_keys.contains(&key.as_str()) {
-            continue;
-        }
         let Some(value) = properties.get(key).and_then(Value::as_object) else {
             continue;
         };
@@ -669,29 +755,48 @@ fn format_gemma4_parameters(properties: &serde_json::Map<String, Value>) -> Stri
                 format_gemma4_argument(&Value::String(description.to_string()), true)
             ));
         }
-        if value.get("nullable").and_then(Value::as_bool) == Some(true) {
-            fields.push("nullable:true".to_string());
-        }
-        if let Some(enum_values) = value.get("enum") {
+        let type_upper = value
+            .get("type")
+            .and_then(Value::as_str)
+            .map(|t| t.to_ascii_uppercase());
+        if type_upper.as_deref() == Some("STRING")
+            && let Some(enum_values) = value.get("enum")
+        {
             fields.push(format!(
                 "enum:{}",
                 format_gemma4_argument(enum_values, true)
             ));
         }
-        if let Some(nested) = value.get("properties").and_then(Value::as_object) {
-            fields.push(format!(
-                "properties:{{{}}}",
-                format_gemma4_parameters(nested)
-            ));
+        if type_upper.as_deref() == Some("ARRAY")
+            && let Some(items) = value.get("items")
+        {
+            // Official template renders nested items objects with typed
+            // fields; fall back to argument formatting for simple items.
+            if let Some(items_obj) = items.as_object() {
+                fields.push(format!(
+                    "items:{{{}}}",
+                    format_gemma4_items_object(items_obj)
+                ));
+            } else {
+                fields.push(format!("items:{}", format_gemma4_argument(items, false)));
+            }
         }
-        if let Some(required) = value.get("required") {
-            fields.push(format!(
-                "required:{}",
-                format_gemma4_argument(required, true)
-            ));
+        if value.get("nullable").and_then(Value::as_bool) == Some(true) {
+            fields.push("nullable:true".to_string());
         }
-        if let Some(items) = value.get("items") {
-            fields.push(format!("items:{}", format_gemma4_argument(items, false)));
+        if type_upper.as_deref() == Some("OBJECT") {
+            if let Some(nested) = value.get("properties").and_then(Value::as_object) {
+                fields.push(format!(
+                    "properties:{{{}}}",
+                    format_gemma4_parameters(nested)
+                ));
+            }
+            if let Some(required) = value.get("required") {
+                fields.push(format!(
+                    "required:{}",
+                    format_gemma4_argument(required, true)
+                ));
+            }
         }
         if let Some(param_type) = value.get("type") {
             fields.push(format!(
@@ -703,6 +808,44 @@ fn format_gemma4_parameters(properties: &serde_json::Map<String, Value>) -> Stri
     }
     rendered.join(",")
 }
+
+fn format_gemma4_items_object(items: &serde_json::Map<String, Value>) -> String {
+    let mut fields = Vec::new();
+    let mut keys = items.keys().collect::<Vec<_>>();
+    keys.sort();
+    for key in keys {
+        let Some(value) = items.get(key) else {
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        match key.as_str() {
+            "properties" => {
+                if let Some(nested) = value.as_object() {
+                    fields.push(format!(
+                        "properties:{{{}}}",
+                        format_gemma4_parameters(nested)
+                    ));
+                }
+            }
+            "required" => {
+                fields.push(format!("required:{}", format_gemma4_argument(value, true)));
+            }
+            "type" => {
+                fields.push(format!("type:{}", format_gemma4_upper_type_argument(value)));
+            }
+            _ => {
+                fields.push(format!("{key}:{}", format_gemma4_argument(value, true)));
+            }
+        }
+    }
+    fields.join(",")
+}
+
+// strip_gemma4_thinking_from_history lives in chat.rs (canonical channel
+// markers) and is used for both the dedicated Gemma renderer and the plain
+// chat.rs Gemma4 history path.
 
 fn format_gemma4_arguments_object(arguments: &Value) -> String {
     match arguments {
@@ -781,22 +924,6 @@ fn format_gemma4_argument(value: &Value, escape_keys: bool) -> String {
             format!("{{{fields}}}")
         }
     }
-}
-
-fn strip_gemma4_thinking_from_history(content: &str) -> String {
-    let mut remaining = content;
-    let mut rendered = String::new();
-    while let Some(start) = remaining.find("<|channel>") {
-        rendered.push_str(&remaining[..start]);
-        let body_start = start + "<|channel>".len();
-        let Some(relative_end) = remaining[body_start..].find("<channel|>") else {
-            remaining = "";
-            break;
-        };
-        remaining = &remaining[body_start + relative_end + "<channel|>".len()..];
-    }
-    rendered.push_str(remaining);
-    rendered.trim().to_string()
 }
 
 fn prepend_qwen_tool_contract(

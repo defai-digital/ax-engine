@@ -139,9 +139,12 @@ pub(crate) fn normalize_role(role: &str) -> Result<&'static str, String> {
 }
 
 pub(crate) fn template_kwargs_for_model_id(model_id: &str) -> Option<Value> {
+    // Gemma 4 / Qwen / GLM all default thinking off for OpenAI-compatible short
+    // answers. Callers that want thinking must opt in via the request
+    // `reasoning` field (native) or chat_template_kwargs (delegated).
     matches!(
         ChatPromptTemplate::for_model_id(model_id),
-        ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Glm47
+        ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Glm47 | ChatPromptTemplate::Gemma4
     )
     .then(|| json!({"enable_thinking": false}))
 }
@@ -399,7 +402,13 @@ fn render_prompt_internal(
                 prompt.push_str("<|turn>");
                 prompt.push_str(turn);
                 prompt.push('\n');
-                prompt.push_str(content);
+                // Match the official template's strip_thinking macro: prior
+                // model turns must not re-inject channel framing into prefill.
+                if role == "assistant" {
+                    prompt.push_str(&strip_gemma4_thinking_from_history(content));
+                } else {
+                    prompt.push_str(content);
+                }
                 prompt.push_str("<turn|>\n");
             }
             ChatPromptTemplate::Glm47 => {
@@ -675,6 +684,27 @@ fn split_gemma4_channels(tokens: &[u32], ids: Gemma4ChannelIds) -> (Vec<u32>, Ve
         }
     }
     (kept, channel_bodies)
+}
+
+/// Drop Gemma 4 thinking-channel spans from assistant history content.
+///
+/// Mirrors the official `chat_template.jinja` `strip_thinking` macro used when
+/// re-rendering prior model turns: everything from `<|channel>` through
+/// `<channel|>` is removed so channel framing never re-enters the prefill.
+pub(crate) fn strip_gemma4_thinking_from_history(content: &str) -> String {
+    let mut remaining = content;
+    let mut rendered = String::new();
+    while let Some(start) = remaining.find(GEMMA4_CHANNEL_OPEN) {
+        rendered.push_str(&remaining[..start]);
+        let body_start = start + GEMMA4_CHANNEL_OPEN.len();
+        let Some(relative_end) = remaining[body_start..].find(GEMMA4_CHANNEL_CLOSE) else {
+            remaining = "";
+            break;
+        };
+        remaining = &remaining[body_start + relative_end + GEMMA4_CHANNEL_CLOSE.len()..];
+    }
+    rendered.push_str(remaining);
+    rendered.trim().to_string()
 }
 
 /// Drop the channel-name header line (e.g. `thought`) from a decoded channel
@@ -993,6 +1023,33 @@ mod tests {
             stops.iter().any(|s| s == "<|return|>"),
             "must stop on <|return|>: {stops:?}"
         );
+    }
+
+    #[test]
+    fn strip_gemma4_thinking_from_history_drops_channel_spans() {
+        assert_eq!(
+            strip_gemma4_thinking_from_history("<|channel>thought\nplan\n<channel|>Hello"),
+            "Hello"
+        );
+        assert_eq!(
+            strip_gemma4_thinking_from_history("plain answer"),
+            "plain answer"
+        );
+        // Plain multi-turn Gemma path must strip prior assistant channels.
+        let prompt = render_prompt(
+            "gemma4-e2b",
+            &[
+                ("user".to_string(), "Hi".to_string()),
+                (
+                    "assistant".to_string(),
+                    "<|channel>thought\nplan\n<channel|>Hello".to_string(),
+                ),
+                ("user".to_string(), "Again".to_string()),
+            ],
+        )
+        .expect("render");
+        assert!(prompt.contains("<|turn>model\nHello<turn|>\n"));
+        assert!(!prompt.contains("plan"));
     }
 
     #[test]

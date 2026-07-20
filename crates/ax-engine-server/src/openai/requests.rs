@@ -23,12 +23,12 @@ use crate::openai::schema::{
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+use crate::openai::chat_requests::{
+    ChatPromptRenderOptions, messages_contain_inline_media, reject_video_chat_content,
+    render_gemma4_unified_chat_with_media, render_openai_chat_prompt_with_options,
+};
 pub(crate) use crate::openai::chat_requests::{
     chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
-};
-use crate::openai::chat_requests::{
-    messages_contain_inline_media, reject_video_chat_content,
-    render_gemma4_unified_chat_with_media, render_openai_chat_prompt_with_tools,
 };
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
@@ -486,12 +486,22 @@ pub(crate) fn build_openai_chat_request(
                 multimodal_inputs.gemma4_unified = Some(prompt.runtime_inputs);
                 None
             }
-            None => Some(render_openai_chat_prompt_with_tools(
-                live.model_id.as_ref(),
-                &request.messages,
-                request.tools.as_ref(),
-                request.tool_choice.as_ref(),
-            )?),
+            None => {
+                // Gemma 4: request.reasoning enables the official
+                // enable_thinking path (`<|think|>` + open thought channel).
+                // Other families keep their existing thinking defaults.
+                let enable_thinking = matches!(
+                    chat::ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+                    chat::ChatPromptTemplate::Gemma4
+                ) && openai_reasoning_is_enabled(request.reasoning.as_ref());
+                Some(render_openai_chat_prompt_with_options(
+                    live.model_id.as_ref(),
+                    &request.messages,
+                    request.tools.as_ref(),
+                    request.tool_choice.as_ref(),
+                    ChatPromptRenderOptions { enable_thinking },
+                )?)
+            }
         }
     };
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
@@ -697,11 +707,12 @@ pub(crate) fn tokenize_native_mlx_text_input(
     if live.runtime_report.selected_backend != SelectedBackend::Mlx {
         return Ok((input_tokens, input_text));
     }
-    if !input_tokens.is_empty() || input_text.is_none() {
+    if !input_tokens.is_empty() {
         return Ok((input_tokens, input_text));
     }
-
-    let input_text = input_text.expect("checked above");
+    let Some(input_text) = input_text else {
+        return Ok((input_tokens, None));
+    };
     let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
@@ -1125,7 +1136,7 @@ fn reject_unsupported_completion_logprobs(
     ))
 }
 
-fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
+pub(crate) fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
     let Some(reasoning) = reasoning else {
         return false;
     };
