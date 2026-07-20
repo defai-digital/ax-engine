@@ -1101,6 +1101,10 @@ pub(crate) fn advance_diffusion_workspace(
         let weights_addr = weights as *const ModelWeights as usize;
         let cache_addr = cache as *const MlxKVCache as usize;
         let has_self_cond = diff_cfg.self_conditioning;
+        // SAFETY: The closure captures raw pointers to `cfg`, `weights`, and `cache`
+        // because `MlxClosure::new_dyn()` requires `'static` captures. The referenced
+        // objects outlive this advance call — the closure is invoked synchronously
+        // (from `denoise_step`) and never stored beyond this scope.
         let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
             let token_ids = inputs.get(0);
             let self_cond_signal = inputs.get(1);
