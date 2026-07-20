@@ -146,9 +146,9 @@ fn render_glm_openai_chat_prompt(
     chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
 }
 
-/// Ministral hub template:
-/// - `[AVAILABLE_TOOLS] […][/AVAILABLE_TOOLS]` only before the **last** user turn
-/// - assistant tool calls: `[TOOL_CALLS] [{…function…, "id": "XXXXXXXXX"}]</s>`
+/// Ministral hub template (exact marker spacing from chat_template.jinja):
+/// - `[AVAILABLE_TOOLS] [{…}][/AVAILABLE_TOOLS]` only before the **last** user turn
+/// - assistant tool calls: `[TOOL_CALLS] [{…, "id": "XXXXXXXXX"}]</s>`
 /// - tool results: `[TOOL_RESULTS] {"content": …, "call_id": "XXXXXXXXX"}[/TOOL_RESULTS]`
 /// - system folds into the last user `[INST]`; plain assistant is ` content</s>`
 fn render_ministral_openai_chat_prompt(
@@ -159,9 +159,9 @@ fn render_ministral_openai_chat_prompt(
         return Err(empty_chat_messages_error());
     }
     let tools = tools.filter(|value| openai_value_is_present(value));
-    let last_user_idx = messages.iter().rposition(|message| {
-        matches!(chat::normalize_role(&message.role), Ok("user"))
-    });
+    let last_user_idx = messages
+        .iter()
+        .rposition(|message| matches!(chat::normalize_role(&message.role), Ok("user")));
     let mut prompt = String::from("<s>");
     let mut system: Option<String> = None;
     for (index, message) in messages.iter().enumerate() {
@@ -172,7 +172,7 @@ fn render_ministral_openai_chat_prompt(
             .is_some_and(openai_value_is_present);
 
         if has_tool_calls && role == "assistant" {
-            // Hub: [TOOL_CALLS] [ {function…, "id": "9chars"} ]</s>
+            // Hub: `[TOOL_CALLS] [` + objects + `]` + eos
             prompt.push_str("[TOOL_CALLS] ");
             prompt.push_str(&ministral_tool_calls_array(message.tool_calls.as_ref())?);
             prompt.push_str("</s>");
@@ -189,8 +189,9 @@ fn render_ministral_openai_chat_prompt(
                 if Some(index) == last_user_idx
                     && let Some(tools) = tools
                 {
+                    // Hub: `[AVAILABLE_TOOLS] [` … `]`
                     prompt.push_str("[AVAILABLE_TOOLS] ");
-                    prompt.push_str(&ministral_available_tools_array(tools));
+                    prompt.push_str(&ministral_available_tools_array(tools)?);
                     prompt.push_str("[/AVAILABLE_TOOLS]");
                 }
                 prompt.push_str("[INST]");
@@ -205,17 +206,18 @@ fn render_ministral_openai_chat_prompt(
             }
             "assistant" => {
                 let content = render_openai_chat_content(message.content.as_ref())?;
+                // Hub: " " + content|trim + eos_token
                 prompt.push(' ');
                 prompt.push_str(content.trim());
                 prompt.push_str("</s>");
             }
             "tool" | "function" => {
-                // Hub: [TOOL_RESULTS] {"content": <raw>, "call_id": "XXXXXXXXX"}[/TOOL_RESULTS]
+                // Hub: `[TOOL_RESULTS] {"content": ` + content + `, "call_id": "…"}[/TOOL_RESULTS]`
                 let content = render_openai_chat_content(message.content.as_ref())?;
                 let call_id = message
                     ._tool_call_id
                     .as_deref()
-                    .filter(|id| id.len() == 9)
+                    .filter(|id| ministral_tool_call_id_is_valid(id))
                     .ok_or_else(|| {
                         chat_error_response(
                             "Ministral tool results require tool_call_id of length 9 \
@@ -223,7 +225,6 @@ fn render_ministral_openai_chat_prompt(
                                 .to_string(),
                         )
                     })?;
-                // Match hub string concatenation (content is not JSON-escaped).
                 prompt.push_str("[TOOL_RESULTS] {\"content\": ");
                 prompt.push_str(&content);
                 prompt.push_str(", \"call_id\": \"");
@@ -274,7 +275,7 @@ fn render_llama3_openai_chat_prompt(
         "<|end_header_id|>\n\n",
         "<|eot_id|>",
         /* environment_ipython_in_system */ true,
-        /* python_tool_call_wrappers */ true,
+        /* python_tool_call_wrappers */ false,
     )
 }
 
@@ -347,6 +348,14 @@ fn render_llama_family_tools_prompt(
 
         if role == "assistant" && has_tool_calls {
             let content = render_openai_chat_content(message.content.as_ref())?;
+            let calls = llama_tool_call_payloads(message.tool_calls.as_ref())?;
+            if !python_tool_call_wrappers && calls.len() != 1 {
+                return Err(chat_error_response(
+                    "Llama 3 supports exactly one tool call per assistant message \
+                     (hub chat_template.jinja)"
+                        .to_string(),
+                ));
+            }
             prompt.push_str(header_open);
             prompt.push_str("assistant");
             prompt.push_str(header_close);
@@ -358,10 +367,8 @@ fn render_llama_family_tools_prompt(
                     prompt.push_str(&content);
                 }
                 prompt.push_str("<|python_end|>");
-            } else if !content.trim().is_empty() {
-                prompt.push_str(content.trim());
             }
-            for call in llama_tool_call_payloads(message.tool_calls.as_ref()) {
+            for call in calls {
                 prompt.push_str(&call);
             }
             prompt.push_str(eot);
@@ -416,18 +423,47 @@ fn render_llama_family_tools_prompt(
     Ok(prompt)
 }
 
-/// Hub Ministral AVAILABLE_TOOLS array: OpenAI tool objects with compact JSON.
-fn ministral_available_tools_array(tools: &Value) -> String {
-    match tools {
-        Value::Array(items) => {
-            let parts: Vec<String> = items.iter().map(compact_json).collect();
-            format!("[{}]", parts.join(", "))
+/// Hub Ministral AVAILABLE_TOOLS array, including its JSON whitespace contract.
+fn ministral_available_tools_array(tools: &Value) -> Result<String, HttpErrorResponse> {
+    let items = match tools {
+        Value::Array(items) => items.as_slice(),
+        Value::Object(_) => std::slice::from_ref(tools),
+        _ => {
+            return Err(chat_error_response(
+                "Ministral tools must be an object or array".to_string(),
+            ));
         }
-        other => format!("[{}]", compact_json(other)),
+    };
+    let mut rendered = Vec::with_capacity(items.len());
+    for (index, tool) in items.iter().enumerate() {
+        let function = tool
+            .get("function")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                chat_error_response(format!(
+                    "Ministral tools[{index}] requires a function object"
+                ))
+            })?;
+        let fields = function
+            .iter()
+            .filter(|(key, _)| key.as_str() != "return")
+            .map(|(key, value)| {
+                format!(
+                    "{}: {}",
+                    jinja_json(&Value::String(key.clone())),
+                    jinja_json(value)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        rendered.push(format!(
+            "{{\"type\": \"function\", \"function\": {{{fields}}}}}"
+        ));
     }
+    Ok(format!("[{}]", rendered.join(", ")))
 }
 
-/// Hub: `[TOOL_CALLS] [ {function_json without trailing }, "id": "XXXXXXXXX"} ]`
+/// Hub: `[TOOL_CALLS] [{function_json without trailing }, "id": "XXXXXXXXX"}]`
 fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, HttpErrorResponse> {
     let Some(tool_calls) = tool_calls else {
         return Ok("[]".to_string());
@@ -435,7 +471,11 @@ fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, Http
     let calls = match tool_calls {
         Value::Array(calls) => calls.as_slice(),
         Value::Object(_) => std::slice::from_ref(tool_calls),
-        _ => return Ok("[]".to_string()),
+        _ => {
+            return Err(chat_error_response(
+                "Ministral tool_calls must be an object or array".to_string(),
+            ));
+        }
     };
     let mut parts = Vec::new();
     for call in calls {
@@ -448,7 +488,7 @@ fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, Http
         let id = object
             .get("id")
             .and_then(Value::as_str)
-            .filter(|id| id.len() == 9)
+            .filter(|id| ministral_tool_call_id_is_valid(id))
             .ok_or_else(|| {
                 chat_error_response(
                     "Ministral tool call ids must be alphanumeric length 9 \
@@ -457,7 +497,7 @@ fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, Http
                 )
             })?;
         // function|tojson without final `}`, then append `, "id": "…"}`
-        let function_json = compact_json(function);
+        let function_json = jinja_json(function);
         let without_close = function_json
             .strip_suffix('}')
             .unwrap_or(function_json.as_str());
@@ -466,13 +506,15 @@ fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, Http
     Ok(format!("[{}]", parts.join(", ")))
 }
 
+fn ministral_tool_call_id_is_valid(id: &str) -> bool {
+    id.len() == 9 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
 fn pretty_tool_json_lines(tools: &Value) -> Vec<String> {
     match tools {
         Value::Array(items) => items
             .iter()
-            .map(|item| {
-                serde_json::to_string_pretty(item).unwrap_or_else(|_| compact_json(item))
-            })
+            .map(|item| serde_json::to_string_pretty(item).unwrap_or_else(|_| compact_json(item)))
             .collect(),
         other => {
             vec![serde_json::to_string_pretty(other).unwrap_or_else(|_| compact_json(other))]
@@ -481,28 +523,45 @@ fn pretty_tool_json_lines(tools: &Value) -> Vec<String> {
 }
 
 /// Hub Llama tool-call payload: `{"name": "…", "parameters": {…}}` (parameters, not arguments).
-fn llama_tool_call_payloads(tool_calls: Option<&Value>) -> Vec<String> {
-    let Some(tool_calls) = tool_calls else {
-        return Vec::new();
-    };
+fn llama_tool_call_payloads(tool_calls: Option<&Value>) -> Result<Vec<String>, HttpErrorResponse> {
+    let tool_calls = tool_calls.ok_or_else(|| {
+        chat_error_response("Llama assistant tool_calls must be present".to_string())
+    })?;
     let calls = match tool_calls {
         Value::Array(calls) => calls.as_slice(),
         Value::Object(_) => std::slice::from_ref(tool_calls),
-        _ => return Vec::new(),
+        _ => {
+            return Err(chat_error_response(
+                "Llama assistant tool_calls must be an object or array".to_string(),
+            ));
+        }
     };
-    calls
-        .iter()
-        .filter_map(|call| {
-            let function = call.get("function")?.as_object()?;
-            let name = function.get("name")?.as_str()?;
-            let arguments = normalize_tool_arguments(function.get("arguments"));
-            let payload = serde_json::json!({
-                "name": name,
-                "parameters": arguments,
-            });
-            Some(compact_json(&payload))
-        })
-        .collect()
+    let mut payloads = Vec::with_capacity(calls.len());
+    for (index, call) in calls.iter().enumerate() {
+        let function = call
+            .get("function")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                chat_error_response(format!(
+                    "Llama assistant tool_calls[{index}] requires a function object"
+                ))
+            })?;
+        let name = function
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                chat_error_response(format!(
+                    "Llama assistant tool_calls[{index}].function requires a name"
+                ))
+            })?;
+        let arguments = normalize_tool_arguments(function.get("arguments"));
+        payloads.push(format!(
+            "{{\"name\": {}, \"parameters\": {}}}",
+            jinja_json(&Value::String(name.to_string())),
+            jinja_json(&arguments)
+        ));
+    }
+    Ok(payloads)
 }
 
 fn render_glm_chat_message_pairs(
@@ -1701,6 +1760,35 @@ fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
 
 fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+}
+
+/// Match Python `json.dumps` spacing used by hub Jinja `tojson` filters
+/// (space after `:` and `,`, object key insertion order preserved).
+fn jinja_json(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string()),
+        Value::Array(values) => {
+            let body = values.iter().map(jinja_json).collect::<Vec<_>>().join(", ");
+            format!("[{body}]")
+        }
+        Value::Object(object) => {
+            let body = object
+                .iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{}: {}",
+                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string()),
+                        jinja_json(value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{body}}}")
+        }
+    }
 }
 
 fn render_qwen_xml_tool_call(name: &str, arguments: &Value) -> String {

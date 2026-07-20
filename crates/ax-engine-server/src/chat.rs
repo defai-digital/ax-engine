@@ -398,7 +398,9 @@ fn render_prompt_internal(
     let mut gpt_oss_system: Option<&str> = None;
     // Ministral hub template folds system into the *last* user turn, not the first.
     let ministral_last_user_idx = if matches!(template, ChatPromptTemplate::MinistralInstruct) {
-        messages.iter().rposition(|(role, _)| matches!(normalize_role(role), Ok("user")))
+        messages
+            .iter()
+            .rposition(|(role, _)| matches!(normalize_role(role), Ok("user")))
     } else {
         None
     };
