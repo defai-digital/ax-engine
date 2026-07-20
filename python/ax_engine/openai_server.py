@@ -644,6 +644,7 @@ def create_app(
     session_kwargs: dict[str, Any] | None = None,
 ) -> Any:
     try:
+        import anyio
         from fastapi import FastAPI, Request
         from fastapi.responses import JSONResponse, StreamingResponse
         from tokenizers import Tokenizer
@@ -714,17 +715,24 @@ def create_app(
 
         temperature = float(payload.get("temperature", 0.0))
         default_rp = 1.1 if temperature <= 0.0 else 1.0
-        with lock:
-            result = session.generate(
-                input_tokens,
-                max_output_tokens=int(payload["max_tokens"]),
-                temperature=temperature,
-                top_p=float(payload.get("top_p", 1.0)),
-                top_k=int(payload.get("top_k", 0)),
-                repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
-                seed=int(payload.get("seed", 0)),
-                metadata=payload.get("metadata"),
-            )
+
+        def _blocking_completion() -> Any:
+            with lock:
+                return session.generate(
+                    input_tokens,
+                    max_output_tokens=int(payload["max_tokens"]),
+                    temperature=temperature,
+                    top_p=float(payload.get("top_p", 1.0)),
+                    top_k=int(payload.get("top_k", 0)),
+                    repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
+                    seed=int(payload.get("seed", 0)),
+                    metadata=payload.get("metadata"),
+                )
+
+        # generate() blocks for the whole generation; running it inline would
+        # park the event loop and stall every concurrent request, /health
+        # included.
+        result = await anyio.to_thread.run_sync(_blocking_completion)
         text = tokenizer.decode(list(result.output_tokens))
         return {
             "id": f"cmpl-{result.request_id}",
@@ -771,17 +779,25 @@ def create_app(
             if parse_tool_calls:
                 temperature = float(payload.get("temperature", 0.0))
                 default_rp = 1.1 if temperature <= 0.0 else 1.0
-                with lock:
-                    result = session.generate(
-                        input_tokens,
-                        max_output_tokens=int(payload["max_tokens"]),
-                        temperature=temperature,
-                        top_p=float(payload.get("top_p", 1.0)),
-                        top_k=int(payload.get("top_k", 0)),
-                        repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
-                        seed=int(payload.get("seed", 0)),
-                        metadata=payload.get("metadata"),
-                    )
+
+                def _blocking_tool_chat() -> Any:
+                    with lock:
+                        return session.generate(
+                            input_tokens,
+                            max_output_tokens=int(payload["max_tokens"]),
+                            temperature=temperature,
+                            top_p=float(payload.get("top_p", 1.0)),
+                            top_k=int(payload.get("top_k", 0)),
+                            repetition_penalty=float(
+                                payload.get("repetition_penalty", default_rp)
+                            ),
+                            seed=int(payload.get("seed", 0)),
+                            metadata=payload.get("metadata"),
+                        )
+
+                # Blocking generate off the event loop; see the completions
+                # handler for rationale.
+                result = await anyio.to_thread.run_sync(_blocking_tool_chat)
                 text = tokenizer.decode(list(result.output_tokens))
                 events = stream_buffered_tool_chat_chunks(
                     model_id,
@@ -804,17 +820,23 @@ def create_app(
 
         temperature = float(payload.get("temperature", 0.0))
         default_rp = 1.1 if temperature <= 0.0 else 1.0
-        with lock:
-            result = session.generate(
-                input_tokens,
-                max_output_tokens=int(payload["max_tokens"]),
-                temperature=temperature,
-                top_p=float(payload.get("top_p", 1.0)),
-                top_k=int(payload.get("top_k", 0)),
-                repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
-                seed=int(payload.get("seed", 0)),
-                metadata=payload.get("metadata"),
-            )
+
+        def _blocking_chat() -> Any:
+            with lock:
+                return session.generate(
+                    input_tokens,
+                    max_output_tokens=int(payload["max_tokens"]),
+                    temperature=temperature,
+                    top_p=float(payload.get("top_p", 1.0)),
+                    top_k=int(payload.get("top_k", 0)),
+                    repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
+                    seed=int(payload.get("seed", 0)),
+                    metadata=payload.get("metadata"),
+                )
+
+        # Blocking generate off the event loop; see the completions handler
+        # for rationale.
+        result = await anyio.to_thread.run_sync(_blocking_chat)
         text = tokenizer.decode(list(result.output_tokens))
         message: dict[str, Any] = {"role": "assistant", "content": text}
         response_finish_reason = finish_reason(result.finish_reason)
