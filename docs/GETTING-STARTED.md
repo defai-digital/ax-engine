@@ -82,8 +82,17 @@ helper scripts onto your `PATH`.
 > [!NOTE]
 > The formula depends on this tap's own `mlx` / `mlx-c` formulas (not
 > homebrew-core bottles) so MLX NAX acceleration is not silently disabled on
-> macOS 26.x. Those deps **build from source** and need **Xcode** (no Apple
-> Developer account). First install can take a while.
+> macOS 26.x. Those deps **build from source** and need **Xcode** with its
+> **Metal Toolchain** component (no Apple Developer account). Since Xcode 26
+> the Metal Toolchain is a separate download; if it is missing, the `mlx`
+> formula aborts before building and prints the fix:
+>
+> ```bash
+> xcodebuild -downloadComponent MetalToolchain
+> ```
+>
+> Run that once after installing or upgrading Xcode, then re-run
+> `brew install`. First install can take a while.
 
 **Linkage model:** GitHub release binaries are built against pip/venv MLX (for
 source and wheel performance parity) and ship with `@rpath/libmlx.dylib`. The

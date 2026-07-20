@@ -23,6 +23,15 @@ Release builds intentionally track pip MLX for performance parity with
 at formula-owned libraries (`MachO::Tools.change_install_name` + ad-hoc
 `codesign`).
 
+## Metal Toolchain preflight
+
+The tap's `Formula/mlx.rb` (no mirror here) declares a custom
+`MetalToolchainRequirement` that runs `xcrun metal --version` before the
+source build and aborts with `xcodebuild -downloadComponent MetalToolchain`
+instructions when it fails. Since Xcode 26 the Metal Toolchain is a separate
+download; without the preflight the mlx kernel build dies mid-compile with an
+opaque error (issue #68). Keep the requirement when touching the tap formula.
+
 ## Required install markers
 
 `scripts/brew-release.sh` and `.github/workflows/brew-release.yml` fail if the

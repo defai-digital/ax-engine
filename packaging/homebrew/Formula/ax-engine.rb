@@ -61,8 +61,10 @@ class AxEngine < Formula
       The mlx-c dependency (and its own mlx dependency) build from source
       using this tap's own formulas -- not homebrew-core's pre-built bottle
       -- to avoid a deployment-target bug that silently disables MLX's NAX
-      acceleration on macOS 26.x. Xcode is required for that build; an Apple
-      Developer account is not.
+      acceleration on macOS 26.x. Xcode -- including its Metal Toolchain
+      component, a separate download since Xcode 26
+      (xcodebuild -downloadComponent MetalToolchain) -- is required for
+      that build; an Apple Developer account is not.
     EOS
   end
 
