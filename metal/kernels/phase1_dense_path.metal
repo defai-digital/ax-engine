@@ -245,6 +245,9 @@ kernel void paged_decode_attention(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         score = smem[0];
+        // Every simdgroup must consume this iteration's broadcast score
+        // before lane 0 overwrites smem in the next loop iteration.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         // Online softmax update for this thread's output dimension (lid)
         float m_new    = max(m, score);
@@ -1232,6 +1235,9 @@ kernel void sample_argmax_logprob_f32(
     threadgroup_barrier(mem_flags::mem_threadgroup);
     best_score = smem_val[0];
     winner_idx = smem_idx[0];
+    // Pass 2 reuses smem_val: every thread must read the broadcast winner
+    // before lane 0 of simdgroup 0 overwrites slot 0.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Pass 2: parallel logsumexp
     float partial_exp = 0.0f;
@@ -1302,6 +1308,9 @@ kernel void sample_argmax_logprob_batched_f32(
     threadgroup_barrier(mem_flags::mem_threadgroup);
     best_score = smem_val[0];
     winner     = smem_idx[0];
+    // Pass 2 reuses smem_val: every thread must read the broadcast winner
+    // before lane 0 of simdgroup 0 overwrites slot 0.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Pass 2: parallel logsumexp
     float partial_exp = 0.0f;
