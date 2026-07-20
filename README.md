@@ -5,6 +5,9 @@ Homebrew, download a model, and serve OpenAI-compatible endpoints locally —
 with a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP, and
 peer-backed benchmarks against `mlx-lm`, llama.cpp, MTPLX, and lightning-mlx.
 
+Browse all serve-ready snapshots in the
+[AutomatosX model collection on Hugging Face](https://huggingface.co/AutomatosX/models).
+
 **Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 Max or newer, 32 GB+ unified
 memory).**
 
