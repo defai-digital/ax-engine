@@ -1791,6 +1791,14 @@ fn parse_mtp_sidecar_bits_hint(runtime_config: &serde_json::Value) -> Option<i32
         })
 }
 
+fn mtp_router_bits_hint(sidecar_bits: Option<i32>) -> Option<i32> {
+    // prepare_mtp_sidecar.py keeps the MoE router at INT8 even when the other
+    // eligible 2-D projections use INT4. Without this tensor-specific hint,
+    // the packed router columns are interpreted as INT4 and expand to twice
+    // the model hidden size.
+    sidecar_bits.map(|_| 8)
+}
+
 fn apply_mtp_depth_policy(depth: usize, sidecar_bits: Option<i32>) -> usize {
     if std::env::var("AX_MLX_MTP_MAX_DEPTH").is_ok() {
         return apply_mtp_max_depth_cap(depth);
@@ -1879,7 +1887,11 @@ fn load_mtp(
     let k_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.k_proj"), bits)?;
     let v_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.v_proj"), bits)?;
     let o_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.o_proj"), bits)?;
-    let router_proj = mtp_take_weight(name_map, &format!("{p}.mlp.gate"), bits);
+    let router_proj = mtp_take_weight(
+        name_map,
+        &format!("{p}.mlp.gate"),
+        mtp_router_bits_hint(bits),
+    );
     let shared_expert_gate =
         mtp_take_weight(name_map, &format!("{p}.mlp.shared_expert_gate"), bits);
     let shared_gate_proj =
@@ -2657,6 +2669,7 @@ fn load_linear_attention_weights(
         && in_proj_ba.is_none()
         && let (Some(qkv), Some(z), Some(a), Some(b)) =
             (&in_proj_qkv, &in_proj_z, &in_proj_a, &in_proj_b)
+        && linear_attention_projection_packing_supported(qkv, z, a, b)
     {
         let (qkvz, ba) = pack_split_linear_attention_projections(config, qkv, z, a, b)?;
         in_proj_qkvz = Some(qkvz);
@@ -3054,7 +3067,21 @@ fn dense_ffn_gate_up_packing_supported(
     {
         return false;
     }
-    gate.bits != 5 && up.bits != 5
+    if gate.bits == 5 || up.bits == 5 || gate.mode != up.mode {
+        return false;
+    }
+    if gate.linear_bias.is_some() != up.linear_bias.is_some() {
+        return false;
+    }
+    match (gate.scales.as_ref(), up.scales.as_ref()) {
+        (Some(_), Some(_)) => {
+            gate.group_size == up.group_size
+                && gate.bits == up.bits
+                && gate.biases.is_some() == up.biases.is_some()
+        }
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 fn pack_glm_mla_qa_kva_projection(
@@ -3064,6 +3091,24 @@ fn pack_glm_mla_qa_kva_projection(
     let packed = concat_quantized_weight_rows(q_a, kv_a)?;
     eval_packed_projection(&packed);
     Ok(packed)
+}
+
+fn linear_attention_projection_packing_supported(
+    qkv: &QuantizedWeight,
+    z: &QuantizedWeight,
+    a: &QuantizedWeight,
+    b: &QuantizedWeight,
+) -> bool {
+    validate_linear_attention_pack_compatibility(
+        "linear_attention_in_proj_qkvz",
+        &[Some(qkv), Some(z)],
+    )
+    .is_ok()
+        && validate_linear_attention_pack_compatibility(
+            "linear_attention_in_proj_ba",
+            &[Some(b), Some(a)],
+        )
+        .is_ok()
 }
 
 fn pack_split_linear_attention_projections(
@@ -4666,6 +4711,7 @@ mod tests {
         let q4_up = glm_quantized_weight(64, 4, true);
         let q5_gate = glm_quantized_weight(64, 5, true);
         let q5_up = glm_quantized_weight(64, 5, true);
+        let q8_up = glm_quantized_weight(64, 8, true);
 
         assert!(!dense_ffn_gate_up_packing_supported(
             "qwen3", &q4_gate, &q4_up
@@ -4698,6 +4744,33 @@ mod tests {
         ));
         assert!(dense_ffn_gate_up_packing_supported(
             "llama", &q4_gate, &q4_up
+        ));
+        assert!(!dense_ffn_gate_up_packing_supported(
+            "gemma4", &q4_gate, &q8_up,
+        ));
+    }
+
+    #[test]
+    fn linear_attention_projection_packing_skips_optiq_mixed_precision() {
+        let qkv = glm_quantized_weight(64, 8, true);
+        let z = glm_quantized_weight(64, 4, true);
+        let a = glm_quantized_weight(64, 4, true);
+        let b = glm_quantized_weight(64, 8, true);
+
+        assert!(!linear_attention_projection_packing_supported(
+            &qkv, &z, &a, &b,
+        ));
+    }
+
+    #[test]
+    fn linear_attention_projection_packing_accepts_matching_precision() {
+        let qkv = glm_quantized_weight(64, 4, true);
+        let z = glm_quantized_weight(64, 4, true);
+        let a = glm_quantized_weight(64, 4, true);
+        let b = glm_quantized_weight(64, 4, true);
+
+        assert!(linear_attention_projection_packing_supported(
+            &qkv, &z, &a, &b,
         ));
     }
 
@@ -4994,6 +5067,30 @@ mod tests {
 
         assert_eq!(weight.bits, 8);
         assert_eq!(weight.group_size, 128);
+    }
+
+    #[test]
+    fn mtp_router_uses_pipeline_int8_hint_inside_int4_sidecar() {
+        let mut name_map = HashMap::from([
+            (
+                "mtp.layers.0.mlp.gate.weight".to_string(),
+                zeros(&[256, 512], MlxDtype::Uint32, None),
+            ),
+            (
+                "mtp.layers.0.mlp.gate.scales".to_string(),
+                zeros(&[256, 32], MlxDtype::Bfloat16, None),
+            ),
+        ]);
+
+        let weight = mtp_take_weight(
+            &mut name_map,
+            "mtp.layers.0.mlp.gate",
+            mtp_router_bits_hint(Some(4)),
+        )
+        .expect("pipeline MTP router should load");
+
+        assert_eq!(weight.bits, 8);
+        assert_eq!(weight.group_size, 64);
     }
 
     #[test]
