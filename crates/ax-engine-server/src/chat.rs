@@ -396,14 +396,31 @@ fn render_prompt_internal(
     let mut mistral_system: Option<&str> = None;
     let mut ministral_system: Option<&str> = None;
     let mut gpt_oss_system: Option<&str> = None;
-    // Ministral hub template folds system into the *last* user turn, not the first.
-    let ministral_last_user_idx = if matches!(template, ChatPromptTemplate::MinistralInstruct) {
-        messages
-            .iter()
-            .rposition(|(role, _)| matches!(normalize_role(role), Ok("user")))
-    } else {
-        None
-    };
+    let mut ministral_loop_start = 0usize;
+    if matches!(template, ChatPromptTemplate::MinistralInstruct) {
+        if let Some((role, content)) = messages.first()
+            && normalize_role(role)? == "system"
+        {
+            ministral_system = Some(content.as_str());
+            ministral_loop_start = 1;
+        }
+
+        let mut expects_user = true;
+        for (role, _) in &messages[ministral_loop_start..] {
+            let role = normalize_role(role)?;
+            if matches!(role, "tool" | "function") {
+                continue;
+            }
+            if !matches!(role, "user" | "assistant") || (role == "user") != expects_user {
+                return Err(
+                    "After the optional system message, Ministral conversation roles must \
+                     alternate user/assistant/user/assistant/..."
+                        .to_string(),
+                );
+            }
+            expects_user = !expects_user;
+        }
+    }
     for (msg_index, (role, content)) in messages.iter().enumerate() {
         let role = normalize_role(role)?;
         match template {
@@ -508,15 +525,15 @@ fn render_prompt_internal(
                 }
             }
             ChatPromptTemplate::MinistralInstruct => {
-                // Ministral hub: system folds into the *last* user [INST];
-                // assistant is ` ` + content + eos_token (`</s>`).
+                // The hub removes only an initial system message, and folds it
+                // into a user [INST] only when that user is the final message.
+                if msg_index < ministral_loop_start {
+                    continue;
+                }
                 match role {
-                    "system" => {
-                        ministral_system = Some(content.as_str());
-                    }
                     "user" => {
                         prompt.push_str("[INST]");
-                        if ministral_last_user_idx == Some(msg_index)
+                        if msg_index + 1 == messages.len()
                             && let Some(system) = ministral_system.take()
                         {
                             prompt.push_str(system);
@@ -526,8 +543,7 @@ fn render_prompt_internal(
                         prompt.push_str("[/INST]");
                     }
                     "assistant" => {
-                        prompt.push(' ');
-                        prompt.push_str(content.trim());
+                        prompt.push_str(content);
                         prompt.push_str("</s>");
                     }
                     "tool" | "function" => {
@@ -535,7 +551,13 @@ fn render_prompt_internal(
                         prompt.push_str(content);
                         prompt.push_str("[/INST]");
                     }
-                    _ => {}
+                    _ => {
+                        return Err(
+                            "Ministral only supports user and assistant roles, plus an optional \
+                             initial system message and tool results"
+                                .to_string(),
+                        );
+                    }
                 }
             }
             ChatPromptTemplate::GptOssHarmony => {
@@ -596,13 +618,6 @@ fn render_prompt_internal(
             prompt.push_str("[SYSTEM_PROMPT]");
             prompt.push_str(system);
             prompt.push_str("[/SYSTEM_PROMPT]");
-        }
-    }
-    if matches!(template, ChatPromptTemplate::MinistralInstruct) {
-        if let Some(system) = ministral_system {
-            prompt.push_str("[INST]");
-            prompt.push_str(system);
-            prompt.push_str("[/INST]");
         }
     }
     if matches!(template, ChatPromptTemplate::GptOssHarmony) {
@@ -1135,8 +1150,8 @@ mod tests {
     }
 
     #[test]
-    fn ministral_folds_system_into_last_user_inst() {
-        // Hub Ministral: system is applied on the *last* user turn only.
+    fn ministral_folds_system_into_final_user_inst() {
+        // Hub Ministral: system is applied only when the final message is a user.
         let simple = render_prompt(
             "ministral-8b",
             &[
@@ -1159,8 +1174,29 @@ mod tests {
         .expect("ministral multi");
         assert_eq!(
             multi,
-            "<s>[INST]Hi[/INST] Hello there</s>[INST]Be concise.\n\nAgain[/INST]"
+            "<s>[INST]Hi[/INST]Hello there</s>[INST]Be concise.\n\nAgain[/INST]"
         );
+
+        let completed = render_prompt(
+            "ministral-8b",
+            &[
+                ("system".to_string(), "Be concise.".to_string()),
+                ("user".to_string(), "Hi".to_string()),
+                ("assistant".to_string(), "Hello there".to_string()),
+            ],
+        )
+        .expect("completed Ministral history");
+        assert_eq!(completed, "<s>[INST]Hi[/INST]Hello there</s>");
+
+        let invalid = render_prompt(
+            "ministral-8b",
+            &[
+                ("user".to_string(), "first".to_string()),
+                ("user".to_string(), "second".to_string()),
+            ],
+        )
+        .expect_err("Ministral must reject non-alternating roles");
+        assert!(invalid.contains("must alternate"));
     }
 
     #[test]

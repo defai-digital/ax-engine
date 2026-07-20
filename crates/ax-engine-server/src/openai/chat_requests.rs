@@ -99,11 +99,9 @@ pub(crate) fn render_openai_chat_prompt_with_options(
         return render_glm_openai_chat_prompt(model_id, messages, tools, tool_choice);
     }
     let template = chat::ChatPromptTemplate::for_model_id(model_id);
-    // Ministral hub: `[AVAILABLE_TOOLS] [json…][/AVAILABLE_TOOLS]` before the
-    // first [INST] when tools are present.
-    if matches!(template, chat::ChatPromptTemplate::MinistralInstruct)
-        && tools.map(openai_value_is_present).unwrap_or(false)
-    {
+    // Always use the dedicated Ministral renderer: structured tool-call history
+    // can be present even when this request does not redeclare the tool schemas.
+    if matches!(template, chat::ChatPromptTemplate::MinistralInstruct) {
         return render_ministral_openai_chat_prompt(messages, tools);
     }
     // Llama 4 hub: inject function schemas into the first user turn (not a
@@ -147,10 +145,11 @@ fn render_glm_openai_chat_prompt(
 }
 
 /// Ministral hub template (exact marker spacing from chat_template.jinja):
-/// - `[AVAILABLE_TOOLS] [{…}][/AVAILABLE_TOOLS]` only before the **last** user turn
-/// - assistant tool calls: `[TOOL_CALLS] [{…, "id": "XXXXXXXXX"}]</s>`
-/// - tool results: `[TOOL_RESULTS] {"content": …, "call_id": "XXXXXXXXX"}[/TOOL_RESULTS]`
-/// - system folds into the last user `[INST]`; plain assistant is ` content</s>`
+/// - `[AVAILABLE_TOOLS][{…}][/AVAILABLE_TOOLS]` only before the **last** user turn
+/// - assistant tool calls: `[TOOL_CALLS][{…, "id": "XXXXXXXXX"}]</s>`
+/// - tool results: `[TOOL_RESULTS]{"content": …, "call_id": "XXXXXXXXX"}[/TOOL_RESULTS]`
+/// - system folds into `[INST]` only when the final message is a user
+/// - plain assistant is `content</s>`
 fn render_ministral_openai_chat_prompt(
     messages: &[OpenAiChatMessage],
     tools: Option<&Value>,
@@ -159,12 +158,48 @@ fn render_ministral_openai_chat_prompt(
         return Err(empty_chat_messages_error());
     }
     let tools = tools.filter(|value| openai_value_is_present(value));
+    let mut loop_start = 0usize;
+    let mut system: Option<String> = None;
+    if let Some(first) = messages.first()
+        && chat::normalize_role(&first.role).map_err(chat_error_response)? == "system"
+    {
+        system = Some(render_openai_chat_content(first.content.as_ref())?);
+        loop_start = 1;
+    }
+
+    // Match the hub template's validation pass. Tool calls/results do not
+    // advance the conversational parity; all other turns must start with a
+    // user and alternate with assistants.
+    let mut expects_user = true;
+    for message in &messages[loop_start..] {
+        let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        let has_tool_calls = message
+            .tool_calls
+            .as_ref()
+            .is_some_and(openai_value_is_present);
+        if has_tool_calls && role != "assistant" {
+            return Err(chat_error_response(
+                "Ministral tool_calls are only valid on assistant messages".to_string(),
+            ));
+        }
+        if matches!(role, "tool" | "function") || has_tool_calls {
+            continue;
+        }
+        if !matches!(role, "user" | "assistant") || (role == "user") != expects_user {
+            return Err(chat_error_response(
+                "After the optional system message, Ministral conversation roles must alternate \
+                 user/assistant/user/assistant/..."
+                    .to_string(),
+            ));
+        }
+        expects_user = !expects_user;
+    }
+
     let last_user_idx = messages
         .iter()
         .rposition(|message| matches!(chat::normalize_role(&message.role), Ok("user")));
     let mut prompt = String::from("<s>");
-    let mut system: Option<String> = None;
-    for (index, message) in messages.iter().enumerate() {
+    for (index, message) in messages.iter().enumerate().skip(loop_start) {
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
         let has_tool_calls = message
             .tool_calls
@@ -172,33 +207,30 @@ fn render_ministral_openai_chat_prompt(
             .is_some_and(openai_value_is_present);
 
         if has_tool_calls && role == "assistant" {
-            // Hub: `[TOOL_CALLS] [` + objects + `]` + eos
-            prompt.push_str("[TOOL_CALLS] ");
+            // Hub: `[TOOL_CALLS][` + objects + `]` + eos
+            prompt.push_str("[TOOL_CALLS]");
             prompt.push_str(&ministral_tool_calls_array(message.tool_calls.as_ref())?);
             prompt.push_str("</s>");
             continue;
         }
 
         match role {
-            "system" => {
-                system = Some(render_openai_chat_content(message.content.as_ref())?);
-            }
             "user" => {
                 let content = render_openai_chat_content(message.content.as_ref())?;
                 // AVAILABLE_TOOLS only on the last user message (hub condition).
                 if Some(index) == last_user_idx
                     && let Some(tools) = tools
                 {
-                    // Hub: `[AVAILABLE_TOOLS] [` … `]`
-                    prompt.push_str("[AVAILABLE_TOOLS] ");
+                    // Hub: `[AVAILABLE_TOOLS][` … `]`
+                    prompt.push_str("[AVAILABLE_TOOLS]");
                     prompt.push_str(&ministral_available_tools_array(tools)?);
                     prompt.push_str("[/AVAILABLE_TOOLS]");
                 }
                 prompt.push_str("[INST]");
-                if Some(index) == last_user_idx
+                if index + 1 == messages.len()
                     && let Some(system_text) = system.take()
                 {
-                    prompt.push_str(system_text.trim());
+                    prompt.push_str(&system_text);
                     prompt.push_str("\n\n");
                 }
                 prompt.push_str(&content);
@@ -206,13 +238,12 @@ fn render_ministral_openai_chat_prompt(
             }
             "assistant" => {
                 let content = render_openai_chat_content(message.content.as_ref())?;
-                // Hub: " " + content|trim + eos_token
-                prompt.push(' ');
-                prompt.push_str(content.trim());
+                // Hub: message["content"] + eos_token (no inserted whitespace).
+                prompt.push_str(&content);
                 prompt.push_str("</s>");
             }
             "tool" | "function" => {
-                // Hub: `[TOOL_RESULTS] {"content": ` + content + `, "call_id": "…"}[/TOOL_RESULTS]`
+                // Hub: `[TOOL_RESULTS]{"content": ` + content + `, "call_id": "…"}[/TOOL_RESULTS]`
                 let content = render_openai_chat_content(message.content.as_ref())?;
                 let call_id = message
                     ._tool_call_id
@@ -225,19 +256,20 @@ fn render_ministral_openai_chat_prompt(
                                 .to_string(),
                         )
                     })?;
-                prompt.push_str("[TOOL_RESULTS] {\"content\": ");
+                prompt.push_str("[TOOL_RESULTS]{\"content\": ");
                 prompt.push_str(&content);
                 prompt.push_str(", \"call_id\": \"");
                 prompt.push_str(call_id);
                 prompt.push_str("\"}[/TOOL_RESULTS]");
             }
-            _ => {}
+            _ => {
+                return Err(chat_error_response(
+                    "Ministral only supports user and assistant roles, plus an optional initial \
+                     system message and tool results"
+                        .to_string(),
+                ));
+            }
         }
-    }
-    if let Some(system_text) = system {
-        prompt.push_str("[INST]");
-        prompt.push_str(system_text.trim());
-        prompt.push_str("[/INST]");
     }
     Ok(prompt)
 }
@@ -253,12 +285,14 @@ fn render_llama4_openai_chat_prompt(
     render_llama_family_tools_prompt(
         messages,
         tools,
-        "<|begin_of_text|>",
-        "<|header_start|>",
-        "<|header_end|>\n\n",
-        "<|eot|>",
-        /* environment_ipython_in_system */ false,
-        /* python_tool_call_wrappers */ true,
+        LlamaToolPromptSyntax {
+            bos: "<|begin_of_text|>",
+            header_open: "<|header_start|>",
+            header_close: "<|header_end|>\n\n",
+            eot: "<|eot|>",
+            environment_ipython: false,
+            python_tool_call_wrappers: true,
+        },
     )
 }
 
@@ -270,25 +304,39 @@ fn render_llama3_openai_chat_prompt(
     render_llama_family_tools_prompt(
         messages,
         tools,
-        "<|begin_of_text|>",
-        "<|start_header_id|>",
-        "<|end_header_id|>\n\n",
-        "<|eot_id|>",
-        /* environment_ipython_in_system */ true,
-        /* python_tool_call_wrappers */ false,
+        LlamaToolPromptSyntax {
+            bos: "<|begin_of_text|>",
+            header_open: "<|start_header_id|>",
+            header_close: "<|end_header_id|>\n\n",
+            eot: "<|eot_id|>",
+            environment_ipython: true,
+            python_tool_call_wrappers: false,
+        },
     )
+}
+
+struct LlamaToolPromptSyntax<'a> {
+    bos: &'a str,
+    header_open: &'a str,
+    header_close: &'a str,
+    eot: &'a str,
+    environment_ipython: bool,
+    python_tool_call_wrappers: bool,
 }
 
 fn render_llama_family_tools_prompt(
     messages: &[OpenAiChatMessage],
     tools: Option<&Value>,
-    bos: &str,
-    header_open: &str,
-    header_close: &str,
-    eot: &str,
-    environment_ipython: bool,
-    python_tool_call_wrappers: bool,
+    syntax: LlamaToolPromptSyntax<'_>,
 ) -> Result<String, HttpErrorResponse> {
+    let LlamaToolPromptSyntax {
+        bos,
+        header_open,
+        header_close,
+        eot,
+        environment_ipython,
+        python_tool_call_wrappers,
+    } = syntax;
     if messages.is_empty() {
         return Err(empty_chat_messages_error());
     }
@@ -463,7 +511,7 @@ fn ministral_available_tools_array(tools: &Value) -> Result<String, HttpErrorRes
     Ok(format!("[{}]", rendered.join(", ")))
 }
 
-/// Hub: `[TOOL_CALLS] [{function_json without trailing }, "id": "XXXXXXXXX"}]`
+/// Hub: `[TOOL_CALLS][{function_json without trailing }, "id": "XXXXXXXXX"}]`
 fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, HttpErrorResponse> {
     let Some(tool_calls) = tool_calls else {
         return Ok("[]".to_string());
@@ -482,9 +530,14 @@ fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, Http
         let object = call.as_object().ok_or_else(|| {
             chat_error_response("Ministral tool_calls entries must be objects".to_string())
         })?;
-        let function = object.get("function").ok_or_else(|| {
-            chat_error_response("Ministral tool_calls require function".to_string())
-        })?;
+        let function = object
+            .get("function")
+            .filter(|value| value.is_object())
+            .ok_or_else(|| {
+                chat_error_response(
+                    "Ministral tool_calls entries require a function object".to_string(),
+                )
+            })?;
         let id = object
             .get("id")
             .and_then(Value::as_str)

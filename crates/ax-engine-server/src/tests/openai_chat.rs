@@ -331,7 +331,7 @@ fn openai_chat_prompt_renderer_diffusiongemma_matches_hub_generation_prefill() {
 }
 
 #[test]
-fn openai_chat_prompt_renderer_ministral_available_tools_and_last_user_system() {
+fn openai_chat_prompt_renderer_ministral_available_tools_and_final_user_system() {
     let tools = json!([{
         "type": "function",
         "function": {
@@ -359,7 +359,7 @@ fn openai_chat_prompt_renderer_ministral_available_tools_and_last_user_system() 
         Some(&json!("auto")),
     )
     .expect("ministral tools");
-    assert!(prompt.starts_with("<s>[AVAILABLE_TOOLS] ["));
+    assert!(prompt.starts_with("<s>[AVAILABLE_TOOLS]["));
     assert!(prompt.contains("[/AVAILABLE_TOOLS][INST]Look up AX[/INST]"));
     assert!(prompt.contains("\"name\":\"lookup\"") || prompt.contains("\"name\": \"lookup\""));
 
@@ -372,11 +372,62 @@ fn openai_chat_prompt_renderer_ministral_available_tools_and_last_user_system() 
     .expect("multi");
     let multi_prompt =
         render_openai_chat_prompt("ministral-8b-instruct", &multi).expect("ministral multi");
-    // Hub: " " + assistant content|trim + eos before next INST.
+    // Hub appends assistant content directly before eos, without adding a space.
     assert_eq!(
         multi_prompt,
-        "<s>[INST]Hi[/INST] Hello there</s>[INST]Be concise.\n\nAgain[/INST]"
+        "<s>[INST]Hi[/INST]Hello there</s>[INST]Be concise.\n\nAgain[/INST]"
     );
+}
+
+#[test]
+fn openai_chat_prompt_renderer_ministral_preserves_content_whitespace() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "  Be exact.  "},
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "  Answer  "},
+        {"role": "user", "content": "Again"}
+    ]))
+    .expect("messages");
+    let prompt =
+        render_openai_chat_prompt("ministral-8b-instruct", &messages).expect("ministral prompt");
+    assert_eq!(
+        prompt,
+        "<s>[INST]Hi[/INST]  Answer  </s>[INST]  Be exact.  \n\nAgain[/INST]"
+    );
+}
+
+#[test]
+fn openai_chat_prompt_renderer_ministral_enforces_hub_role_order() {
+    let completed: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello"}
+    ]))
+    .expect("completed messages");
+    assert_eq!(
+        render_openai_chat_prompt("ministral-8b-instruct", &completed)
+            .expect("completed Ministral history"),
+        "<s>[INST]Hi[/INST]Hello</s>",
+        "the hub only folds an initial system message into a final user turn"
+    );
+
+    for invalid in [
+        json!([
+            {"role": "user", "content": "first"},
+            {"role": "user", "content": "second"}
+        ]),
+        json!([
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "late"}
+        ]),
+    ] {
+        let messages: Vec<OpenAiChatMessage> =
+            serde_json::from_value(invalid).expect("invalid-order fixture");
+        let error = render_openai_chat_prompt("ministral-8b-instruct", &messages)
+            .expect_err("Ministral must reject non-alternating roles");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.error.message.contains("must alternate"));
+    }
 }
 
 #[test]
@@ -426,9 +477,9 @@ fn openai_chat_prompt_renderer_ministral_tools_roundtrip_matches_hub() {
     )
     .expect("ministral tools roundtrip");
 
-    // Hub template: `[AVAILABLE_TOOLS] [` (space) and `[TOOL_CALLS] [` (space).
+    // Hub template concatenates each marker directly with its JSON payload.
     assert!(
-        prompt.starts_with("<s>[AVAILABLE_TOOLS] ["),
+        prompt.starts_with("<s>[AVAILABLE_TOOLS]["),
         "tools before last user: {prompt}"
     );
     assert!(
@@ -436,7 +487,7 @@ fn openai_chat_prompt_renderer_ministral_tools_roundtrip_matches_hub() {
         "{prompt}"
     );
     assert!(
-        prompt.contains("[TOOL_CALLS] [")
+        prompt.contains("[TOOL_CALLS][")
             && prompt.contains("\"name\": \"lookup\"")
             && prompt.contains("\"arguments\":")
             && prompt.contains(", \"id\": \"callABC12\"}]</s>"),
@@ -444,7 +495,7 @@ fn openai_chat_prompt_renderer_ministral_tools_roundtrip_matches_hub() {
     );
     assert!(
         prompt.contains(
-            "[TOOL_RESULTS] {\"content\": AX Engine, \"call_id\": \"callABC12\"}[/TOOL_RESULTS]"
+            "[TOOL_RESULTS]{\"content\": AX Engine, \"call_id\": \"callABC12\"}[/TOOL_RESULTS]"
         ),
         "TOOL_RESULTS raw content + call_id: {prompt}"
     );
@@ -452,6 +503,22 @@ fn openai_chat_prompt_renderer_ministral_tools_roundtrip_matches_hub() {
         !prompt.contains("[INST]AX Engine[/INST]"),
         "tool results must not be framed as INST: {prompt}"
     );
+}
+
+#[test]
+fn openai_chat_prompt_renderer_ministral_rejects_non_object_tool_function() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"},
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "callABC12", "function": "lookup"}]
+        }
+    ]))
+    .expect("messages");
+    let error = render_openai_chat_prompt("ministral-8b-instruct", &messages)
+        .expect_err("non-object function must fail");
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(error.1.error.message.contains("function object"));
 }
 
 #[test]
@@ -2683,180 +2750,508 @@ fn hub_chat_template_family_matrix_control_tokens() {
     // tools_roundtrip when the hub template defines a tools surface.
     let cells: &[Cell] = &[
         // --- gemma4 ---
-        Cell { family: "gemma4", model_id: "gemma4-e2b", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert!(p.contains("<|turn>system\nBe concise.<turn|>\n"));
-            assert!(p.ends_with("<|turn>model\n<|channel>thought\n<channel|>"));
-        }},
-        Cell { family: "gemma4", model_id: "gemma4-e2b", case: "multi", messages: multi, with_tools: false, check: |p| {
-            assert!(p.contains("<|turn>model\nHello there<turn|>\n"));
-            assert!(p.ends_with("<|turn>model\n<|channel>thought\n<channel|>"));
-        }},
-        Cell { family: "gemma4", model_id: "gemma4-e2b", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert!(p.contains("<|turn>system\nBe concise.<turn|>\n"));
-            assert!(p.contains("Hello there"));
-        }},
-        Cell { family: "gemma4", model_id: "gemma4-e2b", case: "tools_user", messages: tools_user, with_tools: true, check: |p| {
-            assert!(p.contains("<|tool>declaration:lookup") || p.contains("<|tool>"));
-            assert!(p.contains("<|turn>user\nLook up AX<turn|>\n"));
-        }},
-        Cell { family: "gemma4", model_id: "gemma4-e2b", case: "tools_roundtrip", messages: tools_roundtrip, with_tools: true, check: |p| {
-            assert!(p.contains("<|tool_call>call:lookup"));
-            assert!(p.contains("<|tool_response>response:lookup"));
-        }},
+        Cell {
+            family: "gemma4",
+            model_id: "gemma4-e2b",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|turn>system\nBe concise.<turn|>\n"));
+                assert!(p.ends_with("<|turn>model\n<|channel>thought\n<channel|>"));
+            },
+        },
+        Cell {
+            family: "gemma4",
+            model_id: "gemma4-e2b",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|turn>model\nHello there<turn|>\n"));
+                assert!(p.ends_with("<|turn>model\n<|channel>thought\n<channel|>"));
+            },
+        },
+        Cell {
+            family: "gemma4",
+            model_id: "gemma4-e2b",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|turn>system\nBe concise.<turn|>\n"));
+                assert!(p.contains("Hello there"));
+            },
+        },
+        Cell {
+            family: "gemma4",
+            model_id: "gemma4-e2b",
+            case: "tools_user",
+            messages: tools_user,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("<|tool>declaration:lookup") || p.contains("<|tool>"));
+                assert!(p.contains("<|turn>user\nLook up AX<turn|>\n"));
+            },
+        },
+        Cell {
+            family: "gemma4",
+            model_id: "gemma4-e2b",
+            case: "tools_roundtrip",
+            messages: tools_roundtrip,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("<|tool_call>call:lookup"));
+                assert!(p.contains("<|tool_response>response:lookup"));
+            },
+        },
         // --- diffusiongemma ---
-        Cell { family: "diffusiongemma", model_id: "diffusiongemma-26B-A4B-it-4bit", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert!(p.ends_with("<|turn>model\n"));
-            assert!(!p.contains("<|channel>thought\n<channel|>"));
-        }},
-        Cell { family: "diffusiongemma", model_id: "diffusiongemma-26B-A4B-it-4bit", case: "multi", messages: multi, with_tools: false, check: |p| {
-            assert!(p.contains("Hello there"));
-            assert!(p.ends_with("<|turn>model\n"));
-        }},
-        Cell { family: "diffusiongemma", model_id: "diffusiongemma-26B-A4B-it-4bit", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert!(p.contains("<|turn>system\nBe concise.<turn|>\n"));
-            assert!(p.ends_with("<|turn>model\n"));
-        }},
-        Cell { family: "diffusiongemma", model_id: "diffusiongemma-26B-A4B-it-4bit", case: "tools_user", messages: tools_user, with_tools: true, check: |p| {
-            assert!(p.contains("<|tool>") || p.contains("declaration:lookup"));
-        }},
+        Cell {
+            family: "diffusiongemma",
+            model_id: "diffusiongemma-26B-A4B-it-4bit",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert!(p.ends_with("<|turn>model\n"));
+                assert!(!p.contains("<|channel>thought\n<channel|>"));
+            },
+        },
+        Cell {
+            family: "diffusiongemma",
+            model_id: "diffusiongemma-26B-A4B-it-4bit",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("Hello there"));
+                assert!(p.ends_with("<|turn>model\n"));
+            },
+        },
+        Cell {
+            family: "diffusiongemma",
+            model_id: "diffusiongemma-26B-A4B-it-4bit",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|turn>system\nBe concise.<turn|>\n"));
+                assert!(p.ends_with("<|turn>model\n"));
+            },
+        },
+        Cell {
+            family: "diffusiongemma",
+            model_id: "diffusiongemma-26B-A4B-it-4bit",
+            case: "tools_user",
+            messages: tools_user,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("<|tool>") || p.contains("declaration:lookup"));
+            },
+        },
         // --- qwen35 / qwen36 / coder ---
-        Cell { family: "qwen35", model_id: "Qwen3.5-9B", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert!(p.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
-        }},
-        Cell { family: "qwen35", model_id: "Qwen3.5-9B", case: "multi", messages: multi, with_tools: false, check: |p| {
-            assert!(p.contains("<|im_start|>assistant\nHello there<|im_end|>"));
-        }},
-        Cell { family: "qwen35", model_id: "Qwen3.5-9B", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert!(p.contains("<|im_start|>system\nBe concise.<|im_end|>"));
-        }},
-        Cell { family: "qwen35", model_id: "Qwen3.5-9B", case: "tools_user", messages: tools_user, with_tools: true, check: |p| {
-            assert!(p.contains("# Tools") || p.contains("<tools>"));
-            assert!(p.contains("lookup"));
-        }},
-        Cell { family: "qwen36", model_id: "Qwen3.6-35B-A3B-4bit", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert!(p.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
-        }},
-        Cell { family: "qwen36", model_id: "Qwen3.6-35B-A3B-4bit", case: "multi", messages: multi, with_tools: false, check: |p| {
-            assert!(p.contains("Hello there"));
-        }},
-        Cell { family: "qwen36", model_id: "Qwen3.6-35B-A3B-4bit", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert!(p.contains("Be concise."));
-        }},
-        Cell { family: "qwen36", model_id: "Qwen3.6-35B-A3B-4bit", case: "tools_user", messages: tools_user, with_tools: true, check: |p| {
-            assert!(p.contains("You have access to the following functions"));
-            assert!(!p.contains("<function>\n<name>lookup</name>"));
-        }},
-        Cell { family: "qwen3_coder", model_id: "Qwen3-Coder-Next-4bit", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert!(p.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK));
-        }},
-        Cell { family: "qwen3_coder", model_id: "Qwen3-Coder-Next-4bit", case: "multi", messages: multi, with_tools: false, check: |p| {
-            assert!(p.contains("Hello there"));
-        }},
-        Cell { family: "qwen3_coder", model_id: "Qwen3-Coder-Next-4bit", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert!(p.contains("Be concise."));
-        }},
-        Cell { family: "qwen3_coder", model_id: "Qwen3-Coder-Next-4bit", case: "tools_user", messages: tools_user, with_tools: true, check: |p| {
-            assert!(p.contains("<function>\n<name>lookup</name>") || p.contains("# Tools"));
-        }},
+        Cell {
+            family: "qwen35",
+            model_id: "Qwen3.5-9B",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert!(p.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+            },
+        },
+        Cell {
+            family: "qwen35",
+            model_id: "Qwen3.5-9B",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|im_start|>assistant\nHello there<|im_end|>"));
+            },
+        },
+        Cell {
+            family: "qwen35",
+            model_id: "Qwen3.5-9B",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|im_start|>system\nBe concise.<|im_end|>"));
+            },
+        },
+        Cell {
+            family: "qwen35",
+            model_id: "Qwen3.5-9B",
+            case: "tools_user",
+            messages: tools_user,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("# Tools") || p.contains("<tools>"));
+                assert!(p.contains("lookup"));
+            },
+        },
+        Cell {
+            family: "qwen36",
+            model_id: "Qwen3.6-35B-A3B-4bit",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert!(p.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+            },
+        },
+        Cell {
+            family: "qwen36",
+            model_id: "Qwen3.6-35B-A3B-4bit",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("Hello there"));
+            },
+        },
+        Cell {
+            family: "qwen36",
+            model_id: "Qwen3.6-35B-A3B-4bit",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("Be concise."));
+            },
+        },
+        Cell {
+            family: "qwen36",
+            model_id: "Qwen3.6-35B-A3B-4bit",
+            case: "tools_user",
+            messages: tools_user,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("You have access to the following functions"));
+                assert!(!p.contains("<function>\n<name>lookup</name>"));
+            },
+        },
+        Cell {
+            family: "qwen3_coder",
+            model_id: "Qwen3-Coder-Next-4bit",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert!(p.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK));
+            },
+        },
+        Cell {
+            family: "qwen3_coder",
+            model_id: "Qwen3-Coder-Next-4bit",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("Hello there"));
+            },
+        },
+        Cell {
+            family: "qwen3_coder",
+            model_id: "Qwen3-Coder-Next-4bit",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("Be concise."));
+            },
+        },
+        Cell {
+            family: "qwen3_coder",
+            model_id: "Qwen3-Coder-Next-4bit",
+            case: "tools_user",
+            messages: tools_user,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("<function>\n<name>lookup</name>") || p.contains("# Tools"));
+            },
+        },
         // --- glm ---
-        Cell { family: "glm", model_id: "glm4_moe_lite", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert!(p.starts_with("[gMASK]<sop>"));
-            assert!(p.ends_with("<|assistant|></think>"));
-        }},
-        Cell { family: "glm", model_id: "glm4_moe_lite", case: "multi", messages: multi, with_tools: false, check: |p| {
-            assert!(p.contains("Hello there"));
-        }},
-        Cell { family: "glm", model_id: "glm4_moe_lite", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert!(p.contains("<|system|>Be concise."));
-        }},
-        Cell { family: "glm", model_id: "glm4_moe_lite", case: "tools_user", messages: tools_user, with_tools: true, check: |p| {
-            assert!(p.contains("# Tools") || p.contains("<tools>"));
-        }},
+        Cell {
+            family: "glm",
+            model_id: "glm4_moe_lite",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert!(p.starts_with("[gMASK]<sop>"));
+                assert!(p.ends_with("<|assistant|></think>"));
+            },
+        },
+        Cell {
+            family: "glm",
+            model_id: "glm4_moe_lite",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("Hello there"));
+            },
+        },
+        Cell {
+            family: "glm",
+            model_id: "glm4_moe_lite",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|system|>Be concise."));
+            },
+        },
+        Cell {
+            family: "glm",
+            model_id: "glm4_moe_lite",
+            case: "tools_user",
+            messages: tools_user,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("# Tools") || p.contains("<tools>"));
+            },
+        },
         // --- llama3 ---
-        Cell { family: "llama3", model_id: "meta-llama/Llama-3.1-8B-Instruct", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert!(p.contains("<|start_header_id|>system<|end_header_id|>"));
-            assert!(!p.contains("Cutting Knowledge Date"));
-        }},
-        Cell { family: "llama3", model_id: "meta-llama/Llama-3.1-8B-Instruct", case: "multi", messages: multi, with_tools: false, check: |p| {
-            assert!(p.contains("Hello there"));
-            assert!(p.contains("<|eot_id|>"));
-        }},
-        Cell { family: "llama3", model_id: "meta-llama/Llama-3.1-8B-Instruct", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert!(p.contains("Be concise."));
-        }},
-        Cell { family: "llama3", model_id: "meta-llama/Llama-3.1-8B-Instruct", case: "tools_user", messages: tools_user, with_tools: true, check: |p| {
-            assert!(p.contains("Environment: ipython"));
-            assert!(p.contains("Given the following functions"));
-        }},
-        Cell { family: "llama3", model_id: "meta-llama/Llama-3.1-8B-Instruct", case: "tools_roundtrip", messages: llama_tools_roundtrip, with_tools: true, check: |p| {
-            assert!(!p.contains("<|python_start|>"));
-            assert!(p.contains("\"parameters\":"));
-            assert!(p.contains("<|start_header_id|>ipython<|end_header_id|>"));
-        }},
+        Cell {
+            family: "llama3",
+            model_id: "meta-llama/Llama-3.1-8B-Instruct",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|start_header_id|>system<|end_header_id|>"));
+                assert!(!p.contains("Cutting Knowledge Date"));
+            },
+        },
+        Cell {
+            family: "llama3",
+            model_id: "meta-llama/Llama-3.1-8B-Instruct",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("Hello there"));
+                assert!(p.contains("<|eot_id|>"));
+            },
+        },
+        Cell {
+            family: "llama3",
+            model_id: "meta-llama/Llama-3.1-8B-Instruct",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("Be concise."));
+            },
+        },
+        Cell {
+            family: "llama3",
+            model_id: "meta-llama/Llama-3.1-8B-Instruct",
+            case: "tools_user",
+            messages: tools_user,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("Environment: ipython"));
+                assert!(p.contains("Given the following functions"));
+            },
+        },
+        Cell {
+            family: "llama3",
+            model_id: "meta-llama/Llama-3.1-8B-Instruct",
+            case: "tools_roundtrip",
+            messages: llama_tools_roundtrip,
+            with_tools: true,
+            check: |p| {
+                assert!(!p.contains("<|python_start|>"));
+                assert!(p.contains("\"parameters\":"));
+                assert!(p.contains("<|start_header_id|>ipython<|end_header_id|>"));
+            },
+        },
         // --- llama4 ---
-        Cell { family: "llama4", model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert!(p.contains("<|header_start|>system<|header_end|>"));
-            assert!(!p.contains("<|start_header_id|>"));
-        }},
-        Cell { family: "llama4", model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct", case: "multi", messages: multi, with_tools: false, check: |p| {
-            assert!(p.contains("<|eot|>"));
-            assert!(p.contains("Hello there"));
-        }},
-        Cell { family: "llama4", model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert!(p.contains("Be concise."));
-        }},
-        Cell { family: "llama4", model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct", case: "tools_user", messages: tools_user, with_tools: true, check: |p| {
-            assert!(p.contains("Given the following functions"));
-            assert!(p.contains("<|header_start|>user<|header_end|>"));
-        }},
-        Cell { family: "llama4", model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct", case: "tools_roundtrip", messages: tools_roundtrip, with_tools: true, check: |p| {
-            assert!(p.contains("<|python_start|>"));
-            assert!(p.contains("<|header_start|>ipython<|header_end|>"));
-        }},
+        Cell {
+            family: "llama4",
+            model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|header_start|>system<|header_end|>"));
+                assert!(!p.contains("<|start_header_id|>"));
+            },
+        },
+        Cell {
+            family: "llama4",
+            model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|eot|>"));
+                assert!(p.contains("Hello there"));
+            },
+        },
+        Cell {
+            family: "llama4",
+            model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("Be concise."));
+            },
+        },
+        Cell {
+            family: "llama4",
+            model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            case: "tools_user",
+            messages: tools_user,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("Given the following functions"));
+                assert!(p.contains("<|header_start|>user<|header_end|>"));
+            },
+        },
+        Cell {
+            family: "llama4",
+            model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            case: "tools_roundtrip",
+            messages: tools_roundtrip,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("<|python_start|>"));
+                assert!(p.contains("<|header_start|>ipython<|header_end|>"));
+            },
+        },
         // --- devstral (no tools surface in hub template) ---
-        Cell { family: "devstral", model_id: "devstral-small", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert!(p.contains("[SYSTEM_PROMPT]Be concise.[/SYSTEM_PROMPT][INST]Hello[/INST]"));
-        }},
-        Cell { family: "devstral", model_id: "devstral-small", case: "multi", messages: multi, with_tools: false, check: |p| {
-            // No default identity when system omitted (intentional vs hub).
-            assert!(p.contains("[INST]Hi[/INST]Hello there</s>[INST]Again[/INST]"));
-            assert!(!p.contains("You are Devstral"));
-        }},
-        Cell { family: "devstral", model_id: "devstral-small", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert_eq!(p, "<s>[SYSTEM_PROMPT]Be concise.[/SYSTEM_PROMPT][INST]Hi[/INST]Hello there</s>[INST]Again[/INST]");
-        }},
+        Cell {
+            family: "devstral",
+            model_id: "devstral-small",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("[SYSTEM_PROMPT]Be concise.[/SYSTEM_PROMPT][INST]Hello[/INST]"));
+            },
+        },
+        Cell {
+            family: "devstral",
+            model_id: "devstral-small",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                // No default identity when system omitted (intentional vs hub).
+                assert!(p.contains("[INST]Hi[/INST]Hello there</s>[INST]Again[/INST]"));
+                assert!(!p.contains("You are Devstral"));
+            },
+        },
+        Cell {
+            family: "devstral",
+            model_id: "devstral-small",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert_eq!(
+                    p,
+                    "<s>[SYSTEM_PROMPT]Be concise.[/SYSTEM_PROMPT][INST]Hi[/INST]Hello there</s>[INST]Again[/INST]"
+                );
+            },
+        },
         // --- ministral ---
-        Cell { family: "ministral", model_id: "ministral-8b-instruct", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert_eq!(p, "<s>[INST]Be concise.\n\nHello[/INST]");
-        }},
-        Cell { family: "ministral", model_id: "ministral-8b-instruct", case: "multi", messages: multi, with_tools: false, check: |p| {
-            assert!(p.contains("[INST]Hi[/INST] Hello there</s>[INST]Again[/INST]"));
-        }},
-        Cell { family: "ministral", model_id: "ministral-8b-instruct", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert_eq!(p, "<s>[INST]Hi[/INST] Hello there</s>[INST]Be concise.\n\nAgain[/INST]");
-        }},
-        Cell { family: "ministral", model_id: "ministral-8b-instruct", case: "tools_user", messages: tools_user, with_tools: true, check: |p| {
-            assert!(p.starts_with("<s>[AVAILABLE_TOOLS] ["));
-            assert!(p.contains("[/AVAILABLE_TOOLS][INST]Look up AX[/INST]"));
-        }},
-        Cell { family: "ministral", model_id: "ministral-8b-instruct", case: "tools_roundtrip", messages: tools_roundtrip, with_tools: true, check: |p| {
-            assert!(p.contains("[AVAILABLE_TOOLS] "));
-            assert!(p.contains("[TOOL_CALLS] "));
-            assert!(p.contains("[TOOL_RESULTS] "));
-            assert!(p.contains("\"call_id\": \"callABC12\""));
-        }},
+        Cell {
+            family: "ministral",
+            model_id: "ministral-8b-instruct",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert_eq!(p, "<s>[INST]Be concise.\n\nHello[/INST]");
+            },
+        },
+        Cell {
+            family: "ministral",
+            model_id: "ministral-8b-instruct",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("[INST]Hi[/INST]Hello there</s>[INST]Again[/INST]"));
+            },
+        },
+        Cell {
+            family: "ministral",
+            model_id: "ministral-8b-instruct",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert_eq!(
+                    p,
+                    "<s>[INST]Hi[/INST]Hello there</s>[INST]Be concise.\n\nAgain[/INST]"
+                );
+            },
+        },
+        Cell {
+            family: "ministral",
+            model_id: "ministral-8b-instruct",
+            case: "tools_user",
+            messages: tools_user,
+            with_tools: true,
+            check: |p| {
+                assert!(p.starts_with("<s>[AVAILABLE_TOOLS]["));
+                assert!(p.contains("[/AVAILABLE_TOOLS][INST]Look up AX[/INST]"));
+            },
+        },
+        Cell {
+            family: "ministral",
+            model_id: "ministral-8b-instruct",
+            case: "tools_roundtrip",
+            messages: tools_roundtrip,
+            with_tools: true,
+            check: |p| {
+                assert!(p.contains("[AVAILABLE_TOOLS]["));
+                assert!(p.contains("[TOOL_CALLS]["));
+                assert!(p.contains("[TOOL_RESULTS]{"));
+                assert!(p.contains("\"call_id\": \"callABC12\""));
+            },
+        },
         // --- gpt_oss ---
-        Cell { family: "gpt_oss", model_id: "gpt-oss-20b", case: "simple", messages: simple, with_tools: false, check: |p| {
-            assert!(p.contains("<|start|>system<|message|>"));
-            assert!(p.ends_with("<|start|>assistant<|channel|>final<|message|>"));
-        }},
-        Cell { family: "gpt_oss", model_id: "gpt-oss-20b", case: "multi", messages: multi, with_tools: false, check: |p| {
-            assert!(p.contains("<|channel|>final<|message|>Hello there"));
-        }},
-        Cell { family: "gpt_oss", model_id: "gpt-oss-20b", case: "multi_sys", messages: multi_sys, with_tools: false, check: |p| {
-            assert!(p.contains("Be concise."));
-            assert!(p.ends_with("<|start|>assistant<|channel|>final<|message|>"));
-        }},
+        Cell {
+            family: "gpt_oss",
+            model_id: "gpt-oss-20b",
+            case: "simple",
+            messages: simple,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|start|>system<|message|>"));
+                assert!(p.ends_with("<|start|>assistant<|channel|>final<|message|>"));
+            },
+        },
+        Cell {
+            family: "gpt_oss",
+            model_id: "gpt-oss-20b",
+            case: "multi",
+            messages: multi,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("<|channel|>final<|message|>Hello there"));
+            },
+        },
+        Cell {
+            family: "gpt_oss",
+            model_id: "gpt-oss-20b",
+            case: "multi_sys",
+            messages: multi_sys,
+            with_tools: false,
+            check: |p| {
+                assert!(p.contains("Be concise."));
+                assert!(p.ends_with("<|start|>assistant<|channel|>final<|message|>"));
+            },
+        },
     ];
 
     let dump_dir = std::env::var_os("AX_TEMPLATE_DIFF_DIR").map(std::path::PathBuf::from);
