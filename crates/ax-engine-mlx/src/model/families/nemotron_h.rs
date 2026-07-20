@@ -96,8 +96,8 @@ fn attention_forward(
         .as_ref()
         .expect("nemotron attention layer must have o_proj");
 
-    let batch = x.shape()[0] as i32;
-    let seq = x.shape()[1] as i32;
+    let batch = x.shape()[0];
+    let seq = x.shape()[1];
     let n_heads = cfg.n_heads as i32;
     let n_kv = cfg.n_kv_heads as i32;
     let head_dim = cfg.head_dim as i32;
@@ -313,7 +313,7 @@ fn mamba_conv1d(
     conv_dim: usize,
     kernel: usize,
 ) -> (MlxArray, MlxArray) {
-    let batch = conv_input.shape()[0] as i32;
+    let batch = conv_input.shape()[0];
     let conv_dim_i = conv_dim as i32;
     let k = kernel as i32;
     let n_keep = k - 1;
@@ -367,6 +367,7 @@ fn softplus(x: &MlxArray) -> MlxArray {
 /// - dt: [B, L, H]
 /// - dt_bias: [H]
 /// - state: [B, H, Dh, Ds]
+#[allow(clippy::too_many_arguments)]
 fn ssm_update(
     x: &MlxArray,
     a_log: &MlxArray,

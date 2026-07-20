@@ -1805,7 +1805,7 @@ fn validate_nemotron_h_layer(
                 });
             }
         }
-        other if other.is_empty() => {
+        "" => {
             // Fall back to tensor-role inference when layer_types is empty.
             if !(has_mamba || has_attn || has_moe) {
                 return Err(NativeModelError::InvalidManifest {

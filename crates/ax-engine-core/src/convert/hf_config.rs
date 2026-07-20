@@ -726,21 +726,22 @@ pub(crate) fn parse_nemotron_hybrid_pattern(
                 .filter(|c| !c.is_whitespace())
                 .collect(),
         )
-    } else if let Some(arr) = config.get("layers_block_type").and_then(|v| v.as_array()) {
-        Some(
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| match s {
-                    "mamba" => 'M',
-                    "attention" => '*',
-                    "moe" => 'E',
-                    "mlp" => '-',
-                    other => other.chars().next().unwrap_or('?'),
-                })
-                .collect(),
-        )
     } else {
-        None
+        config
+            .get("layers_block_type")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| match s {
+                        "mamba" => 'M',
+                        "attention" => '*',
+                        "moe" => 'E',
+                        "mlp" => '-',
+                        other => other.chars().next().unwrap_or('?'),
+                    })
+                    .collect()
+            })
     };
 
     let Some(chars) = chars else {
