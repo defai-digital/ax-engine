@@ -877,6 +877,10 @@ impl EngineSession {
                 request_id,
                 &request,
             )?;
+            // Delegated generations have no engine-side submission to advance
+            // the id, so advance here — otherwise every repeated `generate()`
+            // on a delegated backend reuses request_id 1.
+            self.advance_request_id(request_id);
             return run_delegated_generate_with_config(&self.config, request_id, &request);
         }
         let request_id = self.submit_generate_with_request_id(request_id, request)?;
@@ -975,6 +979,10 @@ impl EngineSession {
                     self.llama_cpp_stream_state_with_request_id(request_id, request)
                 }
                 SelectedBackend::MlxLmDelegated => {
+                    // No engine-side submission advances the id on this path;
+                    // advance here so concurrent mlx-lm streams get distinct
+                    // request ids (the llama.cpp branch already does).
+                    self.advance_request_id(request_id);
                     let mlx_lm_backend = self
                         .config
                         .mlx_lm_backend
