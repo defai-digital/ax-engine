@@ -246,7 +246,10 @@ fn openai_chat_prompt_renderer_preserves_qwen_coder_user_system_with_tool_contra
 }
 
 #[test]
-fn openai_chat_prompt_renderer_uses_qwen36_coder_xml_tool_contract() {
+fn openai_chat_prompt_renderer_uses_qwen36_function_xml_tool_contract() {
+    // AutomatosX / hub Qwen3.6 chat_template.jinja matches Qwen3.5: JSON tool
+    // schemas inside <tools> and function= call format (not Coder-Next XML
+    // declarations).
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "Read README.md"}
     ]))
@@ -273,19 +276,58 @@ fn openai_chat_prompt_renderer_uses_qwen36_coder_xml_tool_contract() {
     )
     .expect("qwen3.6 tool prompt should render");
 
-    assert!(prompt.starts_with(
-        "<|im_start|>system\nYou are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.\n\n# Tools"
-    ));
-    assert!(prompt.contains("# Tools\n\nYou have access to the following tools:"));
-    assert!(prompt.contains("<function>\n<name>read_file</name>"));
-    assert!(prompt.contains("<description>Read a workspace file</description>"));
-    assert!(prompt.contains("<parameter>\n<name>path</name>"));
-    assert!(prompt.contains("If you choose to call a tool ONLY reply"));
+    assert!(
+        prompt.starts_with(
+            "<|im_start|>system\n# Tools\n\nYou have access to the following functions:"
+        )
+    );
+    assert!(prompt.contains("<tools>\n"));
+    assert!(prompt.contains("\"name\":\"read_file\""));
+    assert!(prompt.contains("\"type\":\"function\"") || prompt.contains("\"type\": \"function\""));
+    // Not Coder-Next XML tool *declarations*.
+    assert!(!prompt.contains("<function>\n<name>read_file</name>"));
+    assert!(
+        !prompt.contains("You are Qwen, a helpful AI assistant that can interact with a computer")
+    );
     assert!(prompt.contains("<function=example_function_name>"));
     assert!(prompt.contains("<parameter=example_parameter_1>"));
-    assert!(prompt.contains("the tool calling block MUST begin with an opening <tool_call> tag"));
+    assert!(prompt.contains(
+        "an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags"
+    ));
     assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
     assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_uses_llama4_header_markers() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Hello"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt("meta-llama/Llama-4-Scout-17B-16E-Instruct", &messages)
+        .expect("llama4 prompt");
+    assert_eq!(
+        prompt,
+        "<|begin_of_text|><|header_start|>system<|header_end|>\n\nBe concise.<|eot|><|header_start|>user<|header_end|>\n\nHello<|eot|><|header_start|>assistant<|header_end|>\n\n"
+    );
+}
+
+#[test]
+fn openai_chat_prompt_renderer_diffusiongemma_matches_hub_generation_prefill() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Hello"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt =
+        render_openai_chat_prompt("diffusiongemma-26B-A4B-it-4bit", &messages).expect("diffusion");
+    assert_eq!(
+        prompt,
+        "<bos><|turn>system\nBe concise.<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n"
+    );
 }
 
 #[test]

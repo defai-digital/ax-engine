@@ -86,7 +86,12 @@ pub(crate) fn render_openai_chat_prompt_with_options(
         chat::ChatPromptTemplate::for_model_id(model_id),
         chat::ChatPromptTemplate::Gemma4
     ) {
-        return render_gemma4_openai_chat_prompt(messages, tools, options.enable_thinking);
+        return render_gemma4_openai_chat_prompt(
+            model_id,
+            messages,
+            tools,
+            options.enable_thinking,
+        );
     }
     if matches!(
         chat::ChatPromptTemplate::for_model_id(model_id),
@@ -460,6 +465,7 @@ enum Gemma4PrevMessageType {
 }
 
 fn render_gemma4_openai_chat_prompt(
+    model_id: &str,
     messages: &[OpenAiChatMessage],
     tools: Option<&Value>,
     enable_thinking: bool,
@@ -608,7 +614,9 @@ fn render_gemma4_openai_chat_prompt(
         }
         None => {
             prompt.push_str("<|turn>model\n");
-            if !enable_thinking {
+            // Gemma 4 IT: empty thought prefill when thinking is off.
+            // DiffusionGemma hub template opens the model turn only.
+            if !enable_thinking && !chat::is_diffusion_gemma(model_id) {
                 prompt.push_str("<|channel>thought\n<channel|>");
             }
         }
@@ -1122,10 +1130,15 @@ impl QwenToolContractStyle {
 fn qwen_tool_contract_style(model_id: &str) -> QwenToolContractStyle {
     let normalized = chat::normalize_model_id_token(model_id);
     if chat::uses_qwen_coder_xml_tool_contract(model_id) {
+        // Coder-Next: XML tool *declarations* + function= call format.
         QwenToolContractStyle::CoderXml
     } else if normalized.contains("qwen3-next")
         || normalized.contains("qwen3-5")
         || normalized.contains("qwen35")
+        // Hub Qwen3.6 templates match Qwen3.5: JSON tool schemas + function= calls
+        // (not Coder-Next XML declarations).
+        || normalized.contains("qwen3-6")
+        || normalized.contains("qwen36")
     {
         QwenToolContractStyle::FunctionXml
     } else {

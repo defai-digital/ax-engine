@@ -98,13 +98,13 @@ Native Qwen ChatML and native Gemma 4 text sessions support model-family
 tool-call contracts. AX Engine renders OpenAI `tools` into the prompt, replays
 assistant `tool_calls` history, and parses generated spans back into OpenAI
 `message.tool_calls` with `finish_reason=tool_calls`. Native Qwen ChatML tool
-prompting follows the matching Ollama template for the selected model family:
-Qwen3 dense uses the JSON
-`<tool_call>{"name": ..., "arguments": ...}</tool_call>` contract,
-Qwen3.5 uses the function-XML contract, and Qwen3.6 plus Qwen3-Coder-Next use
-the Qwen3-Coder XML contract. AX mirrors the selected Ollama-family template
-shape: Qwen3.5 renders tool schemas as OpenAI tool JSON lines before asking for
-function-XML calls, while Qwen3.6 and Qwen3-Coder render XML tool declarations.
+prompting follows the matching hub `chat_template.jinja` for the selected model
+family: Qwen3 dense uses the JSON
+`<tool_call>{"name": ..., "arguments": ...}</tool_call>` contract;
+Qwen3.5 and Qwen3.6 use function-XML calls with JSON tool schemas inside
+`<tools>`; Qwen3-Coder-Next uses XML tool *declarations* plus function-XML
+calls. AX mirrors those shapes so AutomatosX hub packs match the artifact
+template rather than a one-size-fits-all Qwen tool preamble.
 Native
 Gemma 4 text chat uses the Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and
 `<|tool_response>` DSL.
@@ -123,7 +123,7 @@ The `ax_engine` metadata also reports routing intent for clients: Qwen3-Coder
 models set `primary_use="coding"`, `coding_only=true`, and `chat_default=false`;
 Qwen3.6 models set `primary_use="general"`, `coding_supported=true`, and
 `chat_default=true`, so they can remain default chat/general-agent choices while
-still using the coding tool contract when tools are requested.
+still supporting tools via the hub function-XML contract.
 Streaming requests with `tools` on native AX-rendered tool-call paths return
 buffered OpenAI-shaped SSE chunks with `delta.tool_calls`; they do not stream
 the tool call token-by-token yet. Integrations such as `ax-code` should treat

@@ -39,11 +39,17 @@ pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK: &str = "<|im_
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChatPromptTemplate {
     QwenChatMl,
+    /// Llama 3.x Instruct: `<|start_header_id|>` / `<|eot_id|>`.
     Llama3,
+    /// Llama 4 Instruct: `<|header_start|>` / `<|eot|>` (not Llama 3 markers).
+    Llama4,
+    /// Gemma 4 IT (empty thought prefill when thinking is off).
     Gemma4,
     Glm47,
-    /// Mistral Instruct / Tekken-style `[INST]` chat (Small, Ministral, Devstral).
+    /// Devstral / Mistral Small-style: `[SYSTEM_PROMPT]…[/SYSTEM_PROMPT][INST]…[/INST]`.
     MistralInstruct,
+    /// Ministral classic Instruct: system folded into the first `[INST]` block.
+    MinistralInstruct,
     /// OpenAI Harmony format used by GPT-OSS (`<|start|>…<|message|>…<|end|>`).
     GptOssHarmony,
     Unsupported(ChatUnsupportedFamily),
@@ -87,6 +93,9 @@ impl ChatPromptTemplate {
             || normalized.contains("diffusion-gemma")
             || normalized.contains("diffusion_gemma")
         {
+            // DiffusionGemma shares turn markers with Gemma 4 IT; generation
+            // prefill differs (no empty thought channel) and is specialized
+            // via `is_diffusion_gemma` in the renderers.
             Self::Gemma4
         } else if normalized.contains("gemma-3") || normalized.contains("gemma3") {
             Self::Unsupported(ChatUnsupportedFamily::Gemma3)
@@ -95,17 +104,18 @@ impl ChatPromptTemplate {
         } else if normalized.contains("llama-4")
             || normalized.contains("llama4")
             || normalized.contains("llama_4")
-            || normalized.contains("llama-3")
+        {
+            Self::Llama4
+        } else if normalized.contains("llama-3")
             || normalized.contains("llama3")
             || normalized.contains("llama_3")
         {
-            // Llama 3.x and Llama 4 Instruct share the header/eot chat framing
-            // used by the Llama3 fallback renderer.
             Self::Llama3
         } else if normalized.contains("mixtral") {
             Self::Unsupported(ChatUnsupportedFamily::Mixtral)
+        } else if normalized.contains("ministral") {
+            Self::MinistralInstruct
         } else if normalized.contains("mistral")
-            || normalized.contains("ministral")
             || normalized.contains("devstral")
             || normalized.contains("codestral")
         {
@@ -122,6 +132,15 @@ impl ChatPromptTemplate {
             Self::PlainRolePrefix
         }
     }
+}
+
+/// DiffusionGemma IT uses Gemma 4 turn markers but does **not** pre-fill an
+/// empty thought channel on the generation prompt (hub chat_template.jinja).
+pub(crate) fn is_diffusion_gemma(model_id: &str) -> bool {
+    let normalized = model_id.to_ascii_lowercase();
+    normalized.contains("diffusiongemma")
+        || normalized.contains("diffusion-gemma")
+        || normalized.contains("diffusion_gemma")
 }
 
 pub(crate) fn normalize_role(role: &str) -> Result<&'static str, String> {
@@ -270,13 +289,14 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
     match template {
         ChatPromptTemplate::QwenChatMl => vec!["<|im_end|>".to_string()],
         ChatPromptTemplate::Llama3 => vec!["<|eot_id|>".to_string()],
+        ChatPromptTemplate::Llama4 => vec!["<|eot|>".to_string()],
         ChatPromptTemplate::Gemma4 => vec![GEMMA4_TURN_TERMINATOR.to_string()],
         ChatPromptTemplate::Glm47 => vec![
             "<|endoftext|>".to_string(),
             "<|user|>".to_string(),
             "<|observation|>".to_string(),
         ],
-        ChatPromptTemplate::MistralInstruct => {
+        ChatPromptTemplate::MistralInstruct | ChatPromptTemplate::MinistralInstruct => {
             vec!["</s>".to_string(), "[INST]".to_string()]
         }
         // Generation ends on <|return|>; also stop if the model closes a turn
@@ -315,6 +335,7 @@ fn render_prompt_with_template_for_model(
     qwen_thinking_enabled: bool,
 ) -> Result<String, String> {
     render_prompt_internal(
+        model_id,
         template,
         messages,
         qwen_assistant_generation_prompt(model_id, qwen_thinking_enabled),
@@ -328,6 +349,7 @@ pub(crate) fn render_prompt_with_template(
     qwen_thinking_enabled: bool,
 ) -> Result<String, String> {
     render_prompt_internal(
+        "qwen3",
         template,
         messages,
         if qwen_thinking_enabled {
@@ -339,6 +361,7 @@ pub(crate) fn render_prompt_with_template(
 }
 
 fn render_prompt_internal(
+    model_id: &str,
     template: ChatPromptTemplate,
     messages: &[(String, String)],
     qwen_generation_prompt: &str,
@@ -346,12 +369,18 @@ fn render_prompt_internal(
     let mut prompt = String::new();
     let mut qwen_tool_response_open = false;
     match template {
-        ChatPromptTemplate::Llama3 => prompt.push_str("<|begin_of_text|>"),
+        ChatPromptTemplate::Llama3 | ChatPromptTemplate::Llama4 => {
+            prompt.push_str("<|begin_of_text|>")
+        }
         ChatPromptTemplate::Gemma4 => prompt.push_str("<bos>"),
         ChatPromptTemplate::Glm47 => prompt.push_str("[gMASK]<sop>"),
-        ChatPromptTemplate::MistralInstruct => prompt.push_str("<s>"),
+        ChatPromptTemplate::MistralInstruct | ChatPromptTemplate::MinistralInstruct => {
+            prompt.push_str("<s>")
+        }
         ChatPromptTemplate::GptOssHarmony => {
             // Always emit the Harmony system header first (identity + channels).
+            // Intentional AX delta vs hub jinja: Reasoning: low + no live date,
+            // and generation prefills final channel (below) for short answers.
             prompt.push_str("<|start|>system<|message|>");
             prompt.push_str(GPT_OSS_DEFAULT_SYSTEM);
             prompt.push_str("<|end|>");
@@ -365,6 +394,7 @@ fn render_prompt_internal(
         }
     }
     let mut mistral_system: Option<&str> = None;
+    let mut ministral_system: Option<&str> = None;
     let mut gpt_oss_system: Option<&str> = None;
     for (role, content) in messages {
         let role = normalize_role(role)?;
@@ -391,11 +421,20 @@ fn render_prompt_internal(
                 }
             }
             ChatPromptTemplate::Llama3 => {
+                // Intentional AX delta: omit Llama's default knowledge-date
+                // system preamble when the caller did not supply a system msg.
                 prompt.push_str("<|start_header_id|>");
                 prompt.push_str(role);
                 prompt.push_str("<|end_header_id|>\n\n");
                 prompt.push_str(content);
                 prompt.push_str("<|eot_id|>");
+            }
+            ChatPromptTemplate::Llama4 => {
+                prompt.push_str("<|header_start|>");
+                prompt.push_str(role);
+                prompt.push_str("<|header_end|>\n\n");
+                prompt.push_str(content);
+                prompt.push_str("<|eot|>");
             }
             ChatPromptTemplate::Gemma4 => {
                 let turn = if role == "assistant" { "model" } else { role };
@@ -432,8 +471,8 @@ fn render_prompt_internal(
                 }
             }
             ChatPromptTemplate::MistralInstruct => {
-                // Mistral Instruct / Tekken framing used by Small, Ministral, Devstral.
-                // System is emitted once before the first [INST] block.
+                // Devstral / Mistral: [SYSTEM_PROMPT]…[/SYSTEM_PROMPT][INST]…[/INST].
+                // Hub templates do not insert </s> between multi-turn turns.
                 match role {
                     "system" => {
                         mistral_system = Some(content.as_str());
@@ -450,10 +489,36 @@ fn render_prompt_internal(
                     }
                     "assistant" => {
                         prompt.push_str(content);
-                        prompt.push_str("</s>");
                     }
                     "tool" | "function" => {
-                        // Tool results are folded into the next user turn as plain text.
+                        prompt.push_str("[INST]");
+                        prompt.push_str(content);
+                        prompt.push_str("[/INST]");
+                    }
+                    _ => {}
+                }
+            }
+            ChatPromptTemplate::MinistralInstruct => {
+                // Ministral hub template folds system into the first [INST] body.
+                match role {
+                    "system" => {
+                        ministral_system = Some(content.as_str());
+                    }
+                    "user" => {
+                        prompt.push_str("[INST]");
+                        if let Some(system) = ministral_system.take() {
+                            prompt.push_str(system);
+                            prompt.push_str("\n\n");
+                        }
+                        prompt.push_str(content);
+                        prompt.push_str("[/INST]");
+                    }
+                    "assistant" => {
+                        // Hub multi-turn: `[/INST] answer[INST]` (no </s>).
+                        prompt.push(' ');
+                        prompt.push_str(content);
+                    }
+                    "tool" | "function" => {
                         prompt.push_str("[INST]");
                         prompt.push_str(content);
                         prompt.push_str("[/INST]");
@@ -521,6 +586,13 @@ fn render_prompt_internal(
             prompt.push_str("[/SYSTEM_PROMPT]");
         }
     }
+    if matches!(template, ChatPromptTemplate::MinistralInstruct) {
+        if let Some(system) = ministral_system {
+            prompt.push_str("[INST]");
+            prompt.push_str(system);
+            prompt.push_str("[/INST]");
+        }
+    }
     if matches!(template, ChatPromptTemplate::GptOssHarmony) {
         if let Some(system) = gpt_oss_system {
             prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
@@ -535,13 +607,23 @@ fn render_prompt_internal(
         ChatPromptTemplate::Llama3 => {
             prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
         }
+        ChatPromptTemplate::Llama4 => {
+            prompt.push_str("<|header_start|>assistant<|header_end|>\n\n");
+        }
         ChatPromptTemplate::Gemma4 => {
-            prompt.push_str("<|turn>model\n<|channel>thought\n<channel|>")
+            prompt.push_str("<|turn>model\n");
+            // Gemma 4 IT pre-fills an empty thought channel when thinking is
+            // off. DiffusionGemma's hub template opens the model turn only.
+            if !is_diffusion_gemma(model_id) {
+                prompt.push_str("<|channel>thought\n<channel|>");
+            }
         }
         ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|></think>"),
-        ChatPromptTemplate::MistralInstruct => {}
+        ChatPromptTemplate::MistralInstruct | ChatPromptTemplate::MinistralInstruct => {}
         // Prefill final channel so short chat answers do not spend the entire
         // budget on analysis CoT (mlx-community / Unsloth guidance for gpt-oss).
+        // Intentional AX delta vs hub jinja, which leaves `<|start|>assistant`
+        // without a channel prefill.
         ChatPromptTemplate::GptOssHarmony => {
             prompt.push_str("<|start|>assistant<|channel|>final<|message|>")
         }
@@ -581,15 +663,12 @@ pub(crate) fn normalize_model_id_token(model_id: &str) -> String {
         .collect()
 }
 
+/// Coder-Next hub templates declare tools as XML `<function><name>…` blocks.
+/// Qwen3.5 / Qwen3.6 AutomatosX hub templates declare tools as JSON lines and
+/// call with function-XML — use [`qwen_tool_contract_style`] FunctionXml, not
+/// this coder path.
 pub(crate) fn uses_qwen_coder_xml_tool_contract(model_id: &str) -> bool {
-    if is_qwen_non_thinking_only_model(model_id) {
-        return true;
-    }
-    let normalized = model_id.to_ascii_lowercase();
-    normalized.contains("qwen3.6")
-        || normalized.contains("qwen3_6")
-        || normalized.contains("qwen3-6")
-        || normalized.contains("qwen36")
+    is_qwen_coder_model(model_id)
 }
 
 /// Token ids of the Gemma 4 channel markers, looked up from the model's
@@ -984,14 +1063,72 @@ mod tests {
         let messages = vec![("user".to_string(), "hello".to_string())];
         let llama = render_prompt("llama3.3-70b", &messages).expect("llama3 chat");
         assert!(llama.contains("<|start_header_id|>user<|end_header_id|>"));
+        assert!(llama.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
+        // Llama 4 hub templates use header_start / eot (not Llama 3 markers).
         let scout = render_prompt("llama4-scout", &messages).expect("llama4 chat");
-        assert!(scout.contains("<|start_header_id|>user<|end_header_id|>"));
+        assert!(scout.contains("<|header_start|>user<|header_end|>"));
+        assert!(scout.contains("<|eot|>"));
+        assert!(!scout.contains("<|start_header_id|>"));
+        assert!(scout.ends_with("<|header_start|>assistant<|header_end|>\n\n"));
         let mistral = render_prompt("mistral-small", &messages).expect("mistral chat");
         assert!(mistral.contains("[INST]hello[/INST]"));
         let ministral = render_prompt("ministral-8b", &messages).expect("ministral chat");
         assert!(ministral.contains("[INST]hello[/INST]"));
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("ministral-8b"),
+            ChatPromptTemplate::MinistralInstruct
+        );
         let devstral = render_prompt("devstral-small", &messages).expect("devstral chat");
         assert!(devstral.contains("[INST]hello[/INST]"));
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("devstral-small"),
+            ChatPromptTemplate::MistralInstruct
+        );
+    }
+
+    #[test]
+    fn diffusiongemma_skips_empty_thought_prefill() {
+        let messages = vec![("user".to_string(), "Hello".to_string())];
+        let it = render_prompt("gemma4-e2b", &messages).expect("gemma4 it");
+        assert!(
+            it.ends_with("<|turn>model\n<|channel>thought\n<channel|>"),
+            "Gemma 4 IT pre-fills empty thought: {it}"
+        );
+        let diffusion =
+            render_prompt("diffusiongemma-26B-A4B-it-4bit", &messages).expect("diffusion");
+        assert!(
+            diffusion.ends_with("<|turn>model\n"),
+            "DiffusionGemma opens model turn only: {diffusion}"
+        );
+        assert!(
+            !diffusion.contains("<|channel>thought\n<channel|>"),
+            "DiffusionGemma must not pre-fill empty thought"
+        );
+    }
+
+    #[test]
+    fn devstral_multi_turn_omits_eos_between_turns() {
+        let messages = vec![
+            ("system".to_string(), "Be concise.".to_string()),
+            ("user".to_string(), "Hi".to_string()),
+            ("assistant".to_string(), "Hello there".to_string()),
+            ("user".to_string(), "Again".to_string()),
+        ];
+        let prompt = render_prompt("devstral-small", &messages).expect("devstral");
+        assert_eq!(
+            prompt,
+            "<s>[SYSTEM_PROMPT]Be concise.[/SYSTEM_PROMPT][INST]Hi[/INST]Hello there[INST]Again[/INST]"
+        );
+    }
+
+    #[test]
+    fn ministral_folds_system_into_first_inst() {
+        let messages = vec![
+            ("system".to_string(), "Be concise.".to_string()),
+            ("user".to_string(), "Hello".to_string()),
+        ];
+        let prompt = render_prompt("ministral-8b", &messages).expect("ministral");
+        assert_eq!(prompt, "<s>[INST]Be concise.\n\nHello[/INST]");
     }
 
     #[test]
@@ -1240,7 +1377,9 @@ mod tests {
     }
 
     #[test]
-    fn qwen36_uses_coder_xml_tools_without_becoming_non_thinking_only() {
+    fn qwen36_uses_function_xml_tools_not_coder_declarations() {
+        // Hub Qwen3.6 chat_template.jinja matches Qwen3.5 (JSON tool schemas +
+        // function= calls). Only Coder-Next uses XML tool *declarations*.
         for model_id in [
             "qwen3.6-27b-8bit",
             "Qwen3.6-35B-A3B-4bit",
@@ -1248,7 +1387,11 @@ mod tests {
         ] {
             assert!(is_qwen_thinking_model(model_id), "{model_id}");
             assert!(!is_qwen_non_thinking_only_model(model_id), "{model_id}");
-            assert!(uses_qwen_coder_xml_tool_contract(model_id), "{model_id}");
+            assert!(
+                !uses_qwen_coder_xml_tool_contract(model_id),
+                "{model_id} must not use Coder-Next XML declarations"
+            );
         }
+        assert!(uses_qwen_coder_xml_tool_contract("Qwen3-Coder-Next-4bit"));
     }
 }
