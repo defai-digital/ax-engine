@@ -4,7 +4,7 @@ use crate::backend::{RuntimeReport, SelectedBackend};
 use crate::generate::{
     GenerateMtpReport, GeneratePerformanceReport, GenerateRequest, GenerateResponse,
     GenerateRouteReport, GenerateStreamEvent, GenerateStreamRequestEvent,
-    GenerateStreamResponseEvent, GenerateStreamStepEvent,
+    GenerateStreamResponseEvent, GenerateStreamStepEvent, finish_reason_from_stop_type,
 };
 use crate::llama_cpp::{LlamaCppPromptProgress, LlamaCppStreamChunk, LlamaCppStreamHandle};
 use crate::mlx_lm::{MlxLmStreamChunkResult, MlxLmStreamHandle, finish_reason_from_mlx_lm};
@@ -838,32 +838,6 @@ pub(super) fn apply_llama_cpp_usage_counts(
     }
 }
 
-pub(super) fn finish_reason_from_stop_type(
-    stop: bool,
-    stop_type: Option<&str>,
-) -> Option<crate::generate::GenerateFinishReason> {
-    if !stop {
-        return None;
-    }
-    match stop_type {
-        // llama.cpp server completion format
-        Some("limit") => Some(crate::generate::GenerateFinishReason::MaxOutputTokens),
-        Some("eos") => Some(crate::generate::GenerateFinishReason::Stop),
-        // OpenAI-compatible format (vLLM, mistral.rs, mlx)
-        Some("length") => Some(crate::generate::GenerateFinishReason::MaxOutputTokens),
-        Some("stop") => Some(crate::generate::GenerateFinishReason::Stop),
-        Some("content_filter") => Some(crate::generate::GenerateFinishReason::ContentFilter),
-        None => Some(crate::generate::GenerateFinishReason::MaxOutputTokens),
-        Some(unknown) => {
-            tracing::warn!(
-                stop_type = unknown,
-                "llama.cpp stream returned unknown stop_type; reporting error finish reason"
-            );
-            Some(crate::generate::GenerateFinishReason::Error)
-        }
-    }
-}
-
 pub(super) fn terminal_stop_reason_from_finish_reason(
     finish_reason: Option<crate::generate::GenerateFinishReason>,
 ) -> Option<ax_engine_core::StopReason> {
@@ -1006,6 +980,30 @@ mod tests {
                 .expect("phase Done returns Ok(None)")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn llama_cpp_stream_finish_reason_maps_stop_types() {
+        // Stop-string ("word"), natural EOS, OpenAI-compatible "stop", and a
+        // terminal chunk with no stop_type are all successful stops — the
+        // streaming path previously reported "word" as an error and None as
+        // a token-budget stop.
+        for stop_type in [Some("word"), Some("eos"), Some("stop"), None] {
+            assert_eq!(
+                finish_reason_from_stop_type(true, stop_type),
+                Some(GenerateFinishReason::Stop),
+                "stop_type {stop_type:?} must map to Stop"
+            );
+        }
+        assert_eq!(
+            finish_reason_from_stop_type(true, Some("limit")),
+            Some(GenerateFinishReason::MaxOutputTokens)
+        );
+        assert_eq!(
+            finish_reason_from_stop_type(true, Some("length")),
+            Some(GenerateFinishReason::MaxOutputTokens)
+        );
+        assert_eq!(finish_reason_from_stop_type(false, Some("eos")), None);
     }
 
     #[test]

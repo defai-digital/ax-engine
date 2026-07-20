@@ -316,6 +316,36 @@ pub enum GenerateFinishReason {
     Error,
 }
 
+/// Map a delegated backend's terminal `stop`/`stop_type` pair onto the SDK
+/// finish reason. One shared mapping serves both the blocking and streaming
+/// llama.cpp paths — they previously diverged, and the streaming copy lacked
+/// `"word"`, so stop-string terminations were reported as errors.
+pub(crate) fn finish_reason_from_stop_type(
+    stop: bool,
+    stop_type: Option<&str>,
+) -> Option<GenerateFinishReason> {
+    if !stop {
+        return None;
+    }
+    match stop_type {
+        // llama.cpp reports "limit"; OpenAI-compatible servers (vLLM,
+        // mistral.rs, mlx) report "length".
+        Some("limit" | "length") => Some(GenerateFinishReason::MaxOutputTokens),
+        // "eos" = natural end of sequence, "word" = llama.cpp stop-string
+        // match, "stop" = the OpenAI-compatible equivalent. A terminal chunk
+        // without a stop_type is a normal completion.
+        Some("eos" | "word" | "stop") | None => Some(GenerateFinishReason::Stop),
+        Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
+        Some(unknown) => {
+            tracing::warn!(
+                stop_type = unknown,
+                "delegated backend returned unknown stop_type; reporting error finish reason"
+            );
+            Some(GenerateFinishReason::Error)
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GenerateSampling {
     #[serde(default)]
