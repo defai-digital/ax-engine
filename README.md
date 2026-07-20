@@ -40,9 +40,23 @@ ax-engine doctor
 ```
 
 Homebrew is the primary install path for the CLI, server, and bench tools.
-First install builds this tap's `mlx` / `mlx-c` from source (can take a
-while) and needs Xcode plus its Metal Toolchain component — a separate
-download since Xcode 26: `xcodebuild -downloadComponent MetalToolchain`.
+First install builds this tap's `mlx` / `mlx-c` from source (can take a while)
+and needs full Xcode, not just Command Line Tools. On Xcode 26+, also install
+Apple's Metal Toolchain component:
+
+```bash
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -runFirstLaunch
+xcodebuild -downloadComponent metalToolchain
+```
+
+If you already have Homebrew's `mlx` / `mlx-c` from `homebrew/core`, remove
+them before installing AX Engine:
+
+```bash
+brew uninstall mlx-c mlx
+```
+
 For the Python SDK (`import ax_engine`), use
 `pip install "ax-engine[download]>=6.9.0,<7"` instead — see
 [Getting Started](docs/GETTING-STARTED.md).

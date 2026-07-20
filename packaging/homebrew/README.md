@@ -27,7 +27,7 @@ at formula-owned libraries (`MachO::Tools.change_install_name` + ad-hoc
 
 The tap's `Formula/mlx.rb` (no mirror here) declares a custom
 `MetalToolchainRequirement` that runs `xcrun metal --version` before the
-source build and aborts with `xcodebuild -downloadComponent MetalToolchain`
+source build and aborts with `xcodebuild -downloadComponent metalToolchain`
 instructions when it fails. Since Xcode 26 the Metal Toolchain is a separate
 download; without the preflight the mlx kernel build dies mid-compile with an
 opaque error (issue #68). Keep the requirement when touching the tap formula.

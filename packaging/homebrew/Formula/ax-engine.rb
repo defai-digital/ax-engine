@@ -63,7 +63,7 @@ class AxEngine < Formula
       -- to avoid a deployment-target bug that silently disables MLX's NAX
       acceleration on macOS 26.x. Xcode -- including its Metal Toolchain
       component, a separate download since Xcode 26
-      (xcodebuild -downloadComponent MetalToolchain) -- is required for
+      (xcodebuild -downloadComponent metalToolchain) -- is required for
       that build; an Apple Developer account is not.
     EOS
   end

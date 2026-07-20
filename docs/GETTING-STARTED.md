@@ -88,11 +88,37 @@ helper scripts onto your `PATH`.
 > formula aborts before building and prints the fix:
 >
 > ```bash
-> xcodebuild -downloadComponent MetalToolchain
+> xcodebuild -downloadComponent metalToolchain
 > ```
 >
 > Run that once after installing or upgrading Xcode, then re-run
 > `brew install`. First install can take a while.
+
+#### Homebrew troubleshooting
+
+If install fails with `xcrun metal --version` or `metallib` missing, make sure
+Homebrew is using full Xcode and the Metal Toolchain is installed:
+
+```bash
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -runFirstLaunch
+sudo xcodebuild -license accept
+xcodebuild -downloadComponent metalToolchain
+xcrun --kill-cache
+xcrun metal --version
+xcrun -find metallib
+```
+
+If install fails with `mlx is already installed from homebrew/core`, remove the
+core MLX packages and retry the AX Engine install:
+
+```bash
+brew uninstall mlx-c mlx
+brew install defai-digital/ax-engine/ax-engine
+```
+
+The `steipete/tap` trust warning sometimes shown by Homebrew is unrelated to
+AX Engine.
 
 **Linkage model:** GitHub release binaries are built against pip/venv MLX (for
 source and wheel performance parity) and ship with `@rpath/libmlx.dylib`. The
@@ -176,7 +202,7 @@ component:
 
 ```text
 brew install protobuf
-xcodebuild -downloadComponent MetalToolchain
+xcodebuild -downloadComponent metalToolchain
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip maturin

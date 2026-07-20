@@ -225,7 +225,7 @@ jobs:
             homebrew-core bottles) so MLX NAX acceleration is not silently
             disabled on macOS 26.x. Xcode -- including its Metal Toolchain
             component, a separate download since Xcode 26
-            (xcodebuild -downloadComponent MetalToolchain) -- is required for
+            (xcodebuild -downloadComponent metalToolchain) -- is required for
             that source build; an Apple Developer account is not.
           """)
 
