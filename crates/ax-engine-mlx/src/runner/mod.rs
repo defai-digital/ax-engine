@@ -53,7 +53,8 @@ use crate::generate::{
     decode_step, start_direct_pipeline,
 };
 use crate::kv_block_pool::{
-    FaBlockPoolConfig, default_fa_block_pool_config, fa_kv_block_pool_enabled,
+    FaBlockPoolConfig, default_fa_block_pool_config, fa_block_pool_max_blocks_override,
+    fa_kv_block_pool_enabled,
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
@@ -1006,7 +1007,7 @@ impl MlxRunner {
             return;
         };
         config.block_size_tokens = block_size_tokens.max(1);
-        let explicit_max_blocks = std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS").is_ok();
+        let explicit_max_blocks = fa_block_pool_max_blocks_override().is_some();
         if !explicit_max_blocks {
             config.max_blocks = total_blocks.max(1);
         }
@@ -1355,22 +1356,9 @@ impl MlxRunner {
         let batched_decode_certification = load_batched_decode_certification(artifacts);
         let batched_decode_capabilities = BatchedDecodeCapabilities::from_loaded_model(
             has_mtp,
-            // Intentionally `diffusion.is_some()`, not the broader
-            // `cfg.is_block_diffusion()`: this gates whether the model's
-            // *actual* decode dispatch runs the diffusion denoise path,
-            // which is itself driven solely by `cfg.diffusion` (see
-            // `run_item`'s decode-mode dispatch and the prefill/decode
-            // token-suppression checks a few hundred lines below, which
-            // also key on `diffusion.is_some()`). `is_block_diffusion()` is
-            // a superset (`generation_kind == BlockDiffusion ||
-            // diffusion.is_some()`) — a `diffusion_gemma`-family manifest
-            // with an explicit `canvas_size: Some(0)` resolves
-            // `generation_kind` to `BlockDiffusion` (family-name fallback in
-            // `is_block_diffusion_manifest`) while `DiffusionConfig::from_manifest`
-            // deliberately treats `canvas_size: Some(0)` as disabled
-            // diffusion (see its doc comment). Such a model actually runs
-            // as plain autoregressive; using the broader check here would
-            // needlessly disable batched-decode eligibility for it.
+            // This gates the model's actual decode dispatch, which is driven
+            // by the resolved diffusion config. Manifest validation above
+            // guarantees every block-diffusion manifest resolves one.
             cfg.diffusion.is_some(),
             &kv_layer_windows,
             &weights.layers,
@@ -3330,7 +3318,7 @@ impl MlxRunner {
                     // Each non-final chunk in chunked_prefill calls async_eval; only the
                     // last chunk calls a blocking eval.  Compute counts from prompt length.
                     let drain_count =
-                        prefill_token_count.saturating_sub(1) as u32 / self.prefill_chunk as u32;
+                        prefill_drain_async_eval_count(prefill_token_count, self.prefill_chunk);
                     state
                         .decode_telemetry
                         .record_prefill_drain_async_evals(drain_count);
@@ -7059,8 +7047,7 @@ impl LazyTargetProbs {
                     workspace.target_candidates.sort_by(
                         |(left_token, left_prob), (right_token, right_prob)| {
                             right_prob
-                                .partial_cmp(left_prob)
-                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .total_cmp(left_prob)
                                 .then_with(|| left_token.cmp(right_token))
                         },
                     );
@@ -7654,6 +7641,11 @@ fn prefill_item_completes_prompt(
             >= c.prompt_len
     })
     .unwrap_or(true)
+}
+
+fn prefill_drain_async_eval_count(token_count: usize, prefill_chunk: usize) -> u32 {
+    let count = token_count.saturating_sub(1) / prefill_chunk.max(1);
+    count.min(u32::MAX as usize) as u32
 }
 
 /// Whether the prefill output token may be reused as a request's first generated
@@ -9977,6 +9969,18 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn prefill_drain_count_handles_zero_and_wide_chunk_sizes() {
+        assert_eq!(prefill_drain_async_eval_count(0, 0), 0);
+        assert_eq!(prefill_drain_async_eval_count(2048, 2048), 0);
+        assert_eq!(prefill_drain_async_eval_count(2049, 2048), 1);
+        assert_eq!(
+            prefill_drain_async_eval_count(2049, (u32::MAX as usize) + 1),
+            0
+        );
+        assert_eq!(prefill_drain_async_eval_count(usize::MAX, 1), u32::MAX);
+    }
+
     fn unique_test_dir(label: &str) -> PathBuf {
         static NEXT_TEST_DIR_ID: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(0);
@@ -11013,9 +11017,8 @@ mod tests {
     }
 
     #[test]
-    fn mlx_manifest_validation_allows_deepseek_v3_kv_b_contract() {
+    fn mlx_manifest_validation_allows_deepseek_v3_variants_kv_b_contract() {
         let mut manifest = glm4_moe_lite_manifest();
-        manifest.model_family = "deepseek_v3".to_string();
         manifest.glm_router = NativeGlmRouterConfig::default();
         manifest.moe.layer_freq = Some(1);
         manifest.moe.first_dense_layers = Some(1);
@@ -11038,10 +11041,14 @@ mod tests {
                 vec![4, 2],
             ));
         }
-        let artifacts = write_artifacts(manifest);
+        for family in ["deepseek_v3", "deepseek_v32"] {
+            let mut variant = manifest.clone();
+            variant.model_family = family.to_string();
+            let artifacts = write_artifacts(variant);
 
-        validate_mlx_supported_manifest(&artifacts)
-            .expect("DeepSeek V3 KV-B runtime contract should be accepted");
+            validate_mlx_supported_manifest(&artifacts)
+                .expect("DeepSeek V3 KV-B runtime contract should be accepted");
+        }
     }
 
     #[test]
@@ -13161,6 +13168,8 @@ mod tests {
 
     #[test]
     fn mlx_manifest_validation_covers_diffusion_gemma_contract() {
+        type DiffusionManifestMutation = (&'static str, fn(&mut NativeDiffusionConfig));
+
         // The diffusion validator had zero direct coverage although every
         // release-abort in the diffusion decode path assumes it ran.
         let mut manifest = dense_manifest();
@@ -13184,6 +13193,121 @@ mod tests {
         manifest.diffusion.canvas_size = Some(64);
         validate_diffusion_gemma_manifest(&manifest)
             .expect("layer_types + canvas_size should satisfy the diffusion contract");
+
+        let zero_cases: &[DiffusionManifestMutation] = &[
+            ("canvas_size", |config: &mut NativeDiffusionConfig| {
+                config.canvas_size = Some(0)
+            }),
+            ("max_denoise_steps", |config: &mut NativeDiffusionConfig| {
+                config.max_denoise_steps = Some(0);
+            }),
+            ("convergence_steps", |config: &mut NativeDiffusionConfig| {
+                config.convergence_steps = Some(0);
+            }),
+            (
+                "convergence_check_interval",
+                |config: &mut NativeDiffusionConfig| {
+                    config.convergence_check_interval = Some(0);
+                },
+            ),
+        ];
+        for &(field, mutate) in zero_cases {
+            let mut invalid = manifest.clone();
+            mutate(&mut invalid.diffusion);
+            let error = validate_diffusion_gemma_manifest(&invalid)
+                .expect_err("zero diffusion dimensions must fail closed");
+            assert!(error.to_string().contains(field));
+        }
+
+        let scalar_cases: &[DiffusionManifestMutation] = &[
+            ("temperature_start", |config: &mut NativeDiffusionConfig| {
+                config.temperature_start = Some(0.0)
+            }),
+            ("temperature_end", |config: &mut NativeDiffusionConfig| {
+                config.temperature_end = Some(f32::NAN)
+            }),
+            (
+                "confidence_threshold",
+                |config: &mut NativeDiffusionConfig| config.confidence_threshold = Some(1.1),
+            ),
+            (
+                "acceptance_rate_threshold",
+                |config: &mut NativeDiffusionConfig| {
+                    config.acceptance_rate_threshold = Some(-0.1);
+                },
+            ),
+        ];
+        for &(field, mutate) in scalar_cases {
+            let mut invalid = manifest.clone();
+            mutate(&mut invalid.diffusion);
+            let error = validate_diffusion_gemma_manifest(&invalid)
+                .expect_err("invalid diffusion scalars must fail closed");
+            assert!(error.to_string().contains(field));
+        }
+    }
+
+    #[test]
+    fn mlx_manifest_validation_matches_llama4_layer_routing_contract() {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "llama4".to_string();
+        manifest.moe = NativeMoeConfig {
+            expert_count: Some(4),
+            experts_per_token: Some(1),
+            expert_intermediate_size: Some(8),
+            layer_freq: Some(1),
+            first_dense_layers: None,
+            shared_expert_count: Some(1),
+            sigmoid_routing: false,
+            routed_scaling_factor: None,
+            n_group: None,
+            topk_group: None,
+        };
+        manifest.tensors.retain(|tensor| {
+            !matches!(
+                tensor.role,
+                NativeTensorRole::FfnGate | NativeTensorRole::FfnUp | NativeTensorRole::FfnDown
+            )
+        });
+        for role in [
+            NativeTensorRole::FfnGateInp,
+            NativeTensorRole::FfnGateExps,
+            NativeTensorRole::FfnUpExps,
+            NativeTensorRole::FfnDownExps,
+            NativeTensorRole::FfnSharedExpertGate,
+            NativeTensorRole::FfnSharedExpertUp,
+            NativeTensorRole::FfnSharedExpertDown,
+        ] {
+            manifest.tensors.push(tensor(
+                &format!("model.layers.0.{role:?}.weight"),
+                role,
+                Some(0),
+                vec![4, 4],
+            ));
+        }
+
+        validate_llama4_manifest(&manifest)
+            .expect("Llama4 MoE layers with expert and shared-expert weights should validate");
+
+        let mut missing_shared = manifest.clone();
+        missing_shared
+            .tensors
+            .retain(|tensor| tensor.role != NativeTensorRole::FfnSharedExpertDown);
+        let error = validate_llama4_manifest(&missing_shared)
+            .expect_err("Llama4 MoE layers without a complete shared expert must fail closed");
+        assert!(error.to_string().contains("FfnSharedExpertDown"));
+
+        let mut wrong_route = manifest.clone();
+        wrong_route.moe.layer_freq = Some(2);
+        let error = validate_llama4_manifest(&wrong_route)
+            .expect_err("a dense-routed Llama4 layer must provide dense FFN weights");
+        assert!(error.to_string().contains("FfnGate"));
+
+        let mut invalid_temperature = manifest;
+        invalid_temperature.no_rope_layer_interval = 2;
+        invalid_temperature.attn_temperature_floor = Some(0);
+        let error = validate_llama4_manifest(&invalid_temperature)
+            .expect_err("zero Llama4 attention temperature floor must fail closed");
+        assert!(error.to_string().contains("attn_temperature_floor"));
     }
 
     #[test]

@@ -362,6 +362,105 @@ fn gpt_oss_tensor_map_matches_openai_and_mlx_community_keys() {
 }
 
 #[test]
+fn converts_and_validates_gpt_oss_native_mxfp4_experts() {
+    let dir = unique_test_dir("gpt_oss_native_mxfp4");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "gpt_oss",
+            "hidden_size": 32,
+            "intermediate_size": 32,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 1,
+            "head_dim": 8,
+            "vocab_size": 64,
+            "num_local_experts": 4,
+            "num_experts_per_tok": 2,
+            "layer_types": ["full_attention"],
+            "rope_theta": 150000,
+            "rms_norm_eps": 1e-5
+        }),
+    );
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[
+            ("model.embed_tokens.weight", "BF16", &[64, 32]),
+            ("model.norm.weight", "BF16", &[32]),
+            ("lm_head.weight", "BF16", &[64, 32]),
+            ("model.layers.0.input_layernorm.weight", "BF16", &[32]),
+            (
+                "model.layers.0.post_attention_layernorm.weight",
+                "BF16",
+                &[32],
+            ),
+            ("model.layers.0.self_attn.q_proj.weight", "BF16", &[32, 32]),
+            ("model.layers.0.self_attn.k_proj.weight", "BF16", &[8, 32]),
+            ("model.layers.0.self_attn.v_proj.weight", "BF16", &[8, 32]),
+            ("model.layers.0.self_attn.o_proj.weight", "BF16", &[32, 32]),
+            ("model.layers.0.self_attn.sinks", "F32", &[4]),
+            ("model.layers.0.mlp.router.weight", "BF16", &[4, 32]),
+            (
+                "model.layers.0.mlp.experts.gate_up_proj_blocks",
+                "U8",
+                &[4, 64, 1, 16],
+            ),
+            (
+                "model.layers.0.mlp.experts.gate_up_proj_scales",
+                "U8",
+                &[4, 64, 1],
+            ),
+            (
+                "model.layers.0.mlp.experts.down_proj_blocks",
+                "U8",
+                &[4, 32, 1, 16],
+            ),
+            (
+                "model.layers.0.mlp.experts.down_proj_scales",
+                "U8",
+                &[4, 32, 1],
+            ),
+        ],
+    );
+
+    let manifest = convert_hf_model_dir(&dir).expect("GPT-OSS conversion should succeed");
+    assert_eq!(manifest.model_family, "gpt_oss");
+    for role in [
+        NativeTensorRole::AttnSink,
+        NativeTensorRole::FfnGateUpExpsMxfp4Blocks,
+        NativeTensorRole::FfnGateUpExpsMxfp4Scales,
+        NativeTensorRole::FfnDownExpsMxfp4Blocks,
+        NativeTensorRole::FfnDownExpsMxfp4Scales,
+    ] {
+        assert!(manifest.tensors.iter().any(|tensor| tensor.role == role));
+    }
+
+    crate::model::NativeModelArtifacts::from_manifest_and_root(dir.clone(), manifest.clone())
+        .expect("native GPT-OSS MXFP4 manifest should validate");
+
+    let mut missing_sink = manifest.clone();
+    missing_sink
+        .tensors
+        .retain(|tensor| tensor.role != NativeTensorRole::AttnSink);
+    let error =
+        crate::model::NativeModelArtifacts::from_manifest_and_root(dir.clone(), missing_sink)
+            .expect_err("GPT-OSS without attention sinks must fail during validation");
+    assert!(error.to_string().contains("attn_sink"));
+
+    let mut partial_blocks = manifest;
+    partial_blocks
+        .tensors
+        .retain(|tensor| tensor.role != NativeTensorRole::FfnDownExpsMxfp4Scales);
+    let error =
+        crate::model::NativeModelArtifacts::from_manifest_and_root(dir.clone(), partial_blocks)
+            .expect_err("partial GPT-OSS MXFP4 layouts must fail during validation");
+    assert!(error.to_string().contains("MoE expert tensors"));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn primary_productivity_families_resolve() {
     let empty_config = serde_json::json!({});
     for (model_type, family_name, lm_prefix) in [

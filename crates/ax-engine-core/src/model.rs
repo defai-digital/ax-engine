@@ -1325,15 +1325,21 @@ fn validate_native_model_manifest(
             && roles.contains(&NativeTensorRole::FfnSharedExpertDown);
         let has_mla_shared_expert_ffn = matches!(
             manifest.model_family.as_str(),
-            "glm4_moe_lite" | "deepseek_v3"
+            "glm4_moe_lite" | "deepseek_v3" | "deepseek_v32"
         ) && roles.contains(&NativeTensorRole::FfnSharedExpertGate)
             && roles.contains(&NativeTensorRole::FfnSharedExpertUp)
             && roles.contains(&NativeTensorRole::FfnSharedExpertDown);
+        let has_gpt_oss_mxfp4_moe = manifest.model_family == "gpt_oss"
+            && roles.contains(&NativeTensorRole::FfnGateUpExpsMxfp4Blocks)
+            && roles.contains(&NativeTensorRole::FfnGateUpExpsMxfp4Scales)
+            && roles.contains(&NativeTensorRole::FfnDownExpsMxfp4Blocks)
+            && roles.contains(&NativeTensorRole::FfnDownExpsMxfp4Scales);
         let has_moe_expert_ffn = roles.contains(&NativeTensorRole::FfnGateInp)
-            && roles.contains(&NativeTensorRole::FfnDownExps)
-            && (roles.contains(&NativeTensorRole::FfnGateUpExpsPacked)
-                || roles.contains(&NativeTensorRole::FfnGateExps)
-                || roles.contains(&NativeTensorRole::FfnUpExps));
+            && (has_gpt_oss_mxfp4_moe
+                || (roles.contains(&NativeTensorRole::FfnDownExps)
+                    && (roles.contains(&NativeTensorRole::FfnGateUpExpsPacked)
+                        || roles.contains(&NativeTensorRole::FfnGateExps)
+                        || roles.contains(&NativeTensorRole::FfnUpExps))));
         if !(has_dense_ffn
             || has_shared_expert_ffn
             || has_mla_shared_expert_ffn
@@ -1378,7 +1384,11 @@ fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::FfnUpExps)
             || roles.contains(&NativeTensorRole::FfnGateUpExpsPacked)
             || roles.contains(&NativeTensorRole::FfnDownExps)
-            || roles.contains(&NativeTensorRole::FfnDownExpsScale);
+            || roles.contains(&NativeTensorRole::FfnDownExpsScale)
+            || roles.contains(&NativeTensorRole::FfnGateUpExpsMxfp4Blocks)
+            || roles.contains(&NativeTensorRole::FfnGateUpExpsMxfp4Scales)
+            || roles.contains(&NativeTensorRole::FfnDownExpsMxfp4Blocks)
+            || roles.contains(&NativeTensorRole::FfnDownExpsMxfp4Scales);
         if manifest.model_family == "gemma4" && has_moe_expert_ffn {
             if has_any_attention {
                 require_layer_role(
@@ -1413,7 +1423,7 @@ fn validate_native_model_manifest(
             if has_any_glm_mla_attention_role(roles) {
                 if !matches!(
                     manifest.model_family.as_str(),
-                    "glm4_moe_lite" | "deepseek_v3"
+                    "glm4_moe_lite" | "deepseek_v3" | "deepseek_v32"
                 ) {
                     return Err(NativeModelError::InvalidManifest {
                         message: format!(
@@ -1577,12 +1587,9 @@ fn validate_native_model_manifest(
                 layer_index,
                 "ffn_gate_inp",
             )?;
-            require_layer_role(
-                roles,
-                NativeTensorRole::FfnDownExps,
-                layer_index,
-                "ffn_down_exps",
-            )?;
+            if manifest.model_family == "gpt_oss" {
+                require_layer_role(roles, NativeTensorRole::AttnSink, layer_index, "attn_sink")?;
+            }
             let has_any_shared_expert = roles.contains(&NativeTensorRole::FfnSharedExpertGateInp)
                 || roles.contains(&NativeTensorRole::FfnSharedExpertGate)
                 || roles.contains(&NativeTensorRole::FfnSharedExpertUp)
@@ -1590,7 +1597,7 @@ fn validate_native_model_manifest(
             if has_any_shared_expert || moe_requires_shared_expert(manifest) {
                 if !matches!(
                     manifest.model_family.as_str(),
-                    "glm4_moe_lite" | "deepseek_v3" | "llama4"
+                    "glm4_moe_lite" | "deepseek_v3" | "deepseek_v32" | "llama4"
                 ) {
                     require_layer_role(
                         roles,
@@ -1622,6 +1629,29 @@ fn validate_native_model_manifest(
             let has_gate_exps = roles.contains(&NativeTensorRole::FfnGateExps);
             let has_up_exps = roles.contains(&NativeTensorRole::FfnUpExps);
             let has_split_moe = has_gate_exps && has_up_exps;
+            let has_any_mxfp4_moe = roles.contains(&NativeTensorRole::FfnGateUpExpsMxfp4Blocks)
+                || roles.contains(&NativeTensorRole::FfnGateUpExpsMxfp4Scales)
+                || roles.contains(&NativeTensorRole::FfnDownExpsMxfp4Blocks)
+                || roles.contains(&NativeTensorRole::FfnDownExpsMxfp4Scales);
+            if has_any_mxfp4_moe && !has_gpt_oss_mxfp4_moe {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {layer_index} must provide all four GPT-OSS MXFP4 block/scale tensors"
+                    ),
+                });
+            }
+            if has_gpt_oss_mxfp4_moe
+                && (has_packed_moe
+                    || has_gate_exps
+                    || has_up_exps
+                    || roles.contains(&NativeTensorRole::FfnDownExps))
+            {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {layer_index} must not mix GPT-OSS MXFP4 blocks with sanitized expert tensors"
+                    ),
+                });
+            }
             if has_packed_moe && (has_gate_exps || has_up_exps) {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
@@ -1630,13 +1660,30 @@ fn validate_native_model_manifest(
                     ),
                 });
             }
-            if !(has_packed_moe || has_split_moe) {
+            if manifest.model_family == "gpt_oss" && has_packed_moe {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
-                        "layer {} must provide ffn_gate_up_exps_packed or ffn_gate_exps/ffn_up_exps",
-                        layer_index
+                        "layer {layer_index} GPT-OSS experts must use split tensors or native MXFP4 blocks"
                     ),
                 });
+            }
+            if !(has_gpt_oss_mxfp4_moe || has_packed_moe || has_split_moe) {
+                let required_layout = if manifest.model_family == "gpt_oss" {
+                    "ffn_gate_exps/ffn_up_exps or all four GPT-OSS MXFP4 block/scale tensors"
+                } else {
+                    "ffn_gate_up_exps_packed or ffn_gate_exps/ffn_up_exps"
+                };
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!("layer {layer_index} must provide {required_layout}"),
+                });
+            }
+            if !has_gpt_oss_mxfp4_moe {
+                require_layer_role(
+                    roles,
+                    NativeTensorRole::FfnDownExps,
+                    layer_index,
+                    "ffn_down_exps",
+                )?;
             }
         }
     }
@@ -1782,6 +1829,15 @@ fn validate_native_model_tensor_shapes(
         ) {
             let head_dim = configured_attention_head_dim(manifest, layer_index);
             expect_vector_shape(attention_k_norm, head_dim, "attention_k_norm")?;
+        }
+        if let Some(attn_sink) =
+            manifest_tensor(manifest, NativeTensorRole::AttnSink, Some(layer_index))
+        {
+            expect_vector_shape(
+                attn_sink,
+                u64::from(manifest.attention_head_count),
+                "attn_sink",
+            )?;
         }
         // Attention O shape validation — only for layers that have attention tensors.
         // The output projection maps from attention output dim back to hidden_size.
@@ -2070,77 +2126,87 @@ fn validate_native_model_tensor_shapes(
             ) {
                 expect_vector_shape(gate_inp_scale, hidden_size, "ffn_gate_inp_scale")?;
             }
-            if let Some(ffn_gate_up_exps_packed) = manifest_tensor(
+            if manifest_tensor(
                 manifest,
-                NativeTensorRole::FfnGateUpExpsPacked,
+                NativeTensorRole::FfnGateUpExpsMxfp4Blocks,
                 Some(layer_index),
-            ) {
-                expect_tensor_shape(
-                    ffn_gate_up_exps_packed,
-                    &[
-                        moe_dims.expert_count,
-                        moe_dims.expert_intermediate_size.saturating_mul(2),
-                        hidden_size,
-                    ],
-                    "ffn_gate_up_exps_packed",
-                )?;
+            )
+            .is_some()
+            {
+                validate_gpt_oss_mxfp4_tensor_shapes(manifest, layer_index)?;
             } else {
-                let ffn_gate_exps = required_layer_tensor_spec(
+                if let Some(ffn_gate_up_exps_packed) = manifest_tensor(
+                    manifest,
+                    NativeTensorRole::FfnGateUpExpsPacked,
+                    Some(layer_index),
+                ) {
+                    expect_tensor_shape(
+                        ffn_gate_up_exps_packed,
+                        &[
+                            moe_dims.expert_count,
+                            moe_dims.expert_intermediate_size.saturating_mul(2),
+                            hidden_size,
+                        ],
+                        "ffn_gate_up_exps_packed",
+                    )?;
+                } else {
+                    let ffn_gate_exps = required_layer_tensor_spec(
+                        manifest,
+                        layer_index,
+                        NativeTensorRole::FfnGateExps,
+                        "ffn_gate_exps",
+                    )?;
+                    let ffn_up_exps = required_layer_tensor_spec(
+                        manifest,
+                        layer_index,
+                        NativeTensorRole::FfnUpExps,
+                        "ffn_up_exps",
+                    )?;
+                    expect_tensor_shape(
+                        ffn_gate_exps,
+                        &[
+                            moe_dims.expert_count,
+                            moe_dims.expert_intermediate_size,
+                            hidden_size,
+                        ],
+                        "ffn_gate_exps",
+                    )?;
+                    expect_tensor_shape(
+                        ffn_up_exps,
+                        &[
+                            moe_dims.expert_count,
+                            moe_dims.expert_intermediate_size,
+                            hidden_size,
+                        ],
+                        "ffn_up_exps",
+                    )?;
+                }
+                let ffn_down_exps = required_layer_tensor_spec(
                     manifest,
                     layer_index,
-                    NativeTensorRole::FfnGateExps,
-                    "ffn_gate_exps",
+                    NativeTensorRole::FfnDownExps,
+                    "ffn_down_exps",
                 )?;
-                let ffn_up_exps = required_layer_tensor_spec(
+                expect_tensor_shape(
+                    ffn_down_exps,
+                    &[
+                        moe_dims.expert_count,
+                        hidden_size,
+                        moe_dims.expert_intermediate_size,
+                    ],
+                    "ffn_down_exps",
+                )?;
+                if let Some(ffn_down_exps_scale) = manifest_tensor(
                     manifest,
-                    layer_index,
-                    NativeTensorRole::FfnUpExps,
-                    "ffn_up_exps",
-                )?;
-                expect_tensor_shape(
-                    ffn_gate_exps,
-                    &[
+                    NativeTensorRole::FfnDownExpsScale,
+                    Some(layer_index),
+                ) {
+                    expect_vector_shape(
+                        ffn_down_exps_scale,
                         moe_dims.expert_count,
-                        moe_dims.expert_intermediate_size,
-                        hidden_size,
-                    ],
-                    "ffn_gate_exps",
-                )?;
-                expect_tensor_shape(
-                    ffn_up_exps,
-                    &[
-                        moe_dims.expert_count,
-                        moe_dims.expert_intermediate_size,
-                        hidden_size,
-                    ],
-                    "ffn_up_exps",
-                )?;
-            }
-            let ffn_down_exps = required_layer_tensor_spec(
-                manifest,
-                layer_index,
-                NativeTensorRole::FfnDownExps,
-                "ffn_down_exps",
-            )?;
-            expect_tensor_shape(
-                ffn_down_exps,
-                &[
-                    moe_dims.expert_count,
-                    hidden_size,
-                    moe_dims.expert_intermediate_size,
-                ],
-                "ffn_down_exps",
-            )?;
-            if let Some(ffn_down_exps_scale) = manifest_tensor(
-                manifest,
-                NativeTensorRole::FfnDownExpsScale,
-                Some(layer_index),
-            ) {
-                expect_vector_shape(
-                    ffn_down_exps_scale,
-                    moe_dims.expert_count,
-                    "ffn_down_exps_scale",
-                )?;
+                        "ffn_down_exps_scale",
+                    )?;
+                }
             }
         }
 
@@ -2333,6 +2399,78 @@ fn validate_native_model_tensor_shapes(
                 moe_dims.expert_intermediate_size,
                 "ffn_shared_expert_down",
             )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_gpt_oss_mxfp4_tensor_shapes(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+) -> Result<(), NativeModelError> {
+    let moe_dims = resolved_moe_dims(manifest)?;
+    if !manifest.hidden_size.is_multiple_of(32)
+        || !moe_dims.expert_intermediate_size.is_multiple_of(32)
+    {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {layer_index} GPT-OSS MXFP4 dimensions must be divisible by group size 32"
+            ),
+        });
+    }
+
+    let expected_gate_up_scales = vec![
+        moe_dims.expert_count,
+        moe_dims.expert_intermediate_size.saturating_mul(2),
+        u64::from(manifest.hidden_size / 32),
+    ];
+    let expected_down_scales = vec![
+        moe_dims.expert_count,
+        u64::from(manifest.hidden_size),
+        moe_dims.expert_intermediate_size / 32,
+    ];
+
+    for (blocks_role, scales_role, label, expected_scales) in [
+        (
+            NativeTensorRole::FfnGateUpExpsMxfp4Blocks,
+            NativeTensorRole::FfnGateUpExpsMxfp4Scales,
+            "ffn_gate_up_exps_mxfp4",
+            expected_gate_up_scales,
+        ),
+        (
+            NativeTensorRole::FfnDownExpsMxfp4Blocks,
+            NativeTensorRole::FfnDownExpsMxfp4Scales,
+            "ffn_down_exps_mxfp4",
+            expected_down_scales,
+        ),
+    ] {
+        let blocks = required_layer_tensor_spec(
+            manifest,
+            layer_index,
+            blocks_role,
+            &format!("{label}_blocks"),
+        )?;
+        let scales = required_layer_tensor_spec(
+            manifest,
+            layer_index,
+            scales_role,
+            &format!("{label}_scales"),
+        )?;
+        if blocks.dtype != NativeTensorDataType::U8 || scales.dtype != NativeTensorDataType::U8 {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!("layer {layer_index} {label} blocks and scales must use u8"),
+            });
+        }
+        let mut expected_blocks = expected_scales.clone();
+        expected_blocks.push(16);
+        if scales.shape != expected_scales || blocks.shape != expected_blocks {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {layer_index} {label} must have block shape {expected_blocks:?} and scale shape {expected_scales:?}, got {:?} and {:?}",
+                    blocks.shape, scales.shape
+                ),
+            });
         }
     }
 
@@ -3182,12 +3320,11 @@ fn expect_tensor_shape(
                 ),
             });
         }
-        if expected_shape.is_empty() {
-            return Ok(());
-        }
-        let expected_last = expected_packed_cols(*expected_shape.last().unwrap(), tensor)?;
         let mut expected = expected_shape.to_vec();
-        *expected.last_mut().unwrap() = expected_last;
+        let Some(expected_last) = expected.last_mut() else {
+            return Ok(());
+        };
+        *expected_last = expected_packed_cols(*expected_last, tensor)?;
         if tensor.shape == expected {
             return Ok(());
         }

@@ -423,6 +423,16 @@ pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
     });
 }
 
+fn mmap_weights_env_value_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// Whether the opt-in memory-mapped safetensors loader is enabled for this process.
+pub fn mmap_weights_enabled() -> bool {
+    let value = std::env::var("AX_MMAP_WEIGHTS").ok();
+    mmap_weights_env_value_enabled(value.as_deref())
+}
+
 pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, WeightLoadError> {
     maybe_raise_metal_buffer_caps(artifacts);
     let root = artifacts.root_dir().to_path_buf();
@@ -433,9 +443,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     // the kernel decide when to read what, which can roughly halve cold
     // startup time for large models. The default remains the C loader
     // until the mmap path has wider integration test coverage.
-    let use_mmap = std::env::var("AX_MMAP_WEIGHTS")
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false);
+    let use_mmap = mmap_weights_enabled();
     let mut file_cache: HashMap<PathBuf, HashMap<String, MlxArray>> = HashMap::new();
     for spec in artifacts.tensor_specs() {
         let full = root.join(&spec.file);
@@ -3825,6 +3833,15 @@ mod tests {
     use ax_engine_core::NativeTensorDataType;
     use mlx_sys::{MlxDtype, zeros};
     use std::path::Path;
+
+    #[test]
+    fn mmap_weights_env_requires_a_nonzero_nonempty_value() {
+        assert!(!mmap_weights_env_value_enabled(None));
+        assert!(!mmap_weights_env_value_enabled(Some("")));
+        assert!(!mmap_weights_env_value_enabled(Some("0")));
+        assert!(mmap_weights_env_value_enabled(Some("1")));
+        assert!(mmap_weights_env_value_enabled(Some("true")));
+    }
 
     fn spec(role: NativeTensorRole) -> NativeTensorSpec {
         NativeTensorSpec {

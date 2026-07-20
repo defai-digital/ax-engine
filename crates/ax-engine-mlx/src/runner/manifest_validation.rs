@@ -31,6 +31,9 @@ pub(super) fn validate_mlx_supported_manifest(
     if manifest.linear_attention.is_enabled() || has_linear_attention_tensors(artifacts) {
         validate_qwen_gated_delta_linear_attention(manifest)?;
     }
+    if manifest.model_family == "llama4" {
+        validate_llama4_manifest(manifest)?;
+    }
     // Interleaved SWA validation (Gemma3/4): triggered by layer_types, KV sharing,
     // a separate global head dim, or a separate SWA rope theta. Families with
     // uniform SWA (mistral3, mixtral) use only sliding_window_size with no
@@ -92,12 +95,68 @@ pub(super) fn validate_diffusion_gemma_manifest(
             "diffusion_gemma requires layer_types for interleaved SWA/full attention".to_string(),
         ));
     }
-    // canvas_size is the primary signal; other fields use sensible defaults
-    // in DiffusionConfig::from_manifest().
-    if manifest.diffusion.canvas_size.is_none() {
-        return Err(MlxRunnerError::UnsupportedFeature(
-            "diffusion_gemma requires diffusion.canvas_size in the manifest".to_string(),
-        ));
+    match manifest.diffusion.canvas_size {
+        Some(value) if value > 0 => {}
+        Some(_) => {
+            return Err(MlxRunnerError::UnsupportedFeature(
+                "diffusion.canvas_size must be greater than zero".to_string(),
+            ));
+        }
+        None => {
+            return Err(MlxRunnerError::UnsupportedFeature(
+                "diffusion_gemma requires diffusion.canvas_size in the manifest".to_string(),
+            ));
+        }
+    }
+    for (name, value) in [
+        ("max_denoise_steps", manifest.diffusion.max_denoise_steps),
+        ("convergence_steps", manifest.diffusion.convergence_steps),
+        (
+            "convergence_check_interval",
+            manifest.diffusion.convergence_check_interval,
+        ),
+    ] {
+        if value == Some(0) {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "diffusion.{name} must be greater than zero"
+            )));
+        }
+    }
+    for (name, value) in [
+        ("entropy_bound", manifest.diffusion.entropy_bound),
+        ("entropy_threshold", manifest.diffusion.entropy_threshold),
+    ] {
+        if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "diffusion.{name} must be finite and non-negative"
+            )));
+        }
+    }
+    for (name, value) in [
+        (
+            "acceptance_rate_threshold",
+            manifest.diffusion.acceptance_rate_threshold,
+        ),
+        (
+            "confidence_threshold",
+            manifest.diffusion.confidence_threshold,
+        ),
+    ] {
+        if value.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "diffusion.{name} must be finite and in [0, 1]"
+            )));
+        }
+    }
+    for (name, value) in [
+        ("temperature_start", manifest.diffusion.temperature_start),
+        ("temperature_end", manifest.diffusion.temperature_end),
+    ] {
+        if value.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "diffusion.{name} must be finite and greater than zero"
+            )));
+        }
     }
     Ok(())
 }
@@ -106,10 +165,13 @@ pub(super) fn validate_mla_moe_manifest(
     manifest: &NativeModelManifest,
 ) -> Result<(), MlxRunnerError> {
     let is_glm4_moe_lite = manifest.model_family == "glm4_moe_lite";
-    let is_deepseek_v3 = manifest.model_family == "deepseek_v3";
+    let is_deepseek_v3 = matches!(
+        manifest.model_family.as_str(),
+        "deepseek_v3" | "deepseek_v32"
+    );
     if !is_glm4_moe_lite && !is_deepseek_v3 {
         return Err(MlxRunnerError::UnsupportedFeature(
-            "MLA tensor roles are supported only for glm4_moe_lite or deepseek_v3 manifests"
+            "MLA tensor roles are supported only for glm4_moe_lite or DeepSeek V3 manifests"
                 .to_string(),
         ));
     }
@@ -232,9 +294,10 @@ pub(super) fn validate_mla_moe_manifest(
     };
     let moe_layer_freq = manifest.moe.layer_freq.unwrap_or(1);
     if is_deepseek_v3 && moe_layer_freq == 0 {
-        return Err(MlxRunnerError::UnsupportedFeature(
-            "deepseek_v3 requires moe.layer_freq greater than zero".to_string(),
-        ));
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "{} requires moe.layer_freq greater than zero",
+            manifest.model_family
+        )));
     }
 
     for layer_index in 0..manifest.layer_count {
@@ -301,6 +364,59 @@ pub(super) fn validate_mla_moe_manifest(
                     layer_index,
                     NativeTensorRole::FfnSharedExpertDown,
                 )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) fn validate_llama4_manifest(
+    manifest: &NativeModelManifest,
+) -> Result<(), MlxRunnerError> {
+    if manifest.moe.is_enabled() && manifest.moe.layer_freq == Some(0) {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "llama4 moe.layer_freq must be greater than zero".to_string(),
+        ));
+    }
+    if manifest.no_rope_layer_interval > 0 {
+        if manifest.attn_temperature_floor == Some(0) {
+            return Err(MlxRunnerError::UnsupportedFeature(
+                "llama4 attn_temperature_floor must be greater than zero".to_string(),
+            ));
+        }
+        if manifest
+            .attn_temperature_scale
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+        {
+            return Err(MlxRunnerError::UnsupportedFeature(
+                "llama4 attn_temperature_scale must be finite and non-negative".to_string(),
+            ));
+        }
+    }
+
+    let expert_count = manifest.moe.expert_count.unwrap_or(0);
+    let layer_freq = manifest.moe.layer_freq.unwrap_or(1);
+    for layer_index in 0..manifest.layer_count {
+        let is_moe = expert_count > 0
+            && layer_freq > 0
+            && layer_index % layer_freq == layer_freq.saturating_sub(1);
+        if is_moe {
+            for role in [
+                NativeTensorRole::FfnGateInp,
+                NativeTensorRole::FfnSharedExpertGate,
+                NativeTensorRole::FfnSharedExpertUp,
+                NativeTensorRole::FfnSharedExpertDown,
+            ] {
+                require_manifest_role(manifest, layer_index, role)?;
+            }
+        } else {
+            for role in [
+                NativeTensorRole::FfnGate,
+                NativeTensorRole::FfnUp,
+                NativeTensorRole::FfnDown,
+            ] {
+                require_manifest_role(manifest, layer_index, role)?;
             }
         }
     }

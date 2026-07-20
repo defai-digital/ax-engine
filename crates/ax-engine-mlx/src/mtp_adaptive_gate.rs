@@ -168,7 +168,7 @@ fn bins_from_env() -> Vec<(f32, f32)> {
                     }
                 }
                 if !bins.is_empty() {
-                    bins.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                    bins.sort_by(|a, b| b.0.total_cmp(&a.0));
                     return bins;
                 }
             }

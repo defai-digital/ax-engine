@@ -89,7 +89,8 @@ pub struct TokenDistribution {
 }
 
 impl TokenDistribution {
-    pub fn new(entries: Vec<(u32, f32)>) -> Option<Self> {
+    pub fn new(mut entries: Vec<(u32, f32)>) -> Option<Self> {
+        entries.retain(|(_, probability)| *probability > 0.0 && probability.is_finite());
         if entries.is_empty() {
             return None;
         }
@@ -100,13 +101,9 @@ impl TokenDistribution {
         Some(Self {
             entries: entries
                 .into_iter()
-                .filter_map(|(token, prob)| {
-                    let normalized = prob / sum;
-                    (normalized > 0.0 && normalized.is_finite()).then_some((token, normalized))
-                })
+                .map(|(token, probability)| (token, probability / sum))
                 .collect(),
         })
-        .filter(|distribution| !distribution.entries.is_empty())
     }
 
     pub fn entries(&self) -> &[(u32, f32)] {
@@ -223,7 +220,7 @@ pub fn sample_categorical_into(
         return probs_buf
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
             .map(|(i, _)| i as u32)
             .unwrap_or(0);
     }
@@ -256,7 +253,7 @@ pub fn sample_categorical_into(
     candidates_buf
         .iter()
         .copied()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(i, _)| i as u32)
         .unwrap_or(0)
 }
@@ -332,8 +329,7 @@ pub fn sample_categorical_with_topp_gpu(
         .collect();
     candidates.sort_by(|(left_idx, left_prob), (right_idx, right_prob)| {
         right_prob
-            .partial_cmp(left_prob)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(left_prob)
             .then_with(|| left_idx.cmp(right_idx))
     });
     let mut cumulative = 0.0f32;
@@ -415,12 +411,7 @@ pub fn sample_indexed_categorical(
         return None;
     }
 
-    let best = logits
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| indices[i])
-        .unwrap_or(0);
+    let best = argmax_index_f32(logits).map_or(0, |index| indices[index]);
     if sampling.temperature <= 0.0 {
         return Some(best);
     }
@@ -457,7 +448,7 @@ pub fn sample_indexed_categorical(
     candidates
         .iter()
         .copied()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(idx, _)| idx as u32)
 }
 
@@ -498,12 +489,7 @@ pub fn indexed_token_distribution(
     if logits.is_empty() || logits.len() != indices.len() {
         return None;
     }
-    let best_i = logits
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i)
-        .unwrap_or(0);
+    let best_i = argmax_index_f32(logits).unwrap_or(0);
     if sampling.temperature <= 0.0 {
         return TokenDistribution::new(vec![(indices[best_i], 1.0)]);
     }
@@ -556,11 +542,7 @@ pub fn indexed_token_logprob(
         return None;
     }
     if sampling.temperature <= 0.0 {
-        let best = logits
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| indices[i])?;
+        let best = argmax_index_f32(logits).map(|index| indices[index])?;
         return if best == token { Some(0.0) } else { None };
     }
 
@@ -668,7 +650,7 @@ pub fn sample_from_token_distribution(
         .entries
         .iter()
         .copied()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(token, _)| token)
 }
 
@@ -778,8 +760,7 @@ fn sample_indexed_full_probability_categorical(
 
     candidates.sort_by(|(left_idx, left_prob), (right_idx, right_prob)| {
         right_prob
-            .partial_cmp(left_prob)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(left_prob)
             .then_with(|| left_idx.cmp(right_idx))
     });
 
@@ -811,7 +792,7 @@ fn sample_indexed_full_probability_categorical(
     }
     candidates
         .into_iter()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(token, _)| token)
 }
 
@@ -844,8 +825,7 @@ fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32)
 
     candidates.sort_by(|(left_idx, left_prob), (right_idx, right_prob)| {
         right_prob
-            .partial_cmp(left_prob)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(left_prob)
             .then_with(|| left_idx.cmp(right_idx))
     });
 
@@ -869,13 +849,22 @@ fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32)
     }
 }
 
+fn argmax_index_f32(logits: &[f32]) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (index, &logit) in logits.iter().enumerate() {
+        if logit.is_nan() {
+            continue;
+        }
+        if best.is_none_or(|(_, best_logit)| logit > best_logit) {
+            best = Some((index, logit));
+        }
+    }
+    best.map(|(index, _)| index)
+        .or((!logits.is_empty()).then_some(0))
+}
+
 fn argmax_f32(logits: &[f32]) -> u32 {
-    logits
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i as u32)
-        .unwrap_or(0)
+    argmax_index_f32(logits).map_or(0, |index| index as u32)
 }
 
 #[cfg(test)]
@@ -1170,6 +1159,24 @@ mod tests {
         let mut rng = Xorshift64::new(99);
         let tok = sample_categorical(&logits, MlxSamplingParams::new(1.0, 1.0, 0), &[], &mut rng);
         assert!((tok as usize) < logits.len());
+    }
+
+    #[test]
+    fn categorical_argmax_ignores_nan_and_keeps_first_tie() {
+        let logits = vec![f32::NAN, 4.0, 4.0, 3.0];
+        let mut rng = Xorshift64::new(99);
+        assert_eq!(
+            sample_categorical(&logits, MlxSamplingParams::greedy(), &[], &mut rng),
+            1
+        );
+    }
+
+    #[test]
+    fn token_distribution_discards_invalid_mass_before_normalizing() {
+        let distribution =
+            TokenDistribution::new(vec![(1, 1.0), (2, -0.5), (3, f32::NAN), (4, 3.0)])
+                .expect("positive entries remain");
+        assert_eq!(distribution.entries(), &[(1, 0.25), (4, 0.75)]);
     }
 
     #[test]

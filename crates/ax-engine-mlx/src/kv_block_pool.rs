@@ -43,12 +43,18 @@ pub fn fa_kv_block_pool_enabled() -> bool {
 /// runs, `KvManager.total_blocks`), so exhaustion always fails the request
 /// instead of demoting to unbounded contiguous growth (see
 /// `FaBlockPoolConfig::hard_cap`).
+pub(crate) fn parse_fa_block_pool_max_blocks_override(raw: Option<&str>) -> Option<u32> {
+    raw.and_then(|value| value.parse::<u32>().ok())
+        .filter(|&value| value > 0)
+}
+
+pub(crate) fn fa_block_pool_max_blocks_override() -> Option<u32> {
+    let raw = std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS").ok();
+    parse_fa_block_pool_max_blocks_override(raw.as_deref())
+}
+
 pub fn default_fa_block_pool_config() -> FaBlockPoolConfig {
-    let max_blocks = std::env::var("AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(8192);
+    let max_blocks = fa_block_pool_max_blocks_override().unwrap_or(8192);
     FaBlockPoolConfig {
         block_size_tokens: 16,
         max_blocks,
@@ -226,6 +232,21 @@ mod tests {
         // request rather than silently demote to unbounded contiguous
         // growth.
         assert!(default_fa_block_pool_config().hard_cap);
+    }
+
+    #[test]
+    fn max_blocks_override_requires_a_positive_integer() {
+        assert_eq!(parse_fa_block_pool_max_blocks_override(None), None);
+        assert_eq!(parse_fa_block_pool_max_blocks_override(Some("")), None);
+        assert_eq!(parse_fa_block_pool_max_blocks_override(Some("0")), None);
+        assert_eq!(
+            parse_fa_block_pool_max_blocks_override(Some("invalid")),
+            None
+        );
+        assert_eq!(
+            parse_fa_block_pool_max_blocks_override(Some("17")),
+            Some(17)
+        );
     }
 
     fn pool(max_blocks: u32) -> FaBlockPool {
