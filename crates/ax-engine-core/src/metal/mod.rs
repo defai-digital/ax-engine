@@ -2367,6 +2367,29 @@ impl MetalBringupRunner {
 
 impl ExecutionRunner for MetalBringupRunner {
     fn run(&self, input: RunnerInput) -> RunnerOutput {
+        // Contract (`RunnerRequestContext::temperature`): runners without
+        // probabilistic sampling must error rather than silently fall back
+        // to greedy. This runner's samplers are argmax-only, so a request
+        // asking for temperature sampling gets an explicit failure instead
+        // of deterministic output masquerading as sampled.
+        if let Some(context) = input
+            .request_contexts
+            .iter()
+            .find(|context| context.temperature > 0.0 && !context.deterministic_argmax_sampling)
+        {
+            let runtime = self.dispatch_runtime_info();
+            return failed_runner_output_from_input(
+                &input,
+                format!(
+                    "phase-1 Metal runner supports only greedy argmax sampling; request {:?} \
+                     asked for temperature {} — send temperature 0 (or deterministic mode) or \
+                     use an MLX-native backend",
+                    context.request_id, context.temperature
+                ),
+                &fallback_failed_workload(&input),
+                Some(&runtime),
+            );
+        }
         if let Err(error) = self
             .bringup
             .assets()
