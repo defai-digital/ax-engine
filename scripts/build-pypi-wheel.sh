@@ -9,18 +9,13 @@
 #
 # MLX source: this script pip-installs `mlx` itself (see step 0 below) and
 # links/bundles from THAT build rather than Homebrew. Homebrew's `mlx`
-# formula derives its build's MACOSX_DEPLOYMENT_TARGET from
-# `MacOS.version.major.minor`, which structurally truncates to "26.0" on
-# every macOS 26.x host (Homebrew stopped tracking minor OS versions after
-# Big Sur). MLX's NAX (Neural Accelerator) GEMM/attention kernels require
-# CMAKE_OSX_DEPLOYMENT_TARGET >= 26.2 (mlx PR #3622); anything below that
-# silently compiles WITHOUT NAX — no build error, ~3-4x slower prefill, only
-# discoverable by inspecting `otool -l libmlx.dylib`'s LC_BUILD_VERSION. The
-# official PyPI `mlx` wheel is built by upstream's own CI with the correct
-# target (verified: minos 26.2, and benchmarks on par with a from-source
-# build that has the target set explicitly) — do not switch this back to
-# `brew --prefix mlx` without re-verifying the Homebrew formula no longer has
-# this gap.
+# formula has lagged the pip wheel's Metal backend quality on macOS 26.x
+# hosts (smaller dylib, slower prefill observed vs the admitted pin). Do not
+# switch this back to `brew --prefix mlx` without re-verifying parity.
+# Official PyPI wheels for the admitted pin currently ship LC_BUILD_VERSION
+# minos 15.0 while still embedding NAX kernels — minos is informational, not
+# a NAX proxy. mlx-sys/build.rs refuses Homebrew provenance; step 0 mirrors
+# that by rejecting Homebrew-resolved lib paths.
 #
 # Environment variables (optional):
 #   MLX_LIB_DIR          — path to dir containing libmlx.dylib
@@ -62,19 +57,28 @@ fi
 export MLX_LIB_DIR="${MLX_LIB_DIR:-$MLX_PIP_DIR/lib}"
 export MLX_INCLUDE_DIR="${MLX_INCLUDE_DIR:-$MLX_PIP_DIR/include}"
 mlx_minos="$(otool -l "$MLX_LIB_DIR/libmlx.dylib" | awk '/LC_BUILD_VERSION/{f=1} f && /minos/{print $2; exit}')"
-echo "    using MLX_LIB_DIR=$MLX_LIB_DIR (minos $mlx_minos)"
-if ! version_ge "$mlx_minos" "26.2"; then
-    echo "error: resolved MLX build has minos $mlx_minos (< 26.2) — NAX kernels are"
-    echo "       silently disabled on this build (mlx PR #3622); refusing to ship a"
-    echo "       regressed wheel. Set MLX_LIB_DIR to a correctly-built MLX, or check"
-    echo "       whether the pip mlx wheel's own build regressed."
-    exit 1
+echo "    using MLX_LIB_DIR=$MLX_LIB_DIR (minos ${mlx_minos:-unknown}, informational)"
+case "$MLX_LIB_DIR" in
+    */Cellar/mlx/*|*/opt/mlx/*|*/homebrew/opt/mlx/*|*/linuxbrew/opt/mlx/*)
+        echo "error: MLX_LIB_DIR is under Homebrew ($MLX_LIB_DIR)."
+        echo "       AX wheels must link the pip mlx pin, not Homebrew (see mlx-sys)."
+        exit 1
+        ;;
+esac
+if command -v brew >/dev/null 2>&1; then
+    brew_mlx="$(brew --prefix mlx 2>/dev/null || true)"
+    if [[ -n "$brew_mlx" && "$MLX_LIB_DIR" == "$brew_mlx"* ]]; then
+        echo "error: MLX_LIB_DIR is under Homebrew ($MLX_LIB_DIR)."
+        echo "       AX wheels must link the pip mlx pin, not Homebrew (see mlx-sys)."
+        exit 1
+    fi
 fi
 
 # ── macOS floor ────────────────────────────────────────────────────────────
-# The bundled pip MLX dylibs are built minos 26.2 (see step 0), so every
-# compiled binary in this wheel must target macOS 26.2. Override only if the
-# MLX libs' minos changes (and update the docs' macOS requirement to match).
+# Keep a high deployment target for shipped ax-engine binaries so release
+# wheels stay on the macOS 26.2+ product floor regardless of the pip MLX
+# dylib's own (currently lower) minos. Override only when deliberately
+# retargeting the wheel.
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.2}"
 # maturin's wheel platform tag comes from Python's own sysconfig.get_platform(),
 # which reflects the interpreter's *compile-time* MACOSX_DEPLOYMENT_TARGET, not

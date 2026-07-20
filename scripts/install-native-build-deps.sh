@@ -14,14 +14,11 @@ brew untap --force aws/tap azure/bicep >/dev/null 2>&1 || true
 
 brew install protobuf
 
-# MLX must come from pip, NOT Homebrew. The brew formula derives its build's
-# MACOSX_DEPLOYMENT_TARGET from MacOS.version.major.minor, which truncates to
-# 26.0 on every macOS 26.x host; MLX's NAX GEMM/attention kernels require a
-# target of 26.2+ (mlx PR #3622) and silently compile out below that — no
-# build error, ~3-4x slower prefill. The official pip wheel is built with the
-# correct target, and mlx-sys/build.rs prefers a pip-installed mlx, so
-# installing it here is what makes builds resolve the correct one. See
-# scripts/build-pypi-wheel.sh's header for the full investigation.
+# MLX must come from pip, NOT Homebrew. The brew formula has lagged the pip
+# wheel's Metal backend quality on macOS 26.x hosts; mlx-sys/build.rs refuses
+# Homebrew provenance and prefers a pip-installed mlx, so installing the pin
+# here is what makes builds resolve the correct one. See
+# scripts/build-pypi-wheel.sh / scripts/check-mlx-version.sh.
 # The exact admitted version is pinned in mlx.version at the repo root;
 # mlx-sys/build.rs enforces the same pin at link time, so an unpinned
 # install here would fail the build anyway. Bump the pin deliberately
