@@ -27,7 +27,7 @@ const defaultBaseURL = "http://127.0.0.1:31418"
 
 // Version is the SDK version. Kept in lockstep with the workspace version in
 // Cargo.toml by the CI "Verify version consistency" check.
-const Version = "6.10.0"
+const Version = "6.11.0"
 
 // ClientOptions configures an AxEngineClient.
 type ClientOptions struct {
