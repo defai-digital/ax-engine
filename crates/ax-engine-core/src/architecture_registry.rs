@@ -340,6 +340,18 @@ mod tests {
             resolve_layer_forward_route("deepseek_v32"),
             Some(LayerForwardRoute::DeepseekV3)
         );
+        assert_eq!(
+            resolve_layer_forward_route("nemotron_h"),
+            Some(LayerForwardRoute::NemotronH)
+        );
+        assert_eq!(
+            resolve_layer_forward_route("unlimited_ocr"),
+            Some(LayerForwardRoute::Standard)
+        );
+        assert_eq!(
+            resolve_layer_forward_route("gpt_oss"),
+            Some(LayerForwardRoute::GptOss)
+        );
         assert_eq!(resolve_layer_forward_route("not_a_family"), None);
     }
 

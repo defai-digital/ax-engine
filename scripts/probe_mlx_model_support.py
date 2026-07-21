@@ -48,6 +48,8 @@ REPO_OWNED_TYPES = {
     "mixtral",
     # Nemotron-H hybrid Mamba-2 + GQA + ReLU² MoE (Nemotron 3 Nano).
     "nemotron_h",
+    # Unlimited-OCR / DeepSeek-OCR multimodal MoE + dual vision.
+    "unlimited_ocr",
 }
 
 

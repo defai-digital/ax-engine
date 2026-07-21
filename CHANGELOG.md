@@ -9,6 +9,15 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Native direct-mode support for **Nemotron-H** (`nemotron_h`, Nemotron 3 Nano):
+  hybrid Mamba-2 / GQA attention / ReLU² MoE residual mixers driven by
+  `hybrid_override_pattern`, convert mapping under `backbone.layers.*.mixer.*`,
+  and ChatML chat templating for Nemotron hub ids.
+- Native direct-mode support for **Unlimited-OCR** (`unlimited_ocr` /
+  DeepSeek-OCR lineage): dual vision (SAM-ViT-B + CLIP-L) + SWA MoE language
+  tower, MXFP8 dense/expert packs, R-SWA prefill (full attention; decode ring
+  deferred), DeepSeek-V2 `rms_norm_eps=1e-6` default, and
+  `unlimited_ocr_smoke` binary for image+text smoke.
 - All 25 public AutomatosX model packs
   (https://huggingface.co/AutomatosX/models) are first-class managed downloads:
   `ax-engine download` / `serve` aliases for Qwen 3.5/3.6, Gemma 4,
@@ -160,6 +169,11 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- After merging Nemotron-H and Unlimited-OCR direct-mode: standard MoE
+  decode now honors `moe.sigmoid_routing` (aligned with the MTP path),
+  convert unsupported-type diagnostics list `nemotron_h` /
+  `unlimited_ocr` / related families, and `probe_mlx_model_support.py`
+  accepts `unlimited_ocr`.
 - Unevaluated-array readbacks in `mlx-sys` now fail with a recorded error
   instead of a SIGSEGV: the shim checks `is_available()` before
   `data<T>()`, `MlxArray::is_evaled` exposes the precondition, and

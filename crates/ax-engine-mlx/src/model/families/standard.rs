@@ -57,7 +57,8 @@ use super::super::shared::{
     flatten_attention_output_bhsd, flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs,
     full_precision_attention, linear_attention_forward_batched, moe_experts_forward,
     moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
-    moe_experts_forward_with_shared, moe_router_gemma4, moe_router_glm, moe_router_qwen3,
+    moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
+    moe_router_qwen3,
     per_layer_input_gate_project, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qkv_project_batched, qw, rms_norm_opt,
     shape_element_count, shared_expert_forward,
@@ -259,8 +260,12 @@ fn layer_shell_post_attention(
             }
         } else {
             let router_started = profile_forward_layer.then(Instant::now);
+            // Match MTP / family-specialized paths: GLM router, DeepSeek-style
+            // sigmoid routing when the manifest sets it, otherwise Qwen softmax.
             let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
                 moe_router_glm(cfg, w, &normed2)
+            } else if cfg.moe_sigmoid_routing {
+                moe_router_deepseek_v3(cfg, w, &normed2)
             } else {
                 moe_router_qwen3(cfg, w, &normed2)
             };
@@ -1100,7 +1105,13 @@ fn ffn_batched(
         !cfg.gemma4_moe_router,
         "batched decode: gemma4 MoE router unsupported"
     );
-    let (top_k_indices, top_k_weights) = moe_router_qwen3(cfg, w, normed2);
+    let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
+        moe_router_glm(cfg, w, normed2)
+    } else if cfg.moe_sigmoid_routing {
+        moe_router_deepseek_v3(cfg, w, normed2)
+    } else {
+        moe_router_qwen3(cfg, w, normed2)
+    };
     let out = if w.shared_gate_proj.is_some() {
         let shared = shared_expert_forward(cfg, w, normed2);
         moe_experts_forward_with_shared(cfg, w, normed2, &top_k_indices, &top_k_weights, &shared)
