@@ -633,12 +633,10 @@ fn add_decomposed_rel_pos(
     // reshape r_q to [B, q_h, q_w, C], Rw [q_w, k_w, C] → [1,1,q_w,C,k_w]
     let rw_t = transpose(&rw, &[0, 2, 1], None); // [q_w, C, k_w]
     let rw_t = reshape(&rw_t, &[1, 1, q_w, dim, k_w], None);
-    let r_q_e = reshape(&r_q, &[b, q_h, q_w, 1, dim], None);
     // matmul on last two of r_q as [..., 1, C] @ [..., C, k_w]
     let r_q_m = reshape(&r_q, &[b, q_h, q_w, 1, dim], None);
     let rel_w = matmul(&r_q_m, &rw_t, None); // [B, q_h, q_w, 1, k_w]
     let rel_w = reshape(&rel_w, &[b, q_h, q_w, k_w], None);
-    let _ = r_q_e;
 
     // Build additive bias [B, H*W, H*W] then we'll reshape with heads outside.
     // rel_h[..., None] + rel_w[..., None, :]

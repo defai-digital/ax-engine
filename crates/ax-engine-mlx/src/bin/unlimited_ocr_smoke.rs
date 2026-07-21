@@ -250,12 +250,25 @@ fn run() -> Result<(), String> {
 
     let mut generated = vec![bootstrap];
     let mut pending = start_direct_pipeline(&cfg, &weights, bootstrap, &mut cache);
+    // DeepSeek-family EOS + Unlimited-OCR det end. Stop early once a complete
+    // Free-OCR det block has closed so short smokes do not loop on repeats.
+    const EOS: u32 = 1;
+    const BOS: u32 = 0;
+    const DET_END: u32 = 128_819; // <|/det|>
     while generated.len() < steps {
         let advanced = advance_direct_pipeline_with_timings(&cfg, &weights, &pending, &mut cache);
         generated.push(advanced.token);
-        // Stop on EOS if present in config (common DeepSeek: 1)
-        if advanced.token == 1 || advanced.token == 0 {
+        if advanced.token == EOS || advanced.token == BOS {
             break;
+        }
+        // After <|/det|>, keep generating until EOS or a small text budget.
+        // If we already emitted det-end and enough trailing text, stop.
+        if let Some(det_end_at) = generated.iter().position(|&t| t == DET_END) {
+            let after = generated.len() - det_end_at - 1;
+            // Typical Free OCR trail: "HELLO … 123" then EOS (~10 tokens).
+            if after >= 16 {
+                break;
+            }
         }
         pending = advanced.next_pending;
         let _ = DEFAULT_PREFILL_CHUNK;
@@ -263,7 +276,13 @@ fn run() -> Result<(), String> {
 
     eprintln!("generated ids: {:?}", generated);
     let text = try_decode_tokens(model_path, &generated);
-    println!("{text}");
+    // Prefer printable body: strip sentencepiece markers for the final line.
+    let printable = text
+        .replace('Ġ', " ")
+        .replace('Ċ', "\n")
+        .replace("<｜end▁of▁sentence｜>", "")
+        .replace("<｜begin▁of▁sentence｜>", "");
+    println!("{printable}");
     Ok(())
 }
 

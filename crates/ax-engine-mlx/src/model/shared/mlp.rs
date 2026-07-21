@@ -1538,15 +1538,25 @@ fn ffn_swiglu_with_policy(
                 vec![out]
             }
         };
+        // Shapeless / fixed-shape compile cannot host some MXFP8 Metal kernels
+        // (`CustomKernel cannot infer output shapes`). Skip compile when the
+        // packed gate/up path is non-affine so we do not pay a failed compile.
+        let pack_mode = packed.mlx_quantization_mode();
+        let compile_ok_for_quant = matches!(
+            pack_mode,
+            mlx_sys::MlxQuantizationMode::Affine | mlx_sys::MlxQuantizationMode::Mxfp4
+        );
         let compiled_result = if !uses_geglu
             && seq == 1
             && leading_elements == 1
+            && compile_ok_for_quant
             && fastpath::dense_ffn_compile_enabled()
         {
             apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
         } else if seq > 1
             && leading_elements >= fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
             && dense_ffn_prefill_compile_supported(&cfg.model_family)
+            && compile_ok_for_quant
             && fastpath::dense_ffn_compile_prefill_enabled()
         {
             apply_layer_dense_ffn_prefill(
