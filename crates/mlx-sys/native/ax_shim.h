@@ -238,6 +238,8 @@ int mlx_random_categorical(mlx_array* res, const mlx_array logits, int axis, con
 /* Linear algebra */
 int mlx_matmul(mlx_array* res, const mlx_array a, const mlx_array b, const mlx_stream s);
 int mlx_conv1d(mlx_array* res, const mlx_array input, const mlx_array weight, int stride, int padding, int dilation, int groups, const mlx_stream s);
+/* input NHWC, weight OHWI; scalar stride/padding/dilation applied to H and W */
+int mlx_conv2d(mlx_array* res, const mlx_array input, const mlx_array weight, int stride, int padding, int dilation, int groups, const mlx_stream s);
 
 /* Clip */
 int mlx_clip(mlx_array* res, const mlx_array a, const mlx_array a_min, const mlx_array a_max, const mlx_stream s);

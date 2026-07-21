@@ -671,9 +671,13 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
 }
 
 fn default_rms_norm_eps(model_family: &str) -> f32 {
+    // DeepSeek-V2/V3 and Unlimited-OCR use 1e-6 (configuration_deepseek_v2 /
+    // DeepseekV3Config). Qwen and Gemma share the same default.
     if model_family.starts_with("qwen")
         || model_family.starts_with("gemma")
         || model_family == "diffusion_gemma"
+        || model_family == "unlimited_ocr"
+        || model_family.starts_with("deepseek")
     {
         1e-6
     } else {
@@ -817,4 +821,20 @@ fn build_gemma4_proportional_rope_freqs(
         })
         .collect();
     MlxArray::from_f32_slice(&freqs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_rms_norm_eps;
+
+    #[test]
+    fn unlimited_ocr_and_deepseek_default_to_1e_6_rms_norm_eps() {
+        // DeepSeek-V2 / Unlimited-OCR language towers use 1e-6; the generic
+        // non-qwen/gemma fallback of 1e-5 would silently corrupt OCR quality.
+        assert!((default_rms_norm_eps("unlimited_ocr") - 1e-6).abs() < f32::EPSILON);
+        assert!((default_rms_norm_eps("deepseek_v3") - 1e-6).abs() < f32::EPSILON);
+        assert!((default_rms_norm_eps("deepseek_v32") - 1e-6).abs() < f32::EPSILON);
+        assert!((default_rms_norm_eps("qwen3") - 1e-6).abs() < f32::EPSILON);
+        assert!((default_rms_norm_eps("llama3") - 1e-5).abs() < f32::EPSILON);
+    }
 }

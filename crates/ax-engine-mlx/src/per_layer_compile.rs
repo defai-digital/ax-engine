@@ -314,7 +314,14 @@ pub fn apply_layer_dense_ffn_decode(
     let mut guard = cache.lock().ok()?;
     if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry(key) {
         let closure = MlxClosure::new_dyn(ffn_fn);
-        if let Ok(compiled) = closure.compile(true) {
+        // MXFP8 / some Metal kernels cannot shapeless-compile (MLX reports
+        // `CustomKernel cannot infer output shapes`). Treat that as an expected
+        // fallback and keep stderr clean — same pattern as mempressure probes.
+        let compiled = {
+            let _quiet = mlx_sys::QuietErrorCapture::new();
+            closure.compile(true)
+        };
+        if let Ok(compiled) = compiled {
             let result = try_apply_with_abort_safety(&compiled, inputs);
             if result.is_none() {
                 tracing::warn!(
@@ -501,7 +508,12 @@ pub fn apply_layer_dense_ffn_prefill(
     if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry(key) {
         let closure = MlxClosure::new_dyn(ffn_fn);
         // Fixed-shape compile: each leading_elements key owns its graph.
-        if let Ok(compiled) = closure.compile(false) {
+        // Quiet expected compile failures (e.g. MXFP8 CustomKernel under compile).
+        let compiled = {
+            let _quiet = mlx_sys::QuietErrorCapture::new();
+            closure.compile(false)
+        };
+        if let Ok(compiled) = compiled {
             let result = try_apply_with_abort_safety(&compiled, inputs);
             if result.is_none() {
                 tracing::warn!(

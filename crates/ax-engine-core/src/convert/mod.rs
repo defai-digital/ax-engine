@@ -51,7 +51,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_unified, gemma4_assistant, diffusion_gemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, llama4, gpt_oss"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_unified, gemma4_assistant, diffusion_gemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, llama4, gpt_oss, unlimited_ocr"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -129,14 +129,26 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
 
     let attention_logit_softcap =
         arch_f64(&config, &model_type, "attn_logit_softcapping").and_then(f64_to_u32);
-    let rms_norm_eps = parse_rms_norm_eps(&config, &model_type);
+    // Unlimited-OCR language tower is DeepSeek-V2 with default rms_norm_eps=1e-6.
+    // HF checkpoints often omit the field; without a convert-side default the
+    // runtime falls through to the generic 1e-5 family default and drifts.
+    let rms_norm_eps = parse_rms_norm_eps(&config, &model_type)
+        .or_else(|| is_unlimited_ocr(&model_type).then_some(1e-6));
     let linear_attention = linear_attention_config(&config, &model_type);
     let mla_attention = mla_attention_config(&config, &model_type);
     let glm_router = glm_router_config(&config, &model_type);
 
     let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
-    let sliding_window_size = arch_u64(&config, &model_type, "sliding_window").and_then(u64_to_u32);
+    // Unlimited-OCR uses ring-SWA (R-SWA): full attention during prefill, then a
+    // decode-only ring of `sliding_window` slots. AX's standard SWA applies the
+    // window during prefill as well and destroys OCR quality on ~273 soft tokens.
+    // Keep full attention for this family until a dedicated R-SWA cache lands.
+    let sliding_window_size = if is_unlimited_ocr(&model_type) {
+        None
+    } else {
+        arch_u64(&config, &model_type, "sliding_window").and_then(u64_to_u32)
+    };
     let final_logit_softcapping =
         arch_f64(&config, &model_type, "final_logit_softcapping").map(|v| v as f32);
     let hidden_size_per_layer_input = arch_u64(&config, &model_type, "hidden_size_per_layer_input")

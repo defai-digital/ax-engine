@@ -65,17 +65,17 @@ pub use metal::{KernelOutputSpec, KernelTemplateArg, MlxMetalKernel};
 pub use op_count::{op_count_snapshot, op_count_take};
 pub use ops::{
     MlxQuantizationMode, add, add_rms_norm_pair, arange, argmax, argpartition_axis, argsort_axis,
-    as_strided, astype, broadcast_to, clip, concatenate, contiguous, conv1d, cos, cumsum,
+    as_strided, astype, broadcast_to, clip, concatenate, contiguous, conv1d, conv2d, cos, cumsum,
     dequantize, dequantize_with_mode, divide, equal, erf, exp, expand_dims, expand_dims_axes,
     flatten, floor, from_fp8, gather_mm, gather_qmm, gather_qmm_with_mode, gelu, gelu_approx,
     gelu_approx_mul, gelu_approx_mul_quantized_matmul, gemma4_post_attn_ffn_block, greater_equal,
     layer_norm, less, less_equal, log, log1p, logical_and, matmul, maximum, minimum, multiply,
     negative, not_equal, outer, pad, power, put_along_axis, qk_norm_rope_bhsd_from_proj, quantize,
-    quantized_matmul, quantized_matmul_rms_norm, qwen_linear_attention_inputs_packed,
-    qwen_linear_attention_post_input, random_categorical, repeat, repeat_axis, reshape, sigmoid,
-    silu_mul, sin, slice, slice_last_dim, slice_update, softmax, softmax_precise, split, stack,
-    stop_gradient, subtract, sum_axis, swiglu_oai, take, take_along_axis, tanh, to_fp8, topk,
-    topk_axis, transpose, unflatten, view, where_cond, zeros,
+    quantized_matmul, quantized_matmul_rms_norm, quantized_matmul_with_mode,
+    qwen_linear_attention_inputs_packed, qwen_linear_attention_post_input, random_categorical,
+    repeat, repeat_axis, reshape, sigmoid, silu_mul, sin, slice, slice_last_dim, slice_update,
+    softmax, softmax_precise, split, stack, stop_gradient, subtract, sum_axis, swiglu_oai, take,
+    take_along_axis, tanh, to_fp8, topk, topk_axis, transpose, unflatten, view, where_cond, zeros,
 };
 pub use stream::MlxStream;
 pub use transforms::{

@@ -201,6 +201,13 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "hybrid Mamba-2 + GQA + ReLU2 MoE; pattern-driven mixers",
     },
+    ArchitectureRegistration {
+        family_label: "unlimited_ocr",
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "Unlimited-OCR multimodal: dual vision + SWA MoE language tower",
+    },
 ];
 
 /// Look up a static registration by manifest `model_family` label.

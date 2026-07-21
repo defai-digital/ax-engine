@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, concatenate,
-    dequantize, divide, multiply, power, reshape, rms_norm, rope_dynamic, slice, split, stack,
-    sum_axis, take, take_along_axis, transpose,
+    dequantize_with_mode, divide, multiply, power, reshape, rms_norm, rope_dynamic, slice, split,
+    stack, sum_axis, take, take_along_axis, transpose,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -405,12 +405,16 @@ pub(crate) fn embed_tokens_arr(
         let row_w = take(&embedding.weight, ids, 0, None);
         let row_s = take(scales, ids, 0, None);
         let row_b = embedding.biases.as_ref().map(|b| take(b, ids, 0, None));
-        let flat = dequantize(
+        // Mode-aware dequant (mxfp8 embeddings have U8 scales and no biases).
+        let flat = dequantize_with_mode(
             &row_w,
             &row_s,
             row_b.as_ref(),
             Some(embedding.group_size),
             Some(embedding.bits),
+            embedding.mlx_quantization_mode(),
+            None,
+            None,
             None,
         );
         reshape(&flat, &[1, seq, hidden_size as i32], None)
@@ -470,12 +474,15 @@ pub fn embed_decode_tokens_batched(
         let row_w = take(&embedding.weight, &ids, 0, None);
         let row_s = take(scales, &ids, 0, None);
         let row_b = embedding.biases.as_ref().map(|b| take(b, &ids, 0, None));
-        dequantize(
+        dequantize_with_mode(
             &row_w,
             &row_s,
             row_b.as_ref(),
             Some(embedding.group_size),
             Some(embedding.bits),
+            embedding.mlx_quantization_mode(),
+            None,
+            None,
             None,
         )
     } else {
@@ -3561,6 +3568,7 @@ mod tests {
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
         };
 
         let per_layer = compute_per_layer_inputs_arr(&cfg, &weights, &ids_scalar, &hidden)
@@ -4161,6 +4169,7 @@ mod tests {
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
         };
         let cache = MlxKVCache::new(0);
         let hidden = zeros(&[1, 1, 16], MlxDtype::Bfloat16, None);
@@ -4212,6 +4221,7 @@ mod tests {
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -4342,6 +4352,7 @@ mod tests {
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -4420,6 +4431,7 @@ mod tests {
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -5193,6 +5205,7 @@ mod tests {
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
         };
         let mut cache = MlxKVCache::new(cfg.layer_count);
 

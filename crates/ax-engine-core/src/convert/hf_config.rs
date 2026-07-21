@@ -60,13 +60,18 @@ fn matches_token(bytes: &[u8], i: usize, token: &[u8]) -> bool {
 }
 
 pub(crate) fn resolve_model_type(config: &serde_json::Value) -> Result<String, ConvertError> {
-    config
+    let raw = config
         .get("model_type")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or(ConvertError::MissingConfigField {
             field: "model_type",
-        })
+        })?;
+    // Normalize hyphenated HF types to snake_case family labels.
+    Ok(match raw.as_str() {
+        "unlimited-ocr" => "unlimited_ocr".to_string(),
+        other => other.to_string(),
+    })
 }
 
 pub(crate) struct ArchitectureParams {
@@ -97,6 +102,18 @@ pub(crate) fn uses_text_config(model_type: &str) -> bool {
             | "qwen3.5"
             | "qwen3.6"
             | "mistral3"
+            // Unlimited-OCR nests language fields under language_config (alias text_config).
+            | "unlimited-ocr"
+            | "unlimited_ocr"
+            | "deepseekocr"
+    )
+}
+
+/// Unlimited-OCR / DeepSeek-OCR multimodal MoE language tower.
+pub(crate) fn is_unlimited_ocr(model_type: &str) -> bool {
+    matches!(
+        model_type,
+        "unlimited-ocr" | "unlimited_ocr" | "deepseekocr"
     )
 }
 
@@ -283,6 +300,7 @@ pub(crate) fn arch_u64(config: &serde_json::Value, model_type: &str, field: &str
         if uses_text_config(model_type) {
             config
                 .get("text_config")
+                .or_else(|| config.get("language_config"))
                 .and_then(|tc| tc.get(field))
                 .and_then(|v| v.as_u64())
         } else {
@@ -296,6 +314,7 @@ pub(crate) fn arch_bool(config: &serde_json::Value, model_type: &str, field: &st
         if uses_text_config(model_type) {
             config
                 .get("text_config")
+                .or_else(|| config.get("language_config"))
                 .and_then(|tc| tc.get(field))
                 .and_then(|v| v.as_bool())
         } else {
@@ -309,6 +328,7 @@ pub(crate) fn arch_f64(config: &serde_json::Value, model_type: &str, field: &str
         if uses_text_config(model_type) {
             config
                 .get("text_config")
+                .or_else(|| config.get("language_config"))
                 .and_then(|tc| tc.get(field))
                 .and_then(|v| v.as_f64())
         } else {
@@ -419,6 +439,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
     // GPT-OSS is always MoE (num_local_experts + num_experts_per_tok).
     let is_gpt_oss = model_type == "gpt_oss";
     let is_nemotron = is_nemotron_h(model_type);
+    let is_ocr = is_unlimited_ocr(model_type);
     if !is_gemma4_moe
         && !is_diffusion_gemma_moe
         && !is_qwen3_moe
@@ -429,6 +450,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         && !is_llama4
         && !is_gpt_oss
         && !is_nemotron
+        && !is_ocr
     {
         return NativeMoeConfig::default();
     }
@@ -442,21 +464,23 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         .or_else(|| arch_u64(config, model_type, "experts_per_token"))
         .and_then(u64_to_u32);
 
-    let layer_freq = if is_deepseek_v3 {
-        arch_u64(config, model_type, "moe_layer_freq").and_then(u64_to_u32)
+    let layer_freq = if is_deepseek_v3 || is_ocr {
+        arch_u64(config, model_type, "moe_layer_freq")
+            .and_then(u64_to_u32)
+            .or(Some(1))
     } else if is_llama4 {
         arch_u64(config, model_type, "interleave_moe_layer_step").and_then(u64_to_u32)
     } else {
         None
     };
 
-    let first_dense_layers = if is_deepseek_v3 {
+    let first_dense_layers = if is_deepseek_v3 || is_ocr {
         arch_u64(config, model_type, "first_k_dense_replace").and_then(u64_to_u32)
     } else {
         None
     };
 
-    let shared_expert_count = if is_deepseek_v3 || is_nemotron {
+    let shared_expert_count = if is_deepseek_v3 || is_nemotron || is_ocr {
         arch_u64(config, model_type, "n_shared_experts").and_then(u64_to_u32)
     } else if is_llama4 {
         // LLaMA 4 always has 1 shared expert when MoE is active

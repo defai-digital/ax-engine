@@ -4103,3 +4103,292 @@ fn parse_nemotron_hybrid_pattern_from_string() {
     let types = parse_layer_types(&config, "nemotron_h", 4);
     assert_eq!(types, vec!["mamba", "moe", "mamba", "attention"]);
 }
+
+#[test]
+fn converts_unlimited_ocr_language_moe_directory() {
+    let dir = unique_test_dir("unlimited_ocr_lang");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "unlimited-ocr",
+            "vocab_size": 128,
+            "hidden_size": 32,
+            "intermediate_size": 64,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 4,
+            "num_hidden_layers": 2,
+            "moe_intermediate_size": 16,
+            "n_routed_experts": 4,
+            "n_shared_experts": 2,
+            "num_experts_per_tok": 2,
+            "first_k_dense_replace": 1,
+            "n_group": 1,
+            "topk_group": 1,
+            "sliding_window": 128,
+            "sliding_window_size": 128,
+            "language_config": {
+                "hidden_size": 32,
+                "intermediate_size": 64,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 4,
+                "num_hidden_layers": 2,
+                "vocab_size": 128,
+                "moe_intermediate_size": 16,
+                "n_routed_experts": 4,
+                "n_shared_experts": 2,
+                "num_experts_per_tok": 2,
+                "first_k_dense_replace": 1,
+                "sliding_window": 128
+            },
+            "projector_config": {
+                "input_dim": 64,
+                "n_embed": 32,
+                "projector_type": "linear"
+            },
+            "quantization": { "group_size": 32, "bits": 8, "mode": "mxfp8" }
+        }),
+    );
+    // MXFP8 packs 4 logical columns per u32 (bits=8 → packed = cols * 8 / 32 = cols/4).
+    // Shared experts store intermediate = moe_intermediate_size * n_shared_experts.
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[
+            ("language_model.model.embed_tokens.weight", "U32", &[128, 8]),
+            ("language_model.model.embed_tokens.scales", "U8", &[128, 1]),
+            ("language_model.model.norm.weight", "BF16", &[32]),
+            ("language_model.lm_head.weight", "U32", &[128, 8]),
+            ("language_model.lm_head.scales", "BF16", &[128, 1]),
+            // dense layer 0
+            (
+                "language_model.model.layers.0.input_layernorm.weight",
+                "BF16",
+                &[32],
+            ),
+            (
+                "language_model.model.layers.0.post_attention_layernorm.weight",
+                "BF16",
+                &[32],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.q_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.q_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.k_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.k_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.v_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.v_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.o_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.o_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            (
+                "language_model.model.layers.0.mlp.gate_proj.weight",
+                "U32",
+                &[64, 8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.gate_proj.scales",
+                "U8",
+                &[64, 1],
+            ),
+            (
+                "language_model.model.layers.0.mlp.up_proj.weight",
+                "U32",
+                &[64, 8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.up_proj.scales",
+                "U8",
+                &[64, 1],
+            ),
+            (
+                "language_model.model.layers.0.mlp.down_proj.weight",
+                "U32",
+                &[32, 16],
+            ),
+            (
+                "language_model.model.layers.0.mlp.down_proj.scales",
+                "U8",
+                &[32, 2],
+            ),
+            // moe layer 1
+            (
+                "language_model.model.layers.1.input_layernorm.weight",
+                "BF16",
+                &[32],
+            ),
+            (
+                "language_model.model.layers.1.post_attention_layernorm.weight",
+                "BF16",
+                &[32],
+            ),
+            (
+                "language_model.model.layers.1.self_attn.q_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.1.self_attn.q_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            (
+                "language_model.model.layers.1.self_attn.k_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.1.self_attn.k_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            (
+                "language_model.model.layers.1.self_attn.v_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.1.self_attn.v_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            (
+                "language_model.model.layers.1.self_attn.o_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.1.self_attn.o_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            (
+                "language_model.model.layers.1.mlp.gate.weight",
+                "BF16",
+                &[4, 32],
+            ),
+            (
+                "language_model.model.layers.1.mlp.switch_mlp.gate_proj.weight",
+                "U32",
+                &[4, 16, 8],
+            ),
+            (
+                "language_model.model.layers.1.mlp.switch_mlp.gate_proj.scales",
+                "U8",
+                &[4, 16, 1],
+            ),
+            (
+                "language_model.model.layers.1.mlp.switch_mlp.up_proj.weight",
+                "U32",
+                &[4, 16, 8],
+            ),
+            (
+                "language_model.model.layers.1.mlp.switch_mlp.up_proj.scales",
+                "U8",
+                &[4, 16, 1],
+            ),
+            (
+                "language_model.model.layers.1.mlp.switch_mlp.down_proj.weight",
+                "U32",
+                &[4, 32, 4],
+            ),
+            (
+                "language_model.model.layers.1.mlp.switch_mlp.down_proj.scales",
+                "U8",
+                &[4, 32, 1],
+            ),
+            // shared intermediate = 16 * 2 = 32
+            (
+                "language_model.model.layers.1.mlp.shared_experts.gate_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.1.mlp.shared_experts.gate_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            (
+                "language_model.model.layers.1.mlp.shared_experts.up_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.1.mlp.shared_experts.up_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            (
+                "language_model.model.layers.1.mlp.shared_experts.down_proj.weight",
+                "U32",
+                &[32, 8],
+            ),
+            (
+                "language_model.model.layers.1.mlp.shared_experts.down_proj.scales",
+                "U8",
+                &[32, 1],
+            ),
+            // projector: 64 -> 32 (input_dim 64, n_embed 32), packed in cols=16
+            ("projector.layers.weight", "U32", &[32, 16]),
+            ("projector.layers.scales", "U8", &[32, 2]),
+            ("image_newline", "BF16", &[32]),
+            ("view_separator", "BF16", &[32]),
+        ],
+    );
+
+    let manifest = convert_hf_model_dir(&dir).expect("unlimited_ocr conversion should succeed");
+    assert_eq!(manifest.model_family, "unlimited_ocr");
+    assert_eq!(manifest.layer_count, 2);
+    assert_eq!(manifest.moe.expert_count, Some(4));
+    assert_eq!(manifest.moe.first_dense_layers, Some(1));
+    assert_eq!(manifest.moe.shared_expert_count, Some(2));
+    // DeepSeek-V2 language default; HF configs often omit the field.
+    assert_eq!(manifest.rms_norm_eps, Some(1e-6));
+    // R-SWA: do not encode standard prefill SWA for unlimited_ocr.
+    assert_eq!(manifest.sliding_window_size, None);
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::UnlimitedOcrProjector)
+    );
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::FfnUpExps && t.layer_index == Some(1))
+    );
+    write_manifest(&dir, &manifest).expect("write");
+    crate::model::NativeModelArtifacts::from_dir(&dir)
+        .expect("unlimited_ocr manifest should validate");
+    let _ = fs::remove_dir_all(dir);
+}

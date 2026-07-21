@@ -86,6 +86,8 @@ pub(super) fn is_mlx_supported_model_family(model_family: &str) -> bool {
             | "gemma4_unified"
             // Nemotron-H hybrid Mamba-2 + GQA + ReLU² MoE (Nemotron 3 Nano).
             | "nemotron_h"
+            // Unlimited-OCR / DeepSeek-OCR multimodal MoE + dual vision.
+            | "unlimited_ocr"
     )
 }
 

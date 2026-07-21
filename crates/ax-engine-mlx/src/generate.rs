@@ -17,6 +17,7 @@ use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
     sample_categorical_into, sample_categorical_with_topk_gpu, sample_categorical_with_topp_gpu,
 };
+use crate::unlimited_ocr::build_embeddings_with_image;
 use crate::weights::ModelWeights;
 
 /// Default chunk size for chunked prefill, matching mlx-lm's default
@@ -402,6 +403,83 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
     };
     clear_cache();
     Ok(tok)
+}
+
+/// Prefill Unlimited-OCR with dual-vision image features injected at `<image>`
+/// soft-token positions. Single full-prompt prefill (no chunking) — vision
+/// features are dense and typically a few hundred tokens.
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_unlimited_ocr_with_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    image_nhwc: &MlxArray,
+    cache: &mut MlxKVCache,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> Result<u32, String> {
+    let sampling = sampling_request.params;
+    let hidden = build_embeddings_with_image(cfg, weights, prompt_tokens, image_nhwc)
+        .map_err(|e| e.to_string())?;
+    // Treat contiguous image soft-tokens as a media range so SWA layers keep
+    // full attention across the vision block (mirrors gemma4_unified).
+    let image_token_id = weights
+        .unlimited_ocr_vision
+        .as_ref()
+        .map(|v| v.image_token_id)
+        .unwrap_or(crate::unlimited_ocr::DEFAULT_IMAGE_TOKEN_ID);
+    let media_ranges = unlimited_ocr_media_ranges(prompt_tokens, image_token_id);
+    let logits = forward_with_initial_hidden_and_media_ranges(
+        cfg,
+        weights,
+        prompt_tokens,
+        hidden,
+        &media_ranges,
+        cache,
+        0,
+        FinalLogitsMode::Full,
+    );
+    cache.advance(prompt_tokens.len());
+
+    let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+        sample_prefill_token_gpu_first(
+            &logits,
+            sampling,
+            sampling_request.repetition_tokens,
+            rng,
+            || eval_with_kv_refs(&logits, cache),
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
+        )
+    } else {
+        let token_arr = argmax(&logits, None);
+        eval_with_kv_refs(&token_arr, cache);
+        token_arr.first_u32_unchecked()
+    };
+    clear_cache();
+    Ok(tok)
+}
+
+fn unlimited_ocr_media_ranges(token_ids: &[u32], image_token_id: u32) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, &tok) in token_ids.iter().enumerate() {
+        if tok == image_token_id {
+            if start.is_none() {
+                start = Some(i);
+            }
+        } else if let Some(s) = start.take() {
+            ranges.push((s, i - 1));
+        }
+    }
+    if let Some(s) = start {
+        ranges.push((s, token_ids.len() - 1));
+    }
+    ranges
 }
 
 /// Like `chunked_prefill` but also returns the pre-norm hidden at the last
