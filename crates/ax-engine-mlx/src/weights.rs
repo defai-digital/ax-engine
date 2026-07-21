@@ -57,6 +57,8 @@ pub struct ModelWeights {
     pub diffusion_self_conditioning: Option<DiffusionSelfConditioningWeights>,
     /// MTP weights for GLM 4.7 Flash: separate sidecar with MLA-based head.
     pub glm_mtp: Option<GlmMtpWeights>,
+    /// Unlimited-OCR dual vision (SAM-ViT-B + CLIP-L) + projector.
+    pub unlimited_ocr_vision: Option<crate::unlimited_ocr::UnlimitedOcrVisionWeights>,
 }
 
 /// Gemma4 Unified vision path, matching vLLM's
@@ -625,6 +627,11 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let gemma4_unified_audio = load_gemma4_unified_audio_weights(specs, &mut name_map)?;
     let diffusion_self_conditioning =
         load_diffusion_self_conditioning_weights(specs, &mut name_map)?;
+    // Unlimited-OCR: projector roles + leftover sam_model.*/vision_model.* keys.
+    // Load before layer loop so language tensors are still present for layers,
+    // but vision keys are independent and safe to consume early.
+    let unlimited_ocr_vision =
+        crate::unlimited_ocr::load_unlimited_ocr_vision_weights(specs, &mut name_map)?;
 
     let mut layers = Vec::with_capacity(layer_count);
     for li in 0..layer_count {
@@ -1106,6 +1113,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         gemma4_unified_audio,
         diffusion_self_conditioning,
         glm_mtp,
+        unlimited_ocr_vision,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;

@@ -525,6 +525,16 @@ extern "C" int mlx_matmul(mlx_array* r, const mlx_array a, const mlx_array b, co
   AX_TRY { aset(r, mx::matmul(aref(a), aref(b), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_conv1d(mlx_array* r, const mlx_array inp, const mlx_array w, int st, int pad, int dil, int grp, const mlx_stream s) {
   AX_TRY { aset(r, mx::conv1d(aref(inp), aref(w), st, pad, dil, grp, sd(s))); return 0; } AX_CATCH }
+extern "C" int mlx_conv2d(mlx_array* r, const mlx_array inp, const mlx_array w, int st, int pad, int dil, int grp, const mlx_stream s) {
+  AX_TRY {
+    aset(r, mx::conv2d(
+      aref(inp), aref(w),
+      std::pair<int, int>{st, st},
+      std::pair<int, int>{pad, pad},
+      std::pair<int, int>{dil, dil},
+      grp, sd(s)));
+    return 0;
+  } AX_CATCH }
 
 /* Clip */
 extern "C" int mlx_clip(mlx_array* r, const mlx_array a, const mlx_array mn, const mlx_array mx_, const mlx_stream s) {

@@ -79,6 +79,8 @@ pub(super) fn is_mlx_supported_model_family(model_family: &str) -> bool {
             | "gpt_oss"
             // Multimodal text backbone (same Standard route as gemma4).
             | "gemma4_unified"
+            // Unlimited-OCR / DeepSeek-OCR multimodal MoE + dual vision.
+            | "unlimited_ocr"
     )
 }
 

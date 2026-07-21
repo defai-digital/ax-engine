@@ -51,7 +51,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_unified, gemma4_assistant, diffusion_gemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, llama4, gpt_oss"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_unified, gemma4_assistant, diffusion_gemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, llama4, gpt_oss, unlimited_ocr"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -136,7 +136,15 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
 
     let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
-    let sliding_window_size = arch_u64(&config, &model_type, "sliding_window").and_then(u64_to_u32);
+    // Unlimited-OCR uses ring-SWA (R-SWA): full attention during prefill, then a
+    // decode-only ring of `sliding_window` slots. AX's standard SWA applies the
+    // window during prefill as well and destroys OCR quality on ~273 soft tokens.
+    // Keep full attention for this family until a dedicated R-SWA cache lands.
+    let sliding_window_size = if is_unlimited_ocr(&model_type) {
+        None
+    } else {
+        arch_u64(&config, &model_type, "sliding_window").and_then(u64_to_u32)
+    };
     let final_logit_softcapping =
         arch_f64(&config, &model_type, "final_logit_softcapping").map(|v| v as f32);
     let hidden_size_per_layer_input = arch_u64(&config, &model_type, "hidden_size_per_layer_input")

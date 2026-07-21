@@ -1396,6 +1396,39 @@ pub fn conv1d(
     }
 }
 
+/// 2D convolution. Input is NHWC, weight is OHWI (MLX layout).
+///
+/// Scalar `stride` / `padding` / `dilation` are applied to both H and W.
+pub fn conv2d(
+    input: &MlxArray,
+    weight: &MlxArray,
+    stride: i32,
+    padding: i32,
+    dilation: i32,
+    groups: i32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        checked_ffi!(
+            "mlx_conv2d",
+            ffi::mlx_conv2d(
+                &mut res.inner,
+                input.inner,
+                weight.inner,
+                stride,
+                padding,
+                dilation,
+                groups,
+                stream,
+            )
+        );
+        res
+    }
+}
+
 pub fn argmax(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     crate::op_count::bump();
     unsafe {
@@ -1856,9 +1889,10 @@ pub fn from_fp8(x: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArra
     }
 }
 
-/// Quantized matmul: x @ dequantize(w, scales, biases).
+/// Quantized matmul: x @ dequantize(w, scales, biases) with affine mode.
 ///
 /// `group_size` and `bits` use the MLX defaults (64 and 4) when `None`.
+/// Prefer [`quantized_matmul_with_mode`] for mxfp4/mxfp8/nvfp4 weights.
 #[allow(clippy::too_many_arguments)]
 pub fn quantized_matmul(
     x: &MlxArray,
@@ -1870,6 +1904,35 @@ pub fn quantized_matmul(
     bits: Option<i32>,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    quantized_matmul_with_mode(
+        x,
+        w,
+        scales,
+        biases,
+        transpose,
+        group_size,
+        bits,
+        MlxQuantizationMode::Affine,
+        s,
+    )
+}
+
+/// Mode-aware quantized matmul (affine / mxfp4 / mxfp8 / nvfp4).
+///
+/// MXFP8 language towers (e.g. Unlimited-OCR) pack dense linears without
+/// affine group biases; passing mode correctly avoids MLX requiring biases.
+#[allow(clippy::too_many_arguments)]
+pub fn quantized_matmul_with_mode(
+    x: &MlxArray,
+    w: &MlxArray,
+    scales: &MlxArray,
+    biases: Option<&MlxArray>,
+    transpose: bool,
+    group_size: Option<i32>,
+    bits: Option<i32>,
+    mode: MlxQuantizationMode,
+    s: Option<&MlxStream>,
+) -> MlxArray {
     crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
@@ -1877,11 +1940,11 @@ pub fn quantized_matmul(
 
         let gs = ffi::mlx_optional_int_ {
             has_value: group_size.is_some(),
-            value: group_size.unwrap_or(64),
+            value: group_size.unwrap_or(mode.default_group_size()),
         };
         let bs = ffi::mlx_optional_int_ {
             has_value: bits.is_some(),
-            value: bits.unwrap_or(4),
+            value: bits.unwrap_or(mode.default_bits()),
         };
 
         let mut res = MlxArray::empty();
@@ -1896,7 +1959,7 @@ pub fn quantized_matmul(
                 transpose,
                 gs,
                 bs,
-                c"affine".as_ptr(),
+                mode.as_ptr(),
                 stream,
             )
         );

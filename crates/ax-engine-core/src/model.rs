@@ -159,6 +159,12 @@ pub enum NativeTensorRole {
     /// EmbeddingGemma sentence-transformers Dense projection 2 (4*hidden → hidden,
     /// no bias, identity activation). Applied after `EmbeddingDense0`, before L2 norm.
     EmbeddingDense1,
+    /// Unlimited-OCR linear projector weight (2048 → hidden).
+    UnlimitedOcrProjector,
+    /// Unlimited-OCR image newline embedding.
+    UnlimitedOcrImageNewline,
+    /// Unlimited-OCR view separator embedding.
+    UnlimitedOcrViewSeparator,
     FinalNorm,
     LmHead,
     RopeFreqs,
@@ -1325,7 +1331,7 @@ fn validate_native_model_manifest(
             && roles.contains(&NativeTensorRole::FfnSharedExpertDown);
         let has_mla_shared_expert_ffn = matches!(
             manifest.model_family.as_str(),
-            "glm4_moe_lite" | "deepseek_v3" | "deepseek_v32"
+            "glm4_moe_lite" | "deepseek_v3" | "deepseek_v32" | "unlimited_ocr"
         ) && roles.contains(&NativeTensorRole::FfnSharedExpertGate)
             && roles.contains(&NativeTensorRole::FfnSharedExpertUp)
             && roles.contains(&NativeTensorRole::FfnSharedExpertDown);
@@ -1597,7 +1603,7 @@ fn validate_native_model_manifest(
             if has_any_shared_expert || moe_requires_shared_expert(manifest) {
                 if !matches!(
                     manifest.model_family.as_str(),
-                    "glm4_moe_lite" | "deepseek_v3" | "deepseek_v32" | "llama4"
+                    "glm4_moe_lite" | "deepseek_v3" | "deepseek_v32" | "llama4" | "unlimited_ocr"
                 ) {
                     require_layer_role(
                         roles,
@@ -3414,6 +3420,15 @@ fn validate_tensor_quantization(
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "tensor {} MXFP4 quantization requires group_size 32 and bits 4",
+                    tensor.name
+                ),
+            });
+        }
+        "mxfp8" if quantization.group_size == 32 && quantization.bits == 8 => {}
+        "mxfp8" => {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "tensor {} MXFP8 quantization requires group_size 32 and bits 8",
                     tensor.name
                 ),
             });

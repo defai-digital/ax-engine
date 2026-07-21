@@ -165,6 +165,55 @@ pub(crate) const DEEPSEEK_V3_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// Unlimited-OCR language MoE extras + projector / special tokens.
+///
+/// Language weights live under `language_model.model.layers.*` (via
+/// `uses_language_model_prefix`). Vision/SAM tensors are harvested from the
+/// safetensors name map at load time without explicit per-tensor roles.
+pub(crate) const UNLIMITED_OCR_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "mlp.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "mlp.switch_mlp.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "mlp.switch_mlp.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "mlp.switch_mlp.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    (
+        "mlp.shared_experts.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "mlp.shared_experts.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "mlp.shared_experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
+    ),
+    // Projector + special image tokens (global).
+    (
+        "projector.layers.weight",
+        TensorMapping::Global(NativeTensorRole::UnlimitedOcrProjector),
+    ),
+    (
+        "image_newline",
+        TensorMapping::Global(NativeTensorRole::UnlimitedOcrImageNewline),
+    ),
+    (
+        "view_separator",
+        TensorMapping::Global(NativeTensorRole::UnlimitedOcrViewSeparator),
+    ),
+];
+
 /// Per-layer tensor patterns for Mixtral sparse MoE layers.
 pub(crate) const MIXTRAL_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (

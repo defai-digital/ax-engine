@@ -142,6 +142,14 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: false,
             uses_decoder_prefix: false,
         }),
+        // Unlimited-OCR / DeepSeek-OCR: language_model.* MoE SWA tower + vision/sam/projector.
+        "unlimited_ocr" | "unlimited-ocr" | "deepseekocr" => Ok(ModelFamily {
+            family_name: "unlimited_ocr",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(UNLIMITED_OCR_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
+        }),
         other => Err(ConvertError::UnsupportedModelType {
             model_type: other.to_string(),
         }),

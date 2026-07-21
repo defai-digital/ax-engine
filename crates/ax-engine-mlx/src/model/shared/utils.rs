@@ -1,7 +1,7 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype,
-    concatenate, contiguous, expand_dims_axes, gather_mm, matmul, multiply, quantized_matmul,
-    reshape, slice, slice_last_dim, take, tanh, transpose,
+    concatenate, contiguous, expand_dims_axes, gather_mm, matmul, multiply, reshape, slice,
+    slice_last_dim, take, tanh, transpose,
 };
 use std::sync::OnceLock;
 
@@ -73,14 +73,21 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     // group-quant biases (`qw.biases`). Matches mlx-lm `nn.Linear` /
     // `QuantizedLinear`: y = x @ W + b. Required for GPT-OSS Q/K/V/O + router.
     let y = if let Some(scales) = &qw.scales {
-        quantized_matmul(
+        // MXFP8/MXFP4 have no affine group-bias channel; pass None for those modes.
+        let mode = qw.mlx_quantization_mode();
+        let quant_biases = match mode {
+            mlx_sys::MlxQuantizationMode::Affine => qw.biases.as_ref(),
+            _ => None,
+        };
+        mlx_sys::quantized_matmul_with_mode(
             x,
             &qw.weight,
             scales,
-            qw.biases.as_ref(),
+            quant_biases,
             true,
             Some(qw.group_size),
             Some(qw.bits),
+            mode,
             None,
         )
     } else {
