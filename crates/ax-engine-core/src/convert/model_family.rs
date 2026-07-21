@@ -142,6 +142,15 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: false,
             uses_decoder_prefix: false,
         }),
+        // Nemotron-H hybrid Mamba-2 + GQA + ReLU² MoE (Nemotron 3 Nano, …).
+        // Weights live under `backbone.layers.*.mixer.*` (see NEMOTRON_H_TENSOR_MAP).
+        "nemotron_h" => Ok(ModelFamily {
+            family_name: "nemotron_h",
+            tensor_map: NEMOTRON_H_TENSOR_MAP,
+            extra_tensor_map: None,
+            uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
+        }),
         other => Err(ConvertError::UnsupportedModelType {
             model_type: other.to_string(),
         }),

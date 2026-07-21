@@ -46,6 +46,8 @@ REPO_OWNED_TYPES = {
     "mistral",
     "mistral3",
     "mixtral",
+    # Nemotron-H hybrid Mamba-2 + GQA + ReLU² MoE (Nemotron 3 Nano).
+    "nemotron_h",
 }
 
 

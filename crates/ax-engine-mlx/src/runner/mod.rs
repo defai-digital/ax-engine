@@ -10488,6 +10488,8 @@ mod tests {
             in_proj_b: Some(unit_weight()),
             in_proj_qkvz: None,
             in_proj_ba: None,
+            conv1d_bias: None,
+            d: None,
             conv1d_dense: mlx_sys::zeros(&[1, 1, 1], MlxDtype::Float32, None),
             dt_bias: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
             a_log: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
@@ -10504,6 +10506,8 @@ mod tests {
             in_proj_b: None,
             in_proj_qkvz: Some(unit_weight()),
             in_proj_ba: Some(unit_weight()),
+            conv1d_bias: None,
+            d: None,
             conv1d_dense: mlx_sys::zeros(&[1, 1, 1], MlxDtype::Float32, None),
             dt_bias: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
             a_log: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
@@ -12431,6 +12435,7 @@ mod tests {
             "mixtral",
             "gpt_oss",
             "gemma4_unified",
+            "nemotron_h",
         ] {
             assert!(
                 is_mlx_supported_model_family(family),

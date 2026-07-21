@@ -21,6 +21,8 @@ pub enum LayerForwardRoute {
     Mistral3,
     Mixtral,
     GptOss,
+    /// Nemotron-H hybrid: per-layer Mamba-2 / attention / ReLU² MoE mixers.
+    NemotronH,
 }
 
 impl LayerForwardRoute {
@@ -34,6 +36,7 @@ impl LayerForwardRoute {
             Self::Mistral3 => 4,
             Self::Mixtral => 5,
             Self::GptOss => 6,
+            Self::NemotronH => 7,
         }
     }
 
@@ -46,6 +49,7 @@ impl LayerForwardRoute {
             Self::Mistral3 => "mistral3",
             Self::Mixtral => "mixtral",
             Self::GptOss => "gpt_oss",
+            Self::NemotronH => "nemotron_h",
         }
     }
 }
@@ -189,6 +193,13 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::GptOss,
         dense_batched_decode_candidate: false,
         cert_gate_note: "MXFP4 MoE",
+    },
+    ArchitectureRegistration {
+        family_label: "nemotron_h",
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::NemotronH,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "hybrid Mamba-2 + GQA + ReLU2 MoE; pattern-driven mixers",
     },
 ];
 

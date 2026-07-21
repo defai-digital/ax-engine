@@ -131,6 +131,9 @@ impl ChatPromptTemplate {
             || normalized.contains("gptoss")
         {
             Self::GptOssHarmony
+        } else if normalized.contains("nemotron") {
+            // Nemotron 3 Nano hub chat_template.jinja is ChatML + <think> (Qwen-like).
+            Self::QwenChatMl
         } else {
             // Families without a verified AX chat fixture use plain role prefixes.
             Self::PlainRolePrefix
@@ -1322,6 +1325,18 @@ mod tests {
         assert_eq!(
             ChatPromptTemplate::for_model_id("glm4.7-flash-4bit"),
             ChatPromptTemplate::Glm47
+        );
+        assert_eq!(
+            ChatPromptTemplate::for_model_id(
+                "mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-6Bit"
+            ),
+            ChatPromptTemplate::QwenChatMl
+        );
+        assert_eq!(
+            ChatPromptTemplate::for_model_id(
+                "mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-OptiQ-4bit"
+            ),
+            ChatPromptTemplate::QwenChatMl
         );
     }
 

@@ -1,9 +1,9 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
-    expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, multiply,
+    expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, maximum, multiply,
     quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax,
-    softmax_precise, sum_axis, take, take_along_axis, topk_axis,
+    softmax_precise, sum_axis, take, take_along_axis, topk_axis, zeros,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -3530,9 +3530,8 @@ fn moe_experts_forward_impl(
             }
             h
         }
-    } else {
+    } else if let Some(gate_exps) = w.gate_exps.as_ref() {
         let gate_up_started = Instant::now();
-        let gate_exps = w.gate_exps.as_ref().expect("MoE layer must have gate_exps");
         let gate_out = qw_gather(
             &gather_inputs.x,
             gate_exps,
@@ -3561,6 +3560,50 @@ fn moe_experts_forward_impl(
         }
         let activation_started = Instant::now();
         let h = dense_ffn_activation(cfg, &gate_out, &up_out);
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::MoeExpertActivation,
+            activation_started,
+            &[&h],
+        );
+        if profile_moe {
+            record_moe_profile_stage(
+                MoeProfileStage::ExpertActivation,
+                saturating_profile_us(activation_started),
+            );
+        }
+        h
+    } else {
+        // Nemotron-H ReLU² experts: only up (fc1) + down (fc2), no SwiGLU gate.
+        let gate_up_started = Instant::now();
+        let up_exps = w
+            .up_exps
+            .as_ref()
+            .expect("ReLU2 MoE layer must have up_exps");
+        let up_out = qw_gather(
+            &gather_inputs.x,
+            up_exps,
+            &gather_inputs.indices,
+            gather_inputs.sorted_indices,
+        );
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::MoeExpertGateUp,
+            gate_up_started,
+            &[&up_out],
+        );
+        if profile_moe {
+            record_moe_profile_stage(
+                MoeProfileStage::ExpertGateUp,
+                saturating_profile_us(gate_up_started),
+            );
+        }
+        let activation_started = Instant::now();
+        let zero = zeros(&[], up_out.dtype(), None);
+        let relu = maximum(&up_out, &zero, None);
+        let h = multiply(&relu, &relu, None);
         forward_profile_eval_elapsed(
             profile_decode,
             profile_prefill,

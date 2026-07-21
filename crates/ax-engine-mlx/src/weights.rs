@@ -251,6 +251,9 @@ pub struct GlmMlaAttentionWeights {
 }
 
 /// Weights for a Qwen3.5 GatedDelta linear-attention layer.
+///
+/// Also carries Nemotron-H Mamba-2 mixer tensors when `in_proj_qkvz` is the
+/// packed Mamba `in_proj` (gate | conv_input | dt) and `d` / `conv1d_bias` are set.
 pub struct LinearAttentionWeights {
     pub in_proj_qkv: Option<QuantizedWeight>,
     pub in_proj_z: Option<QuantizedWeight>,
@@ -261,8 +264,12 @@ pub struct LinearAttentionWeights {
     /// Conv1d kernel dequantized at load time so `linear_attention_forward` never
     /// re-dequantizes per step. Shape: `[conv_dim, conv_kernel_dim, 1]`.
     pub conv1d_dense: MlxArray,
+    /// Optional conv1d bias (Nemotron-H Mamba-2 `use_conv_bias=true`).
+    pub conv1d_bias: Option<MlxArray>,
     pub dt_bias: MlxArray,
     pub a_log: MlxArray,
+    /// Mamba-2 skip residual `D` (per head). Qwen gated-delta leaves this `None`.
+    pub d: Option<MlxArray>,
     pub norm: MlxArray,
     pub out_proj: QuantizedWeight,
 }
@@ -639,6 +646,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             .attention_value_from_key_layers
             .contains(&(li as u32));
         let attention_layout = attention_layout_for_layer(specs, idx)?;
+        let is_nemotron_h = artifacts.manifest().model_family == "nemotron_h";
 
         let attn_norm = take_weight(
             specs,
@@ -656,10 +664,10 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                 idx,
                 "o_proj",
             )?),
-            AttentionLayout::Linear => None,
+            AttentionLayout::Linear | AttentionLayout::None => None,
         };
         let linear_attn = match attention_layout {
-            AttentionLayout::Full => None,
+            AttentionLayout::Full | AttentionLayout::None => None,
             AttentionLayout::Linear => Some(load_linear_attention_weights(
                 specs,
                 &mut name_map,
@@ -667,7 +675,12 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                 &artifacts.manifest().linear_attention,
             )?),
         };
-        let (attn_post_norm, ffn_norm) = take_layer_norms(specs, &mut name_map, idx)?;
+        // Nemotron-H has a single pre-mixer norm; reuse it as ffn_norm placeholder.
+        let (attn_post_norm, ffn_norm) = if is_nemotron_h {
+            (None, attn_norm.clone())
+        } else {
+            take_layer_norms(specs, &mut name_map, idx)?
+        };
         let down_proj = if has_role(specs, NativeTensorRole::FfnDown, idx) {
             Some(take_weight(
                 specs,
@@ -871,9 +884,10 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         let q_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionQNorm, idx)?;
         let k_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionKNorm, idx)?;
 
-        let (qkv_packed, q_proj, k_proj, v_proj, glm_mla_attn) = if attention_layout
-            == AttentionLayout::Linear
-        {
+        let (qkv_packed, q_proj, k_proj, v_proj, glm_mla_attn) = if matches!(
+            attention_layout,
+            AttentionLayout::Linear | AttentionLayout::None
+        ) {
             (None, None, None, None, None)
         } else {
             match full_attention_projection_layout(specs, idx, uses_shared_kv, uses_value_from_key)?
@@ -2483,6 +2497,8 @@ fn gemma4_router_combined_scale(hidden_size: u32, router_scale: &MlxArray) -> Ml
 enum AttentionLayout {
     Full,
     Linear,
+    /// MoE-only or dense-MLP residual mixer with no attention (Nemotron-H `E`/`-`).
+    None,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2503,6 +2519,9 @@ fn attention_layout_for_layer(
 ) -> Result<AttentionLayout, WeightLoadError> {
     let has_full = has_full_attention_role(specs, layer_index);
     let has_linear = has_linear_attention_role(specs, layer_index);
+    let has_moe = has_role(specs, NativeTensorRole::FfnGateInp, layer_index)
+        || has_role(specs, NativeTensorRole::FfnUpExps, layer_index)
+        || has_role(specs, NativeTensorRole::FfnDown, layer_index);
 
     if has_full && has_linear {
         return Err(WeightLoadError::InvalidLayer(format!(
@@ -2511,6 +2530,11 @@ fn attention_layout_for_layer(
     }
     if has_linear {
         Ok(AttentionLayout::Linear)
+    } else if has_full {
+        Ok(AttentionLayout::Full)
+    } else if has_moe {
+        // Nemotron-H MoE / dense MLP residual mixers have no attention tensors.
+        Ok(AttentionLayout::None)
     } else {
         Ok(AttentionLayout::Full)
     }
@@ -2688,6 +2712,43 @@ fn load_linear_attention_weights(
         in_proj_b = None;
     }
 
+    let conv1d_raw = take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::LinearAttentionConv1d,
+        layer_index,
+        "linear_attention_conv1d",
+    )?;
+    let conv1d_dense = if let Some(scales) = &conv1d_raw.scales {
+        dequantize(
+            &conv1d_raw.weight,
+            scales,
+            conv1d_raw.biases.as_ref(),
+            Some(conv1d_raw.group_size),
+            Some(conv1d_raw.bits),
+            None,
+        )
+    } else {
+        conv1d_raw.weight
+    };
+    // Nemotron-H Mamba-2 uses conv1d bias (`use_conv_bias=true`). `take_weight`
+    // already lifts `.bias` (singular) into `QuantizedWeight.linear_bias` when
+    // co-located with `.weight` — do not re-fetch by name (it would be gone).
+    let conv1d_bias = conv1d_raw.linear_bias.or_else(|| {
+        layer_index.and_then(|li| {
+            let candidates = [
+                format!("backbone.layers.{li}.mixer.conv1d.bias"),
+                format!("model.layers.{li}.linear_attn.conv1d.bias"),
+            ];
+            candidates
+                .into_iter()
+                .find_map(|name| name_map.remove(&name))
+        })
+    });
+    // Mamba-2 D residual (mapped to LayerScalar at convert time).
+    let d = try_take_plain(specs, name_map, NativeTensorRole::LayerScalar, layer_index)?
+        .map(|arr| astype(&arr, MlxDtype::Float32, None));
+
     Ok(LinearAttentionWeights {
         in_proj_qkv,
         in_proj_z,
@@ -2695,27 +2756,8 @@ fn load_linear_attention_weights(
         in_proj_b,
         in_proj_qkvz,
         in_proj_ba,
-        conv1d_dense: {
-            let raw = take_weight(
-                specs,
-                name_map,
-                NativeTensorRole::LinearAttentionConv1d,
-                layer_index,
-                "linear_attention_conv1d",
-            )?;
-            if let Some(scales) = &raw.scales {
-                dequantize(
-                    &raw.weight,
-                    scales,
-                    raw.biases.as_ref(),
-                    Some(raw.group_size),
-                    Some(raw.bits),
-                    None,
-                )
-            } else {
-                raw.weight
-            }
-        },
+        conv1d_dense,
+        conv1d_bias,
         // Cast at load time so the per-step linear_attention_forward does not
         // pay an astype dispatch for each layer. `gated_delta_kernel` expects
         // both as f32, matching mlx_lm's reference behaviour. For a 12-layer
@@ -2744,6 +2786,7 @@ fn load_linear_attention_weights(
             MlxDtype::Float32,
             None,
         ),
+        d,
         norm: take_weight(
             specs,
             name_map,

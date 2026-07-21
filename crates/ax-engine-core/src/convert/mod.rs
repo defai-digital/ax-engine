@@ -518,10 +518,12 @@ fn tensor_quantization_override(
     let module_name = tensor_name.strip_suffix(".weight").unwrap_or(tensor_name);
     let unprefixed_name = tensor_name
         .strip_prefix("language_model.")
+        .or_else(|| tensor_name.strip_prefix("backbone."))
         .unwrap_or(tensor_name);
     let unprefixed_module_name = unprefixed_name
         .strip_suffix(".weight")
         .unwrap_or(unprefixed_name);
+    // OptiQ keys are full module paths (e.g. backbone.layers.0.mixer.in_proj).
     let candidates = [
         tensor_name,
         module_name,
@@ -585,6 +587,13 @@ fn parse_quantization_value(
 
 /// Try to match a tensor name against the family's mapping table.
 fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, Option<u32>)> {
+    // Nemotron-H: backbone.embeddings / backbone.norm_f / backbone.layers.N.* / lm_head.
+    if family.family_name == "nemotron_h" {
+        if let Some(result) = match_nemotron_h_tensor(name, family.tensor_map) {
+            return Some(result);
+        }
+    }
+
     // Try standard map (model.embed_tokens, model.layers.N.…)
     if let Some(result) = match_tensor_in_map(name, family.tensor_map) {
         return Some(result);
@@ -656,6 +665,29 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         }
     }
 
+    None
+}
+
+/// Match Nemotron-H backbone-prefixed tensors.
+fn match_nemotron_h_tensor(
+    name: &str,
+    tensor_map: &[(&str, TensorMapping)],
+) -> Option<(NativeTensorRole, Option<u32>)> {
+    match name {
+        "backbone.embeddings.weight" | "backbone.embed_tokens.weight" => {
+            return Some((NativeTensorRole::TokenEmbedding, None));
+        }
+        "backbone.norm_f.weight" | "backbone.norm.weight" => {
+            return Some((NativeTensorRole::FinalNorm, None));
+        }
+        "lm_head.weight" => {
+            return Some((NativeTensorRole::LmHead, None));
+        }
+        _ => {}
+    }
+    if let Some(result) = match_prefixed_per_layer(name, "backbone.layers.", tensor_map) {
+        return Some(result);
+    }
     None
 }
 
