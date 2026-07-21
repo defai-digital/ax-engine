@@ -4,30 +4,23 @@ High-performance local inference engine for Apple Silicon — Python bindings.
 
 ## Installation
 
-This package is the **Python SDK** for AX Engine. For the primary end-user
-CLI / server install on macOS Apple Silicon, use **Homebrew** instead:
+### Python SDK (pip)
+
+Use pip when your application imports `ax_engine` or needs AX Engine's optional
+Python integrations. Install the wheel in a virtual environment:
 
 ```bash
-brew tap defai-digital/ax-engine
-brew install defai-digital/ax-engine/ax-engine
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install --upgrade "ax-engine[download]>=6.11.0,<7"
 ax-engine doctor
-```
-
-See the
-[Getting Started installation guide](https://github.com/defai-digital/ax-engine/blob/main/docs/GETTING-STARTED.md#installation)
-for brew trust, linkage, and troubleshooting details.
-
-### Python (pip) — SDK and library use
-
-```bash
-python3 -m pip install "ax-engine[download]>=6.9.0,<7"
 ```
 
 Requires macOS 26+, Apple Silicon (M2 Max or newer), Python 3.10+.
 The current macOS arm64 wheel also includes the `ax-engine` orchestration CLI
 plus bundled `ax-engine-server` and `ax-engine-bench` binaries when you need a
-wheel-only install. If your package index only shows older `ax-engine`
-versions, those wheels may not expose the top-level CLI commands shown below.
+wheel-only install.
 
 Verify the installed command surface:
 
@@ -35,6 +28,27 @@ Verify the installed command surface:
 ax-engine doctor
 ax-engine-server --help
 ```
+
+### Native CLI and server (Homebrew, primary)
+
+For end users running the TUI, CLI, server, or benchmark tools, Homebrew is the
+primary installation channel:
+
+```bash
+brew tap defai-digital/ax-engine
+brew trust --formula \
+  defai-digital/ax-engine/ax-engine \
+  defai-digital/ax-engine/mlx \
+  defai-digital/ax-engine/mlx-c
+brew install defai-digital/ax-engine/ax-engine
+ax-engine doctor
+```
+
+If both channels are installed, an active virtual environment normally shadows
+Homebrew's commands. Use `which -a ax-engine` to identify every copy and avoid
+mixing versions in one shell. See the
+[Getting Started installation guide](https://github.com/defai-digital/ax-engine/blob/main/docs/GETTING-STARTED.md#installation)
+for requirements, linkage details, and troubleshooting.
 
 ## Quick start
 
@@ -63,8 +77,8 @@ Then point any OpenAI client at `http://127.0.0.1:31418`.
 Install the OpenAI shim or image/audio helpers with the matching extra:
 
 ```bash
-python3 -m pip install "ax-engine[openai]>=6.9.0,<7"
-python3 -m pip install "ax-engine[multimodal]>=6.9.0,<7"
+python3 -m pip install --upgrade "ax-engine[openai]>=6.11.0,<7"
+python3 -m pip install --upgrade "ax-engine[multimodal]>=6.11.0,<7"
 ```
 
 ## Requirements

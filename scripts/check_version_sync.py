@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that every published AX Engine package version is aligned."""
+"""Verify that published package and installation-guide versions are aligned."""
 
 from __future__ import annotations
 
@@ -15,12 +15,30 @@ class VersionSyncError(ValueError):
     """Report an invalid or inconsistent version surface."""
 
 
+INSTALL_REQUIREMENT_PATTERN = re.compile(
+    r"ax-engine(?:\[[^\]]+\])?>=(\d+\.\d+\.\d+),<\d+"
+)
+
+
 def _required_match(root: pathlib.Path, relative_path: str, pattern: str) -> str:
     text = (root / relative_path).read_text(encoding="utf-8")
     match = re.search(pattern, text)
     if match is None:
         raise VersionSyncError(f"could not parse version from {relative_path}")
     return match.group(1)
+
+
+def _required_install_version(root: pathlib.Path, relative_path: str) -> str:
+    text = (root / relative_path).read_text(encoding="utf-8")
+    versions = set(INSTALL_REQUIREMENT_PATTERN.findall(text))
+    if not versions:
+        raise VersionSyncError(f"could not parse install version from {relative_path}")
+    if len(versions) != 1:
+        details = ", ".join(sorted(versions))
+        raise VersionSyncError(
+            f"inconsistent install versions in {relative_path}: {details}"
+        )
+    return versions.pop()
 
 
 def load_versions(root: pathlib.Path) -> dict[str, str]:
@@ -48,6 +66,19 @@ def load_versions(root: pathlib.Path) -> dict[str, str]:
             root,
             "sdk/swift/Sources/AxEngine/AxEngineClient.swift",
             r'\bstatic\s+let\s+version\s*=\s*"([^"]+)"',
+        ),
+        "README.md": _required_install_version(root, "README.md"),
+        "docs/GETTING-STARTED.md": _required_install_version(
+            root, "docs/GETTING-STARTED.md"
+        ),
+        "crates/ax-engine-py/README.md": _required_install_version(
+            root, "crates/ax-engine-py/README.md"
+        ),
+        "docs/sdk/python.md": _required_install_version(root, "docs/sdk/python.md"),
+        "docs/sdk/swift.md": _required_match(
+            root,
+            "docs/sdk/swift.md",
+            r"\bcurrent version is `(\d+\.\d+\.\d+)`",
         ),
     }
 
@@ -93,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: version consistency check failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Version verified: {version} (across 6 files)")
+    print(f"Version verified: {version} (package metadata and install guides)")
     return 0
 
 

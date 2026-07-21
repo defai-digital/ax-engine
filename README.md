@@ -32,6 +32,8 @@ memory).**
 
 ## Quick Start
 
+### Homebrew (primary)
+
 ```bash
 brew tap defai-digital/ax-engine
 brew trust --formula \
@@ -60,9 +62,28 @@ them before installing AX Engine:
 brew uninstall mlx-c mlx
 ```
 
-For the Python SDK (`import ax_engine`), use
-`pip install "ax-engine[download]>=6.9.0,<7"` instead — see
-[Getting Started](docs/GETTING-STARTED.md).
+### Python SDK (pip)
+
+Use the wheel for Python applications that `import ax_engine`, optional Python
+integrations, or systems where Homebrew is unavailable. Install it in a virtual
+environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install --upgrade "ax-engine[download]>=6.11.0,<7"
+ax-engine doctor
+```
+
+The wheel also exposes `ax-engine` and `ax-engine-server` and bundles the bench
+binary used by diagnostics. If both Homebrew and pip are installed, an active
+virtual environment normally wins on `PATH`; use `which -a ax-engine` to see
+every copy and prefer one installation channel in each shell. See
+[Getting Started](docs/GETTING-STARTED.md) for the full channel comparison and
+troubleshooting.
+
+### Run AX Engine
 
 **Option A — interactive TUI** (pick a model, download, serve, chat):
 

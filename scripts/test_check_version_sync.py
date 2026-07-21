@@ -39,8 +39,22 @@ class VersionSyncTests(unittest.TestCase):
             "sdk/swift/Sources/AxEngine/AxEngineClient.swift",
             f'public static let version = "{version}"\n',
         )
+        for path in (
+            "README.md",
+            "docs/GETTING-STARTED.md",
+            "crates/ax-engine-py/README.md",
+            "docs/sdk/python.md",
+        ):
+            self._write(
+                path,
+                f'python3 -m pip install "ax-engine[download]>={version},<2"\n',
+            )
+        self._write(
+            "docs/sdk/swift.md",
+            f'The current version is `{version}`.\n',
+        )
 
-    def test_accepts_all_six_aligned_versions(self):
+    def test_accepts_aligned_package_and_install_versions(self):
         self.assertEqual(check_version_sync.verify_versions(self.root), "1.2.3")
         self.assertEqual(
             check_version_sync.verify_versions(self.root, "v1.2.3"),
@@ -68,6 +82,35 @@ class VersionSyncTests(unittest.TestCase):
         with self.assertRaisesRegex(
             check_version_sync.VersionSyncError,
             "could not parse version from .*AxEngineClient.swift",
+        ):
+            check_version_sync.verify_versions(self.root)
+
+    def test_rejects_a_mismatched_install_version(self):
+        self._write(
+            "README.md",
+            'python3 -m pip install "ax-engine[download]>=1.2.2,<2"\n',
+        )
+
+        with self.assertRaisesRegex(
+            check_version_sync.VersionSyncError,
+            "README.md=1.2.2",
+        ):
+            check_version_sync.verify_versions(self.root)
+
+    def test_rejects_inconsistent_install_versions_in_one_guide(self):
+        self._write(
+            "crates/ax-engine-py/README.md",
+            "\n".join(
+                (
+                    'pip install "ax-engine[download]>=1.2.3,<2"',
+                    'pip install "ax-engine[openai]>=1.2.2,<2"',
+                )
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            check_version_sync.VersionSyncError,
+            "inconsistent install versions in crates/ax-engine-py/README.md",
         ):
             check_version_sync.verify_versions(self.root)
 

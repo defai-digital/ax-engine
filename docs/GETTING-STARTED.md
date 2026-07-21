@@ -47,20 +47,31 @@ paths validate compatibility and route behavior.
 
 ### Match this guide
 
-This guide documents the current `6.9.x` command surface. **Homebrew is the
+These instructions track the latest tagged `6.x` release. **Homebrew is the
 primary deployment path** for the `ax-engine` CLI, server, and bench tools on
-macOS Apple Silicon. Released install channels can still lag behind the
-repository, so check the version before assuming the examples below apply:
+macOS Apple Silicon; the wheel is the supported secondary path for Python
+library use.
+
+| Goal | Recommended channel |
+| --- | --- |
+| Run the TUI, CLI, server, or benchmark tools | Homebrew |
+| Use `import ax_engine`, LangChain helpers, or Python extras | pip in a virtual environment |
+| Develop AX Engine or test unreleased changes | Source build |
+
+The repository can move ahead of its released packages. Refresh the selected
+channel and compare it with the
+[latest GitHub release](https://github.com/defai-digital/ax-engine/releases/latest)
+before following the examples:
 
 ```bash
+brew update
 brew info defai-digital/ax-engine/ax-engine
 python3 -m pip index versions ax-engine   # optional: Python SDK channel
 ```
 
-Use this guide only when Homebrew reports `6.9.0` or newer. If the formula is
-older, update the tap (`brew update`) or use a source build for the commands
-shown here. Prefer the Python wheel only when you need the in-process Python
-SDK (or when Homebrew is unavailable).
+If one channel has not caught up with the latest release, use the other channel
+or build that tagged release from source. Do not silently continue with an
+older package: it may not provide the command surface documented here.
 
 ### Homebrew (primary)
 
@@ -177,28 +188,37 @@ Run this once after `brew install`. No Apple Developer account is required.
 
 Use the wheel when you need the **Python package** (`import ax_engine`),
 LangChain helpers, or the optional OpenAI/multimodal extras — or when you cannot
-use Homebrew.
+use Homebrew. A virtual environment keeps its Python dependencies isolated from
+the system interpreter:
 
 ```bash
-python3 -m pip install "ax-engine[download]>=6.9.0,<7"
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install --upgrade "ax-engine[download]>=6.11.0,<7"
 ax-engine doctor
 ```
 
-The current macOS arm64 wheel also bundles `ax-engine-server` and
-`ax-engine-bench` behind the Python entrypoints, so a wheel-only install can
-still serve and diagnose. If pip cannot find `>=6.9.0` for your platform, use
-the source build below instead of silently accepting an older release. The wheel
+The current macOS arm64 wheel exposes `ax-engine` and `ax-engine-server` and
+bundles `ax-engine-bench` behind the Python entrypoints, so a wheel-only install
+can still serve and diagnose. If pip cannot find `>=6.11.0` for your platform,
+confirm that your configured package index is current, then use Homebrew or the
+source build below instead of silently accepting an older release. The wheel
 bundles AX and MLX Metal runtime assets used by normal serving; Xcode and
 Apple's Metal Toolchain are only required when you build from source, run
 developer diagnostics, or rebuild AX Metal kernels.
+
+The wheel and Homebrew formula both install commands named `ax-engine` and
+`ax-engine-server`. If you install both, an active virtual environment normally
+shadows `/opt/homebrew/bin`; check `which -a ax-engine` and use one installation
+channel in each shell to avoid running mismatched versions.
 
 ### Source
 
 Use source builds for development, local examples, or changes that have not
 been tagged yet. Source is the advanced fallback when neither Homebrew nor pip
-has a matching `6.9.x` package for the current guide. Install Xcode first, open
-it once to finish Apple's setup prompts, then install the Metal Toolchain
-component:
+has the current tagged release. Install Xcode first, open it once to finish
+Apple's setup prompts, then install the Metal Toolchain component:
 
 ```text
 brew install protobuf
@@ -324,7 +344,8 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 # Session is ready once this returns
 ```
 
-Install with `python3 -m pip install "ax-engine[download]>=6.9.0,<7"`.
+Install with
+`python3 -m pip install --upgrade "ax-engine[download]>=6.11.0,<7"`.
 
 Or via the script:
 
