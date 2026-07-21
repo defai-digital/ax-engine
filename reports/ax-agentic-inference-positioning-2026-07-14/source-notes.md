@@ -8,7 +8,7 @@
 
 ## Chart map
 
-- `multi_turn_ttft`: grouped bar chart comparing first-turn and eleventh-turn TTFT for three model families with physical prefix snapshot reuse in the AX Engine repository benchmark. This chart was selected because it shows the existing product asset most directly related to multi-turn agent workloads.
+- `multi_turn_ttft`: grouped bar chart comparing first-turn and tenth-turn (last-turn) TTFT for three model families with physical prefix snapshot reuse in the AX Engine repository benchmark. This chart was selected because it shows the existing product asset most directly related to multi-turn agent workloads.
 - A market-adoption chart was intentionally omitted because McKinsey and Gartner metrics use different populations and constructs; plotting them on one axis would imply false comparability.
 - Vendor-reported Dynamo, vLLM, and Autellix performance results were kept in narrative context rather than plotted, because the workloads and baselines are not comparable with AX.
 - The July 14 AX Serving deployment changes were not charted because they are binary implementation/status evidence rather than comparable quantitative measures.
@@ -42,3 +42,10 @@ These are decision aids, not measured market outcomes.
 - Source conflict: the AX Serving README still defines `/readyz` using routable-worker semantics, while the current runtime contract and code use control-plane readiness plus `/routablez`; the implementation ledger also still says the Helm chart and readiness split are pending even though they exist in the same commit.
 - GitHub Actions run `29312964367` for commit `7d3636e` failed at the reporting snapshot. Formatting, Kubernetes/Helm YAML parsing, and Clippy failures were observed; SDK conformance, dependency audit, and code-quality workflows passed.
 - No customer interviews, revenue, activation, retention, or deployment telemetry were available.
+
+## Corrections (2026-07-20)
+
+- Relabeled the later-turn TTFT series from the eleventh to the tenth turn across the chart data, SQL, metric definitions, and narrative. The underlying `ax.kv_multiturn_chat_evidence.v1` artifacts run exactly 10 turns, and the reported value is `summary.ttft_turn_last_s` (turn 10); `LONG-CONTEXT.md` labels it "Last-turn TTFT".
+- Clarified that the ~18.5k reused tokens are a cumulative total across the whole 10-turn session, not a single-turn value (tooltip label, metric definitions, and narrative).
+- Added GLM4.7's last-turn TTFT regression (0.791 s to 1.716 s) to the evidence-interpretation note to sharpen the non-uniform-architecture caveat.
+- Removed the "Engine structured mode" item from the 0–6 week doc-drift bullet. At commit `98b9bf1a` the Engine docs and code agree (`response_format` is accepted only as workload metadata and structured output validation is listed as unsupported), so the verified doc drift is AX Serving-side only.

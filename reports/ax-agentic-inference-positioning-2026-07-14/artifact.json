@@ -47,7 +47,7 @@
             {
               "field": "reused_tokens",
               "type": "quantitative",
-              "label": "重用 tokens",
+              "label": "session 累計重用 tokens",
               "format": "number"
             }
           ]
@@ -165,7 +165,7 @@
         "query": {
           "engine": "duckdb",
           "language": "sql",
-          "sql": "SELECT model, turn_stage, ttft_seconds, prefix_hits, reused_tokens, speedup_x, reduction_pct FROM (VALUES ('Qwen3.5', '首輪', 0.690, 10, 18496, 8.96, 0.888), ('Qwen3.5', '第 11 輪', 0.077, 10, 18496, 8.96, 0.888), ('Qwen3.6', '首輪', 0.633, 10, 18496, 5.81, 0.828), ('Qwen3.6', '第 11 輪', 0.109, 10, 18496, 5.81, 0.828), ('Gemma4 E2B', '首輪', 0.235, 10, 18784, 6.35, 0.843), ('Gemma4 E2B', '第 11 輪', 0.037, 10, 18784, 6.35, 0.843)) AS benchmark(model, turn_stage, ttft_seconds, prefix_hits, reused_tokens, speedup_x, reduction_pct)",
+          "sql": "SELECT model, turn_stage, ttft_seconds, prefix_hits, reused_tokens, speedup_x, reduction_pct FROM (VALUES ('Qwen3.5', '首輪', 0.690, 10, 18496, 8.96, 0.888), ('Qwen3.5', '第 10 輪', 0.077, 10, 18496, 8.96, 0.888), ('Qwen3.6', '首輪', 0.633, 10, 18496, 5.81, 0.828), ('Qwen3.6', '第 10 輪', 0.109, 10, 18496, 5.81, 0.828), ('Gemma4 E2B', '首輪', 0.235, 10, 18784, 6.35, 0.843), ('Gemma4 E2B', '第 10 輪', 0.037, 10, 18784, 6.35, 0.843)) AS benchmark(model, turn_stage, ttft_seconds, prefix_hits, reused_tokens, speedup_x, reduction_pct)",
           "description": "將 AX Engine LONG-CONTEXT.md 中支援 physical prefix snapshot 的三組首輪／末輪 TTFT benchmark 轉為 tidy rows；改善倍數與降幅由文件數值計算後四捨五入。",
           "url": "https://github.com/defai-digital/ax-engine/blob/98b9bf1a3a1325406c77d07f7c12c6fc674ce61b/docs/LONG-CONTEXT.md",
           "executed_at": "2026-07-14T06:59:18Z",
@@ -175,8 +175,9 @@
           ],
           "metric_definitions": [
             "TTFT：文件報告的 time to first token，單位為秒",
-            "speedup_x：首輪 TTFT 除以第 11 輪 TTFT",
-            "reduction_pct：1 減去第 11 輪 TTFT 除以首輪 TTFT"
+            "speedup_x：首輪 TTFT 除以第 10 輪 TTFT",
+            "reduction_pct：1 減去第 10 輪 TTFT 除以首輪 TTFT",
+            "reused_tokens：整個 10 輪 session 的累計重用 tokens，非單輪數值"
           ]
         }
       },
@@ -355,7 +356,7 @@
       {
         "id": "existing_fit",
         "type": "markdown",
-        "body": "## AX 已有的資產，和 agent workload 高度相符\n\n**AX Engine 已不只是最小的 token loop。** 現有能力包括 model-native tool calling、OpenAI／Ollama surface、request lifecycle、scheduler、KV cache、實體 prefix snapshot reuse、workload hints、telemetry，以及 coding／agentic speculation profile。AX Serving 則已具備 auth、tenant admission、priority aging、cache affinity、KV／queue 壓力感知路由、deployment identity、保守 retry／failover、drain 與 trace continuity。\n\n現有多輪基準也指出一個可驗證的 agentic wedge：在支援實體 prefix snapshot 的三個模型上，第 11 輪 TTFT 比首輪低約 82.8%–88.8%，重用了約 18.5k tokens。這不是普遍效能保證，也不代表所有模型都支援；它證明的是 **agent session reuse 已經能產生可量測價值**，值得成為產品主線而非隱藏優化。"
+        "body": "## AX 已有的資產，和 agent workload 高度相符\n\n**AX Engine 已不只是最小的 token loop。** 現有能力包括 model-native tool calling、OpenAI／Ollama surface、request lifecycle、scheduler、KV cache、實體 prefix snapshot reuse、workload hints、telemetry，以及 coding／agentic speculation profile。AX Serving 則已具備 auth、tenant admission、priority aging、cache affinity、KV／queue 壓力感知路由、deployment identity、保守 retry／failover、drain 與 trace continuity。\n\n現有多輪基準也指出一個可驗證的 agentic wedge：在支援實體 prefix snapshot 的三個模型上，第 10 輪（末輪）TTFT 比首輪低約 82.8%–88.8%，整個 10 輪 session 累計重用了約 18.5k tokens。這不是普遍效能保證，也不代表所有模型都支援；它證明的是 **agent session reuse 已經能產生可量測價值**，值得成為產品主線而非隱藏優化。"
       },
       {
         "id": "serving_current_main",
@@ -372,7 +373,7 @@
         "id": "ttft_note",
         "type": "markdown",
         "sourceId": "ax_engine_long_context",
-        "body": "### 證據解讀\n\nQwen3.5 從 0.690 秒降至 0.077 秒（8.96×），Qwen3.6 從 0.633 秒降至 0.109 秒（5.81×），Gemma4 E2B 從 0.235 秒降至 0.037 秒（6.35×）。同一文件也顯示 GLM4.7 在該路徑沒有 prefix hit，因此對外訊息必須限定於已驗證的 model family 與 workload。"
+        "body": "### 證據解讀\n\nQwen3.5 從 0.690 秒降至 0.077 秒（8.96×），Qwen3.6 從 0.633 秒降至 0.109 秒（5.81×），Gemma4 E2B 從 0.235 秒降至 0.037 秒（6.35×）。同一文件也顯示 GLM4.7 在該路徑沒有 prefix hit（末輪 TTFT 反而從 0.791 秒升至 1.716 秒），因此對外訊息必須限定於已驗證的 model family 與 workload。"
       },
       {
         "id": "portfolio_split",
@@ -409,7 +410,7 @@
       {
         "id": "roadmap",
         "type": "markdown",
-        "body": "## 建議的 12 個月執行順序\n\n### 0–6 週：定位與 contract\n\n- 對外採用 portfolio 故事；Engine 用 **agent-aware inference runtime**，Serving 用 **agent-aware inference fabric／fleet control plane**。\n- 發布跨 repo Agent Session Contract v1 RFC，並保留 OpenAI-compatible fallback。\n- 先讓 main 回到綠燈，並修正文檔狀態漂移：Engine 的 structured mode 說明、Serving 的 `/readyz`／`/routablez` 定義，以及 Helm／Compose implementation status。\n- 建立 OpenAI Agents SDK、LangGraph 與至少一個 coding-agent harness 的 reference adapter／conformance test；不把 harness 內嵌到 AX。\n\n### 6–16 週：把 agent loop 變成可量測的 runtime feature\n\n- Engine 完成 schema-constrained decoding、可靠 tool streaming 與 cache retention primitives。\n- Serving 完成 session-aware routing、safe session lock、runtime capability negotiation 與 agent-specific traces。\n- 優先評估 Anthropic Messages 與 OpenAI Responses 相容層，因 coding agents 的採用價值高於再新增一套自有 agent API。\n\n### 4–9 個月：證明 program-level 優勢\n\n- 用真實或可重播的 coding、research、RAG + tools traces 測 program p95，而不只測 tokens/s。\n- 實驗 tool-boundary pause/resume、program-aware admission 與 subagent fairness；先以 capability-gated profile 發布。\n- 與 5–10 個 design partners 驗證 private Apple Silicon + CUDA fleet 是否真的是付費 wedge。\n\n### 9–12 個月：只在證據成立時 hard rebrand\n\n若 AX 在多個外部 harness 上穩定改善 time-to-next-action，且 Serving 通過 production gates，再把 agentic inference 提升為主品牌；否則維持 secondary use-case positioning。"
+        "body": "## 建議的 12 個月執行順序\n\n### 0–6 週：定位與 contract\n\n- 對外採用 portfolio 故事；Engine 用 **agent-aware inference runtime**，Serving 用 **agent-aware inference fabric／fleet control plane**。\n- 發布跨 repo Agent Session Contract v1 RFC，並保留 OpenAI-compatible fallback。\n- 先讓 main 回到綠燈，並修正文檔狀態漂移：Serving 的 `/readyz`／`/routablez` 定義，以及 Helm／Compose implementation status。\n- 建立 OpenAI Agents SDK、LangGraph 與至少一個 coding-agent harness 的 reference adapter／conformance test；不把 harness 內嵌到 AX。\n\n### 6–16 週：把 agent loop 變成可量測的 runtime feature\n\n- Engine 完成 schema-constrained decoding、可靠 tool streaming 與 cache retention primitives。\n- Serving 完成 session-aware routing、safe session lock、runtime capability negotiation 與 agent-specific traces。\n- 優先評估 Anthropic Messages 與 OpenAI Responses 相容層，因 coding agents 的採用價值高於再新增一套自有 agent API。\n\n### 4–9 個月：證明 program-level 優勢\n\n- 用真實或可重播的 coding、research、RAG + tools traces 測 program p95，而不只測 tokens/s。\n- 實驗 tool-boundary pause/resume、program-aware admission 與 subagent fairness；先以 capability-gated profile 發布。\n- 與 5–10 個 design partners 驗證 private Apple Silicon + CUDA fleet 是否真的是付費 wedge。\n\n### 9–12 個月：只在證據成立時 hard rebrand\n\n若 AX 在多個外部 harness 上穩定改善 time-to-next-action，且 Serving 通過 production gates，再把 agentic inference 提升為主品牌；否則維持 secondary use-case positioning。"
       },
       {
         "id": "gates",
@@ -450,7 +451,7 @@
         },
         {
           "model": "Qwen3.5",
-          "turn_stage": "第 11 輪",
+          "turn_stage": "第 10 輪",
           "ttft_seconds": 0.077,
           "prefix_hits": 10,
           "reused_tokens": 18496,
@@ -468,7 +469,7 @@
         },
         {
           "model": "Qwen3.6",
-          "turn_stage": "第 11 輪",
+          "turn_stage": "第 10 輪",
           "ttft_seconds": 0.109,
           "prefix_hits": 10,
           "reused_tokens": 18496,
@@ -486,7 +487,7 @@
         },
         {
           "model": "Gemma4 E2B",
-          "turn_stage": "第 11 輪",
+          "turn_stage": "第 10 輪",
           "ttft_seconds": 0.037,
           "prefix_hits": 10,
           "reused_tokens": 18784,
