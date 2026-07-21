@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, arange, astype, broadcast_to,
     concatenate, conv2d, expand_dims, flatten, gelu, layer_norm, matmul, multiply, pad, reshape,
-    scaled_dot_product_attention, scaled_dot_product_attention_with_mask, slice, slice_update,
-    split, subtract, take, transpose, zeros,
+    scaled_dot_product_attention, scaled_dot_product_attention_with_mask, sigmoid, slice,
+    slice_update, split, subtract, take, transpose, zeros,
 };
 use thiserror::Error;
 
@@ -34,7 +34,12 @@ const CLIP_WIDTH: i32 = 1024;
 const CLIP_LAYERS: usize = 24;
 const CLIP_HEADS: usize = 16;
 const CLIP_INTERMEDIATE: i32 = 4096;
-const LN_EPS: f32 = 1.0e-6;
+/// SAM ViT LayerNorm / LayerNorm2d epsilon (`eps=1e-6` in deepencoder.py).
+const SAM_LN_EPS: f32 = 1.0e-6;
+/// OpenCLIP / Unlimited-OCR CLIP tower LayerNorm epsilon (`layernorm_epsilon=1e-5`).
+const CLIP_LN_EPS: f32 = 1.0e-5;
+/// OpenCLIP QuickGELU coefficient: `x * sigmoid(1.702 * x)`.
+const QUICK_GELU_SCALE: f32 = 1.702;
 const DOWNSAMPLE_RATIO: i32 = 4;
 
 #[derive(Debug, Error)]
@@ -78,12 +83,23 @@ impl DenseLinear {
 struct LayerNormW {
     weight: MlxArray,
     bias: MlxArray,
+    eps: f32,
 }
 
 impl LayerNormW {
     fn forward(&self, x: &MlxArray) -> MlxArray {
-        layer_norm(x, &self.weight, &self.bias, LN_EPS, None)
+        layer_norm(x, &self.weight, &self.bias, self.eps, None)
     }
+}
+
+/// OpenCLIP QuickGELU used by Unlimited-OCR CLIP MLP (not standard GELU).
+///
+/// `quick_gelu(x) = x * sigmoid(1.702 * x)` — see baidu/Unlimited-OCR
+/// `deepencoder.NoTPFeedForward`.
+fn quick_gelu(x: &MlxArray) -> MlxArray {
+    let scale = mlx_sys::ops::cached_scalar(QUICK_GELU_SCALE, x.dtype());
+    let scaled = multiply(x, &scale, None);
+    multiply(x, &sigmoid(&scaled, None), None)
 }
 
 #[derive(Clone)]
@@ -218,10 +234,12 @@ fn take_linear(
 fn take_ln(
     map: &mut HashMap<String, MlxArray>,
     base: &str,
+    eps: f32,
 ) -> Result<LayerNormW, UnlimitedOcrError> {
     Ok(LayerNormW {
         weight: take_arr(map, &format!("{base}.weight"))?,
         bias: take_arr(map, &format!("{base}.bias"))?,
+        eps,
     })
 }
 
@@ -264,7 +282,7 @@ fn load_sam(map: &mut HashMap<String, MlxArray>) -> Result<SamEncoder, Unlimited
         let head_dim = (SAM_WIDTH as usize) / SAM_HEADS;
         let scale = (head_dim as f32).powf(-0.5);
         blocks.push(SamBlock {
-            norm1: take_ln(map, &format!("{p}.norm1"))?,
+            norm1: take_ln(map, &format!("{p}.norm1"), SAM_LN_EPS)?,
             attn: SamAttention {
                 qkv,
                 proj,
@@ -273,7 +291,7 @@ fn load_sam(map: &mut HashMap<String, MlxArray>) -> Result<SamEncoder, Unlimited
                 num_heads: SAM_HEADS,
                 scale,
             },
-            norm2: take_ln(map, &format!("{p}.norm2"))?,
+            norm2: take_ln(map, &format!("{p}.norm2"), SAM_LN_EPS)?,
             mlp_lin1: take_linear(map, &format!("{p}.mlp.lin1"))?,
             mlp_lin2: take_linear(map, &format!("{p}.mlp.lin2"))?,
             window_size,
@@ -284,9 +302,9 @@ fn load_sam(map: &mut HashMap<String, MlxArray>) -> Result<SamEncoder, Unlimited
         pos_embed,
         blocks,
         neck0: take_conv(map, "sam_model.neck.0", 1, 0, false)?,
-        neck1: take_ln(map, "sam_model.neck.1")?,
+        neck1: take_ln(map, "sam_model.neck.1", SAM_LN_EPS)?,
         neck2: take_conv(map, "sam_model.neck.2", 1, 1, false)?,
-        neck3: take_ln(map, "sam_model.neck.3")?,
+        neck3: take_ln(map, "sam_model.neck.3", SAM_LN_EPS)?,
         net_2: take_conv(map, "sam_model.net_2", 2, 1, false)?,
         net_3: take_conv(map, "sam_model.net_3", 2, 1, false)?,
     })
@@ -297,21 +315,21 @@ fn load_clip(map: &mut HashMap<String, MlxArray>) -> Result<ClipVision, Unlimite
     let patch_embedding = take_conv(map, "vision_model.embeddings.patch_embedding", 14, 0, false)?;
     let position_embedding = take_arr(map, "vision_model.embeddings.position_embedding.weight")?;
     // typo preserved from HF checkpoint: pre_layrnorm
-    let pre_layernorm = take_ln(map, "vision_model.pre_layrnorm")?;
+    let pre_layernorm = take_ln(map, "vision_model.pre_layrnorm", CLIP_LN_EPS)?;
     let mut layers = Vec::with_capacity(CLIP_LAYERS);
     let head_dim = (CLIP_WIDTH as usize) / CLIP_HEADS;
     let scale = (head_dim as f32).powf(-0.5);
     for i in 0..CLIP_LAYERS {
         let p = format!("vision_model.transformer.layers.{i}");
         layers.push(ClipEncoderLayer {
-            ln1: take_ln(map, &format!("{p}.layer_norm1"))?,
+            ln1: take_ln(map, &format!("{p}.layer_norm1"), CLIP_LN_EPS)?,
             attn: ClipAttention {
                 qkv: take_linear(map, &format!("{p}.self_attn.qkv_proj"))?,
                 out_proj: take_linear(map, &format!("{p}.self_attn.out_proj"))?,
                 num_heads: CLIP_HEADS,
                 scale,
             },
-            ln2: take_ln(map, &format!("{p}.layer_norm2"))?,
+            ln2: take_ln(map, &format!("{p}.layer_norm2"), CLIP_LN_EPS)?,
             fc1: take_linear(map, &format!("{p}.mlp.fc1"))?,
             fc2: take_linear(map, &format!("{p}.mlp.fc2"))?,
         });
@@ -742,9 +760,10 @@ fn clip_attention(attn: &ClipAttention, x: &MlxArray) -> MlxArray {
 fn clip_layer_forward(layer: &ClipEncoderLayer, x: &MlxArray) -> MlxArray {
     let y = clip_attention(&layer.attn, &layer.ln1.forward(x));
     let x = add(x, &y, None);
+    // OpenCLIP MLP uses QuickGELU, not the erf-based GELU used by SAM.
     let y = layer
         .fc2
-        .forward(&gelu(&layer.fc1.forward(&layer.ln2.forward(&x)), None));
+        .forward(&quick_gelu(&layer.fc1.forward(&layer.ln2.forward(&x))));
     add(&x, &y, None)
 }
 
@@ -967,5 +986,54 @@ mod tests {
     fn base_soft_token_count_1024() {
         assert_eq!(default_base_soft_token_count(), 273);
         assert_eq!(base_soft_token_count(1024, 16, 4), 273);
+    }
+
+    /// Regression: CLIP MLP must use OpenCLIP QuickGELU, not erf-GELU.
+    ///
+    /// Reference: `quick_gelu(x) = x * sigmoid(1.702 * x)` from
+    /// baidu/Unlimited-OCR `deepencoder.NoTPFeedForward`. Standard GELU
+    /// diverges enough at moderate magnitudes to corrupt vision features.
+    #[test]
+    fn quick_gelu_matches_openclip_formula() {
+        let xs = [-2.0f32, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 3.5];
+        let arr = MlxArray::from_raw_data(
+            xs.as_ptr().cast(),
+            std::mem::size_of_val(xs.as_slice()),
+            &[xs.len() as i32],
+            MlxDtype::Float32,
+        );
+        let out = quick_gelu(&arr);
+        mlx_sys::eval(&[&out]);
+        let got = out.data_f32();
+        assert_eq!(got.len(), xs.len());
+        for (i, &x) in xs.iter().enumerate() {
+            let expected = x * (1.0 / (1.0 + (-1.702 * x).exp()));
+            let g = got[i];
+            let err = (g - expected).abs();
+            assert!(
+                err < 1e-5,
+                "quick_gelu({x}) = {g}, expected {expected}, err={err}"
+            );
+            // Approximate GELU (tanh form) must diverge for |x| >= 1 so this
+            // test would not pass if the activation were standard GELU.
+            let gelu_ref = {
+                let t = (2.0f32 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x * x * x);
+                0.5 * x * (1.0 + t.tanh())
+            };
+            if x.abs() >= 1.0 {
+                assert!(
+                    (expected - gelu_ref).abs() > 1e-3,
+                    "test point x={x} does not separate quick_gelu from approx gelu"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn layer_norm_eps_constants_match_reference_towers() {
+        // SAM uses 1e-6; CLIP OpenCLIP tower uses 1e-5.
+        assert!((SAM_LN_EPS - 1.0e-6).abs() < f32::EPSILON);
+        assert!((CLIP_LN_EPS - 1.0e-5).abs() < f32::EPSILON);
+        assert!(CLIP_LN_EPS > SAM_LN_EPS);
     }
 }
