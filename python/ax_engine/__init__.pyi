@@ -10,6 +10,25 @@ class EngineStateError(EngineError): ...
 
 def _bundled_binary(name: str) -> Path | None: ...
 
+UNLIMITED_OCR_BASE_SOFT_TOKEN_COUNT: int
+UNLIMITED_OCR_LOCAL_TILE_SIZE: int
+UNLIMITED_OCR_MAX_LOCAL_TILES: int
+UNLIMITED_OCR_LOCAL_QUERY_GRID: int
+
+@dataclass(frozen=True)
+class UnlimitedOcrImageRequest:
+    input_tokens: list[int]
+    multimodal_inputs: dict[str, Any]
+    soft_token_count: int
+
+def prepare_unlimited_ocr_image_request(
+    model_dir: str | Path,
+    input_tokens: list[int],
+    images: list[Any],
+    *,
+    cropping: bool = ...,
+) -> UnlimitedOcrImageRequest: ...
+
 @dataclass(frozen=True)
 class Gemma4UnifiedMultimodalRequest:
     input_tokens: list[int]
@@ -331,6 +350,8 @@ class Session:
         min_p: float | None = None,
         repetition_penalty: float = 1.0,
         repetition_context_size: int | None = None,
+        no_repeat_ngram_size: int = 0,
+        ngram_window: int = 128,
         seed: int = 0,
         deterministic: bool | None = None,
         stop_sequences: list[str] | None = None,
@@ -365,6 +386,8 @@ class Session:
         min_p: float | None = None,
         repetition_penalty: float = 1.0,
         repetition_context_size: int | None = None,
+        no_repeat_ngram_size: int = 0,
+        ngram_window: int = 128,
         seed: int = 0,
         deterministic: bool | None = None,
         stop_sequences: list[str] | None = None,
@@ -402,6 +425,8 @@ class Session:
         min_p: float | None = None,
         repetition_penalty: float = 1.0,
         repetition_context_size: int | None = None,
+        no_repeat_ngram_size: int = 0,
+        ngram_window: int = 128,
         seed: int = 0,
         deterministic: bool | None = None,
         stop_sequences: list[str] | None = None,

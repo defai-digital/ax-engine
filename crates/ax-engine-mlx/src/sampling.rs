@@ -43,6 +43,8 @@ pub struct MlxSamplingParams {
     pub top_k: u32,
     pub repetition_penalty: f32,
     pub repetition_context_size: Option<u32>,
+    pub no_repeat_ngram_size: u32,
+    pub ngram_window: u32,
 }
 
 impl MlxSamplingParams {
@@ -53,6 +55,8 @@ impl MlxSamplingParams {
             top_k,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            no_repeat_ngram_size: 0,
+            ngram_window: 128,
         }
     }
 
@@ -74,6 +78,24 @@ impl MlxSamplingParams {
         self.repetition_penalty.is_finite()
             && self.repetition_penalty > 0.0
             && self.repetition_penalty != 1.0
+    }
+
+    pub const fn with_no_repeat_ngram(
+        mut self,
+        no_repeat_ngram_size: u32,
+        ngram_window: u32,
+    ) -> Self {
+        self.no_repeat_ngram_size = no_repeat_ngram_size;
+        self.ngram_window = ngram_window;
+        self
+    }
+
+    pub const fn uses_no_repeat_ngram(self) -> bool {
+        self.no_repeat_ngram_size > 0
+    }
+
+    pub fn uses_logits_processors(self) -> bool {
+        self.uses_repetition_penalty() || self.uses_no_repeat_ngram()
     }
 }
 
@@ -177,13 +199,21 @@ pub fn sample_categorical_into(
     if logits.is_empty() {
         return 0;
     }
-    let logits = if sampling.uses_repetition_penalty() && !repetition_tokens.is_empty() {
+    let logits = if sampling.uses_logits_processors() && !repetition_tokens.is_empty() {
         logits_buf.clear();
         logits_buf.extend_from_slice(logits);
-        logits_with_repetition_penalty_in_place(
+        if sampling.uses_repetition_penalty() {
+            logits_with_repetition_penalty_in_place(
+                logits_buf,
+                sampling.repetition_penalty,
+                recent_repetition_tokens(repetition_tokens, sampling.repetition_context_size),
+            );
+        }
+        logits_with_no_repeat_ngram_in_place(
             logits_buf,
-            sampling.repetition_penalty,
-            recent_repetition_tokens(repetition_tokens, sampling.repetition_context_size),
+            sampling.no_repeat_ngram_size,
+            sampling.ngram_window,
+            repetition_tokens,
         );
         logits_buf.as_slice()
     } else {
@@ -267,7 +297,7 @@ pub fn sample_categorical_with_topk_gpu(
     if !fastpath::decode_sampling_gpu_topk_enabled()
         || sampling.temperature <= 0.0
         || sampling.top_k == 0
-        || (sampling.uses_repetition_penalty() && !repetition_tokens.is_empty())
+        || (sampling.uses_logits_processors() && !repetition_tokens.is_empty())
     {
         return None;
     }
@@ -308,7 +338,7 @@ pub fn sample_categorical_with_topp_gpu(
         || sampling.temperature <= 0.0
         || sampling.top_k != 0
         || !(sampling.top_p > 0.0 && sampling.top_p < 1.0)
-        || (sampling.uses_repetition_penalty() && !repetition_tokens.is_empty())
+        || (sampling.uses_logits_processors() && !repetition_tokens.is_empty())
     {
         return None;
     }
@@ -817,6 +847,32 @@ fn logits_with_repetition_penalty_in_place(
     }
 }
 
+fn logits_with_no_repeat_ngram_in_place(
+    logits: &mut [f32],
+    no_repeat_ngram_size: u32,
+    ngram_window: u32,
+    history: &[u32],
+) {
+    let ngram_size = no_repeat_ngram_size as usize;
+    if ngram_size == 0 || history.len() < ngram_size {
+        return;
+    }
+    let keep = (ngram_window as usize).max(ngram_size).min(history.len());
+    let history = &history[history.len() - keep..];
+    if history.len() < ngram_size {
+        return;
+    }
+    let prefix_len = ngram_size - 1;
+    let current_prefix = &history[history.len() - prefix_len..];
+    for start in 0..=history.len() - ngram_size {
+        if (prefix_len == 0 || &history[start..start + prefix_len] == current_prefix)
+            && let Some(logit) = logits.get_mut(history[start + prefix_len] as usize)
+        {
+            *logit = f32::NEG_INFINITY;
+        }
+    }
+}
+
 fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32) {
     let filters_enabled = top_k > 0 || top_p < 1.0;
     if !filters_enabled {
@@ -1204,5 +1260,29 @@ mod tests {
         let sampling = MlxSamplingParams::greedy().with_repetition_penalty(2.0, Some(1));
 
         assert_eq!(sample_categorical(&logits, sampling, &[1, 2], &mut rng), 1);
+    }
+
+    #[test]
+    fn no_repeat_ngram_bans_repeated_continuation_before_greedy_argmax() {
+        let logits = vec![0.5_f32, 0.4, 2.0, 0.3];
+        let mut rng = Xorshift64::new(1);
+        let sampling = MlxSamplingParams::greedy().with_no_repeat_ngram(3, 16);
+
+        assert_eq!(
+            sample_categorical(&logits, sampling, &[1, 2, 2, 1, 2], &mut rng),
+            0
+        );
+    }
+
+    #[test]
+    fn no_repeat_ngram_respects_recent_history_window() {
+        let logits = vec![0.5_f32, 0.4, 2.0, 0.3];
+        let mut rng = Xorshift64::new(1);
+        let sampling = MlxSamplingParams::greedy().with_no_repeat_ngram(3, 3);
+
+        assert_eq!(
+            sample_categorical(&logits, sampling, &[1, 2, 2, 1, 2], &mut rng),
+            2
+        );
     }
 }

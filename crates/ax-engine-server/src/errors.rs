@@ -77,6 +77,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
     match error {
         EngineSessionError::EmptyInputTokens
         | EngineSessionError::InvalidMaxOutputTokens
+        | EngineSessionError::InvalidNoRepeatNgram { .. }
         | EngineSessionError::MlxBackendRequiresTokenizedInput
         | EngineSessionError::MultimodalInputsRequireNativeMlx { .. }
         | EngineSessionError::MultimodalPromptExceedsMaxBatchTokens { .. }
@@ -207,15 +208,17 @@ fn openai_error_type(status: StatusCode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ax_engine_sdk::Gemma4UnifiedRuntimeInputError;
+    use ax_engine_sdk::{Gemma4UnifiedRuntimeInputError, RequestMultimodalInputError};
 
     #[test]
     fn invalid_multimodal_inputs_map_to_invalid_request() {
         let (status, body) = map_session_error(EngineSessionError::InvalidMultimodalInputs(
-            Gemma4UnifiedRuntimeInputError::InvalidField {
-                field: "images[0].span".to_string(),
-                message: "replacement span exceeds prompt".to_string(),
-            },
+            RequestMultimodalInputError::Gemma4Unified(
+                Gemma4UnifiedRuntimeInputError::InvalidField {
+                    field: "images[0].span".to_string(),
+                    message: "replacement span exceeds prompt".to_string(),
+                },
+            ),
         ));
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -227,5 +230,19 @@ mod tests {
                 .message
                 .contains("invalid Gemma4 unified runtime input")
         );
+    }
+
+    #[test]
+    fn invalid_no_repeat_ngram_maps_to_invalid_request() {
+        let (status, body) = map_session_error(EngineSessionError::InvalidNoRepeatNgram {
+            no_repeat_ngram_size: 4,
+            ngram_window: 3,
+        });
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body = body.0;
+        assert_eq!(body.error.code.as_deref(), Some("invalid_request"));
+        assert_eq!(body.error.error_type, "invalid_request_error");
+        assert!(body.error.message.contains("no_repeat_ngram_size=4"));
     }
 }

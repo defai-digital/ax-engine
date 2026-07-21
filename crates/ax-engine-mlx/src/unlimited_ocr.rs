@@ -8,11 +8,15 @@
 
 use std::collections::HashMap;
 
+use ax_engine_core::{
+    UNLIMITED_OCR_LOCAL_QUERY_GRID, UNLIMITED_OCR_LOCAL_TILE_SIZE, unlimited_ocr_crop_grid,
+};
+use image::{Rgb, RgbImage, imageops};
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, arange, astype, broadcast_to,
     concatenate, conv2d, expand_dims, flatten, gelu, layer_norm, matmul, multiply, pad, reshape,
-    scaled_dot_product_attention, scaled_dot_product_attention_with_mask, sigmoid, slice,
-    slice_update, split, subtract, take, transpose, zeros,
+    scaled_dot_product_attention, scaled_dot_product_attention_with_mask, slice, slice_update,
+    split, subtract, take, transpose, zeros,
 };
 use thiserror::Error;
 
@@ -24,6 +28,7 @@ use crate::weights::{ModelWeights, QuantizedWeight};
 pub const DEFAULT_IMAGE_TOKEN_ID: u32 = 128_815;
 
 const IMAGE_SIZE: i32 = 1024;
+const LOCAL_IMAGE_SIZE: i32 = UNLIMITED_OCR_LOCAL_TILE_SIZE as i32;
 const SAM_PATCH: i32 = 16;
 const SAM_WIDTH: i32 = 768;
 const SAM_DEPTH: usize = 12;
@@ -36,10 +41,10 @@ const CLIP_HEADS: usize = 16;
 const CLIP_INTERMEDIATE: i32 = 4096;
 /// SAM ViT LayerNorm / LayerNorm2d epsilon (`eps=1e-6` in deepencoder.py).
 const SAM_LN_EPS: f32 = 1.0e-6;
-/// OpenCLIP / Unlimited-OCR CLIP tower LayerNorm epsilon (`layernorm_epsilon=1e-5`).
-const CLIP_LN_EPS: f32 = 1.0e-5;
-/// OpenCLIP QuickGELU coefficient: `x * sigmoid(1.702 * x)`.
-const QUICK_GELU_SCALE: f32 = 1.702;
+/// The CLIP embedding pre-normalization keeps MLX LayerNorm's 1e-5 default.
+const CLIP_PRE_LN_EPS: f32 = 1.0e-5;
+/// Unlimited-OCR's transformer ``VisionConfig.layer_norm_eps`` is 1e-6.
+const CLIP_LAYER_LN_EPS: f32 = 1.0e-6;
 const DOWNSAMPLE_RATIO: i32 = 4;
 
 #[derive(Debug, Error)]
@@ -92,22 +97,14 @@ impl LayerNormW {
     }
 }
 
-/// OpenCLIP QuickGELU used by Unlimited-OCR CLIP MLP (not standard GELU).
-///
-/// `quick_gelu(x) = x * sigmoid(1.702 * x)` — see baidu/Unlimited-OCR
-/// `deepencoder.NoTPFeedForward`.
-fn quick_gelu(x: &MlxArray) -> MlxArray {
-    let scale = mlx_sys::ops::cached_scalar(QUICK_GELU_SCALE, x.dtype());
-    let scaled = multiply(x, &scale, None);
-    multiply(x, &sigmoid(&scaled, None), None)
-}
-
 #[derive(Clone)]
 struct SamAttention {
     qkv: DenseLinear,
     proj: DenseLinear,
     rel_pos_h: Option<MlxArray>,
     rel_pos_w: Option<MlxArray>,
+    rel_pos_h_local: Option<MlxArray>,
+    rel_pos_w_local: Option<MlxArray>,
     num_heads: usize,
     scale: f32,
 }
@@ -126,6 +123,7 @@ struct SamBlock {
 struct SamEncoder {
     patch_embed: DenseLinearLikeConv,
     pos_embed: MlxArray,
+    pos_embed_local: MlxArray,
     blocks: Vec<SamBlock>,
     neck0: DenseLinearLikeConv,
     neck1: LayerNormW,
@@ -183,6 +181,7 @@ struct ClipVision {
     #[allow(dead_code)]
     patch_embedding: DenseLinearLikeConv,
     position_embedding: MlxArray,
+    position_embedding_local: MlxArray,
     pre_layernorm: LayerNormW,
     layers: Vec<ClipEncoderLayer>,
 }
@@ -198,6 +197,14 @@ pub struct UnlimitedOcrVisionWeights {
     pub image_token_id: u32,
 }
 
+/// Preprocessed global view plus the released processor's optional local tiles.
+pub struct UnlimitedOcrImageViews {
+    pub global_nhwc: MlxArray,
+    pub local_nhwc: Option<MlxArray>,
+    pub crop_columns: u32,
+    pub crop_rows: u32,
+}
+
 /// Soft-token count for base-resolution global-only mode.
 ///
 /// `num_queries = ceil((image_size / patch_size) / downsample_ratio)`
@@ -211,6 +218,157 @@ pub fn base_soft_token_count(image_size: i32, patch_size: i32, downsample_ratio:
 /// Default base-mode soft token count for 1024 / SAM patch 16 / downsample 4 → 273.
 pub fn default_base_soft_token_count() -> usize {
     base_soft_token_count(IMAGE_SIZE, SAM_PATCH, DOWNSAMPLE_RATIO)
+}
+
+fn cubic_weight(distance: f32, coefficient: f32) -> f32 {
+    let value = distance.abs();
+    if value <= 1.0 {
+        (coefficient + 2.0) * value.powi(3) - (coefficient + 3.0) * value.powi(2) + 1.0
+    } else if value < 2.0 {
+        coefficient * value.powi(3) - 5.0 * coefficient * value.powi(2) + 8.0 * coefficient * value
+            - 4.0 * coefficient
+    } else {
+        0.0
+    }
+}
+
+fn cubic_axis_weights(input: usize, output: usize, antialias: bool) -> Vec<Vec<(usize, f32)>> {
+    let scale = output as f32 / input as f32;
+    let filter_scale = if antialias && scale < 1.0 {
+        1.0 / scale
+    } else {
+        1.0
+    };
+    let support = 2.0 * filter_scale;
+    let taps = (2.0 * support + 1.0) as usize;
+    let coefficient = if antialias { -0.5 } else { -0.75 };
+
+    (0..output)
+        .map(|index| {
+            let coordinate = (index as f32 + 0.5) / output as f32 * input as f32 - 0.5;
+            let start = (coordinate - support).floor() as isize + 1;
+            let mut values = Vec::with_capacity(taps);
+            let mut total = 0.0_f32;
+            for offset in 0..taps {
+                let source = start + offset as isize;
+                if source < 0 || source >= input as isize {
+                    continue;
+                }
+                let weight = cubic_weight((coordinate - source as f32) / filter_scale, coefficient);
+                if weight != 0.0 {
+                    values.push((source as usize, weight));
+                    total += weight;
+                }
+            }
+            if total != 0.0 {
+                for (_, weight) in &mut values {
+                    *weight /= total;
+                }
+            }
+            values
+        })
+        .collect()
+}
+
+fn resize_hwc_cubic(
+    input: &[f32],
+    input_height: usize,
+    input_width: usize,
+    channels: usize,
+    output_height: usize,
+    output_width: usize,
+    antialias: bool,
+) -> Vec<f32> {
+    let y_weights = cubic_axis_weights(input_height, output_height, antialias);
+    let x_weights = cubic_axis_weights(input_width, output_width, antialias);
+    let mut vertical = vec![0.0_f32; output_height * input_width * channels];
+    for (output_y, entries) in y_weights.iter().enumerate() {
+        for x in 0..input_width {
+            for channel in 0..channels {
+                let mut value = 0.0_f32;
+                for &(input_y, weight) in entries {
+                    value += input[(input_y * input_width + x) * channels + channel] * weight;
+                }
+                vertical[(output_y * input_width + x) * channels + channel] = value;
+            }
+        }
+    }
+
+    let mut output = vec![0.0_f32; output_height * output_width * channels];
+    for y in 0..output_height {
+        for (output_x, entries) in x_weights.iter().enumerate() {
+            for channel in 0..channels {
+                let mut value = 0.0_f32;
+                for &(input_x, weight) in entries {
+                    value += vertical[(y * input_width + input_x) * channels + channel] * weight;
+                }
+                output[(y * output_width + output_x) * channels + channel] = value;
+            }
+        }
+    }
+    output
+}
+
+fn array_f32_values(array: &MlxArray) -> Vec<f32> {
+    let values = astype(array, MlxDtype::Float32, None);
+    mlx_sys::eval(&[&values]);
+    values.data_f32().to_vec()
+}
+
+fn array_from_f32(values: &[f32], shape: &[i32], dtype: MlxDtype) -> MlxArray {
+    let value = MlxArray::from_raw_data(
+        values.as_ptr().cast(),
+        std::mem::size_of_val(values),
+        shape,
+        MlxDtype::Float32,
+    );
+    let value = astype(&value, dtype, None);
+    mlx_sys::eval(&[&value]);
+    value
+}
+
+fn resize_sam_position_embedding(position: &MlxArray) -> MlxArray {
+    let shape = position.shape();
+    let channels = shape[3] as usize;
+    let values = array_f32_values(position);
+    let resized = resize_hwc_cubic(&values, 64, 64, channels, 40, 40, true);
+    array_from_f32(&resized, &[1, 40, 40, shape[3]], position.dtype())
+}
+
+fn resize_clip_position_embedding(position: &MlxArray) -> MlxArray {
+    let shape = position.shape();
+    let channels = shape[1] as usize;
+    let values = array_f32_values(position);
+    let resized = resize_hwc_cubic(&values[channels..], 16, 16, channels, 10, 10, false);
+    let mut combined = Vec::with_capacity((1 + 100) * channels);
+    combined.extend_from_slice(&values[..channels]);
+    combined.extend_from_slice(&resized);
+    array_from_f32(&combined, &[101, shape[1]], position.dtype())
+}
+
+fn resize_relative_position(position: &MlxArray, output_length: usize) -> MlxArray {
+    let shape = position.shape();
+    let input_length = shape[0] as usize;
+    let channels = shape[1] as usize;
+    let values = array_f32_values(position);
+    let scale = input_length as f32 / output_length as f32;
+    let mut resized = vec![0.0_f32; output_length * channels];
+    for output in 0..output_length {
+        let coordinate = output as f32 * scale;
+        let lower = (coordinate.floor() as usize).min(input_length - 1);
+        let upper = (lower + 1).min(input_length - 1);
+        let weight = coordinate - lower as f32;
+        for channel in 0..channels {
+            resized[output * channels + channel] = values[lower * channels + channel]
+                * (1.0 - weight)
+                + values[upper * channels + channel] * weight;
+        }
+    }
+    array_from_f32(
+        &resized,
+        &[output_length as i32, shape[1]],
+        position.dtype(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +425,7 @@ fn take_conv(
 fn load_sam(map: &mut HashMap<String, MlxArray>) -> Result<SamEncoder, UnlimitedOcrError> {
     let patch_embed = take_conv(map, "sam_model.patch_embed.proj", SAM_PATCH, 0, true)?;
     let pos_embed = take_arr(map, "sam_model.pos_embed")?;
+    let pos_embed_local = resize_sam_position_embedding(&pos_embed);
     let mut blocks = Vec::with_capacity(SAM_DEPTH);
     for i in 0..SAM_DEPTH {
         let p = format!("sam_model.blocks.{i}");
@@ -279,6 +438,20 @@ fn load_sam(map: &mut HashMap<String, MlxArray>) -> Result<SamEncoder, Unlimited
         let proj = take_linear(map, &format!("{p}.attn.proj"))?;
         let rel_pos_h = map.remove(&format!("{p}.attn.rel_pos_h"));
         let rel_pos_w = map.remove(&format!("{p}.attn.rel_pos_w"));
+        let rel_pos_h_local = (window_size == 0)
+            .then(|| {
+                rel_pos_h
+                    .as_ref()
+                    .map(|value| resize_relative_position(value, 79))
+            })
+            .flatten();
+        let rel_pos_w_local = (window_size == 0)
+            .then(|| {
+                rel_pos_w
+                    .as_ref()
+                    .map(|value| resize_relative_position(value, 79))
+            })
+            .flatten();
         let head_dim = (SAM_WIDTH as usize) / SAM_HEADS;
         let scale = (head_dim as f32).powf(-0.5);
         blocks.push(SamBlock {
@@ -288,6 +461,8 @@ fn load_sam(map: &mut HashMap<String, MlxArray>) -> Result<SamEncoder, Unlimited
                 proj,
                 rel_pos_h,
                 rel_pos_w,
+                rel_pos_h_local,
+                rel_pos_w_local,
                 num_heads: SAM_HEADS,
                 scale,
             },
@@ -300,6 +475,7 @@ fn load_sam(map: &mut HashMap<String, MlxArray>) -> Result<SamEncoder, Unlimited
     Ok(SamEncoder {
         patch_embed,
         pos_embed,
+        pos_embed_local,
         blocks,
         neck0: take_conv(map, "sam_model.neck.0", 1, 0, false)?,
         neck1: take_ln(map, "sam_model.neck.1", SAM_LN_EPS)?,
@@ -314,22 +490,23 @@ fn load_clip(map: &mut HashMap<String, MlxArray>) -> Result<ClipVision, Unlimite
     let class_embedding = take_arr(map, "vision_model.embeddings.class_embedding")?;
     let patch_embedding = take_conv(map, "vision_model.embeddings.patch_embedding", 14, 0, false)?;
     let position_embedding = take_arr(map, "vision_model.embeddings.position_embedding.weight")?;
+    let position_embedding_local = resize_clip_position_embedding(&position_embedding);
     // typo preserved from HF checkpoint: pre_layrnorm
-    let pre_layernorm = take_ln(map, "vision_model.pre_layrnorm", CLIP_LN_EPS)?;
+    let pre_layernorm = take_ln(map, "vision_model.pre_layrnorm", CLIP_PRE_LN_EPS)?;
     let mut layers = Vec::with_capacity(CLIP_LAYERS);
     let head_dim = (CLIP_WIDTH as usize) / CLIP_HEADS;
     let scale = (head_dim as f32).powf(-0.5);
     for i in 0..CLIP_LAYERS {
         let p = format!("vision_model.transformer.layers.{i}");
         layers.push(ClipEncoderLayer {
-            ln1: take_ln(map, &format!("{p}.layer_norm1"), CLIP_LN_EPS)?,
+            ln1: take_ln(map, &format!("{p}.layer_norm1"), CLIP_LAYER_LN_EPS)?,
             attn: ClipAttention {
                 qkv: take_linear(map, &format!("{p}.self_attn.qkv_proj"))?,
                 out_proj: take_linear(map, &format!("{p}.self_attn.out_proj"))?,
                 num_heads: CLIP_HEADS,
                 scale,
             },
-            ln2: take_ln(map, &format!("{p}.layer_norm2"), CLIP_LN_EPS)?,
+            ln2: take_ln(map, &format!("{p}.layer_norm2"), CLIP_LAYER_LN_EPS)?,
             fc1: take_linear(map, &format!("{p}.mlp.fc1"))?,
             fc2: take_linear(map, &format!("{p}.mlp.fc2"))?,
         });
@@ -339,6 +516,7 @@ fn load_clip(map: &mut HashMap<String, MlxArray>) -> Result<ClipVision, Unlimite
         class_embedding,
         patch_embedding,
         position_embedding,
+        position_embedding_local,
         pre_layernorm,
         layers,
     })
@@ -433,59 +611,128 @@ pub fn load_unlimited_ocr_vision_weights(
 // Preprocess
 // ---------------------------------------------------------------------------
 
-/// Letterbox RGB u8 image into 1024×1024, normalize mean/std 0.5, return NHWC f32.
-///
-/// `rgb` is row-major H×W×3.
+fn normalized_image_batch(images: &[RgbImage]) -> Result<MlxArray, UnlimitedOcrError> {
+    let Some(first) = images.first() else {
+        return Err(UnlimitedOcrError::BadPixelValues);
+    };
+    let width = first.width();
+    let height = first.height();
+    if images
+        .iter()
+        .any(|candidate| candidate.dimensions() != (width, height))
+    {
+        return Err(UnlimitedOcrError::BadPixelValues);
+    }
+    let image_bytes = width as usize * height as usize * 3;
+    let mut pixels = Vec::with_capacity(images.len() * image_bytes);
+    for source in images {
+        pixels.extend(source.as_raw().iter().map(|value| {
+            let unit = f32::from(*value) / 255.0;
+            2.0 * unit - 1.0
+        }));
+    }
+    let array = MlxArray::from_raw_data(
+        pixels.as_ptr().cast(),
+        std::mem::size_of_val(pixels.as_slice()),
+        &[images.len() as i32, height as i32, width as i32, 3],
+        MlxDtype::Float32,
+    );
+    let output = astype(&array, MlxDtype::Bfloat16, None);
+    mlx_sys::eval(&[&output]);
+    Ok(output)
+}
+
+fn global_letterbox(source: &RgbImage) -> RgbImage {
+    let target = IMAGE_SIZE as u32;
+    let (width, height) = source.dimensions();
+    let (new_width, new_height) = if width * target > height * target {
+        (
+            target,
+            (f64::from(height) / f64::from(width) * f64::from(target)).round() as u32,
+        )
+    } else {
+        (
+            (f64::from(width) / f64::from(height) * f64::from(target)).round() as u32,
+            target,
+        )
+    };
+    let resized = imageops::resize(
+        source,
+        new_width.max(1),
+        new_height.max(1),
+        imageops::FilterType::CatmullRom,
+    );
+    if resized.dimensions() == (target, target) {
+        return resized;
+    }
+    let mut canvas = RgbImage::from_pixel(target, target, Rgb([127, 127, 127]));
+    let x = i64::from((target - resized.width()) / 2);
+    let y = i64::from((target - resized.height()) / 2);
+    imageops::replace(&mut canvas, &resized, x, y);
+    canvas
+}
+
+/// Prepare the released global view and optional 640px high-resolution tiles.
+pub fn preprocess_document_rgb_u8(
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    cropping: bool,
+) -> Result<UnlimitedOcrImageViews, UnlimitedOcrError> {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or(UnlimitedOcrError::BadPixelValues)?;
+    if width == 0 || height == 0 || rgb.len() != expected {
+        return Err(UnlimitedOcrError::BadPixelValues);
+    }
+    let source =
+        RgbImage::from_raw(width, height, rgb.to_vec()).ok_or(UnlimitedOcrError::BadPixelValues)?;
+    let global_nhwc = normalized_image_batch(&[global_letterbox(&source)])?;
+    let (crop_columns, crop_rows) = unlimited_ocr_crop_grid(width, height, cropping);
+    let local_nhwc = if crop_columns > 1 || crop_rows > 1 {
+        let target_width = UNLIMITED_OCR_LOCAL_TILE_SIZE * crop_columns;
+        let target_height = UNLIMITED_OCR_LOCAL_TILE_SIZE * crop_rows;
+        let resized = imageops::resize(
+            &source,
+            target_width,
+            target_height,
+            imageops::FilterType::CatmullRom,
+        );
+        let mut tiles = Vec::with_capacity((crop_columns * crop_rows) as usize);
+        for row in 0..crop_rows {
+            for column in 0..crop_columns {
+                tiles.push(
+                    imageops::crop_imm(
+                        &resized,
+                        column * UNLIMITED_OCR_LOCAL_TILE_SIZE,
+                        row * UNLIMITED_OCR_LOCAL_TILE_SIZE,
+                        UNLIMITED_OCR_LOCAL_TILE_SIZE,
+                        UNLIMITED_OCR_LOCAL_TILE_SIZE,
+                    )
+                    .to_image(),
+                );
+            }
+        }
+        Some(normalized_image_batch(&tiles)?)
+    } else {
+        None
+    };
+    Ok(UnlimitedOcrImageViews {
+        global_nhwc,
+        local_nhwc,
+        crop_columns,
+        crop_rows,
+    })
+}
+
+/// Global-only compatibility wrapper used by diagnostics and small images.
 pub fn preprocess_rgb_u8(
     rgb: &[u8],
     width: u32,
     height: u32,
 ) -> Result<MlxArray, UnlimitedOcrError> {
-    if width == 0 || height == 0 || rgb.len() < (width as usize) * (height as usize) * 3 {
-        return Err(UnlimitedOcrError::BadPixelValues);
-    }
-    let target = IMAGE_SIZE as u32;
-    // Letterbox (ImageOps.pad): scale to fit, center on mean-colored canvas.
-    let scale = (target as f32 / width as f32).min(target as f32 / height as f32);
-    let new_w = ((width as f32) * scale).round().max(1.0) as u32;
-    let new_h = ((height as f32) * scale).round().max(1.0) as u32;
-    let pad_x = ((target - new_w) / 2) as i32;
-    let pad_y = ((target - new_h) / 2) as i32;
-    // mean 0.5 → pad value 127 (matches int(0.5*255))
-    let mut canvas = vec![127u8; (target as usize) * (target as usize) * 3];
-    // nearest-neighbor resize into the centered box
-    for y in 0..new_h {
-        let src_y = ((y as f32 + 0.5) / scale - 0.5)
-            .floor()
-            .clamp(0.0, (height - 1) as f32) as u32;
-        for x in 0..new_w {
-            let src_x = ((x as f32 + 0.5) / scale - 0.5)
-                .floor()
-                .clamp(0.0, (width - 1) as f32) as u32;
-            let si = ((src_y * width + src_x) * 3) as usize;
-            let di = (((pad_y as u32 + y) * target + (pad_x as u32 + x)) * 3) as usize;
-            canvas[di] = rgb[si];
-            canvas[di + 1] = rgb[si + 1];
-            canvas[di + 2] = rgb[si + 2];
-        }
-    }
-    // u8 → f32 /255, normalize (x-0.5)/0.5 = 2x-1, keep NHWC
-    let mut pixels = Vec::with_capacity(canvas.len());
-    for &v in &canvas {
-        let x = (v as f32) / 255.0;
-        pixels.push(2.0 * x - 1.0);
-    }
-    let arr = MlxArray::from_raw_data(
-        pixels.as_ptr().cast(),
-        std::mem::size_of_val(pixels.as_slice()),
-        &[1, IMAGE_SIZE, IMAGE_SIZE, 3],
-        MlxDtype::Float32,
-    );
-    // mlx_array_new_data copies host bytes; cast + eval materializes BF16.
-    let out = astype(&arr, MlxDtype::Bfloat16, None);
-    mlx_sys::eval(&[&out]);
-    drop(pixels);
-    Ok(out)
+    Ok(preprocess_document_rgb_u8(rgb, width, height, false)?.global_nhwc)
 }
 
 /// Build NHWC BF16 pixels from planar CHW f32 already normalized (mean/std 0.5).
@@ -670,7 +917,15 @@ fn sam_attention(attn: &SamAttention, x: &MlxArray) -> MlxArray {
     let k4 = reshape(&k, &[b, heads, h * w, head_dim], None);
     let v4 = reshape(&v, &[b, heads, h * w, head_dim], None);
 
-    let out = if let (Some(rh), Some(rw)) = (&attn.rel_pos_h, &attn.rel_pos_w) {
+    let (relative_h, relative_w) = if h == LOCAL_IMAGE_SIZE / SAM_PATCH {
+        (
+            attn.rel_pos_h_local.as_ref().or(attn.rel_pos_h.as_ref()),
+            attn.rel_pos_w_local.as_ref().or(attn.rel_pos_w.as_ref()),
+        )
+    } else {
+        (attn.rel_pos_h.as_ref(), attn.rel_pos_w.as_ref())
+    };
+    let out = if let (Some(rh), Some(rw)) = (relative_h, relative_w) {
         let bias = add_decomposed_rel_pos(&q, rh, rw, h, w, h, w); // [B*heads, HW, HW]
         let bias = reshape(&bias, &[b, heads, h * w, h * w], None);
         scaled_dot_product_attention_with_mask(
@@ -717,8 +972,12 @@ fn sam_block_forward(block: &SamBlock, x: &MlxArray) -> MlxArray {
 fn sam_forward(sam: &SamEncoder, x: &MlxArray) -> MlxArray {
     // x: NHWC
     let mut x = sam.patch_embed.forward(x);
-    // pos embed same spatial size for 1024 base
-    x = add(&x, &sam.pos_embed, None);
+    let position = if x.shape()[1] == LOCAL_IMAGE_SIZE / SAM_PATCH {
+        &sam.pos_embed_local
+    } else {
+        &sam.pos_embed
+    };
+    x = add(&x, position, None);
     for block in &sam.blocks {
         x = sam_block_forward(block, &x);
     }
@@ -758,10 +1017,12 @@ fn clip_attention(attn: &ClipAttention, x: &MlxArray) -> MlxArray {
 fn clip_layer_forward(layer: &ClipEncoderLayer, x: &MlxArray) -> MlxArray {
     let y = clip_attention(&layer.attn, &layer.ln1.forward(x));
     let x = add(x, &y, None);
-    // OpenCLIP MLP uses QuickGELU, not the erf-based GELU used by SAM.
+    // The released Unlimited-OCR MLX checkpoint uses the same erf-based GELU
+    // as mlx-vlm's deepseekocr VisionModel. QuickGELU produces materially
+    // different image embeddings with these weights.
     let y = layer
         .fc2
-        .forward(&quick_gelu(&layer.fc1.forward(&layer.ln2.forward(&x))));
+        .forward(&gelu(&layer.fc1.forward(&layer.ln2.forward(&x)), None));
     add(&x, &y, None)
 }
 
@@ -777,21 +1038,13 @@ fn clip_forward(clip: &ClipVision, patch_embeds: &MlxArray) -> MlxArray {
     let mut embeddings = concatenate(&[&class_embeds, &patch_flat], 1, None);
     // position embedding [num_pos, C] — for 16×16+1 == 257 matches CLIP-L/14@224
     let num_pos = embeddings.shape()[1];
-    let pos = if clip.position_embedding.shape()[0] == num_pos {
-        let pos = reshape(&clip.position_embedding, &[1, num_pos, CLIP_WIDTH], None);
-        broadcast_to(&pos, &[b, num_pos, CLIP_WIDTH], None)
+    let position = if num_pos == clip.position_embedding_local.shape()[0] {
+        &clip.position_embedding_local
     } else {
-        // Should not happen for base mode; fall back to first num_pos rows.
-        let pos = slice(
-            &clip.position_embedding,
-            &[0, 0],
-            &[num_pos, CLIP_WIDTH],
-            &[1, 1],
-            None,
-        );
-        let pos = reshape(&pos, &[1, num_pos, CLIP_WIDTH], None);
-        broadcast_to(&pos, &[b, num_pos, CLIP_WIDTH], None)
+        &clip.position_embedding
     };
+    let pos = reshape(position, &[1, num_pos, CLIP_WIDTH], None);
+    let pos = broadcast_to(&pos, &[b, num_pos, CLIP_WIDTH], None);
     let pos = astype(&pos, embeddings.dtype(), None);
     embeddings = add(&embeddings, &pos, None);
     let _ = hw;
@@ -857,6 +1110,66 @@ pub fn encode_base_image(
     let flat = reshape(&with_nl, &[h * (w + 1), n_dim], None);
     let sep = reshape(&vision.view_separator, &[1, n_dim], None);
     Ok(concatenate(&[&flat, &sep], 0, None))
+}
+
+/// Encode the global view and, when present, reassemble local tiles into the
+/// same two-dimensional feature canvas used by the released processor.
+pub fn encode_document_image(
+    vision: &UnlimitedOcrVisionWeights,
+    views: &UnlimitedOcrImageViews,
+) -> Result<MlxArray, UnlimitedOcrError> {
+    let global = encode_base_image(vision, &views.global_nhwc)?;
+    let Some(local_images) = views.local_nhwc.as_ref() else {
+        return Ok(global);
+    };
+    let expected_tiles = (views.crop_columns * views.crop_rows) as i32;
+    if expected_tiles <= 1 || local_images.shape()[0] != expected_tiles {
+        return Err(UnlimitedOcrError::Assembly(format!(
+            "local tile batch {} does not match {}x{} crop grid",
+            local_images.shape()[0],
+            views.crop_columns,
+            views.crop_rows
+        )));
+    }
+
+    let sam = sam_forward(&vision.sam, local_images);
+    let clip = clip_forward(&vision.clip, &sam);
+    let clip_patches = slice(
+        &clip,
+        &[0, 1, 0],
+        &[clip.shape()[0], clip.shape()[1], clip.shape()[2]],
+        &[1, 1, 1],
+        None,
+    );
+    let sam_flat = flatten(&sam, 1, 2, None);
+    let fused = concatenate(&[&clip_patches, &sam_flat], -1, None);
+    let projected = qw(&fused, &vision.projector);
+    let feature_count = projected.shape()[1];
+    let dimensions = projected.shape()[2];
+    let side = (feature_count as f32).sqrt() as i32;
+    if side * side != feature_count || side != UNLIMITED_OCR_LOCAL_QUERY_GRID as i32 {
+        return Err(UnlimitedOcrError::Assembly(format!(
+            "local projected feature grid is {feature_count}, expected {}x{}",
+            UNLIMITED_OCR_LOCAL_QUERY_GRID, UNLIMITED_OCR_LOCAL_QUERY_GRID
+        )));
+    }
+
+    let rows = views.crop_rows as i32;
+    let columns = views.crop_columns as i32;
+    let local = reshape(&projected, &[rows, columns, side, side, dimensions], None);
+    let local = transpose(&local, &[0, 2, 1, 3, 4], None);
+    let canvas_rows = rows * side;
+    let canvas_columns = columns * side;
+    let local = reshape(&local, &[canvas_rows, canvas_columns, dimensions], None);
+    let newline = reshape(&vision.image_newline, &[1, 1, dimensions], None);
+    let newline = broadcast_to(&newline, &[canvas_rows, 1, dimensions], None);
+    let local = concatenate(&[&local, &newline], 1, None);
+    let local = reshape(
+        &local,
+        &[canvas_rows * (canvas_columns + 1), dimensions],
+        None,
+    );
+    Ok(concatenate(&[&local, &global], 0, None))
 }
 
 // ---------------------------------------------------------------------------
@@ -928,7 +1241,7 @@ pub fn build_embeddings_with_image(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
-    image_nhwc: &MlxArray,
+    views: &UnlimitedOcrImageViews,
 ) -> Result<MlxArray, UnlimitedOcrError> {
     let vision = weights
         .unlimited_ocr_vision
@@ -939,7 +1252,7 @@ pub fn build_embeddings_with_image(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden_pub(&hidden, scale);
     }
-    let features = encode_base_image(vision, image_nhwc)?;
+    let features = encode_document_image(vision, views)?;
     let features = astype(&features, hidden.dtype(), None);
     overwrite_image_token_positions(
         hidden,
@@ -986,54 +1299,15 @@ mod tests {
         assert_eq!(base_soft_token_count(1024, 16, 4), 273);
     }
 
-    /// Regression: CLIP MLP must use OpenCLIP QuickGELU, not erf-GELU.
-    ///
-    /// Reference: `quick_gelu(x) = x * sigmoid(1.702 * x)` from
-    /// baidu/Unlimited-OCR `deepencoder.NoTPFeedForward`. Standard GELU
-    /// diverges enough at moderate magnitudes to corrupt vision features.
-    #[test]
-    fn quick_gelu_matches_openclip_formula() {
-        let xs = [-2.0f32, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 3.5];
-        let arr = MlxArray::from_raw_data(
-            xs.as_ptr().cast(),
-            std::mem::size_of_val(xs.as_slice()),
-            &[xs.len() as i32],
-            MlxDtype::Float32,
-        );
-        let out = quick_gelu(&arr);
-        mlx_sys::eval(&[&out]);
-        let got = out.data_f32();
-        assert_eq!(got.len(), xs.len());
-        for (i, &x) in xs.iter().enumerate() {
-            let expected = x * (1.0 / (1.0 + (-1.702 * x).exp()));
-            let g = got[i];
-            let err = (g - expected).abs();
-            assert!(
-                err < 1e-5,
-                "quick_gelu({x}) = {g}, expected {expected}, err={err}"
-            );
-            // Approximate GELU (tanh form) must diverge for |x| >= 1 so this
-            // test would not pass if the activation were standard GELU.
-            let gelu_ref = {
-                let t = (2.0f32 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x * x * x);
-                0.5 * x * (1.0 + t.tanh())
-            };
-            if x.abs() >= 1.0 {
-                assert!(
-                    (expected - gelu_ref).abs() > 1e-3,
-                    "test point x={x} does not separate quick_gelu from approx gelu"
-                );
-            }
-        }
-    }
-
     #[test]
     fn layer_norm_eps_constants_match_reference_towers() {
-        // SAM uses 1e-6; CLIP OpenCLIP tower uses 1e-5.
+        // SAM and CLIP transformer blocks use 1e-6.  Only CLIP's input
+        // pre-layer norm uses 1e-5 in the released Unlimited-OCR model.
         assert!((SAM_LN_EPS - 1.0e-6).abs() < f32::EPSILON);
-        assert!((CLIP_LN_EPS - 1.0e-5).abs() < f32::EPSILON);
+        assert!((CLIP_PRE_LN_EPS - 1.0e-5).abs() < f32::EPSILON);
+        assert!((CLIP_LAYER_LN_EPS - 1.0e-6).abs() < f32::EPSILON);
         const {
-            assert!(CLIP_LN_EPS > SAM_LN_EPS);
+            assert!(CLIP_PRE_LN_EPS > CLIP_LAYER_LN_EPS);
         }
     }
 }

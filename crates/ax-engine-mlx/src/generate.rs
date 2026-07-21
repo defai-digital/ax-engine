@@ -17,7 +17,7 @@ use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
     sample_categorical_into, sample_categorical_with_topk_gpu, sample_categorical_with_topp_gpu,
 };
-use crate::unlimited_ocr::build_embeddings_with_image;
+use crate::unlimited_ocr::{UnlimitedOcrImageViews, build_embeddings_with_image};
 use crate::weights::ModelWeights;
 
 /// Default chunk size for chunked prefill, matching mlx-lm's default
@@ -306,7 +306,7 @@ pub fn chunked_prefill_with_sampling_buffers(
         let chunk = &prompt_tokens[offset..end];
         let is_final_chunk = end == total;
         let needs_full_logits =
-            is_final_chunk && (sampling.temperature > 0.0 || sampling.uses_repetition_penalty());
+            is_final_chunk && (sampling.temperature > 0.0 || sampling.uses_logits_processors());
         let logits = if needs_full_logits {
             forward(cfg, weights, chunk, cache, cache.seq_len())
         } else if is_final_chunk {
@@ -320,7 +320,7 @@ pub fn chunked_prefill_with_sampling_buffers(
         offset = end;
 
         if offset == total {
-            let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+            let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
                 sample_prefill_token_gpu_first(
                     &logits,
                     sampling,
@@ -385,7 +385,7 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
     );
     cache.advance(prompt_tokens.len());
 
-    let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
         sample_prefill_token_gpu_first(
             &logits,
             sampling,
@@ -413,7 +413,7 @@ pub fn chunked_prefill_unlimited_ocr_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt_tokens: &[u32],
-    image_nhwc: &MlxArray,
+    image_views: &UnlimitedOcrImageViews,
     cache: &mut MlxKVCache,
     sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
@@ -422,16 +422,13 @@ pub fn chunked_prefill_unlimited_ocr_with_sampling_buffers(
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
     let sampling = sampling_request.params;
-    let hidden = build_embeddings_with_image(cfg, weights, prompt_tokens, image_nhwc)
+    let hidden = build_embeddings_with_image(cfg, weights, prompt_tokens, image_views)
         .map_err(|e| e.to_string())?;
-    // Treat contiguous image soft-tokens as a media range so SWA layers keep
-    // full attention across the vision block (mirrors gemma4_unified).
-    let image_token_id = weights
-        .unlimited_ocr_vision
-        .as_ref()
-        .map(|v| v.image_token_id)
-        .unwrap_or(crate::unlimited_ocr::DEFAULT_IMAGE_TOKEN_ID);
-    let media_ranges = unlimited_ocr_media_ranges(prompt_tokens, image_token_id);
+    // Unlimited-OCR uses ordinary causal attention for the complete prefill.
+    // Its R-SWA cache only starts replacing generated decode entries after the
+    // full prompt has been retained.  In particular, image soft tokens are not
+    // a bidirectional PrefixLM block (that behaviour is specific to Gemma4).
+    let media_ranges = [];
     let logits = forward_with_initial_hidden_and_media_ranges(
         cfg,
         weights,
@@ -444,7 +441,7 @@ pub fn chunked_prefill_unlimited_ocr_with_sampling_buffers(
     );
     cache.advance(prompt_tokens.len());
 
-    let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
         sample_prefill_token_gpu_first(
             &logits,
             sampling,
@@ -462,24 +459,6 @@ pub fn chunked_prefill_unlimited_ocr_with_sampling_buffers(
     };
     clear_cache();
     Ok(tok)
-}
-
-fn unlimited_ocr_media_ranges(token_ids: &[u32], image_token_id: u32) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    let mut start: Option<usize> = None;
-    for (i, &tok) in token_ids.iter().enumerate() {
-        if tok == image_token_id {
-            if start.is_none() {
-                start = Some(i);
-            }
-        } else if let Some(s) = start.take() {
-            ranges.push((s, i - 1));
-        }
-    }
-    if let Some(s) = start {
-        ranges.push((s, token_ids.len() - 1));
-    }
-    ranges
 }
 
 /// Like `chunked_prefill` but also returns the pre-norm hidden at the last
@@ -640,7 +619,7 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             );
             cache.advance(chunk.len());
 
-            let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+            let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
                 eval_with_kv_refs(&last_logits, cache);
                 sample_prefill_token_gpu_first(
                     &last_logits,
@@ -692,7 +671,7 @@ fn mlx_lm_style_cache_only_prefix_len(total_tokens: usize, sampling: MlxSampling
     // enough that last-layer skip amortizes the extra completing-step barrier
     // (short sampled prompts measured slightly slower under dual-barrier).
     const SAMPLING_CACHE_ONLY_MIN_TOKENS: usize = 512;
-    if total_tokens <= 1 || sampling.uses_repetition_penalty() {
+    if total_tokens <= 1 || sampling.uses_logits_processors() {
         return 0;
     }
     if sampling.temperature <= 0.0 || total_tokens >= SAMPLING_CACHE_ONLY_MIN_TOKENS {
@@ -885,7 +864,7 @@ pub fn decode_step_with_sampling_buffers(
 ) -> u32 {
     let sampling = sampling_request.params;
     let token_offset = cache.seq_len();
-    let deterministic_argmax = sampling.temperature <= 0.0 && !sampling.uses_repetition_penalty();
+    let deterministic_argmax = sampling.temperature <= 0.0 && !sampling.uses_logits_processors();
     let logits = if deterministic_argmax {
         forward_argmax(cfg, weights, &[last_token], cache, token_offset)
     } else {
@@ -894,13 +873,13 @@ pub fn decode_step_with_sampling_buffers(
     cache.advance(1);
 
     if sampling.temperature > 0.0
-        && !sampling.uses_repetition_penalty()
+        && !sampling.uses_logits_processors()
         && sampling.top_k == 0
         && sampling.top_p >= 1.0
     {
         // GPU-side sampling: no logits transfer to CPU.
         sample_categorical_gpu(&logits, sampling.temperature)
-    } else if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+    } else if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
         if let Some(tok) = sample_categorical_with_topk_gpu(
             &logits,
             sampling,

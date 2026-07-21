@@ -19,6 +19,7 @@ pub mod request_manager;
 pub mod runner;
 pub mod sampling;
 pub mod scheduler;
+pub mod unlimited_ocr;
 
 pub use architecture::{
     ArchitectureSpec, AttentionKind, CacheKind, FfnKind, LayerSpec, StructuralCapabilities,
@@ -67,8 +68,8 @@ pub use model::{
 };
 pub use multimodal_adapter::{MultimodalPrefillAdapter, PrefillModality};
 pub use request::{
-    RequestMultimodalInputs, RequestRecord, RequestSnapshot, RequestState, RequestSubmission,
-    RequestWorkloadHints, StateTransitionError,
+    RequestMultimodalInputError, RequestMultimodalInputs, RequestRecord, RequestSnapshot,
+    RequestState, RequestSubmission, RequestWorkloadHints, StateTransitionError,
 };
 pub use request_manager::{RequestManager, RequestManagerError};
 pub use runner::{
@@ -101,4 +102,11 @@ pub use scheduler::{
     ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS, RouteMetadata, SchedulePlan, Scheduler,
     SchedulerInput, plan_work_unit_for_snapshot, upsert_route_decision,
     work_unit_for_execution_mode,
+};
+pub use unlimited_ocr::{
+    UNLIMITED_OCR_BASE_SOFT_TOKEN_COUNT, UNLIMITED_OCR_LOCAL_QUERY_GRID,
+    UNLIMITED_OCR_LOCAL_TILE_SIZE, UNLIMITED_OCR_MAX_IMAGE_DIMENSION,
+    UNLIMITED_OCR_MAX_LOCAL_TILES, UNLIMITED_OCR_MAX_RGB_BYTES, UnlimitedOcrImageRuntimeInput,
+    UnlimitedOcrRuntimeInputError, UnlimitedOcrRuntimeInputs, unlimited_ocr_crop_grid,
+    unlimited_ocr_soft_token_count,
 };

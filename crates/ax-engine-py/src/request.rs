@@ -1,9 +1,10 @@
 use ax_engine_sdk::{
     DelegatedHttpTimeouts, GenerateRequest, GenerateSampling, RequestMultimodalInputs,
+    UnlimitedOcrImageRuntimeInput, UnlimitedOcrRuntimeInputs,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
+use pyo3::types::{PyAny, PyBytes, PyDict, PyList, PyTuple};
 use serde_json::{Map, Number, Value};
 
 pub(crate) fn delegated_http_timeouts_from_secs(
@@ -55,12 +56,110 @@ pub(crate) fn multimodal_inputs_from_py(
     if value.is_none() {
         return Ok(RequestMultimodalInputs::default());
     }
+    if let Some(inputs) = unlimited_ocr_inputs_from_py(value)? {
+        return Ok(inputs);
+    }
     let json = py_any_to_json(value)?;
     serde_json::from_value(json).map_err(|error| {
         PyValueError::new_err(format!(
             "multimodal_inputs must match RequestMultimodalInputs schema: {error}"
         ))
     })
+}
+
+fn unlimited_ocr_inputs_from_py(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Option<RequestMultimodalInputs>> {
+    let Ok(payload) = value.cast::<PyDict>() else {
+        return Ok(None);
+    };
+    let Some(root_value) = payload.get_item("unlimited_ocr")? else {
+        return Ok(None);
+    };
+    if payload.contains("gemma4_unified")? {
+        return Err(PyValueError::new_err(
+            "multimodal request may select only one provider schema",
+        ));
+    }
+    let root = root_value.cast::<PyDict>().map_err(|_| {
+        PyValueError::new_err("multimodal_inputs.unlimited_ocr must be a dictionary")
+    })?;
+    let image_token_id = root
+        .get_item("image_token_id")?
+        .ok_or_else(|| {
+            PyValueError::new_err("multimodal_inputs.unlimited_ocr.image_token_id is required")
+        })?
+        .extract::<u32>()?;
+    let soft_token_count = root
+        .get_item("soft_token_count")?
+        .ok_or_else(|| {
+            PyValueError::new_err("multimodal_inputs.unlimited_ocr.soft_token_count is required")
+        })?
+        .extract::<u32>()?;
+    let cropping = root
+        .get_item("cropping")?
+        .map(|value| value.extract::<bool>())
+        .transpose()?
+        .unwrap_or(true);
+    let images_value = root.get_item("images")?.ok_or_else(|| {
+        PyValueError::new_err("multimodal_inputs.unlimited_ocr.images is required")
+    })?;
+    let images_list = images_value.cast::<PyList>().map_err(|_| {
+        PyValueError::new_err("multimodal_inputs.unlimited_ocr.images must be a list")
+    })?;
+    let mut images = Vec::with_capacity(images_list.len());
+    for (index, item) in images_list.iter().enumerate() {
+        let image = item.cast::<PyDict>().map_err(|_| {
+            PyValueError::new_err(format!(
+                "multimodal_inputs.unlimited_ocr.images[{index}] must be a dictionary"
+            ))
+        })?;
+        let width = image
+            .get_item("width")?
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "multimodal_inputs.unlimited_ocr.images[{index}].width is required"
+                ))
+            })?
+            .extract::<u32>()?;
+        let height = image
+            .get_item("height")?
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "multimodal_inputs.unlimited_ocr.images[{index}].height is required"
+                ))
+            })?
+            .extract::<u32>()?;
+        let rgb_value = image.get_item("rgb_bytes")?.ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "multimodal_inputs.unlimited_ocr.images[{index}].rgb_bytes is required"
+            ))
+        })?;
+        let rgb_bytes = if let Ok(bytes) = rgb_value.cast::<PyBytes>() {
+            bytes.as_bytes().to_vec()
+        } else {
+            rgb_value.extract::<Vec<u8>>().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "multimodal_inputs.unlimited_ocr.images[{index}].rgb_bytes must be bytes or a list of byte values"
+                ))
+            })?
+        };
+        images.push(UnlimitedOcrImageRuntimeInput {
+            width,
+            height,
+            rgb_bytes,
+        });
+    }
+
+    Ok(Some(RequestMultimodalInputs {
+        gemma4_unified: None,
+        unlimited_ocr: Some(UnlimitedOcrRuntimeInputs {
+            image_token_id,
+            soft_token_count,
+            cropping,
+            images,
+        }),
+    }))
 }
 
 fn py_any_to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
@@ -155,6 +254,8 @@ mod tests {
                 deterministic: Some(true),
                 repetition_penalty: 1.1,
                 repetition_context_size: Some(64),
+                no_repeat_ngram_size: 35,
+                ngram_window: 128,
                 ignore_eos: true,
             },
             vec!["stop".to_string()],
@@ -174,6 +275,8 @@ mod tests {
         assert_eq!(request.sampling.deterministic, Some(true));
         assert_eq!(request.sampling.repetition_penalty, 1.1);
         assert_eq!(request.sampling.repetition_context_size, Some(64));
+        assert_eq!(request.sampling.no_repeat_ngram_size, 35);
+        assert_eq!(request.sampling.ngram_window, 128);
         assert!(request.sampling.ignore_eos);
         assert_eq!(request.stop_sequences, vec!["stop"]);
         assert_eq!(request.metadata.as_deref(), Some("metadata"));
@@ -211,6 +314,36 @@ mod tests {
                 .expect("Gemma4 inputs should be present");
             assert_eq!(gemma4.images.len(), 1);
             assert_eq!(gemma4.images[0].span.soft_token_count, 2);
+        });
+    }
+
+    #[test]
+    fn multimodal_inputs_from_py_deserializes_unlimited_ocr_bytes_without_json_expansion() {
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let payload = PyDict::new(py);
+            let root = PyDict::new(py);
+            let image = PyDict::new(py);
+            root.set_item("image_token_id", 128_815_u32).unwrap();
+            root.set_item("soft_token_count", 273_u32).unwrap();
+            image.set_item("width", 2_u32).unwrap();
+            image.set_item("height", 1_u32).unwrap();
+            image
+                .set_item("rgb_bytes", PyBytes::new(py, &[0, 1, 2, 3, 4, 5]))
+                .unwrap();
+            root.set_item("images", vec![image]).unwrap();
+            payload.set_item("unlimited_ocr", root).unwrap();
+
+            let inputs = multimodal_inputs_from_py(Some(payload.as_any()))
+                .expect("Python bytes payload should deserialize");
+            let ocr = inputs
+                .unlimited_ocr
+                .expect("Unlimited-OCR inputs should be present");
+            assert_eq!(ocr.image_token_id, 128_815);
+            assert_eq!(ocr.soft_token_count, 273);
+            assert!(ocr.cropping);
+            assert_eq!(ocr.images.len(), 1);
+            assert_eq!(ocr.images[0].rgb_bytes, vec![0, 1, 2, 3, 4, 5]);
         });
     }
 }

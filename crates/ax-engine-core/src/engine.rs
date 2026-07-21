@@ -892,6 +892,8 @@ impl EngineCore {
                     top_k: record.sampling_params.top_k,
                     repetition_penalty: record.sampling_params.repetition_penalty,
                     repetition_context_size: record.sampling_params.repetition_context_size,
+                    no_repeat_ngram_size: record.sampling_params.no_repeat_ngram_size,
+                    ngram_window: record.sampling_params.ngram_window,
                     ignore_eos: record.sampling_params.ignore_eos,
                     tool_call_mode: record.workload_hints.tool_call,
                     structured_output_mode: record.workload_hints.structured_output,
@@ -1018,13 +1020,23 @@ impl EngineCore {
                 request_id,
                 previous_token,
                 logits,
-                recent_tokens: if record.sampling_params.repetition_penalty == 1.0 {
+                recent_tokens: if record.sampling_params.repetition_penalty == 1.0
+                    && record.sampling_params.no_repeat_ngram_size == 0
+                {
                     Vec::new()
                 } else {
+                    let context_size = if record.sampling_params.repetition_penalty != 1.0 {
+                        record
+                            .sampling_params
+                            .repetition_context_size
+                            .map(|size| size.max(record.sampling_params.ngram_window))
+                    } else {
+                        Some(record.sampling_params.ngram_window)
+                    };
                     recent_repetition_tokens(
                         &record.prompt_tokens,
                         &record.generated_tokens,
-                        record.sampling_params.repetition_context_size,
+                        context_size,
                     )
                 },
                 generated_len: record.generated_tokens.len() as u32,

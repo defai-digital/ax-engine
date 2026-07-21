@@ -56,6 +56,14 @@ impl MultimodalPrefillAdapter {
                 modalities.push(PrefillModality::Audio);
             }
         }
+        if inputs
+            .unlimited_ocr
+            .as_ref()
+            .is_some_and(|ocr| !ocr.images.is_empty())
+            && !modalities.contains(&PrefillModality::Vision)
+        {
+            modalities.push(PrefillModality::Vision);
+        }
 
         Self {
             modalities,
@@ -179,6 +187,7 @@ mod tests {
                 audios: Vec::new(),
                 videos: Vec::new(),
             }),
+            unlimited_ocr: None,
         };
 
         let backbone = GenerationKind::Autoregressive;

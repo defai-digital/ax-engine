@@ -1,4 +1,4 @@
-use ax_engine_core::{EngineCoreError, Gemma4UnifiedRuntimeInputError, MetalRuntimeError};
+use ax_engine_core::{EngineCoreError, MetalRuntimeError, RequestMultimodalInputError};
 use thiserror::Error;
 
 use crate::backend::{BackendContractError, SelectedBackend};
@@ -20,6 +20,13 @@ pub enum EngineSessionError {
     #[error("generate request max_output_tokens must be greater than zero")]
     InvalidMaxOutputTokens,
     #[error(
+        "no_repeat_ngram_size={no_repeat_ngram_size} requires ngram_window to be positive and at least as large"
+    )]
+    InvalidNoRepeatNgram {
+        no_repeat_ngram_size: u32,
+        ngram_window: u32,
+    },
+    #[error(
         "MLX preview session only accepts pre-tokenized input_tokens; input_text requires a llama.cpp backend"
     )]
     MlxBackendRequiresTokenizedInput,
@@ -35,7 +42,7 @@ pub enum EngineSessionError {
         max_batch_tokens: u32,
     },
     #[error(transparent)]
-    InvalidMultimodalInputs(#[from] Gemma4UnifiedRuntimeInputError),
+    InvalidMultimodalInputs(#[from] RequestMultimodalInputError),
     #[error(
         "MLX mode requires validated Metal runtime artifacts; deterministic fallback is internal-only and must be explicitly enabled"
     )]

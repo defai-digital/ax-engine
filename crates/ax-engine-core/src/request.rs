@@ -7,6 +7,7 @@ use crate::ids::{ModelId, RequestId, SequenceNo};
 use crate::kv::BlockTable;
 use crate::sampling::{SamplingParams, StopReason};
 use crate::scheduler::RouteMetadata;
+use crate::unlimited_ocr::{UnlimitedOcrRuntimeInputError, UnlimitedOcrRuntimeInputs};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,6 +43,8 @@ pub struct RequestSubmission {
 pub struct RequestMultimodalInputs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gemma4_unified: Option<Gemma4UnifiedRuntimeInputs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlimited_ocr: Option<UnlimitedOcrRuntimeInputs>,
 }
 
 impl RequestMultimodalInputs {
@@ -49,7 +52,53 @@ impl RequestMultimodalInputs {
         self.gemma4_unified
             .as_ref()
             .is_none_or(|inputs| inputs.is_empty())
+            && self
+                .unlimited_ocr
+                .as_ref()
+                .is_none_or(|inputs| inputs.is_empty())
     }
+
+    pub fn validate_for_prompt_tokens(
+        &self,
+        prompt_tokens: &[u32],
+    ) -> Result<(), RequestMultimodalInputError> {
+        let gemma4_active = self
+            .gemma4_unified
+            .as_ref()
+            .is_some_and(|inputs| !inputs.is_empty());
+        let unlimited_ocr_active = self
+            .unlimited_ocr
+            .as_ref()
+            .is_some_and(|inputs| !inputs.is_empty());
+        if gemma4_active && unlimited_ocr_active {
+            return Err(RequestMultimodalInputError::MultipleProviders);
+        }
+        if let Some(inputs) = self
+            .gemma4_unified
+            .as_ref()
+            .filter(|inputs| !inputs.is_empty())
+        {
+            inputs.validate_for_prompt_len(prompt_tokens.len())?;
+        }
+        if let Some(inputs) = self
+            .unlimited_ocr
+            .as_ref()
+            .filter(|inputs| !inputs.is_empty())
+        {
+            inputs.validate_for_prompt_tokens(prompt_tokens)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum RequestMultimodalInputError {
+    #[error("multimodal request may select only one provider schema")]
+    MultipleProviders,
+    #[error(transparent)]
+    Gemma4Unified(#[from] crate::gemma4_unified::Gemma4UnifiedRuntimeInputError),
+    #[error(transparent)]
+    UnlimitedOcr(#[from] UnlimitedOcrRuntimeInputError),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

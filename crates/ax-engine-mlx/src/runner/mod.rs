@@ -49,6 +49,7 @@ use crate::gemma4_assistant_mtp::{
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings, chunked_prefill,
     chunked_prefill_gemma4_unified_with_sampling_buffers,
+    chunked_prefill_unlimited_ocr_with_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
     decode_step, start_direct_pipeline,
 };
@@ -85,6 +86,7 @@ use crate::sampling::{
     token_distribution,
 };
 use crate::speculation_profile::speculation_profile_from_env;
+use crate::unlimited_ocr::preprocess_document_rgb_u8;
 #[cfg(test)]
 use crate::weights::{LayerWeights, QuantizedWeight};
 use crate::weights::{ModelWeights, load_weights};
@@ -557,7 +559,7 @@ impl RequestState {
         additional_prompt_tokens: &[u32],
         sampling: MlxSamplingParams,
     ) -> Vec<u32> {
-        if !sampling.uses_repetition_penalty() {
+        if !sampling.uses_logits_processors() {
             return Vec::new();
         }
 
@@ -566,11 +568,20 @@ impl RequestState {
             .len()
             .saturating_add(additional_prompt_tokens.len())
             .saturating_add(self.generated_tokens.len());
-        let keep_len = sampling
-            .repetition_context_size
-            .map(|size| size as usize)
-            .unwrap_or(total_len)
-            .min(total_len);
+        let repetition_keep = if sampling.uses_repetition_penalty() {
+            sampling
+                .repetition_context_size
+                .map(|size| size as usize)
+                .unwrap_or(total_len)
+        } else {
+            0
+        };
+        let ngram_keep = if sampling.uses_no_repeat_ngram() {
+            (sampling.ngram_window as usize).max(sampling.no_repeat_ngram_size as usize)
+        } else {
+            0
+        };
+        let keep_len = repetition_keep.max(ngram_keep).min(total_len);
         if keep_len == 0 {
             return Vec::new();
         }
@@ -1470,6 +1481,7 @@ fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) ->
 fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams {
     MlxSamplingParams::new(ctx.temperature, ctx.top_p, ctx.top_k)
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
+        .with_no_repeat_ngram(ctx.no_repeat_ngram_size, ctx.ngram_window)
 }
 
 fn seed_batched_session_and_reclaim_private_cache(
@@ -2920,7 +2932,19 @@ impl MlxRunner {
         let gemma4_unified_inputs = multimodal_inputs
             .and_then(|inputs| inputs.gemma4_unified.as_ref())
             .filter(|inputs| !inputs.is_empty());
+        let unlimited_ocr_inputs = multimodal_inputs
+            .and_then(|inputs| inputs.unlimited_ocr.as_ref())
+            .filter(|inputs| !inputs.is_empty());
+        if gemma4_unified_inputs.is_some() && unlimited_ocr_inputs.is_some() {
+            return errored_item_run(
+                item.request_id,
+                "multimodal request may select only one provider schema",
+            );
+        }
         let has_gemma4_unified_multimodal_prefill = is_prefill && gemma4_unified_inputs.is_some();
+        let has_unlimited_ocr_multimodal_prefill = is_prefill && unlimited_ocr_inputs.is_some();
+        let has_native_multimodal_prefill =
+            has_gemma4_unified_multimodal_prefill || has_unlimited_ocr_multimodal_prefill;
         // ADR-038 Phase 4: multimodal is a prefill adapter into the same
         // generation strategy — never a parallel generation engine.
         if let Some(inputs) = multimodal_inputs {
@@ -2944,6 +2968,7 @@ impl MlxRunner {
             .map(|c| {
                 MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
                     .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
+                    .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
             })
             .unwrap_or_default();
         let is_greedy = ctx
@@ -2968,7 +2993,7 @@ impl MlxRunner {
                 )
             })
         };
-        let mut prefix_cache = if has_gemma4_unified_multimodal_prefill {
+        let mut prefix_cache = if has_native_multimodal_prefill {
             MlxPrefixCacheTelemetry::default()
         } else {
             self.restore_reused_prefix_state(
@@ -3027,6 +3052,86 @@ impl MlxRunner {
                         &full_prompt_tokens,
                         &mut state.cache,
                         inputs,
+                        MlxSamplingRequest::new(sampling, &repetition_history),
+                        &mut state.rng,
+                        &mut state.sampling_probs_buf,
+                        &mut state.sampling_logits_buf,
+                        &mut state.sampling_candidates_buf,
+                    ) {
+                        Ok(tok) => tok,
+                        Err(error) => return errored_item_run(item.request_id, error),
+                    };
+                    let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
+                    state.prompt_prefix_tokens = full_prompt_tokens;
+
+                    state
+                        .decode_telemetry
+                        .record_prefill(elapsed_us(prefill_started));
+                    let generation_state_started = Instant::now();
+                    self.initialize_generation_state(
+                        &mut state,
+                        max_output,
+                        Some(tok),
+                        is_greedy,
+                        sampling.temperature,
+                    );
+                    let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
+                    state.decode_telemetry.record_prefill_eval_barrier();
+                    state.decode_telemetry.record_prefill_breakdown(
+                        prefill_forward_wall_us,
+                        0,
+                        prefill_generation_state_wall_us,
+                    );
+                    Some(tok)
+                } else if let Some(inputs) = unlimited_ocr_inputs {
+                    if !prefill_completes_prompt {
+                        return errored_item_run(
+                            item.request_id,
+                            "Unlimited-OCR multimodal prefill requires the complete prompt in one execution item",
+                        );
+                    }
+                    state.cache.reset();
+                    state.prompt_prefix_tokens.clear();
+                    state.cached_prefill_output_token = None;
+                    state.mtp_prefill_hidden = None;
+                    state.mtp_prefill_history_tokens.clear();
+
+                    let mut full_prompt_tokens = Vec::with_capacity(
+                        item.reused_prefix_token_slice
+                            .len()
+                            .saturating_add(token_ids.len()),
+                    );
+                    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
+                    full_prompt_tokens.extend_from_slice(token_ids);
+                    if let Err(error) = inputs.validate_for_prompt_tokens(&full_prompt_tokens) {
+                        return errored_item_run(item.request_id, error.to_string());
+                    }
+                    let Some(image) = inputs.images.first() else {
+                        return errored_item_run(
+                            item.request_id,
+                            "Unlimited-OCR request has no image",
+                        );
+                    };
+                    let image_views = match preprocess_document_rgb_u8(
+                        &image.rgb_bytes,
+                        image.width,
+                        image.height,
+                        inputs.cropping,
+                    ) {
+                        Ok(image) => image,
+                        Err(error) => {
+                            return errored_item_run(item.request_id, error.to_string());
+                        }
+                    };
+                    let repetition_history =
+                        state.repetition_history(&full_prompt_tokens, sampling);
+                    let prefill_forward_started = Instant::now();
+                    let tok = match chunked_prefill_unlimited_ocr_with_sampling_buffers(
+                        &self.cfg,
+                        &self.weights,
+                        &full_prompt_tokens,
+                        &image_views,
+                        &mut state.cache,
                         MlxSamplingRequest::new(sampling, &repetition_history),
                         &mut state.rng,
                         &mut state.sampling_probs_buf,
@@ -4611,7 +4716,7 @@ impl MlxRunner {
 
         if ngram_request_disabled_direct_fast_path(
             is_greedy,
-            sampling.uses_repetition_penalty(),
+            sampling.uses_logits_processors(),
             self.has_mtp(),
             state.ngram_acceleration_disabled_for_request,
             state.ngram_request_disable_reason,
@@ -4879,7 +4984,7 @@ impl MlxRunner {
             return Some(self.run_single_decode(state, last_token, sampling));
         }
 
-        if sampling.uses_repetition_penalty() {
+        if sampling.uses_logits_processors() {
             return Some(self.run_single_decode(state, last_token, sampling));
         }
 
@@ -6761,7 +6866,7 @@ impl MlxRunner {
             exact_supported,
             approximate_profile,
             state.mtp_bypassed,
-            sampling.uses_repetition_penalty(),
+            sampling.uses_logits_processors(),
         ) {
             MtpRequestRoute::DirectFallback => {
                 state.mtp_telemetry.record_direct_fallback();
@@ -6773,7 +6878,7 @@ impl MlxRunner {
                 if let Some(cache) = state.mtp_cache.as_mut() {
                     cache.reset();
                 }
-                if is_greedy && !sampling.uses_repetition_penalty() {
+                if is_greedy && !sampling.uses_logits_processors() {
                     return vec![self.run_direct_pipeline_decode(
                         state,
                         last_token,
@@ -7691,7 +7796,7 @@ fn prefill_output_token_cacheable(
     let is_greedy = ctx
         .map(|c| c.deterministic_argmax_sampling)
         .unwrap_or(sampling == MlxSamplingParams::greedy());
-    is_greedy && !sampling.uses_repetition_penalty()
+    is_greedy && !sampling.uses_logits_processors()
 }
 
 fn hash_prefix_tokens(tokens: &[u32]) -> u64 {
@@ -8188,6 +8293,8 @@ mod tests {
             top_k: 0,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            no_repeat_ngram_size: 0,
+            ngram_window: 128,
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
@@ -9969,6 +10076,8 @@ mod tests {
             top_k: 0,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            no_repeat_ngram_size: 0,
+            ngram_window: 128,
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,

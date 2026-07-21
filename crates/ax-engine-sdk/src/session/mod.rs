@@ -289,6 +289,15 @@ impl EngineSession {
         if request.max_output_tokens == 0 {
             return Err(EngineSessionError::InvalidMaxOutputTokens);
         }
+        if request.sampling.no_repeat_ngram_size > 0
+            && (request.sampling.ngram_window == 0
+                || request.sampling.no_repeat_ngram_size > request.sampling.ngram_window)
+        {
+            return Err(EngineSessionError::InvalidNoRepeatNgram {
+                no_repeat_ngram_size: request.sampling.no_repeat_ngram_size,
+                ngram_window: request.sampling.ngram_window,
+            });
+        }
         let has_input_text = request
             .input_text
             .as_ref()
@@ -321,10 +330,10 @@ impl EngineSession {
                     max_batch_tokens,
                 });
             }
-            if !request.input_tokens.is_empty()
-                && let Some(inputs) = request.multimodal_inputs.gemma4_unified.as_ref()
-            {
-                inputs.validate_for_prompt_len(request.input_tokens.len())?;
+            if !request.input_tokens.is_empty() {
+                request
+                    .multimodal_inputs
+                    .validate_for_prompt_tokens(&request.input_tokens)?;
             }
         }
 

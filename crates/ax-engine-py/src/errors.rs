@@ -35,6 +35,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
     match error {
         EngineSessionError::EmptyInputTokens
         | EngineSessionError::InvalidMaxOutputTokens
+        | EngineSessionError::InvalidNoRepeatNgram { .. }
         | EngineSessionError::MlxBackendRequiresTokenizedInput
         | EngineSessionError::MultimodalInputsRequireNativeMlx { .. }
         | EngineSessionError::MultimodalPromptExceedsMaxBatchTokens { .. }

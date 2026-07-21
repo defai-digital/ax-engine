@@ -365,6 +365,12 @@ pub struct GenerateSampling {
     /// None lets each backend use its own default (typically 64 for llama.cpp, 20 for mlx-lm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repetition_context_size: Option<u32>,
+    /// N-gram size that must not repeat. Zero disables the processor.
+    #[serde(default)]
+    pub no_repeat_ngram_size: u32,
+    /// Maximum recent token history inspected for repeated n-grams.
+    #[serde(default = "default_ngram_window")]
+    pub ngram_window: u32,
     #[serde(default)]
     pub seed: u64,
     /// Per-request deterministic override. `None` inherits the session default.
@@ -390,6 +396,8 @@ impl Default for GenerateSampling {
             min_p: None,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            no_repeat_ngram_size: 0,
+            ngram_window: 128,
             seed: 0,
             deterministic: None,
             ignore_eos: false,
@@ -410,11 +418,17 @@ impl GenerateSampling {
             top_k: self.top_k,
             repetition_penalty: self.repetition_penalty,
             repetition_context_size: self.repetition_context_size,
+            no_repeat_ngram_size: self.no_repeat_ngram_size,
+            ngram_window: self.ngram_window,
             seed: self.seed,
             deterministic,
             ignore_eos: self.ignore_eos,
         }
     }
+}
+
+const fn default_ngram_window() -> u32 {
+    128
 }
 
 impl GenerateResponse {

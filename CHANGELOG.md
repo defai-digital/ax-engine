@@ -15,9 +15,12 @@ and this project adheres to Semantic Versioning.
   and ChatML chat templating for Nemotron hub ids.
 - Native direct-mode support for **Unlimited-OCR** (`unlimited_ocr` /
   DeepSeek-OCR lineage): dual vision (SAM-ViT-B + CLIP-L) + SWA MoE language
-  tower, MXFP8 dense/expert packs, R-SWA prefill (full attention; decode ring
-  deferred), DeepSeek-V2 `rms_norm_eps=1e-6` default, and
-  `unlimited_ocr_smoke` binary for image+text smoke.
+  tower, MXFP8 dense/expert packs, causal full-prompt prefill plus bounded R-SWA
+  decode, DeepSeek-V2 `rms_norm_eps=1e-6` default, and an image+text smoke
+  binary. The public Python request helper accepts a local image/Pillow image,
+  reproduces the released 1024px global plus dynamic 640px crop grid, expands
+  the exact soft-token span, and exposes bounded no-repeat n-gram decoding
+  through `Session`.
 - All 25 public AutomatosX model packs
   (https://huggingface.co/AutomatosX/models) are first-class managed downloads:
   `ax-engine download` / `serve` aliases for Qwen 3.5/3.6, Gemma 4,

@@ -152,7 +152,7 @@ pub(super) fn mtp_exact_sampling_supported(
     sampling: MlxSamplingParams,
     target_softmax_topk: Option<u32>,
 ) -> bool {
-    if sampling.uses_repetition_penalty()
+    if sampling.uses_logits_processors()
         || crate::mtp::mtp_draft_mode_from_env() != crate::mtp::MtpDraftMode::Greedy
     {
         return false;

@@ -12,6 +12,7 @@ unsafe_code = "allow"
 mlx-sys = { path = "../mlx-sys" }
 ax-engine-core = { path = "../ax-engine-core" }
 fs2.workspace = true
+image.workspace = true
 parking_lot = "0.12"
 serde.workspace = true
 serde_json.workspace = true

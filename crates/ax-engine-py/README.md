@@ -13,7 +13,7 @@ Python integrations. Install the wheel in a virtual environment:
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install --upgrade "ax-engine[download]>=6.11.0,<7"
+python3 -m pip install --upgrade "ax-engine[download]>=6.12.0,<7"
 ax-engine doctor
 ```
 
@@ -60,6 +60,51 @@ result = session.generate([token_id, ...], max_output_tokens=128)
 print(result.output_tokens)
 ```
 
+### Native Unlimited-OCR image requests
+
+AX Engine 6.12 exposes native Unlimited-OCR global and high-resolution tile
+paths without model repository code. Tokenize a prompt containing exactly one
+literal `<image>`, then let the helper expand and attach one local path or
+Pillow image:
+
+```python
+from tokenizers import Tokenizer
+import ax_engine
+
+model_dir = "/path/to/ax-unlimited-ocr"
+tokenizer = Tokenizer.from_file(f"{model_dir}/tokenizer.json")
+input_tokens = tokenizer.encode(
+    "<image>Convert the document to markdown.",
+    add_special_tokens=False,
+).ids
+request = ax_engine.prepare_unlimited_ocr_image_request(
+    model_dir,
+    [0, *input_tokens],
+    ["page.png"],
+)
+
+with ax_engine.Session(
+    model_id="unlimited_ocr",
+    mlx=True,
+    mlx_model_artifacts_dir=model_dir,
+) as session:
+    result = session.generate(
+        request.input_tokens,
+        multimodal_inputs=request.multimodal_inputs,
+        max_output_tokens=8192,
+        no_repeat_ngram_size=35,
+        ngram_window=128,
+    )
+
+text = tokenizer.decode(result.output_tokens, skip_special_tokens=False)
+```
+
+The public path accepts exactly one bounded RGB source image. By default it
+selects the released processor's bounded 640px tile grid (up to 32 tiles) in
+addition to the 1024px global view; pass `cropping=False` only for an explicit
+global-only tradeoff. Resize, tiling, letterboxing, normalization, dual-vision
+projection, and BF16 conversion run in the native MLX implementation.
+
 Or use the OpenAI-compatible shim:
 
 ```bash
@@ -77,8 +122,8 @@ Then point any OpenAI client at `http://127.0.0.1:31418`.
 Install the OpenAI shim or image/audio helpers with the matching extra:
 
 ```bash
-python3 -m pip install --upgrade "ax-engine[openai]>=6.11.0,<7"
-python3 -m pip install --upgrade "ax-engine[multimodal]>=6.11.0,<7"
+python3 -m pip install --upgrade "ax-engine[openai]>=6.12.0,<7"
+python3 -m pip install --upgrade "ax-engine[multimodal]>=6.12.0,<7"
 ```
 
 ## Requirements

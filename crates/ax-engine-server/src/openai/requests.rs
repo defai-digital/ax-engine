@@ -880,6 +880,8 @@ fn build_openai_sampling_with_default_repetition_penalty(
             .repetition_penalty
             .unwrap_or(default_repetition_penalty),
         repetition_context_size: params.repetition_context_size,
+        no_repeat_ngram_size: 0,
+        ngram_window: 128,
         seed: params
             .seed
             .unwrap_or_else(|| default_openai_seed(temperature)),

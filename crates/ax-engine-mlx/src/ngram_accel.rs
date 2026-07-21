@@ -1074,7 +1074,7 @@ pub fn ngram_accel_decode_step_with_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Vec<u32> {
-    if draft.is_empty() || sampling.uses_repetition_penalty() {
+    if draft.is_empty() || sampling.uses_logits_processors() {
         return single_decode_with_sampling_buffers(
             cfg,
             weights,
@@ -1497,7 +1497,7 @@ pub fn single_decode_with_sampling_buffers(
     cache.advance(1);
 
     let tok = if sampling.temperature > 0.0
-        && !sampling.uses_repetition_penalty()
+        && !sampling.uses_logits_processors()
         && sampling.top_k == 0
         && sampling.top_p >= 1.0
     {
@@ -1512,7 +1512,7 @@ pub fn single_decode_with_sampling_buffers(
         // GPU-selected candidate set: transfers a few hundred (index, prob)
         // pairs instead of the full vocab (1 MB of f32 at 262k) per token.
         tok
-    } else if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+    } else if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
         let kv_refs = cache.collect_eval_refs();
         let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
         targets.push(&logits);

@@ -68,14 +68,14 @@ pub fn batched_sampling_class(
         return Some(BatchedSamplingClass::Greedy);
     }
     let temp_positive = sampling.temperature > 0.0;
-    let uses_rep = sampling.uses_repetition_penalty();
+    let uses_processors = sampling.uses_logits_processors();
     // Branch 1 (single decode): pure temperature → GPU `random_categorical`.
     // Non-reproducible / not batchable token-exact → ineligible.
-    if temp_positive && !uses_rep && sampling.top_k == 0 && sampling.top_p >= 1.0 {
+    if temp_positive && !uses_processors && sampling.top_k == 0 && sampling.top_p >= 1.0 {
         return None;
     }
     // Branch 2 (single decode): host `sample_categorical_into`.
-    if temp_positive || uses_rep {
+    if temp_positive || uses_processors {
         return Some(BatchedSamplingClass::HostSampled);
     }
     // Branch 3 (single decode): greedy `argmax`.

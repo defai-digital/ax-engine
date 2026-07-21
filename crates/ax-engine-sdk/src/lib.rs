@@ -27,8 +27,9 @@ pub use ax_engine_core::gemma4_unified::{
 };
 pub use ax_engine_core::{
     CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvManagerConfig, NativeDiffusionConfig,
-    NativeLinearAttentionConfig, NativeMlaAttentionConfig, RequestMultimodalInputs,
-    RequestWorkloadHints,
+    NativeLinearAttentionConfig, NativeMlaAttentionConfig, RequestMultimodalInputError,
+    RequestMultimodalInputs, RequestWorkloadHints, UNLIMITED_OCR_BASE_SOFT_TOKEN_COUNT,
+    UnlimitedOcrImageRuntimeInput, UnlimitedOcrRuntimeInputError, UnlimitedOcrRuntimeInputs,
 };
 #[cfg(feature = "mlx-native")]
 pub use ax_engine_mlx::MlxPrefixCacheStore;

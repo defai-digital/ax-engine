@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ax_engine_core::NativeModelArtifacts;
+use ax_engine_core::{NativeModelArtifacts, unlimited_ocr_soft_token_count};
 use ax_engine_mlx::{
     generate::{
         DEFAULT_PREFILL_CHUNK, advance_direct_pipeline_with_timings,
@@ -21,7 +21,7 @@ use ax_engine_mlx::{
     sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64},
     unlimited_ocr::{
         DEFAULT_IMAGE_TOKEN_ID, build_free_ocr_token_ids, default_base_soft_token_count,
-        preprocess_rgb_u8,
+        preprocess_document_rgb_u8,
     },
     weights::load_weights,
 };
@@ -209,7 +209,11 @@ fn run() -> Result<(), String> {
 
     let (rgb, w, h) = load_png_rgb(Path::new(&image_path))?;
     eprintln!("image {w}x{h}");
-    let image = preprocess_rgb_u8(&rgb, w, h).map_err(|e| e.to_string())?;
+    let cropping = !matches!(
+        env::var("AX_OCR_CROPPING").as_deref(),
+        Ok("0") | Ok("false") | Ok("no")
+    );
+    let image = preprocess_document_rgb_u8(&rgb, w, h, cropping).map_err(|e| e.to_string())?;
 
     // Prompt: bos + image soft tokens + "Free OCR."
     // Matches mlx-vlm with base_size=1024, image_size=1024, cropping=False:
@@ -220,7 +224,7 @@ fn run() -> Result<(), String> {
         .filter(|v: &Vec<u32>| !v.is_empty())
         .unwrap_or_else(|| vec![21431, 126041, 16]);
     eprintln!("suffix ids ({} tokens): {:?}", suffix_ids.len(), suffix_ids);
-    let soft = default_base_soft_token_count();
+    let soft = unlimited_ocr_soft_token_count(w, h, cropping) as usize;
     let prompt = build_free_ocr_token_ids(&[], &suffix_ids, DEFAULT_IMAGE_TOKEN_ID, soft, Some(0));
     eprintln!("prompt len {}", prompt.len());
 

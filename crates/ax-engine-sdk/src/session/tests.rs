@@ -28,7 +28,7 @@ use crate::backend::{
     BackendPolicy, NativeModelArtifactsSource, NativeRuntimeArtifactsSource, PreviewBackendRequest,
     ResolvedBackend, SupportTier,
 };
-use crate::generate::GenerateFinishReason;
+use crate::generate::{GenerateFinishReason, GenerateSampling};
 use crate::{LlamaCppBackendError, MlxLmConfig};
 
 fn sample_submission() -> RequestSubmission {
@@ -61,6 +61,7 @@ fn sample_gemma4_multimodal_inputs() -> RequestMultimodalInputs {
             audios: Vec::new(),
             videos: Vec::new(),
         }),
+        unlimited_ocr: None,
     }
 }
 
@@ -647,6 +648,40 @@ fn native_generate_validation_rejects_malformed_gemma4_multimodal_inputs() {
     assert!(matches!(
         error,
         EngineSessionError::InvalidMultimodalInputs(_)
+    ));
+}
+
+#[test]
+fn generate_validation_rejects_no_repeat_ngram_larger_than_window() {
+    let request = GenerateRequest {
+        model_id: "unlimited_ocr".to_string(),
+        input_tokens: vec![1, 2, 3],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: GenerateSampling {
+            no_repeat_ngram_size: 35,
+            ngram_window: 32,
+            ..GenerateSampling::default()
+        },
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+
+    let error = EngineSession::validate_generate_request_for_backend(
+        SelectedBackend::Mlx,
+        2048,
+        1,
+        &request,
+    )
+    .expect_err("no-repeat n-gram larger than its window must fail");
+
+    assert!(matches!(
+        error,
+        EngineSessionError::InvalidNoRepeatNgram {
+            no_repeat_ngram_size: 35,
+            ngram_window: 32,
+        }
     ));
 }
 

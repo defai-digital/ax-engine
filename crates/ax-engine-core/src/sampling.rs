@@ -11,6 +11,8 @@ pub struct SamplingParams {
     pub top_k: u32,
     pub repetition_penalty: f32,
     pub repetition_context_size: Option<u32>,
+    pub no_repeat_ngram_size: u32,
+    pub ngram_window: u32,
     pub seed: u64,
     pub deterministic: bool,
     pub ignore_eos: bool,
@@ -24,6 +26,8 @@ impl Default for SamplingParams {
             top_k: 0,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            no_repeat_ngram_size: 0,
+            ngram_window: 128,
             seed: 0,
             deterministic: true,
             ignore_eos: false,
@@ -39,6 +43,7 @@ pub(crate) fn sampling_params_allow_deterministic_argmax_fast_path(
         && params.top_k == 0
         && params.top_p >= 1.0
         && params.repetition_penalty == 1.0
+        && params.no_repeat_ngram_size == 0
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -88,9 +93,9 @@ impl TokenSampler for DeterministicSampler {
             .into_iter()
             .map(|request| {
                 let sampled_from_logits = request.logits.as_ref().and_then(|logits| {
-                    sample_argmax_with_logprob_and_repetition_penalty(
+                    sample_argmax_with_logprob_and_logits_processors(
                         logits,
-                        request.sampling_params.repetition_penalty,
+                        &request.sampling_params,
                         &request.recent_tokens,
                     )
                 });
@@ -125,20 +130,28 @@ impl TokenSampler for DeterministicSampler {
 }
 
 pub(crate) fn sample_argmax_with_logprob(logits: &[f32]) -> Option<(u32, f32)> {
-    sample_argmax_with_logprob_and_repetition_penalty(logits, 1.0, &[])
+    sample_argmax_with_logprob_and_logits_processors(logits, &SamplingParams::default(), &[])
 }
 
-fn sample_argmax_with_logprob_and_repetition_penalty(
+fn sample_argmax_with_logprob_and_logits_processors(
     logits: &[f32],
-    repetition_penalty: f32,
+    sampling: &SamplingParams,
     recent_tokens: &[u32],
 ) -> Option<(u32, f32)> {
     let mut adjusted_logits_buf: Vec<f32>;
-    let logits = if repetition_penalty_applies(repetition_penalty, recent_tokens) {
+    let logits = if repetition_penalty_applies(sampling.repetition_penalty, recent_tokens)
+        || no_repeat_ngram_applies(sampling.no_repeat_ngram_size, recent_tokens)
+    {
         adjusted_logits_buf = logits.to_vec();
         apply_repetition_penalty_in_place(
             &mut adjusted_logits_buf,
-            repetition_penalty,
+            sampling.repetition_penalty,
+            recent_tokens,
+        );
+        apply_no_repeat_ngram_in_place(
+            &mut adjusted_logits_buf,
+            sampling.no_repeat_ngram_size,
+            sampling.ngram_window,
             recent_tokens,
         );
         adjusted_logits_buf.as_slice()
@@ -197,6 +210,36 @@ fn repetition_penalty_applies(repetition_penalty: f32, recent_tokens: &[u32]) ->
         && repetition_penalty > 0.0
         && repetition_penalty != 1.0
         && !recent_tokens.is_empty()
+}
+
+fn no_repeat_ngram_applies(no_repeat_ngram_size: u32, recent_tokens: &[u32]) -> bool {
+    no_repeat_ngram_size > 0 && recent_tokens.len() >= no_repeat_ngram_size as usize
+}
+
+pub(crate) fn apply_no_repeat_ngram_in_place(
+    logits: &mut [f32],
+    no_repeat_ngram_size: u32,
+    ngram_window: u32,
+    history: &[u32],
+) {
+    let ngram_size = no_repeat_ngram_size as usize;
+    if ngram_size == 0 || history.len() < ngram_size {
+        return;
+    }
+    let keep = (ngram_window as usize).max(ngram_size).min(history.len());
+    let history = &history[history.len() - keep..];
+    if history.len() < ngram_size {
+        return;
+    }
+    let prefix_len = ngram_size - 1;
+    let current_prefix = &history[history.len() - prefix_len..];
+    for start in 0..=history.len() - ngram_size {
+        if prefix_len == 0 || history[start..start + prefix_len] == *current_prefix {
+            if let Some(logit) = logits.get_mut(history[start + prefix_len] as usize) {
+                *logit = f32::NEG_INFINITY;
+            }
+        }
+    }
 }
 
 pub(crate) fn apply_repetition_penalty_in_place(
@@ -328,6 +371,29 @@ mod tests {
                 previous_token: 99,
                 logits: Some(vec![1.0, 1.8, 0.9]),
                 recent_tokens: vec![1],
+                generated_len: 0,
+                max_output_tokens: 4,
+                sampling_params,
+            }],
+        });
+
+        assert_eq!(sampled[0].token_id, 0);
+    }
+
+    #[test]
+    fn deterministic_sampler_bans_token_that_would_repeat_ngram() {
+        let sampler = DeterministicSampler;
+        let sampling_params = SamplingParams {
+            no_repeat_ngram_size: 3,
+            ngram_window: 16,
+            ..SamplingParams::default()
+        };
+        let sampled = sampler.sample(SamplerInput {
+            requests: vec![SamplerRequest {
+                request_id: RequestId(1),
+                previous_token: 99,
+                logits: Some(vec![0.5, 0.4, 2.0, 0.3]),
+                recent_tokens: vec![1, 2, 2, 1, 2],
                 generated_len: 0,
                 max_output_tokens: 4,
                 sampling_params,
