@@ -4167,6 +4167,8 @@ fn converts_unlimited_ocr_language_moe_directory() {
     assert_eq!(manifest.moe.expert_count, Some(4));
     assert_eq!(manifest.moe.first_dense_layers, Some(1));
     assert_eq!(manifest.moe.shared_expert_count, Some(2));
+    // DeepSeek-V2 language default; HF configs often omit the field.
+    assert_eq!(manifest.rms_norm_eps, Some(1e-6));
     // R-SWA: do not encode standard prefill SWA for unlimited_ocr.
     assert_eq!(manifest.sliding_window_size, None);
     assert!(

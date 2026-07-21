@@ -129,7 +129,11 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
 
     let attention_logit_softcap =
         arch_f64(&config, &model_type, "attn_logit_softcapping").and_then(f64_to_u32);
-    let rms_norm_eps = parse_rms_norm_eps(&config, &model_type);
+    // Unlimited-OCR language tower is DeepSeek-V2 with default rms_norm_eps=1e-6.
+    // HF checkpoints often omit the field; without a convert-side default the
+    // runtime falls through to the generic 1e-5 family default and drifts.
+    let rms_norm_eps = parse_rms_norm_eps(&config, &model_type)
+        .or_else(|| is_unlimited_ocr(&model_type).then_some(1e-6));
     let linear_attention = linear_attention_config(&config, &model_type);
     let mla_attention = mla_attention_config(&config, &model_type);
     let glm_router = glm_router_config(&config, &model_type);
