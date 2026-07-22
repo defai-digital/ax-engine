@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     from PIL import Image
@@ -94,6 +95,59 @@ class UnlimitedOcrRequestTests(unittest.TestCase):
 
         image_input = request.multimodal_inputs["unlimited_ocr"]["images"][0]
         self.assertEqual(image_input["rgb_bytes"], bytes([10, 20, 30]))
+
+    def test_rejects_oversized_path_before_decoding_pixels(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_model_contract(model_dir)
+            image_path = model_dir / "oversized.png"
+            image_path.write_bytes(b"placeholder")
+            opened = mock.MagicMock()
+            opened.__enter__.return_value = opened
+            opened.size = (module._MAX_IMAGE_DIMENSION + 1, 1)
+
+            with mock.patch("PIL.Image.open", return_value=opened):
+                with self.assertRaisesRegex(ValueError, "dimensions must not exceed"):
+                    module.prepare_unlimited_ocr_image_request(
+                        model_dir,
+                        [IMAGE_TOKEN_ID],
+                        [image_path],
+                    )
+
+            opened.load.assert_not_called()
+
+    def test_rejects_token_ids_outside_native_u32_range(self) -> None:
+        module = load_module()
+        with self.assertRaisesRegex(ValueError, "unsigned 32-bit integers"):
+            module._validate_input_tokens([2**32])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_model_contract(model_dir)
+            config_path = model_dir / "config.json"
+            config_path.write_text(
+                json.dumps({"model_type": "unlimited-ocr", "image_token_id": 2**32}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "unsigned 32-bit integer"):
+                module._load_image_token_id(model_dir)
+
+    def test_rejects_non_list_tokenizer_added_tokens(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "unlimited-ocr"}),
+                encoding="utf-8",
+            )
+            (model_dir / "tokenizer.json").write_text(
+                json.dumps({"added_tokens": None}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "added_tokens must be a list"):
+                module._load_image_token_id(model_dir)
 
     def test_rejects_missing_or_duplicate_placeholder(self) -> None:
         module = load_module()

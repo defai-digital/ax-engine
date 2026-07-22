@@ -280,10 +280,15 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         ):
             text = path.read_text()
             self.assertIn("maturin develop", text)
-            self.assertRegex(
+            self.assertIn(
+                "mlx.version",
                 text,
-                r'pip install .*mlx',
-                f"{path.name} must pip-install mlx into its maturin venv",
+                f"{path.name} must read the repository MLX pin",
+            )
+            self.assertIn(
+                '"mlx==${MLX_PIN}"',
+                text,
+                f"{path.name} must install the pinned MLX into its maturin venv",
             )
 
 

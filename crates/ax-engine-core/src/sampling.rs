@@ -143,11 +143,13 @@ fn sample_argmax_with_logprob_and_logits_processors(
         || no_repeat_ngram_applies(sampling.no_repeat_ngram_size, recent_tokens)
     {
         adjusted_logits_buf = logits.to_vec();
-        apply_repetition_penalty_in_place(
-            &mut adjusted_logits_buf,
-            sampling.repetition_penalty,
-            recent_tokens,
-        );
+        if repetition_penalty_applies(sampling.repetition_penalty, recent_tokens) {
+            apply_repetition_penalty_in_place(
+                &mut adjusted_logits_buf,
+                sampling.repetition_penalty,
+                recent_tokens,
+            );
+        }
         apply_no_repeat_ngram_in_place(
             &mut adjusted_logits_buf,
             sampling.no_repeat_ngram_size,
@@ -401,6 +403,31 @@ mod tests {
         });
 
         assert_eq!(sampled[0].token_id, 0);
+    }
+
+    #[test]
+    fn deterministic_sampler_ignores_invalid_repetition_penalty_with_ngram_processor() {
+        let sampler = DeterministicSampler;
+        let sampling_params = SamplingParams {
+            repetition_penalty: f32::NAN,
+            no_repeat_ngram_size: 3,
+            ngram_window: 16,
+            ..SamplingParams::default()
+        };
+        let sampled = sampler.sample(SamplerInput {
+            requests: vec![SamplerRequest {
+                request_id: RequestId(1),
+                previous_token: 99,
+                logits: Some(vec![0.5, 1.5, 2.0, 0.3]),
+                recent_tokens: vec![1, 2, 2, 1, 2],
+                generated_len: 0,
+                max_output_tokens: 4,
+                sampling_params,
+            }],
+        });
+
+        assert_eq!(sampled[0].token_id, 1);
+        assert_eq!(sampled[0].stop_reason, None);
     }
 
     #[test]

@@ -11,6 +11,7 @@ UNLIMITED_OCR_MAX_LOCAL_TILES = 32
 UNLIMITED_OCR_LOCAL_QUERY_GRID = 10
 _MAX_IMAGE_DIMENSION = 32_768
 _MAX_RGB_BYTES = 256 * 1024 * 1024
+_MAX_TOKEN_ID = 2**32 - 1
 
 
 @dataclass(frozen=True)
@@ -49,10 +50,7 @@ def prepare_unlimited_ocr_image_request(
         )
     if not isinstance(images, list) or len(images) != 1:
         actual = len(images) if isinstance(images, list) else type(images).__name__
-        raise ValueError(
-            "native Unlimited-OCR requires exactly one source image; "
-            f"found {actual}"
-        )
+        raise ValueError(f"native Unlimited-OCR requires exactly one source image; found {actual}")
     if not isinstance(cropping, bool):
         raise TypeError("Unlimited-OCR cropping must be a boolean")
     image = _load_rgb_image(images[0])
@@ -118,8 +116,7 @@ def _crop_grid(width: int, height: int, cropping: bool) -> tuple[int, int]:
     for columns, rows in ratios:
         difference = abs(aspect - columns / rows)
         if difference < best_diff or (
-            difference == best_diff
-            and area > 0.5 * tile_area * columns * rows
+            difference == best_diff and area > 0.5 * tile_area * columns * rows
         ):
             best_diff = difference
             best = (columns, rows)
@@ -139,10 +136,10 @@ def _validate_input_tokens(input_tokens: list[int]) -> list[int]:
     if not isinstance(input_tokens, list) or not input_tokens:
         raise ValueError("Unlimited-OCR input_tokens must be a non-empty list")
     if any(
-        not isinstance(token, int) or isinstance(token, bool) or token < 0
+        not isinstance(token, int) or isinstance(token, bool) or token < 0 or token > _MAX_TOKEN_ID
         for token in input_tokens
     ):
-        raise ValueError("Unlimited-OCR input_tokens must contain non-negative integers")
+        raise ValueError("Unlimited-OCR input_tokens must contain unsigned 32-bit integers")
     return list(input_tokens)
 
 
@@ -151,25 +148,32 @@ def _load_image_token_id(model_dir: Path) -> int:
     model_type = str(config.get("model_type", "")).replace("-", "_")
     if model_type not in {"unlimited_ocr", "deepseekocr"}:
         raise ValueError(
-            "Unlimited-OCR config model_type must be unlimited-ocr, unlimited_ocr, "
-            "or deepseekocr"
+            "Unlimited-OCR config model_type must be unlimited-ocr, unlimited_ocr, or deepseekocr"
         )
     configured = config.get("image_token_id")
-    if isinstance(configured, int) and not isinstance(configured, bool) and configured >= 0:
-        return configured
+    if isinstance(configured, int) and not isinstance(configured, bool):
+        if configured > _MAX_TOKEN_ID:
+            raise ValueError("Unlimited-OCR image_token_id must be an unsigned 32-bit integer")
+        if configured >= 0:
+            return configured
 
     tokenizer = _load_json_object(model_dir / "tokenizer.json", "tokenizer")
-    matches = {
-        item.get("id")
-        for item in tokenizer.get("added_tokens", [])
-        if isinstance(item, dict)
-        and item.get("content") == "<image>"
-        and isinstance(item.get("id"), int)
-        and not isinstance(item.get("id"), bool)
-        and item["id"] >= 0
-    }
+    added_tokens = tokenizer.get("added_tokens", [])
+    if not isinstance(added_tokens, list):
+        raise ValueError("tokenizer added_tokens must be a list")
+    matches: set[int] = set()
+    for item in added_tokens:
+        if not isinstance(item, dict) or item.get("content") != "<image>":
+            continue
+        token_id = item.get("id")
+        if (
+            isinstance(token_id, int)
+            and not isinstance(token_id, bool)
+            and 0 <= token_id <= _MAX_TOKEN_ID
+        ):
+            matches.add(token_id)
     if len(matches) != 1:
-        raise ValueError("tokenizer must define exactly one non-negative <image> token ID")
+        raise ValueError("tokenizer must define exactly one unsigned 32-bit <image> token ID")
     return matches.pop()
 
 
@@ -192,17 +196,23 @@ def _load_rgb_image(value: Any):
         ) from exc
 
     if isinstance(value, Image.Image):
+        _validate_dimensions(*value.size)
         source = value.copy()
     elif isinstance(value, (str, Path)):
         path = Path(value).expanduser()
         if not path.is_file():
             raise FileNotFoundError(f"Unlimited-OCR image not found: {path}")
         try:
-            with Image.open(path) as opened:
-                opened.load()
-                source = opened.copy()
+            opened = Image.open(path)
         except (OSError, ValueError) as exc:
             raise ValueError(f"cannot decode Unlimited-OCR image: {path}") from exc
+        with opened:
+            _validate_dimensions(*opened.size)
+            try:
+                opened.load()
+                source = opened.copy()
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"cannot decode Unlimited-OCR image: {path}") from exc
     else:
         raise TypeError(
             "Unlimited-OCR images must be local paths or PIL.Image.Image instances; "

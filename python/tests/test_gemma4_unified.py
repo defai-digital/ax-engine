@@ -9,6 +9,7 @@ import unittest
 import wave
 from io import BytesIO
 from pathlib import Path
+from unittest import mock
 
 try:
     from PIL import Image
@@ -131,6 +132,49 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
         self.assertEqual(image_input["span"]["soft_token_count"], 2)
         self.assertEqual(len(image_input["pixel_values"]), 24)
 
+    @unittest.skipIf(Image is None, "Pillow is required for Gemma4 image preprocessing")
+    def test_rejects_oversized_image_before_decoding_pixels(self) -> None:
+        module = load_module()
+        opened = mock.MagicMock()
+        opened.size = (module._MAX_IMAGE_DIMENSION + 1, 1)
+
+        with (
+            mock.patch("PIL.Image.open", return_value=opened),
+            self.assertRaisesRegex(ValueError, "dimensions must not exceed"),
+        ):
+            module._load_pil_image("oversized.png")
+
+        opened.load.assert_not_called()
+
+    def test_patchify_stops_at_soft_token_budget(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            config = module._load_config(model_dir)
+
+        image = mock.MagicMock()
+        image.width = 10_000
+        image.height = 10_000
+        pixels = mock.MagicMock()
+        pixels.__getitem__.return_value = (1, 2, 3)
+        image.load.return_value = pixels
+
+        patch_values, position_ids = module._patchify_rgb(image, config, 2)
+
+        self.assertEqual(position_ids, [[0, 0], [1, 0]])
+        self.assertEqual(len(patch_values), 2)
+        self.assertEqual(pixels.__getitem__.call_count, 8)
+
+    def test_rejects_input_tokens_outside_native_u32_range(self) -> None:
+        module = load_module()
+        for tokens in ([2**32], [-1], [True]):
+            with (
+                self.subTest(tokens=tokens),
+                self.assertRaisesRegex(ValueError, "unsigned 32-bit integers"),
+            ):
+                module.prepare_gemma4_unified_multimodal_request("unused", tokens)
+
     def test_prepare_audio_request_chunks_waveform_and_expands_placeholder(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -219,9 +263,7 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)
             write_tiny_config(model_dir)
-            audio_data = base64.b64encode(tiny_wav_bytes([0, 16384, -16384], 4)).decode(
-                "ascii"
-            )
+            audio_data = base64.b64encode(tiny_wav_bytes([0, 16384, -16384], 4)).decode("ascii")
 
             request = module.prepare_gemma4_unified_audio_request(
                 model_dir,
@@ -284,6 +326,7 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
             ([[[400], 401]], "frame entry"),
             ([[[400.5], [401]]], "non-integer"),
             ([[[-1], [401]]], "non-negative"),
+            ([[[2**32], [401]]], "unsigned 32-bit"),
         ]
         for timestamp_token_ids, message in bad_timestamp_cases:
             with self.subTest(message=message):
@@ -300,6 +343,38 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
 
 
 class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
+    def test_load_config_rejects_non_object_json_sections(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            (model_dir / "config.json").write_text("[]")
+            with self.assertRaisesRegex(ValueError, "must contain a JSON object"):
+                module._load_config(model_dir)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            processor_path = model_dir / "processor_config.json"
+            processor = json.loads(processor_path.read_text())
+            processor["image_processor"] = []
+            processor_path.write_text(json.dumps(processor))
+            with self.assertRaisesRegex(ValueError, "image_processor must be an object"):
+                module._load_config(model_dir)
+
+    def test_load_config_rejects_token_ids_outside_native_u32_range(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            config_path = model_dir / "config.json"
+            model_config = json.loads(config_path.read_text())
+            model_config["image_token_id"] = 2**32
+            config_path.write_text(json.dumps(model_config))
+
+            with self.assertRaisesRegex(ValueError, "unsigned 32-bit integer"):
+                module._load_config(model_dir)
+
     def test_load_config_accepts_zero_eoa_token_index(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -580,9 +655,7 @@ class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
                 self.assertEqual(target_h % 8, 0)
 
 
-def write_tiny_config(
-    model_dir: Path, processor_filename: str = "processor_config.json"
-) -> None:
+def write_tiny_config(model_dir: Path, processor_filename: str = "processor_config.json") -> None:
     (model_dir / "config.json").write_text(
         json.dumps(
             {
@@ -657,9 +730,7 @@ def tiny_wav_bytes(samples: list[int], sampling_rate: int) -> bytes:
         wav.setnchannels(1)
         wav.setsampwidth(2)
         wav.setframerate(sampling_rate)
-        wav.writeframes(
-            b"".join(sample.to_bytes(2, "little", signed=True) for sample in samples)
-        )
+        wav.writeframes(b"".join(sample.to_bytes(2, "little", signed=True) for sample in samples))
     return buffer.getvalue()
 
 

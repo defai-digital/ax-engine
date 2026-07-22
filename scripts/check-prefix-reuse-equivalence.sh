@@ -64,7 +64,8 @@ source "$VENV_DIR/bin/activate"
 python -m pip install --quiet --upgrade pip
 # mlx must be in this venv: mlx-sys/build.rs resolves headers/lib from the
 # active Python (install-native-build-deps only targets the host interpreter).
-python -m pip install --quiet "maturin>=1.7,<2" tokenizers mlx
+MLX_PIN="$(tr -d '[:space:]' < "$ROOT_DIR/mlx.version")"
+python -m pip install --quiet "maturin>=1.7,<2" tokenizers "mlx==${MLX_PIN}"
 
 cd "$ROOT_DIR"
 

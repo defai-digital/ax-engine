@@ -14,6 +14,8 @@ from typing import Any
 
 _REMOTE_MEDIA_TIMEOUT_SECONDS = 10
 _MAX_REMOTE_MEDIA_BYTES = 64 * 1024 * 1024
+_MAX_IMAGE_DIMENSION = 8_192
+_MAX_TOKEN_ID = 2**32 - 1
 # Smallest positive normal f32; image_std channels below this would overflow
 # the per-pixel division once the values land in f32 tensors. Matches the
 # Rust server's is_normal() validation.
@@ -112,6 +114,7 @@ def prepare_gemma4_unified_multimodal_request(
     videos provided, plus one frame entry per sampled frame after preprocessing.
     """
 
+    tokens = _validate_token_ids(input_tokens, "input_tokens", require_nonempty=True)
     config = _load_config(Path(model_dir))
     prepared_images = [] if images is None else list(images)
     prepared_audios = [] if audios is None else list(audios)
@@ -130,7 +133,7 @@ def prepare_gemma4_unified_multimodal_request(
         audio_spans,
         video_spans,
     ) = _expand_multimodal_placeholders(
-        input_tokens,
+        tokens,
         processed_images,
         processed_audios,
         processed_videos,
@@ -272,17 +275,15 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
             + ", ".join(str(path) for path in processor_config_candidates)
         )
 
-    model_config = json.loads(model_config_path.read_text())
-    processor_config = json.loads(processor_config_path.read_text())
-    image_config = processor_config.get("image_processor") or {}
-    video_config = processor_config.get("video_processor") or {}
-    feature_config = (
-        processor_config.get("feature_extractor")
-        or processor_config.get("audio_feature_extractor")
-        or {}
-    )
-    vision_config = model_config.get("vision_config") or {}
-    audio_config = model_config.get("audio_config") or {}
+    model_config = _load_json_object(model_config_path, "Gemma4 unified config")
+    processor_config = _load_json_object(processor_config_path, "Gemma4 unified processor config")
+    image_config = _optional_config_object(processor_config, "image_processor")
+    video_config = _optional_config_object(processor_config, "video_processor")
+    feature_config = _optional_config_object(
+        processor_config, "feature_extractor"
+    ) or _optional_config_object(processor_config, "audio_feature_extractor")
+    vision_config = _optional_config_object(model_config, "vision_config")
+    audio_config = _optional_config_object(model_config, "audio_config")
     if image_config.get("image_processor_type") not in (
         None,
         "Gemma4UnifiedImageProcessor",
@@ -331,8 +332,8 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         # pixel (inf/NaN, overflow, or sign-flipped values) once values land
         # in f32 tensors: a subnormal like 1e-40 passes a naive > 0 check but
         # overflows the division, and 1e40 is finite in f64 but inf in f32.
-        # Reject the checkpoint config instead; _rgb_pixels divides by std
-        # relying on this.
+        # Reject the checkpoint config instead; patch extraction divides by
+        # std relying on this.
         raise ValueError(
             "preprocessor_config.json image_std contains a channel that is "
             f"not a positive normal float32 value {image_std!r}; cannot "
@@ -340,13 +341,15 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         )
 
     return _Gemma4UnifiedConfig(
-        image_token_id=_required_int(model_config, "image_token_id"),
-        audio_token_id=_required_int(model_config, "audio_token_id"),
-        video_token_id=_required_int(model_config, "video_token_id"),
-        boi_token_id=_required_int(model_config, "boi_token_id"),
-        eoi_token_id=_required_int(model_config, "eoi_token_id"),
-        boa_token_id=_required_int(model_config, "boa_token_id"),
-        eoa_token_id=_optional_int_or_required(model_config, "eoa_token_index", "eoa_token_id"),
+        image_token_id=_required_token_id(model_config, "image_token_id"),
+        audio_token_id=_required_token_id(model_config, "audio_token_id"),
+        video_token_id=_required_token_id(model_config, "video_token_id"),
+        boi_token_id=_required_token_id(model_config, "boi_token_id"),
+        eoi_token_id=_required_token_id(model_config, "eoi_token_id"),
+        boa_token_id=_required_token_id(model_config, "boa_token_id"),
+        eoa_token_id=_optional_token_id_or_required(
+            model_config, "eoa_token_index", "eoa_token_id"
+        ),
         do_convert_rgb=bool(image_config.get("do_convert_rgb", True)),
         do_resize=bool(image_config.get("do_resize", True)),
         do_rescale=bool(image_config.get("do_rescale", True)),
@@ -410,55 +413,60 @@ def _process_image(
     if max_soft_tokens <= 0:
         raise ValueError("Gemma4 unified max_soft_tokens must be positive")
     pil_image = _load_pil_image(image)
-    if config.do_convert_rgb:
-        pil_image = pil_image.convert("RGB")
-    elif pil_image.mode != "RGB":
-        raise ValueError("Gemma4 unified image preprocessing currently requires RGB images")
+    try:
+        if config.do_convert_rgb:
+            converted = pil_image.convert("RGB")
+            if converted is not pil_image:
+                pil_image.close()
+                pil_image = converted
+        elif pil_image.mode != "RGB":
+            raise ValueError("Gemma4 unified image preprocessing currently requires RGB images")
 
-    if config.do_resize:
-        target_width, target_height = _resized_dimensions(
-            pil_image.width,
-            pil_image.height,
-            config.patch_size,
-            config.pooling_kernel_size,
-            max_soft_tokens,
-        )
-        if target_width != pil_image.width or target_height != pil_image.height:
-            from PIL import Image
+        if config.do_resize:
+            target_width, target_height = _resized_dimensions(
+                pil_image.width,
+                pil_image.height,
+                config.patch_size,
+                config.pooling_kernel_size,
+                max_soft_tokens,
+            )
+            if target_width != pil_image.width or target_height != pil_image.height:
+                from PIL import Image
 
-            pil_image = pil_image.resize(
-                (target_width, target_height),
-                resample=Image.Resampling.BICUBIC,
+                resized = pil_image.resize(
+                    (target_width, target_height),
+                    resample=Image.Resampling.BICUBIC,
+                )
+                if resized is not pil_image:
+                    pil_image.close()
+                    pil_image = resized
+
+        if pil_image.width % config.model_patch_size != 0:
+            raise ValueError(
+                "Gemma4 unified image width must be divisible by model_patch_size "
+                f"after resize: width={pil_image.width}, model_patch_size={config.model_patch_size}"
+            )
+        if pil_image.height % config.model_patch_size != 0:
+            raise ValueError(
+                "Gemma4 unified image height must be divisible by model_patch_size "
+                f"after resize: height={pil_image.height}, "
+                f"model_patch_size={config.model_patch_size}"
             )
 
-    if pil_image.width % config.model_patch_size != 0:
-        raise ValueError(
-            "Gemma4 unified image width must be divisible by model_patch_size "
-            f"after resize: width={pil_image.width}, model_patch_size={config.model_patch_size}"
-        )
-    if pil_image.height % config.model_patch_size != 0:
-        raise ValueError(
-            "Gemma4 unified image height must be divisible by model_patch_size "
-            f"after resize: height={pil_image.height}, model_patch_size={config.model_patch_size}"
-        )
+        patch_values, position_ids = _patchify_rgb(pil_image, config, max_soft_tokens)
+        soft_token_count = len(position_ids)
 
-    pixels = _rgb_pixels(pil_image, config)
-    patch_values, position_ids = _patchify_rgb(pixels, pil_image.width, pil_image.height, config)
-    soft_token_count = len(position_ids)
-    if soft_token_count > max_soft_tokens:
-        patch_values = patch_values[:max_soft_tokens]
-        position_ids = position_ids[:max_soft_tokens]
-        soft_token_count = max_soft_tokens
+        while len(position_ids) < max_soft_tokens:
+            patch_values.append([0.0] * (config.model_patch_size * config.model_patch_size * 3))
+            position_ids.append([-1, -1])
 
-    while len(position_ids) < max_soft_tokens:
-        patch_values.append([0.0] * (config.model_patch_size * config.model_patch_size * 3))
-        position_ids.append([-1, -1])
-
-    return {
-        "pixel_values": [value for patch in patch_values for value in patch],
-        "pixel_position_ids": position_ids,
-        "soft_token_count": soft_token_count,
-    }
+        return {
+            "pixel_values": [value for patch in patch_values for value in patch],
+            "pixel_position_ids": position_ids,
+            "soft_token_count": soft_token_count,
+        }
+    finally:
+        pil_image.close()
 
 
 def _process_audios(
@@ -547,17 +555,24 @@ def _load_pil_image(image: Any):
     if isinstance(image, dict):
         image = _media_source_from_dict(image, "image")
     if isinstance(image, Image.Image):
-        return image
+        _validate_image_dimensions(*image.size)
+        return image.copy()
+    opened = None
     if isinstance(image, bytes):
-        return Image.open(BytesIO(image))
-    if isinstance(image, str):
+        opened = Image.open(BytesIO(image))
+    elif isinstance(image, str):
         if image.startswith("data:"):
-            return Image.open(BytesIO(_decode_data_uri(image, ("image/",))))
-        if _is_remote_url(image):
-            return Image.open(BytesIO(_fetch_url_bytes(image)))
-        if image.startswith("file://"):
+            opened = Image.open(BytesIO(_decode_data_uri(image, ("image/",))))
+        elif _is_remote_url(image):
+            opened = Image.open(BytesIO(_fetch_url_bytes(image)))
+        elif image.startswith("file://"):
             image = _file_url_to_path(image)
-    return Image.open(image)
+    if opened is None:
+        opened = Image.open(image)
+    with opened:
+        _validate_image_dimensions(*opened.size)
+        opened.load()
+        return opened.copy()
 
 
 def _load_audio_waveform(audio: Any, default_sampling_rate: int) -> tuple[list[float], int]:
@@ -851,6 +866,13 @@ def _normalize_video_timestamp_ids(
                         f" found {int_token} at video {idx}, frame {frame_idx},"
                         f" index {token_idx}"
                     )
+                if int_token > _MAX_TOKEN_ID:
+                    raise ValueError(
+                        "Gemma4 unified video timestamp_token_ids must contain"
+                        " unsigned 32-bit token ids;"
+                        f" found {int_token} at video {idx}, frame {frame_idx},"
+                        f" index {token_idx}"
+                    )
                 normalized_tokens.append(int_token)
             normalized_frame_tokens.append(normalized_tokens)
         normalized.append(normalized_frame_tokens)
@@ -979,6 +1001,33 @@ def _span(
     }
 
 
+def _validate_token_ids(
+    tokens: Any,
+    name: str,
+    *,
+    require_nonempty: bool = False,
+) -> list[int]:
+    if not isinstance(tokens, list) or (require_nonempty and not tokens):
+        requirement = "a non-empty list" if require_nonempty else "a list"
+        raise ValueError(f"Gemma4 unified {name} must be {requirement}")
+    if any(
+        not isinstance(token, int) or isinstance(token, bool) or token < 0 or token > _MAX_TOKEN_ID
+        for token in tokens
+    ):
+        raise ValueError(f"Gemma4 unified {name} must contain unsigned 32-bit integers")
+    return list(tokens)
+
+
+def _validate_image_dimensions(width: int, height: int) -> None:
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Invalid image dimensions: {width}x{height}")
+    if width > _MAX_IMAGE_DIMENSION or height > _MAX_IMAGE_DIMENSION:
+        raise ValueError(
+            "Gemma4 unified image dimensions must not exceed "
+            f"{_MAX_IMAGE_DIMENSION} pixels per side; found {width}x{height}"
+        )
+
+
 def _resized_dimensions(
     width: int,
     height: int,
@@ -1012,49 +1061,42 @@ def _resized_dimensions(
     return int(target_width), int(target_height)
 
 
-def _rgb_pixels(
+def _patchify_rgb(
     image: Any,
     config: _Gemma4UnifiedConfig,
-) -> list[tuple[float, float, float]]:
-    values = []
-    data = image.tobytes()
-    for index in range(0, len(data), 3):
-        red, green, blue = data[index], data[index + 1], data[index + 2]
-        pixel = [float(red), float(green), float(blue)]
-        if config.do_rescale:
-            pixel = [channel * config.rescale_factor for channel in pixel]
-        if config.do_normalize:
-            # std > 0 is guaranteed by _load_config's image_std validation.
-            pixel = [
-                (channel - mean) / std
-                for channel, mean, std in zip(
-                    pixel, config.image_mean, config.image_std, strict=True
-                )
-            ]
-        values.append((pixel[0], pixel[1], pixel[2]))
-    return values
-
-
-def _patchify_rgb(
-    pixels: list[tuple[float, float, float]],
-    width: int,
-    height: int,
-    config: _Gemma4UnifiedConfig,
+    max_soft_tokens: int,
 ) -> tuple[list[list[float]], list[list[int]]]:
     patch = config.model_patch_size
-    patch_height = height // patch
-    patch_width = width // patch
+    patch_height = image.height // patch
+    patch_width = image.width // patch
+    keep = min(patch_height * patch_width, max_soft_tokens)
+    pixels = image.load()
     patch_values: list[list[float]] = []
     position_ids: list[list[int]] = []
     for patch_y in range(patch_height):
         for patch_x in range(patch_width):
+            if len(position_ids) >= keep:
+                return patch_values, position_ids
             values: list[float] = []
             y0 = patch_y * patch
             x0 = patch_x * patch
             for dy in range(patch):
-                row_offset = (y0 + dy) * width
                 for dx in range(patch):
-                    values.extend(pixels[row_offset + x0 + dx])
+                    pixel = [float(channel) for channel in pixels[x0 + dx, y0 + dy]]
+                    if config.do_rescale:
+                        pixel = [channel * config.rescale_factor for channel in pixel]
+                    if config.do_normalize:
+                        # Positive normal std is guaranteed by _load_config.
+                        pixel = [
+                            (channel - mean) / std
+                            for channel, mean, std in zip(
+                                pixel,
+                                config.image_mean,
+                                config.image_std,
+                                strict=True,
+                            )
+                        ]
+                    values.extend(pixel)
             patch_values.append(values)
             position_ids.append([patch_x, patch_y])
     return patch_values, position_ids
@@ -1067,11 +1109,24 @@ def _required_int(config: dict[str, Any], key: str) -> int:
     return value
 
 
-def _optional_int_or_required(config: dict[str, Any], optional_key: str, required_key: str) -> int:
+def _required_token_id(config: dict[str, Any], key: str) -> int:
+    value = _required_int(config, key)
+    if value < 0 or value > _MAX_TOKEN_ID:
+        raise ValueError(f"Gemma4 unified config field {key} must be an unsigned 32-bit integer")
+    return value
+
+
+def _optional_token_id_or_required(
+    config: dict[str, Any], optional_key: str, required_key: str
+) -> int:
     value = _optional_int(config, optional_key)
-    if value is not None:
-        return value
-    return _required_int(config, required_key)
+    if value is None:
+        return _required_token_id(config, required_key)
+    if value < 0 or value > _MAX_TOKEN_ID:
+        raise ValueError(
+            f"Gemma4 unified config field {optional_key} must be an unsigned 32-bit integer"
+        )
+    return value
 
 
 def _optional_int_or_default(config: dict[str, Any], key: str, default: int) -> int:
@@ -1120,8 +1175,32 @@ def _optional_int(config: dict[str, Any], key: str) -> int | None:
     return int(value)
 
 
+def _load_json_object(path: Path, name: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot load {name}: {path}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must contain a JSON object")
+    return value
+
+
+def _optional_config_object(config: dict[str, Any], key: str) -> dict[str, Any]:
+    value = config.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"Gemma4 unified config field {key} must be an object")
+    return value
+
+
 def _triple(value: Any) -> tuple[float, float, float]:
-    items = list(value)
+    if not isinstance(value, list):
+        raise ValueError("Gemma4 unified image mean/std must be a list")
+    items = value
     if len(items) != 3:
         raise ValueError("Gemma4 unified image mean/std must contain three values")
-    return float(items[0]), float(items[1]), float(items[2])
+    try:
+        return float(items[0]), float(items[1]), float(items[2])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Gemma4 unified image mean/std must contain numeric values") from exc
