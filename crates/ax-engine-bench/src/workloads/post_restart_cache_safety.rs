@@ -96,7 +96,8 @@ fn tokens_for(count: u32) -> Vec<u32> {
 }
 
 /// Schema-v3 key wrapper preserving this workload's older argument shape;
-/// `salt` (the former token_hash) uniquifies the artifact fingerprint.
+/// `fingerprint_seed` (the former token_hash) uniquifies the artifact
+/// fingerprint. This is a cache-key differentiator, not cryptographic salt.
 #[allow(clippy::too_many_arguments)]
 fn workload_key(
     model_id: &str,
@@ -104,12 +105,12 @@ fn workload_key(
     layer_layout: &str,
     block_size_tokens: u32,
     token_count: u32,
-    salt: u64,
+    fingerprint_seed: u64,
     tokens: &[u32],
 ) -> Vec<u8> {
     canonical_key_bytes(&DiskPrefixKeyFields {
         model_id,
-        artifact_fingerprint_sha256: &format!("{salt:064x}"),
+        artifact_fingerprint_sha256: &format!("{fingerprint_seed:064x}"),
         route_policy,
         layer_layout,
         kv_payload_version: 3,

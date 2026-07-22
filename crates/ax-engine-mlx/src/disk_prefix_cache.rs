@@ -1504,21 +1504,22 @@ mod tests {
         }
     }
 
-    /// Schema-v3 key helper preserving the older tests' shape: `salt`
-    /// uniquifies the artifact fingerprint the way the v2 token_hash
-    /// argument used to uniquify the key.
+    /// Schema-v3 key helper preserving the older tests' shape:
+    /// `fingerprint_seed` uniquifies the artifact fingerprint the way the
+    /// v2 token_hash argument used to uniquify the key. This is a test
+    /// cache-key differentiator, not cryptographic salt material.
     fn test_key(
         model_id: &str,
         route_policy: &str,
         layer_layout: &str,
         block_size_tokens: u32,
         token_count: u32,
-        salt: u64,
+        fingerprint_seed: u64,
         tokens: &[u32],
     ) -> Vec<u8> {
         canonical_key_bytes(&DiskPrefixKeyFields {
             model_id,
-            artifact_fingerprint_sha256: &format!("{salt:064x}"),
+            artifact_fingerprint_sha256: &format!("{fingerprint_seed:064x}"),
             route_policy,
             layer_layout,
             kv_payload_version: 3,
