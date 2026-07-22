@@ -195,13 +195,13 @@ the system interpreter:
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install --upgrade "ax-engine[download]>=6.12.0,<7"
+python3 -m pip install --upgrade "ax-engine[download]>=6.11.1,<7"
 ax-engine doctor
 ```
 
 The current macOS arm64 wheel exposes `ax-engine` and `ax-engine-server` and
 bundles `ax-engine-bench` behind the Python entrypoints, so a wheel-only install
-can still serve and diagnose. If pip cannot find `>=6.12.0` for your platform,
+can still serve and diagnose. If pip cannot find `>=6.11.1` for your platform,
 confirm that your configured package index is current, then use Homebrew or the
 source build below instead of silently accepting an older release. The wheel
 bundles AX and MLX Metal runtime assets used by normal serving; Xcode and
@@ -345,7 +345,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install with
-`python3 -m pip install --upgrade "ax-engine[download]>=6.12.0,<7"`.
+`python3 -m pip install --upgrade "ax-engine[download]>=6.11.1,<7"`.
 
 Or via the script:
 

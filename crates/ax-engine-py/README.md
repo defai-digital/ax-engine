@@ -13,7 +13,7 @@ Python integrations. Install the wheel in a virtual environment:
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install --upgrade "ax-engine[download]>=6.12.0,<7"
+python3 -m pip install --upgrade "ax-engine[download]>=6.11.1,<7"
 ax-engine doctor
 ```
 
@@ -122,8 +122,8 @@ Then point any OpenAI client at `http://127.0.0.1:31418`.
 Install the OpenAI shim or image/audio helpers with the matching extra:
 
 ```bash
-python3 -m pip install --upgrade "ax-engine[openai]>=6.12.0,<7"
-python3 -m pip install --upgrade "ax-engine[multimodal]>=6.12.0,<7"
+python3 -m pip install --upgrade "ax-engine[openai]>=6.11.1,<7"
+python3 -m pip install --upgrade "ax-engine[multimodal]>=6.11.1,<7"
 ```
 
 ## Requirements
