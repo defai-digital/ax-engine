@@ -383,6 +383,20 @@ pub const BUFFER_CAP_MIN_BIG_TENSORS: usize = 16;
 const BUFFER_CAP_TARGET_MB: u32 = 1024;
 const BUFFER_CAP_TARGET_OPS: u32 = 1000;
 
+/// Whether a model family may use the optimistic MLX command-buffer caps.
+///
+/// Unlimited-OCR is a compact MXFP8 MoE whose vision-prefill/decode mix does
+/// not benefit from the Qwen gather-QMM overlap tuning. On MLX 0.32 / M5 Max,
+/// setting both 1024 MB and 1000 ops regresses its end-to-end generation by
+/// roughly 26%, so retain MLX's defaults for this family. Explicitly supplied
+/// `MLX_MAX_*_PER_BUFFER` variables remain untouched and still take precedence.
+fn auto_buffer_caps_supported_for_family(model_family: &str) -> bool {
+    !matches!(
+        model_family,
+        "unlimited_ocr" | "unlimited-ocr" | "deepseekocr"
+    )
+}
+
 /// Auto-raise MLX's Metal command-buffer caps so `async_eval` keeps overlapping
 /// host graph build with GPU execution on MoE-class checkpoints
 /// (`docs/performance/gather-qmm-async-serialization.md`).
@@ -390,11 +404,13 @@ const BUFFER_CAP_TARGET_OPS: u32 = 1000;
 /// **Decides once per process** — MLX reads `MLX_MAX_*_PER_BUFFER` a single
 /// time at Metal device init, so later loads cannot change the outcome.
 ///
-/// **Optimistic raise when auto is ON:** caps are raised on the first decision
-/// regardless of whether the first checkpoint is MoE-class. Dense-first loads
-/// were previously a silent multi-model footgun (Llama then Coder-Next never
-/// got the MoE win). Dense impact is measured neutral (Gemma A/B ≈ 0.998);
-/// MoE impact is the ship reason (+11–25%). Pre-set env vars still win.
+/// **Optimistic raise when auto is ON:** for eligible families, caps are raised
+/// on the first decision regardless of whether the first checkpoint is
+/// MoE-class. Dense-first loads were previously a silent multi-model footgun
+/// (Llama then Coder-Next never got the MoE win). Dense impact is measured
+/// neutral (Gemma A/B ≈ 0.998); MoE impact is the ship reason (+11–25%).
+/// Unlimited-OCR is excluded by measured MLX 0.32 evidence. Pre-set env vars
+/// still win.
 ///
 /// Must run before the process's first MLX Metal init.
 /// `MlxRunner::from_artifacts_inner` calls this ahead of `set_wired_limit`;
@@ -405,19 +421,30 @@ pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
         if !crate::fastpath::auto_buffer_caps_enabled() {
             return;
         }
+        let model_family = artifacts.manifest().model_family.as_str();
+        if !auto_buffer_caps_supported_for_family(model_family) {
+            tracing::info!(
+                target = "ax_engine_mlx",
+                model_family,
+                "retained MLX default command-buffer caps for an excluded model family; \
+                 explicit MLX_MAX_*_PER_BUFFER values remain authoritative"
+            );
+            return;
+        }
         let big_tensors = artifacts
             .tensor_specs()
             .iter()
             .filter(|spec| spec.length_bytes > BUFFER_CAP_BIG_TENSOR_BYTES)
             .count();
         let is_moe_class = big_tensors >= BUFFER_CAP_MIN_BIG_TENSORS;
-        // Always raise under auto-ON (see doc above). Telemetry records whether
-        // the triggering checkpoint was MoE-class so operators can diagnose
-        // multi-model order.
+        // Always raise for eligible families under auto-ON (see doc above).
+        // Telemetry records whether the triggering checkpoint was MoE-class so
+        // operators can diagnose multi-model order.
         let (mb_applied, ops_applied) =
             mlx_sys::set_metal_buffer_caps_env(BUFFER_CAP_TARGET_MB, BUFFER_CAP_TARGET_OPS);
         tracing::info!(
             target = "ax_engine_mlx",
+            model_family,
             big_tensors,
             is_moe_class,
             mb_applied,
@@ -3892,6 +3919,26 @@ mod tests {
         assert!(!mmap_weights_env_value_enabled(Some("0")));
         assert!(mmap_weights_env_value_enabled(Some("1")));
         assert!(mmap_weights_env_value_enabled(Some("true")));
+    }
+
+    #[test]
+    fn auto_buffer_caps_exclude_unlimited_ocr_aliases() {
+        for family in ["unlimited_ocr", "unlimited-ocr", "deepseekocr"] {
+            assert!(
+                !auto_buffer_caps_supported_for_family(family),
+                "{family} must retain MLX 0.32 defaults on the first Metal initialization"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_buffer_caps_keep_proven_moe_families_enabled() {
+        for family in ["qwen3_next", "qwen3_5", "qwen3"] {
+            assert!(
+                auto_buffer_caps_supported_for_family(family),
+                "{family} must retain the measured gather-QMM overlap optimization"
+            );
+        }
     }
 
     fn spec(role: NativeTensorRole) -> NativeTensorSpec {

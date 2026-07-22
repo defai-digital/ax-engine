@@ -90,13 +90,12 @@ Cap sweep on Coder-Next: 256 MB → 88.5, 512 → 91.7, 1024 → 92.8,
 
 ## Update (same day): engine-level default SHIPPED (`AX_MLX_AUTO_BUFFER_CAPS`, default ON)
 
-`load_weights` now counts manifest tensors above 48 MB (the MLX default cap
-band); at ≥16 such tensors — dense checkpoints carry ~2 (embedding +
-lm_head), MoE expert stacks push 90–150 — it raises the caps to
+For eligible model families, `load_weights` raises the caps optimistically to
 1024 MB / 1000 ops via `mlx_sys::set_metal_buffer_caps_env` before the first
-GPU op. User-set `MLX_MAX_*_PER_BUFFER` always wins; kill switch
-`AX_MLX_AUTO_BUFFER_CAPS=0`. Decision is once-per-process (MLX reads the
-variables a single time at Metal device init).
+GPU op. It also records the count of manifest tensors above 48 MB (the MLX
+default cap band) for diagnostics. User-set `MLX_MAX_*_PER_BUFFER` always wins;
+kill switch `AX_MLX_AUTO_BUFFER_CAPS=0`. Decision is once-per-process (MLX
+reads the variables a single time at Metal device init).
 
 **Interleaved A/B (5 reps × 256 steps targets, 3 reps control, rep-level
 interleave across models, M3 Max,
@@ -114,6 +113,20 @@ interleaved pairs put it at 0.998. The predicate still covers Gemma
 (91 big tensors) — measured harmless there, strongly positive on the
 Qwen3-Next family. Note the absolute numbers ran under heavy sustained
 thermal load; the pairwise ratios are the reliable signal.
+
+### MLX 0.32 / M5 Max exception: Unlimited-OCR
+
+Unlimited-OCR keeps MLX's default command-buffer caps. A production-session
+test on M5 Max (macOS 26.5.2, MLX 0.32.0, 1,503 vision soft tokens, 142 output
+tokens) found the combined 1024 MB / 1000 ops settings increased median
+generation latency from 0.760102 s to 0.959923 s (+26.29%) while producing
+identical tokens. The patched automatic decision and explicit
+`AX_MLX_AUTO_BUFFER_CAPS=0` then measured 0.760622 s and 0.759759 s over five
+interleaved pairs (0.11% difference), with 10/10 exact OCR outputs.
+
+The exclusion covers `unlimited_ocr`, `unlimited-ocr`, and `deepseekocr`.
+Explicit `MLX_MAX_*_PER_BUFFER` values remain authoritative, including for
+these aliases; proven Qwen MoE families retain the automatic raise.
 
 ## Remaining next steps
 2. **Upstream report to ml-explore/mlx** (draft below) — the honest fix is
