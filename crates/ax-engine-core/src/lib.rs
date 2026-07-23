@@ -51,7 +51,7 @@ pub use kv::{
     KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
 };
 pub use loop_detection::{LoopDetectionConfig, detects_loop};
-pub use media_digest::{media_digest, ordered_media_digests_key};
+pub use media_digest::{media_digest, media_digest_f32, ordered_media_digests_key};
 pub use mempressure::{
     DeviceResidentSnapshot, HostRssSnapshot, PressureLevel, PressureObservation, PressureThresholds,
 };

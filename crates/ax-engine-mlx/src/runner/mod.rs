@@ -500,6 +500,8 @@ struct PromptPrefixSnapshotStoreOptions<'a> {
     prefill_completes_prompt: bool,
     greedy_prefill_output_token: Option<u32>,
     cold_prefill_us: u64,
+    /// WS-M3 media digests folded into prefix keys (empty for text-only).
+    media_key: &'a str,
 }
 
 impl RequestState {
@@ -3167,6 +3169,7 @@ impl MlxRunner {
         };
         // WS-M3: when multimodal prefix reuse is enabled, restore like text
         // (media identity is folded into the prefix key via media_key).
+        let media_key = self.media_key_from_inputs(multimodal_inputs);
         let mut prefix_cache =
             if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
                 MlxPrefixCacheTelemetry::default()
@@ -3178,6 +3181,7 @@ impl MlxRunner {
                     model_id,
                     block_size_tokens,
                     sampling,
+                    &media_key,
                 )
             };
         prefix_cache.native_evictions = prefix_cache.native_evictions.saturating_add(
@@ -3252,6 +3256,27 @@ impl MlxRunner {
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
                     state.prompt_prefix_tokens = full_prompt_tokens;
 
+                    // WS-M3: store multimodal prefix under media-keyed identity when enabled.
+                    let mut prefill_prefix_cache_wall_us = 0u32;
+                    if multimodal_prefix_reuse_enabled() {
+                        let prefix_cache_started = Instant::now();
+                        let cold_prefill_us = elapsed_us(prefill_started);
+                        prefix_cache.merge_from(self.store_prompt_prefix_snapshots(
+                            model_id,
+                            block_size_tokens,
+                            &state,
+                            PromptPrefixSnapshotStoreOptions {
+                                linear_boundary_snapshot: None,
+                                prefill_completes_prompt: true,
+                                greedy_prefill_output_token:
+                                    prefill_output_token_cacheable(ctx, sampling).then_some(tok),
+                                cold_prefill_us: u64::from(cold_prefill_us),
+                                media_key: &media_key,
+                            },
+                        ));
+                        prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
+                    }
+
                     state
                         .decode_telemetry
                         .record_prefill(elapsed_us(prefill_started));
@@ -3267,7 +3292,7 @@ impl MlxRunner {
                     state.decode_telemetry.record_prefill_eval_barrier();
                     state.decode_telemetry.record_prefill_breakdown(
                         prefill_forward_wall_us,
-                        0,
+                        prefill_prefix_cache_wall_us,
                         prefill_generation_state_wall_us,
                     );
                     Some(tok)
@@ -3584,6 +3609,7 @@ impl MlxRunner {
                                     .then_some(tok)
                                     .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
                                 cold_prefill_us: u64::from(cold_prefill_us),
+                                media_key: &media_key,
                             },
                         ),
                     );
@@ -3918,13 +3944,19 @@ impl MlxRunner {
         ))
     }
 
-    fn prefix_cache_key(
-        &self,
-        model_id: &str,
-        block_size_tokens: u32,
-        tokens: &[u32],
-    ) -> MlxPrefixCacheKey {
-        self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, "")
+    /// Model fingerprint used for media digests (artifact identity when known).
+    fn media_model_fingerprint(&self) -> String {
+        self.artifact_fingerprint
+            .clone()
+            .unwrap_or_else(|| self.model_artifacts_root.clone())
+    }
+
+    fn media_key_from_inputs(&self, multimodal_inputs: Option<&RequestMultimodalInputs>) -> String {
+        multimodal_inputs
+            .and_then(|inputs| inputs.gemma4_unified.as_ref())
+            .filter(|g| !g.is_empty())
+            .map(|g| g.media_prefix_key(&self.media_model_fingerprint()))
+            .unwrap_or_default()
     }
 
     fn prefix_cache_key_with_media(
@@ -4023,8 +4055,10 @@ impl MlxRunner {
         model_id: &str,
         block_size_tokens: u32,
         input: &[u32],
+        media_key: &str,
     ) -> Option<Vec<u32>> {
-        let requested_key = self.prefix_cache_key(model_id, block_size_tokens, input);
+        let requested_key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
         let native_len = self
             .native_fa_prefix_sharing_enabled()
             .then(|| {
@@ -4041,7 +4075,12 @@ impl MlxRunner {
         // no correctness reason.
         let portable =
             Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
-                let key = self.prefix_cache_key(model_id, block_size_tokens, prefix);
+                let key = self.prefix_cache_key_with_media(
+                    model_id,
+                    block_size_tokens,
+                    prefix,
+                    media_key,
+                );
                 if self.prefix_cache.lock().contains_exact_tokens(&key, prefix) {
                     return true;
                 }
@@ -4098,6 +4137,7 @@ impl MlxRunner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn restore_reused_prefix_state(
         &self,
         state: &mut RequestState,
@@ -4106,6 +4146,7 @@ impl MlxRunner {
         model_id: &str,
         block_size_tokens: u32,
         sampling: MlxSamplingParams,
+        media_key: &str,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         // Scheduler annotation comes from `ax-engine-core`'s prefix-lookup
@@ -4133,8 +4174,13 @@ impl MlxRunner {
             && !probe_upper_bound.is_empty()
             && matches!(item.mode, ExecutionMode::Prefill)
         {
-            self.probe_runner_snapshot_for_prefix(model_id, block_size_tokens, probe_upper_bound)
-                .unwrap_or_default()
+            self.probe_runner_snapshot_for_prefix(
+                model_id,
+                block_size_tokens,
+                probe_upper_bound,
+                media_key,
+            )
+            .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -4185,7 +4231,8 @@ impl MlxRunner {
             return telemetry;
         }
 
-        let key = self.prefix_cache_key(model_id, block_size_tokens, reused_tokens);
+        let key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, reused_tokens, media_key);
         let native_hit = if self.native_fa_prefix_sharing_enabled() {
             self.native_prefix_cache
                 .lock()
@@ -4568,6 +4615,7 @@ impl MlxRunner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn store_linear_boundary_snapshot(
         &self,
         model_id: &str,
@@ -4576,10 +4624,11 @@ impl MlxRunner {
         prefix_len: usize,
         snapshot_cache: &MlxKVCache,
         cold_prefill_us: u64,
+        media_key: &str,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         let tokens = &state.prompt_prefix_tokens[..prefix_len];
-        let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
+        let key = self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, media_key);
         // The boundary snapshot is by construction the largest aligned
         // prefix, so it follows the main store path's disk policy: mirror it
         // to the L2 disk layer when one is open. Compute the disk key up
@@ -4677,6 +4726,7 @@ impl MlxRunner {
             prefill_completes_prompt,
             greedy_prefill_output_token,
             cold_prefill_us,
+            media_key,
         } = options;
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         if block_size_tokens == 0 || state.prompt_prefix_tokens.is_empty() {
@@ -4747,6 +4797,7 @@ impl MlxRunner {
                     *boundary_len,
                     boundary_cache,
                     cold_prefill_us,
+                    media_key,
                 ));
                 return telemetry;
             }
@@ -4763,7 +4814,8 @@ impl MlxRunner {
 
         for prefix_len in (snapshot_start_tokens..=full_block_tokens).step_by(block_size) {
             let tokens = &state.prompt_prefix_tokens[..prefix_len];
-            let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
+            let key =
+                self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, media_key);
             let is_largest = prefix_len == full_block_tokens;
             let snapshot_prefill_output_token = (prefix_len == available_tokens)
                 .then_some(greedy_prefill_output_token)

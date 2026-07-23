@@ -240,6 +240,41 @@ impl Gemma4UnifiedRuntimeInputs {
         self.images.is_empty() && self.audios.is_empty() && self.videos.is_empty()
     }
 
+    /// Ordered media digests for prefix-cache identity (WS-M3).
+    ///
+    /// Domain-separated by soft-token budget and `model_fingerprint` so a
+    /// budget change or weight reload cannot hit stale KV.
+    pub fn media_prefix_key(&self, model_fingerprint: &str) -> String {
+        use crate::media_digest::{media_digest_f32, ordered_media_digests_key};
+        let mut digests = Vec::new();
+        for image in &self.images {
+            digests.push(media_digest_f32(
+                &image.pixel_values,
+                image.span.soft_token_count,
+                model_fingerprint,
+            ));
+        }
+        for audio in &self.audios {
+            digests.push(media_digest_f32(
+                &audio.input_features,
+                audio.span.soft_token_count,
+                model_fingerprint,
+            ));
+        }
+        for video in &self.videos {
+            digests.push(media_digest_f32(
+                &video.pixel_values,
+                video.span.soft_token_count,
+                model_fingerprint,
+            ));
+        }
+        if digests.is_empty() {
+            String::new()
+        } else {
+            ordered_media_digests_key(&digests)
+        }
+    }
+
     pub fn validate_for_prompt_len(
         &self,
         prompt_token_len: usize,
@@ -1633,6 +1668,35 @@ mod tests {
         assert_eq!(resolve_soft_token_budget(None, None, 280).unwrap(), 280);
         assert!(resolve_soft_token_budget(Some("ultra"), None, 280).is_err());
         assert_eq!(max_frames_for_atomic_budget(2048, 70, 368), 24);
+    }
+
+    #[test]
+    fn media_prefix_key_domain_separates_images() {
+        let a = Gemma4UnifiedRuntimeInputs {
+            images: vec![Gemma4UnifiedImageRuntimeInput {
+                span: Gemma4UnifiedTokenSpan {
+                    modality: Gemma4UnifiedModality::Image,
+                    placeholder_index: 0,
+                    replacement_start: 0,
+                    soft_token_count: 4,
+                    replacement_token_count: 6,
+                },
+                pixel_values: vec![0.1, 0.2, 0.3],
+                pixel_position_ids: vec![[0, 0]; 4],
+            }],
+            audios: Vec::new(),
+            videos: Vec::new(),
+        };
+        let mut b = a.clone();
+        b.images[0].pixel_values = vec![0.9, 0.8, 0.7];
+        let ka = a.media_prefix_key("fp");
+        let kb = b.media_prefix_key("fp");
+        assert_ne!(ka, kb);
+        assert!(!ka.is_empty());
+        // budget change → miss
+        b.images[0].pixel_values = a.images[0].pixel_values.clone();
+        b.images[0].span.soft_token_count = 8;
+        assert_ne!(a.media_prefix_key("fp"), b.media_prefix_key("fp"));
     }
 
     #[test]

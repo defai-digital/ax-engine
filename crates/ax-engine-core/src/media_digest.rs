@@ -35,6 +35,15 @@ pub fn ordered_media_digests_key(digests: &[String]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Digest f32 tensor bytes (little-endian) for runtime media identity.
+pub fn media_digest_f32(values: &[f32], soft_token_budget: u32, model_fingerprint: &str) -> String {
+    let mut bytes = Vec::with_capacity(values.len().saturating_mul(4));
+    for v in values {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    media_digest(&bytes, soft_token_budget, model_fingerprint)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -118,6 +118,50 @@ pub fn text_only_decode_family(model_family: &str) -> Option<&'static str> {
     }
 }
 
+/// Prefill gate: image inputs require a vision tower. Until ViT weights are
+/// mapped for this family, fail closed (never silent text-only degrade).
+pub fn require_vision_for_images(
+    has_image_inputs: bool,
+    has_vision_weights: bool,
+) -> Result<(), Qwen3VlError> {
+    if has_image_inputs && !has_vision_weights {
+        return Err(Qwen3VlError::MissingVisionWeights);
+    }
+    Ok(())
+}
+
+/// Decode-route selection for a loaded VL checkpoint.
+pub fn select_decode_route(
+    model_family: &str,
+    has_media: bool,
+) -> Result<&'static str, Qwen3VlError> {
+    if !is_qwen3_vl_family(model_family) {
+        // Non-VL families: caller keeps its own label (not static).
+        return Ok(if model_family.is_empty() {
+            "unknown"
+        } else {
+            // Map known families to static labels when possible.
+            match model_family {
+                "qwen3" => "qwen3",
+                "qwen3_5" | "qwen3.5" => "qwen3_5",
+                "qwen3_next" | "qwen3.6" | "qwen3_6" => "qwen3_next",
+                "gemma4" => "gemma4",
+                "gemma4_vl" => "gemma4_vl",
+                _ => "other",
+            }
+        });
+    }
+    if has_media {
+        // Multimodal path: still text-graph after scatter; vision tower required.
+        return Ok(if model_family == "qwen3_vl_moe" {
+            "qwen3_vl_moe"
+        } else {
+            "qwen3_vl"
+        });
+    }
+    Ok(text_only_decode_family(model_family).unwrap_or("qwen3"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +204,14 @@ mod tests {
         assert_eq!(g.soft_token_count().unwrap(), 4);
         let idx = plan_image_scatter(&[1], &[g]).unwrap();
         assert_eq!(idx, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn vision_required_and_text_route() {
+        assert!(require_vision_for_images(true, false).is_err());
+        assert!(require_vision_for_images(true, true).is_ok());
+        assert!(require_vision_for_images(false, false).is_ok());
+        assert_eq!(select_decode_route("qwen3_vl", false).unwrap(), "qwen3");
+        assert_eq!(select_decode_route("qwen3_vl", true).unwrap(), "qwen3_vl");
     }
 }

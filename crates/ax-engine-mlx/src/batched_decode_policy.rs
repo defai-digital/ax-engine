@@ -51,6 +51,27 @@ pub fn deterministic_expert_order(active_expert_ids: &mut [u32]) {
     active_expert_ids.sort_unstable();
 }
 
+/// Env: `AX_MLX_BATCHED_MOE_ROW_EXACT` — when on (default for Decision A
+/// families), `ffn_batched` runs MoE per-row instead of shared `gather_qmm`.
+/// Opt out with `=0` for uncertified amortized throughput experiments.
+pub const ENV_BATCHED_MOE_ROW_EXACT: &str = "AX_MLX_BATCHED_MOE_ROW_EXACT";
+
+/// True when batched MoE must use per-row (RowExact) expert execution for
+/// bit-exact greedy parity (Decision A).
+pub fn row_exact_moe_enabled(model_family: &str) -> bool {
+    if let Ok(v) = std::env::var(ENV_BATCHED_MOE_ROW_EXACT) {
+        let v = v.trim().to_ascii_lowercase();
+        if matches!(v.as_str(), "0" | "false" | "off" | "no") {
+            return false;
+        }
+        if matches!(v.as_str(), "1" | "true" | "on" | "yes") {
+            return true;
+        }
+    }
+    // Default: Decision A families use RowExact so B>1 cert is achievable.
+    family_requires_decision_a_cert(model_family)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
