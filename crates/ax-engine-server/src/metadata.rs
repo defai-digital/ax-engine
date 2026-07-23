@@ -392,7 +392,10 @@ fn openai_text_supported_live(live: &LiveState) -> bool {
     // every backend that serves the OpenAI text endpoints must advertise them here.
     matches!(
         live.runtime_report.selected_backend,
-        SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated | SelectedBackend::Mlx
+        SelectedBackend::LlamaCpp
+            | SelectedBackend::MlxLmDelegated
+            | SelectedBackend::TensorRtEdgeLlm
+            | SelectedBackend::Mlx
     )
 }
 

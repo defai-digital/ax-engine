@@ -28,6 +28,7 @@ pub enum PreviewSupportTier {
     MlxPreview,
     MlxLmDelegated,
     LlamaCpp,
+    TensorRtEdgeLlm,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -112,6 +113,10 @@ pub struct ServerArgs {
     pub llama_server_url: Option<String>,
     #[arg(long = "mlx-lm-server-url")]
     pub mlx_lm_server_url: Option<String>,
+
+    /// Base URL for TensorRT Edge-LLM OpenAI-compatible server (Thor).
+    #[arg(long = "edge-llm-server-url")]
+    pub edge_llm_server_url: Option<String>,
 
     /// Connect timeout, in seconds, for delegated llama.cpp / mlx_lm HTTP backends.
     #[arg(long = "delegated-http-connect-timeout-secs", default_value_t = DelegatedHttpTimeouts::default_connect_secs())]

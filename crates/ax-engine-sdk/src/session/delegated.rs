@@ -1,4 +1,5 @@
 use crate::backend::{RuntimeReport, SelectedBackend};
+use crate::edge_llm::run_blocking_generate as run_edge_llm_generate;
 use crate::generate::{GenerateRequest, GenerateResponse};
 use crate::llama_cpp::{
     LlamaCppConfig, LlamaCppStreamHandle, run_blocking_generate, start_streaming_generate,
@@ -34,6 +35,14 @@ pub(super) fn run_delegated_generate_prevalidated(
                 .as_ref()
                 .ok_or(EngineSessionError::MissingMlxLmConfig)?;
             run_mlx_lm_generate(request_id, runtime, mlx_lm_backend, request)
+                .map_err(EngineSessionError::from)
+        }
+        SelectedBackend::TensorRtEdgeLlm => {
+            let edge_llm_backend = config
+                .edge_llm_backend
+                .as_ref()
+                .ok_or(EngineSessionError::MissingEdgeLlmConfig)?;
+            run_edge_llm_generate(request_id, runtime, edge_llm_backend, request)
                 .map_err(EngineSessionError::from)
         }
         SelectedBackend::Mlx => {

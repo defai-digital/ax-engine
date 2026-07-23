@@ -2,6 +2,7 @@ use ax_engine_core::{EngineCoreError, MetalRuntimeError, RequestMultimodalInputE
 use thiserror::Error;
 
 use crate::backend::{BackendContractError, SelectedBackend};
+use crate::edge_llm::EdgeLlmBackendError;
 use crate::llama_cpp::LlamaCppBackendError;
 use crate::mlx_lm::MlxLmBackendError;
 
@@ -13,6 +14,8 @@ pub enum EngineSessionError {
     LlamaCpp(#[from] LlamaCppBackendError),
     #[error(transparent)]
     MlxLm(#[from] MlxLmBackendError),
+    #[error(transparent)]
+    EdgeLlm(#[from] EdgeLlmBackendError),
     #[error("max_batch_tokens must be greater than zero")]
     InvalidMaxBatchTokens,
     #[error("generate request requires input_tokens or input_text")]
@@ -67,6 +70,8 @@ pub enum EngineSessionError {
     MissingLlamaCppConfig { selected_backend: SelectedBackend },
     #[error("mlx-lm delegated backend requires mlx_lm_backend config")]
     MissingMlxLmConfig,
+    #[error("tensor_rt_edge_llm backend requires edge_llm_backend config")]
+    MissingEdgeLlmConfig,
     #[error("delegated backend {selected_backend:?} is missing runtime report")]
     MissingDelegatedRuntime { selected_backend: SelectedBackend },
     #[error(
@@ -80,6 +85,10 @@ pub enum EngineSessionError {
     MlxLmDoesNotSupportStreaming,
     #[error("mlx-lm delegated backend does not support {operation} in the preview SDK lifecycle")]
     MlxLmDoesNotSupportLifecycle { operation: &'static str },
+    #[error(
+        "tensor_rt_edge_llm backend does not support {operation} via EngineSession lifecycle yet; use OpenAI chat routes"
+    )]
+    EdgeLlmDoesNotSupportLifecycle { operation: &'static str },
     #[error(
         "stateless streaming is not supported for the native MLX backend ({selected_backend:?}); \
          use EngineSession streaming methods instead"

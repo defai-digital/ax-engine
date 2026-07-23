@@ -3,11 +3,11 @@ use axum::extract::State;
 use axum::http::StatusCode;
 
 use crate::app_state::AppState;
-use crate::backends::{llama_cpp, mlx_lm};
+use crate::backends::{edge_llm, llama_cpp, mlx_lm};
 use crate::errors::ErrorResponse;
 use crate::openai::generation::{
-    run_openai_llama_cpp_chat_generation, run_openai_mlx_lm_chat_generation,
-    run_openai_text_generation,
+    run_openai_edge_llm_chat_generation, run_openai_llama_cpp_chat_generation,
+    run_openai_mlx_lm_chat_generation, run_openai_text_generation,
 };
 use crate::openai::requests::build_openai_chat_request_offloading_media;
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
@@ -20,6 +20,9 @@ pub(crate) async fn openai_chat_completions(
     let live = select_openai_model(&state, request.model.as_deref())?;
     if mlx_lm::is_selected(&live) {
         return run_openai_mlx_lm_chat_generation(state, live, request).await;
+    }
+    if edge_llm::is_selected(&live) {
+        return run_openai_edge_llm_chat_generation(state, live, request).await;
     }
     if llama_cpp::supports_server_chat(&live) {
         return run_openai_llama_cpp_chat_generation(state, live, request).await;

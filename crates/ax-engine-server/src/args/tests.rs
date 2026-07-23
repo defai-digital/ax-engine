@@ -62,6 +62,7 @@ fn base_args() -> ServerArgs {
         llama_model_path: None,
         llama_server_url: None,
         mlx_lm_server_url: None,
+        edge_llm_server_url: None,
         delegated_http_connect_timeout_secs: DelegatedHttpTimeouts::default_connect_secs(),
         delegated_http_read_timeout_secs: DelegatedHttpTimeouts::default_io_secs(),
         delegated_http_write_timeout_secs: DelegatedHttpTimeouts::default_io_secs(),
@@ -142,6 +143,10 @@ fn preview_support_tier_maps_to_sdk_support_tier() {
     assert_eq!(
         PreviewSupportTier::LlamaCpp.as_sdk_support_tier(),
         SupportTier::LlamaCpp
+    );
+    assert_eq!(
+        PreviewSupportTier::TensorRtEdgeLlm.as_sdk_support_tier(),
+        SupportTier::TensorRtEdgeLlm
     );
 }
 

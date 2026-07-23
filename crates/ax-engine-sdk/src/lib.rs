@@ -39,6 +39,7 @@ pub use ax_engine_mlx::MlxPrefixCacheStore;
 
 pub mod backend;
 mod delegated_http;
+pub mod edge_llm;
 pub mod generate;
 mod host;
 pub mod llama_cpp;
@@ -73,6 +74,15 @@ pub use llama_cpp::{
     LlamaCppConfig, LlamaCppServerCompletionConfig, LlamaCppStreamChunk, LlamaCppStreamHandle,
     run_blocking_chat_generate as run_blocking_llama_cpp_chat_generate,
     start_streaming_chat_generate as start_streaming_llama_cpp_chat_generate,
+};
+pub use edge_llm::{
+    EdgeLlmBackendError, EdgeLlmChatGenerateRequest, EdgeLlmChatMessage, EdgeLlmConfig,
+    EdgeLlmServerCompletionConfig, EdgeLlmStreamChunkResult, EdgeLlmStreamHandle,
+    finish_reason_from_edge_llm,
+    run_blocking_chat_generate as run_blocking_edge_llm_chat_generate,
+    run_blocking_generate as run_blocking_edge_llm_generate,
+    start_streaming_chat_generate as start_streaming_edge_llm_chat_generate,
+    start_streaming_generate as start_streaming_edge_llm_generate,
 };
 pub use mlx_lm::{
     MlxLmBackendError, MlxLmChatGenerateRequest, MlxLmChatMessage, MlxLmConfig,

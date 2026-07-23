@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::delegated_http::DelegatedHttpTimeouts;
+use crate::edge_llm::{EdgeLlmConfig, EdgeLlmServerCompletionConfig};
 use crate::llama_cpp::{LlamaCppConfig, LlamaCppServerCompletionConfig};
 use crate::mlx_lm::{MlxLmConfig, MlxLmServerCompletionConfig};
 
@@ -17,6 +18,7 @@ pub enum ResolutionPolicy {
     PreferMlx,
     AllowMlxLmDelegated,
     AllowLlamaCpp,
+    AllowTensorRtEdgeLlm,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -25,6 +27,8 @@ pub enum SelectedBackend {
     Mlx,
     MlxLmDelegated,
     LlamaCpp,
+    /// Delegated TensorRT Edge-LLM OpenAI-compatible server (Thor / edge CUDA).
+    TensorRtEdgeLlm,
 }
 
 impl SelectedBackend {
@@ -40,6 +44,7 @@ pub enum SupportTier {
     MlxPreview,
     MlxLmDelegated,
     LlamaCpp,
+    TensorRtEdgeLlm,
     Unsupported,
 }
 
@@ -74,6 +79,10 @@ impl BackendPolicy {
 
     pub const fn allow_mlx_lm_delegated() -> Self {
         Self::new(ResolutionPolicy::AllowMlxLmDelegated)
+    }
+
+    pub const fn allow_tensor_rt_edge_llm() -> Self {
+        Self::new(ResolutionPolicy::AllowTensorRtEdgeLlm)
     }
 }
 
@@ -156,6 +165,17 @@ impl CapabilityReport {
         }
     }
 
+    pub const fn tensor_rt_edge_llm_text() -> Self {
+        Self {
+            text_generation: true,
+            token_streaming: true,
+            deterministic_mode: false,
+            prefix_reuse: false,
+            long_context_validation: CapabilityLevel::Preview,
+            benchmark_metrics: CapabilityLevel::Preview,
+        }
+    }
+
     pub const fn llama_cpp_cli_baseline() -> Self {
         Self {
             text_generation: true,
@@ -188,6 +208,9 @@ impl CapabilityReport {
             (SelectedBackend::MlxLmDelegated, SupportTier::MlxLmDelegated) => {
                 Self::mlx_lm_delegated_text()
             }
+            (SelectedBackend::TensorRtEdgeLlm, SupportTier::TensorRtEdgeLlm) => {
+                Self::tensor_rt_edge_llm_text()
+            }
             (_, SupportTier::LlamaCpp) => Self::llama_cpp_baseline(),
             (_, SupportTier::Unsupported) => Self::unsupported(),
             _ => Self::unsupported(),
@@ -203,6 +226,10 @@ impl CapabilityReport {
 
     pub fn for_mlx_lm_backend(_config: &MlxLmConfig) -> Self {
         Self::mlx_lm_delegated_text()
+    }
+
+    pub fn for_edge_llm_backend(_config: &EdgeLlmConfig) -> Self {
+        Self::tensor_rt_edge_llm_text()
     }
 }
 
@@ -418,6 +445,14 @@ impl ResolvedBackend {
         )
     }
 
+    pub fn tensor_rt_edge_llm(reason: impl Into<String>) -> Self {
+        Self::new(
+            SelectedBackend::TensorRtEdgeLlm,
+            SupportTier::TensorRtEdgeLlm,
+            Some(reason.into()),
+        )
+    }
+
     pub fn validate_against(
         &self,
         backend_policy: &BackendPolicy,
@@ -453,6 +488,25 @@ impl ResolvedBackend {
                 .is_some_and(|reason| !reason.trim().is_empty());
             if !has_reason {
                 return Err(BackendContractError::MlxLmBackendRequiresDelegationReason);
+            }
+            return Ok(());
+        }
+
+        if self.selected_backend == SelectedBackend::TensorRtEdgeLlm {
+            if self.support_tier != SupportTier::TensorRtEdgeLlm {
+                return Err(BackendContractError::EdgeLlmBackendRequiresEdgeLlmTier {
+                    support_tier: self.support_tier,
+                });
+            }
+            if matches!(backend_policy.resolution_policy, ResolutionPolicy::MlxOnly) {
+                return Err(BackendContractError::MlxOnlyPolicyCannotResolveEdgeLlm);
+            }
+            let has_reason = self
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| !reason.trim().is_empty());
+            if !has_reason {
+                return Err(BackendContractError::EdgeLlmBackendRequiresDelegationReason);
             }
             return Ok(());
         }
@@ -494,6 +548,7 @@ pub struct PreviewBackendRequest {
     pub llama_model_path: Option<PathBuf>,
     pub llama_server_url: Option<String>,
     pub mlx_lm_server_url: Option<String>,
+    pub edge_llm_server_url: Option<String>,
     pub delegated_http_timeouts: DelegatedHttpTimeouts,
 }
 
@@ -506,6 +561,7 @@ impl Default for PreviewBackendRequest {
             llama_model_path: None,
             llama_server_url: None,
             mlx_lm_server_url: None,
+            edge_llm_server_url: None,
             delegated_http_timeouts: DelegatedHttpTimeouts::default(),
         }
     }
@@ -554,12 +610,13 @@ pub struct PreviewBackendResolution {
     pub resolved_backend: ResolvedBackend,
     pub llama_backend: Option<LlamaCppConfig>,
     pub mlx_lm_backend: Option<MlxLmConfig>,
+    pub edge_llm_backend: Option<EdgeLlmConfig>,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum PreviewBackendResolutionError {
     #[error(
-        "unsupported support_tier {value}; expected mlx_preview, mlx_certified, mlx_lm_delegated, or llama_cpp"
+        "unsupported support_tier {value}; expected mlx_preview, mlx_certified, mlx_lm_delegated, llama_cpp, or tensor_rt_edge_llm"
     )]
     UnsupportedSupportTierLabel { value: String },
     #[error("support_tier llama_cpp accepts either llama_server_url or llama_model_path, not both")]
@@ -568,6 +625,8 @@ pub enum PreviewBackendResolutionError {
     MissingLlamaCppTarget,
     #[error("support_tier mlx_lm_delegated requires mlx_lm_server_url")]
     MissingMlxLmServerUrl,
+    #[error("support_tier tensor_rt_edge_llm requires edge_llm_server_url")]
+    MissingEdgeLlmServerUrl,
 }
 
 pub fn preview_support_tier_from_label(
@@ -578,6 +637,7 @@ pub fn preview_support_tier_from_label(
         "mlx_certified" => Ok(SupportTier::MlxCertified),
         "mlx_lm_delegated" => Ok(SupportTier::MlxLmDelegated),
         "llama_cpp" => Ok(SupportTier::LlamaCpp),
+        "tensor_rt_edge_llm" => Ok(SupportTier::TensorRtEdgeLlm),
         other => Err(PreviewBackendResolutionError::UnsupportedSupportTierLabel {
             value: other.to_string(),
         }),
@@ -605,6 +665,7 @@ pub fn resolve_preview_backend(
                 ),
                 llama_backend: Some(llama_backend),
                 mlx_lm_backend: None,
+                edge_llm_backend: None,
             })
         }
         PreviewBackendMode::ShippingMlx => Ok(PreviewBackendResolution {
@@ -612,6 +673,7 @@ pub fn resolve_preview_backend(
             resolved_backend: ResolvedBackend::mlx_preview(),
             llama_backend: None,
             mlx_lm_backend: None,
+            edge_llm_backend: None,
         }),
     }
 }
@@ -625,6 +687,7 @@ fn resolve_explicit_preview_backend(
             resolved_backend: ResolvedBackend::mlx_preview(),
             llama_backend: None,
             mlx_lm_backend: None,
+            edge_llm_backend: None,
         }),
         SupportTier::MlxCertified => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::mlx_only(),
@@ -635,6 +698,7 @@ fn resolve_explicit_preview_backend(
             ),
             llama_backend: None,
             mlx_lm_backend: None,
+            edge_llm_backend: None,
         }),
         SupportTier::MlxLmDelegated => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::allow_mlx_lm_delegated(),
@@ -644,6 +708,19 @@ fn resolve_explicit_preview_backend(
             llama_backend: None,
             mlx_lm_backend: Some(resolve_mlx_lm_target(
                 request.mlx_lm_server_url,
+                request.delegated_http_timeouts,
+            )?),
+            edge_llm_backend: None,
+        }),
+        SupportTier::TensorRtEdgeLlm => Ok(PreviewBackendResolution {
+            backend_policy: BackendPolicy::allow_tensor_rt_edge_llm(),
+            resolved_backend: ResolvedBackend::tensor_rt_edge_llm(
+                "tensorrt edge-llm delegated backend explicitly requested by preview session config",
+            ),
+            llama_backend: None,
+            mlx_lm_backend: None,
+            edge_llm_backend: Some(resolve_edge_llm_target(
+                request.edge_llm_server_url,
                 request.delegated_http_timeouts,
             )?),
         }),
@@ -663,6 +740,7 @@ fn resolve_explicit_preview_backend(
                 ),
                 llama_backend: Some(llama_backend),
                 mlx_lm_backend: None,
+                edge_llm_backend: None,
             })
         }
         SupportTier::Unsupported => {
@@ -681,6 +759,17 @@ fn resolve_mlx_lm_target(
         mlx_lm_server_url.ok_or(PreviewBackendResolutionError::MissingMlxLmServerUrl)?;
     Ok(MlxLmConfig::ServerCompletion(
         MlxLmServerCompletionConfig::new(server_url).with_timeouts(timeouts),
+    ))
+}
+
+fn resolve_edge_llm_target(
+    edge_llm_server_url: Option<String>,
+    timeouts: DelegatedHttpTimeouts,
+) -> Result<EdgeLlmConfig, PreviewBackendResolutionError> {
+    let server_url =
+        edge_llm_server_url.ok_or(PreviewBackendResolutionError::MissingEdgeLlmServerUrl)?;
+    Ok(EdgeLlmConfig::ServerCompletion(
+        EdgeLlmServerCompletionConfig::new(server_url).with_timeouts(timeouts),
     ))
 }
 
@@ -767,6 +856,7 @@ fn support_tier_label(support_tier: SupportTier) -> &'static str {
         SupportTier::MlxPreview => "mlx_preview",
         SupportTier::MlxLmDelegated => "mlx_lm_delegated",
         SupportTier::LlamaCpp => "llama_cpp",
+        SupportTier::TensorRtEdgeLlm => "tensor_rt_edge_llm",
         SupportTier::Unsupported => "unsupported",
     }
 }
@@ -796,6 +886,14 @@ pub enum BackendContractError {
     MlxLmBackendRequiresMlxLmTier { support_tier: SupportTier },
     #[error("mlx-lm delegated backend requires fallback_reason/delegation reason")]
     MlxLmBackendRequiresDelegationReason,
+    #[error("mlx_only policy cannot resolve to tensor_rt_edge_llm backend")]
+    MlxOnlyPolicyCannotResolveEdgeLlm,
+    #[error(
+        "tensor_rt_edge_llm backend requires tensor_rt_edge_llm support tier, got {support_tier:?}"
+    )]
+    EdgeLlmBackendRequiresEdgeLlmTier { support_tier: SupportTier },
+    #[error("tensor_rt_edge_llm backend requires fallback_reason/delegation reason")]
+    EdgeLlmBackendRequiresDelegationReason,
     #[error("llama.cpp backend {selected_backend:?} requires fallback_reason")]
     LlamaCppBackendRequiresFallbackReason { selected_backend: SelectedBackend },
 }

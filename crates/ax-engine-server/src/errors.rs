@@ -1,4 +1,6 @@
-use ax_engine_sdk::{EngineSessionError, LlamaCppBackendError, MlxLmBackendError};
+use ax_engine_sdk::{
+    EdgeLlmBackendError, EngineSessionError, LlamaCppBackendError, MlxLmBackendError,
+};
 use axum::Json;
 use axum::http::StatusCode;
 use serde::Serialize;
@@ -88,6 +90,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::MlxMtpRequiredButUnavailable
         | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportLifecycle { .. }
+        | EngineSessionError::EdgeLlmDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportStreaming
         | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
@@ -104,7 +107,10 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingInputText)
         | EngineSessionError::MlxLm(MlxLmBackendError::UnsupportedTokenPrompt)
-        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. }) => {
+        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingInputText)
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::UnsupportedTokenPrompt)
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::BackendConfigMismatch { .. }) => {
             error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
@@ -113,12 +119,15 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         }
         EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingCompletionChoice { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. }) => {
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingCompletionChoice { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingStreamChoice { .. }) => {
             error_response(StatusCode::BAD_GATEWAY, "backend_error", error.to_string())
         }
         EngineSessionError::BackendContract(_)
         | EngineSessionError::MissingLlamaCppConfig { .. }
         | EngineSessionError::MissingMlxLmConfig
+        | EngineSessionError::MissingEdgeLlmConfig
         | EngineSessionError::MissingDelegatedRuntime { .. }
         | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxLmStreamEndedBeforeStop { .. }
@@ -138,6 +147,12 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::MlxLm(MlxLmBackendError::InvalidResponseJson { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::SseRead { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::InvalidStreamChunk { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::SerializeRequestJson { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::HttpRequest { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::HttpStatus { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::InvalidResponseJson { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::SseRead { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::InvalidStreamChunk { .. })
         | EngineSessionError::UnsupportedHostHardware { .. } => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "unsupported_host",

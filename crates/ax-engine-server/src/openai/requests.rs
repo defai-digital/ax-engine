@@ -1,6 +1,6 @@
 use ax_engine_sdk::{
     EngineTokenizer, GenerateRequest, GenerateSampling, LlamaCppChatGenerateRequest,
-    MlxLmChatGenerateRequest, RequestMultimodalInputs, SelectedBackend,
+    EdgeLlmChatGenerateRequest, EdgeLlmChatMessage, MlxLmChatGenerateRequest, RequestMultimodalInputs, SelectedBackend,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -61,6 +61,12 @@ pub(crate) struct GenerateRequestParts {
 
 pub(crate) struct OpenAiBuiltMlxLmChatRequest {
     pub(crate) chat_request: MlxLmChatGenerateRequest,
+    pub(crate) stream: bool,
+    pub(crate) response_options: OpenAiResponseOptions,
+}
+
+pub(crate) struct OpenAiBuiltEdgeLlmChatRequest {
+    pub(crate) chat_request: EdgeLlmChatGenerateRequest,
     pub(crate) stream: bool,
     pub(crate) response_options: OpenAiResponseOptions,
 }
@@ -604,6 +610,51 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
 
     Ok(OpenAiBuiltMlxLmChatRequest {
         chat_request: MlxLmChatGenerateRequest {
+            model_id: live.model_id.to_string(),
+            messages,
+            max_output_tokens,
+            sampling,
+            stop_sequences,
+            metadata,
+            chat_template_kwargs: chat_template_kwargs_for_model_id(live.model_id.as_ref()),
+        },
+        stream: request.stream,
+        response_options,
+    })
+}
+
+pub(crate) fn build_openai_edge_llm_chat_request(
+    live: &LiveState,
+    request: OpenAiChatCompletionHttpRequest,
+) -> Result<OpenAiBuiltEdgeLlmChatRequest, (StatusCode, Json<ErrorResponse>)> {
+    reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
+    let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
+    let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
+    let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    reject_gemma4_tools_when_ax_cannot_render_them(
+        live.model_id.as_ref(),
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+        true,
+    )?;
+    reject_delegated_chat_tools(
+        &request.messages,
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+    )?;
+    response_options.reject_unsupported_streaming_contract(request.stream, false)?;
+    let messages = build_mlx_lm_chat_messages(&request.messages)?
+        .into_iter()
+        .map(|message| EdgeLlmChatMessage::new(message.role, message.content))
+        .collect();
+    let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
+    let stop_sequences = openai_chat_stop_sequences(live.model_id.as_ref(), request.stop);
+    let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
+    let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
+    let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
+
+    Ok(OpenAiBuiltEdgeLlmChatRequest {
+        chat_request: EdgeLlmChatGenerateRequest {
             model_id: live.model_id.to_string(),
             messages,
             max_output_tokens,
