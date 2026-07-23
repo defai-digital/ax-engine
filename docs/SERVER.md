@@ -515,21 +515,25 @@ Multimodal serving contract limits:
   (default 2048) in one scheduler step. Over-budget requests fail with an
   actionable HTTP 400 instead of being scheduled. Under concurrent load a
   fitting request may wait for a step with enough budget; it is never split.
-- **Token budgets.** Image soft-token budgets come from the model's
-  `preprocessor_config.json` (Gemma 4 12B: up to 280 soft tokens per image);
-  there is no per-request budget or quality override.
+- **Token budgets.** Image soft-token budgets default from the model's
+  `preprocessor_config.json` (Gemma 4 12B: up to 280 soft tokens per image).
+  Chat may override via OpenAI `detail` (`low`/`high`/`auto`) or extension
+  `max_soft_tokens` ∈ {70,140,280,560,1120}; unknown values are HTTP 400.
 - **Audio.** WAV and MP3 input is downmixed to mono and resampled to the
   model rate (16 kHz). The container is sniffed from magic bytes, not the
   declared `format` field. Other formats (AAC/OGG/FLAC) are rejected; send
   pre-computed audio tensors via `/v1/generate` instead. Audio longer than
   the model's `audio_seq_length` cap (750 frames × 40 ms = 30 s by default)
   is silently truncated, and MP3 decoding stops at that cap.
-- **Video.** Public server routes reject video with `unsupported_modality`.
-  Lower-level Gemma4 preprocessing primitives remain internal compatibility
-  code, but video is not advertised by `/v1/models`.
-- **Caching.** Prefix caching is disabled for multimodal requests; every
-  multimodal prefill recomputes the full prompt with that request's own
-  media tensors.
+- **Video.** When the loaded manifest is video-capable (gemma4_unified vision
+  roles present, no convert-time media drops, `AX_MLX_GEMMA4_VIDEO` not off),
+  chat routes accept `video_url` **data URIs only** (no remote `http(s)`, no bare
+  filesystem paths). Default frame cap is 24 (24×70 soft tokens) so expanded
+  prompts fit atomic `--max-batch-tokens` (default 2048). Otherwise video is
+  rejected with `unsupported_modality`.
+- **Caching.** Prefix caching is disabled for multimodal requests unless
+  `AX_MLX_MULTIMODAL_PREFIX_REUSE` is promoted after fixtures; vision-feature
+  cache may skip tower recompute on digest hits (`AX_MLX_VISION_FEATURE_CACHE`).
 - **Chat output.** Gemma 4 thinking-channel framing (`<|channel>thought…`)
   is stripped from chat content; raw `/v1/completions` output stays
   verbatim.

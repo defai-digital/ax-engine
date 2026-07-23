@@ -600,6 +600,28 @@ impl NativeDiffusionConfig {
     }
 }
 
+/// Provenance for tensors skipped during convert (WS-C1 / R-C1).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct DroppedTensorsProvenance {
+    #[serde(default)]
+    pub count: u64,
+    #[serde(default)]
+    pub media_role_hits: u64,
+    /// Sample of dropped tensor names (bounded).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names_sample: Vec<String>,
+}
+
+impl DroppedTensorsProvenance {
+    pub fn is_empty(&self) -> bool {
+        self.count == 0 && self.media_role_hits == 0 && self.names_sample.is_empty()
+    }
+
+    pub fn has_media_role_drops(&self) -> bool {
+        self.media_role_hits > 0
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct NativeModelManifest {
     pub schema_version: String,
@@ -733,6 +755,9 @@ pub struct NativeModelManifest {
     /// Disabled for all non-diffusion model families.
     #[serde(default, skip_serializing_if = "NativeDiffusionConfig::is_disabled")]
     pub diffusion: NativeDiffusionConfig,
+    /// Tensors skipped at convert time (WS-C1). Default empty for legacy manifests.
+    #[serde(default, skip_serializing_if = "DroppedTensorsProvenance::is_empty")]
+    pub dropped_tensors: DroppedTensorsProvenance,
     pub tensors: Vec<NativeTensorSpec>,
 }
 
@@ -3942,6 +3967,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

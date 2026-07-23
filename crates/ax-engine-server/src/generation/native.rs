@@ -15,8 +15,8 @@ pub(crate) async fn generate(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
 ) -> Result<Json<GenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    request.reject_video_inputs()?;
     let live = select_model(&state, request.model.as_deref())?;
+    request.reject_video_inputs(&live)?;
 
     let request = build_generate_request(&live, request);
     let (_, response) = run_stateless_generate_request(&state, &live, request).await?;

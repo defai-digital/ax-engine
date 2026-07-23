@@ -15,6 +15,7 @@ pub mod generate;
 pub mod kv_block_pool;
 pub mod kv_cache;
 pub mod unlimited_ocr;
+pub mod vision_feature_cache;
 // Public for the kernel-dispatch probe binaries (`src/bin/`), like the
 // sibling modules; not a stable external API.
 pub mod linear_attention_ops;

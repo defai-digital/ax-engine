@@ -580,7 +580,7 @@ impl GenerateFinishReason {
     ) -> Option<Self> {
         match state {
             RequestState::Finished => match terminal_stop_reason {
-                Some(StopReason::EosToken) => Some(Self::Stop),
+                Some(StopReason::EosToken) | Some(StopReason::LoopDetected) => Some(Self::Stop),
                 Some(StopReason::MaxOutputTokens) | None => Some(Self::MaxOutputTokens),
                 Some(StopReason::Cancelled) => Some(Self::Cancelled),
                 Some(StopReason::Error) => Some(Self::Error),
@@ -600,7 +600,7 @@ impl GenerateFinishReason {
     ) -> Option<Self> {
         match state {
             SessionRequestState::Finished => match terminal_stop_reason {
-                Some(StopReason::EosToken) => Some(Self::Stop),
+                Some(StopReason::EosToken) | Some(StopReason::LoopDetected) => Some(Self::Stop),
                 Some(StopReason::MaxOutputTokens) | None => Some(Self::MaxOutputTokens),
                 Some(StopReason::Cancelled) => Some(Self::Cancelled),
                 Some(StopReason::Error) => Some(Self::Error),
@@ -853,6 +853,12 @@ mod tests {
         );
 
         assert_eq!(response.finish_reason, Some(GenerateFinishReason::Stop));
+
+        let looped = GenerateFinishReason::from_request_state(
+            RequestState::Finished,
+            Some(StopReason::LoopDetected),
+        );
+        assert_eq!(looped, Some(GenerateFinishReason::Stop));
     }
 
     #[test]

@@ -3680,7 +3680,14 @@ impl MlxRunner {
             max_output,
             terminal_token_ids,
         );
-        if stop_reason.is_none() {
+        let (sampled_tokens, stop_reason) = apply_loop_detection_stop(
+            sampled_tokens,
+            stop_reason,
+            &state.generated_tokens,
+            loop_detection_config_for_family(&self.cfg.model_family),
+        );
+        // Keep tokens for LoopDetected (and continuing decode).
+        if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
             for &sampled_token in &sampled_tokens {
                 state.generated_tokens.push(sampled_token);
                 update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
@@ -8116,6 +8123,52 @@ fn truncate_sampled_tokens_for_stop(
     (sampled_tokens, None)
 }
 
+/// Apply n-gram loop detection after EOS/max-output truncation (WS-C2).
+///
+/// Keeps emitted tokens and sets [`StopReason::LoopDetected`] (maps to OpenAI
+/// `finish_reason=stop`). Does not invent an EOS token id. Distinct from
+/// `no_repeat_ngram_size` logit bans.
+fn apply_loop_detection_stop(
+    sampled_tokens: Vec<u32>,
+    stop_reason: Option<StopReason>,
+    generated_history: &[u32],
+    loop_cfg: Option<ax_engine_core::LoopDetectionConfig>,
+) -> (Vec<u32>, Option<StopReason>) {
+    if stop_reason.is_some() || sampled_tokens.is_empty() {
+        return (sampled_tokens, stop_reason);
+    }
+    let Some(cfg) = loop_cfg.filter(|c| c.is_enabled()) else {
+        return (sampled_tokens, stop_reason);
+    };
+    let mut probe =
+        Vec::with_capacity(generated_history.len().saturating_add(sampled_tokens.len()));
+    probe.extend_from_slice(generated_history);
+    probe.extend_from_slice(&sampled_tokens);
+    if ax_engine_core::detects_loop(&probe, cfg) {
+        return (sampled_tokens, Some(StopReason::LoopDetected));
+    }
+    (sampled_tokens, stop_reason)
+}
+
+/// Resolve loop-detection config for this model family (default-on Gemma 4 only).
+fn loop_detection_config_for_family(
+    model_family: &str,
+) -> Option<ax_engine_core::LoopDetectionConfig> {
+    let env = std::env::var("AX_GEMMA4_LOOP_DETECTION")
+        .unwrap_or_else(|_| "on".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    match env.as_str() {
+        "off" | "0" | "false" | "no" => return None,
+        "force" => {
+            return Some(ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT);
+        }
+        _ => {}
+    }
+    let is_gemma4 = model_family.starts_with("gemma4");
+    is_gemma4.then_some(ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT)
+}
+
 fn token_is_terminal(token: u32, terminal_token_ids: &[u32]) -> bool {
     terminal_token_ids.contains(&token)
 }
@@ -11216,6 +11269,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

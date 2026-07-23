@@ -481,6 +481,8 @@ impl RequestManager {
                 let mut stop = None;
                 for sampled_token in sampled_tokens {
                     stop = sampled_token.stop_reason;
+                    // EosToken is not emitted into the output stream; LoopDetected
+                    // keeps already-emitted collapse tokens (including the last one).
                     if !matches!(stop, Some(StopReason::EosToken)) {
                         if record.generated_tokens.len() as u32 >= record.max_output_tokens {
                             return Err(RequestManagerError::ProgressInvariantViolation {
@@ -524,7 +526,11 @@ impl RequestManager {
             let should_finish = reached_max_output_tokens
                 || matches!(
                     stop_reason,
-                    Some(StopReason::EosToken | StopReason::MaxOutputTokens)
+                    Some(
+                        StopReason::EosToken
+                            | StopReason::MaxOutputTokens
+                            | StopReason::LoopDetected
+                    )
                 );
 
             if let Some(diff) = update.diffusion_schedule {

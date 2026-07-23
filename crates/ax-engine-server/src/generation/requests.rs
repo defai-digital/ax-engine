@@ -26,7 +26,10 @@ pub(crate) struct GenerateHttpRequest {
 }
 
 impl GenerateHttpRequest {
-    pub(crate) fn reject_video_inputs(&self) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    pub(crate) fn reject_video_inputs(
+        &self,
+        live: &LiveState,
+    ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
         let has_video = self
             .multimodal_inputs
             .gemma4_unified
@@ -35,10 +38,15 @@ impl GenerateHttpRequest {
         if !has_video {
             return Ok(());
         }
+        if crate::metadata::model_supports_video(live) {
+            return Ok(());
+        }
         Err(error_response(
             StatusCode::BAD_REQUEST,
             "unsupported_modality",
-            "video input is not supported; this server accepts text, image, and audio".to_string(),
+            "video input is not supported for this model; requires gemma4_unified vision roles, \
+no convert-time media drops, and AX_MLX_GEMMA4_VIDEO enabled (data URI only)"
+                .to_string(),
         ))
     }
 }

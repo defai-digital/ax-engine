@@ -280,6 +280,11 @@ fn openai_tool_calling_supported_live(live: &LiveState, openai_text: bool) -> bo
         )
 }
 
+/// Public capability probe used by request rejection paths (WS-M1).
+pub(crate) fn model_supports_video(live: &LiveState) -> bool {
+    native_processed_multimodal_support_live(live).video
+}
+
 fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessedMultimodalSupport {
     if live.runtime_report.selected_backend != SelectedBackend::Mlx {
         return NativeProcessedMultimodalSupport::default();
@@ -303,13 +308,35 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         .iter()
         .all(|role| has_global_tensor_role(tensors, role));
     let audio = has_global_tensor_role(tensors, GEMMA4_UNIFIED_AUDIO_ROLE);
+    // WS-M1: advertise video only for gemma4_unified manifests that already
+    // have vision roles, have no convert-time media drops, and are not
+    // disabled via AX_MLX_GEMMA4_VIDEO=off. Media is data-URI only (no remote
+    // fetch). Frame caps keep expanded soft tokens under atomic max_batch_tokens.
+    let media_drops = manifest
+        .get("dropped_tensors")
+        .and_then(|d| d.get("media_role_hits"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let family = manifest
+        .get("model_family")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let video_env_off = matches!(
+        std::env::var("AX_MLX_GEMMA4_VIDEO")
+            .unwrap_or_else(|_| "on".into())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "off" | "no"
+    );
+    let video = image
+        && !video_env_off
+        && media_drops == 0
+        && (family == "gemma4" || family == "gemma4_unified" || family.starts_with("gemma4"));
     NativeProcessedMultimodalSupport {
         image,
         audio,
-        // The public multi-model profile intentionally supports text, image,
-        // and audio only. Keep the lower-level Gemma4 video primitives private
-        // to existing callers, but never advertise video serving capability.
-        video: false,
+        video,
     }
 }
 

@@ -25,11 +25,96 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::model::{
-    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeDiffusionConfig, NativeGlmRouterConfig,
-    NativeLinearAttentionConfig, NativeMlaAttentionConfig, NativeModelManifest, NativeMoeConfig,
-    NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization,
-    NativeTensorRole, NativeTensorSpec, WeightSanitize,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, DroppedTensorsProvenance, NativeDiffusionConfig,
+    NativeGlmRouterConfig, NativeLinearAttentionConfig, NativeMlaAttentionConfig,
+    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
+    NativeTensorFormat, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
+    WeightSanitize,
 };
+
+/// Env: when set to `1`/`true`/`on`, convert hard-errors if any tensors are dropped.
+pub const AX_CONVERT_STRICT_TENSORS: &str = "AX_CONVERT_STRICT_TENSORS";
+/// Env: when not explicitly off, emit dropped-tensor warnings (default on).
+pub const AX_CONVERT_DROPPED_TENSOR_REPORT: &str = "AX_CONVERT_DROPPED_TENSOR_REPORT";
+
+/// Case-insensitive substrings that indicate media-role weights (WS-C1).
+const MEDIA_ROLE_NAME_MARKERS: &[&str] = &[
+    "vision_tower",
+    "vision",
+    "visual",
+    "vit",
+    "image_newline",
+    "projector",
+    "multi_modal",
+    "audio_tower",
+    "conformer",
+    "sam.",
+    "clip.",
+];
+
+/// Ledger for tensors skipped during convert mapping (WS-C1 / R-C1).
+#[derive(Clone, Debug, Default)]
+pub struct DroppedTensorLedger {
+    pub count: u64,
+    pub bytes: u64,
+    pub media_role_hits: u64,
+    pub names_sample: Vec<String>,
+}
+
+impl DroppedTensorLedger {
+    const SAMPLE_CAP: usize = 16;
+
+    pub fn record(&mut self, name: &str, length_bytes: u64) {
+        self.count = self.count.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(length_bytes);
+        if tensor_name_looks_like_media_role(name) {
+            self.media_role_hits = self.media_role_hits.saturating_add(1);
+        }
+        if self.names_sample.len() < Self::SAMPLE_CAP {
+            self.names_sample.push(name.to_string());
+        }
+    }
+
+    pub fn to_provenance(&self) -> DroppedTensorsProvenance {
+        DroppedTensorsProvenance {
+            count: self.count,
+            media_role_hits: self.media_role_hits,
+            names_sample: self.names_sample.clone(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
+/// Returns true when a tensor name matches media-role heuristics.
+pub fn tensor_name_looks_like_media_role(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    MEDIA_ROLE_NAME_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn convert_report_enabled() -> bool {
+    match std::env::var(AX_CONVERT_DROPPED_TENSOR_REPORT) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off" || v == "no")
+        }
+        Err(_) => true,
+    }
+}
+
+fn convert_strict_tensors() -> bool {
+    match std::env::var(AX_CONVERT_STRICT_TENSORS) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on" || v == "yes"
+        }
+        Err(_) => false,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -51,7 +136,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_unified, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, llama4, gpt_oss, nemotron_h, unlimited_ocr"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, llama4, gpt_oss, nemotron_h, unlimited_ocr"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -64,6 +149,16 @@ pub enum ConvertError {
     UnsupportedDtype { name: String, dtype: String },
     #[error("invalid {model_type} conversion contract: {message}")]
     InvalidModelContract { model_type: String, message: String },
+    #[error(
+        "convert dropped {count} unrecognised tensor(s) ({media_role_hits} media-role); \
+set {strict_env}=0 to allow, or map the tensors (sample: {sample})"
+    )]
+    DroppedTensorsStrict {
+        count: u64,
+        media_role_hits: u64,
+        sample: String,
+        strict_env: &'static str,
+    },
 }
 
 /// Convert a HuggingFace / MLX model directory into a `NativeModelManifest`.
@@ -78,7 +173,25 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let arch = resolve_architecture(&config, &model_type)?;
     let safetensors_files = find_safetensors_files(model_dir)?;
     let all_tensors = parse_all_safetensors_headers(model_dir, &safetensors_files)?;
-    let mut mapped_tensors = map_tensors(&config, &all_tensors, &family)?;
+    let (mut mapped_tensors, dropped_ledger) = map_tensors(&config, &all_tensors, &family)?;
+    if !dropped_ledger.is_empty() && convert_report_enabled() {
+        tracing::warn!(
+            target = "ax_engine_core::convert",
+            count = dropped_ledger.count,
+            bytes = dropped_ledger.bytes,
+            media_role_hits = dropped_ledger.media_role_hits,
+            names_sample = ?dropped_ledger.names_sample,
+            "convert_dropped_unrecognised_tensors"
+        );
+    }
+    if !dropped_ledger.is_empty() && convert_strict_tensors() {
+        return Err(ConvertError::DroppedTensorsStrict {
+            count: dropped_ledger.count,
+            media_role_hits: dropped_ledger.media_role_hits,
+            sample: dropped_ledger.names_sample.join(", "),
+            strict_env: AX_CONVERT_STRICT_TENSORS,
+        });
+    }
 
     // KV-shared layers have K/V weights in the checkpoint (mlx-lm ignores them), but
     // our manifest must not include them — the runtime reuses K/V from the source layer.
@@ -256,6 +369,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         think_start_token_id: think_token_ids.0,
         think_end_token_id: think_token_ids.1,
         diffusion: parse_diffusion_config(&config, &model_type),
+        dropped_tensors: dropped_ledger.to_provenance(),
         tensors: mapped_tensors,
     };
 
@@ -756,12 +870,14 @@ fn map_tensors(
     config: &serde_json::Value,
     all_tensors: &[SafetensorEntry],
     family: &ModelFamily,
-) -> Result<Vec<NativeTensorSpec>, ConvertError> {
+) -> Result<(Vec<NativeTensorSpec>, DroppedTensorLedger), ConvertError> {
     let mut mapped = Vec::new();
+    let mut dropped = DroppedTensorLedger::default();
 
     for entry in all_tensors {
         let Some((role, layer_index)) = match_tensor(&entry.name, family) else {
-            // Skip unrecognised tensors (e.g. bias tensors, MoE experts, vision tower).
+            // Fail-loud: count every unrecognised tensor (WS-C1).
+            dropped.record(&entry.name, entry.length_bytes);
             continue;
         };
 
@@ -789,7 +905,45 @@ fn map_tensors(
 
     // Sort by (layer_index, role ordinal) for deterministic output.
     mapped.sort_by_key(|spec| (spec.layer_index, format!("{:?}", spec.role)));
-    Ok(mapped)
+    Ok((mapped, dropped))
+}
+
+#[cfg(test)]
+mod dropped_tensor_tests {
+    use super::*;
+
+    #[test]
+    fn media_role_matcher_hits_vision_and_audio() {
+        assert!(tensor_name_looks_like_media_role(
+            "model.vision_tower.layers.0.weight"
+        ));
+        assert!(tensor_name_looks_like_media_role(
+            "language_model.multi_modal_projector.bias"
+        ));
+        assert!(tensor_name_looks_like_media_role(
+            "audio_tower.conformer.conv.weight"
+        ));
+        assert!(tensor_name_looks_like_media_role(
+            "model.sam.patch_embed.weight"
+        ));
+        assert!(!tensor_name_looks_like_media_role(
+            "model.layers.0.mlp.gate_proj.weight"
+        ));
+    }
+
+    #[test]
+    fn ledger_records_media_hits_and_samples() {
+        let mut ledger = DroppedTensorLedger::default();
+        ledger.record("model.vision_tower.x", 100);
+        ledger.record("model.layers.0.bias", 8);
+        assert_eq!(ledger.count, 2);
+        assert_eq!(ledger.media_role_hits, 1);
+        assert_eq!(ledger.bytes, 108);
+        let prov = ledger.to_provenance();
+        assert_eq!(prov.count, 2);
+        assert_eq!(prov.media_role_hits, 1);
+        assert!(prov.has_media_role_drops());
+    }
 }
 
 // ---------------------------------------------------------------------------

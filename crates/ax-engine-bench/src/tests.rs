@@ -930,6 +930,7 @@ fn write_valid_native_model_fixture() -> PathBuf {
         think_start_token_id: None,
         think_end_token_id: None,
         diffusion: ax_engine_core::NativeDiffusionConfig::default(),
+        dropped_tensors: Default::default(),
         tensors: vec![
             native_model_tensor(
                 "model.embed_tokens.weight",
@@ -1126,6 +1127,7 @@ fn write_projection_native_model_fixture() -> PathBuf {
         think_start_token_id: None,
         think_end_token_id: None,
         diffusion: ax_engine_core::NativeDiffusionConfig::default(),
+        dropped_tensors: Default::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",

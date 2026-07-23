@@ -342,7 +342,10 @@ pub(crate) fn build_openai_completion_request(
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, false, structured_output);
     let multimodal_inputs = request.multimodal_inputs;
-    reject_video_multimodal_inputs(&multimodal_inputs)?;
+    reject_video_multimodal_inputs(
+        &multimodal_inputs,
+        crate::metadata::model_supports_video(live),
+    )?;
     reject_openai_multimodal_inputs_without_native_mlx(
         live,
         "OpenAI completions",
@@ -413,7 +416,10 @@ pub(crate) async fn build_openai_chat_request_offloading_media(
     live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
-    reject_video_chat_content(&request.messages)?;
+    reject_video_chat_content(
+        &request.messages,
+        crate::metadata::model_supports_video(live),
+    )?;
     if !messages_contain_inline_media(&request.messages) {
         return build_openai_chat_request(live, request);
     }
@@ -425,7 +431,10 @@ pub(crate) fn build_openai_chat_request(
     live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
-    reject_video_chat_content(&request.messages)?;
+    reject_video_chat_content(
+        &request.messages,
+        crate::metadata::model_supports_video(live),
+    )?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
@@ -439,7 +448,10 @@ pub(crate) fn build_openai_chat_request(
         .reject_unsupported_streaming_contract(request.stream, streaming_reasoning_supported)?;
     let mut input_tokens = request.input_tokens;
     let mut multimodal_inputs = request.multimodal_inputs;
-    reject_video_multimodal_inputs(&multimodal_inputs)?;
+    reject_video_multimodal_inputs(
+        &multimodal_inputs,
+        crate::metadata::model_supports_video(live),
+    )?;
     reject_gemma4_tools_when_ax_cannot_render_them(
         live.model_id.as_ref(),
         request.tools.as_ref(),
@@ -758,18 +770,21 @@ fn reject_openai_multimodal_inputs_without_native_mlx(
 
 fn reject_video_multimodal_inputs(
     multimodal_inputs: &RequestMultimodalInputs,
+    video_supported: bool,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     let has_video = multimodal_inputs
         .gemma4_unified
         .as_ref()
         .is_some_and(|inputs| !inputs.videos.is_empty());
-    if !has_video {
+    if !has_video || video_supported {
         return Ok(());
     }
     Err(error_response(
         StatusCode::BAD_REQUEST,
         "unsupported_modality",
-        "video input is not supported; this server accepts text, image, and audio".to_string(),
+        "video input is not supported for this model; requires gemma4_unified vision capability \
+(data URI only)"
+            .to_string(),
     ))
 }
 

@@ -925,7 +925,7 @@ fn render_openai_chat_content(
                     OpenAiChatContentPartKind::Media(kind) => {
                         return Err(openai_media_part_error(kind, part));
                     }
-                    OpenAiChatContentPartKind::VideoUnsupported => {
+                    OpenAiChatContentPartKind::Video => {
                         return Err(unsupported_video_error(&part.part_type));
                     }
                     OpenAiChatContentPartKind::Unsupported => {
@@ -1880,7 +1880,8 @@ fn escape_xml_text(value: &str) -> String {
 enum OpenAiChatContentPartKind {
     Text,
     Media(OpenAiChatMediaKind),
-    VideoUnsupported,
+    /// Video content part; accepted only when model capability gate allows.
+    Video,
     Unsupported,
 }
 
@@ -1902,7 +1903,7 @@ fn chat_content_part_kind(part: &OpenAiChatContentPart) -> OpenAiChatContentPart
         // Product serving scope is text + image + audio. Keep lower-level
         // video preprocessing code isolated, but reject video on the public
         // OpenAI surface instead of advertising a partially-supported path.
-        "video_url" | "input_video" | "video" => OpenAiChatContentPartKind::VideoUnsupported,
+        "video_url" | "input_video" | "video" => OpenAiChatContentPartKind::Video,
         _ => OpenAiChatContentPartKind::Unsupported,
     }
 }
@@ -1944,13 +1945,15 @@ fn unsupported_video_error(part_type: &str) -> HttpErrorResponse {
         StatusCode::BAD_REQUEST,
         "unsupported_modality",
         format!(
-            "OpenAI chat content part type {part_type} is not supported; this server accepts text, image, and audio"
+            "OpenAI chat content part type {part_type} is not supported for this model; \
+requires gemma4_unified vision capability (data URI only, no remote URLs)"
         ),
     )
 }
 
 pub(crate) fn reject_video_chat_content(
     messages: &[OpenAiChatMessage],
+    video_supported: bool,
 ) -> Result<(), HttpErrorResponse> {
     for part in messages
         .iter()
@@ -1962,22 +1965,24 @@ pub(crate) fn reject_video_chat_content(
     {
         if matches!(
             chat_content_part_kind(part),
-            OpenAiChatContentPartKind::VideoUnsupported
-        ) {
+            OpenAiChatContentPartKind::Video
+        ) && !video_supported
+        {
             return Err(unsupported_video_error(&part.part_type));
         }
     }
     Ok(())
 }
 
-/// True when any message carries a supported inline media content part (image/audio).
+/// True when any message carries a supported inline media content part
+/// (image/audio/video).
 pub(crate) fn messages_contain_inline_media(messages: &[OpenAiChatMessage]) -> bool {
     messages.iter().any(|message| match &message.content {
         Some(OpenAiChatContent::Text(_)) | None => false,
         Some(OpenAiChatContent::Parts(parts)) => parts.iter().any(|part| {
             matches!(
                 chat_content_part_kind(part),
-                OpenAiChatContentPartKind::Media(_)
+                OpenAiChatContentPartKind::Media(_) | OpenAiChatContentPartKind::Video
             )
         }),
     })
@@ -2181,8 +2186,11 @@ fn render_content_collecting_media(
                         collected.audios.push(audio_part_bytes(part)?);
                         rendered.push_str(audio_placeholder);
                     }
-                    OpenAiChatContentPartKind::VideoUnsupported => {
-                        return Err(unsupported_video_error(&part.part_type));
+                    OpenAiChatContentPartKind::Video => {
+                        collected.videos.push(video_part_bytes(part)?);
+                        // Video uses the same soft-token placeholder surface as image
+                        // at the chat template layer; expansion happens later.
+                        rendered.push_str(image_placeholder);
                     }
                     OpenAiChatContentPartKind::Unsupported => {
                         return Err(error_response(
@@ -2205,6 +2213,20 @@ fn image_part_bytes(part: &OpenAiChatContentPart) -> Result<Vec<u8>, HttpErrorRe
         .ok_or_else(|| media_payload_missing("image", "image_url"))?;
     let url =
         data_value_url(value).ok_or_else(|| media_payload_missing("image", "image_url.url"))?;
+    let (_mime, bytes) = multimodal::decode_data_uri(url).map_err(media_error_response)?;
+    Ok(bytes)
+}
+
+/// Decode video payload from a chat content part. Data URIs only (no remote
+/// `http(s)` and no bare filesystem paths) — preserves the SSRF-free posture.
+fn video_part_bytes(part: &OpenAiChatContentPart) -> Result<Vec<u8>, HttpErrorResponse> {
+    let value = part
+        .video_url
+        .as_ref()
+        .or(part.image_url.as_ref())
+        .ok_or_else(|| media_payload_missing("video", "video_url"))?;
+    let url =
+        data_value_url(value).ok_or_else(|| media_payload_missing("video", "video_url.url"))?;
     let (_mime, bytes) = multimodal::decode_data_uri(url).map_err(media_error_response)?;
     Ok(bytes)
 }

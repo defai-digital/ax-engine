@@ -453,6 +453,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
             tensors: Vec::new(),
         }
     }
