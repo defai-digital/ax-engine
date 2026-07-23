@@ -123,9 +123,9 @@ impl StructuralCapabilities {
         if self.is_encoder_embed {
             reasons.push("encoder_embed");
         }
-        if self.has_sliding_window {
-            reasons.push("sliding_window");
-        }
+        // Full/sliding stacks use a per-layer batched mask. Requests whose
+        // private sliding cache has already compacted are rejected later at
+        // cohort admission because their absolute prefix cannot be recovered.
         // MoE is supported only via the explicit qwen3 router capability bit
         // (set from model family at ArchitectureSpec construction). Linear
         // attention is an independent attention path — it no longer proxies
@@ -236,9 +236,7 @@ impl ArchitectureSpec {
             || manifest.tensors.iter().any(|t| {
                 matches!(
                     t.role,
-                    NativeTensorRole::PerLayerInputGate
-                        | NativeTensorRole::PerLayerInputProjection
-                        | NativeTensorRole::LayerScalar
+                    NativeTensorRole::PerLayerInputGate | NativeTensorRole::PerLayerInputProjection
                 )
             });
         let is_multimodal_capable = manifest.tensors.iter().any(|t| {
@@ -475,9 +473,10 @@ mod tests {
             "interleaved SWA dense Gemma text should be a SWA pilot candidate: {:?}",
             caps.gemma_swa_decode_structural_rejections()
         );
-        // Dense Qwen pilot still rejects SWA.
+        // The production batched route now carries a per-layer SWA mask.
         assert!(
-            caps.batched_decode_structural_rejections()
+            !caps
+                .batched_decode_structural_rejections()
                 .contains(&"sliding_window")
         );
 

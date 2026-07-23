@@ -14,11 +14,20 @@ use super::fixtures::{
 };
 
 #[tokio::test]
-async fn submit_request_rejects_while_a_model_load_is_in_progress() {
-    // Preserve the lifecycle-specific conflict while generation-bound
-    // admission provides the final stale-snapshot race guard.
-    let (llama_server_url, llama_cpp_server_handle) =
-        spawn_llama_cpp_completion_stream_server(0, vec![], |_payload| {});
+async fn submit_request_is_not_globally_blocked_by_a_model_load() {
+    // The lifecycle-mutation flag serializes registry changes; it must not be
+    // used as a process-wide request gate. Target generations use their own
+    // admission controller when they actually need to drain.
+    let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_stream_server(
+        1,
+        vec![json!({
+            "content": "done",
+            "tokens": [4],
+            "stop": true,
+            "stop_type": "limit"
+        })],
+        |_| {},
+    );
     let state = llama_cpp_server_state(llama_server_url);
     state.loading.store(true, Ordering::Release);
     let app = build_router(state);
@@ -37,13 +46,7 @@ async fn submit_request_rejects_while_a_model_load_is_in_progress() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(
-        body.get("error")
-            .and_then(|error| error.get("code"))
-            .and_then(|code| code.as_str()),
-        Some("model_loading")
-    );
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 
     llama_cpp_server_handle
         .join()

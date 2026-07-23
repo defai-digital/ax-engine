@@ -62,7 +62,7 @@ use super::super::shared::{
     qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project,
     qkv_project_batched, qw, rms_norm_opt, shape_element_count, shared_expert_forward,
 };
-use crate::attention_mask::create_ring_sliding_mask;
+use crate::attention_mask::{batched_decode_validity_mask_with_window, create_ring_sliding_mask};
 use crate::batched_kv_cache::BatchedKvCache;
 use crate::batched_linear_state::BatchedLinearState;
 use crate::fastpath;
@@ -969,10 +969,9 @@ pub(crate) fn layer_forward(
 ///
 /// Supports **ragged** rows: `offsets[r]` is row `r`'s current decode position,
 /// so a continuously-batched cohort at different sequence positions decodes
-/// together. Scope (asserted): normal (non-KV-shared) full-attention dense
-/// layers, no sliding window, no MoE, no per-layer-input gating, no layer
-/// scalar. Unsupported layers panic; the batched runner routes only eligible
-/// requests here.
+/// together. Scope (asserted): normal (non-KV-shared) full/sliding-attention
+/// layers, Qwen-compatible MoE, and scalar residuals. Per-layer-input gating
+/// remains unsupported; the batched runner routes only eligible requests here.
 #[allow(clippy::too_many_arguments)]
 pub fn layer_forward_batched(
     cfg: &ModelConfig,
@@ -1002,12 +1001,8 @@ pub fn layer_forward_batched(
         "batched decode (2a): KV-shared layers unsupported"
     );
     assert!(
-        sliding_window.is_none(),
-        "batched decode (2a): sliding-window layers unsupported"
-    );
-    assert!(
-        w.per_layer_gate.is_none() && w.layer_scalar.is_none(),
-        "batched decode (2a): per-layer-input gating / layer scalar unsupported"
+        w.per_layer_gate.is_none(),
+        "batched decode: per-layer-input gating unsupported"
     );
 
     let seq = 1usize;
@@ -1088,8 +1083,30 @@ pub fn layer_forward_batched(
     mark(0, &[&q_rope, &k_rope, &v]);
 
     let (cached_k, cached_v) = cache.append_decode_layer(layer_idx, &k_rope, &v);
-    let attn_sdpa =
-        full_precision_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, seq, mask);
+    let sliding_mask = sliding_window.map(|window| {
+        let valid_lengths = offsets
+            .iter()
+            .map(|offset| offset.saturating_add(1))
+            .collect::<Vec<_>>();
+        batched_decode_validity_mask_with_window(
+            &valid_lengths,
+            cached_k.shape()[2] as usize,
+            Some(window),
+        )
+    });
+    let layer_mask = if sliding_mask.is_some() {
+        &sliding_mask
+    } else {
+        mask
+    };
+    let attn_sdpa = full_precision_attention(
+        &q_rope,
+        &cached_k,
+        &cached_v,
+        cfg.query_scale,
+        seq,
+        layer_mask,
+    );
     let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
     mark(1, &[&attn_flat]);
 
@@ -1110,7 +1127,11 @@ pub fn layer_forward_batched(
 
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
     let ffn_out = ffn_batched(cfg, w, &normed2, layer_idx);
-    let out = add(&hidden, &ffn_out, None);
+    let out = if let Some(scalar) = &w.layer_scalar {
+        add_then_multiply_scalar(&hidden, &ffn_out, scalar)
+    } else {
+        add(&hidden, &ffn_out, None)
+    };
     mark(3, &[&out]);
     out
 }
@@ -1168,19 +1189,24 @@ pub fn layer_forward_batched_linear(
     w: &LayerWeights,
     hidden: &MlxArray,
     lin_state: &mut BatchedLinearState,
-    layer_idx: usize,
+    linear_state_idx: usize,
+    model_layer_idx: usize,
 ) -> MlxArray {
     assert!(
-        w.per_layer_gate.is_none() && w.layer_scalar.is_none(),
-        "batched decode: per-layer-input gating / layer scalar unsupported"
+        w.per_layer_gate.is_none(),
+        "batched decode: per-layer-input gating unsupported"
     );
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
-    let attn_proj = linear_attention_forward_batched(cfg, w, &normed, lin_state, layer_idx);
+    let attn_proj = linear_attention_forward_batched(cfg, w, &normed, lin_state, linear_state_idx);
     let hidden = add(hidden, &attn_proj, None);
 
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
-    let ffn_out = ffn_batched(cfg, w, &normed2, layer_idx);
-    add(&hidden, &ffn_out, None)
+    let ffn_out = ffn_batched(cfg, w, &normed2, model_layer_idx);
+    if let Some(scalar) = &w.layer_scalar {
+        add_then_multiply_scalar(&hidden, &ffn_out, scalar)
+    } else {
+        add(&hidden, &ffn_out, None)
+    }
 }
 
 // ---------------------------------------------------------------------------

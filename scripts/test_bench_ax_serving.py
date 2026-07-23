@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -131,8 +132,25 @@ class AxServingBenchTests(unittest.TestCase):
         self.assertAlmostEqual(observation["client_tpot_ms"], 75.0)
         self.assertAlmostEqual(observation["stream_step_interval_ms"][0], 50.0)
         self.assertAlmostEqual(observation["stream_step_interval_ms"][1], 60.0)
+        self.assertEqual(observation["output_identity"]["kind"], "token_ids")
+        self.assertEqual(observation["output_identity"]["count"], 3)
+        self.assertEqual(
+            observation["output_identity"]["sha256"],
+            hashlib.sha256(b"[10,11,12]").hexdigest(),
+        )
         self.assertEqual(observation["route_decisions"]["ax_mlx_prefix_cache_disk_hits"], 2)
         self.assertTrue(observation["route_decisions"]["ax_mlx_prefix_cache_disk_enabled"])
+
+    def test_observe_stream_rejects_missing_terminal_response(self) -> None:
+        observation = bench.observe_stream(
+            iter([("step", {"delta_tokens": [10]}, 0.1)]),
+            prompt=prompt(),
+            scheduled_at_s=0.0,
+            started_at_s=0.0,
+            completed_at_s=0.2,
+        )
+        self.assertFalse(observation["ok"])
+        self.assertIn("terminal response", observation["error"])
 
     def test_summary_computes_percentiles_and_goodput(self) -> None:
         observations = [

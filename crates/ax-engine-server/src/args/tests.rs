@@ -78,6 +78,7 @@ fn base_args() -> ServerArgs {
         max_inflight_prefill_requests: 0,
         grpc_bind_address: None,
         max_concurrent_requests: None,
+        max_concurrent_requests_per_model: None,
         max_request_body_bytes: None,
         request_timeout_secs: None,
         grpc_request_timeout_secs: None,
@@ -1133,6 +1134,7 @@ fn speculation_profile_maps_into_session_config() {
 fn resolved_limits_default_to_unset_when_no_flags_given() {
     let args = base_args();
     assert_eq!(args.resolved_max_concurrent_requests(), None);
+    assert_eq!(args.resolved_max_concurrent_requests_per_model(), None);
     assert_eq!(
         args.resolved_max_request_body_bytes(),
         crate::DEFAULT_MAX_REQUEST_BODY_BYTES
@@ -1149,11 +1151,13 @@ fn resolved_limits_default_to_unset_when_no_flags_given() {
 fn resolved_limits_honor_explicit_flags() {
     let args = ServerArgs {
         max_concurrent_requests: Some(4),
+        max_concurrent_requests_per_model: Some(2),
         max_request_body_bytes: Some(1024),
         request_timeout_secs: Some(30),
         ..base_args()
     };
     assert_eq!(args.resolved_max_concurrent_requests(), Some(4));
+    assert_eq!(args.resolved_max_concurrent_requests_per_model(), Some(2));
     assert_eq!(args.resolved_max_request_body_bytes(), 1024);
     assert_eq!(
         args.resolved_request_timeout(),

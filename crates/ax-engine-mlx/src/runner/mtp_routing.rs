@@ -167,7 +167,48 @@ pub(super) const fn should_bootstrap_direct_pipeline(
     has_mtp: bool,
     mtp_uses_direct_pipeline: bool,
 ) -> bool {
-    session_direct || (request_ngram_disabled && !has_mtp) || mtp_uses_direct_pipeline
+    // `session_direct` means that n-gram acceleration is disabled; it does not
+    // disable an attached/requested MTP route. Bootstrapping a pending direct
+    // token while strict MTP is selected causes every subsequent decode step
+    // to drain the direct pipeline before `run_model_decode` can enter MTP.
+    //
+    // The explicit MTP direct-fallback decision remains authoritative for
+    // unsupported sampling configurations.
+    mtp_uses_direct_pipeline || (!has_mtp && (session_direct || request_ngram_disabled))
+}
+
+pub(super) const fn should_use_session_direct_pipeline(
+    session_direct: bool,
+    is_greedy: bool,
+    has_mtp: bool,
+    mtp_requested: bool,
+) -> bool {
+    session_direct && is_greedy && (!has_mtp || !mtp_requested)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) const fn gemma4_assistant_mtp_coalesced_verify_route(
+    enabled: bool,
+    assistant_attached: bool,
+    target_mtp_attached: bool,
+    mtp_requested: bool,
+    ngram_stacking_disabled: bool,
+    skip_state_enabled: bool,
+    deterministic_greedy: bool,
+    uses_logits_processors: bool,
+    has_pending_assistant_draft: bool,
+    adaptive_gate_active: bool,
+) -> bool {
+    enabled
+        && assistant_attached
+        && !target_mtp_attached
+        && mtp_requested
+        && ngram_stacking_disabled
+        && !skip_state_enabled
+        && deterministic_greedy
+        && !uses_logits_processors
+        && has_pending_assistant_draft
+        && !adaptive_gate_active
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

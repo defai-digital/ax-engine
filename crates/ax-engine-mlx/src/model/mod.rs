@@ -551,7 +551,7 @@ pub fn decode_batched_forward(
                 .as_deref_mut()
                 .expect("batched decode: linear-attention layer requires a BatchedLinearState");
             hidden = families::standard::layer_forward_batched_linear(
-                cfg, layer_w, &hidden, lin, linear_idx,
+                cfg, layer_w, &hidden, lin, linear_idx, li,
             );
             linear_idx += 1;
         } else {

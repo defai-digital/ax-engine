@@ -131,6 +131,7 @@ env var fallback (CLI flag wins when both are set):
 | Flag | Env var | Default |
 |---|---|---|
 | `--max-concurrent-requests <N>` | `AX_ENGINE_MAX_CONCURRENT_REQUESTS` | unlimited |
+| `--max-concurrent-requests-per-model <N>` | `AX_ENGINE_MAX_CONCURRENT_REQUESTS_PER_MODEL` | unlimited |
 | `--max-request-body-bytes <N>` | `AX_ENGINE_MAX_REQUEST_BODY_BYTES` | 256 MiB (always enforced, even unset) |
 | `--request-timeout-secs <N>` | `AX_ENGINE_REQUEST_TIMEOUT_SECS` | no timeout |
 | `--grpc-request-timeout-secs <N>` | `AX_ENGINE_GRPC_REQUEST_TIMEOUT_SECS` | falls back to `--request-timeout-secs` |
@@ -141,12 +142,14 @@ env var fallback (CLI flag wins when both are set):
 
 Notes:
 
-- The concurrency limit is shared by HTTP and gRPC engine jobs. Generation,
-  streaming, embedding, and stepwise requests hold capacity until their
-  blocking job is terminal, even after a transport timeout or disconnect.
-  Saturated HTTP calls return 429; saturated gRPC calls return
-  `RESOURCE_EXHAUSTED`. Health, metrics, and metadata reads do not consume
-  engine capacity.
+- The process-wide concurrency limit is shared by HTTP and gRPC engine jobs.
+  The per-model limit is owned by one published model generation. Admission
+  acquires the model lease before the process lease, so a draining or saturated
+  model cannot consume sibling capacity. Generation, streaming, embedding, and
+  stepwise requests hold both leases until their blocking job is terminal, even
+  after a transport timeout or disconnect. Saturated HTTP calls return 429;
+  saturated gRPC calls return `RESOURCE_EXHAUSTED`. Health, metrics, and
+  metadata reads do not consume engine capacity.
 - The HTTP rate limit sheds transport load before handler work and returns a
   distinct 429 message, so operators can distinguish it from engine
   saturation.
@@ -990,6 +993,9 @@ Other rules:
 - The last resident model cannot be unloaded (`409 last_model`).
 - Unloading the current default reassigns `default_model_id` to another
   resident model; load/unload responses always report the resulting default.
+- Add and availability-first replacement build the new generation outside the
+  registry lock. Unload and replacement close admission and drain only the
+  selected generation; sibling models continue accepting requests.
 - Concurrent load/unload while another is in progress → `409 model_loading`.
 
 ### Execution model
@@ -997,14 +1003,18 @@ Other rules:
 Each retained model owns an independent `EngineSession` and scheduler (no
 cross-model fused batch). A process-wide execution arbiter grants one model
 turn per engine step and per embedding execution, rotating fairly among waiting
-model IDs so one busy model cannot monopolize Metal forever.
+model IDs so one busy model cannot monopolize Metal forever. Arbiter metrics
+separate `engine_step` and `bulk_command` turns and report total/max wait and
+hold time by model.
 
-Because a turn is one engine step, a sibling model's decode waits while a long
-prefill runs (up to `--max-batch-tokens` prompt tokens, default 2048 — often
-roughly 1–2 s on the allowlisted sizes). For latency-sensitive multi-model
-serving, shrink `--max-batch-tokens` (for example 512) or enable
-`--multi-prefill-fair` with `--max-prefill-tokens-per-request-per-step` so
-prefills chunk and decode turns interleave between chunks.
+When two or more models are resident, fair prefill is enabled automatically.
+The service uses 256 prefill tokens per turn while no sibling has recent device
+activity, then contracts to one token while a sibling is active, waiting, or
+was active within the 250 ms grace window. This bounds interactive stream gaps
+without changing per-model graph/KV ownership. Set
+`AX_SERVER_MULTI_MODEL_PREFILL_ISOLATION=0` to restore the historical policy.
+Scheduler-split prefill remains ordered, and portable prefix serialization is
+deferred until the final split chunk.
 
 Stepwise APIs: `/v1/requests` routes by `model`; `/v1/step?model=…` advances a
 non-default loaded model (omit `model` for the default). Request snapshot and
@@ -1041,6 +1051,20 @@ sweeps run only while the server is otherwise idle.
 Engine-step `/metrics` series carry a `model` label per loaded model, plus
 unlabeled aggregates for single-model dashboards. Unload/replace drop the
 retired generation's per-model samples immediately.
+
+Memory metrics deliberately separate process measurements from model
+attribution:
+
+- `ax_engine_memory_mlx_{active,cache,peak}_bytes` and
+  `ax_engine_memory_host_resident_bytes` are process-level measurements;
+- `ax_engine_model_memory_weight_artifact_bytes` is exact on-disk
+  safetensors size, not allocator usage;
+- logical KV, contiguous capacity, recurrent state, paged-pool slabs, physical
+  KV, and prefix payloads are reported per model;
+- `ax_engine_model_kv_topology_info` exposes attention/sliding storage,
+  recurrent-state presence, and rollback strategy;
+- attributed lower bound, unattributed active bytes, attribution excess, and
+  coverage make double-counting or missing attribution visible.
 
 The server allocates request ids from one process-local sequence across both
 blocking and stepwise paths so transport logs and client correlation do not

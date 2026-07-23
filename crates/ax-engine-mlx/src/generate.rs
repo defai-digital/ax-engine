@@ -146,6 +146,20 @@ pub struct DirectPipelineAdvance {
     pub timings: DirectPipelineTimings,
 }
 
+/// A batch=1 direct-decode graph prepared for grouped submission.
+///
+/// The array keeps the exact single-request graph shape and KV topology.  A
+/// caller may prepare several independent rows and pass every
+/// [`next_pending`](Self::next_pending) to one `mlx_async_eval` call, then
+/// materialise the previous pending arrays with one `mlx_eval` call.  Unlike
+/// tensor batching this cannot change GEMM/SDPA reduction order, so it is the
+/// fail-closed production fallback when a model has not earned a
+/// batch-dimension numerical certificate.
+pub struct PreparedDirectPipelineAdvance {
+    pub next_pending: MlxArray,
+    pub timings: DirectPipelineTimings,
+}
+
 fn elapsed_us(started: Instant) -> u32 {
     started.elapsed().as_micros().min(u32::MAX as u128) as u32
 }
@@ -153,7 +167,7 @@ fn elapsed_us(started: Instant) -> u32 {
 static DIRECT_PIPELINE_BARRIER_ENABLED: OnceLock<bool> = OnceLock::new();
 static DIRECT_PIPELINE_STAGE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 
-fn direct_pipeline_barrier_enabled() -> bool {
+pub(crate) fn direct_pipeline_barrier_enabled() -> bool {
     *DIRECT_PIPELINE_BARRIER_ENABLED.get_or_init(|| {
         matches!(
             std::env::var("AX_MLX_DIRECT_PIPELINE_BARRIER").as_deref(),
@@ -752,6 +766,58 @@ pub fn advance_direct_pipeline_with_timings(
     pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
     cache: &mut MlxKVCache,
 ) -> DirectPipelineAdvance {
+    let mut prepared = prepare_direct_pipeline_advance(cfg, weights, pending, cache);
+
+    // Submit step N+1 to the GPU before waiting for step N.
+    // KV cache is in next_token_arr's computation graph (via SDPA), so no extra
+    // refs needed — they would only add one GPU command buffer per layer (≈85µs each).
+    let async_eval_started = Instant::now();
+    async_eval(&[&prepared.next_pending]);
+    prepared.timings.async_eval_wall_us = elapsed_us(async_eval_started);
+
+    // Diagnostic barrier: force step N+1 GPU completion before measuring the
+    // pending (step N) wait. Splits `async_eval` cost into "pure submit" vs
+    // "GPU-completion wait" by removing the double-buffer overlap.
+    prepared.timings.next_complete_wall_us = if direct_pipeline_barrier_enabled() {
+        let started = Instant::now();
+        eval(&[&prepared.next_pending]);
+        elapsed_us(started)
+    } else {
+        0
+    };
+
+    // Materialise the pending (step N) token.  Because `async_eval` was called
+    // in the previous `start_direct_pipeline` / `advance_direct_pipeline`, the GPU
+    // has been working on this token the entire time the CPU was building N+1's
+    // graph above — so `eval` is typically a no-op barrier.
+    let pending_eval_started = Instant::now();
+    eval(&[pending]);
+    prepared.timings.pending_eval_wall_us = elapsed_us(pending_eval_started);
+    let pending_read_started = Instant::now();
+    let tok = pending.first_u32_unchecked();
+    prepared.timings.pending_read_wall_us = elapsed_us(pending_read_started);
+
+    DirectPipelineAdvance {
+        token: tok,
+        next_pending: prepared.next_pending,
+        timings: prepared.timings,
+    }
+}
+
+/// Build the next batch=1 direct-decode graph without submitting or
+/// materialising either token.
+///
+/// This is deliberately separate from [`advance_direct_pipeline_with_timings`]
+/// so the runner can coalesce several row-exact graphs into one asynchronous
+/// submission and one completion barrier.  The cache is advanced exactly as in
+/// the ordinary direct pipeline; callers must either retain
+/// `next_pending` for the next step or discard the entire request state.
+pub fn prepare_direct_pipeline_advance(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    pending: &MlxArray,
+    cache: &mut MlxKVCache,
+) -> PreparedDirectPipelineAdvance {
     // Build next step's graph using the lazy pending token.
     // forward_lazy_single accepts an unevaluated MlxArray, so this runs entirely
     // on the CPU without waiting for `pending` to be materialised.
@@ -772,51 +838,19 @@ pub fn advance_direct_pipeline_with_timings(
     let argmax_started = Instant::now();
     let next_token_arr = argmax(&logits, None);
     let argmax_wall_us = elapsed_us(argmax_started);
-    // Submit step N+1 to the GPU before waiting for step N.
-    // KV cache is in next_token_arr's computation graph (via SDPA), so no extra
-    // refs needed — they would only add one GPU command buffer per layer (≈85µs each).
-    let async_eval_started = Instant::now();
-    async_eval(&[&next_token_arr]);
-    let async_eval_wall_us = elapsed_us(async_eval_started);
 
-    // Diagnostic barrier: force step N+1 GPU completion before measuring the
-    // pending (step N) wait. Splits `async_eval` cost into "pure submit" vs
-    // "GPU-completion wait" by removing the double-buffer overlap.
-    let next_complete_wall_us = if direct_pipeline_barrier_enabled() {
-        let started = Instant::now();
-        eval(&[&next_token_arr]);
-        elapsed_us(started)
-    } else {
-        0
-    };
-
-    // Materialise the pending (step N) token.  Because `async_eval` was called
-    // in the previous `start_direct_pipeline` / `advance_direct_pipeline`, the GPU
-    // has been working on this token the entire time the CPU was building N+1's
-    // graph above — so `eval` is typically a no-op barrier.
-    let pending_eval_started = Instant::now();
-    eval(&[pending]);
-    let pending_eval_wall_us = elapsed_us(pending_eval_started);
-    let pending_read_started = Instant::now();
-    let tok = pending.first_u32_unchecked();
-    let pending_read_wall_us = elapsed_us(pending_read_started);
-
-    DirectPipelineAdvance {
-        token: tok,
+    PreparedDirectPipelineAdvance {
         next_pending: next_token_arr,
         timings: DirectPipelineTimings {
             forward_wall_us,
             forward_layer_loop_wall_us: forward_stage.layer_loop_wall_us,
             forward_head_wall_us: forward_stage.head_wall_us,
             argmax_wall_us,
-            async_eval_wall_us,
-            next_complete_wall_us,
-            pending_eval_wall_us,
-            pending_read_wall_us,
             linear_attention_layer_ops: forward_stage.linear_attention_layer_ops,
             linear_attention_layer_count: forward_stage.linear_attention_layer_count,
             full_attention_layer_ops: forward_stage.full_attention_layer_ops,
             full_attention_layer_count: forward_stage.full_attention_layer_count,
+            ..DirectPipelineTimings::default()
         },
     }
 }

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{
     EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateRequest,
@@ -29,20 +30,51 @@ pub(crate) struct ModelExecutionArbiter {
 
 #[derive(Default)]
 struct ModelExecutionState {
-    held: bool,
+    held_model: Option<String>,
     last_served: Option<String>,
+    last_activity: BTreeMap<String, Instant>,
     waiters: BTreeMap<String, usize>,
+    stats: BTreeMap<(String, ExecutionWorkClass), ModelExecutionStats>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ExecutionWorkClass {
+    EngineStep,
+    BulkCommand,
+}
+
+impl ExecutionWorkClass {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::EngineStep => "engine_step",
+            Self::BulkCommand => "bulk_command",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ModelExecutionStats {
+    pub(crate) turns_total: u64,
+    pub(crate) wait_us_total: u64,
+    pub(crate) wait_us_max: u64,
+    pub(crate) hold_us_total: u64,
+    pub(crate) hold_us_max: u64,
 }
 
 struct ModelExecutionTurn<'a> {
     arbiter: &'a ModelExecutionArbiter,
+    model_id: String,
+    work_class: ExecutionWorkClass,
+    started_at: Instant,
 }
 
 impl ModelExecutionArbiter {
-    fn acquire(&self, model_id: &str) -> ModelExecutionTurn<'_> {
+    fn acquire(&self, model_id: &str, work_class: ExecutionWorkClass) -> ModelExecutionTurn<'_> {
+        let wait_started_at = Instant::now();
         let mut state = self.state.lock();
         *state.waiters.entry(model_id.to_string()).or_default() += 1;
-        while state.held || next_waiting_model(&state).as_deref() != Some(model_id) {
+        while state.held_model.is_some() || next_waiting_model(&state).as_deref() != Some(model_id)
+        {
             self.ready.wait(&mut state);
         }
         let remove_waiter = if let Some(waiters) = state.waiters.get_mut(model_id) {
@@ -54,16 +86,79 @@ impl ModelExecutionArbiter {
         if remove_waiter {
             state.waiters.remove(model_id);
         }
-        state.held = true;
+        state.held_model = Some(model_id.to_string());
         state.last_served = Some(model_id.to_string());
-        ModelExecutionTurn { arbiter: self }
+        state
+            .last_activity
+            .insert(model_id.to_string(), Instant::now());
+        let wait_us = duration_us(wait_started_at.elapsed());
+        let stats = state
+            .stats
+            .entry((model_id.to_string(), work_class))
+            .or_default();
+        stats.turns_total = stats.turns_total.saturating_add(1);
+        stats.wait_us_total = stats.wait_us_total.saturating_add(wait_us);
+        stats.wait_us_max = stats.wait_us_max.max(wait_us);
+        ModelExecutionTurn {
+            arbiter: self,
+            model_id: model_id.to_string(),
+            work_class,
+            started_at: Instant::now(),
+        }
+    }
+
+    pub(crate) fn stats(&self) -> Vec<(String, ExecutionWorkClass, ModelExecutionStats)> {
+        self.state
+            .lock()
+            .stats
+            .iter()
+            .map(|((model_id, work_class), stats)| (model_id.clone(), *work_class, *stats))
+            .collect()
+    }
+
+    pub(crate) fn remove_model(&self, model_id: &str) {
+        let mut state = self.state.lock();
+        state
+            .stats
+            .retain(|(stats_model_id, _), _| stats_model_id != model_id);
+        state.last_activity.remove(model_id);
+        state.waiters.remove(model_id);
+        if state.last_served.as_deref() == Some(model_id) {
+            state.last_served = None;
+        }
+    }
+
+    fn has_recent_sibling_activity(&self, model_id: &str, recent_for: Duration) -> bool {
+        let now = Instant::now();
+        let state = self.state.lock();
+        state
+            .held_model
+            .as_deref()
+            .is_some_and(|held_model| held_model != model_id)
+            || state
+                .waiters
+                .iter()
+                .any(|(waiting_model, waiters)| waiting_model != model_id && *waiters > 0)
+            || state.last_activity.iter().any(|(active_model, at)| {
+                active_model != model_id && now.saturating_duration_since(*at) <= recent_for
+            })
     }
 }
 
 impl Drop for ModelExecutionTurn<'_> {
     fn drop(&mut self) {
         let mut state = self.arbiter.state.lock();
-        state.held = false;
+        let hold_us = duration_us(self.started_at.elapsed());
+        let stats = state
+            .stats
+            .entry((self.model_id.clone(), self.work_class))
+            .or_default();
+        stats.hold_us_total = stats.hold_us_total.saturating_add(hold_us);
+        stats.hold_us_max = stats.hold_us_max.max(hold_us);
+        state.held_model = None;
+        state
+            .last_activity
+            .insert(self.model_id.clone(), Instant::now());
         drop(state);
         // Wake all waiters: fairness is enforced by next_waiting_model(), but
         // notify_one could wake the wrong model which would re-wait without
@@ -71,6 +166,10 @@ impl Drop for ModelExecutionTurn<'_> {
         // thundering herd cost is negligible.
         self.arbiter.ready.notify_all();
     }
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
 fn next_waiting_model(state: &ModelExecutionState) -> Option<String> {
@@ -91,6 +190,10 @@ struct ModelExecutionTarget {
     model_id: Arc<String>,
     arbiter: Arc<ModelExecutionArbiter>,
 }
+
+const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP: u32 = 1;
+pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
+const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GenerationPressureEvent {
@@ -152,6 +255,7 @@ struct ServiceState {
     pressure_observer: parking_lot::RwLock<Option<PressureObserver>>,
     stepwise_terminal_observer: parking_lot::RwLock<Option<StepwiseTerminalObserver>>,
     execution_target: parking_lot::RwLock<Option<ModelExecutionTarget>>,
+    adaptive_prefill_isolation: AtomicBool,
 }
 
 pub(crate) struct NativeGenerationService {
@@ -215,6 +319,7 @@ impl NativeGenerationService {
             pressure_observer: parking_lot::RwLock::new(None),
             stepwise_terminal_observer: parking_lot::RwLock::new(None),
             execution_target: parking_lot::RwLock::new(None),
+            adaptive_prefill_isolation: AtomicBool::new(false),
         });
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
@@ -433,6 +538,12 @@ impl NativeGenerationService {
         arbiter: Arc<ModelExecutionArbiter>,
     ) {
         *self.state.execution_target.write() = Some(ModelExecutionTarget { model_id, arbiter });
+    }
+
+    pub(crate) fn set_adaptive_prefill_isolation(&self, enabled: bool) {
+        self.state
+            .adaptive_prefill_isolation
+            .store(enabled, Ordering::Release);
     }
 
     pub(crate) async fn shutdown(&self) -> Result<(), GenerationServiceError> {
@@ -723,9 +834,11 @@ fn handle_command(
     match command {
         ServiceCommand::Execute(job) => {
             let execution_target = state.execution_target.read().clone();
-            let _turn = execution_target
-                .as_ref()
-                .map(|target| target.arbiter.acquire(target.model_id.as_ref()));
+            let _turn = execution_target.as_ref().map(|target| {
+                target
+                    .arbiter
+                    .acquire(target.model_id.as_ref(), ExecutionWorkClass::BulkCommand)
+            });
             job(session);
             complete_job(state);
         }
@@ -940,9 +1053,30 @@ fn advance_shared_engine(
 ) -> SessionResult<EngineStepReport> {
     maintain_streams(session, active_streams, service_state);
     let execution_target = service_state.execution_target.read().clone();
-    let _turn = execution_target
-        .as_ref()
-        .map(|target| target.arbiter.acquire(target.model_id.as_ref()));
+    if let Some(target) = execution_target.as_ref().filter(|_| {
+        service_state
+            .adaptive_prefill_isolation
+            .load(Ordering::Acquire)
+    }) {
+        let sibling_active = target.arbiter.has_recent_sibling_activity(
+            target.model_id.as_ref(),
+            ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
+        );
+        let desired_tokens = if sibling_active {
+            ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP
+        } else {
+            ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
+        };
+        let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
+        if !enabled || current_tokens != desired_tokens {
+            session.set_multi_prefill_fair(true, desired_tokens, inflight);
+        }
+    }
+    let _turn = execution_target.as_ref().map(|target| {
+        target
+            .arbiter
+            .acquire(target.model_id.as_ref(), ExecutionWorkClass::EngineStep)
+    });
     match session.step_report_with_request_ids() {
         Ok((report, request_ids)) => {
             record_step_report(service_state, &report);
@@ -1585,14 +1719,14 @@ mod tests {
     #[test]
     fn execution_arbiter_rotates_between_waiting_models() {
         let arbiter = Arc::new(ModelExecutionArbiter::default());
-        let first_turn = arbiter.acquire("alpha");
+        let first_turn = arbiter.acquire("alpha", ExecutionWorkClass::EngineStep);
         let (acquired_tx, acquired_rx) = std_mpsc::channel();
         let mut workers = Vec::new();
         for model_id in ["alpha", "beta"] {
             let worker_arbiter = Arc::clone(&arbiter);
             let acquired_tx = acquired_tx.clone();
             workers.push(std::thread::spawn(move || {
-                let _turn = worker_arbiter.acquire(model_id);
+                let _turn = worker_arbiter.acquire(model_id, ExecutionWorkClass::EngineStep);
                 acquired_tx
                     .send(model_id)
                     .expect("acquisition should be observed");
@@ -1622,6 +1756,31 @@ mod tests {
         for worker in workers {
             worker.join().expect("arbiter worker should finish");
         }
+        let stats = arbiter.stats();
+        let alpha = stats
+            .iter()
+            .find(|(model_id, work_class, _)| {
+                model_id == "alpha" && *work_class == ExecutionWorkClass::EngineStep
+            })
+            .map(|(_, _, stats)| stats)
+            .expect("alpha stats should exist");
+        assert_eq!(alpha.turns_total, 2);
+        assert!(alpha.hold_us_total >= alpha.hold_us_max);
+    }
+
+    #[test]
+    fn execution_arbiter_reports_and_forgets_recent_sibling_activity() {
+        let arbiter = ModelExecutionArbiter::default();
+        assert!(!arbiter.has_recent_sibling_activity("alpha", Duration::from_secs(1)));
+
+        let beta_turn = arbiter.acquire("beta", ExecutionWorkClass::EngineStep);
+        assert!(arbiter.has_recent_sibling_activity("alpha", Duration::from_secs(1)));
+        assert!(!arbiter.has_recent_sibling_activity("beta", Duration::from_secs(1)));
+        drop(beta_turn);
+
+        assert!(arbiter.has_recent_sibling_activity("alpha", Duration::from_secs(1)));
+        arbiter.remove_model("beta");
+        assert!(!arbiter.has_recent_sibling_activity("alpha", Duration::from_secs(1)));
     }
 
     #[test]
@@ -1636,6 +1795,7 @@ mod tests {
             pressure_observer: parking_lot::RwLock::new(None),
             stepwise_terminal_observer: parking_lot::RwLock::new(None),
             execution_target: parking_lot::RwLock::new(None),
+            adaptive_prefill_isolation: AtomicBool::new(false),
         };
 
         rollback_failed_enqueue(&state);

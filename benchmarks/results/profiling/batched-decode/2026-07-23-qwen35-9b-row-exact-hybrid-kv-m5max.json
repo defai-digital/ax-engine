@@ -1,0 +1,167 @@
+{
+  "artifact_fingerprint_sha256": "618e1cf46f47524622f3a7bfc6364963c05dd7c9435fc126a4be452bf6d9e5ac",
+  "device_architecture": "applegpu_g17s",
+  "engine_version": "6.11.1",
+  "mlx_version": "0.32.0",
+  "model_family": "qwen3_5",
+  "numerics_env_sha256": "72a4f7868366432436453e433a340e00cdf57e0c6f700a720341f456ad65cba3",
+  "runtime_contract": "ax.mlx.row_exact_coalesced_decode.runtime.v1",
+  "scenarios": [
+    {
+      "baseline": {
+        "seconds": 1.065,
+        "tokens": 128,
+        "tokens_per_second": 120.2
+      },
+      "baseline_passed": true,
+      "batch": 2,
+      "coalesced": {
+        "seconds": 0.966,
+        "tokens": 128,
+        "tokens_per_second": 132.5
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.1023294509151413
+    },
+    {
+      "baseline": {
+        "seconds": 2.187,
+        "tokens": 256,
+        "tokens_per_second": 117.1
+      },
+      "baseline_passed": true,
+      "batch": 4,
+      "coalesced": {
+        "seconds": 1.678,
+        "tokens": 256,
+        "tokens_per_second": 152.6
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.3031596925704527
+    },
+    {
+      "baseline": {
+        "seconds": 2.191,
+        "tokens": 256,
+        "tokens_per_second": 116.9
+      },
+      "baseline_passed": true,
+      "batch": 4,
+      "coalesced": {
+        "seconds": 1.681,
+        "tokens": 256,
+        "tokens_per_second": 152.3
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.3028229255774166
+    },
+    {
+      "baseline": {
+        "seconds": 2.203,
+        "tokens": 256,
+        "tokens_per_second": 116.2
+      },
+      "baseline_passed": true,
+      "batch": 4,
+      "coalesced": {
+        "seconds": 1.679,
+        "tokens": 256,
+        "tokens_per_second": 152.4
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 1,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.3115318416523236
+    },
+    {
+      "baseline": {
+        "seconds": 2.225,
+        "tokens": 256,
+        "tokens_per_second": 115.1
+      },
+      "baseline_passed": true,
+      "batch": 4,
+      "coalesced": {
+        "seconds": 1.739,
+        "tokens": 256,
+        "tokens_per_second": 147.2
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 512,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.2788879235447437
+    },
+    {
+      "baseline": {
+        "seconds": 2.214,
+        "tokens": 256,
+        "tokens_per_second": 115.6
+      },
+      "baseline_passed": true,
+      "batch": 4,
+      "coalesced": {
+        "seconds": 1.694,
+        "tokens": 256,
+        "tokens_per_second": 151.1
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": true,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.3070934256055364
+    },
+    {
+      "baseline": {
+        "seconds": 1.113,
+        "tokens": 128,
+        "tokens_per_second": 115.0
+      },
+      "baseline_passed": true,
+      "batch": 2,
+      "coalesced": {
+        "seconds": 1.008,
+        "tokens": 128,
+        "tokens_per_second": 127.0
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 992,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.1043478260869566
+    }
+  ],
+  "schema_version": "ax.mlx.row_exact_coalesced_decode_certification.v1",
+  "verdict": "pass"
+}

@@ -12,8 +12,8 @@
 //! `argmax`). For mixed greedy/sampled cohorts the runner drives
 //! [`BatchedDecodeSession::step_logits`] instead and resolves each row's token
 //! itself with the request's own RNG (see [`crate::batched_sampling`]). Scope is
-//! the same as [`crate::model::decode_batched_forward`]: full-attention dense
-//! families, ragged positions supported.
+//! the same as [`crate::model::decode_batched_forward`]: full/sliding attention
+//! dense families plus certified Qwen hybrid paths, with ragged positions.
 
 use std::sync::OnceLock;
 
@@ -27,18 +27,20 @@ use crate::kv_cache::MlxKVCache;
 use crate::model::{ModelConfig, decode_batched_forward};
 use crate::weights::{LayerWeights, ModelWeights};
 
-/// `AX_MLX_BATCHED_DECODE` — opt in to routing eligible greedy dense-decode
-/// requests through a shared batched forward. **Default: OFF.** Experimental:
-/// the batched path holds KV in the session rather than each request's
+/// `AX_MLX_BATCHED_DECODE` — route certified eligible decode requests through a
+/// shared batched forward. **Default: ON**; `0`/`false`/`off`/`no` is the
+/// operator kill switch. Certification and structural gates remain fail-closed.
+/// The batched path holds KV in the session rather than each request's
 /// `MlxKVCache`; the core keeps its logical block ledger, while runner state is
 /// released whenever a request is preempted or reaches a terminal state.
 pub fn batched_decode_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("AX_MLX_BATCHED_DECODE").as_deref(),
-            Ok("1") | Ok("true") | Ok("yes")
-        )
+    *ENABLED.get_or_init(|| match std::env::var("AX_MLX_BATCHED_DECODE") {
+        Err(_) => true,
+        Ok(raw) => !matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
     })
 }
 
@@ -152,7 +154,6 @@ pub(crate) fn decode_batch_bucket(active: usize) -> usize {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BatchedDecodeCapabilities {
     certification_status: BatchedDecodeCertificationStatus,
-    has_mtp: bool,
     is_diffusion: bool,
     has_sliding_window: bool,
     /// OR over layers: any full/sliding (non-linear, non-MLA) attention layer.
@@ -182,8 +183,9 @@ pub(crate) fn layer_has_usable_attention_projections(weights: &LayerWeights) -> 
         return true;
     }
     let has_o = weights.o_proj.is_some();
-    let has_split =
-        weights.q_proj.is_some() && weights.k_proj.is_some() && weights.v_proj.is_some();
+    // V may intentionally alias K (Gemma full-attention layers); the shared
+    // projection helper implements that fallback.
+    let has_split = weights.q_proj.is_some() && weights.k_proj.is_some();
     let has_packed = weights.qkv_packed.is_some();
     // Q-only layers that share KV from a source layer (assistant shared-KV).
     let has_q_shared_kv =
@@ -209,7 +211,6 @@ fn layer_moe_is_batched_qwen3_compatible(weights: &LayerWeights) -> bool {
 
 impl BatchedDecodeCapabilities {
     pub(crate) fn from_loaded_model(
-        has_mtp: bool,
         is_diffusion: bool,
         layer_windows: &[Option<usize>],
         layers: &[LayerWeights],
@@ -233,7 +234,6 @@ impl BatchedDecodeCapabilities {
         };
         Self {
             certification_status,
-            has_mtp,
             is_diffusion,
             has_sliding_window: layer_windows.iter().any(Option::is_some),
             has_full_attention,
@@ -242,9 +242,11 @@ impl BatchedDecodeCapabilities {
                 && layers.iter().all(layer_moe_is_batched_qwen3_compatible),
             has_linear_attention,
             has_mla,
+            // A scalar-only residual is batch-general. Per-layer input
+            // projection/gating still requires a dedicated batched route.
             has_layer_gating: layers
                 .iter()
-                .any(|weights| weights.per_layer_gate.is_some() || weights.layer_scalar.is_some()),
+                .any(|weights| weights.per_layer_gate.is_some()),
             has_complete_attention_projections: layers.is_empty()
                 || layers.iter().all(layer_has_usable_attention_projections),
         }
@@ -256,9 +258,9 @@ impl BatchedDecodeCapabilities {
 
     pub(crate) fn rejection_reasons(self, allow_uncertified: bool) -> Vec<&'static str> {
         let mut reasons = Vec::new();
-        if self.has_mtp {
-            reasons.push("mtp");
-        }
+        // An attached MTP/assistant artifact is not a model-level blocker.
+        // Strict MTP requests are kept out by the runner's request-level gate,
+        // so direct sessions may batch the same target weights.
         // Structural gates via ADR-038 StructuralCapabilities (not family names).
         // Order matches the historical runner contract so route telemetry stays stable:
         // mtp → structural(diffusion first) → cert → remaining structure.
@@ -344,6 +346,23 @@ impl BatchedDecodeSession {
         &self.slot_req
     }
 
+    /// Whether `prefill` still exposes an absolute, un-compacted prefix for
+    /// every attention layer. A sliding cache that has rotated/trimmed holds
+    /// fewer physical tokens than its logical `seq_len`; copying it into the
+    /// dense batched store would shift positions, so that request must remain
+    /// on the per-item route.
+    pub fn can_seed(&self, prefill: &MlxKVCache) -> bool {
+        let logical_len = prefill.seq_len() as i32;
+        (0..self.cache.num_layers()).all(|layer| {
+            if let Some((k, v)) = prefill.peek_layer_kv(layer) {
+                k.shape().get(2).copied() == Some(logical_len)
+                    && v.shape().get(2).copied() == Some(logical_len)
+            } else {
+                matches!(prefill.linear_state(layer), (Some(_), Some(_)))
+            }
+        })
+    }
+
     /// Admit `id` into the cohort, seeding its KV from a completed batch=1
     /// `prefill` cache and taking `first_token` as its current token (the token
     /// produced by prefill, to be fed on the next `step`). Panics if full or if
@@ -372,6 +391,10 @@ impl BatchedDecodeSession {
         assert!(
             !self.slot_req.contains(&id),
             "request {id} already in session"
+        );
+        assert!(
+            self.can_seed(prefill),
+            "batched decode: compacted or unsupported cache topology cannot seed a cohort"
         );
         // Lazily provision the linear-attention recurrent-state store the first
         // time a hybrid model's prefill reveals gated-delta layers. Capacity
@@ -526,7 +549,6 @@ mod tests {
         let no_windows: [Option<usize>; 0] = [];
         let uncertified = BatchedDecodeCapabilities::from_loaded_model(
             false,
-            false,
             &no_windows,
             &[],
             BatchedDecodeCertificationStatus::Missing,
@@ -540,7 +562,6 @@ mod tests {
         assert!(
             BatchedDecodeCapabilities::from_loaded_model(
                 false,
-                false,
                 &no_windows,
                 &[],
                 BatchedDecodeCertificationStatus::Certified,
@@ -550,7 +571,6 @@ mod tests {
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
                 true,
-                false,
                 &no_windows,
                 &[],
                 BatchedDecodeCertificationStatus::Missing,
@@ -558,18 +578,7 @@ mod tests {
             .eligible(true)
         );
         assert!(
-            !BatchedDecodeCapabilities::from_loaded_model(
-                false,
-                true,
-                &no_windows,
-                &[],
-                BatchedDecodeCertificationStatus::Missing,
-            )
-            .eligible(true)
-        );
-        assert!(
-            !BatchedDecodeCapabilities::from_loaded_model(
-                false,
+            BatchedDecodeCapabilities::from_loaded_model(
                 false,
                 &[Some(4096)],
                 &[],
@@ -580,25 +589,15 @@ mod tests {
     }
 
     #[test]
-    fn model_rejection_reasons_preserve_all_independent_gates() {
+    fn model_rejection_reasons_preserve_fail_closed_gates() {
         let reasons = BatchedDecodeCapabilities::from_loaded_model(
-            true,
             true,
             &[Some(4096)],
             &[],
             BatchedDecodeCertificationStatus::Missing,
         )
         .rejection_reasons(false);
-
-        assert_eq!(
-            reasons,
-            vec![
-                "mtp",
-                "diffusion",
-                "certification_missing",
-                "sliding_window"
-            ]
-        );
+        assert_eq!(reasons, vec!["diffusion", "certification_missing"]);
     }
 
     fn stub_layer_weights() -> crate::weights::LayerWeights {
@@ -670,7 +669,6 @@ mod tests {
 
         let reasons = BatchedDecodeCapabilities::from_loaded_model(
             false,
-            false,
             &[],
             &[incomplete],
             BatchedDecodeCertificationStatus::Certified,
@@ -719,7 +717,6 @@ mod tests {
 
         let caps = BatchedDecodeCapabilities::from_loaded_model(
             false,
-            false,
             &[],
             &[full, linear],
             BatchedDecodeCertificationStatus::Missing,
@@ -759,7 +756,6 @@ mod tests {
 
         let caps = BatchedDecodeCapabilities::from_loaded_model(
             false,
-            false,
             &[],
             &[full],
             BatchedDecodeCertificationStatus::Missing,
@@ -782,7 +778,6 @@ mod tests {
         gemma_moe.router_expert_scale = Some(zeros(&[8], MlxDtype::Float32, None));
         let gemma_caps = BatchedDecodeCapabilities::from_loaded_model(
             false,
-            false,
             &[],
             &[gemma_moe],
             BatchedDecodeCertificationStatus::Missing,
@@ -798,7 +793,6 @@ mod tests {
     fn uncertified_path_still_requires_allow_flag() {
         let full = dense_split_layer();
         let caps = BatchedDecodeCapabilities::from_loaded_model(
-            false,
             false,
             &[],
             &[full],

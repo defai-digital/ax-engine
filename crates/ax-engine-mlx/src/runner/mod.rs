@@ -7,8 +7,8 @@ use std::thread::{self, ThreadId};
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxStream, add, argmax, argpartition_axis, astype, clear_cache, divide,
-    enable_compile, eval, max_recommended_working_set_size, multiply, power, reshape,
+    MlxArray, MlxDtype, MlxStream, add, argmax, argpartition_axis, astype, async_eval, clear_cache,
+    divide, enable_compile, eval, max_recommended_working_set_size, multiply, power, reshape,
     set_cache_limit, set_memory_limit, set_wired_limit, slice, softmax, stack, sum_axis, take,
     take_along_axis,
 };
@@ -56,7 +56,8 @@ use crate::generate::{
     chunked_prefill_gemma4_unified_with_sampling_buffers,
     chunked_prefill_unlimited_ocr_with_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
-    decode_step, start_direct_pipeline,
+    decode_step, direct_pipeline_barrier_enabled, prepare_direct_pipeline_advance,
+    start_direct_pipeline,
 };
 use crate::kv_block_pool::{
     FaBlockPoolConfig, FaBlockPoolError, SharedFaBlockPool, default_fa_block_pool_config,
@@ -1489,7 +1490,6 @@ impl MlxRunner {
             weights.mtp.is_some() || weights.glm_mtp.is_some() || gemma4_assistant_mtp.is_some();
         let batched_decode_certification = load_batched_decode_certification(artifacts);
         let batched_decode_capabilities = BatchedDecodeCapabilities::from_loaded_model(
-            has_mtp,
             // This gates the model's actual decode dispatch, which is driven
             // by the resolved diffusion config. Manifest validation above
             // guarantees every block-diffusion manifest resolves one.
@@ -1673,6 +1673,39 @@ fn batched_admission_blocked_by_memory_pressure(memory_pressure: Option<&str>) -
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CoalescedDirectDisposition {
+    /// Remain on the ordinary direct pipeline.
+    Direct,
+    /// Request-local n-gram disable: preserve its telemetry and optional
+    /// recurrent n-gram feed/re-enable probe.
+    RequestDisabled { feed_ngram: bool },
+    /// N-gram cooldown consumes one counter and feeds the emitted token.
+    NgramCooldown,
+    /// The pending direct token is a transition barrier back to n-gram. Finish
+    /// it without building another lookahead graph.
+    DrainToNgram,
+}
+
+fn row_exact_coalescing_family(model_family: &str) -> bool {
+    matches!(
+        model_family,
+        "qwen3" | "qwen3_5" | "qwen3_next" | "gemma3" | "gemma4"
+    )
+}
+
+fn shared_wall_time_share(total_us: u32, ordinal: usize, count: usize) -> u32 {
+    if count == 0 {
+        return 0;
+    }
+    let count_u32 = u32::try_from(count).unwrap_or(u32::MAX);
+    let base = total_us / count_u32;
+    let remainder = total_us % count_u32;
+    base.saturating_add(u32::from(
+        u32::try_from(ordinal).unwrap_or(u32::MAX) < remainder,
+    ))
+}
+
 impl MlxRunner {
     /// Whether a single item can join the batched dense-decode group this step:
     /// a steady-state (`generated_len >= 1`) single-token decode whose sampler
@@ -1687,6 +1720,13 @@ impl MlxRunner {
         item: &ax_engine_core::ExecutionItem,
         ctx: Option<&RunnerRequestContext>,
     ) -> bool {
+        // MTP is a request/session route, not a property of the target
+        // weights. Keep strict MTP requests on their speculative path while
+        // allowing the same package to use batched direct decode when MTP is
+        // disabled for the session.
+        if self.has_mtp() && self.mtp_requested {
+            return false;
+        }
         if !matches!(item.mode, ExecutionMode::Decode) || item.input_token_slice.len() != 1 {
             return false;
         }
@@ -1704,6 +1744,702 @@ impl MlxRunner {
             Some(BatchedSamplingClass::HostSampled) => batched_decode_sampling_enabled(),
             None => false,
         }
+    }
+
+    fn coalesced_direct_disposition(&self, state: &RequestState) -> CoalescedDirectDisposition {
+        if self.disable_ngram_acceleration {
+            return CoalescedDirectDisposition::Direct;
+        }
+        if state.ngram_acceleration_disabled_for_request {
+            return CoalescedDirectDisposition::RequestDisabled {
+                feed_ngram: ngram_request_disabled_fallback_should_feed_output(
+                    state.ngram_request_disable_reason,
+                ),
+            };
+        }
+        if state.ngram_disabled_steps > 0 {
+            return CoalescedDirectDisposition::NgramCooldown;
+        }
+        CoalescedDirectDisposition::DrainToNgram
+    }
+
+    /// Coalesce independent batch=1 direct pipelines into one MLX submission.
+    ///
+    /// This is the production fail-closed fallback for Qwen/Gemma weights that
+    /// have not earned a tensor-batch numerical certificate. Every row retains
+    /// its single-request forward graph, cache, argmax, and sampler semantics;
+    /// only `async_eval(next_rows)` and `eval(pending_rows)` are shared. That
+    /// preserves the reduction order that the sequential oracle exercises
+    /// while removing one host submission/barrier pair per sibling request.
+    fn run_row_exact_coalesced_group(
+        &self,
+        group: &[(usize, &ax_engine_core::ExecutionItem)],
+        contexts: &[RunnerRequestContext],
+    ) -> (Vec<(usize, MlxItemRun)>, usize) {
+        struct Row {
+            item_index: usize,
+            request_id: RequestId,
+            scheduled_token_count: u32,
+            generated_len: u32,
+            max_output: u32,
+            ignore_eos: bool,
+            final_by_max_output: bool,
+            disposition: CoalescedDirectDisposition,
+            state: RequestState,
+            pending: MlxArray,
+            prepared: Option<crate::generate::PreparedDirectPipelineAdvance>,
+            token: u32,
+            read_wall_us: u32,
+        }
+
+        let mut rows = Vec::with_capacity(group.len());
+        {
+            let mut states = self.states.lock();
+            for &(item_index, item) in group {
+                let Some(mut state) = states.remove(&item.request_id) else {
+                    continue;
+                };
+                let Some(pending) = state.pending_direct.take() else {
+                    states.insert(item.request_id, state);
+                    continue;
+                };
+                let ctx = contexts
+                    .iter()
+                    .find(|ctx| ctx.request_id == item.request_id);
+                let generated_len = ctx.map(|ctx| ctx.generated_len).unwrap_or(0);
+                let max_output = ctx.map(|ctx| ctx.max_output_tokens).unwrap_or(1);
+                let disposition = self.coalesced_direct_disposition(&state);
+                rows.push(Row {
+                    item_index,
+                    request_id: item.request_id,
+                    scheduled_token_count: item.scheduled_token_count,
+                    generated_len,
+                    max_output,
+                    ignore_eos: ctx.map(|ctx| ctx.ignore_eos).unwrap_or(false),
+                    final_by_max_output: generated_len.saturating_add(1) >= max_output,
+                    disposition,
+                    state,
+                    pending,
+                    prepared: None,
+                    token: 0,
+                    read_wall_us: 0,
+                });
+            }
+        }
+
+        // A singleton cannot save a submission or barrier. Restore it exactly
+        // as found so the ordinary per-item path handles it below.
+        if rows.len() < 2 {
+            let mut states = self.states.lock();
+            for mut row in rows {
+                row.state.pending_direct = Some(row.pending);
+                states.insert(row.request_id, row.state);
+            }
+            return (Vec::new(), 0);
+        }
+
+        let group_started = Instant::now();
+        for row in &mut rows {
+            match row.disposition {
+                CoalescedDirectDisposition::RequestDisabled { .. } => {
+                    row.state.ngram_acceleration.record_request_disabled_step();
+                    row.state
+                        .ngram_acceleration
+                        .record_request_disabled_reason(row.state.ngram_request_disable_reason);
+                }
+                CoalescedDirectDisposition::NgramCooldown => {
+                    row.state.ngram_disabled_steps =
+                        row.state.ngram_disabled_steps.saturating_sub(1);
+                    row.state.ngram_acceleration.record_cooldown_step();
+                }
+                CoalescedDirectDisposition::Direct | CoalescedDirectDisposition::DrainToNgram => {}
+            }
+
+            let should_prepare = !row.final_by_max_output
+                && !matches!(row.disposition, CoalescedDirectDisposition::DrainToNgram);
+            if should_prepare {
+                row.prepared = Some(prepare_direct_pipeline_advance(
+                    &self.cfg,
+                    &self.weights,
+                    &row.pending,
+                    &mut row.state.cache,
+                ));
+            }
+        }
+
+        let prepared_count = rows.iter().filter(|row| row.prepared.is_some()).count();
+        let async_eval_wall_us = if prepared_count > 0 {
+            let started = Instant::now();
+            let refs = rows
+                .iter()
+                .filter_map(|row| row.prepared.as_ref().map(|prepared| &prepared.next_pending))
+                .collect::<Vec<_>>();
+            async_eval(&refs);
+            elapsed_us(started)
+        } else {
+            0
+        };
+        let next_complete_wall_us = if prepared_count > 0 && direct_pipeline_barrier_enabled() {
+            let started = Instant::now();
+            let refs = rows
+                .iter()
+                .filter_map(|row| row.prepared.as_ref().map(|prepared| &prepared.next_pending))
+                .collect::<Vec<_>>();
+            eval(&refs);
+            elapsed_us(started)
+        } else {
+            0
+        };
+
+        let pending_eval_started = Instant::now();
+        {
+            let refs = rows.iter().map(|row| &row.pending).collect::<Vec<_>>();
+            eval(&refs);
+        }
+        let pending_eval_wall_us = elapsed_us(pending_eval_started);
+        for row in &mut rows {
+            let started = Instant::now();
+            row.token = row.pending.first_u32_unchecked();
+            row.read_wall_us = elapsed_us(started);
+        }
+        let group_wall_us = elapsed_us(group_started);
+
+        let row_count = rows.len();
+        let mut prepared_ordinal = 0usize;
+        let mut runs = Vec::with_capacity(row_count);
+        let mut continuing = Vec::with_capacity(row_count);
+        let mut should_clear_cache = false;
+        for (row_ordinal, mut row) in rows.into_iter().enumerate() {
+            let mut timings = DirectPipelineTimings::default();
+            if let Some(prepared) = row.prepared.take() {
+                timings = prepared.timings;
+                timings.async_eval_wall_us =
+                    shared_wall_time_share(async_eval_wall_us, prepared_ordinal, prepared_count);
+                timings.next_complete_wall_us =
+                    shared_wall_time_share(next_complete_wall_us, prepared_ordinal, prepared_count);
+                row.state.pending_direct = Some(prepared.next_pending);
+                row.state.direct_pipeline_emitted_tokens =
+                    row.state.direct_pipeline_emitted_tokens.saturating_add(1);
+                should_clear_cache |= direct_pipeline_clear_cache_due(
+                    row.state.direct_pipeline_emitted_tokens,
+                    self.direct_clear_cache_cadence,
+                );
+                prepared_ordinal = prepared_ordinal.saturating_add(1);
+            }
+            timings.pending_eval_wall_us =
+                shared_wall_time_share(pending_eval_wall_us, row_ordinal, row_count);
+            timings.pending_read_wall_us = row.read_wall_us;
+            row.state
+                .decode_telemetry
+                .record_direct_pipeline(group_wall_us);
+            row.state
+                .decode_telemetry
+                .record_direct_pipeline_timings(timings);
+            row.state.decode_telemetry.record_production_decode_eval();
+            row.state.decode_telemetry.record_decode(group_wall_us);
+
+            match row.disposition {
+                CoalescedDirectDisposition::RequestDisabled { feed_ngram } => {
+                    if feed_ngram {
+                        row.state.ngram.feed(&[row.token]);
+                        maybe_reenable_linear_ngram_from_fallback_output(
+                            &mut row.state,
+                            self.ngram_policy_variant,
+                            true,
+                        );
+                    }
+                }
+                CoalescedDirectDisposition::NgramCooldown => {
+                    row.state.ngram.feed(&[row.token]);
+                }
+                CoalescedDirectDisposition::DrainToNgram => {
+                    row.state.ngram.feed(&[row.token]);
+                    row.state.direct_pipeline_emitted_tokens = 0;
+                }
+                CoalescedDirectDisposition::Direct => {}
+            }
+
+            if row.state.cache.hard_cap_exhausted() {
+                should_clear_cache = true;
+                runs.push((
+                    row.item_index,
+                    errored_item_run(
+                        row.request_id,
+                        "FA KV block pool exhausted under explicit \
+                         AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap",
+                    ),
+                ));
+                continue;
+            }
+
+            let terminal = if row.ignore_eos {
+                &[][..]
+            } else {
+                self.terminal_token_ids.as_slice()
+            };
+            let (sampled, stop_reason) = truncate_sampled_tokens_for_stop(
+                vec![row.token],
+                row.generated_len,
+                row.max_output,
+                terminal,
+            );
+            if stop_reason.is_none() {
+                for &token in &sampled {
+                    row.state.generated_tokens.push(token);
+                    update_ngram_think_state(&self.cfg, &mut row.state.ngram_in_think, token);
+                }
+            } else {
+                should_clear_cache = true;
+            }
+            let kv_usage = row
+                .state
+                .cache
+                .usage_snapshot_with_layer_windows(&self.kv_layer_windows);
+            let mut sampled_iter = sampled.into_iter();
+            let run = MlxItemRun {
+                update: RequestExecutionUpdate {
+                    request_id: row.request_id,
+                    tokens_executed: row.scheduled_token_count,
+                    output_token: sampled_iter.next(),
+                    output_tokens: sampled_iter.collect(),
+                    stop_reason,
+                    error: None,
+                    diffusion_schedule: None,
+                },
+                ngram_acceleration: row.state.ngram_acceleration,
+                mtp_telemetry: row.state.mtp_telemetry,
+                gemma4_assistant_mtp_telemetry: row.state.gemma4_assistant_mtp_telemetry,
+                gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry::default(),
+                decode_telemetry: row.state.decode_telemetry,
+                gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
+                moe_profile: MoeProfileSnapshot::default(),
+                linear_attention_profile: LinearAttentionProfileSnapshot::default(),
+                dense_ffn_fastpath: DenseFfnFastpathSnapshot::default(),
+                prefill_profile: row.state.prefill_profile,
+                decode_profile: row.state.decode_profile,
+                kv_usage,
+                prefix_cache: MlxPrefixCacheTelemetry::default(),
+            };
+            if stop_reason.is_none() {
+                continuing.push((row.request_id, row.state));
+            }
+            runs.push((row.item_index, run));
+        }
+        if !continuing.is_empty() {
+            let mut states = self.states.lock();
+            for (request_id, state) in continuing {
+                states.insert(request_id, state);
+            }
+        }
+        if should_clear_cache {
+            clear_cache();
+        }
+        if let Some((_, first)) = runs.first_mut() {
+            first.gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
+            first.moe_profile = take_moe_profile_snapshot();
+            first.linear_attention_profile = take_linear_attention_profile_snapshot();
+            first.dense_ffn_fastpath = take_dense_ffn_fastpath_snapshot();
+            first
+                .decode_profile
+                .merge_from(take_decode_profile_snapshot());
+        }
+        (runs, prepared_count)
+    }
+
+    fn gemma4_assistant_mtp_coalesced_item_eligible(
+        &self,
+        item: &ax_engine_core::ExecutionItem,
+        ctx: Option<&RunnerRequestContext>,
+    ) -> bool {
+        if !matches!(item.mode, ExecutionMode::Decode) || item.input_token_slice.len() != 1 {
+            return false;
+        }
+        let Some(ctx) = ctx else {
+            return false;
+        };
+        let sampling = sampling_params_from_context(ctx);
+        let states = self.states.lock();
+        let Some(state) = states.get(&item.request_id) else {
+            return false;
+        };
+        let assistant_only_draft = !state.mtp_pending_draft.is_empty()
+            && state.mtp_pending_draft.len() == state.mtp_pending_draft_sources.len()
+            && state
+                .mtp_pending_draft_sources
+                .iter()
+                .all(|source| *source == MtpDraftSource::Gemma4Assistant);
+        gemma4_assistant_mtp_coalesced_verify_route(
+            crate::fastpath::gemma4_assistant_mtp_coalesced_verify_enabled(),
+            self.gemma4_assistant_mtp_status.enabled,
+            self.weights.mtp.is_some() || self.weights.glm_mtp.is_some(),
+            self.mtp_requested,
+            self.disable_mtp_ngram_stacking,
+            self.mtp_skip_state,
+            ctx.deterministic_argmax_sampling,
+            sampling.uses_logits_processors(),
+            assistant_only_draft,
+            state.mtp_adaptive_gate.is_some(),
+        ) && !state.mtp_bypassed
+            && state.pending_direct.is_none()
+            && state.bonus_queue.is_empty()
+            && state.diffusion_block_queue.is_empty()
+    }
+
+    /// Coalesce independent, exact-greedy Gemma assistant-MTP target verifies.
+    ///
+    /// Each row keeps a private batch=1 target graph and KV topology. Only the
+    /// MLX completion barrier is shared, so reduction order, acceptance,
+    /// rollback, and assistant drafting stay identical to the sequential route.
+    /// This is deliberately narrower than tensor batching and fails closed for
+    /// sampled targets, n-gram stacking, skip-state, or adaptive draft gates.
+    fn run_gemma4_assistant_mtp_coalesced_group(
+        &self,
+        group: &[(usize, &ax_engine_core::ExecutionItem)],
+        contexts: &[RunnerRequestContext],
+    ) -> Vec<(usize, MlxItemRun)> {
+        struct Row {
+            item_index: usize,
+            request_id: RequestId,
+            scheduled_token_count: u32,
+            generated_len: u32,
+            max_output: u32,
+            ignore_eos: bool,
+            sampling: MlxSamplingParams,
+            state: RequestState,
+            pending: Vec<u32>,
+            pending_sources: Vec<MtpDraftSource>,
+            token_offset: usize,
+            verify_len: usize,
+            post_norm_all: MlxArray,
+            predicted: MlxArray,
+            verify_forward_wall_us: u32,
+        }
+
+        let mut rows = Vec::with_capacity(group.len());
+        {
+            let mut states = self.states.lock();
+            for &(item_index, item) in group {
+                let Some(ctx) = contexts
+                    .iter()
+                    .find(|ctx| ctx.request_id == item.request_id)
+                else {
+                    continue;
+                };
+                let Some(mut state) = states.remove(&item.request_id) else {
+                    continue;
+                };
+                let pending = state.mtp_pending_draft.clone();
+                let pending_sources = state.mtp_pending_draft_sources.clone();
+                let valid = !pending.is_empty()
+                    && pending.len() == pending_sources.len()
+                    && pending_sources
+                        .iter()
+                        .all(|source| *source == MtpDraftSource::Gemma4Assistant)
+                    && !state.mtp_bypassed
+                    && state.pending_direct.is_none()
+                    && state.bonus_queue.is_empty()
+                    && state.diffusion_block_queue.is_empty();
+                if !valid {
+                    states.insert(item.request_id, state);
+                    continue;
+                }
+
+                let sampling = sampling_params_from_context(ctx);
+                let (rotate_sliding, rotate_slack) = cache_rotation_for_execution(
+                    item.mode,
+                    state.rotating_sliding_latch,
+                    self.rotating_sliding_decode,
+                    true,
+                );
+                state.cache.set_rotating_sliding_decode(rotate_sliding);
+                state.cache.set_rotating_sliding_slack(rotate_slack);
+
+                let last_token = state
+                    .next_model_last_token
+                    .or_else(|| item.input_token_slice.last().copied())
+                    .unwrap_or(0);
+                let token_offset = state.cache.seq_len();
+                let mut verify_input = Vec::with_capacity(1 + pending.len());
+                verify_input.push(last_token);
+                verify_input.extend_from_slice(&pending);
+                let verify_len = verify_input.len();
+                let verify_forward_started = Instant::now();
+                let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
+                    &self.cfg,
+                    &self.weights,
+                    &verify_input,
+                    &mut state.cache,
+                    token_offset,
+                );
+                let verify_forward_wall_us = elapsed_us(verify_forward_started);
+                state.cache.advance(verify_len);
+                let predicted = argmax(&logits_all, None);
+                rows.push(Row {
+                    item_index,
+                    request_id: item.request_id,
+                    scheduled_token_count: item.scheduled_token_count,
+                    generated_len: ctx.generated_len,
+                    max_output: ctx.max_output_tokens,
+                    ignore_eos: ctx.ignore_eos,
+                    sampling,
+                    state,
+                    pending,
+                    pending_sources,
+                    token_offset,
+                    verify_len,
+                    post_norm_all,
+                    predicted,
+                    verify_forward_wall_us,
+                });
+            }
+        }
+
+        if rows.len() < 2 {
+            let mut states = self.states.lock();
+            for row in rows {
+                states.insert(row.request_id, row.state);
+            }
+            return Vec::new();
+        }
+
+        let group_started = Instant::now();
+        let mut owned_targets = Vec::new();
+        for row in &rows {
+            owned_targets.push(row.predicted.clone());
+            owned_targets.push(row.post_norm_all.clone());
+            owned_targets.extend(row.state.cache.collect_eval_refs().into_iter().cloned());
+        }
+        let verify_eval_started = Instant::now();
+        let target_refs = owned_targets.iter().collect::<Vec<_>>();
+        eval(&target_refs);
+        let verify_eval_wall_us = elapsed_us(verify_eval_started);
+
+        let row_count = rows.len();
+        let mut should_clear_cache = false;
+        let mut continuing = Vec::with_capacity(row_count);
+        let mut runs = Vec::with_capacity(row_count);
+        for (row_ordinal, mut row) in rows.into_iter().enumerate() {
+            let predicted = row.predicted.data_u32().to_vec();
+            let accept_started = Instant::now();
+            let accept_count = row
+                .pending
+                .iter()
+                .zip(predicted.iter())
+                .take_while(|(draft, target)| draft == target)
+                .count();
+            let accept_wall_us = elapsed_us(accept_started);
+
+            let rollback_started = Instant::now();
+            let committed_len = row.token_offset + 1 + accept_count;
+            let trimmed = row.state.cache.trim_to(committed_len);
+            let rejected_count = row.pending.len().saturating_sub(accept_count);
+            if rejected_count > 0 {
+                let new_mtp_len = row.state.mtp_decode_count.saturating_sub(rejected_count);
+                if let Some(cache) = row.state.mtp_cache.as_mut() {
+                    let _ = cache.trim_to(new_mtp_len);
+                }
+                row.state.mtp_decode_count = new_mtp_len;
+            }
+            let rollback_wall_us = elapsed_us(rollback_started);
+            if !trimmed {
+                should_clear_cache = true;
+                runs.push((
+                    row.item_index,
+                    errored_item_run(
+                        row.request_id,
+                        "coalesced Gemma assistant-MTP rollback trim was refused",
+                    ),
+                ));
+                continue;
+            }
+
+            let draft_hidden =
+                slice_post_norm_hidden(&row.post_norm_all, accept_count, self.cfg.hidden_size);
+            let tail_sample_started = Instant::now();
+            let tail_token = predicted.get(accept_count).copied().unwrap_or(0);
+            let tail_sample_wall_us = elapsed_us(tail_sample_started);
+            let mut result = row.pending[..accept_count].to_vec();
+            result.push(tail_token);
+
+            let proposal_law = if row.state.mtp_pending_draft_distributions.is_empty()
+                && crate::mtp::mtp_draft_mode_from_env() == crate::mtp::MtpDraftMode::Greedy
+            {
+                MtpProposalLaw::DeterministicDelta
+            } else {
+                MtpProposalLaw::Stochastic
+            };
+            row.state
+                .mtp_telemetry
+                .record_correctness_mode(MtpCorrectnessMode::GreedyExact, proposal_law);
+            row.state.mtp_telemetry.record_step(
+                row.pending.len(),
+                accept_count,
+                &row.pending_sources,
+                None,
+                accept_count,
+            );
+            let row_eval_wall_us =
+                shared_wall_time_share(verify_eval_wall_us, row_ordinal, row_count);
+            row.state.gemma4_assistant_mtp_telemetry.record_verified(
+                row.pending.len(),
+                accept_count,
+                row.verify_forward_wall_us,
+                row_eval_wall_us,
+            );
+            row.state.ngram.feed(&result);
+
+            row.state.mtp_adaptive_max_depth = mtp_next_adaptive_depth(
+                row.state.mtp_adaptive_max_depth,
+                self.mtp_max_depth(),
+                row.pending.len(),
+                accept_count,
+                row.state.mtp_consecutive_misses,
+            );
+            if accept_count == 0 {
+                row.state.mtp_consecutive_misses =
+                    row.state.mtp_consecutive_misses.saturating_add(1);
+            } else {
+                row.state.mtp_consecutive_misses = 0;
+            }
+            if row.state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= mtp_bypass_min_samples()
+                && row.state.mtp_telemetry.mtp_only_accept_rate_ewma < mtp_bypass_threshold()
+            {
+                row.state.mtp_bypassed = true;
+            }
+
+            let draft_started = Instant::now();
+            if row.state.mtp_bypassed {
+                row.state.mtp_pending_draft.clear();
+                row.state.mtp_pending_draft_log_probs.clear();
+                row.state.mtp_pending_draft_distributions.clear();
+                row.state.mtp_pending_draft_sources.clear();
+            } else {
+                let (draft, log_probs, distributions) = self.gemma4_assistant_draft_token(
+                    &mut row.state,
+                    tail_token,
+                    &draft_hidden,
+                    row.sampling,
+                );
+                row.state.mtp_pending_draft = draft;
+                row.state.mtp_pending_draft_log_probs = log_probs;
+                row.state.mtp_pending_draft_distributions = distributions;
+                row.state.mtp_pending_draft_sources =
+                    vec![MtpDraftSource::Gemma4Assistant; row.state.mtp_pending_draft.len()];
+            }
+            let draft_wall_us = elapsed_us(draft_started);
+            if !row.state.mtp_pending_draft.is_empty() {
+                row.state
+                    .gemma4_assistant_mtp_telemetry
+                    .record_submitted(row.state.mtp_pending_draft.len(), draft_wall_us);
+            }
+            let mtp_timings = MtpStepTimings {
+                verify_forward_wall_us: row.verify_forward_wall_us,
+                verify_eval_wall_us: row_eval_wall_us,
+                accept_wall_us,
+                rollback_wall_us,
+                tail_sample_wall_us,
+                draft_wall_us,
+                assistant_draft_wall_us: draft_wall_us,
+                verify_tokens: saturating_u32(row.verify_len),
+                emitted_tokens: saturating_u32(result.len()),
+                ..MtpStepTimings::default()
+            };
+            row.state.mtp_telemetry.record_timings(mtp_timings);
+            row.state
+                .decode_telemetry
+                .record_decode(shared_wall_time_share(
+                    elapsed_us(group_started),
+                    row_ordinal,
+                    row_count,
+                ));
+
+            let terminal = if row.ignore_eos {
+                &[][..]
+            } else {
+                self.terminal_token_ids.as_slice()
+            };
+            let sampled = apply_decode_result(&mut row.state, &result, terminal);
+            let (sampled, stop_reason) = truncate_sampled_tokens_for_stop(
+                sampled,
+                row.generated_len,
+                row.max_output,
+                terminal,
+            );
+            if row.state.cache.hard_cap_exhausted() {
+                should_clear_cache = true;
+                runs.push((
+                    row.item_index,
+                    errored_item_run(
+                        row.request_id,
+                        "FA KV block pool exhausted under explicit \
+                         AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap",
+                    ),
+                ));
+                continue;
+            }
+            if stop_reason.is_none() {
+                for &token in &sampled {
+                    row.state.generated_tokens.push(token);
+                    update_ngram_think_state(&self.cfg, &mut row.state.ngram_in_think, token);
+                }
+            } else {
+                should_clear_cache = true;
+            }
+
+            let kv_usage = row
+                .state
+                .cache
+                .usage_snapshot_with_layer_windows(&self.kv_layer_windows);
+            let mut sampled_iter = sampled.into_iter();
+            let run = MlxItemRun {
+                update: RequestExecutionUpdate {
+                    request_id: row.request_id,
+                    tokens_executed: row.scheduled_token_count,
+                    output_token: sampled_iter.next(),
+                    output_tokens: sampled_iter.collect(),
+                    stop_reason,
+                    error: None,
+                    diffusion_schedule: None,
+                },
+                ngram_acceleration: row.state.ngram_acceleration,
+                mtp_telemetry: row.state.mtp_telemetry,
+                gemma4_assistant_mtp_telemetry: row.state.gemma4_assistant_mtp_telemetry,
+                gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry::default(),
+                decode_telemetry: row.state.decode_telemetry,
+                gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
+                moe_profile: MoeProfileSnapshot::default(),
+                linear_attention_profile: LinearAttentionProfileSnapshot::default(),
+                dense_ffn_fastpath: DenseFfnFastpathSnapshot::default(),
+                prefill_profile: row.state.prefill_profile,
+                decode_profile: row.state.decode_profile,
+                kv_usage,
+                prefix_cache: MlxPrefixCacheTelemetry::default(),
+            };
+            if stop_reason.is_none() {
+                continuing.push((row.request_id, row.state));
+            }
+            runs.push((row.item_index, run));
+        }
+
+        if !continuing.is_empty() {
+            let mut states = self.states.lock();
+            for (request_id, state) in continuing {
+                states.insert(request_id, state);
+            }
+        }
+        if let Some((_, first)) = runs.first_mut() {
+            first.gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
+            first.moe_profile = take_moe_profile_snapshot();
+            first.linear_attention_profile = take_linear_attention_profile_snapshot();
+            first.dense_ffn_fastpath = take_dense_ffn_fastpath_snapshot();
+            first
+                .decode_profile
+                .merge_from(take_decode_profile_snapshot());
+        }
+        if should_clear_cache {
+            clear_cache();
+        }
+        runs
     }
 
     /// Run one decode step for a group of eligible requests through the shared
@@ -1988,12 +2724,17 @@ impl ExecutionRunner for MlxRunner {
             );
         }
 
-        // ── Batched dense-decode interception (AX_MLX_BATCHED_DECODE, default
-        // off). Eligible greedy decode items run through one shared batched
-        // forward; every other item — and the whole thing when the flag is off
-        // or the model is ineligible — stays byte-for-byte on the per-item path.
+        // ── Batched decode interception (AX_MLX_BATCHED_DECODE, default on
+        // with fail-closed certification). Certified eligible decode items run
+        // through one shared tensor-batched forward. Qwen/Gemma direct rows
+        // without a numerical certificate use the row-exact coalesced fallback:
+        // independent batch=1 graphs with one grouped submission/barrier.
+        // Everything else stays byte-for-byte on the per-item path.
         let mut batched_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let mut batched_forward_rows = 0usize;
+        let mut row_exact_coalesced_rows = 0usize;
+        let mut row_exact_coalesced_forward_rows = 0usize;
+        let mut gemma4_assistant_mtp_coalesced_rows = 0usize;
         let batched_enabled = batched_decode_enabled();
         let decode_candidate_count = input
             .execution_batch
@@ -2003,12 +2744,60 @@ impl ExecutionRunner for MlxRunner {
                 matches!(item.mode, ExecutionMode::Decode) && item.input_token_slice.len() == 1
             })
             .count();
+        if batched_enabled {
+            let group = input
+                .execution_batch
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| {
+                    self.gemma4_assistant_mtp_coalesced_item_eligible(
+                        item,
+                        input
+                            .request_contexts
+                            .iter()
+                            .find(|ctx| ctx.request_id == item.request_id),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if group.len() >= 2 {
+                let runs =
+                    self.run_gemma4_assistant_mtp_coalesced_group(&group, &input.request_contexts);
+                gemma4_assistant_mtp_coalesced_rows = runs.len();
+                for (item_index, result) in runs {
+                    batched_idx.insert(item_index);
+                    ngram_acceleration.merge_from(result.ngram_acceleration);
+                    mtp_telemetry.merge_from(result.mtp_telemetry);
+                    gemma4_assistant_mtp_telemetry
+                        .merge_from(result.gemma4_assistant_mtp_telemetry);
+                    decode_telemetry.merge_from(result.decode_telemetry);
+                    gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
+                    moe_profile.merge_from(result.moe_profile);
+                    linear_attention_profile.merge_from(result.linear_attention_profile);
+                    dense_ffn_fastpath.merge_from(result.dense_ffn_fastpath);
+                    prefill_profile.merge_from(result.prefill_profile);
+                    decode_profile.merge_from(result.decode_profile);
+                    kv_cache.merge_from(result.kv_usage);
+                    prefix_cache.merge_from(result.prefix_cache);
+                    request_updates.push(result.update);
+                }
+            }
+        }
         if decode_candidate_count >= 2 {
             if !batched_enabled {
                 route_metadata.crossover_decisions.push((
                     "ax_mlx_batched_decode_rejected_flag_disabled".to_string(),
                     decode_candidate_count as u32,
                 ));
+            } else if self.has_mtp() && self.mtp_requested {
+                let rejected =
+                    decode_candidate_count.saturating_sub(gemma4_assistant_mtp_coalesced_rows);
+                if rejected > 0 {
+                    route_metadata.crossover_decisions.push((
+                        "ax_mlx_batched_decode_rejected_mtp_requested".to_string(),
+                        rejected as u32,
+                    ));
+                }
             } else {
                 for reason in &self.batched_decode_model_rejections {
                     route_metadata.crossover_decisions.push((
@@ -2033,6 +2822,7 @@ impl ExecutionRunner for MlxRunner {
             let room = session.capacity().saturating_sub(session.len());
             let mut resident_items: Vec<usize> = Vec::new();
             let mut joiner_items: Vec<usize> = Vec::new();
+            let mut unseedable_joiners = 0usize;
             for (i, item) in input.execution_batch.items.iter().enumerate() {
                 let ctx = input
                     .request_contexts
@@ -2044,8 +2834,23 @@ impl ExecutionRunner for MlxRunner {
                 if resident.contains(&item.request_id.0) {
                     resident_items.push(i);
                 } else {
-                    joiner_items.push(i);
+                    let seedable = self
+                        .states
+                        .lock()
+                        .get(&item.request_id)
+                        .is_some_and(|state| session.can_seed(&state.cache));
+                    if seedable {
+                        joiner_items.push(i);
+                    } else {
+                        unseedable_joiners = unseedable_joiners.saturating_add(1);
+                    }
                 }
+            }
+            if unseedable_joiners > 0 {
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_batched_decode_rejected_compacted_cache".to_string(),
+                    unseedable_joiners as u32,
+                ));
             }
             let admission_blocked =
                 batched_admission_blocked_by_memory_pressure(input.memory_pressure.as_deref());
@@ -2113,16 +2918,107 @@ impl ExecutionRunner for MlxRunner {
                 batched_idx = group.into_iter().collect();
             }
         }
-        if !batched_idx.is_empty() {
+
+        // `batched_idx` is the execution-suppression set for every grouped
+        // route, including assistant-MTP verifies handled above. Keep the
+        // historical tensor-batch counter scoped to the dense tensor/session
+        // route so benchmark contracts cannot mistake an MTP barrier
+        // coalescing win for a tensor-batched decode promotion.
+        let tensor_batched_rows = batched_idx
+            .len()
+            .saturating_sub(gemma4_assistant_mtp_coalesced_rows);
+
+        // A tensor batch is promoted only by a real-weight numerical
+        // certificate. The fallback below preserves each row's batch=1 graph
+        // and therefore its sequential reduction order, but still coalesces
+        // MLX submission/completion work across sibling Qwen/Gemma requests.
+        if batched_enabled && row_exact_coalescing_family(&self.cfg.model_family) {
+            let pending_ids = self
+                .states
+                .lock()
+                .iter()
+                .filter_map(|(request_id, state)| {
+                    state.pending_direct.is_some().then_some(request_id.0)
+                })
+                .collect::<std::collections::HashSet<_>>();
+            let group = input
+                .execution_batch
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(index, item)| {
+                    !batched_idx.contains(index)
+                        && pending_ids.contains(&item.request_id.0)
+                        && self.batched_item_eligible(
+                            item,
+                            input
+                                .request_contexts
+                                .iter()
+                                .find(|ctx| ctx.request_id == item.request_id),
+                        )
+                })
+                .collect::<Vec<_>>();
+            if group.len() >= 2 {
+                let (runs, forward_rows) =
+                    self.run_row_exact_coalesced_group(&group, &input.request_contexts);
+                row_exact_coalesced_rows = runs.len();
+                row_exact_coalesced_forward_rows = forward_rows;
+                for (item_index, result) in runs {
+                    batched_idx.insert(item_index);
+                    ngram_acceleration.merge_from(result.ngram_acceleration);
+                    mtp_telemetry.merge_from(result.mtp_telemetry);
+                    gemma4_assistant_mtp_telemetry
+                        .merge_from(result.gemma4_assistant_mtp_telemetry);
+                    decode_telemetry.merge_from(result.decode_telemetry);
+                    gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
+                    moe_profile.merge_from(result.moe_profile);
+                    linear_attention_profile.merge_from(result.linear_attention_profile);
+                    dense_ffn_fastpath.merge_from(result.dense_ffn_fastpath);
+                    prefill_profile.merge_from(result.prefill_profile);
+                    decode_profile.merge_from(result.decode_profile);
+                    kv_cache.merge_from(result.kv_usage);
+                    prefix_cache.merge_from(result.prefix_cache);
+                    request_updates.push(result.update);
+                }
+            }
+        }
+        if tensor_batched_rows > 0 {
             route_metadata.crossover_decisions.push((
                 "ax_mlx_batched_decode_rows".into(),
-                batched_idx.len() as u32,
+                tensor_batched_rows as u32,
             ));
         }
         if batched_forward_rows > 0 {
             route_metadata.crossover_decisions.push((
                 "ax_mlx_batched_decode_forward_rows".into(),
                 batched_forward_rows as u32,
+            ));
+        }
+        if row_exact_coalesced_rows > 0 {
+            route_metadata.crossover_decisions.push((
+                "ax_mlx_row_exact_coalesced_decode_rows".into(),
+                row_exact_coalesced_rows as u32,
+            ));
+            route_metadata.crossover_decisions.push((
+                "ax_mlx_row_exact_coalesced_decode_forward_rows".into(),
+                row_exact_coalesced_forward_rows as u32,
+            ));
+            route_metadata
+                .crossover_decisions
+                .push(("ax_mlx_row_exact_coalesced_decode_eval_barriers".into(), 1));
+        }
+        if gemma4_assistant_mtp_coalesced_rows > 0 {
+            route_metadata.crossover_decisions.push((
+                "ax_mlx_gemma4_assistant_mtp_coalesced_verify_rows".into(),
+                gemma4_assistant_mtp_coalesced_rows as u32,
+            ));
+            route_metadata.crossover_decisions.push((
+                "ax_mlx_gemma4_assistant_mtp_coalesced_verify_forward_rows".into(),
+                gemma4_assistant_mtp_coalesced_rows as u32,
+            ));
+            route_metadata.crossover_decisions.push((
+                "ax_mlx_gemma4_assistant_mtp_coalesced_verify_eval_barriers".into(),
+                1,
             ));
         }
         route_metadata.crossover_decisions.extend([
@@ -3181,16 +4077,18 @@ impl MlxRunner {
             self.reclaim_native_prefix_capacity(&state.cache, item.input_token_slice.len()),
         );
 
-        // Apply the request's rotating sliding-KV decision. Before
-        // `initialize_generation_state` latches one (i.e. during prefill
-        // runs), fall back to the session default. The latch must win on
-        // every later run: rotation is irreversible per request — if a
-        // decode step ran with the flag reset to the session default after
-        // a ring conversion, the next append would grow the ring through
-        // the ordered path and scramble token order.
-        let (rotate_sliding, rotate_slack) = state
-            .rotating_sliding_latch
-            .unwrap_or((self.rotating_sliding_decode && is_greedy, 0));
+        // Apply the request's rotating sliding-KV decision. Every prefill item
+        // stays ordered, including scheduler-split prompts; the final item
+        // latches decode rotation in `initialize_generation_state`. The latch
+        // must win on every later decode run: rotation is irreversible per
+        // request, so resetting it after conversion would grow slot-ordered
+        // storage through the ordered path and scramble token order.
+        let (rotate_sliding, rotate_slack) = cache_rotation_for_execution(
+            item.mode,
+            state.rotating_sliding_latch,
+            self.rotating_sliding_decode,
+            is_greedy,
+        );
         state.cache.set_rotating_sliding_decode(rotate_sliding);
         state.cache.set_rotating_sliding_slack(rotate_slack);
 
@@ -3868,10 +4766,10 @@ impl MlxRunner {
         // Without a fingerprint, fold in `model_artifacts_root` so a
         // hot-swap that reuses `model_id` cannot hit wrong-checkpoint KV.
         if self.artifact_fingerprint.is_some() {
-            format!("layers={};full_attention_only", self.cfg.layer_count)
+            format!("layers={};ordered-prefix-v2", self.cfg.layer_count)
         } else {
             format!(
-                "layers={};full_attention_only;root={}",
+                "layers={};ordered-prefix-v2;root={}",
                 self.cfg.layer_count, self.model_artifacts_root
             )
         }
@@ -4213,6 +5111,17 @@ impl MlxRunner {
                 return telemetry;
             }
             match snapshot.rehydrate_cache() {
+                Ok(restored_cache) if restored_cache.has_rotated_sliding_layers() => {
+                    telemetry.record_blocked_unsupported_layout();
+                    tracing::warn!(
+                        target: "ax_engine_mlx::prefix_cache",
+                        "L1 prefix-cache payload contains slot-ordered rotating KV; \
+                         treating as miss and recomputing ordered prefix state",
+                    );
+                    // Fall through to L2/miss. The ordered-prefix-v2 key
+                    // prevents newly written entries from reaching here;
+                    // this guard also contains in-process legacy entries.
+                }
                 Ok(restored_cache) => {
                     let (prepared, pressure_evictions) =
                         self.prepare_portable_prefix_restore(restored_cache);
@@ -4296,35 +5205,45 @@ impl MlxRunner {
                                 .saturating_add(deserialize_us),
                         );
                     }
-                    let (prepared, pressure_evictions) =
-                        self.prepare_portable_prefix_restore(restored.cache);
-                    telemetry.native_evictions = telemetry
-                        .native_evictions
-                        .saturating_add(pressure_evictions);
-                    match prepared {
-                        Ok(restored_cache) => {
-                            state.cache = restored_cache;
-                            state.prompt_prefix_tokens = reused_tokens.to_vec();
-                            // F3 M4 — the entry carries the greedy prefill
-                            // output token, so cross-restart L2 hits avoid
-                            // recomputing at decode step 0. Sampling policy
-                            // still controls whether the token is reusable.
-                            state.cached_prefill_output_token = restored
-                                .prefill_output_token
-                                .filter(|_| prefill_output_token_cacheable(ctx, sampling));
-                            telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
-                            telemetry.reused_tokens = telemetry
-                                .reused_tokens
-                                .saturating_add(saturating_u32(reused_tokens.len()));
-                            return telemetry;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                target: "ax_engine_mlx::prefix_cache",
-                                error = %e,
-                                "disk prefix-cache payload could not enter the shared FA pool; recomputing",
-                            );
-                            telemetry.record_disk_fallback_recompute();
+                    if restored.cache.has_rotated_sliding_layers() {
+                        telemetry.record_blocked_unsupported_layout();
+                        telemetry.record_disk_fallback_recompute();
+                        tracing::warn!(
+                            target: "ax_engine_mlx::prefix_cache",
+                            "disk prefix-cache payload contains slot-ordered rotating KV; \
+                             treating as miss and recomputing ordered prefix state",
+                        );
+                    } else {
+                        let (prepared, pressure_evictions) =
+                            self.prepare_portable_prefix_restore(restored.cache);
+                        telemetry.native_evictions = telemetry
+                            .native_evictions
+                            .saturating_add(pressure_evictions);
+                        match prepared {
+                            Ok(restored_cache) => {
+                                state.cache = restored_cache;
+                                state.prompt_prefix_tokens = reused_tokens.to_vec();
+                                // F3 M4 — the entry carries the greedy prefill
+                                // output token, so cross-restart L2 hits avoid
+                                // recomputing at decode step 0. Sampling policy
+                                // still controls whether the token is reusable.
+                                state.cached_prefill_output_token = restored
+                                    .prefill_output_token
+                                    .filter(|_| prefill_output_token_cacheable(ctx, sampling));
+                                telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
+                                telemetry.reused_tokens = telemetry
+                                    .reused_tokens
+                                    .saturating_add(saturating_u32(reused_tokens.len()));
+                                return telemetry;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "ax_engine_mlx::prefix_cache",
+                                    error = %e,
+                                    "disk prefix-cache payload could not enter the shared FA pool; recomputing",
+                                );
+                                telemetry.record_disk_fallback_recompute();
+                            }
                         }
                     }
                 }
@@ -4652,6 +5571,26 @@ impl MlxRunner {
             telemetry.record_blocked_policy_disabled();
             return telemetry;
         }
+        let native_store_enabled = self.native_fa_prefix_sharing_enabled();
+        if !portable_prefix_store_allowed(prefill_completes_prompt, native_store_enabled) {
+            // A scheduler-split prefill can yield hundreds of execution
+            // items. Portable snapshots serialize the complete live KV
+            // state, so doing that after every partial item turns an O(N)
+            // prefill into O(N²) memory traffic and holds the process-wide
+            // Metal turn while sibling decodes wait. Only the native
+            // reference-counted FA pool has a cheap partial-boundary store;
+            // every other topology publishes its portable snapshot once the
+            // prompt is complete.
+            return telemetry;
+        }
+        if state.cache.has_rotated_sliding_layers() {
+            // Slot order is a decode-local physical representation, not a
+            // prompt-prefix representation. A no-op trim would otherwise
+            // serialize it and a later warm extension could issue a
+            // multi-token ordered append into ring slots.
+            telemetry.record_blocked_unsupported_layout();
+            return telemetry;
+        }
 
         let block_size = block_size_tokens as usize;
         let available_tokens = state.prompt_prefix_tokens.len().min(state.cache.seq_len());
@@ -4679,10 +5618,10 @@ impl MlxRunner {
         //     is as sound as for standard FA on the default (non-rotating)
         //     serving path; unaligned prompts therefore still store their
         //     largest aligned prefix — the one a follow-up turn extends. On
-        //     rollback-free direct sessions where a layer HAS rotated,
-        //     `trim_to` returns false for any real trim and the per-prefix
-        //     check below fail-closes the store (a no-op full-prompt trim
-        //     still passes, preserving the aligned same-prompt snapshot).
+        //     rollback-free direct sessions where a layer HAS rotated are
+        //     rejected above even for a no-op full-prompt trim: slot order is
+        //     a request-local decode representation and cannot be safely
+        //     warm-extended by an unrelated request.
         // The `verify_prefix_reuse_equivalence.py` harness fails-closed on
         // any resulting token drift; any future change here must keep that
         // harness green on every model in the supported tier.
@@ -4715,7 +5654,6 @@ impl MlxRunner {
             telemetry.record_blocked_trim_failure();
             return telemetry;
         }
-        let native_store_enabled = self.native_fa_prefix_sharing_enabled();
         let snapshot_start_tokens = prefix_snapshot_start_tokens(
             block_size,
             full_block_tokens,
@@ -5058,7 +5996,12 @@ impl MlxRunner {
         // than inside initialize_generation_state, so that the prefill runner
         // step returns (and the first SSE event fires) without waiting for the
         // decode graph construction.
-        if self.disable_ngram_acceleration && is_greedy {
+        if should_use_session_direct_pipeline(
+            self.disable_ngram_acceleration,
+            is_greedy,
+            self.has_mtp(),
+            self.mtp_requested,
+        ) {
             let last_token = state
                 .next_model_last_token
                 .or_else(|| input_tokens.last().copied())
@@ -8135,6 +9078,33 @@ fn prefill_item_completes_prompt(
     .unwrap_or(true)
 }
 
+fn portable_prefix_store_allowed(
+    prefill_completes_prompt: bool,
+    native_store_enabled: bool,
+) -> bool {
+    prefill_completes_prompt || native_store_enabled
+}
+
+/// Resolve the physical sliding-KV mode for one runner item.
+///
+/// Scheduler-level fair prefill can split one prompt across many execution
+/// items. Each item internally ends with a one-token logits forward; allowing
+/// the session's decode-default rotation there would convert the cache to slot
+/// order before the next multi-token prefill item arrives. Keep every prefill
+/// item ordered and let `initialize_generation_state` latch rotation only after
+/// the complete prompt has finished.
+fn cache_rotation_for_execution(
+    mode: ExecutionMode,
+    request_latch: Option<(bool, usize)>,
+    session_rotating_decode: bool,
+    is_greedy: bool,
+) -> (bool, usize) {
+    if mode == ExecutionMode::Prefill {
+        return (false, 0);
+    }
+    request_latch.unwrap_or((session_rotating_decode && is_greedy, 0))
+}
+
 fn prefill_drain_async_eval_count(token_count: usize, prefill_chunk: usize) -> u32 {
     let count = token_count.saturating_sub(1) / prefill_chunk.max(1);
     count.min(u32::MAX as usize) as u32
@@ -9051,10 +10021,57 @@ mod tests {
 
     #[test]
     fn direct_pipeline_bootstrap_does_not_overlap_strict_mtp() {
-        assert!(should_bootstrap_direct_pipeline(true, false, true, false));
+        assert!(
+            !should_bootstrap_direct_pipeline(true, false, true, false),
+            "disabling n-gram must not silently disable a strict MTP route",
+        );
+        assert!(should_bootstrap_direct_pipeline(true, false, false, false));
         assert!(should_bootstrap_direct_pipeline(false, true, false, false));
         assert!(should_bootstrap_direct_pipeline(false, false, true, true));
         assert!(!should_bootstrap_direct_pipeline(false, true, true, false));
+        assert!(
+            !should_use_session_direct_pipeline(true, true, true, true),
+            "session-level n-gram disable must still enter requested MTP",
+        );
+        assert!(should_use_session_direct_pipeline(true, true, true, false));
+        assert!(should_use_session_direct_pipeline(true, true, false, false));
+        assert!(!should_use_session_direct_pipeline(
+            true, false, false, false
+        ));
+    }
+
+    #[test]
+    fn gemma_assistant_mtp_coalescing_is_fail_closed() {
+        let eligible = || {
+            gemma4_assistant_mtp_coalesced_verify_route(
+                true, true, false, true, true, false, true, false, true, false,
+            )
+        };
+        assert!(eligible());
+        assert!(!gemma4_assistant_mtp_coalesced_verify_route(
+            false, true, false, true, true, false, true, false, true, false,
+        ));
+        assert!(!gemma4_assistant_mtp_coalesced_verify_route(
+            true, true, true, true, true, false, true, false, true, false,
+        ));
+        assert!(!gemma4_assistant_mtp_coalesced_verify_route(
+            true, true, false, true, false, false, true, false, true, false,
+        ));
+        assert!(!gemma4_assistant_mtp_coalesced_verify_route(
+            true, true, false, true, true, true, true, false, true, false,
+        ));
+        assert!(!gemma4_assistant_mtp_coalesced_verify_route(
+            true, true, false, true, true, false, false, false, true, false,
+        ));
+        assert!(!gemma4_assistant_mtp_coalesced_verify_route(
+            true, true, false, true, true, false, true, true, true, false,
+        ));
+        assert!(!gemma4_assistant_mtp_coalesced_verify_route(
+            true, true, false, true, true, false, true, false, false, false,
+        ));
+        assert!(!gemma4_assistant_mtp_coalesced_verify_route(
+            true, true, false, true, true, false, true, false, true, true,
+        ));
     }
 
     #[test]
@@ -10134,6 +11151,16 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_split_prefill_defers_portable_prefix_serialization() {
+        assert!(!portable_prefix_store_allowed(false, false));
+        assert!(portable_prefix_store_allowed(true, false));
+        assert!(
+            portable_prefix_store_allowed(false, true),
+            "native FA snapshots pin refcounted blocks without serializing the full KV payload",
+        );
+    }
+
+    #[test]
     fn discard_probe_shorter_than_scheduler_claim_rejects_partial_restore() {
         // Regression test: the scheduler's cumulative multi-turn block
         // tracking (ax-engine-core) claimed an 8-token reusable prefix, but
@@ -10625,6 +11652,26 @@ mod tests {
             0
         );
         assert_eq!(prefill_drain_async_eval_count(usize::MAX, 1), u32::MAX);
+    }
+
+    #[test]
+    fn split_prefill_never_inherits_decode_ring_rotation() {
+        assert_eq!(
+            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, true),
+            (false, 0)
+        );
+        assert_eq!(
+            cache_rotation_for_execution(ExecutionMode::Prefill, Some((true, 8)), true, true),
+            (false, 0)
+        );
+        assert_eq!(
+            cache_rotation_for_execution(ExecutionMode::Decode, Some((true, 8)), false, false),
+            (true, 8)
+        );
+        assert_eq!(
+            cache_rotation_for_execution(ExecutionMode::Decode, None, true, true),
+            (true, 0)
+        );
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {
@@ -13023,6 +14070,26 @@ mod tests {
             true,
             NgramRequestDisableReason::LinearInitialNoDraft,
         ));
+    }
+
+    #[test]
+    fn row_exact_coalescing_is_scoped_to_qwen_and_gemma_families() {
+        for family in ["qwen3", "qwen3_5", "qwen3_next", "gemma3", "gemma4"] {
+            assert!(row_exact_coalescing_family(family), "{family}");
+        }
+        for family in ["llama3", "glm4", "deepseek", "diffusion_gemma"] {
+            assert!(!row_exact_coalescing_family(family), "{family}");
+        }
+    }
+
+    #[test]
+    fn shared_wall_time_distribution_is_exact_and_balanced() {
+        let shares = (0..4)
+            .map(|ordinal| shared_wall_time_share(11, ordinal, 4))
+            .collect::<Vec<_>>();
+        assert_eq!(shares, vec![3, 3, 3, 2]);
+        assert_eq!(shares.into_iter().sum::<u32>(), 11);
+        assert_eq!(shared_wall_time_share(99, 0, 0), 0);
     }
 
     #[test]

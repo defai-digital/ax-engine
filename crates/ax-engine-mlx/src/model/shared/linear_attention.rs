@@ -149,7 +149,7 @@ pub(crate) fn linear_attention_forward_batched(
     w: &LayerWeights,
     x: &MlxArray,
     lin_state: &mut BatchedLinearState,
-    layer_idx: usize,
+    linear_state_idx: usize,
 ) -> MlxArray {
     let linear_cfg = cfg
         .linear_attention
@@ -167,7 +167,7 @@ pub(crate) fn linear_attention_forward_batched(
 
     // Snapshot this layer's current per-row state (cloned so the store can be
     // reborrowed mutably for the write-back below). `None` on the first step.
-    let (conv_state, recurrent_state) = match lin_state.layer_state(layer_idx) {
+    let (conv_state, recurrent_state) = match lin_state.layer_state(linear_state_idx) {
         Some((conv, rec)) => (Some(conv.clone()), Some(rec.clone())),
         None => (None, None),
     };
@@ -196,7 +196,7 @@ pub(crate) fn linear_attention_forward_batched(
     });
     let (out, new_recurrent_state) =
         gated_delta_kernel(&q, &k, &v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
-    lin_state.update_layer(layer_idx, new_conv_state, new_recurrent_state);
+    lin_state.update_layer(linear_state_idx, new_conv_state, new_recurrent_state);
 
     // Portable gated RMSNorm (allow_full_gate_metal = false): batch-general.
     let out =

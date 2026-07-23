@@ -1,0 +1,1 @@
+{"id":"gemma-mtp-1","kind":"request","at_ms":0,"model":"gemma-4-12b-it","category":"mtp_decode_b1","input_tokens_path":"../../results/gemma4-assistant-mtp/2026-07-08-gemma4-12b-ax-only-direct-mtp-current-code-refresh/12b-4bit-ffn4/long_code/assistant_mtp_depth2-prompts/real-long_code-long_code_sql_schema-gen-1000-5dce06be1566.json","max_output_tokens":256}
