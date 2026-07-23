@@ -365,6 +365,43 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
+    let (tok, _, _) = chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
+        cfg,
+        weights,
+        prompt_tokens,
+        cache,
+        inputs,
+        sampling_request,
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+        false,
+    )?;
+    Ok(tok)
+}
+
+/// Gemma4 unified multimodal prefill with optional MTP post-norm capture (WS-M5).
+///
+/// When `capture_mtp_history` is true (and MTP weights exist), returns post-norm
+/// hidden for every prompt position so `initialize_generation_state` can warm
+/// the MTP head. When false, still uses the full-seq path for consistent numerics.
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    inputs: &Gemma4UnifiedRuntimeInputs,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+    capture_mtp_history: bool,
+) -> Result<(u32, Option<MlxArray>, Vec<u32>), String> {
+    use crate::model::forward_with_initial_hidden_media_post_norm_last_lm_head;
+
     let sampling = sampling_request.params;
     let chunk = build_chunk_embeddings(cfg, weights, prompt_tokens, 0, inputs)
         .map_err(|e| e.to_string())?;
@@ -373,7 +410,7 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
         .iter()
         .map(|range| (range.start, range.end_inclusive))
         .collect();
-    let logits = forward_with_initial_hidden_and_media_ranges(
+    let (logits, post_norm) = forward_with_initial_hidden_media_post_norm_last_lm_head(
         cfg,
         weights,
         prompt_tokens,
@@ -381,7 +418,6 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
         &media_ranges,
         cache,
         0,
-        FinalLogitsMode::Full,
     );
     cache.advance(prompt_tokens.len());
 
@@ -401,8 +437,21 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
         eval_with_kv_refs(&token_arr, cache);
         token_arr.first_u32_unchecked()
     };
+
+    let mut history_tokens = Vec::new();
+    let mtp_hidden = if capture_mtp_history && weights.mtp.is_some() {
+        // History tokens: prompt[1..] + sampled first decode token (matches text path).
+        if prompt_tokens.len() > 1 {
+            history_tokens.extend_from_slice(&prompt_tokens[1..]);
+        }
+        history_tokens.push(tok);
+        eval(&[&post_norm]);
+        Some(post_norm)
+    } else {
+        None
+    };
     clear_cache();
-    Ok(tok)
+    Ok((tok, mtp_hidden, history_tokens))
 }
 
 /// Prefill Unlimited-OCR with dual-vision image features injected at `<image>`

@@ -53,7 +53,7 @@ use crate::gemma4_assistant_mtp::{
 };
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings, chunked_prefill,
-    chunked_prefill_gemma4_unified_with_sampling_buffers,
+    chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers,
     chunked_prefill_unlimited_ocr_with_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
     decode_step, start_direct_pipeline,
@@ -3165,18 +3165,21 @@ impl MlxRunner {
                 )
             })
         };
-        let mut prefix_cache = if has_native_multimodal_prefill {
-            MlxPrefixCacheTelemetry::default()
-        } else {
-            self.restore_reused_prefix_state(
-                &mut state,
-                item,
-                ctx,
-                model_id,
-                block_size_tokens,
-                sampling,
-            )
-        };
+        // WS-M3: when multimodal prefix reuse is enabled, restore like text
+        // (media identity is folded into the prefix key via media_key).
+        let mut prefix_cache =
+            if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
+                MlxPrefixCacheTelemetry::default()
+            } else {
+                self.restore_reused_prefix_state(
+                    &mut state,
+                    item,
+                    ctx,
+                    model_id,
+                    block_size_tokens,
+                    sampling,
+                )
+            };
         prefix_cache.native_evictions = prefix_cache.native_evictions.saturating_add(
             self.reclaim_native_prefix_capacity(&state.cache, item.input_token_slice.len()),
         );
@@ -3221,21 +3224,31 @@ impl MlxRunner {
                     let repetition_history =
                         state.repetition_history(&full_prompt_tokens, sampling);
                     let prefill_forward_started = Instant::now();
-                    let tok = match chunked_prefill_gemma4_unified_with_sampling_buffers(
-                        &self.cfg,
-                        &self.weights,
-                        &full_prompt_tokens,
-                        &mut state.cache,
-                        inputs,
-                        MlxSamplingRequest::new(sampling, &repetition_history),
-                        &mut state.rng,
-                        &mut state.sampling_probs_buf,
-                        &mut state.sampling_logits_buf,
-                        &mut state.sampling_candidates_buf,
-                    ) {
-                        Ok(tok) => tok,
-                        Err(error) => return errored_item_run(item.request_id, error),
-                    };
+                    // WS-M5: capture MTP post-norm when the model has an MTP head.
+                    let capture_mtp = self.weights.mtp.is_some();
+                    let tok =
+                        match chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
+                            &self.cfg,
+                            &self.weights,
+                            &full_prompt_tokens,
+                            &mut state.cache,
+                            inputs,
+                            MlxSamplingRequest::new(sampling, &repetition_history),
+                            &mut state.rng,
+                            &mut state.sampling_probs_buf,
+                            &mut state.sampling_logits_buf,
+                            &mut state.sampling_candidates_buf,
+                            capture_mtp,
+                        ) {
+                            Ok((tok, mtp_hidden, history_tokens)) => {
+                                if let Some(hidden) = mtp_hidden {
+                                    state.mtp_prefill_hidden = Some(hidden);
+                                    state.mtp_prefill_history_tokens = history_tokens;
+                                }
+                                tok
+                            }
+                            Err(error) => return errored_item_run(item.request_id, error),
+                        };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
                     state.prompt_prefix_tokens = full_prompt_tokens;
 
@@ -3911,13 +3924,31 @@ impl MlxRunner {
         block_size_tokens: u32,
         tokens: &[u32],
     ) -> MlxPrefixCacheKey {
+        self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, "")
+    }
+
+    fn prefix_cache_key_with_media(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        tokens: &[u32],
+        media_key: &str,
+    ) -> MlxPrefixCacheKey {
+        // Fold media digests into layer_layout so disk L2 v3 keys also
+        // domain-separate without a schema bump (WS-M3).
+        let layer_layout = if media_key.is_empty() {
+            self.prefix_cache_layer_layout()
+        } else {
+            format!("{};media={}", self.prefix_cache_layer_layout(), media_key)
+        };
         MlxPrefixCacheKey {
             model_id: model_id.to_string(),
             route_policy: self.prefix_cache_route_policy(),
-            layer_layout: self.prefix_cache_layer_layout(),
+            layer_layout,
             block_size_tokens,
             token_count: saturating_u32(tokens.len()),
             token_hash: hash_prefix_tokens(tokens),
+            media_key: media_key.to_string(),
         }
     }
 
@@ -8692,6 +8723,7 @@ mod tests {
             block_size_tokens: 4,
             token_count: 3,
             token_hash: 7,
+            media_key: String::new(),
         };
         let native = Mutex::new(MlxNativePrefixCache::new(MlxPrefixCachePolicy {
             max_bytes: 1024,
@@ -9920,6 +9952,7 @@ mod tests {
             block_size_tokens: 4,
             token_count: 4,
             token_hash: hash_prefix_tokens(&[token; 4]),
+            media_key: String::new(),
         }
     }
 
@@ -11061,13 +11094,16 @@ mod tests {
             decisions.get("ax_mlx_gemma4_unified_visual_inputs"),
             Some(&2)
         );
+        // Prefix reuse default-off → still counts as disabled for multimodal.
         assert_eq!(
             decisions.get("ax_mlx_gemma4_unified_prefix_cache_disabled"),
             Some(&1)
         );
+        // WS-M5: MTP warmup is no longer auto-skipped when the model has MTP;
+        // the skipped counter stays at 0 for the success path.
         assert_eq!(
             decisions.get("ax_mlx_gemma4_unified_mtp_prefill_warmup_skipped"),
-            Some(&1)
+            Some(&0)
         );
     }
 

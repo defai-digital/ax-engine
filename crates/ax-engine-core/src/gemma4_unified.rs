@@ -97,6 +97,47 @@ pub fn max_frames_for_atomic_budget(
     usable / soft_tokens_per_frame
 }
 
+/// Audio window plan for clips longer than `max_seconds` (WS-P1 / R-P1).
+///
+/// Returns non-overlapping windows of `window_seconds` covering
+/// `total_seconds`, plus a final partial window. Overlap is reserved for a
+/// future Conformer streaming path; v1 uses adjacent windows (overlap=0).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioWindow {
+    pub start_seconds: u32,
+    pub end_seconds: u32,
+}
+
+pub fn plan_audio_windows(
+    total_seconds: u32,
+    max_seconds: u32,
+    window_seconds: u32,
+) -> Vec<AudioWindow> {
+    if total_seconds == 0 || window_seconds == 0 {
+        return Vec::new();
+    }
+    if total_seconds <= max_seconds {
+        return vec![AudioWindow {
+            start_seconds: 0,
+            end_seconds: total_seconds,
+        }];
+    }
+    let mut windows = Vec::new();
+    let mut start = 0u32;
+    while start < total_seconds {
+        let end = (start.saturating_add(window_seconds)).min(total_seconds);
+        windows.push(AudioWindow {
+            start_seconds: start,
+            end_seconds: end,
+        });
+        if end == total_seconds {
+            break;
+        }
+        start = end;
+    }
+    windows
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Gemma4UnifiedModality {
@@ -1592,5 +1633,28 @@ mod tests {
         assert_eq!(resolve_soft_token_budget(None, None, 280).unwrap(), 280);
         assert!(resolve_soft_token_budget(Some("ultra"), None, 280).is_err());
         assert_eq!(max_frames_for_atomic_budget(2048, 70, 368), 24);
+    }
+
+    #[test]
+    fn audio_windows_beyond_cap() {
+        let w = plan_audio_windows(75, 30, 30);
+        assert_eq!(
+            w,
+            vec![
+                AudioWindow {
+                    start_seconds: 0,
+                    end_seconds: 30
+                },
+                AudioWindow {
+                    start_seconds: 30,
+                    end_seconds: 60
+                },
+                AudioWindow {
+                    start_seconds: 60,
+                    end_seconds: 75
+                },
+            ]
+        );
+        assert_eq!(plan_audio_windows(20, 30, 30).len(), 1);
     }
 }

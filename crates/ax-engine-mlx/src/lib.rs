@@ -1,6 +1,7 @@
 pub(crate) mod artifact_identity;
 pub(crate) mod attention_mask;
 pub mod batched_decode_certification;
+pub mod batched_decode_policy;
 pub mod batched_decode_session;
 pub mod batched_kv_cache;
 pub mod batched_linear_state;
@@ -11,11 +12,16 @@ pub mod disk_prefix_cache;
 pub mod fastpath;
 pub mod gemma4_assistant_mtp;
 pub(crate) mod gemma4_unified;
+pub mod gemma4_vl;
 pub mod generate;
 pub mod kv_block_pool;
 pub mod kv_cache;
+pub mod qwen3_vl;
 pub mod unlimited_ocr;
 pub mod vision_feature_cache;
+
+#[cfg(test)]
+mod vl_fixture_tests;
 // Public for the kernel-dispatch probe binaries (`src/bin/`), like the
 // sibling modules; not a stable external API.
 pub mod linear_attention_ops;
