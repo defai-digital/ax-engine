@@ -1,0 +1,1 @@
+{"id":"qwen-stream","kind":"request","at_ms":0,"model":"qwen3.5-9b","category":"interactive_decode","input_token_pattern":[3,10,17,24,31,38,45,52],"input_tokens_count":32,"max_output_tokens":192}

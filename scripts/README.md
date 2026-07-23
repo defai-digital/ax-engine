@@ -262,6 +262,20 @@ throughput baselines.
   `--min-goodput-ratio`, `--min-input-tokens-p95`, and
   `--require-route-decision-min KEY=MIN` before citing long-prompt or
   runtime-path-specific serving claims.
+- `bench_ax_multimodel_serving.py`: timed multi-model + lifecycle replay
+  against a running AX server (`ax.multimodel_serving_benchmark.v1`). Emits
+  focus-family tags for the Qwen 3 + Gemma 4 flip schedule, interactive
+  stream-gap summaries, and request availability counters.
+- `check_ax_multimodel_serving_artifact.py`: fail-closed validator for
+  multi-model artifacts. Supports `--require-focus-family`, interactive
+  stream-gap caps, and HTTP 503 budgets used by the mlxcel flip plan.
+- `compare_qwen_gemma_flip.py`: compares candidate vs baseline multi-model
+  artifacts with provisional throughput / TTFT / stream-gap / availability
+  gates. Use `--report-only` during Week-1 calibration.
+- `test_bench_ax_multimodel_serving.py`,
+  `test_check_ax_multimodel_serving_artifact.py`,
+  `test_compare_qwen_gemma_flip.py`: unit tests for the multi-model flip
+  harness.
 - `render_ax_serving_benchmark_report.py`: renders validated
   `ax.serving_benchmark.v1` artifacts as Markdown tables for TTFT, client TPOT,
   E2E latency, queue delay, token distributions, goodput, and category
