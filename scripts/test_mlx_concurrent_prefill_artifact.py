@@ -118,6 +118,27 @@ def valid_artifact() -> dict[str, object]:
     }
 
 
+def add_exact_shared_prefix_outputs(
+    artifact: dict[str, object],
+    *,
+    output_tokens: list[int] | None = None,
+) -> None:
+    artifact["capture_output_token_ids"] = True
+    artifact["shared_prefix"] = True
+    expected = [42] if output_tokens is None else output_tokens
+    for row_payload in artifact["rows"]:
+        concurrency = row_payload["concurrent_requests"]
+        row_payload["prompt_token_ids_sha256"] = [prompt_hash(1)] * concurrency
+        row_payload["trials"] = [
+            {
+                "observations": [
+                    {"output_token_ids": list(expected)} for _ in range(concurrency)
+                ]
+            }
+            for _ in range(row_payload["repetitions"])
+        ]
+
+
 class ConcurrentPrefillArtifactTests(unittest.TestCase):
     def write_fixture(self, artifact: dict[str, object]) -> Path:
         root = Path(tempfile.mkdtemp())
@@ -201,6 +222,38 @@ class ConcurrentPrefillArtifactTests(unittest.TestCase):
         path = self.write_fixture(artifact)
 
         with self.assertRaisesRegex(checker.ConcurrentPrefillArtifactError, "stale request_ttft_ms"):
+            checker.validate_mlx_concurrent_prefill_artifact(path)
+
+    def test_captured_shared_prefix_outputs_are_validated_exactly(self) -> None:
+        artifact = valid_artifact()
+        add_exact_shared_prefix_outputs(artifact)
+        path = self.write_fixture(artifact)
+
+        checked = checker.validate_mlx_concurrent_prefill_artifact(path)
+
+        self.assertEqual(checked, ["concurrency=1", "concurrency=4"])
+
+    def test_captured_shared_prefix_output_divergence_fails(self) -> None:
+        artifact = valid_artifact()
+        add_exact_shared_prefix_outputs(artifact)
+        artifact["rows"][1]["trials"][2]["observations"][3]["output_token_ids"] = [43]
+        path = self.write_fixture(artifact)
+
+        with self.assertRaisesRegex(
+            checker.ConcurrentPrefillArtifactError,
+            "output_token_ids diverge",
+        ):
+            checker.validate_mlx_concurrent_prefill_artifact(path)
+
+    def test_captured_output_length_must_match_generation_contract(self) -> None:
+        artifact = valid_artifact()
+        add_exact_shared_prefix_outputs(artifact, output_tokens=[])
+        path = self.write_fixture(artifact)
+
+        with self.assertRaisesRegex(
+            checker.ConcurrentPrefillArtifactError,
+            "exactly 1 u32 token IDs",
+        ):
             checker.validate_mlx_concurrent_prefill_artifact(path)
 
     def test_cli_reports_concurrency_levels(self) -> None:

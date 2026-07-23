@@ -16,6 +16,9 @@
 //!     payload+tensor peak (DTPC-007).
 //!   - Content-addressed key filenames (SHA-256 of key schema v3 bytes) with
 //!     embedded-key collision checks.
+//!   - Optional page-manifest payloads backed by immutable, content-addressed
+//!     owner-only blobs, streaming native restore, dedup-aware budgets, and
+//!     grace-period mark-and-sweep.
 //!   - Adaptive admission, oversize rejection, owner-only permissions, and
 //!     byte/entry budgets with utility-aware eviction (stale first, then
 //!     lowest cold-prefill-per-byte, mtime tie-break).
@@ -24,12 +27,15 @@
 //!   - Network filesystems, mmap demand-paging of active attention, and
 //!     lossy storage codecs (separate ADRs).
 
+use std::borrow::Cow;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
+
+use crate::disk_page_store::{PAGE_MANIFEST_FLAG, PageManifest, PageStore, PageStoreError};
 
 /// Outer file magic. Distinct from the kv_cache payload's `AXKB` magic
 /// so an unframed payload cannot be mistaken for a complete file.
@@ -83,6 +89,12 @@ const DEFAULT_DISK_IO_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_DISK_WRITE_QUEUE_DEPTH: usize = 2;
 /// Default best-effort writer drain budget at shutdown (spec §4).
 const DEFAULT_DISK_SHUTDOWN_DRAIN_MS: u64 = 5000;
+/// Serialized payload page size for the opt-in page-era L2.
+const DEFAULT_DISK_PAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Grace period before an unreferenced page blob is reclaimed.
+const DEFAULT_DISK_PAGE_GC_GRACE_MS: u64 = 60_000;
+/// Defensive cap for the small page-reference payload inside `.axkv`.
+const MAX_PAGE_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 
 /// L2 store admission mode (spec §5). `Adaptive` admits only entries
 /// whose predicted lifecycle value is positive; `Always` is a diagnostic
@@ -175,6 +187,13 @@ pub struct DiskPrefixCachePolicy {
     pub write_queue_depth: usize,
     /// Best-effort writer drain budget at shutdown.
     pub shutdown_drain_ms: u64,
+    /// Opt in to immutable content-addressed payload pages plus atomic
+    /// `.axkv` manifests. Default false until promotion evidence exists.
+    pub page_store: bool,
+    /// Maximum bytes per immutable payload page.
+    pub page_bytes: usize,
+    /// Grace before mark-and-sweep removes an unreferenced page blob.
+    pub page_gc_grace_ms: u64,
 }
 
 impl Default for DiskPrefixCachePolicy {
@@ -189,6 +208,9 @@ impl Default for DiskPrefixCachePolicy {
             io_chunk_bytes: DEFAULT_DISK_IO_CHUNK_BYTES,
             write_queue_depth: DEFAULT_DISK_WRITE_QUEUE_DEPTH,
             shutdown_drain_ms: DEFAULT_DISK_SHUTDOWN_DRAIN_MS,
+            page_store: false,
+            page_bytes: DEFAULT_DISK_PAGE_BYTES,
+            page_gc_grace_ms: DEFAULT_DISK_PAGE_GC_GRACE_MS,
         }
     }
 }
@@ -202,7 +224,8 @@ impl DiskPrefixCachePolicy {
     /// Build a policy from env, falling back to the documented
     /// defaults when an entry is unset, blank, or unparseable. Reads
     /// `AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES` and
-    /// `AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES`.
+    /// `AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES`, plus the optional page-store
+    /// controls documented on the fields below.
     ///
     /// An explicit `0` is preserved (not treated as unset): it means
     /// "disabled", matching the in-memory tier's env semantics, and is
@@ -221,6 +244,12 @@ impl DiskPrefixCachePolicy {
                     None
                 }
             }
+        }
+
+        fn enabled(name: &str) -> bool {
+            std::env::var(name)
+                .ok()
+                .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes"))
         }
 
         let max_bytes = parsed::<u64>("AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES")
@@ -261,6 +290,12 @@ impl DiskPrefixCachePolicy {
                 .clamp(1, 8),
             shutdown_drain_ms: parsed::<u64>("AX_MLX_PREFIX_CACHE_DISK_SHUTDOWN_DRAIN_MS")
                 .unwrap_or(DEFAULT_DISK_SHUTDOWN_DRAIN_MS),
+            page_store: enabled("AX_MLX_PREFIX_CACHE_DISK_PAGE_STORE"),
+            page_bytes: parsed::<usize>("AX_MLX_PREFIX_CACHE_DISK_PAGE_BYTES")
+                .unwrap_or(DEFAULT_DISK_PAGE_BYTES)
+                .clamp(64 * 1024, 16 * 1024 * 1024),
+            page_gc_grace_ms: parsed::<u64>("AX_MLX_PREFIX_CACHE_DISK_PAGE_GC_GRACE_MS")
+                .unwrap_or(DEFAULT_DISK_PAGE_GC_GRACE_MS),
         }
     }
 
@@ -515,6 +550,7 @@ fn key_sha256_hex(key_bytes: &[u8]) -> String {
 pub struct DiskPrefixCache {
     dir: PathBuf,
     policy: DiskPrefixCachePolicy,
+    page_store: Option<PageStore>,
 }
 
 /// Outcome of [`DiskPrefixCache::insert`], including how many entries
@@ -618,7 +654,19 @@ impl DiskPrefixCache {
         }
         #[cfg(not(unix))]
         let _ = existed;
-        let cache = Self { dir, policy };
+        let page_store = if policy.page_store || PageStore::exists(&dir) {
+            Some(
+                PageStore::open(&dir, policy.page_bytes, policy.page_gc_grace_ms)
+                    .map_err(page_store_error)?,
+            )
+        } else {
+            None
+        };
+        let cache = Self {
+            dir,
+            policy,
+            page_store,
+        };
         // Reclaim `.tmp.<pid>` files leaked by crashed processes before
         // applying budgets: the `.axkv`-only eviction sweep never matches
         // them, so without this they accumulate without bound. Safe under
@@ -632,6 +680,7 @@ impl DiskPrefixCache {
         // rather than only after the next insert. Eviction is
         // best-effort and never propagates errors here.
         let _ = cache.evict_until_within_policy();
+        cache.gc_page_store();
         Ok(cache)
     }
 
@@ -810,10 +859,9 @@ impl DiskPrefixCache {
         }
         let header_len = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
         let flags = u32::from_le_bytes(header[12..16].try_into().unwrap());
-        // No flags are defined; a nonzero word is from the future and
-        // cannot be interpreted safely. Header extension is only legal
-        // behind a defined flag, so header_len must match exactly here.
-        if flags != 0 || header_len != FIXED_HEADER_LEN {
+        // Only the page-manifest bit is defined. Unknown bits and header
+        // extensions fail closed.
+        if !matches!(flags, 0 | PAGE_MANIFEST_FLAG) || header_len != FIXED_HEADER_LEN {
             return Err(ReadEntryError::Invalid);
         }
         let key_len = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
@@ -833,6 +881,7 @@ impl DiskPrefixCache {
             .ok_or(ReadEntryError::Invalid)?;
         if total_len != meta.len()
             || payload_len > self.policy.max_entry_bytes.max(self.policy.max_bytes)
+            || (flags == PAGE_MANIFEST_FLAG && payload_len > MAX_PAGE_MANIFEST_BYTES as u64)
             || payload_len > usize::MAX as u64
         {
             return Err(ReadEntryError::Invalid);
@@ -852,25 +901,26 @@ impl DiskPrefixCache {
         }
 
         let mut hasher = Self::entry_sha256_hasher(
+            flags,
             prefill_slot,
             producer_cold_prefill_us,
             producer_serialize_us,
             expected_key,
         );
-        let mut payload = vec![0u8; payload_len as usize];
+        let mut stored_payload = vec![0u8; payload_len as usize];
         let chunk = self.policy.io_chunk_bytes.max(1);
         let mut filled = 0usize;
-        while filled < payload.len() {
-            let end = (filled + chunk).min(payload.len());
+        while filled < stored_payload.len() {
+            let end = (filled + chunk).min(stored_payload.len());
             let read_started = std::time::Instant::now();
-            if file.read_exact(&mut payload[filled..end]).is_err() {
+            if file.read_exact(&mut stored_payload[filled..end]).is_err() {
                 return Err(ReadEntryError::Invalid);
             }
             timings.read_wall_us = timings
                 .read_wall_us
                 .saturating_add(elapsed_us(read_started));
             let checksum_started = std::time::Instant::now();
-            hasher.update(&payload[filled..end]);
+            hasher.update(&stored_payload[filled..end]);
             timings.checksum_wall_us = timings
                 .checksum_wall_us
                 .saturating_add(elapsed_us(checksum_started));
@@ -885,6 +935,26 @@ impl DiskPrefixCache {
         if digest.as_slice() != expected_hash {
             return Err(ReadEntryError::Invalid);
         }
+
+        let payload = if flags == PAGE_MANIFEST_FLAG {
+            let page_store = self.page_store.as_ref().ok_or(ReadEntryError::Invalid)?;
+            let manifest = PageManifest::decode(
+                &stored_payload,
+                Some(expected_key),
+                self.policy.max_entry_bytes.max(self.policy.max_bytes),
+            )
+            .map_err(page_read_error)?;
+            let (payload, page_stats) =
+                page_store.read_payload(manifest).map_err(page_read_error)?;
+            timings.read_wall_us = timings.read_wall_us.saturating_add(page_stats.read_wall_us);
+            timings.checksum_wall_us = timings
+                .checksum_wall_us
+                .saturating_add(page_stats.checksum_wall_us);
+            timings.bytes_read = timings.bytes_read.saturating_add(page_stats.bytes_read);
+            payload
+        } else {
+            stored_payload
+        };
 
         let prefill_output_token = if prefill_slot == PREFILL_TOKEN_NONE {
             None
@@ -948,7 +1018,7 @@ impl DiskPrefixCache {
         }
         let header_len = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
         let flags = u32::from_le_bytes(header[12..16].try_into().unwrap());
-        if flags != 0 || header_len != FIXED_HEADER_LEN {
+        if !matches!(flags, 0 | PAGE_MANIFEST_FLAG) || header_len != FIXED_HEADER_LEN {
             return Err(ReadEntryError::Invalid);
         }
         let key_len = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
@@ -967,6 +1037,7 @@ impl DiskPrefixCache {
             .ok_or(ReadEntryError::Invalid)?;
         if total_len != meta.len()
             || payload_len > self.policy.max_entry_bytes.max(self.policy.max_bytes)
+            || (flags == PAGE_MANIFEST_FLAG && payload_len > MAX_PAGE_MANIFEST_BYTES as u64)
             || payload_len > usize::MAX as u64
         {
             return Err(ReadEntryError::Invalid);
@@ -986,11 +1057,63 @@ impl DiskPrefixCache {
         }
 
         let mut hasher = Self::entry_sha256_hasher(
+            flags,
             prefill_slot,
             producer_cold_prefill_us,
             producer_serialize_us,
             expected_key,
         );
+        if flags == PAGE_MANIFEST_FLAG {
+            let manifest_len = usize::try_from(payload_len).map_err(|_| ReadEntryError::Invalid)?;
+            let mut manifest_bytes = vec![0u8; manifest_len];
+            let read_started = std::time::Instant::now();
+            if file.read_exact(&mut manifest_bytes).is_err() {
+                return Err(ReadEntryError::Invalid);
+            }
+            timings.read_wall_us = timings
+                .read_wall_us
+                .saturating_add(elapsed_us(read_started));
+            timings.bytes_read = timings.bytes_read.saturating_add(payload_len);
+            let checksum_started = std::time::Instant::now();
+            hasher.update(&manifest_bytes);
+            let digest = hasher.finalize();
+            timings.checksum_wall_us = timings
+                .checksum_wall_us
+                .saturating_add(elapsed_us(checksum_started));
+            if digest.as_slice() != expected_hash {
+                return Err(ReadEntryError::Invalid);
+            }
+            let page_store = self.page_store.as_ref().ok_or(ReadEntryError::Invalid)?;
+            let manifest = PageManifest::decode(
+                &manifest_bytes,
+                Some(expected_key),
+                self.policy.max_entry_bytes.max(self.policy.max_bytes),
+            )
+            .map_err(page_read_error)?;
+            let mut reader = page_store.reader(manifest);
+            let cache = crate::kv_cache::MlxKVCache::try_deserialize_from_reader(&mut reader)
+                .map_err(|_| ReadEntryError::Invalid)?;
+            let page_stats = reader.finish().map_err(page_read_error)?;
+            timings.read_wall_us = timings.read_wall_us.saturating_add(page_stats.read_wall_us);
+            timings.checksum_wall_us = timings
+                .checksum_wall_us
+                .saturating_add(page_stats.checksum_wall_us);
+            timings.bytes_read = timings.bytes_read.saturating_add(page_stats.bytes_read);
+            let prefill_output_token = if prefill_slot == PREFILL_TOKEN_NONE {
+                None
+            } else {
+                Some(prefill_slot)
+            };
+            return Ok(Some((
+                DiskPrefixCacheRestored {
+                    cache,
+                    prefill_output_token,
+                    producer_cold_prefill_us,
+                    producer_serialize_us,
+                },
+                timings,
+            )));
+        }
         let mut limited: Take<&mut fs::File> = (&mut file).take(payload_len);
         let cache = {
             let mut hashing = HashingRead {
@@ -1052,6 +1175,7 @@ impl DiskPrefixCache {
                 path = %path.display(),
                 "removed unparseable disk prefix-cache entry",
             );
+            self.gc_page_store_unlocked();
         }
     }
 
@@ -1094,7 +1218,18 @@ impl DiskPrefixCache {
         // budget can never be durable: post-insert eviction would remove
         // every older entry and then the entry itself, while telemetry
         // reported a successful insert. Skip the write up front instead.
-        let file_len = (FIXED_HEADER_LEN + key_bytes.len() + payload.len()) as u64;
+        let page_manifest_overhead = if self.policy.page_store {
+            PageStore::estimated_manifest_len(self.policy.page_bytes, payload.len())
+                .unwrap_or(usize::MAX)
+        } else {
+            0
+        };
+        let file_len = FIXED_HEADER_LEN
+            .checked_add(key_bytes.len())
+            .and_then(|bytes| bytes.checked_add(payload.len()))
+            .and_then(|bytes| bytes.checked_add(page_manifest_overhead))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .unwrap_or(u64::MAX);
         if file_len > self.policy.max_bytes || file_len > self.policy.max_entry_bytes {
             tracing::warn!(
                 target: "ax_engine_mlx::prefix_cache",
@@ -1106,6 +1241,25 @@ impl DiskPrefixCache {
             return Ok(DiskPrefixCacheInsertOutcome::default());
         }
         let _lock = self.lock_exclusive()?;
+        // Pages are published before the manifest. Holding the directory lock
+        // prevents mark-and-sweep from racing this write; a crash here can
+        // leave only an unreachable blob, reclaimed after the grace period.
+        let (flags, stored_payload): (u32, Cow<'_, [u8]>) = if self.policy.page_store {
+            let page_store = self
+                .page_store
+                .as_ref()
+                .expect("enabled page store must be opened with the cache");
+            (
+                PAGE_MANIFEST_FLAG,
+                Cow::Owned(
+                    page_store
+                        .publish_payload(payload, key_bytes)
+                        .map_err(page_store_error)?,
+                ),
+            )
+        } else {
+            (0, Cow::Borrowed(payload))
+        };
         let final_path = self.path_for(key_bytes);
         let tmp_path = self.dir.join(format!(
             "{}.tmp.{}",
@@ -1113,15 +1267,16 @@ impl DiskPrefixCache {
             std::process::id()
         ));
 
-        let payload_len = payload.len() as u64;
+        let payload_len = stored_payload.len() as u64;
         let key_len = u32::try_from(key_bytes.len()).expect("key too long");
         let prefill_slot = prefill_output_token.unwrap_or(PREFILL_TOKEN_NONE);
         let entry_hash = Self::entry_checksum_oneshot(
+            flags,
             prefill_slot,
             producer_cold_prefill_us,
             producer_serialize_us,
             key_bytes,
-            payload,
+            stored_payload.as_ref(),
         );
 
         // Header + key are small; the payload is written from the caller's
@@ -1131,7 +1286,7 @@ impl DiskPrefixCache {
         head.extend_from_slice(FILE_MAGIC);
         head.extend_from_slice(&FILE_VERSION.to_le_bytes());
         head.extend_from_slice(&(FIXED_HEADER_LEN as u32).to_le_bytes());
-        head.extend_from_slice(&0u32.to_le_bytes()); // flags: none defined
+        head.extend_from_slice(&flags.to_le_bytes());
         head.extend_from_slice(&key_len.to_le_bytes());
         head.extend_from_slice(&payload_len.to_le_bytes());
         head.extend_from_slice(&entry_hash);
@@ -1156,7 +1311,7 @@ impl DiskPrefixCache {
             }
             let mut f = open.open(&tmp_path)?;
             f.write_all(&head)?;
-            f.write_all(payload)?;
+            f.write_all(stored_payload.as_ref())?;
             f.sync_all()?;
         }
         fs::rename(&tmp_path, &final_path)?;
@@ -1168,12 +1323,14 @@ impl DiskPrefixCache {
         }
 
         let evictions = self.evict_until_within_policy_unlocked();
+        self.gc_page_store_unlocked();
         Ok(DiskPrefixCacheInsertOutcome { evictions })
     }
 
     /// One-shot v3 entry checksum over an in-memory payload (write side).
     #[allow(clippy::too_many_arguments)]
     fn entry_checksum_oneshot(
+        flags: u32,
         prefill_slot: u32,
         producer_cold_prefill_us: u64,
         producer_serialize_us: u64,
@@ -1181,6 +1338,7 @@ impl DiskPrefixCache {
         payload: &[u8],
     ) -> [u8; 32] {
         let mut hasher = Self::entry_sha256_hasher(
+            flags,
             prefill_slot,
             producer_cold_prefill_us,
             producer_serialize_us,
@@ -1196,6 +1354,7 @@ impl DiskPrefixCache {
     /// v3 entry checksum: domain + semantic header fields + canonical key
     /// + payload (the checksum field itself is excluded).
     fn entry_sha256_hasher(
+        flags: u32,
         prefill_slot: u32,
         producer_cold_prefill_us: u64,
         producer_serialize_us: u64,
@@ -1203,7 +1362,7 @@ impl DiskPrefixCache {
     ) -> Sha256 {
         let mut hasher = Sha256::new();
         hasher.update(ENTRY_CHECKSUM_DOMAIN);
-        hasher.update(0u32.to_le_bytes()); // flags
+        hasher.update(flags.to_le_bytes());
         hasher.update(prefill_slot.to_le_bytes());
         hasher.update(producer_cold_prefill_us.to_le_bytes());
         hasher.update(producer_serialize_us.to_le_bytes());
@@ -1246,6 +1405,23 @@ impl DiskPrefixCache {
             }
         };
 
+        // Page blobs are charged once regardless of reference count. The
+        // manifest scan is also our refcount table for marginal-byte eviction.
+        let mut page_refcounts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut page_sizes: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        for entry in &entries {
+            for hash in &entry.page_hashes {
+                *page_refcounts.entry(hash.clone()).or_default() += 1;
+                if let Some(page_store) = self.page_store.as_ref() {
+                    page_sizes
+                        .entry(hash.clone())
+                        .or_insert_with(|| page_store.page_size(hash).unwrap_or(0));
+                }
+            }
+        }
+
         // Spec §10: stale/corrupt versions first, then lowest utility
         // (cold-prefill savings per byte), mtime as tie-break.
         entries.sort_by(|a, b| {
@@ -1254,7 +1430,11 @@ impl DiskPrefixCache {
                 .then_with(|| a.utility_score().cmp(&b.utility_score()))
                 .then_with(|| a.mtime.cmp(&b.mtime))
         });
-        let mut total_bytes: u64 = entries.iter().map(|e| e.size).sum();
+        let mut total_bytes: u64 = entries
+            .iter()
+            .map(|entry| entry.size)
+            .sum::<u64>()
+            .saturating_add(page_sizes.values().copied().sum::<u64>());
         let mut total_entries = entries.len();
         let mut evictions: u32 = 0;
         let mut idx = 0;
@@ -1265,6 +1445,15 @@ impl DiskPrefixCache {
             match fs::remove_file(&entry.path) {
                 Ok(()) => {
                     total_bytes = total_bytes.saturating_sub(entry.size);
+                    for hash in &entry.page_hashes {
+                        if let Some(refcount) = page_refcounts.get_mut(hash) {
+                            *refcount = refcount.saturating_sub(1);
+                            if *refcount == 0 {
+                                total_bytes = total_bytes
+                                    .saturating_sub(page_sizes.get(hash).copied().unwrap_or(0));
+                            }
+                        }
+                    }
                     total_entries = total_entries.saturating_sub(1);
                     evictions = evictions.saturating_add(1);
                 }
@@ -1272,6 +1461,15 @@ impl DiskPrefixCache {
                     // Another writer may have evicted this entry
                     // concurrently. Treat as already-gone.
                     total_bytes = total_bytes.saturating_sub(entry.size);
+                    for hash in &entry.page_hashes {
+                        if let Some(refcount) = page_refcounts.get_mut(hash) {
+                            *refcount = refcount.saturating_sub(1);
+                            if *refcount == 0 {
+                                total_bytes = total_bytes
+                                    .saturating_sub(page_sizes.get(hash).copied().unwrap_or(0));
+                            }
+                        }
+                    }
                     total_entries = total_entries.saturating_sub(1);
                 }
                 Err(e) => {
@@ -1285,6 +1483,7 @@ impl DiskPrefixCache {
             }
             idx += 1;
         }
+        self.gc_page_store_unlocked();
         evictions
     }
 
@@ -1335,15 +1534,128 @@ impl DiskPrefixCache {
             let size = metadata.len();
             let mtime = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
             let (producer_cold_prefill_us, stale_version) = peek_entry_utility_fields(&path);
+            let page_manifest = self.read_page_manifest_for_gc(&path);
+            let page_hashes = page_manifest
+                .as_ref()
+                .map(PageManifest::page_hashes_hex)
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let logical_size = page_manifest
+                .as_ref()
+                .map(|manifest| manifest.payload_len.saturating_add(size))
+                .unwrap_or(size);
             out.push(EntryStat {
                 path,
                 size,
+                logical_size,
                 mtime,
                 producer_cold_prefill_us,
                 stale_version,
+                page_hashes,
             });
         }
         Ok(out)
+    }
+
+    fn gc_page_store(&self) {
+        if self.page_store.is_none() {
+            return;
+        }
+        let Ok(_lock) = self.lock_exclusive() else {
+            return;
+        };
+        self.gc_page_store_unlocked();
+    }
+
+    /// Mark pages referenced by fully validated atomic manifests, then sweep
+    /// old unreferenced blobs. The scan is the durable refcount source of
+    /// truth: a shared hash remains live until its last manifest disappears.
+    fn gc_page_store_unlocked(&self) {
+        let Some(page_store) = self.page_store.as_ref() else {
+            return;
+        };
+        let mut live = std::collections::HashSet::new();
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != ENTRY_EXTENSION) {
+                continue;
+            }
+            if let Some(manifest) = self.read_page_manifest_for_gc(&path) {
+                live.extend(manifest.page_hashes_hex());
+            }
+        }
+        if let Err(error) = page_store.gc_unreferenced(&live) {
+            tracing::warn!(
+                target: "ax_engine_mlx::prefix_cache",
+                error = ?error,
+                "page-era prefix-cache GC failed; leaving blobs for a later sweep",
+            );
+        }
+    }
+
+    /// Bounded parser used only by GC/refcount accounting. Legacy payload
+    /// entries are skipped after the fixed header, so this never loads a
+    /// monolithic KV payload.
+    fn read_page_manifest_for_gc(&self, path: &Path) -> Option<PageManifest> {
+        use std::io::Read;
+
+        let meta = fs::symlink_metadata(path).ok()?;
+        if !meta.file_type().is_file() {
+            return None;
+        }
+        let mut file = fs::File::open(path).ok()?;
+        let mut header = [0u8; FIXED_HEADER_LEN];
+        file.read_exact(&mut header).ok()?;
+        if &header[0..4] != FILE_MAGIC
+            || u32::from_le_bytes(header[4..8].try_into().ok()?) != FILE_VERSION
+            || u32::from_le_bytes(header[8..12].try_into().ok()?) as usize != FIXED_HEADER_LEN
+        {
+            return None;
+        }
+        let flags = u32::from_le_bytes(header[12..16].try_into().ok()?);
+        if flags != PAGE_MANIFEST_FLAG {
+            return None;
+        }
+        let key_len = u32::from_le_bytes(header[16..20].try_into().ok()?) as usize;
+        let manifest_len = u64::from_le_bytes(header[20..28].try_into().ok()?);
+        let expected_hash: [u8; 32] = header[28..60].try_into().ok()?;
+        let prefill_slot = u32::from_le_bytes(header[60..64].try_into().ok()?);
+        let producer_cold_prefill_us = u64::from_le_bytes(header[64..72].try_into().ok()?);
+        let producer_serialize_us = u64::from_le_bytes(header[72..80].try_into().ok()?);
+        let total_len = (FIXED_HEADER_LEN as u64)
+            .checked_add(key_len as u64)?
+            .checked_add(manifest_len)?;
+        let manifest_len = usize::try_from(manifest_len).ok()?;
+        if total_len != meta.len() || manifest_len > MAX_PAGE_MANIFEST_BYTES {
+            return None;
+        }
+        let mut key = vec![0u8; key_len];
+        let mut manifest_bytes = vec![0u8; manifest_len];
+        file.read_exact(&mut key).ok()?;
+        file.read_exact(&mut manifest_bytes).ok()?;
+        let actual_hash = Self::entry_checksum_oneshot(
+            flags,
+            prefill_slot,
+            producer_cold_prefill_us,
+            producer_serialize_us,
+            &key,
+            &manifest_bytes,
+        );
+        if actual_hash != expected_hash {
+            return None;
+        }
+        PageManifest::decode(
+            &manifest_bytes,
+            Some(&key),
+            self.policy.max_entry_bytes.max(self.policy.max_bytes),
+        )
+        .ok()
     }
 }
 
@@ -1374,21 +1686,25 @@ fn peek_entry_utility_fields(path: &Path) -> (u64, bool) {
 struct EntryStat {
     path: PathBuf,
     size: u64,
+    /// Original logical payload + manifest overhead for utility ranking.
+    logical_size: u64,
     mtime: std::time::SystemTime,
     /// Producer cold-prefill microseconds from the v3 header (0 if unknown).
     producer_cold_prefill_us: u64,
     /// True when the outer file version is not the current format.
     stale_version: bool,
+    /// Unique immutable page hashes referenced by this manifest.
+    page_hashes: Vec<String>,
 }
 
 impl EntryStat {
     /// Higher is more valuable to retain (saved recompute per stored byte).
     fn utility_score(&self) -> u128 {
-        if self.size == 0 {
+        if self.logical_size == 0 {
             return 0;
         }
         (u128::from(self.producer_cold_prefill_us.max(1))).saturating_mul(1_000_000)
-            / u128::from(self.size)
+            / u128::from(self.logical_size)
     }
 }
 
@@ -1464,6 +1780,33 @@ enum ReadEntryError {
     NotFound,
     Invalid,
     Io(std::io::Error),
+}
+
+fn page_store_error(error: PageStoreError) -> DiskPrefixCacheError {
+    match error {
+        PageStoreError::Io(error) => DiskPrefixCacheError::Io(error),
+        PageStoreError::Invalid => DiskPrefixCacheError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid durable KV page-store operation",
+        )),
+    }
+}
+
+fn page_read_error(error: PageStoreError) -> ReadEntryError {
+    match error {
+        PageStoreError::Io(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData
+                    | std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::UnexpectedEof
+            ) =>
+        {
+            ReadEntryError::Invalid
+        }
+        PageStoreError::Io(error) => ReadEntryError::Io(error),
+        PageStoreError::Invalid => ReadEntryError::Invalid,
+    }
 }
 
 fn elapsed_us(started: std::time::Instant) -> u64 {
@@ -2193,6 +2536,33 @@ mod tests {
     }
 
     #[test]
+    fn policy_from_env_keeps_page_store_default_off_and_parses_page_controls() {
+        const ENABLED: &str = "AX_MLX_PREFIX_CACHE_DISK_PAGE_STORE";
+        const BYTES: &str = "AX_MLX_PREFIX_CACHE_DISK_PAGE_BYTES";
+        const GRACE: &str = "AX_MLX_PREFIX_CACHE_DISK_PAGE_GC_GRACE_MS";
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _env_guard = EnvVarGuard::capture(&[ENABLED, BYTES, GRACE]);
+        // SAFETY: ENV_LOCK serializes all environment-mutating tests and the
+        // guard restores the original values before releasing the lock.
+        unsafe {
+            env::remove_var(ENABLED);
+            env::remove_var(BYTES);
+            env::remove_var(GRACE);
+        }
+        assert!(!DiskPrefixCachePolicy::from_env().page_store);
+        // SAFETY: same lock/restore discipline as above.
+        unsafe {
+            env::set_var(ENABLED, "true");
+            env::set_var(BYTES, "131072");
+            env::set_var(GRACE, "1234");
+        }
+        let policy = DiskPrefixCachePolicy::from_env();
+        assert!(policy.page_store);
+        assert_eq!(policy.page_bytes, 131_072);
+        assert_eq!(policy.page_gc_grace_ms, 1234);
+    }
+
+    #[test]
     fn policy_from_env_respects_combined_overrides() {
         let key_bytes = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
         let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
@@ -2870,6 +3240,249 @@ mod tests {
             cache.get_restored_timed(&key).expect("io").is_none(),
             "corrupt entry is a miss"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn page_manifest_round_trip_survives_restart_with_flag_disabled() {
+        let dir = unique_tempdir("page-restart");
+        let key = test_key("m", "p", "standard-fa", 4, 4, 0x99, &[1, 2, 3, 4]);
+        let payload = b"abcdefghabcdefgh-tail".to_vec();
+        {
+            let cache = DiskPrefixCache::with_policy(
+                &dir,
+                DiskPrefixCachePolicy {
+                    page_store: true,
+                    page_bytes: 8,
+                    page_gc_grace_ms: 0,
+                    ..DiskPrefixCachePolicy::default()
+                },
+            )
+            .expect("open page store");
+            cache
+                .insert_parts(&key, &payload, Some(17), 42_000, 900)
+                .expect("insert page manifest");
+            let raw = fs::read(cache.path_for(&key)).expect("manifest file");
+            assert_eq!(
+                u32::from_le_bytes(raw[12..16].try_into().expect("flags")),
+                PAGE_MANIFEST_FLAG
+            );
+            let blobs = cache.page_store.as_ref().expect("page store").blob_paths();
+            assert_eq!(blobs.len(), 2, "duplicate 8-byte page is stored once");
+            let hit = cache.get(&key).expect("get").expect("hit");
+            assert_eq!(hit.payload, payload);
+            assert_eq!(hit.prefill_output_token, Some(17));
+        }
+
+        // Disabling new page writes must not strand already durable entries.
+        let reopened = DiskPrefixCache::open(&dir).expect("reopen legacy-write mode");
+        assert!(!reopened.policy().page_store);
+        let hit = reopened.get(&key).expect("reopen get").expect("reopen hit");
+        assert_eq!(hit.payload, payload);
+        assert_eq!(hit.producer_cold_prefill_us, 42_000);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn page_manifest_streams_native_restore_without_payload_vec() {
+        let dir = unique_tempdir("page-native");
+        let cache = DiskPrefixCache::with_policy(
+            &dir,
+            DiskPrefixCachePolicy {
+                page_store: true,
+                page_bytes: 16,
+                page_gc_grace_ms: 0,
+                ..DiskPrefixCachePolicy::default()
+            },
+        )
+        .expect("open");
+        let key = test_key("m", "p", "standard-fa", 4, 4, 0xaa, &[1, 2, 3, 4]);
+        let native = crate::kv_cache::MlxKVCache::new(2);
+        let payload = native.serialize_to_bytes();
+        cache
+            .insert_parts(&key, &payload, Some(23), 50_000, 1_000)
+            .expect("insert");
+        let (restored, timings) = cache
+            .get_restored_timed(&key)
+            .expect("restore")
+            .expect("hit");
+        assert_eq!(restored.cache.seq_len(), 0);
+        assert_eq!(restored.prefill_output_token, Some(23));
+        assert!(timings.bytes_read >= payload.len() as u64);
+
+        let trailing_key = test_key("m", "p", "standard-fa", 4, 4, 0xab, &[1, 2, 3, 4]);
+        let mut trailing = payload.clone();
+        trailing.push(0);
+        cache
+            .insert(&trailing_key, &payload_only(&trailing))
+            .expect("insert trailing payload");
+        assert!(
+            cache
+                .get_restored_timed(&trailing_key)
+                .expect("trailing payload is a miss")
+                .is_none(),
+            "page restore must reject bytes the native payload did not consume"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn page_gc_keeps_shared_blob_until_last_manifest_is_removed() {
+        let dir = unique_tempdir("page-refcount");
+        let cache = DiskPrefixCache::with_policy(
+            &dir,
+            DiskPrefixCachePolicy {
+                page_store: true,
+                page_bytes: 8,
+                page_gc_grace_ms: 0,
+                ..DiskPrefixCachePolicy::default()
+            },
+        )
+        .expect("open");
+        let key_a = test_key("m", "p", "standard-fa", 4, 2, 1, &[1, 2]);
+        let key_b = test_key("m", "p", "standard-fa", 4, 2, 2, &[1, 3]);
+        cache
+            .insert(&key_a, &payload_only(b"abcdefgh-A"))
+            .expect("insert a");
+        cache
+            .insert(&key_b, &payload_only(b"abcdefgh-B"))
+            .expect("insert b");
+        let page_store = cache.page_store.as_ref().expect("page store");
+        assert_eq!(page_store.blob_paths().len(), 3);
+
+        fs::remove_file(cache.path_for(&key_a)).expect("remove first manifest");
+        cache.evict_until_within_policy();
+        assert_eq!(
+            page_store.blob_paths().len(),
+            2,
+            "shared page and remaining unique page stay live"
+        );
+        assert_eq!(
+            cache.get(&key_b).expect("get b").expect("b hit").payload,
+            b"abcdefgh-B"
+        );
+
+        fs::remove_file(cache.path_for(&key_b)).expect("remove last manifest");
+        cache.evict_until_within_policy();
+        assert!(page_store.blob_paths().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn page_store_enforces_manifest_count_and_unique_page_byte_budgets() {
+        let dir = unique_tempdir("page-budgets");
+        let base = DiskPrefixCachePolicy {
+            page_store: true,
+            page_bytes: 8,
+            page_gc_grace_ms: 0,
+            max_bytes: u64::MAX,
+            max_entry_bytes: u64::MAX,
+            max_entries: 2,
+            ..DiskPrefixCachePolicy::default()
+        };
+        let key_a = test_key("m", "p", "standard-fa", 4, 2, 11, &[1, 2]);
+        let key_b = test_key("m", "p", "standard-fa", 4, 2, 12, &[1, 3]);
+        {
+            let cache = DiskPrefixCache::with_policy(&dir, base).expect("open");
+            cache
+                .insert(&key_a, &payload_only(b"abcdefgh-A"))
+                .expect("insert a");
+            cache
+                .insert(&key_b, &payload_only(b"abcdefgh-B"))
+                .expect("insert b");
+        }
+
+        let count_limited = DiskPrefixCache::with_policy(
+            &dir,
+            DiskPrefixCachePolicy {
+                max_entries: 1,
+                ..base
+            },
+        )
+        .expect("count-limited reopen");
+        let survivors = usize::from(count_limited.contains(&key_a))
+            + usize::from(count_limited.contains(&key_b));
+        assert_eq!(survivors, 1);
+        assert_eq!(
+            count_limited
+                .page_store
+                .as_ref()
+                .expect("page store")
+                .blob_paths()
+                .len(),
+            2,
+            "one shared and one surviving unique page remain"
+        );
+
+        let manifest_bytes = fs::read_dir(&dir)
+            .expect("root")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == ENTRY_EXTENSION)
+            })
+            .filter_map(|entry| entry.metadata().ok().map(|meta| meta.len()))
+            .sum::<u64>();
+        let page_bytes = count_limited
+            .page_store
+            .as_ref()
+            .expect("page store")
+            .blob_paths()
+            .into_iter()
+            .filter_map(|path| fs::metadata(path).ok().map(|meta| meta.len()))
+            .sum::<u64>();
+        let physical_bytes = manifest_bytes.saturating_add(page_bytes);
+        drop(count_limited);
+
+        let byte_limited = DiskPrefixCache::with_policy(
+            &dir,
+            DiskPrefixCachePolicy {
+                max_bytes: physical_bytes.saturating_sub(1),
+                max_entry_bytes: u64::MAX,
+                max_entries: usize::MAX,
+                ..base
+            },
+        )
+        .expect("byte-limited reopen");
+        assert!(!byte_limited.contains(&key_a));
+        assert!(!byte_limited.contains(&key_b));
+        assert!(
+            byte_limited
+                .page_store
+                .as_ref()
+                .expect("page store")
+                .blob_paths()
+                .is_empty(),
+            "unique page bytes participate in the byte budget"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_page_fails_closed_and_reclaims_manifest() {
+        let dir = unique_tempdir("page-corrupt");
+        let cache = DiskPrefixCache::with_policy(
+            &dir,
+            DiskPrefixCachePolicy {
+                page_store: true,
+                page_bytes: 8,
+                page_gc_grace_ms: 0,
+                ..DiskPrefixCachePolicy::default()
+            },
+        )
+        .expect("open");
+        let key = test_key("m", "p", "standard-fa", 4, 2, 3, &[1, 2]);
+        cache
+            .insert(&key, &payload_only(b"abcdefgh-tail"))
+            .expect("insert");
+        let page_store = cache.page_store.as_ref().expect("page store");
+        let blob = page_store.blob_paths().into_iter().next().expect("blob");
+        fs::write(blob, b"corrupt!").expect("corrupt page");
+        assert!(cache.get(&key).expect("corruption is a miss").is_none());
+        assert!(!cache.path_for(&key).exists());
+        assert!(page_store.blob_paths().is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -284,6 +284,9 @@ The disk layer is additive:
 | `AX_MLX_PREFIX_CACHE_DISK_IO_CHUNK_BYTES` | 4 MiB | Streaming outer-read staging chunk (clamped 64 KiB..16 MiB). |
 | `AX_MLX_PREFIX_CACHE_DISK_WRITE_QUEUE_DEPTH` | 2 | Snapshot-sized background write jobs (clamped 1..8). |
 | `AX_MLX_PREFIX_CACHE_DISK_SHUTDOWN_DRAIN_MS` | 5000 | Best-effort writer drain before detaching unfinished I/O. |
+| `AX_MLX_PREFIX_CACHE_DISK_PAGE_STORE` | unset/off | Experimental: publish immutable content-addressed payload pages and an atomic `.axkv` manifest instead of one monolithic payload. New writes only; existing page manifests remain readable when turned off. |
+| `AX_MLX_PREFIX_CACHE_DISK_PAGE_BYTES` | 4 MiB | Page payload size, clamped to 64 KiB..16 MiB when read from the environment. |
+| `AX_MLX_PREFIX_CACHE_DISK_PAGE_GC_GRACE_MS` | 60000 | Grace before mark-and-sweep removes blobs not referenced by any validated manifest. |
 
 The cache assumes a **local** filesystem with cooperative writers. Writers use a
 directory-level advisory lock on `.axkv.lock`; readers remain lock-free and rely
@@ -303,8 +306,17 @@ the `.axkv` extension. Outer file format **v3** stores:
 - fixed header with flags, lengths, entry SHA-256 (key + semantic fields + payload),
   optional greedy prefill token, and producer cost metadata;
 - embedded canonical key bytes for collision detection;
-- serialized `MlxKVCache` payload **v4** (drops the retired experimental
-  KV-compression shadow section).
+- either serialized `MlxKVCache` payload **v4**, or (flag bit `1`) a validated
+  page manifest naming domain-separated SHA-256 `.pages/*.axpg` blobs.
+
+Page-mode writes publish and fsync missing immutable blobs before atomically
+publishing the `.axkv` manifest. Identical blobs are stored once. The manifest
+binds the complete canonical key, original payload length and hash, ordered page
+hashes and lengths. Native restore streams those pages directly into the v4
+deserializer and rejects missing, symlinked, truncated, reordered, corrupt, or
+trailing data. GC derives reference counts by scanning validated manifests;
+unreferenced blobs are removed only after the configured grace period. Byte
+budgets count unique referenced page bytes once plus manifest bytes.
 
 Readers fail closed. Truncation, stale version, mismatched key bytes, checksum
 failure, or missing content-derived model artifact fingerprint yields a miss.
@@ -441,11 +453,12 @@ blocked_*) tuple identifies which code path served the warm reuse:
 | `hits = 0, blocked ≥ 1, blocked_trim_failure ≥ 1, stores = 0`             | Linear (exact-align) or trim refused (e.g. rotated ring); store skipped | Linear: pad/align prompts or use boundary capture. MLA should store largest aligned prefix — investigate if this fires often on GLM multi-turn |
 | `hits = 0, misses = 0, warmup_tokens = 0, blocked = 0`                   | KvManager did not signal a logical prefix hit — engine had no matched prefix to forward to the runner | check `prefix_reused_blocks` (engine-level) — likely first encounter, or prompt is shorter than `block_size_tokens` (16) |
 
-`prefix_cache_path` in route metadata mirrors the same outcome with a
-single string: `retained_prompt_prefix_cache` for snapshot hits,
-`metadata_lookup` for everything else. Most operators only need the
-string; the cheat sheet is for triaging unexpected `metadata_lookup`
-results when a hit was expected.
+`prefix_cache_path` describes the core logical source:
+`retained_prompt_prefix_cache`, `live_request_share`, or
+`mixed_live_and_retained`; `metadata_lookup` means no logical share was
+adopted. It does not by itself prove physical MLX restoration. Use
+`ax_mlx_prefix_cache_native_hits`, `ax_mlx_prefix_cache_reused_tokens`, and
+`ax_mlx_prefix_cache_warmup_tokens` for that distinction.
 
 ### Validated hot-prefix evidence
 
@@ -592,33 +605,87 @@ per-request block-table allocation details.
 
 ---
 
-## FA Physical Block Pool (PR4, default OFF)
+## FA Physical Block Pool and Native Sharing (default OFF)
 
 Track C of
 [`docs/designs/kv-weak-surfaces-2026-07-14.md`](designs/kv-weak-surfaces-2026-07-14.md)
-introduces an FA-only private block path:
+introduced the FA-only private block path. ADR-006 adds a second, independently
+gated runner-local sharing experiment:
 
 | Item | Status |
 |---|---|
-| Pure allocator (`FaBlockPool` in `kv_block_pool.rs`) | Implemented |
+| Refcount/COW allocator (`FaBlockPool` / `SharedFaBlockPool`) | Implemented |
 | Env opt-in `AX_MLX_FA_KV_BLOCK_POOL` | Present (**default OFF**) |
-| Optional `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` | Overrides session `total_blocks` when set |
+| Second opt-in `AX_MLX_FA_KV_BLOCK_SHARING` | Present (**default OFF**); requires the base pool flag |
+| Third opt-in `AX_MLX_FA_NATIVE_PAGED_ATTENTION` | Present (**default OFF**); diagnostic single-slab decode kernel only, not the preferred serving path |
+| Optional `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` | Explicit positive ID-slot cap |
 | Session geometry align | `MlxRunner::align_fa_block_pool_to_kv(block_size, total_blocks)` from session bring-up |
-| Integration into `MlxKVCache` pure-FA append/trim | Implemented when flag enables a private pool |
-| SDPA / peek / serialize materialize dense K/V | Implemented (concat/gather); `ax_mlx_kv_paged_materialize_us` |
-| Pool exhaustion | Fail-closed **at the request level**, always (auto-aligned to `total_blocks` or an explicit `MAX_BLOCKS` override — both are real memory budgets): demotes internally first so the in-flight forward completes correctly (`ax_mlx_kv_paged_pool_exhaustion_fallbacks`), then fails only that request (`MlxKVCache::hard_cap_exhausted()` → `errored_item_run` → normal terminal cleanup); not a process abort (this workspace builds with `panic = "abort"`) |
-| Sliding / rotating / MLA / linear layers | Stay contiguous even when the flag is on |
-| Cross-request sharing / MLA pairs | Out of scope until PR5+ |
+| Private mode | One pool per request cache; clones share within that ownership domain and COW on write |
+| Sharing mode | One pool per `MlxRunner`; pure standard-FA requests and native L1 entries share IDs |
+| Native prefix adoption | Exact-token longest compatible prefix, partial matches block-floored, non-consuming clone + trim; serialized L1/L2 remains fallback |
+| Pressure reclamation | Evicts runner-local native L1 entries before request-scoped exhaustion |
+| Unsupported layouts | Sliding / rotating / MLA / linear / diffusion, specialized multimodal, and target-MTP/assistant configurations remain on existing paths |
+| Decode attention | Fixed-slab row gather (`take` by same-slab run) feeds MLX SDPA; the third-flag kernel is attempted only for eligible one-slab decode |
+| Peek / serialize | Gather dense logical K/V for portable contracts; sharing mode serializes only the largest aligned prefix per store event |
+| Pool exhaustion | Demote the affected layer for graph safety, then fail only that request under the hard cap; never abort the process |
+| Telemetry | Materialize, exhaustion, native hit/store/eviction, COW, used/shared blocks, fixed-slab count/KiB/grow events, native paged-attention calls/fallbacks |
+
+The fixed-slab gauges are `ax_mlx_kv_paged_pool_slabs`,
+`ax_mlx_kv_paged_pool_slab_kib`, and
+`ax_mlx_kv_paged_pool_slab_grow_events`. They are max-merged across request
+snapshots and benchmark repetitions; summing them would double-count one
+runner-wide pool.
 
 With the flag off (production default), all FA layers keep the historical
-contiguous per-request buffers. With the flag on, pure-FA layers store private
-fixed-size blocks and materialize dense `[1, n_kv_heads, T, head_dim]` views for
-SDPA; disk serialize still emits contiguous tensors (no I-2 format bump).
+contiguous per-request buffers. With only the base flag on, each request uses an
+isolated pool. With both flags on, eligible requests created by one runner use
+one shared allocator and can adopt native prefix blocks with refcount increments;
+the first divergent write allocates a unique block before updating its own array.
 
-Do **not** claim memory savings or paged-attention performance from this path
-alone — materialize cost may regress decode until sharing or native block kernels
-land. Token-exact oracle tests under `kv_cache::tests` compare paged vs
-contiguous append/trim/serialize.
+The compatibility representation allocates one ID per **layer-token block**.
+When sharing is enabled and no explicit cap is set, runner alignment therefore
+uses `KvManager.total_blocks × model_layer_count` ID slots. An explicit
+`AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` is interpreted directly in layer-block
+slots in sharing mode. K/V storage is per layer in fixed arrays shaped
+`[32, block_size, n_kv_heads, head_dim]`. Growth appends a slab and never
+resizes or copies an existing slab to the configured ceiling. Refcount-zero
+rows are reused; each layer cache carries only its ordered physical-ID table.
+
+Private mode materializes its block arrays. Two-flag sharing maps IDs to slab
+rows, groups the logical row list into maximal same-slab runs, applies one
+`take(axis=0)` per run, and reshapes/transposes the lazy result to
+`[1, n_kv_heads, T, head_dim]` for MLX SDPA. This is the preferred experimental
+route: mlxcel's Apple measurements and AX's own probe do not justify assuming a
+custom page-reading kernel is faster. With the third flag, structurally eligible
+single-token decode may attempt the diagnostic Metal kernel only if all rows are
+in one slab; multi-slab and failed geometry use gather + SDPA. Disk serialization emits portable
+contiguous tensor payloads (optionally split into immutable L2 payload pages).
+Native MLX handles never enter the cross-runner `MlxPrefixCacheStore` or the
+disk writer.
+
+On a sharing-enabled store, only the largest block-aligned prompt prefix is
+serialized and pinned. A later compatible shorter prompt can clone the larger
+native entry and trim the clone at a block boundary; the source entry is not
+consumed and remains available to concurrent siblings. This avoids the former
+8K/block-16 behavior of constructing 512 progressively larger payloads.
+
+If native L1 misses but serialized L1/L2 hits, an eligible sharing runner
+transactionally repages the dense payload into the same shared pool before
+adopting it. It reclaims native LRU entries first; if the payload still cannot
+fit, the request uses pooled recomputation. A portable restore cannot bypass
+the runner-wide block budget.
+
+Do **not** generalize memory or paged-attention performance from allocator tests.
+On one Llama-3.1-8B-Instruct-4bit 8K cold/hot/c4 run, fixed-slab sharing was
+token-exact and the completed process peaked at 37.3 GiB macOS physical
+footprint versus 74.4 GiB for the contiguous baseline. Warm c4 median TTFT was
+287.7 ms with zero failures, native-cache warmup, or pool exhaustion. That is
+positive one-model experimental evidence, not a default-on or cross-model claim;
+the p95 matrix and 60-minute mixed soak still control promotion. Measure
+Metal-aware physical footprint in addition to RSS. The native block-table
+kernel is diagnostic and is not a promotion gate. Token-exact oracle tests
+under `kv_cache::tests` compare paged vs contiguous append/trim/serialize and
+clone-then-diverge behavior.
 
 ## Key Invariants
 
@@ -631,6 +698,9 @@ contiguous append/trim/serialize.
 - Evicting a cached block in `KvManager` cascade-evicts all descendants.
   Never evict a block without checking `select_cached_block_eviction_candidate`.
 - Retained-prefix hash matches must be token-payload validated before reuse.
+- A paged block with refcount greater than one must obtain a unique replacement
+  ID before any divergent write; eviction releases only the native cache's own
+  reference and cannot invalidate an active adopter.
 - The MLX runner `prefix_cache` and `KvManager.cached_blocks` are independent.
   A hit in one does not guarantee a hit in the other.
 - Treat `ax_mlx_prefix_cache_misses` differently from
@@ -680,7 +750,7 @@ Per `crates/ax-engine-mlx/src/disk_prefix_cache.rs` (80-byte fixed header):
 | 0..4 | magic `AXKV` (distinct from the inner payload's `AXKB`) |
 | 4..8 | file-format version (**`3`**; 1–2 are clean misses) |
 | 8..12 | header length |
-| 12..16 | flags (must be zero today) |
+| 12..16 | flags (`0` = inline v4 payload, `1` = content-addressed page manifest; all other bits reject) |
 | 16..20 | embedded key length |
 | 20..28 | payload length |
 | 28..60 | entry SHA-256 (key + semantic header fields + payload) |
@@ -689,8 +759,10 @@ Per `crates/ax-engine-mlx/src/disk_prefix_cache.rs` (80-byte fixed header):
 | 72..80 | producer serialization microseconds (accounting only) |
 | 80.. | canonical key bytes, then KV payload |
 
-Writes are atomic-rename (temp file, fsync, rename, directory sync). Mutating
-operations take a directory-level advisory lock; readers stay lock-free.
+Writes are atomic-rename (temp file, fsync, rename, directory sync). Page mode
+publishes immutable owner-only blobs before the manifest and validates both the
+outer entry checksum and nested page/payload hashes. Mutating operations take a
+directory-level advisory lock; readers stay lock-free.
 The request hot path streams the payload into native tensors under the entry
 checksum (`get_restored_timed`) without retaining a full intermediate payload
 `Vec` for deserialize. Decode never demand-pages `.axkv` files.

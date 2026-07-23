@@ -440,6 +440,38 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_prefix_cache_warmup_tokens",
     "ax_mlx_prefix_cache_entries",
     "ax_mlx_prefix_cache_bytes_kib",
+    "ax_mlx_prefix_cache_native_hits",
+    "ax_mlx_prefix_cache_native_stores",
+    "ax_mlx_prefix_cache_native_evictions",
+    # KV ownership/footprint evidence. Keep this list in sync with
+    # ROUTE_DECISION_AX_MLX_KV_KEYS in ax-engine-core so benchmark artifacts
+    # can prove that the paged route was exercised instead of inferring it
+    # from process RSS or feature flags.
+    "ax_mlx_kv_request_snapshots",
+    "ax_mlx_kv_logical_tokens",
+    "ax_mlx_kv_capacity_tokens",
+    "ax_mlx_kv_logical_kib",
+    "ax_mlx_kv_capacity_kib",
+    "ax_mlx_kv_full_attention_layers",
+    "ax_mlx_kv_sliding_window_layers",
+    "ax_mlx_kv_sliding_retained_tokens",
+    "ax_mlx_kv_sliding_reclaimable_capacity_tokens",
+    "ax_mlx_kv_sliding_reclaimable_capacity_kib",
+    "ax_mlx_kv_rotated_ring_layers",
+    "ax_mlx_kv_rotating_ring_slack",
+    "ax_mlx_kv_linear_state_layers",
+    "ax_mlx_kv_linear_state_kib",
+    "ax_mlx_kv_growth_count",
+    "ax_mlx_kv_paged_materialize_us",
+    "ax_mlx_kv_paged_pool_exhaustion_fallbacks",
+    "ax_mlx_kv_paged_cow_copies",
+    "ax_mlx_kv_paged_pool_blocks_used",
+    "ax_mlx_kv_paged_pool_shared_blocks",
+    "ax_mlx_kv_paged_pool_slabs",
+    "ax_mlx_kv_paged_pool_slab_kib",
+    "ax_mlx_kv_paged_pool_slab_grow_events",
+    "ax_mlx_kv_paged_attention_calls",
+    "ax_mlx_kv_paged_attention_fallbacks",
     "ax_mlx_dense_ffn_gate_up_packed_layers",
     "ax_mlx_dense_ffn_split_gate_up_layers",
     "ax_mlx_dense_attention_qkv_packed_layers",
@@ -469,6 +501,19 @@ AX_MLX_AFFINE_MAX_KEYS: frozenset[str] = frozenset(
     key
     for key in AX_MLX_TELEMETRY_KEYS
     if key.startswith("ax_mlx_affine_") or key == "ax_mlx_experimental_3bit_gate"
+)
+
+# Pool occupancy and cache footprint are gauges. Across repetitions the
+# summary must retain their high-water mark; summing them would manufacture a
+# physically impossible block count and invalidate memory-promotion evidence.
+AX_MLX_KV_GAUGE_KEYS: frozenset[str] = frozenset(
+    {
+        "ax_mlx_kv_paged_pool_blocks_used",
+        "ax_mlx_kv_paged_pool_shared_blocks",
+        "ax_mlx_kv_paged_pool_slabs",
+        "ax_mlx_kv_paged_pool_slab_kib",
+        "ax_mlx_kv_paged_pool_slab_grow_events",
+    }
 )
 
 AX_MLX_PREFIX_CACHE_MAX_KEYS = {
@@ -2967,7 +3012,7 @@ def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for run in runs:
         for key, value in (run.get("ax_mlx_telemetry") or {}).items():
-            if key in AX_MLX_AFFINE_MAX_KEYS:
+            if key in AX_MLX_AFFINE_MAX_KEYS or key in AX_MLX_KV_GAUGE_KEYS:
                 totals[key] = max(totals.get(key, 0), int(value))
             else:
                 totals[key] = totals.get(key, 0) + int(value)
@@ -3890,6 +3935,7 @@ def axengine_one_run(
         output_token_ids: list[int] = []
         final_route: dict[str, Any] | None = None
         prefill_route: dict[str, Any] | None = None
+        terminal_response: dict[str, Any] | None = None
         step_local_decisions: dict[str, int] = {}
         scheduler_step_telemetry: list[dict[str, int]] = []
 
@@ -3927,7 +3973,8 @@ def axengine_one_run(
                 else:
                     decode_us += runner_us
             elif current_event == "response":
-                response_tokens = obj.get("response", {}).get("output_tokens")
+                terminal_response = obj.get("response", {})
+                response_tokens = terminal_response.get("output_tokens")
                 if isinstance(response_tokens, list):
                     output_tokens = len(response_tokens) or output_tokens
                     if response_tokens and first_output_wall_s is None:
@@ -3941,6 +3988,29 @@ def axengine_one_run(
         client_wall_total_ms = (time.perf_counter() - request_started) * 1000.0
     finally:
         conn.close()
+    if terminal_response is None:
+        raise RuntimeError("ax-engine SSE stream ended without a terminal response")
+    terminal_status = terminal_response.get("status")
+    terminal_reason = terminal_response.get("finish_reason")
+    if terminal_status in {"failed", "cancelled"} or (
+        generation_tokens > 0 and first_output_wall_s is None
+    ):
+        failure_decisions = {
+            str(key): value
+            for key, value in (
+                terminal_response.get("route", {}).get("crossover_decisions") or {}
+            ).items()
+            if any(
+                marker in str(key)
+                for marker in ("prefix", "paged", "exhaust", "memory", "failed")
+            )
+        }
+        raise RuntimeError(
+            "ax-engine request produced no output: "
+            f"status={terminal_status!r}, finish_reason={terminal_reason!r}, "
+            f"step_count={terminal_response.get('step_count')!r}, "
+            f"route_decisions={failure_decisions!r}"
+        )
     final_route = route_with_step_local_decisions(final_route, step_local_decisions)
     prompt_tokens = len(tokens)
     prefill_s = prefill_us / 1_000_000

@@ -400,7 +400,16 @@ throughput baselines.
   writes prompt-token artifacts, captures `ax.mlx_startup_latency.v1` and
   `ax.mlx_concurrent_prefill.v1`, validates both outputs, and writes
   `p2-latency.md` before returning. Use `--dry-run` first to inspect the output
-  paths without starting a server.
+  paths without starting a server. For explicit warm-prefix comparisons, use
+  `--enable-prefix-cache --shared-prefix --capture-output-token-ids`; the
+  concurrent runner then records exact response tokens and the checker rejects
+  missing/wrong-length IDs or any shared-prefix c1/cN token divergence; it also records relevant paged-KV
+  environment flags, native prefix hit/store/eviction counters, fixed-slab
+  count/KiB/grow gauges, ready-state RSS, and in-flight process RSS
+  high-water. A failed, cancelled, output-less, or unterminated SSE response
+  fails the trial instead of being coerced into a numeric sample. Use macOS
+  `sample`/`footprint` alongside the artifact when Metal-aware memory is part
+  of the claim; RSS alone is insufficient.
 - `test_run_mlx_p2_latency_artifacts.py`: unit tests for the P2 latency runner
   artifact assembly, ratio calculations, and dry-run CLI.
 - `render_mlx_p2_latency_report.py`: renders validated P2 startup and/or

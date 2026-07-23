@@ -66,7 +66,8 @@ use crate::attention_mask::create_ring_sliding_mask;
 use crate::batched_kv_cache::BatchedKvCache;
 use crate::batched_linear_state::BatchedLinearState;
 use crate::fastpath;
-use crate::kv_cache::MlxKVCache;
+use crate::kv_cache::{MlxAttentionKv, MlxKVCache};
+use crate::paged_attention::paged_decode_attention;
 use crate::per_layer_compile::{apply_layer_gemma4_dual_path_decode, apply_layer_moe_decode};
 use crate::weights::LayerWeights;
 
@@ -563,7 +564,7 @@ pub(crate) fn layer_forward(
     let post_attn_started;
     let attn_proj = {
         let pre_sdpa_started = profile_forward_layer.then(Instant::now);
-        let (q_rope, cached_k, cached_v, attn_gate) = if let Some(src_layer) = kv_source {
+        let (q_rope, attention_kv, attn_gate) = if let Some(src_layer) = kv_source {
             // KV-shared layer (Gemma4 layers 24-41): compute Q only.
             let q_raw = qw(
                 &normed,
@@ -644,7 +645,7 @@ pub(crate) fn layer_forward(
                 q_rope
             };
             let (ck, cv) = cache.peek_source_kv(src_layer, seq);
-            (q_rope, ck, cv, None)
+            (q_rope, MlxAttentionKv::Dense { k: ck, v: cv }, None)
         } else {
             // Normal layer: compute Q, K, V from own projections.
             let qkv_proj_started = profile_forward_layer.then(Instant::now);
@@ -797,20 +798,45 @@ pub(crate) fn layer_forward(
             } else {
                 None
             };
-            let (ck, cv) = cache.append_with_retained_window(layer_idx, k_rope, v, retained_window);
+            let attention_kv = cache.append_with_retained_window_for_attention(
+                layer_idx,
+                k_rope,
+                v,
+                retained_window,
+            );
             if let Some(started) = rope_kv_started {
-                forward_profile_eval_elapsed(
-                    profile_decode_layer,
-                    profile_prefill_layer,
-                    DecodeProfileStage::PreSdpaRopeKv,
-                    started,
-                    &[&q_rope, &ck, &cv],
-                );
+                match &attention_kv {
+                    MlxAttentionKv::Dense { k, v } => forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::PreSdpaRopeKv,
+                        started,
+                        &[&q_rope, k, v],
+                    ),
+                    MlxAttentionKv::Paged(view) => forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::PreSdpaRopeKv,
+                        started,
+                        &[&q_rope, &view.k_slab, &view.v_slab, &view.block_table],
+                    ),
+                }
             }
-            (q_rope, ck, cv, attn_gate_raw)
+            (q_rope, attention_kv, attn_gate_raw)
         };
         if let Some(started) = pre_sdpa_started {
-            let mut refs: Vec<&MlxArray> = vec![&q_rope, &cached_k, &cached_v];
+            let mut refs: Vec<&MlxArray> = vec![&q_rope];
+            match &attention_kv {
+                MlxAttentionKv::Dense { k, v } => {
+                    refs.push(k);
+                    refs.push(v);
+                }
+                MlxAttentionKv::Paged(view) => {
+                    refs.push(&view.k_slab);
+                    refs.push(&view.v_slab);
+                    refs.push(&view.block_table);
+                }
+            }
             if let Some(g) = attn_gate.as_ref() {
                 refs.push(g);
             }
@@ -823,7 +849,7 @@ pub(crate) fn layer_forward(
             );
         }
         // 8. SDPA.
-        let key_len = cached_k.shape()[2] as usize;
+        let key_len = attention_kv.key_len();
         let local_mask: Option<MlxArray>;
         let mask_opt: &Option<MlxArray> = if let Some(m) = shared_mask {
             m
@@ -841,14 +867,24 @@ pub(crate) fn layer_forward(
             &local_mask
         };
         let sdpa_started = profile_forward_layer.then(Instant::now);
-        let attn_sdpa = full_precision_attention(
-            &q_rope,
-            &cached_k,
-            &cached_v,
-            cfg.query_scale,
-            seq,
-            mask_opt,
-        );
+        let attn_sdpa = match attention_kv {
+            MlxAttentionKv::Dense { k, v } => {
+                full_precision_attention(&q_rope, &k, &v, cfg.query_scale, seq, mask_opt)
+            }
+            MlxAttentionKv::Paged(view) => {
+                if seq == 1
+                    && mask_opt.is_none()
+                    && let Some(output) = paged_decode_attention(&q_rope, &view, cfg.query_scale)
+                {
+                    cache.record_paged_attention_result(true);
+                    output
+                } else {
+                    cache.record_paged_attention_result(false);
+                    let (k, v) = view.materialize();
+                    full_precision_attention(&q_rope, &k, &v, cfg.query_scale, seq, mask_opt)
+                }
+            }
+        };
         if let Some(started) = sdpa_started {
             forward_profile_eval_elapsed(
                 profile_decode_layer,

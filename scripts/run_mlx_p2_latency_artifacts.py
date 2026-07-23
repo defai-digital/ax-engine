@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import socket
 import statistics
 import subprocess
@@ -96,12 +97,17 @@ def build_prompt_docs(
     prompt_tokens: int,
     generation_tokens: int,
     request_count: int,
+    shared_prefix: bool = False,
 ) -> list[PromptDoc]:
     vocab_size = bench.model_vocab_size(model_dir)
     base_tokens = bench.mlx_lm_reference_prompt_tokens(vocab_size, prompt_tokens)
     docs: list[PromptDoc] = []
     for index in range(request_count):
-        tokens = [int((token + index) % vocab_size) for token in base_tokens]
+        tokens = (
+            list(base_tokens)
+            if shared_prefix
+            else [int((token + index) % vocab_size) for token in base_tokens]
+        )
         doc = bench.write_prompt_tokens(
             artifact_root,
             prompt_tokens=prompt_tokens,
@@ -165,14 +171,20 @@ def start_direct_server(
     model_dir: Path,
     model_id: str,
     port: int,
+    prefix_cache_enabled: bool = False,
 ) -> tuple[subprocess.Popen[Any], float, float]:
     started = time.perf_counter()
+    start_kwargs: dict[str, Any] = {
+        "model_id": model_id,
+        "direct_mode": True,
+    }
+    if prefix_cache_enabled:
+        start_kwargs["prefix_cache_enabled"] = True
     proc = bench.start_axengine(
         bench.AX_ENGINE_SERVER,
         model_dir,
         port,
-        model_id=model_id,
-        direct_mode=True,
+        **start_kwargs,
     )
     process_spawn_ms = (time.perf_counter() - started) * 1000.0
     if not bench.wait_for_server(f"http://127.0.0.1:{port}/health", proc=proc):
@@ -183,20 +195,31 @@ def start_direct_server(
     return proc, process_spawn_ms, server_ready_ms
 
 
-def run_one_request(port: int, prompt: PromptDoc, server_pid: int | None) -> dict[str, Any]:
+def run_one_request(
+    port: int,
+    prompt: PromptDoc,
+    server_pid: int | None,
+    *,
+    capture_output_token_ids: bool = False,
+) -> dict[str, Any]:
     started = time.perf_counter()
+    run_kwargs: dict[str, Any] = {
+        "capture_scheduler_step_telemetry": True,
+        "server_pid": server_pid,
+    }
+    if capture_output_token_ids:
+        run_kwargs["capture_output_token_ids"] = True
     run = bench.axengine_one_run(
         port,
         prompt.token_ids,
         prompt.generation_tokens,
-        capture_scheduler_step_telemetry=True,
-        server_pid=server_pid,
+        **run_kwargs,
     )
     wall_ms = (time.perf_counter() - started) * 1000.0
     client_ttft_ms = run.get("client_wall_ttft_ms")
     if client_ttft_ms is None:
         client_ttft_ms = run["ttft_ms"]
-    return {
+    result = {
         "ttft_ms": float(client_ttft_ms),
         "ttft_source": "client_wall_first_output",
         "decode_tok_s": float(run["decode_tok_s"]),
@@ -205,6 +228,15 @@ def run_one_request(port: int, prompt: PromptDoc, server_pid: int | None) -> dic
         "scheduler_telemetry": run.get("scheduler_telemetry", {}),
         "scheduler_step_telemetry": run.get("scheduler_step_telemetry", []),
     }
+    if capture_output_token_ids:
+        result["output_token_ids"] = run.get("output_token_ids", [])
+    for key in (
+        "ax_mlx_telemetry",
+        "core_prefix_reuse_telemetry",
+    ):
+        if run.get(key):
+            result[key] = run[key]
+    return result
 
 
 def startup_phase_row(
@@ -381,25 +413,49 @@ def run_concurrent_trial(
     port: int,
     prompts: list[PromptDoc],
     server_pid: int,
+    capture_output_token_ids: bool = False,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     failures = 0
-    observations: list[dict[str, float]] = []
+    request_errors: list[str] = []
+    observations: list[dict[str, Any]] = []
+    peak_memory_gb = bench.process_rss_gb(server_pid) or 0.0
 
-    def invoke(prompt: PromptDoc) -> dict[str, float]:
-        return run_one_request(port, prompt, server_pid)
+    def invoke(prompt: PromptDoc) -> dict[str, Any]:
+        return run_one_request(
+            port,
+            prompt,
+            server_pid,
+            capture_output_token_ids=capture_output_token_ids,
+        )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(prompts)) as executor:
-        futures = [executor.submit(invoke, prompt) for prompt in prompts]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                observations.append(future.result())
-            except Exception:
-                failures += 1
+        pending = {executor.submit(invoke, prompt) for prompt in prompts}
+        while pending:
+            completed, pending = concurrent.futures.wait(
+                pending,
+                timeout=0.05,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            peak_memory_gb = max(
+                peak_memory_gb,
+                bench.process_rss_gb(server_pid) or 0.0,
+            )
+            for future in completed:
+                try:
+                    observations.append(future.result())
+                except Exception as exc:
+                    failures += 1
+                    request_errors.append(f"{type(exc).__name__}: {exc}")
+    peak_memory_gb = max(
+        peak_memory_gb,
+        bench.process_rss_gb(server_pid) or 0.0,
+    )
     total_wall_ms = (time.perf_counter() - started) * 1000.0
     return {
         "total_wall_ms": total_wall_ms,
         "failure_count": failures,
+        "request_errors": request_errors,
         "request_ttft_ms": statistics.median(
             item["ttft_ms"] for item in observations
         )
@@ -410,7 +466,7 @@ def run_concurrent_trial(
         )
         if observations
         else 0.0,
-        "peak_memory_gb": bench.process_rss_gb(server_pid) or 0.0,
+        "peak_memory_gb": peak_memory_gb,
         "observations": observations,
     }
 
@@ -583,9 +639,18 @@ def capture_concurrent_artifact(
     warmup_repetitions: int,
     repetitions: int,
     cooldown: float,
+    prefix_cache_enabled: bool = False,
+    shared_prefix: bool = False,
+    capture_output_token_ids: bool = False,
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
-    proc, _spawn_ms, _ready_ms = start_direct_server(model_dir, model_id, port)
+    proc, _spawn_ms, _ready_ms = start_direct_server(
+        model_dir,
+        model_id,
+        port,
+        prefix_cache_enabled=prefix_cache_enabled,
+    )
+    server_ready_rss_gb = bench.process_rss_gb(proc.pid) or 0.0
     try:
         single_row: dict[str, Any] | None = None
         for concurrency in sorted(prompt_groups):
@@ -594,10 +659,15 @@ def capture_concurrent_artifact(
                     port=port,
                     prompts=prompt_groups[concurrency],
                     server_pid=proc.pid,
+                    capture_output_token_ids=capture_output_token_ids,
                 )
                 if warmup["failure_count"]:
+                    server_exit = proc.poll()
+                    server_stderr = bench.process_stderr_snapshot(proc, limit=20_000)
                     raise RuntimeError(
-                        f"concurrency={concurrency} warmup request failed"
+                        f"concurrency={concurrency} warmup request failed: "
+                        + "; ".join(warmup["request_errors"])
+                        + f"; server_exit={server_exit}; server_stderr={server_stderr}"
                     )
             trials = []
             for index in range(repetitions):
@@ -606,6 +676,7 @@ def capture_concurrent_artifact(
                         port=port,
                         prompts=prompt_groups[concurrency],
                         server_pid=proc.pid,
+                        capture_output_token_ids=capture_output_token_ids,
                     )
                 )
                 if cooldown > 0 and index < repetitions - 1:
@@ -639,6 +710,22 @@ def capture_concurrent_artifact(
             "from batch=1 runner throughput and from continuous-batching claims."
         ),
         "warmup_repetitions": warmup_repetitions,
+        "prefix_cache_enabled": prefix_cache_enabled,
+        "shared_prefix": shared_prefix,
+        "capture_output_token_ids": capture_output_token_ids,
+        "server_ready_rss_gb": server_ready_rss_gb,
+        "environment": {
+            key: os.environ.get(key)
+            for key in (
+                "AX_MLX_FA_KV_BLOCK_POOL",
+                "AX_MLX_FA_KV_BLOCK_SHARING",
+                "AX_MLX_FA_NATIVE_PAGED_ATTENTION",
+                "AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS",
+                "AX_MLX_PREFIX_CACHE_MAX_BYTES",
+                "AX_MLX_PREFIX_CACHE_MAX_ENTRIES",
+                "AX_MLX_PREFIX_CACHE_DISK_DISABLED",
+            )
+        },
         "prompt_artifacts": [
             prompt.token_ids_path
             for prompts in prompt_groups.values()
@@ -690,6 +777,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--skip-startup", action="store_true")
     parser.add_argument("--skip-concurrent", action="store_true")
+    parser.add_argument(
+        "--enable-prefix-cache",
+        action="store_true",
+        help="Keep the AX MLX prefix cache enabled for explicit warm-prefix evidence.",
+    )
+    parser.add_argument(
+        "--shared-prefix",
+        action="store_true",
+        help="Use the exact same prompt tokens for every concurrent request.",
+    )
+    parser.add_argument(
+        "--capture-output-token-ids",
+        action="store_true",
+        help="Record response token IDs for cross-mode exactness checks.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -757,6 +859,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt_tokens=args.context_tokens,
             generation_tokens=args.concurrent_generation_tokens,
             request_count=max_concurrency,
+            shared_prefix=args.shared_prefix,
         )
         prompt_groups = {
             level: concurrent_prompts[:level] for level in args.concurrency_levels
@@ -771,6 +874,9 @@ def main(argv: list[str] | None = None) -> int:
             warmup_repetitions=args.warmup_repetitions,
             repetitions=args.repetitions,
             cooldown=args.cooldown,
+            prefix_cache_enabled=args.enable_prefix_cache,
+            shared_prefix=args.shared_prefix,
+            capture_output_token_ids=args.capture_output_token_ids,
         )
         write_json(concurrent_output, concurrent_artifact)
         validate_mlx_concurrent_prefill_artifact(

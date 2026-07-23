@@ -37,6 +37,28 @@ def prompt(index: int = 0) -> object:
 
 
 class P2LatencyRunnerTests(unittest.TestCase):
+    def test_build_prompt_docs_can_reuse_an_exact_shared_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.object(runner.bench, "model_vocab_size", return_value=100),
+                mock.patch.object(
+                    runner.bench,
+                    "mlx_lm_reference_prompt_tokens",
+                    return_value=[1, 2, 3],
+                ),
+            ):
+                docs = runner.build_prompt_docs(
+                    model_dir=Path(tmp),
+                    artifact_root=Path(tmp) / "prompts",
+                    prompt_tokens=3,
+                    generation_tokens=1,
+                    request_count=4,
+                    shared_prefix=True,
+                )
+
+        self.assertEqual([doc.token_ids for doc in docs], [[1, 2, 3]] * 4)
+        self.assertEqual(len({doc.token_ids_sha256 for doc in docs}), 1)
+
     def test_run_one_request_uses_client_observed_ttft(self) -> None:
         result = {
             "ttft_ms": 0.0,
@@ -300,6 +322,104 @@ class P2LatencyRunnerTests(unittest.TestCase):
         self.assertEqual(run_trial.call_count, 10)
         self.assertEqual(artifact["warmup_repetitions"], 2)
         self.assertEqual([row["repetitions"] for row in artifact["rows"]], [3, 3])
+
+    def test_concurrent_trial_samples_peak_rss_while_requests_run(self) -> None:
+        observation = {
+            "ttft_ms": 10.0,
+            "wall_ms": 20.0,
+            "decode_tok_s": 1.0,
+        }
+        with (
+            mock.patch.object(runner, "run_one_request", return_value=observation),
+            mock.patch.object(
+                runner.bench,
+                "process_rss_gb",
+                side_effect=[1.0, 4.0, 2.0],
+            ),
+        ):
+            trial = runner.run_concurrent_trial(
+                port=19091,
+                prompts=[prompt(0)],
+                server_pid=1234,
+            )
+
+        self.assertEqual(trial["peak_memory_gb"], 4.0)
+
+    def test_concurrent_trial_preserves_request_errors(self) -> None:
+        with (
+            mock.patch.object(
+                runner,
+                "run_one_request",
+                side_effect=RuntimeError("pool exhausted"),
+            ),
+            mock.patch.object(runner.bench, "process_rss_gb", return_value=1.0),
+        ):
+            trial = runner.run_concurrent_trial(
+                port=19091,
+                prompts=[prompt(0)],
+                server_pid=1234,
+            )
+
+        self.assertEqual(trial["failure_count"], 1)
+        self.assertEqual(
+            trial["request_errors"],
+            ["RuntimeError: pool exhausted"],
+        )
+
+    def test_concurrent_capture_records_explicit_shared_prefix_mode(self) -> None:
+        process = mock.Mock(pid=1234)
+        trial = {
+            "request_ttft_ms": 10.0,
+            "total_wall_ms": 20.0,
+            "queue_delay_ms": 10.0,
+            "failure_count": 0,
+            "peak_memory_gb": 1.0,
+            "observations": [],
+        }
+        with (
+            mock.patch.object(
+                runner,
+                "start_direct_server",
+                return_value=(process, 0.0, 0.0),
+            ) as start,
+            mock.patch.object(
+                runner,
+                "run_concurrent_trial",
+                return_value=trial,
+            ) as run_trial,
+            mock.patch.object(runner.bench, "process_rss_gb", return_value=0.5),
+            mock.patch.object(runner.bench, "kill_proc"),
+        ):
+            artifact = runner.capture_concurrent_artifact(
+                model_dir=Path("/tmp/model"),
+                model_id="test-model",
+                model_metadata={},
+                host_label="test-host",
+                port=19091,
+                prompt_groups={1: [prompt(0)]},
+                warmup_repetitions=1,
+                repetitions=3,
+                cooldown=0.0,
+                prefix_cache_enabled=True,
+                shared_prefix=True,
+                capture_output_token_ids=True,
+            )
+
+        start.assert_called_once_with(
+            Path("/tmp/model"),
+            "test-model",
+            19091,
+            prefix_cache_enabled=True,
+        )
+        self.assertTrue(artifact["prefix_cache_enabled"])
+        self.assertTrue(artifact["shared_prefix"])
+        self.assertTrue(artifact["capture_output_token_ids"])
+        self.assertTrue(
+            all(
+                call.kwargs["capture_output_token_ids"]
+                for call in run_trial.call_args_list
+            )
+        )
 
     def test_dry_run_does_not_require_real_model_weights(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

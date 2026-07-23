@@ -3,9 +3,10 @@ use std::time::Instant;
 use mlx_sys::{MlxArray, MlxDtype, concatenate, contiguous, eval, slice, slice_update, zeros};
 
 use crate::kv_block_pool::{
-    FaBlockPool, FaBlockPoolConfig, FaBlockPoolError, PhysicalBlockId,
+    FaBlockPoolConfig, FaBlockPoolError, FaBlockPoolSnapshot, PhysicalBlockId, SharedFaBlockPool,
     default_fa_block_pool_config, fa_kv_block_pool_enabled,
 };
+use crate::paged_attention::PagedAttentionView;
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
 /// the logical sequence length exceeds capacity, so the number of grow operations
@@ -193,8 +194,25 @@ pub struct MlxKVCacheUsage {
     /// paged blocks (PR4). Zero when the contiguous path is used.
     pub paged_materialize_us: u64,
     /// Times a paged FA append fell back to contiguous growth because the
-    /// private block pool was exhausted (fail-soft for production safety).
+    /// owning block pool was exhausted. Production hard-cap callers fail the
+    /// request after the dense compatibility graph is completed.
     pub paged_pool_exhaustion_fallbacks: u64,
+    /// Blocks copied on first divergent write after a paged clone/adoption.
+    pub paged_cow_copies: u64,
+    /// Pool-wide physical blocks currently allocated. Gauge, not additive.
+    pub paged_pool_blocks_used: u32,
+    /// Pool-wide allocated blocks with more than one owning view. Gauge.
+    pub paged_pool_shared_blocks: u32,
+    /// Fixed-size K/V slabs currently allocated across all pool layers.
+    pub paged_pool_slabs: u32,
+    /// Real MLX bytes reserved by fixed K/V slabs, including slack rows.
+    pub paged_pool_slab_bytes: u64,
+    /// Pool-wide episodes that appended slabs after a layer's first slab.
+    pub paged_pool_slab_grow_events: u64,
+    /// Decode attention calls that consumed a single-slab block table.
+    pub paged_attention_calls: u64,
+    /// Eligible single-slab calls that fell back to gather + dense SDPA.
+    pub paged_attention_fallbacks: u64,
 }
 
 #[derive(Clone)]
@@ -217,22 +235,86 @@ struct LayerKV {
     dtype: MlxDtype,
 }
 
-/// Private FA block list for one layer (PR4 paged path).
+/// FA block list for one layer (private or runner-shared paged path).
 ///
 /// Each block is a full `[1, n_kv_heads, block_size, head_dim]` slab. Logical
 /// tokens fill blocks left-to-right; SDPA consumers materialize a dense
 /// `[1, n_kv_heads, T, head_dim]` view via [`PagedFaLayer::materialize`].
 #[derive(Clone)]
 struct PagedFaLayer {
+    layer_idx: usize,
     n_kv_heads: i32,
     head_dim: i32,
     dtype: MlxDtype,
     block_size: usize,
     block_ids: Vec<PhysicalBlockId>,
+    /// Runner-sharing storage uses mlxcel-style fixed per-layer slabs. The
+    /// private compatibility route keeps one array handle per block below.
+    slab_storage: bool,
     k_blocks: Vec<MlxArray>,
     v_blocks: Vec<MlxArray>,
     last_k_view: Option<MlxArray>,
     last_v_view: Option<MlxArray>,
+}
+
+pub(crate) enum MlxAttentionKv {
+    Dense { k: MlxArray, v: MlxArray },
+    Paged(PagedAttentionView),
+}
+
+impl MlxAttentionKv {
+    pub(crate) fn key_len(&self) -> usize {
+        match self {
+            Self::Dense { k, .. } => k.shape()[2] as usize,
+            Self::Paged(view) => view.key_len,
+        }
+    }
+
+    pub(crate) fn into_dense(self) -> (MlxArray, MlxArray) {
+        match self {
+            Self::Dense { k, v } => (k, v),
+            Self::Paged(view) => view.materialize(),
+        }
+    }
+}
+
+/// Owns one all-or-nothing pool allocation until a repaged cache has adopted
+/// every ID. This closes the unwind edge between allocation and construction:
+/// MLX tensor slicing is expected to be infallible for validated shapes, but a
+/// panic must still return the reserved IDs instead of leaking runner capacity.
+struct FaBlockReservation {
+    pool: SharedFaBlockPool,
+    ids: Vec<PhysicalBlockId>,
+    armed: bool,
+}
+
+impl FaBlockReservation {
+    fn new(pool: SharedFaBlockPool, count: u32) -> Result<Self, FaBlockPoolError> {
+        let ids = pool.allocate(count)?;
+        Ok(Self {
+            pool,
+            ids,
+            armed: true,
+        })
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for FaBlockReservation {
+    fn drop(&mut self) {
+        if self.armed
+            && let Err(error) = self.pool.free(&self.ids)
+        {
+            tracing::error!(
+                target: "ax_engine_mlx::kv_pool",
+                %error,
+                "failed to release reserved FA blocks after repage construction",
+            );
+        }
+    }
 }
 
 impl PagedFaLayer {
@@ -245,7 +327,52 @@ impl PagedFaLayer {
         self.last_v_view = None;
     }
 
-    fn materialize(&self, token_start: usize, token_end: usize) -> (MlxArray, MlxArray) {
+    fn attention_view(
+        &self,
+        pool: &SharedFaBlockPool,
+        key_len: usize,
+    ) -> Option<PagedAttentionView> {
+        if !self.slab_storage
+            || !pool.native_attention_enabled()
+            || key_len == 0
+            || key_len > self.capacity_tokens()
+        {
+            return None;
+        }
+        let needed = key_len.div_ceil(self.block_size);
+        let slab = pool.single_slab_snapshot(self.layer_idx, &self.block_ids[..needed])?;
+        if slab.n_kv_heads != self.n_kv_heads
+            || slab.head_dim != self.head_dim
+            || slab.block_size != self.block_size
+            || slab.dtype != self.dtype
+        {
+            return None;
+        }
+        let block_ids = slab.local_rows;
+        let block_table = MlxArray::from_raw_data(
+            block_ids.as_ptr().cast(),
+            block_ids.len().saturating_mul(std::mem::size_of::<u32>()),
+            &[block_ids.len() as i32],
+            MlxDtype::Uint32,
+        );
+        Some(PagedAttentionView {
+            k_slab: slab.k,
+            v_slab: slab.v,
+            block_table,
+            block_ids,
+            key_len,
+            block_size: self.block_size,
+            n_kv_heads: self.n_kv_heads as usize,
+            head_dim: self.head_dim as usize,
+        })
+    }
+
+    fn materialize(
+        &self,
+        pool: &SharedFaBlockPool,
+        token_start: usize,
+        token_end: usize,
+    ) -> (MlxArray, MlxArray) {
         assert!(
             token_end >= token_start,
             "paged materialize requires token_end >= token_start"
@@ -263,6 +390,11 @@ impl PagedFaLayer {
             self.capacity_tokens()
         );
 
+        if self.slab_storage {
+            return pool
+                .gather_slab_tokens(self.layer_idx, &self.block_ids, token_start, token_end)
+                .expect("shared paged FA layer requires initialized slab rows");
+        }
         let mut k_pieces: Vec<MlxArray> = Vec::new();
         let mut v_pieces: Vec<MlxArray> = Vec::new();
         let mut t = token_start;
@@ -270,23 +402,12 @@ impl PagedFaLayer {
             let block_idx = t / self.block_size;
             let offset = t % self.block_size;
             let take = (token_end - t).min(self.block_size - offset);
-            let start = [0i32, 0, offset as i32, 0];
-            let stop = [1i32, self.n_kv_heads, (offset + take) as i32, self.head_dim];
+            let start = [0, 0, offset as i32, 0];
+            let stop = [1, self.n_kv_heads, (offset + take) as i32, self.head_dim];
             let strides = [1i32, 1, 1, 1];
-            k_pieces.push(slice(
-                &self.k_blocks[block_idx],
-                &start,
-                &stop,
-                &strides,
-                None,
-            ));
-            v_pieces.push(slice(
-                &self.v_blocks[block_idx],
-                &start,
-                &stop,
-                &strides,
-                None,
-            ));
+            let (k_source, v_source) = (&self.k_blocks[block_idx], &self.v_blocks[block_idx]);
+            k_pieces.push(slice(k_source, &start, &stop, &strides, None));
+            v_pieces.push(slice(v_source, &start, &stop, &strides, None));
             t += take;
         }
         if k_pieces.len() == 1 {
@@ -297,26 +418,9 @@ impl PagedFaLayer {
         (concatenate(&k_refs, 2, None), concatenate(&v_refs, 2, None))
     }
 
-    /// Clone block tensors into a fresh pool (private PR4: new physical IDs).
-    fn clone_into_pool(&self, pool: &mut FaBlockPool) -> Result<Self, FaBlockPoolError> {
-        let n = self.block_ids.len() as u32;
-        let ids = pool.allocate(n)?;
-        Ok(Self {
-            n_kv_heads: self.n_kv_heads,
-            head_dim: self.head_dim,
-            dtype: self.dtype,
-            block_size: self.block_size,
-            block_ids: ids,
-            k_blocks: self.k_blocks.clone(),
-            v_blocks: self.v_blocks.clone(),
-            last_k_view: self.last_k_view.clone(),
-            last_v_view: self.last_v_view.clone(),
-        })
-    }
-
     fn ensure_capacity(
         &mut self,
-        pool: &mut FaBlockPool,
+        pool: &SharedFaBlockPool,
         tokens: usize,
         growth_count: &mut u64,
     ) -> Result<(), FaBlockPoolError> {
@@ -325,19 +429,33 @@ impl PagedFaLayer {
         } else {
             tokens.div_ceil(self.block_size)
         };
-        while self.block_ids.len() < needed {
-            let ids = pool.allocate(1)?;
-            let shape = [1i32, self.n_kv_heads, self.block_size as i32, self.head_dim];
-            self.block_ids.push(ids[0]);
-            self.k_blocks.push(zeros(&shape, self.dtype, None));
-            self.v_blocks.push(zeros(&shape, self.dtype, None));
-            *growth_count = growth_count.saturating_add(1);
+        let missing = needed.saturating_sub(self.block_ids.len());
+        if missing > 0 {
+            let ids = pool.allocate(missing as u32)?;
+            self.block_ids.extend(ids);
+            if !self.slab_storage {
+                let shape = [1i32, self.n_kv_heads, self.block_size as i32, self.head_dim];
+                for _ in 0..missing {
+                    self.k_blocks.push(zeros(&shape, self.dtype, None));
+                    self.v_blocks.push(zeros(&shape, self.dtype, None));
+                }
+            }
+            *growth_count = growth_count.saturating_add(missing as u64);
             self.clear_views();
+        }
+        if self.slab_storage && !self.block_ids.is_empty() {
+            pool.ensure_layer_slab_storage(
+                self.layer_idx,
+                self.n_kv_heads,
+                self.head_dim,
+                self.dtype,
+                &self.block_ids,
+            )?;
         }
         Ok(())
     }
 
-    fn free_blocks_beyond(&mut self, pool: &mut FaBlockPool, keep_tokens: usize) {
+    fn free_blocks_beyond(&mut self, pool: &SharedFaBlockPool, keep_tokens: usize) {
         let keep_blocks = if keep_tokens == 0 {
             0
         } else {
@@ -354,13 +472,59 @@ impl PagedFaLayer {
         self.clear_views();
     }
 
-    fn write_tokens(&mut self, write_start: usize, new_k: &MlxArray, new_v: &MlxArray) {
+    /// Move this view off every shared block that the pending write touches.
+    /// Tensor handles are still clones of the old values until `write_tokens`
+    /// applies functional updates. Pool ownership preparation is transactional
+    /// across every intersecting block.
+    fn prepare_write(
+        &mut self,
+        pool: &SharedFaBlockPool,
+        write_start: usize,
+        write_end: usize,
+    ) -> Result<u64, FaBlockPoolError> {
+        if write_end <= write_start {
+            return Ok(0);
+        }
+        let first = write_start / self.block_size;
+        let last = (write_end - 1) / self.block_size;
+        let last = last.min(self.block_ids.len().saturating_sub(1));
+        let old_ids = self.block_ids[first..=last].to_vec();
+        let prepared = pool.make_unique_many(&old_ids)?;
+        let mut copies = 0u64;
+        let mut slab_copies = Vec::new();
+        for (offset, (id, copied)) in prepared.into_iter().enumerate() {
+            self.block_ids[first + offset] = id;
+            copies = copies.saturating_add(u64::from(copied));
+            if copied && self.slab_storage {
+                slab_copies.push((old_ids[offset], id));
+            }
+        }
+        if self.slab_storage {
+            pool.copy_slab_blocks(self.layer_idx, &slab_copies)?;
+        }
+        Ok(copies)
+    }
+
+    fn write_tokens(
+        &mut self,
+        pool: &SharedFaBlockPool,
+        write_start: usize,
+        new_k: &MlxArray,
+        new_v: &MlxArray,
+    ) -> Result<(), FaBlockPoolError> {
         let new_tokens = new_k.shape()[2] as usize;
         let write_end = write_start + new_tokens;
         assert!(
             write_end <= self.capacity_tokens(),
             "paged write past capacity"
         );
+        if self.slab_storage {
+            // Drop the previous lazy gather before moving the slab handle so
+            // MLX can donate the destination buffer on the next update.
+            self.clear_views();
+            pool.write_slab_tokens(self.layer_idx, &self.block_ids, write_start, new_k, new_v)?;
+            return Ok(());
+        }
         let mut src = 0usize;
         let mut t = write_start;
         while t < write_end {
@@ -394,6 +558,7 @@ impl PagedFaLayer {
             t += take;
         }
         self.clear_views();
+        Ok(())
     }
 }
 
@@ -629,15 +794,19 @@ pub struct MlxKVCache {
     /// ([`SlidingRingLayout`]), and `trim_to` accepts rollbacks up to
     /// `slack` tokens deep.
     rotating_slack: usize,
-    /// Private FA block pool when paged mode is active (flag or explicit
-    /// constructor). `None` keeps the historical contiguous path.
-    fa_pool: Option<FaBlockPool>,
+    /// Synchronized FA block pool when paged mode is active (flag or explicit
+    /// constructor). A runner may share this handle across request caches;
+    /// private mode creates a handle visible to only this cache and its clones.
+    fa_pool: Option<SharedFaBlockPool>,
     /// Cumulative µs spent in paged FA materialize (SDPA / serialize views).
     paged_materialize_us: u64,
-    /// Count of paged→contiguous failovers when the private pool is exhausted.
+    /// Count of paged→contiguous failovers when the owning pool is exhausted.
     paged_pool_exhaustion_fallbacks: u64,
-    /// Sticky: set when a `hard_cap` pool (operator-set
-    /// `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`) exhausted. The layer still
+    /// Cache-local count of block-level CoW replacements.
+    paged_cow_copies: u64,
+    paged_attention_calls: u64,
+    paged_attention_fallbacks: u64,
+    /// Sticky: set when a production `hard_cap` pool exhausted. The layer still
     /// demotes to contiguous (correct data — proven token-exact by
     /// `fa_paged_pool_exhaustion_demotion_matches_contiguous_oracle`), but
     /// the caller must fail this request instead of returning a token
@@ -673,33 +842,24 @@ impl SlidingRingLayout {
 
 impl Clone for MlxKVCache {
     fn clone(&self) -> Self {
-        // Paged layers hold private physical IDs: re-allocate into a fresh
-        // pool so free/trim on either side cannot double-free.
-        let mut fa_pool = self.fa_pool.as_ref().map(|pool| {
-            FaBlockPool::new(pool.config()).expect("clone reuses a validated pool config")
-        });
-        let layers = self
-            .layers
-            .iter()
-            .map(|entry| match entry {
-                None => None,
-                Some(FaLayerStorage::Contiguous(lkv)) => {
-                    Some(FaLayerStorage::Contiguous(lkv.clone()))
-                }
-                Some(FaLayerStorage::Paged(paged)) => {
-                    let pool = fa_pool
-                        .as_mut()
-                        .expect("paged FA layer requires an FA block pool");
-                    Some(FaLayerStorage::Paged(
-                        paged
-                            .clone_into_pool(pool)
-                            .expect("clone must fit in a same-sized FA block pool"),
-                    ))
-                }
-            })
-            .collect();
+        let fa_pool = self.fa_pool.clone();
+        if let Some(pool) = fa_pool.as_ref() {
+            let ids: Vec<PhysicalBlockId> = self
+                .layers
+                .iter()
+                .filter_map(Option::as_ref)
+                .filter_map(|layer| match layer {
+                    FaLayerStorage::Paged(paged) => Some(paged.block_ids.as_slice()),
+                    FaLayerStorage::Contiguous(_) => None,
+                })
+                .flatten()
+                .copied()
+                .collect();
+            pool.retain(&ids)
+                .expect("paged cache clone must retain valid physical block IDs");
+        }
         Self {
-            layers,
+            layers: self.layers.clone(),
             glm_mla_layers: self.glm_mla_layers.clone(),
             linear_layers: self.linear_layers.clone(),
             seq_len: self.seq_len,
@@ -710,7 +870,33 @@ impl Clone for MlxKVCache {
             fa_pool,
             paged_materialize_us: self.paged_materialize_us,
             paged_pool_exhaustion_fallbacks: self.paged_pool_exhaustion_fallbacks,
+            // CoW events are owned by the new view after cloning; do not
+            // re-report the source view's historical counter.
+            paged_cow_copies: 0,
+            paged_attention_calls: 0,
+            paged_attention_fallbacks: 0,
             hard_cap_exhausted: self.hard_cap_exhausted,
+        }
+    }
+}
+
+impl Drop for MlxKVCache {
+    fn drop(&mut self) {
+        let Some(pool) = self.fa_pool.as_ref() else {
+            return;
+        };
+        for layer in self.layers.iter_mut().flatten() {
+            let FaLayerStorage::Paged(paged) = layer else {
+                continue;
+            };
+            let ids = std::mem::take(&mut paged.block_ids);
+            if let Err(error) = pool.free(&ids) {
+                tracing::error!(
+                    target: "ax_engine_mlx::kv_pool",
+                    %error,
+                    "failed to release paged KV blocks during cache drop",
+                );
+            }
         }
     }
 }
@@ -763,6 +949,9 @@ impl MlxKVCache {
             fa_pool: None,
             paged_materialize_us: 0,
             paged_pool_exhaustion_fallbacks: 0,
+            paged_cow_copies: 0,
+            paged_attention_calls: 0,
+            paged_attention_fallbacks: 0,
             hard_cap_exhausted: false,
         }
     }
@@ -770,7 +959,13 @@ impl MlxKVCache {
     /// FA private block-pool path (PR4). Pure FA appends use paged storage and
     /// materialize dense K/V for SDPA; sliding/rotating layers stay contiguous.
     pub fn new_with_fa_block_pool(num_layers: usize, config: FaBlockPoolConfig) -> Self {
-        let fa_pool = FaBlockPool::new(config).expect("FA block pool config must be non-zero");
+        let fa_pool =
+            SharedFaBlockPool::new(config).expect("FA block pool config must be non-zero");
+        Self::new_with_shared_fa_block_pool(num_layers, fa_pool)
+    }
+
+    /// Build a paged cache backed by a runner-owned synchronized FA pool.
+    pub fn new_with_shared_fa_block_pool(num_layers: usize, fa_pool: SharedFaBlockPool) -> Self {
         Self {
             layers: (0..num_layers).map(|_| None).collect(),
             glm_mla_layers: (0..num_layers).map(|_| None).collect(),
@@ -785,26 +980,289 @@ impl MlxKVCache {
             fa_pool: Some(fa_pool),
             paged_materialize_us: 0,
             paged_pool_exhaustion_fallbacks: 0,
+            paged_cow_copies: 0,
+            paged_attention_calls: 0,
+            paged_attention_fallbacks: 0,
             hard_cap_exhausted: false,
         }
     }
 
-    /// Whether this cache owns a private FA block pool (paged pure-FA path).
+    /// Whether this cache has an FA block pool (private or runner-shared).
     pub fn fa_block_pool_enabled(&self) -> bool {
         self.fa_pool.is_some()
     }
 
-    /// Set once a `hard_cap` pool (operator-set
-    /// `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`) has exhausted. The caller must
+    /// Set once a production `hard_cap` pool has exhausted. The caller must
     /// fail the owning request instead of treating this forward as
     /// successful — see `MlxRunner::run_item`.
     pub fn hard_cap_exhausted(&self) -> bool {
         self.hard_cap_exhausted
     }
 
-    /// Blocks available in the private FA pool, if paged mode is active.
+    /// Blocks available in the owning FA pool, if paged mode is active.
     pub fn fa_block_pool_available(&self) -> Option<u32> {
-        self.fa_pool.as_ref().map(FaBlockPool::available_blocks)
+        self.fa_pool
+            .as_ref()
+            .map(|pool| pool.snapshot().available_blocks)
+    }
+
+    pub fn fa_block_pool_snapshot(&self) -> Option<FaBlockPoolSnapshot> {
+        self.fa_pool.as_ref().map(SharedFaBlockPool::snapshot)
+    }
+
+    pub fn shares_fa_block_pool_with(&self, other: &Self) -> bool {
+        match (&self.fa_pool, &other.fa_pool) {
+            (Some(left), Some(right)) => left.same_pool(right),
+            _ => false,
+        }
+    }
+
+    pub fn uses_fa_block_pool(&self, pool: &SharedFaBlockPool) -> bool {
+        self.fa_pool
+            .as_ref()
+            .is_some_and(|owned| owned.same_pool(pool))
+    }
+
+    /// Whether this cache is safe to retain in the runner-local native L1.
+    ///
+    /// Model-level eligibility is necessary but not sufficient: compiled or
+    /// speculative paths can replace a paged layer with dense storage at
+    /// runtime. Native L1 only promises physical-page adoption, so every
+    /// layer must still be a structurally valid paged FA layer.
+    pub fn is_native_fa_shareable(&self) -> bool {
+        let slab_pool = self
+            .fa_pool
+            .as_ref()
+            .is_some_and(SharedFaBlockPool::slab_storage_enabled);
+        self.fa_pool.is_some()
+            && self.seq_len > 0
+            && !self.layers.is_empty()
+            && self.layers.iter().all(|layer| {
+                matches!(
+                    layer,
+                    Some(FaLayerStorage::Paged(paged))
+                        if ((!paged.slab_storage
+                            && paged.block_ids.len() == paged.k_blocks.len()
+                            && paged.block_ids.len() == paged.v_blocks.len())
+                            || (paged.slab_storage
+                                && slab_pool
+                                && paged.k_blocks.is_empty()
+                                && paged.v_blocks.is_empty()))
+                            && !paged.block_ids.is_empty()
+                            && paged.capacity_tokens() >= self.seq_len
+                )
+            })
+            && self.glm_mla_layers.iter().all(Option::is_none)
+            && self
+                .linear_layers
+                .iter()
+                .all(|state| state.conv_state.is_none() && state.recurrent_state.is_none())
+    }
+
+    /// Validate a dense standard-FA snapshot and return the layer-block slots
+    /// required to rebuild it in `pool` without changing the wire format.
+    pub fn fa_blocks_required_for_repage(
+        &self,
+        pool: &SharedFaBlockPool,
+    ) -> Result<u32, FaBlockPoolError> {
+        if self.seq_len == 0 || self.layers.is_empty() {
+            return Err(FaBlockPoolError::InvalidConfig(
+                "repage requires a non-empty standard-FA cache",
+            ));
+        }
+        if self.glm_mla_layers.iter().any(Option::is_some)
+            || self
+                .linear_layers
+                .iter()
+                .any(|state| state.conv_state.is_some() || state.recurrent_state.is_some())
+        {
+            return Err(FaBlockPoolError::InvalidConfig(
+                "repage supports standard FA only",
+            ));
+        }
+        for layer in &self.layers {
+            let Some(FaLayerStorage::Contiguous(layer)) = layer else {
+                return Err(FaBlockPoolError::InvalidConfig(
+                    "repage requires every layer to be dense FA",
+                ));
+            };
+            let shape = layer.k.shape();
+            if layer.rotating_window.is_some()
+                || layer.capacity < self.seq_len
+                || shape.len() != 4
+                || shape != layer.v.shape()
+                || shape[0] != 1
+                || shape[1] != layer.n_kv_heads
+                || shape[2] as usize != layer.capacity
+                || shape[3] != layer.head_dim
+                || layer.k.dtype() != layer.v.dtype()
+            {
+                return Err(FaBlockPoolError::InvalidConfig(
+                    "repage rejected incompatible FA layer geometry",
+                ));
+            }
+        }
+
+        let block_size = pool.config().block_size_tokens as usize;
+        let per_layer = self.seq_len.div_ceil(block_size) as u64;
+        let total = per_layer.saturating_mul(self.layers.len() as u64);
+        u32::try_from(total)
+            .map_err(|_| FaBlockPoolError::InvalidConfig("repage layer-block count exceeds u32"))
+    }
+
+    /// Clone a dense serialized standard-FA snapshot into the runner's shared
+    /// paged representation. Allocation is one transaction; failure leaves
+    /// both the source cache and pool ownership unchanged.
+    pub fn clone_repage_into_shared_fa_pool(
+        &self,
+        pool: SharedFaBlockPool,
+    ) -> Result<Self, FaBlockPoolError> {
+        let required = self.fa_blocks_required_for_repage(&pool)?;
+        let block_size = pool.config().block_size_tokens as usize;
+        let blocks_per_layer = self.seq_len.div_ceil(block_size);
+        let mut reservation = FaBlockReservation::new(pool.clone(), required)?;
+        let mut paged_layers = Vec::with_capacity(self.layers.len());
+
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            let Some(FaLayerStorage::Contiguous(layer)) = layer else {
+                return Err(FaBlockPoolError::InvalidConfig(
+                    "repage layout changed after validation",
+                ));
+            };
+            let id_start = layer_idx.saturating_mul(blocks_per_layer);
+            let ids = reservation.ids[id_start..id_start + blocks_per_layer].to_vec();
+            let slab_storage = pool.slab_storage_enabled();
+            let mut k_blocks = Vec::with_capacity(if slab_storage { 0 } else { blocks_per_layer });
+            let mut v_blocks = Vec::with_capacity(if slab_storage { 0 } else { blocks_per_layer });
+
+            if slab_storage {
+                pool.ensure_layer_slab_storage(
+                    layer_idx,
+                    layer.n_kv_heads,
+                    layer.head_dim,
+                    layer.dtype,
+                    &ids,
+                )?;
+                // Serialized dense layers retain their growth capacity. Only
+                // the logical prefix belongs in the page table; passing the
+                // full backing buffer would overrun `blocks_per_layer`.
+                let start = [0i32, 0, 0, 0];
+                let stop = [1i32, layer.n_kv_heads, self.seq_len as i32, layer.head_dim];
+                let strides = [1i32, 1, 1, 1];
+                let logical_k = slice(&layer.k, &start, &stop, &strides, None);
+                let logical_v = slice(&layer.v, &start, &stop, &strides, None);
+                pool.write_slab_tokens(layer_idx, &ids, 0, &logical_k, &logical_v)?;
+            }
+
+            for block_idx in 0..if slab_storage { 0 } else { blocks_per_layer } {
+                let token_start = block_idx.saturating_mul(block_size);
+                let token_count = (self.seq_len - token_start).min(block_size);
+                let token_end = token_start + token_count;
+                let start = [0i32, 0, token_start as i32, 0];
+                let stop = [1i32, layer.n_kv_heads, token_end as i32, layer.head_dim];
+                let strides = [1i32, 1, 1, 1];
+                let k_segment = slice(&layer.k, &start, &stop, &strides, None);
+                let v_segment = slice(&layer.v, &start, &stop, &strides, None);
+                if token_count == block_size {
+                    k_blocks.push(k_segment);
+                    v_blocks.push(v_segment);
+                } else {
+                    let shape = [1i32, layer.n_kv_heads, block_size as i32, layer.head_dim];
+                    let block_start = [0i32, 0, 0, 0];
+                    let block_stop = [1i32, layer.n_kv_heads, token_count as i32, layer.head_dim];
+                    k_blocks.push(slice_update(
+                        &zeros(&shape, layer.dtype, None),
+                        &k_segment,
+                        &block_start,
+                        &block_stop,
+                        &strides,
+                        None,
+                    ));
+                    v_blocks.push(slice_update(
+                        &zeros(&shape, layer.dtype, None),
+                        &v_segment,
+                        &block_start,
+                        &block_stop,
+                        &strides,
+                        None,
+                    ));
+                }
+            }
+
+            paged_layers.push(Some(FaLayerStorage::Paged(PagedFaLayer {
+                layer_idx,
+                n_kv_heads: layer.n_kv_heads,
+                head_dim: layer.head_dim,
+                dtype: layer.dtype,
+                block_size,
+                block_ids: ids,
+                slab_storage,
+                k_blocks,
+                v_blocks,
+                last_k_view: None,
+                last_v_view: None,
+            })));
+        }
+
+        let mut repaged = Self::new_with_shared_fa_block_pool(self.layers.len(), pool);
+        repaged.layers = paged_layers;
+        repaged.seq_len = self.seq_len;
+        repaged.rope_offset = self.rope_offset;
+        repaged.growth_count = self.growth_count;
+        repaged.paged_materialize_us = self.paged_materialize_us;
+        repaged.paged_pool_exhaustion_fallbacks = self.paged_pool_exhaustion_fallbacks;
+        repaged.paged_cow_copies = self.paged_cow_copies;
+        repaged.paged_attention_calls = self.paged_attention_calls;
+        repaged.paged_attention_fallbacks = self.paged_attention_fallbacks;
+        repaged.hard_cap_exhausted = self.hard_cap_exhausted;
+        reservation.disarm();
+        Ok(repaged)
+    }
+
+    /// Conservative physical-block demand for appending `new_tokens` to a
+    /// pure-FA cache. Callers gate this to layouts where every empty layer will
+    /// become paged FA; hybrid layouts intentionally do not use the estimate.
+    pub fn additional_fa_blocks_for_append(&self, new_tokens: usize) -> Option<u32> {
+        let pool = self.fa_pool.as_ref()?;
+        if new_tokens == 0 {
+            return Some(0);
+        }
+        let block_size = pool.config().block_size_tokens as usize;
+        let write_start = self.seq_len;
+        let write_end = write_start.saturating_add(new_tokens);
+        let needed_blocks = write_end.div_ceil(block_size);
+        let mut additional = 0u64;
+
+        for layer in &self.layers {
+            match layer {
+                None => {
+                    additional = additional.saturating_add(needed_blocks as u64);
+                }
+                Some(FaLayerStorage::Contiguous(_)) => {}
+                Some(FaLayerStorage::Paged(paged)) => {
+                    additional = additional
+                        .saturating_add(needed_blocks.saturating_sub(paged.block_ids.len()) as u64);
+                    if !paged.block_ids.is_empty() {
+                        let first = write_start / block_size;
+                        let last = (write_end - 1) / block_size;
+                        if first < paged.block_ids.len() {
+                            for block_idx in
+                                first..=last.min(paged.block_ids.len().saturating_sub(1))
+                            {
+                                if pool
+                                    .ref_count(paged.block_ids[block_idx])
+                                    .is_ok_and(|ref_count| ref_count > 1)
+                                {
+                                    additional = additional.saturating_add(1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(additional.min(u64::from(u32::MAX)) as u32)
     }
 
     /// Current logical sequence length (token count cached).
@@ -983,8 +1441,13 @@ impl MlxKVCache {
     }
 
     fn serialize_tensor(out: &mut Vec<u8>, arr: &MlxArray) {
-        // Materialise before reading bytes; data_raw is only valid post-eval.
-        eval(&[arr]);
+        // `eval` alone does not make a slice/transpose row-contiguous. Paged
+        // materialization can return an exact-length view, bypassing the
+        // trimming branch above, so normalize every tensor before `data_raw`.
+        // MLX treats `contiguous` as a cheap identity for already-contiguous
+        // arrays and as an owned materialization for strided views.
+        let arr = contiguous(arr, None);
+        eval(&[&arr]);
         let dtype_tag = Self::dtype_to_tag(arr.dtype());
         let shape = arr.shape();
         let ndim = shape.len() as u8;
@@ -1142,7 +1605,11 @@ impl MlxKVCache {
                         // serialize is rare vs decode; time is not accumulated
                         // into `paged_materialize_us` (that field tracks live
                         // SDPA materialize on the append path).
-                        let (k, v) = paged.materialize(0, self.seq_len);
+                        let pool = self
+                            .fa_pool
+                            .as_ref()
+                            .expect("paged FA serialization requires pool");
+                        let (k, v) = paged.materialize(pool, 0, self.seq_len);
                         Self::serialize_tensor_logical(&mut out, &k, logical_tokens);
                         Self::serialize_tensor_logical(&mut out, &v, logical_tokens);
                     }
@@ -1356,7 +1823,9 @@ impl MlxKVCache {
             && window.is_none()
             && matches!(self.layers[layer], None | Some(FaLayerStorage::Paged(_)));
         if use_paged {
-            return self.append_paged_fa(layer, new_k, new_v, write_start, write_end, append);
+            return self
+                .append_paged_fa(layer, new_k, new_v, write_start..write_end, append, false)
+                .into_dense();
         }
 
         let entry = &mut self.layers[layer];
@@ -1516,29 +1985,67 @@ impl MlxKVCache {
         (k_view, v_view)
     }
 
+    /// Standard-FA append that can return a single-slab block-table view for
+    /// single-token decode. All unsupported shapes retain the dense contract.
+    pub(crate) fn append_with_retained_window_for_attention(
+        &mut self,
+        layer: usize,
+        new_k: MlxArray,
+        new_v: MlxArray,
+        window: Option<usize>,
+    ) -> MlxAttentionKv {
+        let append = validate_append_inputs(layer, self.layers.len(), &new_k, &new_v);
+        let write_start = self.seq_len;
+        let write_end = write_start + append.new_tokens;
+        let use_native_paged = append.new_tokens == 1
+            && window.is_none()
+            && self
+                .fa_pool
+                .as_ref()
+                .is_some_and(SharedFaBlockPool::native_attention_enabled)
+            && matches!(self.layers[layer], None | Some(FaLayerStorage::Paged(_)));
+        if use_native_paged {
+            return self.append_paged_fa(layer, new_k, new_v, write_start..write_end, append, true);
+        }
+        let (k, v) = self.append_with_retained_window(layer, new_k, new_v, window);
+        MlxAttentionKv::Dense { k, v }
+    }
+
+    pub(crate) fn record_paged_attention_result(&mut self, used_native: bool) {
+        if used_native {
+            self.paged_attention_calls = self.paged_attention_calls.saturating_add(1);
+        } else {
+            self.paged_attention_fallbacks = self.paged_attention_fallbacks.saturating_add(1);
+        }
+    }
+
     fn append_paged_fa(
         &mut self,
         layer: usize,
         new_k: MlxArray,
         new_v: MlxArray,
-        write_start: usize,
-        write_end: usize,
+        write_range: std::ops::Range<usize>,
         append: AppendShape,
-    ) -> (MlxArray, MlxArray) {
-        let block_size = self
+        prefer_native_attention: bool,
+    ) -> MlxAttentionKv {
+        let write_start = write_range.start;
+        let write_end = write_range.end;
+        let pool = self
             .fa_pool
             .as_ref()
             .expect("paged append requires FA block pool")
-            .config()
-            .block_size_tokens as usize;
+            .clone();
+        let block_size = pool.config().block_size_tokens as usize;
 
         if self.layers[layer].is_none() {
             self.layers[layer] = Some(FaLayerStorage::Paged(PagedFaLayer {
+                layer_idx: layer,
                 n_kv_heads: append.n_kv_heads,
                 head_dim: append.head_dim,
                 dtype: append.dtype,
                 block_size,
                 block_ids: Vec::new(),
+                slab_storage: pool.slab_storage_enabled(),
                 k_blocks: Vec::new(),
                 v_blocks: Vec::new(),
                 last_k_view: None,
@@ -1546,11 +2053,7 @@ impl MlxKVCache {
             }));
         }
 
-        let need_demote = {
-            let pool = self
-                .fa_pool
-                .as_mut()
-                .expect("paged append requires FA block pool");
+        let preparation = {
             let paged = match self.layers[layer]
                 .as_mut()
                 .expect("paged layer just created")
@@ -1572,24 +2075,33 @@ impl MlxKVCache {
                 paged.dtype, append.dtype,
                 "paged FA append cannot change dtype for an existing layer"
             );
-            match paged.ensure_capacity(pool, write_end, &mut self.growth_count) {
-                Ok(()) => {
-                    paged.write_tokens(write_start, &new_k, &new_v);
-                    false
-                }
-                Err(FaBlockPoolError::Exhausted { .. }) => true,
-                Err(err) => panic!("FA block pool error on layer {layer}: {err}"),
+            match paged.ensure_capacity(&pool, write_end, &mut self.growth_count) {
+                Ok(()) => match paged.prepare_write(&pool, write_start, write_end) {
+                    Ok(cow_copies) => paged
+                        .write_tokens(&pool, write_start, &new_k, &new_v)
+                        .map(|()| cow_copies),
+                    Err(err) => Err(err),
+                },
+                Err(err) => Err(err),
             }
         };
 
+        let need_demote = match preparation {
+            Ok(cow_copies) => {
+                self.paged_cow_copies = self.paged_cow_copies.saturating_add(cow_copies);
+                false
+            }
+            Err(FaBlockPoolError::Exhausted { .. }) => true,
+            Err(err) => panic!("FA block pool error on layer {layer}: {err}"),
+        };
+
         if need_demote {
-            // Either way, materialize existing private blocks into
+            // Either way, materialize existing paged blocks into
             // contiguous storage first and finish this append on the
             // historical growth path, so the compute graph for this forward
             // stays well-formed and correct (proven token-exact by
             // fa_paged_pool_exhaustion_demotion_matches_contiguous_oracle)
-            // regardless of policy. Under an explicit
-            // AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap (`hard_cap`) this also
+            // regardless of policy. Under a production `hard_cap` this also
             // sticks hard_cap_exhausted so the caller fails the request
             // instead of returning a token computed past the operator's
             // memory bound; without an explicit cap this stays fail-soft.
@@ -1603,7 +2115,8 @@ impl MlxKVCache {
                 self.hard_cap_exhausted = true;
             }
             self.demote_paged_layer_to_contiguous(layer, write_start);
-            return self.append_with_retained_window(layer, new_k, new_v, None);
+            let (k, v) = self.append_with_retained_window(layer, new_k, new_v, None);
+            return MlxAttentionKv::Dense { k, v };
         }
 
         let paged = match self.layers[layer]
@@ -1613,18 +2126,24 @@ impl MlxKVCache {
             FaLayerStorage::Paged(p) => p,
             FaLayerStorage::Contiguous(_) => unreachable!("paged path"),
         };
+        if prefer_native_attention && let Some(view) = paged.attention_view(&pool, write_end) {
+            return MlxAttentionKv::Paged(view);
+        }
         let started = Instant::now();
-        let (k_view, v_view) = paged.materialize(0, write_end);
+        let (k_view, v_view) = paged.materialize(&pool, 0, write_end);
         self.paged_materialize_us = self
             .paged_materialize_us
             .saturating_add(started.elapsed().as_micros() as u64);
         paged.last_k_view = Some(k_view.clone());
         paged.last_v_view = Some(v_view.clone());
-        (k_view, v_view)
+        MlxAttentionKv::Dense {
+            k: k_view,
+            v: v_view,
+        }
     }
 
     /// Convert a paged FA layer into contiguous storage up to `logical_len`
-    /// tokens and free its private blocks. Used on pool exhaustion.
+    /// tokens and release its paged blocks. Used on pool exhaustion.
     fn demote_paged_layer_to_contiguous(&mut self, layer: usize, logical_len: usize) {
         let Some(FaLayerStorage::Paged(paged)) = self.layers.get_mut(layer).and_then(Option::take)
         else {
@@ -1638,12 +2157,16 @@ impl MlxKVCache {
                 zeros(&shape, paged.dtype, None),
             )
         } else {
-            paged.materialize(0, logical_len)
+            let pool = self
+                .fa_pool
+                .as_ref()
+                .expect("paged FA demotion requires pool");
+            paged.materialize(pool, 0, logical_len)
         };
         self.paged_materialize_us = self
             .paged_materialize_us
             .saturating_add(started.elapsed().as_micros() as u64);
-        if let Some(pool) = self.fa_pool.as_mut() {
+        if let Some(pool) = self.fa_pool.as_ref() {
             let _ = pool.free(&paged.block_ids);
         }
         let capacity = if logical_len == 0 {
@@ -1960,12 +2483,12 @@ impl MlxKVCache {
             // including the rejected draft positions.  Drop them so any
             // consumer between this trim and the next append re-slices from
             // the logical boundary instead of attending over trimmed tokens.
-            // Paged layers also free fully-empty trailing blocks back to the
-            // private pool (fail-closed capacity bookkeeping).
+            // Paged layers also release fully-empty trailing blocks back to
+            // their pool (fail-closed capacity bookkeeping).
             for fa in self.layers.iter_mut().flatten() {
                 fa.clear_views();
             }
-            if let Some(pool) = self.fa_pool.as_mut() {
+            if let Some(pool) = self.fa_pool.as_ref() {
                 for fa in self.layers.iter_mut().flatten() {
                     if let FaLayerStorage::Paged(paged) = fa {
                         paged.free_blocks_beyond(pool, self.seq_len);
@@ -1999,7 +2522,15 @@ impl MlxKVCache {
                 let v = slice(&lkv.v, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
                 Some((k, v))
             }
-            FaLayerStorage::Paged(paged) => Some(paged.materialize(0, self.seq_len)),
+            FaLayerStorage::Paged(paged) => Some(
+                paged.materialize(
+                    self.fa_pool
+                        .as_ref()
+                        .expect("paged logical view requires pool"),
+                    0,
+                    self.seq_len,
+                ),
+            ),
         }
     }
 
@@ -2018,6 +2549,20 @@ impl MlxKVCache {
         let length = shape[2] as usize;
         let head_dim = shape[3];
         let dtype = k.dtype();
+        // Compiled/speculative paths return dense K/V. Release this view's
+        // paged ownership before replacing it so native adopters keep their
+        // own references and the pool never leaks the removed IDs.
+        let previous = self.layers.get_mut(layer).and_then(Option::take);
+        if let Some(FaLayerStorage::Paged(paged)) = previous
+            && let Some(pool) = self.fa_pool.as_ref()
+            && let Err(error) = pool.free(&paged.block_ids)
+        {
+            tracing::error!(
+                target: "ax_engine_mlx::kv_pool",
+                %error,
+                "failed to release paged KV blocks during dense layer replacement",
+            );
+        }
         self.layers[layer] = Some(FaLayerStorage::Contiguous(LayerKV {
             last_k_view: Some(k.clone()),
             last_v_view: Some(v.clone()),
@@ -2108,8 +2653,19 @@ impl MlxKVCache {
             rotating_ring_slack: self.rotating_slack,
             paged_materialize_us: self.paged_materialize_us,
             paged_pool_exhaustion_fallbacks: self.paged_pool_exhaustion_fallbacks,
+            paged_cow_copies: self.paged_cow_copies,
+            paged_attention_calls: self.paged_attention_calls,
+            paged_attention_fallbacks: self.paged_attention_fallbacks,
             ..MlxKVCacheUsage::default()
         };
+        if let Some(pool) = self.fa_pool.as_ref() {
+            let snapshot = pool.snapshot();
+            usage.paged_pool_blocks_used = snapshot.allocated_blocks;
+            usage.paged_pool_shared_blocks = snapshot.shared_blocks;
+            usage.paged_pool_slabs = snapshot.slab_count;
+            usage.paged_pool_slab_bytes = snapshot.slab_bytes;
+            usage.paged_pool_slab_grow_events = snapshot.slab_grow_events;
+        }
 
         for (layer_idx, fa) in self.layers.iter().enumerate() {
             let Some(fa) = fa else {
@@ -2257,7 +2813,13 @@ impl MlxKVCache {
             }
             FaLayerStorage::Paged(paged) => match (&paged.last_k_view, &paged.last_v_view) {
                 (Some(k), Some(v)) => (k.clone(), v.clone()),
-                _ => paged.materialize(0, self.seq_len + new_tokens),
+                _ => paged.materialize(
+                    self.fa_pool
+                        .as_ref()
+                        .expect("paged source view requires pool"),
+                    0,
+                    self.seq_len + new_tokens,
+                ),
             },
         }
     }
@@ -2304,7 +2866,15 @@ impl MlxKVCache {
             }
             FaLayerStorage::Paged(paged) => match (&paged.last_k_view, &paged.last_v_view) {
                 (Some(k), Some(v)) => Some((k.clone(), v.clone())),
-                _ => Some(paged.materialize(0, self.seq_len)),
+                _ => Some(
+                    paged.materialize(
+                        self.fa_pool
+                            .as_ref()
+                            .expect("paged layer view requires pool"),
+                        0,
+                        self.seq_len,
+                    ),
+                ),
             },
         }
     }
@@ -2356,7 +2926,15 @@ impl MlxKVCache {
                 );
                 Some((k, v))
             }
-            FaLayerStorage::Paged(paged) => Some(paged.materialize(0, self.seq_len)),
+            FaLayerStorage::Paged(paged) => Some(
+                paged.materialize(
+                    self.fa_pool
+                        .as_ref()
+                        .expect("paged full view requires pool"),
+                    0,
+                    self.seq_len,
+                ),
+            ),
         }
     }
 
@@ -2382,7 +2960,7 @@ impl MlxKVCache {
         // If this layer was paged, free its blocks before replacing.
         let previous = self.layers.get_mut(layer).and_then(Option::take);
         if let Some(FaLayerStorage::Paged(paged)) = previous
-            && let Some(pool) = self.fa_pool.as_mut()
+            && let Some(pool) = self.fa_pool.as_ref()
         {
             let _ = pool.free(&paged.block_ids);
         }
@@ -2403,7 +2981,7 @@ impl MlxKVCache {
 
     /// Reset cache entirely (e.g., between requests).
     pub fn reset(&mut self) {
-        if let Some(pool) = self.fa_pool.as_mut() {
+        if let Some(pool) = self.fa_pool.as_ref() {
             for entry in self.layers.iter_mut().flatten() {
                 if let FaLayerStorage::Paged(paged) = entry {
                     let _ = pool.free(&paged.block_ids);
@@ -3563,6 +4141,38 @@ mod tests {
     }
 
     #[test]
+    fn serialize_materializes_exact_length_strided_fa_views() {
+        let backing_tokens = 8usize;
+        let seq_len = 3usize;
+        let head_dim = 4;
+        let n_kv_heads = 2;
+        let base_k = build_fa_array_f32(backing_tokens, n_kv_heads, head_dim);
+        let base_v = build_fa_array_f32(backing_tokens, n_kv_heads, head_dim);
+        let stop = [1, n_kv_heads, seq_len as i32, head_dim];
+        let k = slice(&base_k, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
+        let v = slice(&base_v, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
+        let expected_k = host_f32(&contiguous(&k, None));
+
+        let mut cache = MlxKVCache::new_contiguous(1);
+        cache.layers[0] = Some(FaLayerStorage::Contiguous(LayerKV {
+            last_k_view: None,
+            last_v_view: None,
+            n_kv_heads,
+            head_dim,
+            capacity: seq_len,
+            rotating_window: None,
+            dtype: MlxDtype::Float32,
+            k,
+            v,
+        }));
+        cache.seq_len = seq_len;
+
+        let restored = MlxKVCache::try_deserialize_from_bytes(&cache.serialize_to_bytes())
+            .expect("strided exact-length round-trip");
+        assert_eq!(host_f32(&contiguous_layer(&restored, 0).k), expected_k,);
+    }
+
+    #[test]
     fn serialize_roundtrips_rope_offset() {
         let mut cache = MlxKVCache::new(1);
         cache.seq_len = 4;
@@ -4097,11 +4707,23 @@ mod tests {
         let v = fa_token_values(5, 1, 4, 2.0);
         let _ = a.append(0, k, v);
         a.advance(5);
+        let pool = a.fa_pool.as_ref().expect("paged pool").clone();
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
         let b = a.clone();
+        assert!(a.shares_fa_block_pool_with(&b));
+        assert!(a.is_native_fa_shareable());
+        assert!(b.is_native_fa_shareable());
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
+        assert_eq!(pool.snapshot().shared_blocks, 2);
+        assert_eq!(a.additional_fa_blocks_for_append(1), Some(1));
         assert!(a.trim_to(2));
-        // Clone must still hold its private blocks after source trim frees IDs.
+        // Clone still owns both blocks after the source releases its tail.
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
+        assert_eq!(pool.snapshot().shared_blocks, 1);
+        assert_eq!(a.additional_fa_blocks_for_append(1), Some(1));
         let (bk, _) = b.logical_layer_kv(0).expect("clone layer");
         eval(&[&bk]);
+        let b_before = host_f32(&bk);
         assert_eq!(bk.shape()[2], 5);
         let k2 = fa_token_values(1, 1, 4, 9.0);
         let v2 = fa_token_values(1, 1, 4, 9.5);
@@ -4109,8 +4731,169 @@ mod tests {
         a.advance(1);
         eval(&[&ak]);
         assert_eq!(ak.shape()[2], 3);
-        // Drop both; free lists must not double-free (pool drop is fine).
+        assert_eq!(pool.snapshot().allocated_blocks, 3);
+        assert_eq!(pool.snapshot().shared_blocks, 0);
+        assert_eq!(a.usage_snapshot().paged_cow_copies, 1);
+        let (bk_after, _) = b.logical_layer_kv(0).expect("clone layer after divergence");
+        eval(&[&bk_after]);
+        assert_eq!(host_f32(&bk_after), b_before);
+
+        // A dense compiled/speculative replacement releases only this view's
+        // paged IDs and becomes ineligible for native physical adoption.
+        let dense_k = fa_token_values(3, 1, 4, 4.0);
+        let dense_v = fa_token_values(3, 1, 4, 5.0);
+        a.set_layer_kv_logical(0, dense_k, dense_v, 3);
+        assert!(!a.is_native_fa_shareable());
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
+
+        // Drop both; every reference returns to the one shared pool exactly once.
         drop(a);
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
         drop(b);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn dense_standard_fa_snapshot_repages_transactionally() {
+        let mut dense = MlxKVCache::new_contiguous(2);
+        for layer in 0..2 {
+            let k = fa_token_values(5, 1, 4, 1.0 + layer as f32);
+            let v = fa_token_values(5, 1, 4, 3.0 + layer as f32);
+            let _ = dense.append(layer, k, v);
+        }
+        dense.advance(5);
+        let restored = MlxKVCache::try_deserialize_from_bytes(&dense.serialize_to_bytes())
+            .expect("dense restore");
+
+        let too_small = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 3,
+            hard_cap: true,
+        })
+        .expect("small pool");
+        assert_eq!(restored.fa_blocks_required_for_repage(&too_small), Ok(4));
+        assert!(matches!(
+            restored.clone_repage_into_shared_fa_pool(too_small.clone()),
+            Err(FaBlockPoolError::Exhausted {
+                requested: 4,
+                available: 3
+            })
+        ));
+        assert_eq!(too_small.snapshot().allocated_blocks, 0);
+
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 4,
+            hard_cap: true,
+        })
+        .expect("exact pool");
+        let repaged = restored
+            .clone_repage_into_shared_fa_pool(pool.clone())
+            .expect("repage");
+        assert!(repaged.is_native_fa_shareable());
+        assert_eq!(pool.snapshot().allocated_blocks, 4);
+        for layer in 0..2 {
+            let (dense_k, dense_v) = restored.logical_layer_kv(layer).expect("dense layer");
+            let (paged_k, paged_v) = repaged.logical_layer_kv(layer).expect("paged layer");
+            eval(&[&dense_k, &dense_v, &paged_k, &paged_v]);
+            assert_eq!(host_f32(&paged_k), host_f32(&dense_k));
+            assert_eq!(host_f32(&paged_v), host_f32(&dense_v));
+        }
+        drop(repaged);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn fixed_slab_clone_cow_preserves_source_and_releases_every_block() {
+        let pool = SharedFaBlockPool::new_with_native_slab_storage(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 16,
+            hard_cap: true,
+        })
+        .expect("central pool");
+        let mut branch = MlxKVCache::new_with_shared_fa_block_pool(1, pool.clone());
+        let initial_k = fa_token_values(5, 1, 4, 1.0);
+        let initial_v = fa_token_values(5, 1, 4, 2.0);
+        let _ = branch.append(0, initial_k, initial_v);
+        branch.advance(5);
+        assert!(branch.is_native_fa_shareable());
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
+
+        let source = branch.clone();
+        assert!(source.is_native_fa_shareable());
+        assert_eq!(pool.snapshot().shared_blocks, 2);
+        let (source_k_before, source_v_before) =
+            source.logical_layer_kv(0).expect("source central layer");
+        eval(&[&source_k_before, &source_v_before]);
+        let source_k_before = host_f32(&source_k_before);
+        let source_v_before = host_f32(&source_v_before);
+
+        let next_k = fa_token_values(1, 1, 4, 9.0);
+        let next_v = fa_token_values(1, 1, 4, 9.5);
+        let attention = branch.append_with_retained_window_for_attention(0, next_k, next_v, None);
+        branch.advance(1);
+        let MlxAttentionKv::Paged(view) = attention else {
+            panic!("eligible single-token central append must return a block-table view");
+        };
+        assert_eq!(view.key_len, 6);
+        assert_eq!(view.block_ids.len(), 2);
+        let (branch_k, branch_v) = view.materialize();
+        eval(&[&branch_k, &branch_v]);
+        assert_eq!(branch_k.shape(), vec![1, 1, 6, 4]);
+        assert_eq!(
+            &host_f32(&branch_k)[20..],
+            fa_token_values(1, 1, 4, 9.0).data_f32()
+        );
+        assert_eq!(
+            &host_f32(&branch_v)[20..],
+            fa_token_values(1, 1, 4, 9.5).data_f32()
+        );
+        assert_eq!(branch.usage_snapshot().paged_cow_copies, 1);
+        assert_eq!(pool.snapshot().allocated_blocks, 3);
+        assert_eq!(pool.snapshot().shared_blocks, 1);
+
+        let (source_k_after, source_v_after) =
+            source.logical_layer_kv(0).expect("source after branch COW");
+        eval(&[&source_k_after, &source_v_after]);
+        assert_eq!(host_f32(&source_k_after), source_k_before);
+        assert_eq!(host_f32(&source_v_after), source_v_before);
+
+        drop(branch);
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
+        drop(source);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn dense_snapshot_repages_into_fixed_slabs_without_dense_block_handles() {
+        let mut dense = MlxKVCache::new_contiguous(1);
+        let expected_k = fa_token_values(5, 2, 8, 1.0);
+        let expected_v = fa_token_values(5, 2, 8, 2.0);
+        let _ = dense.append(0, expected_k.clone(), expected_v.clone());
+        dense.advance(5);
+
+        let pool = SharedFaBlockPool::new_with_native_slab_storage(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 2,
+            hard_cap: true,
+        })
+        .expect("central pool");
+        let repaged = dense
+            .clone_repage_into_shared_fa_pool(pool.clone())
+            .expect("central repage");
+        assert!(repaged.is_native_fa_shareable());
+        let Some(FaLayerStorage::Paged(layer)) = repaged.layers[0].as_ref() else {
+            panic!("repage must produce paged storage");
+        };
+        assert!(layer.slab_storage);
+        assert!(layer.k_blocks.is_empty());
+        assert!(layer.v_blocks.is_empty());
+        let (actual_k, actual_v) = repaged.logical_layer_kv(0).expect("central layer");
+        eval(&[&actual_k, &actual_v]);
+        eval(&[&expected_k, &expected_v]);
+        assert_eq!(host_f32(&actual_k), host_f32(&expected_k));
+        assert_eq!(host_f32(&actual_v), host_f32(&expected_v));
+        drop(repaged);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
     }
 }

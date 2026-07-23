@@ -2321,6 +2321,15 @@ pub(super) struct KvCacheTelemetry {
     pub(super) growth_count: u64,
     pub(super) paged_materialize_us: u64,
     pub(super) paged_pool_exhaustion_fallbacks: u64,
+    pub(super) paged_cow_copies: u64,
+    /// Pool-wide gauges are max-merged across request snapshots.
+    pub(super) paged_pool_blocks_used_max: u64,
+    pub(super) paged_pool_shared_blocks_max: u64,
+    pub(super) paged_pool_slabs_max: u64,
+    pub(super) paged_pool_slab_bytes_max: u64,
+    pub(super) paged_pool_slab_grow_events_max: u64,
+    pub(super) paged_attention_calls: u64,
+    pub(super) paged_attention_fallbacks: u64,
 }
 
 impl KvCacheTelemetry {
@@ -2368,6 +2377,28 @@ impl KvCacheTelemetry {
         self.paged_pool_exhaustion_fallbacks = self
             .paged_pool_exhaustion_fallbacks
             .saturating_add(usage.paged_pool_exhaustion_fallbacks);
+        self.paged_cow_copies = self.paged_cow_copies.saturating_add(usage.paged_cow_copies);
+        self.paged_pool_blocks_used_max = self
+            .paged_pool_blocks_used_max
+            .max(u64::from(usage.paged_pool_blocks_used));
+        self.paged_pool_shared_blocks_max = self
+            .paged_pool_shared_blocks_max
+            .max(u64::from(usage.paged_pool_shared_blocks));
+        self.paged_pool_slabs_max = self
+            .paged_pool_slabs_max
+            .max(u64::from(usage.paged_pool_slabs));
+        self.paged_pool_slab_bytes_max = self
+            .paged_pool_slab_bytes_max
+            .max(usage.paged_pool_slab_bytes);
+        self.paged_pool_slab_grow_events_max = self
+            .paged_pool_slab_grow_events_max
+            .max(usage.paged_pool_slab_grow_events);
+        self.paged_attention_calls = self
+            .paged_attention_calls
+            .saturating_add(usage.paged_attention_calls);
+        self.paged_attention_fallbacks = self
+            .paged_attention_fallbacks
+            .saturating_add(usage.paged_attention_fallbacks);
     }
 
     pub(super) fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -2443,6 +2474,38 @@ impl KvCacheTelemetry {
             (
                 ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_EXHAUSTION_FALLBACKS,
                 saturating_u32_from_u64(self.paged_pool_exhaustion_fallbacks),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_PAGED_COW_COPIES,
+                saturating_u32_from_u64(self.paged_cow_copies),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_BLOCKS_USED,
+                saturating_u32_from_u64(self.paged_pool_blocks_used_max),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SHARED_BLOCKS,
+                saturating_u32_from_u64(self.paged_pool_shared_blocks_max),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLABS,
+                saturating_u32_from_u64(self.paged_pool_slabs_max),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLAB_KIB,
+                kib_ceil(self.paged_pool_slab_bytes_max),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLAB_GROW_EVENTS,
+                saturating_u32_from_u64(self.paged_pool_slab_grow_events_max),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_PAGED_ATTENTION_CALLS,
+                saturating_u32_from_u64(self.paged_attention_calls),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_PAGED_ATTENTION_FALLBACKS,
+                saturating_u32_from_u64(self.paged_attention_fallbacks),
             ),
         ];
 

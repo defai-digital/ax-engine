@@ -711,58 +711,64 @@ impl EngineCore {
             }
             return Ok((BTreeMap::new(), schedule_plan));
         }
-        let Some(execution_batch) = &schedule_plan.execution_batch else {
-            return Ok((BTreeMap::new(), schedule_plan));
-        };
-
-        let mut pending_prefix_reuse = Vec::new();
-        for item in &execution_batch.items {
-            if item.mode != ExecutionMode::Prefill {
-                continue;
-            }
-
-            let lookup = self.lookup_prefix(item.request_id)?;
-            if !lookup.hit {
-                continue;
-            }
-
-            debug!(
-                request_id = item.request_id.0,
-                matched_tokens = lookup.matched_token_count,
-                matched_blocks = lookup.matched_blocks.len(),
-                retained_cache_hit = lookup.uses_retained_cache(),
-                "reusing prompt prefix before scheduling runner work"
-            );
-            self.request_manager
-                .validate_prefix_reuse(item.request_id, lookup.matched_token_count)?;
-            self.kv_manager
-                .validate_prefix_share(item.request_id, &lookup)?;
-            pending_prefix_reuse.push((item.request_id, lookup));
-        }
-
         let mut prefix_reuse = BTreeMap::new();
-        for (request_id, lookup) in pending_prefix_reuse {
-            self.kv_manager.share_prefix(request_id, &lookup)?;
-            self.sync_request_block_table(request_id)?;
-            self.request_manager
-                .apply_prefix_reuse(request_id, lookup.matched_token_count)?;
-            prefix_reuse.insert(request_id, lookup);
-        }
+        while let Some(execution_batch) = &schedule_plan.execution_batch {
+            let mut pending_prefix_reuse = Vec::new();
+            for item in &execution_batch.items {
+                if item.mode != ExecutionMode::Prefill
+                    || prefix_reuse.contains_key(&item.request_id)
+                {
+                    continue;
+                }
 
-        if prefix_reuse.is_empty() {
-            return Ok((prefix_reuse, schedule_plan));
-        }
+                let lookup = self.lookup_prefix(item.request_id)?;
+                if !lookup.hit {
+                    continue;
+                }
 
-        self.refresh_execution_plan_refs()?;
+                debug!(
+                    request_id = item.request_id.0,
+                    matched_tokens = lookup.matched_token_count,
+                    matched_blocks = lookup.matched_blocks.len(),
+                    retained_cache_hit = lookup.uses_retained_cache(),
+                    "reusing prompt prefix before scheduling runner work"
+                );
+                self.request_manager
+                    .validate_prefix_reuse(item.request_id, lookup.matched_token_count)?;
+                self.kv_manager
+                    .validate_prefix_share(item.request_id, &lookup)?;
+                pending_prefix_reuse.push((item.request_id, lookup));
+            }
 
-        Ok((prefix_reuse, {
+            if pending_prefix_reuse.is_empty() {
+                break;
+            }
+
+            for (request_id, lookup) in pending_prefix_reuse {
+                self.kv_manager.share_prefix(request_id, &lookup)?;
+                self.sync_request_block_table(request_id)?;
+                self.request_manager
+                    .apply_prefix_reuse(request_id, lookup.matched_token_count)?;
+                prefix_reuse.insert(request_id, lookup);
+            }
+
+            // Prefix adoption consumes little or none of this step's token
+            // budget. Replanning can therefore admit prefill requests that
+            // were absent from the previous batch. Resolve those newly
+            // admitted requests too, until the plan reaches a fixed point;
+            // otherwise a same-prefix c4 batch can restore only the first
+            // three requests and make the fourth recompute token by token
+            // under KV pressure.
+            self.refresh_execution_plan_refs()?;
             let request_snapshots = self.request_manager.snapshots();
-            self.scheduler.plan(&self.scheduler_input(
+            schedule_plan = self.scheduler.plan(&self.scheduler_input(
                 schedule_plan.step_id,
                 request_snapshots,
                 global_token_budget,
-            ))
-        }))
+            ));
+        }
+
+        Ok((prefix_reuse, schedule_plan))
     }
 
     fn scheduler_input(
@@ -3102,6 +3108,66 @@ mod tests {
                 }),
             Some(1)
         );
+    }
+
+    #[test]
+    fn prefix_reuse_replans_to_a_fixed_point_for_newly_admitted_requests() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
+        let shared_prompt = vec![10, 11, 12, 13, 14, 15, 16, 17];
+
+        assert!(
+            engine
+                .submit(make_submission_with_prompt(1, 1, shared_prompt.clone(), 1))
+                .is_ok(),
+            "seed request submission must succeed",
+        );
+        assert!(engine.step(8, true).is_ok(), "seed prefill must succeed");
+
+        for request_id in 2..=5 {
+            assert!(
+                engine
+                    .submit(make_submission_with_prompt(
+                        request_id,
+                        request_id,
+                        shared_prompt.clone(),
+                        1,
+                    ))
+                    .is_ok(),
+                "repeated request submission must succeed",
+            );
+        }
+
+        // The initial 24-token plan can admit only three 8-token prefills.
+        // Reusing those prefixes frees enough budget to admit request 5; it
+        // must be probed in the replanned batch instead of cold-prefilling.
+        let outcome = engine.step(24, true);
+        assert!(outcome.is_ok(), "fixed-point reuse step must succeed");
+        let Ok(outcome) = outcome else {
+            return;
+        };
+        let batch = outcome.schedule_plan.execution_batch.as_ref();
+        assert!(
+            batch.is_some(),
+            "all four repeated prompts should be scheduled"
+        );
+        let Some(batch) = batch else {
+            return;
+        };
+        let repeated_items = batch
+            .items
+            .iter()
+            .filter(|item| (2..=5).contains(&item.request_id.0))
+            .collect::<Vec<_>>();
+
+        assert_eq!(outcome.metrics.prefix_hits, 4);
+        assert_eq!(repeated_items.len(), 4);
+        assert!(repeated_items.iter().all(|item| {
+            item.mode == ExecutionMode::Decode
+                && item.prefix_tokens_reused == 8
+                && item.prefix_blocks_reused == 2
+                && item.reused_prefix_token_slice == shared_prompt
+        }));
     }
 
     #[test]

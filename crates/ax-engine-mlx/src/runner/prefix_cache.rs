@@ -250,6 +250,270 @@ impl MlxPrefixCache {
     }
 }
 
+/// Runner-local native prefix state. Unlike [`MlxPrefixSnapshot`], this never
+/// enters [`MlxPrefixCacheStore`] or the disk tier: live MLX arrays stay bound
+/// to the runner and stream that produced them.
+pub(crate) struct MlxNativePrefixSnapshot {
+    pub(crate) cache: MlxKVCache,
+    pub(crate) tokens: Vec<u32>,
+    pub(crate) token_count: usize,
+    pub(crate) logical_bytes: u64,
+    pub(crate) greedy_prefill_output_token: Option<u32>,
+}
+
+impl MlxNativePrefixSnapshot {
+    pub(crate) fn new(
+        cache: MlxKVCache,
+        tokens: Vec<u32>,
+        logical_kv_bytes: u64,
+        greedy_prefill_output_token: Option<u32>,
+    ) -> Self {
+        let token_count = tokens.len();
+        let logical_bytes = logical_kv_bytes
+            .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64));
+        Self {
+            cache,
+            tokens,
+            token_count,
+            logical_bytes,
+            greedy_prefill_output_token,
+        }
+    }
+}
+
+struct MlxNativePrefixCacheEntry {
+    snapshot: Arc<MlxNativePrefixSnapshot>,
+    touch_tick: u64,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MlxNativePrefixCacheStats {
+    pub(crate) entries: u32,
+    pub(crate) logical_bytes: u64,
+}
+
+pub(crate) struct MlxNativePrefixCacheInsertOutcome {
+    pub(crate) stored: bool,
+    pub(crate) evictions: u32,
+    /// Removed snapshots must be dropped after the caller releases the native
+    /// cache lock because `MlxKVCache::drop` acquires the shared pool lock.
+    pub(crate) retired: Vec<Arc<MlxNativePrefixSnapshot>>,
+}
+
+pub(crate) struct MlxNativePrefixCache {
+    policy: MlxPrefixCachePolicy,
+    entries: HashMap<MlxPrefixCacheKey, MlxNativePrefixCacheEntry>,
+    lru: VecDeque<(MlxPrefixCacheKey, u64)>,
+    logical_bytes: u64,
+    next_touch_tick: u64,
+}
+
+impl MlxNativePrefixCache {
+    pub(crate) fn new(policy: MlxPrefixCachePolicy) -> Self {
+        Self {
+            policy,
+            entries: HashMap::new(),
+            lru: VecDeque::new(),
+            logical_bytes: 0,
+            next_touch_tick: 0,
+        }
+    }
+
+    fn compatible_key(left: &MlxPrefixCacheKey, right: &MlxPrefixCacheKey) -> bool {
+        left.model_id == right.model_id
+            && left.route_policy == right.route_policy
+            && left.layer_layout == right.layer_layout
+            && left.block_size_tokens == right.block_size_tokens
+    }
+
+    /// Longest block-aligned token prefix available from any compatible live
+    /// paged snapshot. A stored larger entry can serve a shorter request by
+    /// clone + trim; the entry itself remains pinned for sibling adopters.
+    pub(crate) fn longest_prefix_len(
+        &self,
+        requested_key: &MlxPrefixCacheKey,
+        requested_tokens: &[u32],
+    ) -> Option<usize> {
+        if !self.policy.enabled() || requested_key.block_size_tokens == 0 {
+            return None;
+        }
+        let block_size = requested_key.block_size_tokens as usize;
+        self.entries
+            .iter()
+            .filter(|(key, _)| Self::compatible_key(key, requested_key))
+            .filter_map(|(_, entry)| {
+                let common = entry
+                    .snapshot
+                    .tokens
+                    .iter()
+                    .zip(requested_tokens)
+                    .take_while(|(left, right)| left == right)
+                    .count();
+                // Exact snapshots remain valid even if a direct test/client
+                // inserted an unaligned entry. Partial adoption is always
+                // floored to a physical block boundary.
+                let aligned =
+                    if common == requested_tokens.len() && common == entry.snapshot.token_count {
+                        common
+                    } else {
+                        common - (common % block_size)
+                    };
+                (aligned > 0).then_some(aligned)
+            })
+            .max()
+    }
+
+    pub(crate) fn get_longest_prefix(
+        &mut self,
+        requested_key: &MlxPrefixCacheKey,
+        requested_tokens: &[u32],
+    ) -> Option<(Arc<MlxNativePrefixSnapshot>, usize)> {
+        let matched_len = self.longest_prefix_len(requested_key, requested_tokens)?;
+        let best_key = self
+            .entries
+            .iter()
+            .filter(|(key, entry)| {
+                Self::compatible_key(key, requested_key)
+                    && entry
+                        .snapshot
+                        .tokens
+                        .get(..matched_len)
+                        .is_some_and(|tokens| tokens == &requested_tokens[..matched_len])
+            })
+            .max_by_key(|(_, entry)| entry.snapshot.token_count)
+            .map(|(key, _)| key.clone())?;
+        let touch_tick = self.allocate_touch_tick();
+        let snapshot = {
+            let entry = self.entries.get_mut(&best_key)?;
+            entry.touch_tick = touch_tick;
+            Arc::clone(&entry.snapshot)
+        };
+        self.lru.push_back((best_key, touch_tick));
+        self.compact_stale_lru_if_needed();
+        Some((snapshot, matched_len))
+    }
+
+    pub(crate) fn contains_exact_tokens(
+        &self,
+        key: &MlxPrefixCacheKey,
+        requested_tokens: &[u32],
+    ) -> bool {
+        self.policy.enabled()
+            && self
+                .entries
+                .get(key)
+                .is_some_and(|entry| entry.snapshot.tokens == requested_tokens)
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        key: MlxPrefixCacheKey,
+        snapshot: MlxNativePrefixSnapshot,
+    ) -> MlxNativePrefixCacheInsertOutcome {
+        let snapshot = Arc::new(snapshot);
+        let mut retired = Vec::new();
+        if !self.policy.enabled()
+            || snapshot.token_count == 0
+            || snapshot.cache.seq_len() != snapshot.token_count
+            || !snapshot.cache.is_native_fa_shareable()
+        {
+            retired.push(snapshot);
+            return MlxNativePrefixCacheInsertOutcome {
+                stored: false,
+                evictions: 0,
+                retired,
+            };
+        }
+
+        if let Some(previous) = self.entries.remove(&key) {
+            self.logical_bytes = self
+                .logical_bytes
+                .saturating_sub(previous.snapshot.logical_bytes);
+            retired.push(previous.snapshot);
+        }
+
+        let touch_tick = self.allocate_touch_tick();
+        self.logical_bytes = self.logical_bytes.saturating_add(snapshot.logical_bytes);
+        self.entries.insert(
+            key.clone(),
+            MlxNativePrefixCacheEntry {
+                snapshot,
+                touch_tick,
+            },
+        );
+        self.lru.push_back((key.clone(), touch_tick));
+        self.compact_stale_lru_if_needed();
+
+        let mut evictions = 0u32;
+        while self.logical_bytes > self.policy.max_bytes
+            || self.entries.len() > self.policy.max_entries
+        {
+            let Some(evicted) = self.take_lru() else {
+                break;
+            };
+            retired.push(evicted);
+            evictions = evictions.saturating_add(1);
+        }
+
+        MlxNativePrefixCacheInsertOutcome {
+            stored: self.entries.contains_key(&key),
+            evictions,
+            retired,
+        }
+    }
+
+    /// Remove one live LRU entry. The caller drops the returned snapshot only
+    /// after releasing the mutex that guards this cache.
+    pub(crate) fn take_lru(&mut self) -> Option<Arc<MlxNativePrefixSnapshot>> {
+        while let Some((key, touch_tick)) = self.lru.pop_front() {
+            let Some(entry) = self.entries.get(&key) else {
+                continue;
+            };
+            if entry.touch_tick != touch_tick {
+                continue;
+            }
+            let removed = self.entries.remove(&key)?;
+            self.logical_bytes = self
+                .logical_bytes
+                .saturating_sub(removed.snapshot.logical_bytes);
+            return Some(removed.snapshot);
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stats(&self) -> MlxNativePrefixCacheStats {
+        MlxNativePrefixCacheStats {
+            entries: saturating_u32(self.entries.len()),
+            logical_bytes: self.logical_bytes,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn allocate_touch_tick(&mut self) -> u64 {
+        let tick = self.next_touch_tick;
+        self.next_touch_tick = self.next_touch_tick.wrapping_add(1);
+        tick
+    }
+
+    fn compact_stale_lru_if_needed(&mut self) {
+        let limit = self.entries.len().saturating_mul(4).saturating_add(64);
+        if self.lru.len() <= limit {
+            return;
+        }
+        let entries = &self.entries;
+        self.lru.retain(|(key, touch_tick)| {
+            entries
+                .get(key)
+                .is_some_and(|entry| entry.touch_tick == *touch_tick)
+        });
+    }
+}
+
 impl Default for MlxPrefixCachePolicy {
     fn default() -> Self {
         Self {
@@ -721,6 +985,9 @@ pub(crate) struct MlxPrefixCacheTelemetry {
     pub(crate) warmup_tokens: u32,
     pub(crate) entries: u32,
     pub(crate) bytes: u64,
+    pub(crate) native_hits: u32,
+    pub(crate) native_stores: u32,
+    pub(crate) native_evictions: u32,
     // F3 M2 — L2 disk cache counters. These count operations performed
     // by the durable file-backed prefix-cache layer, distinct from the
     // in-memory counters above. `disk_*` events fire only when the
@@ -780,6 +1047,9 @@ impl MlxPrefixCacheTelemetry {
         self.warmup_tokens = self.warmup_tokens.saturating_add(other.warmup_tokens);
         self.entries = self.entries.max(other.entries);
         self.bytes = self.bytes.max(other.bytes);
+        self.native_hits = self.native_hits.saturating_add(other.native_hits);
+        self.native_stores = self.native_stores.saturating_add(other.native_stores);
+        self.native_evictions = self.native_evictions.saturating_add(other.native_evictions);
         self.disk_hits = self.disk_hits.saturating_add(other.disk_hits);
         self.disk_misses = self.disk_misses.saturating_add(other.disk_misses);
         self.disk_inserts = self.disk_inserts.saturating_add(other.disk_inserts);
@@ -864,6 +1134,18 @@ impl MlxPrefixCacheTelemetry {
             (
                 ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BYTES_KIB,
                 kib_ceil(self.bytes),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_NATIVE_HITS,
+                self.native_hits,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_NATIVE_STORES,
+                self.native_stores,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_NATIVE_EVICTIONS,
+                self.native_evictions,
             ),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS, self.disk_hits),
             (
@@ -1062,6 +1344,201 @@ impl MlxPrefixCacheTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_prefix_key(token: u32) -> MlxPrefixCacheKey {
+        MlxPrefixCacheKey {
+            model_id: "native-test".to_string(),
+            route_policy: "direct".to_string(),
+            layer_layout: "standard-fa".to_string(),
+            block_size_tokens: 4,
+            token_count: 4,
+            token_hash: u64::from(token),
+        }
+    }
+
+    fn native_test_cache(pool: &SharedFaBlockPool, value: f32) -> MlxKVCache {
+        let mut cache = MlxKVCache::new_with_shared_fa_block_pool(1, pool.clone());
+        let array = |fill: f32| {
+            let data = vec![fill; 8];
+            MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data.as_slice()),
+                &[1, 1, 4, 2],
+                mlx_sys::MlxDtype::Float32,
+            )
+        };
+        let k = array(value);
+        let v = array(value + 1.0);
+        let _ = cache.append(0, k, v);
+        cache.advance(4);
+        cache
+    }
+
+    #[test]
+    fn native_prefix_exact_lookup_adopts_shared_blocks() {
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 4,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let producer = native_test_cache(&pool, 1.0);
+        assert_eq!(pool.snapshot().allocated_blocks, 1);
+
+        let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 2,
+        });
+        let key = native_prefix_key(7);
+        let tokens = vec![7; 4];
+        let outcome = cache.insert(
+            key.clone(),
+            MlxNativePrefixSnapshot::new(producer.clone(), tokens.clone(), 64, Some(11)),
+        );
+        assert!(outcome.stored);
+        assert_eq!(outcome.evictions, 0);
+        assert!(outcome.retired.is_empty());
+        assert_eq!(cache.stats().entries, 1);
+        assert_eq!(cache.stats().logical_bytes, 80);
+        assert!(
+            cache.get_longest_prefix(&key, &[8; 4]).is_none(),
+            "tokens must match exactly"
+        );
+
+        let (hit, matched_len) = cache.get_longest_prefix(&key, &tokens).expect("native hit");
+        assert_eq!(matched_len, tokens.len());
+        let adopted = hit.cache.clone();
+        assert!(producer.shares_fa_block_pool_with(&adopted));
+        assert_eq!(pool.snapshot().allocated_blocks, 1);
+        assert_eq!(pool.snapshot().shared_blocks, 1);
+
+        drop(producer);
+        let retired = cache.take_lru().expect("evict native entry");
+        drop(hit);
+        drop(retired);
+        assert_eq!(pool.snapshot().allocated_blocks, 1);
+        drop(adopted);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn native_prefix_larger_entry_clones_and_trims_without_consuming_source() {
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 8,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let mut producer = MlxKVCache::new_with_shared_fa_block_pool(1, pool.clone());
+        let values = (0..16).map(|value| value as f32).collect::<Vec<_>>();
+        let array = MlxArray::from_raw_data(
+            values.as_ptr().cast(),
+            std::mem::size_of_val(values.as_slice()),
+            &[1, 1, 8, 2],
+            mlx_sys::MlxDtype::Float32,
+        );
+        let _ = producer.append(0, array.clone(), array);
+        producer.advance(8);
+
+        let stored_tokens = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let mut stored_key = native_prefix_key(1);
+        stored_key.token_count = 8;
+        let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 4096,
+            max_entries: 2,
+        });
+        let outcome = cache.insert(
+            stored_key,
+            MlxNativePrefixSnapshot::new(producer.clone(), stored_tokens, 128, Some(99)),
+        );
+        assert!(outcome.stored);
+
+        let requested_tokens = [1, 2, 3, 4, 42, 43];
+        let mut requested_key = native_prefix_key(2);
+        requested_key.token_count = requested_tokens.len() as u32;
+        let (snapshot, matched_len) = cache
+            .get_longest_prefix(&requested_key, &requested_tokens)
+            .expect("four-token aligned prefix");
+        assert_eq!(matched_len, 4);
+        let mut adopted = snapshot.cache.clone();
+        assert!(adopted.trim_to(matched_len));
+        assert_eq!(adopted.seq_len(), 4);
+        assert_eq!(snapshot.cache.seq_len(), 8, "cache entry remains reusable");
+        assert_eq!(cache.stats().entries, 1, "lookup is non-consuming");
+
+        drop(outcome.retired);
+        drop(adopted);
+        drop(snapshot);
+        drop(producer);
+        let retired = cache.take_lru().expect("retire source");
+        drop(retired);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn native_prefix_lru_releases_unreferenced_blocks_after_unlock() {
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 4,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 1,
+        });
+
+        let first = native_test_cache(&pool, 1.0);
+        let first_outcome = cache.insert(
+            native_prefix_key(1),
+            MlxNativePrefixSnapshot::new(first, vec![1; 4], 64, None),
+        );
+        drop(first_outcome.retired);
+        assert_eq!(pool.snapshot().allocated_blocks, 1);
+
+        let second = native_test_cache(&pool, 2.0);
+        let second_outcome = cache.insert(
+            native_prefix_key(2),
+            MlxNativePrefixSnapshot::new(second, vec![2; 4], 64, None),
+        );
+        assert!(second_outcome.stored);
+        assert_eq!(second_outcome.evictions, 1);
+        // The retired Arc still pins the first physical block until the caller
+        // has released its native-cache mutex and drops it.
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
+        drop(second_outcome.retired);
+        assert_eq!(pool.snapshot().allocated_blocks, 1);
+
+        let retired = cache.take_lru().expect("second entry");
+        drop(retired);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn native_prefix_byte_budget_evicts_oversized_entry() {
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 1,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let producer = native_test_cache(&pool, 1.0);
+        let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            // Snapshot charge is 64 payload + 16 token bytes.
+            max_bytes: 79,
+            max_entries: 2,
+        });
+        let outcome = cache.insert(
+            native_prefix_key(3),
+            MlxNativePrefixSnapshot::new(producer, vec![3; 4], 64, None),
+        );
+        assert!(!outcome.stored);
+        assert_eq!(outcome.evictions, 1);
+        assert_eq!(cache.stats().entries, 0);
+        assert_eq!(pool.snapshot().allocated_blocks, 1);
+        drop(outcome.retired);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
 
     #[test]
     fn disk_writer_persists_queued_stores_before_shutdown() {

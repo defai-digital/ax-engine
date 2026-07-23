@@ -5,7 +5,7 @@
 | **Title** | Strengthen AX Engine KV cache weak surfaces (MLA uniformity, concurrent prefill, paged physical layout) |
 | **Author** | _TBD_ |
 | **Date** | 2026-07-14 |
-| **Status** | Approved; Track A R2 + hit-rate harness green; PR3 fair multi-prefill exposed on session/server (default OFF); PR4 FA private pool wired (flag OFF) with align + fail-closed-at-the-request-level exhaustion (both auto-aligned and explicit `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS`); PR5 sharing still open |
+| **Status** | Approved; Track A R2 + hit-rate harness green; PR3 fair multi-prefill exposed on session/server (default OFF); PR4 FA private pool wired (flag OFF); ADR-006/009 runner-local sharing/COW/native L1 plus fixed 32-row slabs and run-gather into MLX SDPA implemented; one Llama 8K S4 experiment is token-exact and Metal-footprint positive; native block-table decode remains diagnostic; S6 content-addressed durable payload pages are implemented behind a separate default-off flag; default-on soak/p95 matrix, MLA pairs, and logical/physical admission coordination remain open |
 | **Related docs** | `docs/KV-CACHE.md`, `docs/SCHEDULER.md`, `docs/LONG-CONTEXT.md`, `docs/SERVING-INVARIANTS.md`, `docs/ROADMAP.md` |
 | **Primary crates** | `ax-engine-core`, `ax-engine-mlx`, `ax-engine-sdk`, `ax-engine-bench` |
 
@@ -775,7 +775,7 @@ flowchart LR
 
 | Layout | PR4 | Later |
 |---|---|---|
-| Standard FA `LayerKV` | Private paged blocks + materialize for SDPA | Sharing / CoW |
+| Standard FA `LayerKV` | Private paged blocks + materialize for SDPA | Runner-local sharing / CoW landed under ADR-006; native block-table attention open |
 | GLM MLA `kv_latent` + `k_pe` | Contiguous (unchanged) | PR5+ paired blocks |
 | Gemma rotating window | Contiguous / hybrid | Later |
 | Linear attention | Contiguous | Non-paged |
@@ -790,10 +790,14 @@ materialize-on-use without behavior change when flag is off.
 
 1. **PR4:** private FA blocks, contiguous-equivalent numerics, flag OFF default,
    materialize for attention, materialize for serialize.
-2. **PR5+:** MLA pairs optional; on prefix hit attach producer block IDs with
-   refcount++; CoW on first divergent append; free at refcount 0; coordinate
-   with `KvManager` eviction (physical missing → warmup recompute).
-3. Only after sharing + benches: optional memory-savings claims.
+2. **ADR-006 / first PR5 slice:** for pure standard FA, one runner-wide
+   allocator; native L1 prefix hits retain producer block IDs; CoW on first
+   divergent append; free at refcount 0; serialized L1/L2 remains fallback.
+3. **ADR-009 / second PR5 slice:** fixed per-layer 32-row slabs, donation-safe
+   writes, maximal same-slab-run gather into MLX SDPA, non-consuming longest
+   native-prefix clone/trim, and diagnostic-only one-slab kernel.
+4. **Remaining PR5+:** MLA pairs, direct logical/physical admission and
+   eviction coordination, transient-prefill budgeting, and broader promotion evidence.
 
 #### C.6 Correctness oracle
 
@@ -869,8 +873,9 @@ remains `KvManager::allocate` / preempt / `BlockedOnMemory`.
 
 **Today:** contiguous `LayerKV` / MLA / linear per request.
 
-**PR4 (flag on, FA layers):** private block lists + materialize-for-SDPA;
-non-FA layers unchanged.
+**PR4 (base flag on, FA layers):** private block lists + materialize-for-SDPA;
+non-FA layers unchanged. **ADR-006 sharing flag:** one allocator per runner,
+refcount/COW native standard-FA L1; materialize-for-SDPA remains.
 
 ### Snapshot / disk (I-2)
 
@@ -967,9 +972,13 @@ No new network surface. Disk cache remains local-FS, opt-in.
 | `ax_scheduler_prefill_deferred_multimodal_atomic` | B | Multimodal deferrals |
 | `ax_mlx_prefill_items_executed` | B | Runner prefill items |
 | `ax_mlx_paged_kv_enabled` | C | 0/1 |
-| `ax_mlx_paged_kv_blocks_used` | C | Physical blocks in use |
+| `ax_mlx_kv_paged_pool_blocks_used` | C | Runner-pool layer-block slots in use |
+| `ax_mlx_kv_paged_pool_shared_blocks` | C | Allocated slots with refcount > 1 |
+| `ax_mlx_kv_paged_pool_slabs` | C | Fixed per-layer K/V slabs currently reserved |
+| `ax_mlx_kv_paged_pool_slab_kib` | C | Real K+V bytes reserved by fixed slabs, rounded to KiB |
+| `ax_mlx_kv_paged_pool_slab_grow_events` | C | Pool-wide post-initialization slab-growth episodes |
 | `ax_mlx_kv_paged_materialize_us` | C | Dense view build cost (PR4 measure; ROUTE_DECISION_AX_MLX_KV_* prefix) |
-| `ax_mlx_paged_kv_cow_copies` | C | Block-level CoW (PR5+) |
+| `ax_mlx_kv_paged_cow_copies` | C | Block-level CoW (ADR-006) |
 
 Logging: `AX_KV_DIAG` for logical ledger; `tracing` under
 `ax_engine_mlx::kv_pool` for pool alloc/exhaust.
@@ -997,7 +1006,7 @@ flowchart TD
 | PR2 | Dual-path default; existing kill switches | `AX_DISABLE_MLA_PREFIX_RESTORE=1`; R2 shape-aligned store; code revert |
 | PR3 | `multi_prefill_fair` default from Open Q1 / I-1 result; kill switch forces greedy monopoly | Set fair false |
 | PR4 | `AX_MLX_PAGED_KV` default OFF | Leave off |
-| PR5 | Sharing behind second flag | Disable sharing |
+| PR5 slice / ADR-006 | `AX_MLX_FA_KV_BLOCK_SHARING` default OFF | Disable sharing; serialized L1 remains fallback |
 
 Staged evidence:
 
@@ -1147,14 +1156,14 @@ Staged evidence:
 | **Acceptance tests / evidence** | Token-exact FA oracle vs contiguous, including the exhaustion/demotion path itself (not just shape/counters or a sibling layer); existing suite green with flag off; optional microbench for materialize cost |
 | **Risk** | **Med** (isolated by default-off; materialize cost measured not claimed as win) |
 
-### PR5+ — Optional sharing, MLA pool, eviction, benchmarks
+### PR5+ — Standard-FA sharing + fixed-slab gather landed; MLA / coordination remain
 
 | Field | Content |
 |---|---|
 | **Title** | Physical block sharing / MLA pairs / eviction / serving benches |
 | **Files / components** | Pool refcount CoW; optional MLA paired blocks; engine→runner block map; I-2 if format changes; multiturn + memory footprint artifacts |
 | **Dependencies** | PR4 |
-| **Description** | Cross-request block sharing on prefix hit; CoW on diverge; free at refcount 0; coordinate with `KvManager` free/evict. Memory-savings claims only after benches. |
+| **Description** | ADR-006 lands runner-local standard-FA native L1 sharing, CoW, refcount-zero release, and native-LRU pressure reclamation behind a second default-off flag. ADR-009 replaces per-block/growable storage with fixed slabs and run-gather into MLX SDPA; the native kernel is diagnostic. One real Llama 8K experiment measured a 49.9% lower process-lifetime physical-footprint peak, but default-on claims still require the soak/p95 matrix. Remaining architecture work: MLA pairs and direct logical/physical admission/eviction coordination. |
 | **Acceptance tests / evidence** | Equivalence + multiturn; shared-prefix memory artifact; fail-closed missing physical → warmup; I-2 if needed |
 | **Risk** | **High** |
 

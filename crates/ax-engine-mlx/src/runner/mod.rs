@@ -23,8 +23,13 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB, ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS,
-    ROUTE_DECISION_AX_MLX_KV_PAGED_MATERIALIZE_US,
+    ROUTE_DECISION_AX_MLX_KV_PAGED_ATTENTION_CALLS,
+    ROUTE_DECISION_AX_MLX_KV_PAGED_ATTENTION_FALLBACKS, ROUTE_DECISION_AX_MLX_KV_PAGED_COW_COPIES,
+    ROUTE_DECISION_AX_MLX_KV_PAGED_MATERIALIZE_US, ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_BLOCKS_USED,
     ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_EXHAUSTION_FALLBACKS,
+    ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SHARED_BLOCKS,
+    ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLAB_GROW_EVENTS,
+    ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLAB_KIB, ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLABS,
     ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS, ROUTE_DECISION_AX_MLX_KV_ROTATED_RING_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_ROTATING_RING_SLACK,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
@@ -54,8 +59,9 @@ use crate::generate::{
     decode_step, start_direct_pipeline,
 };
 use crate::kv_block_pool::{
-    FaBlockPoolConfig, default_fa_block_pool_config, fa_block_pool_max_blocks_override,
-    fa_kv_block_pool_enabled,
+    FaBlockPoolConfig, FaBlockPoolError, SharedFaBlockPool, default_fa_block_pool_config,
+    fa_block_pool_max_blocks_override, fa_kv_block_pool_enabled, fa_kv_block_sharing_enabled,
+    fa_native_paged_attention_enabled,
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
@@ -191,6 +197,10 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_REUSED_TOKENS: &str = "ax_mlx_prefix_ca
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_WARMUP_TOKENS: &str = "ax_mlx_prefix_cache_warmup_tokens";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_ENTRIES: &str = "ax_mlx_prefix_cache_entries";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BYTES_KIB: &str = "ax_mlx_prefix_cache_bytes_kib";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_NATIVE_HITS: &str = "ax_mlx_prefix_cache_native_hits";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_NATIVE_STORES: &str = "ax_mlx_prefix_cache_native_stores";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_NATIVE_EVICTIONS: &str =
+    "ax_mlx_prefix_cache_native_evictions";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS: &str = "ax_mlx_prefix_cache_disk_hits";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_MISSES: &str = "ax_mlx_prefix_cache_disk_misses";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERTS: &str = "ax_mlx_prefix_cache_disk_inserts";
@@ -485,11 +495,31 @@ enum NgramRequestDisableReason {
     LinearInitialNoDraft,
 }
 
+struct PromptPrefixSnapshotStoreOptions<'a> {
+    linear_boundary_snapshot: Option<&'a (usize, MlxKVCache)>,
+    prefill_completes_prompt: bool,
+    greedy_prefill_output_token: Option<u32>,
+    cold_prefill_us: u64,
+}
+
 impl RequestState {
+    #[cfg(test)]
     fn new(num_layers: usize, seed: u64, fa_block_pool_config: Option<FaBlockPoolConfig>) -> Self {
-        let cache = match fa_block_pool_config {
-            Some(config) => MlxKVCache::new_with_fa_block_pool(num_layers, config),
-            None => MlxKVCache::new_contiguous(num_layers),
+        Self::new_with_shared_fa_pool(num_layers, seed, fa_block_pool_config, None)
+    }
+
+    fn new_with_shared_fa_pool(
+        num_layers: usize,
+        seed: u64,
+        fa_block_pool_config: Option<FaBlockPoolConfig>,
+        shared_fa_block_pool: Option<SharedFaBlockPool>,
+    ) -> Self {
+        let cache = if let Some(pool) = shared_fa_block_pool {
+            MlxKVCache::new_with_shared_fa_block_pool(num_layers, pool)
+        } else if let Some(config) = fa_block_pool_config {
+            MlxKVCache::new_with_fa_block_pool(num_layers, config)
+        } else {
+            MlxKVCache::new_contiguous(num_layers)
         };
         Self {
             cache,
@@ -692,10 +722,13 @@ pub struct MlxRunner {
     /// experiments — that dual path can re-open warm_extend token drift.
     /// Non-MLA models keep the caller-supplied larger chunk here.
     cold_prefill_chunk: usize,
-    /// When set, new requests build a private FA block-pool `MlxKVCache`.
+    /// When set, new requests build an FA block-pool `MlxKVCache`.
     /// Geometry is aligned to session `KvManager` via
     /// [`Self::align_fa_block_pool_to_kv`] after construction.
     fa_block_pool_config: Option<FaBlockPoolConfig>,
+    /// One runner-wide allocator when the second sharing gate is enabled.
+    /// `None` preserves per-request private pools (or the contiguous path).
+    shared_fa_block_pool: Option<SharedFaBlockPool>,
     kv_layer_windows: Vec<Option<usize>>,
     binding_summary: NativeModelBindingSummary,
     terminal_token_ids: Vec<u32>,
@@ -748,6 +781,9 @@ pub struct MlxRunner {
     ngram_policy_variant: NgramPolicyVariant,
     /// Serialized, thread-agnostic KV snapshots for block-aligned exact prompt prefixes.
     prefix_cache: Arc<Mutex<MlxPrefixCache>>,
+    /// Runner-local native FA snapshots. Never shared through
+    /// `MlxPrefixCacheStore`; live MLX arrays remain bound to this runner.
+    native_prefix_cache: Mutex<MlxNativePrefixCache>,
     /// Optional L2 file-backed prefix cache (F3). Populated when
     /// `AX_MLX_PREFIX_CACHE_DIR` is set and the disk-disabled kill
     /// switch is not engaged. `None` when off; the L2 paths short-
@@ -971,6 +1007,59 @@ fn load_gemma4_assistant_mtp_runtime(
     (status, Some(runtime))
 }
 
+fn aligned_fa_pool_max_blocks(
+    total_blocks: u32,
+    layer_count: usize,
+    sharing: bool,
+    explicit_override: Option<u32>,
+) -> u32 {
+    explicit_override.unwrap_or_else(|| {
+        if sharing {
+            let layer_count = u32::try_from(layer_count).unwrap_or(u32::MAX);
+            total_blocks.saturating_mul(layer_count).max(1)
+        } else {
+            total_blocks.max(1)
+        }
+    })
+}
+
+fn prefix_snapshot_start_tokens(
+    block_size: usize,
+    full_block_tokens: usize,
+    alignment_restricted: bool,
+    native_page_sharing: bool,
+) -> usize {
+    if alignment_restricted || native_page_sharing {
+        full_block_tokens
+    } else {
+        block_size
+    }
+}
+
+/// Evict native snapshots until the pool can satisfy the caller's current
+/// demand. Recompute demand after every eviction: dropping a snapshot can
+/// make an active adopter the unique owner of its tail block, eliminating a
+/// pending COW allocation even when `available_blocks` itself did not grow.
+fn reclaim_native_prefix_entries(
+    native_cache: &Mutex<MlxNativePrefixCache>,
+    pool: &SharedFaBlockPool,
+    mut required_blocks: impl FnMut() -> Option<u32>,
+) -> u32 {
+    let mut evictions = 0u32;
+    while let Some(required) = required_blocks() {
+        if pool.snapshot().available_blocks >= required {
+            break;
+        }
+        let retired = { native_cache.lock().take_lru() };
+        let Some(retired) = retired else {
+            break;
+        };
+        drop(retired);
+        evictions = evictions.saturating_add(1);
+    }
+    evictions
+}
+
 impl MlxRunner {
     /// Whether the loaded target has a validated Qwen MTP head or Gemma
     /// assistant drafter attached.
@@ -1007,21 +1096,41 @@ impl MlxRunner {
         &self.gemma4_assistant_mtp_status
     }
 
-    /// Align the FA private block-pool geometry to the session `KvManager`.
+    /// Align FA block-pool geometry to the session `KvManager`.
     ///
     /// No-op when `AX_MLX_FA_KV_BLOCK_POOL` is off. When the flag is on, sets
     /// `block_size_tokens` / `max_blocks` so private FA capacity matches logical
     /// block accounting. Env `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` still wins
     /// when set (explicit operator override).
     pub fn align_fa_block_pool_to_kv(&mut self, block_size_tokens: u32, total_blocks: u32) {
+        if self.shared_fa_block_pool.is_some() {
+            let request_state_exists = !self.states.lock().is_empty();
+            let native_state_exists = !self.native_prefix_cache.lock().is_empty();
+            if request_state_exists || native_state_exists {
+                tracing::error!(
+                    target: "ax_engine_mlx::kv_pool",
+                    request_state_exists,
+                    native_state_exists,
+                    "refusing to realign shared FA pool after ownership became live",
+                );
+                return;
+            }
+        }
         let Some(config) = self.fa_block_pool_config.as_mut() else {
             return;
         };
         config.block_size_tokens = block_size_tokens.max(1);
-        let explicit_max_blocks = fa_block_pool_max_blocks_override().is_some();
-        if !explicit_max_blocks {
-            config.max_blocks = total_blocks.max(1);
-        }
+        // The PR4 compatibility representation allocates one ID per
+        // layer-token block. A runner-wide pool therefore needs one
+        // layer-block slot for every logical KvManager block on every
+        // standard-FA layer. Fixed per-layer slabs preserve that mapping
+        // without allocating the configured ceiling up front.
+        config.max_blocks = aligned_fa_pool_max_blocks(
+            total_blocks,
+            self.cfg.layer_count,
+            self.shared_fa_block_pool.is_some(),
+            fa_block_pool_max_blocks_override(),
+        );
         // max_blocks is always a real memory budget here — either the
         // operator's explicit override, or KvManager.total_blocks (itself an
         // operator-configured session capacity, not an arbitrary scaffold
@@ -1029,6 +1138,19 @@ impl MlxRunner {
         // demoting to unbounded contiguous growth (see kv_cache.rs
         // append_paged_fa / MlxRunner::run_item).
         config.hard_cap = true;
+        if self.shared_fa_block_pool.is_some() {
+            let native_attention = self
+                .shared_fa_block_pool
+                .as_ref()
+                .is_some_and(SharedFaBlockPool::native_attention_enabled);
+            self.shared_fa_block_pool = Some(if native_attention {
+                SharedFaBlockPool::new_with_native_slab_storage(*config)
+                    .expect("aligned native FA slab pool config must remain valid")
+            } else {
+                SharedFaBlockPool::new_with_slab_storage(*config)
+                    .expect("aligned FA slab pool config must remain valid")
+            });
+        }
     }
 
     /// Build with every cross-session share available: an optional prefix
@@ -1359,6 +1481,7 @@ impl MlxRunner {
         let (prefix_cache, disk_prefix_cache, disk_prefix_writer) = prefix_cache_store
             .unwrap_or_else(MlxPrefixCacheStore::from_env)
             .into_parts();
+        let native_prefix_cache_policy = prefix_cache.lock().policy;
 
         let cfg_arc = Arc::new(cfg.clone());
         let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
@@ -1393,6 +1516,52 @@ impl MlxRunner {
         } else {
             None
         };
+        let shared_fa_model_eligible = !has_mtp
+            && cfg.mla_attention.is_none()
+            && cfg.linear_attention.is_none()
+            && cfg.diffusion.is_none()
+            && kv_layer_windows.iter().all(Option::is_none)
+            && weights.gemma4_unified_vision.is_none()
+            && weights.gemma4_unified_audio.is_none()
+            && weights.unlimited_ocr_vision.is_none();
+        // The diagnostic native slab kernel is consumed only by the standard causal
+        // decode graph. Keep the broader P0 page-sharing path available for
+        // other eligible models, but fail this experimental compute route
+        // closed for sinks, KV-source layers, mixed head geometry, and
+        // non-autoregressive generation.
+        let native_paged_model_eligible = shared_fa_model_eligible
+            && cfg.generation_kind == ax_engine_core::GenerationKind::Autoregressive
+            && ax_engine_core::resolve_layer_forward_route(&cfg.model_family)
+                == Some(ax_engine_core::LayerForwardRoute::Standard)
+            && cfg.layer_configs.iter().all(|layer| {
+                layer.kv_source_layer.is_none()
+                    && layer.sliding_window.is_none()
+                    && layer.head_dim == cfg.head_dim
+            })
+            && weights.layers.iter().all(|layer| {
+                layer.attn_sink.is_none()
+                    && layer.linear_attn.is_none()
+                    && layer.glm_mla_attn.is_none()
+            });
+        let native_paged_requested = fa_native_paged_attention_enabled();
+        if native_paged_requested && shared_fa_model_eligible && !native_paged_model_eligible {
+            tracing::warn!(
+                target: "ax_engine_mlx::kv_pool",
+                model_family = %cfg.model_family,
+                "native paged attention is structurally ineligible; retaining page sharing with dense attention",
+            );
+        }
+        let shared_fa_block_pool = fa_block_pool_config
+            .filter(|_| fa_kv_block_sharing_enabled() && shared_fa_model_eligible)
+            .map(|config| {
+                if native_paged_requested && native_paged_model_eligible {
+                    SharedFaBlockPool::new_with_native_slab_storage(config)
+                        .expect("default native FA slab pool config must be valid")
+                } else {
+                    SharedFaBlockPool::new_with_slab_storage(config)
+                        .expect("default FA slab pool config must be valid")
+                }
+            });
         Ok(Self {
             cfg,
             cfg_arc,
@@ -1400,6 +1569,7 @@ impl MlxRunner {
             prefill_chunk,
             cold_prefill_chunk,
             fa_block_pool_config,
+            shared_fa_block_pool,
             kv_layer_windows,
             binding_summary,
             terminal_token_ids,
@@ -1423,6 +1593,7 @@ impl MlxRunner {
             gemma4_assistant_mtp,
             ngram_policy_variant,
             prefix_cache,
+            native_prefix_cache: Mutex::new(MlxNativePrefixCache::new(native_prefix_cache_policy)),
             disk_prefix_cache,
             disk_prefix_writer,
             rotating_sliding_decode,
@@ -2986,10 +3157,11 @@ impl MlxRunner {
         let mut state = {
             let mut states = self.states.lock();
             states.remove(&item.request_id).unwrap_or_else(|| {
-                RequestState::new(
+                RequestState::new_with_shared_fa_pool(
                     self.cfg.layer_count,
                     ctx.map(|c| c.seed).unwrap_or(item.request_id.0),
                     self.fa_block_pool_config,
+                    self.shared_fa_block_pool.clone(),
                 )
             })
         };
@@ -3005,6 +3177,9 @@ impl MlxRunner {
                 sampling,
             )
         };
+        prefix_cache.native_evictions = prefix_cache.native_evictions.saturating_add(
+            self.reclaim_native_prefix_capacity(&state.cache, item.input_token_slice.len()),
+        );
 
         // Apply the request's rotating sliding-KV decision. Before
         // `initialize_generation_state` latches one (i.e. during prefill
@@ -3187,10 +3362,7 @@ impl MlxRunner {
                     let probe_over_claim = if full_recompute_tokens.is_some() {
                         0
                     } else {
-                        state
-                            .cache
-                            .seq_len()
-                            .saturating_sub(item.reused_prefix_token_slice.len())
+                        runner_probe_over_claim(state.cache.seq_len(), item)
                     };
                     let prefill_tokens = if probe_over_claim < prefill_tokens_base.len() {
                         &prefill_tokens_base[probe_over_claim..]
@@ -3392,11 +3564,14 @@ impl MlxRunner {
                             model_id,
                             block_size_tokens,
                             &state,
-                            linear_boundary_snapshot.as_ref(),
-                            prefill_completes_prompt
-                                .then_some(tok)
-                                .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
-                            u64::from(cold_prefill_us),
+                            PromptPrefixSnapshotStoreOptions {
+                                linear_boundary_snapshot: linear_boundary_snapshot.as_ref(),
+                                prefill_completes_prompt,
+                                greedy_prefill_output_token: prefill_completes_prompt
+                                    .then_some(tok)
+                                    .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
+                                cold_prefill_us: u64::from(cold_prefill_us),
+                            },
                         ),
                     );
                     let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
@@ -3619,6 +3794,64 @@ impl MlxRunner {
         true
     }
 
+    fn native_fa_prefix_sharing_enabled(&self) -> bool {
+        self.shared_fa_block_pool.is_some()
+            && !self.has_mtp()
+            && self.cfg.mla_attention.is_none()
+            && self.cfg.linear_attention.is_none()
+            && self.cfg.diffusion.is_none()
+            && self.kv_layer_windows.iter().all(Option::is_none)
+            && self.weights.gemma4_unified_vision.is_none()
+            && self.weights.gemma4_unified_audio.is_none()
+            && self.weights.unlimited_ocr_vision.is_none()
+    }
+
+    fn reclaim_native_prefix_capacity(&self, cache: &MlxKVCache, new_tokens: usize) -> u32 {
+        if !self.native_fa_prefix_sharing_enabled() {
+            return 0;
+        }
+        let Some(pool) = self.shared_fa_block_pool.as_ref() else {
+            return 0;
+        };
+        if !cache.uses_fa_block_pool(pool) {
+            return 0;
+        }
+        reclaim_native_prefix_entries(&self.native_prefix_cache, pool, || {
+            cache.additional_fa_blocks_for_append(new_tokens)
+        })
+    }
+
+    fn reclaim_native_prefix_blocks(&self, required: u32) -> u32 {
+        let Some(pool) = self.shared_fa_block_pool.as_ref() else {
+            return 0;
+        };
+        reclaim_native_prefix_entries(&self.native_prefix_cache, pool, || Some(required))
+    }
+
+    /// Restore portable dense snapshots back under the runner-wide physical
+    /// budget. The wire representation remains dense, but an opted-in pure-FA
+    /// runner must not escape its pool merely because native L1 missed.
+    fn prepare_portable_prefix_restore(
+        &self,
+        restored: MlxKVCache,
+    ) -> (Result<MlxKVCache, FaBlockPoolError>, u32) {
+        if !self.native_fa_prefix_sharing_enabled() {
+            return (Ok(restored), 0);
+        }
+        let Some(pool) = self.shared_fa_block_pool.as_ref() else {
+            return (Ok(restored), 0);
+        };
+        let required = match restored.fa_blocks_required_for_repage(pool) {
+            Ok(required) => required,
+            Err(error) => return (Err(error), 0),
+        };
+        let evictions = self.reclaim_native_prefix_blocks(required);
+        (
+            restored.clone_repage_into_shared_fa_pool(pool.clone()),
+            evictions,
+        )
+    }
+
     fn prefix_cache_route_policy(&self) -> String {
         let decode_policy = if self.disable_ngram_acceleration {
             "direct"
@@ -3753,25 +3986,41 @@ impl MlxRunner {
         block_size_tokens: u32,
         input: &[u32],
     ) -> Option<Vec<u32>> {
+        let requested_key = self.prefix_cache_key(model_id, block_size_tokens, input);
+        let native_len = self
+            .native_fa_prefix_sharing_enabled()
+            .then(|| {
+                self.native_prefix_cache
+                    .lock()
+                    .longest_prefix_len(&requested_key, input)
+            })
+            .flatten();
         // Re-acquire the L1 lock per candidate rather than holding it for
         // the whole walk: a long prompt with no L1 hit at any block-aligned
         // length can probe many candidates, each with an `fs::stat` disk
         // check — holding the mutex across all of them would serialize
         // every other concurrent request's L1 access behind that I/O for
         // no correctness reason.
-        Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
-            let key = self.prefix_cache_key(model_id, block_size_tokens, prefix);
-            if self.prefix_cache.lock().contains_exact_tokens(&key, prefix) {
-                return true;
-            }
-            if let Some(disk) = self.disk_prefix_cache.as_ref()
-                && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, prefix)
-                && disk.contains(&key_bytes)
-            {
-                return true;
-            }
-            false
-        })
+        let portable =
+            Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
+                let key = self.prefix_cache_key(model_id, block_size_tokens, prefix);
+                if self.prefix_cache.lock().contains_exact_tokens(&key, prefix) {
+                    return true;
+                }
+                if let Some(disk) = self.disk_prefix_cache.as_ref()
+                    && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, prefix)
+                    && disk.contains(&key_bytes)
+                {
+                    return true;
+                }
+                false
+            });
+        let portable_len = portable.as_ref().map(Vec::len);
+        match (native_len, portable_len) {
+            (Some(native), Some(portable_len)) if native <= portable_len => portable,
+            (Some(native), _) => Some(input[..native].to_vec()),
+            (None, _) => portable,
+        }
     }
 
     /// Discard a probed prefix that is shorter than a *non-empty* scheduler
@@ -3899,6 +4148,13 @@ impl MlxRunner {
         }
 
         let key = self.prefix_cache_key(model_id, block_size_tokens, reused_tokens);
+        let native_hit = if self.native_fa_prefix_sharing_enabled() {
+            self.native_prefix_cache
+                .lock()
+                .get_longest_prefix(&key, reused_tokens)
+        } else {
+            None
+        };
         let hit = {
             let mut cache = self.prefix_cache.lock();
             let hit = cache.get(&key, reused_tokens);
@@ -3924,6 +4180,30 @@ impl MlxRunner {
             && item.mode == ExecutionMode::Prefill
             && crate::fastpath::mla_prefix_restore_disabled();
 
+        if let Some((snapshot, matched_len)) = native_hit
+            && matched_len == reused_tokens.len()
+            && let Some(pool) = self.shared_fa_block_pool.as_ref()
+            && snapshot.cache.uses_fa_block_pool(pool)
+            && snapshot.cache.is_native_fa_shareable()
+        {
+            let mut adopted = snapshot.cache.clone();
+            if adopted.trim_to(matched_len) {
+                state.cache = adopted;
+                state.prompt_prefix_tokens = reused_tokens.to_vec();
+                state.cached_prefill_output_token = (matched_len == snapshot.token_count)
+                    .then_some(snapshot.greedy_prefill_output_token)
+                    .flatten()
+                    .filter(|_| prefill_output_token_cacheable(ctx, sampling));
+                telemetry.hits = telemetry.hits.saturating_add(1);
+                telemetry.native_hits = telemetry.native_hits.saturating_add(1);
+                telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
+                telemetry.reused_tokens = telemetry
+                    .reused_tokens
+                    .saturating_add(saturating_u32(matched_len));
+                return telemetry;
+            }
+        }
+
         if let Some(snapshot) = hit {
             if mla_extend_unsafe {
                 telemetry.record_blocked_unsupported_layout();
@@ -3934,20 +4214,36 @@ impl MlxRunner {
             }
             match snapshot.rehydrate_cache() {
                 Ok(restored_cache) => {
-                    state.cache = restored_cache;
-                    state.prompt_prefix_tokens = reused_tokens.to_vec();
-                    // Only inherit the producer's greedy token when this request
-                    // would compute it too; otherwise leave it unset so the
-                    // consume site resamples with the request's own sampling.
-                    state.cached_prefill_output_token = snapshot
-                        .greedy_prefill_output_token
-                        .filter(|_| prefill_output_token_cacheable(ctx, sampling));
-                    telemetry.hits = telemetry.hits.saturating_add(1);
-                    telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
-                    telemetry.reused_tokens = telemetry
-                        .reused_tokens
-                        .saturating_add(saturating_u32(snapshot.token_count));
-                    return telemetry;
+                    let (prepared, pressure_evictions) =
+                        self.prepare_portable_prefix_restore(restored_cache);
+                    telemetry.native_evictions = telemetry
+                        .native_evictions
+                        .saturating_add(pressure_evictions);
+                    match prepared {
+                        Ok(restored_cache) => {
+                            state.cache = restored_cache;
+                            state.prompt_prefix_tokens = reused_tokens.to_vec();
+                            // Only inherit the producer's greedy token when this request
+                            // would compute it too; otherwise leave it unset so the
+                            // consume site resamples with the request's own sampling.
+                            state.cached_prefill_output_token = snapshot
+                                .greedy_prefill_output_token
+                                .filter(|_| prefill_output_token_cacheable(ctx, sampling));
+                            telemetry.hits = telemetry.hits.saturating_add(1);
+                            telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
+                            telemetry.reused_tokens = telemetry
+                                .reused_tokens
+                                .saturating_add(saturating_u32(snapshot.token_count));
+                            return telemetry;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "ax_engine_mlx::prefix_cache",
+                                error = %e,
+                                "L1 prefix-cache payload could not enter the shared FA pool; treating as miss",
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -3987,22 +4283,7 @@ impl MlxRunner {
                     // Streaming restore materializes tensors while reading;
                     // stage timings already include payload IO + checksum.
                     let deserialize_us = 0u64;
-                    state.cache = restored.cache;
-                    state.prompt_prefix_tokens = reused_tokens.to_vec();
-                    // F3 M4 — the entry carries the greedy
-                    // prefill output token, so cross-restart L2
-                    // hits avoid recomputing at decode step 0
-                    // (which diverged for single-block prefixes
-                    // in the pre-fix run). When the slot is None
-                    // (older partial-prefix snapshot), decode_one
-                    // still runs as a fallback. Only a greedy,
-                    // no-repetition-penalty consumer may inherit the
-                    // stored greedy token; others resample.
-                    state.cached_prefill_output_token = restored
-                        .prefill_output_token
-                        .filter(|_| prefill_output_token_cacheable(ctx, sampling));
                     telemetry.record_disk_hit();
-                    telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
                     telemetry.record_disk_restore_stages(read_timings, deserialize_us);
                     // Feed the observed restore throughput back into
                     // the admission cost model.
@@ -4015,10 +4296,37 @@ impl MlxRunner {
                                 .saturating_add(deserialize_us),
                         );
                     }
-                    telemetry.reused_tokens = telemetry
-                        .reused_tokens
-                        .saturating_add(saturating_u32(reused_tokens.len()));
-                    return telemetry;
+                    let (prepared, pressure_evictions) =
+                        self.prepare_portable_prefix_restore(restored.cache);
+                    telemetry.native_evictions = telemetry
+                        .native_evictions
+                        .saturating_add(pressure_evictions);
+                    match prepared {
+                        Ok(restored_cache) => {
+                            state.cache = restored_cache;
+                            state.prompt_prefix_tokens = reused_tokens.to_vec();
+                            // F3 M4 — the entry carries the greedy prefill
+                            // output token, so cross-restart L2 hits avoid
+                            // recomputing at decode step 0. Sampling policy
+                            // still controls whether the token is reusable.
+                            state.cached_prefill_output_token = restored
+                                .prefill_output_token
+                                .filter(|_| prefill_output_token_cacheable(ctx, sampling));
+                            telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
+                            telemetry.reused_tokens = telemetry
+                                .reused_tokens
+                                .saturating_add(saturating_u32(reused_tokens.len()));
+                            return telemetry;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "ax_engine_mlx::prefix_cache",
+                                error = %e,
+                                "disk prefix-cache payload could not enter the shared FA pool; recomputing",
+                            );
+                            telemetry.record_disk_fallback_recompute();
+                        }
+                    }
                 }
                 Ok(None) => {
                     telemetry.record_disk_miss();
@@ -4324,10 +4632,14 @@ impl MlxRunner {
         model_id: &str,
         block_size_tokens: u32,
         state: &RequestState,
-        linear_boundary_snapshot: Option<&(usize, MlxKVCache)>,
-        greedy_prefill_output_token: Option<u32>,
-        cold_prefill_us: u64,
+        options: PromptPrefixSnapshotStoreOptions<'_>,
     ) -> MlxPrefixCacheTelemetry {
+        let PromptPrefixSnapshotStoreOptions {
+            linear_boundary_snapshot,
+            prefill_completes_prompt,
+            greedy_prefill_output_token,
+            cold_prefill_us,
+        } = options;
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         if block_size_tokens == 0 || state.prompt_prefix_tokens.is_empty() {
             return telemetry;
@@ -4403,11 +4715,13 @@ impl MlxRunner {
             telemetry.record_blocked_trim_failure();
             return telemetry;
         }
-        let snapshot_start_tokens = if alignment_restricted {
-            full_block_tokens
-        } else {
-            block_size
-        };
+        let native_store_enabled = self.native_fa_prefix_sharing_enabled();
+        let snapshot_start_tokens = prefix_snapshot_start_tokens(
+            block_size,
+            full_block_tokens,
+            alignment_restricted,
+            native_store_enabled,
+        );
 
         for prefix_len in (snapshot_start_tokens..=full_block_tokens).step_by(block_size) {
             let tokens = &state.prompt_prefix_tokens[..prefix_len];
@@ -4434,20 +4748,68 @@ impl MlxRunner {
                 }
                 superseding
             };
-            if l1_superseding {
-                let disk_store_needed = is_largest
-                    && self.disk_prefix_cache.as_ref().is_some_and(|disk| {
-                        self.disk_prefix_key_bytes(&key, tokens)
-                            .is_some_and(|key_bytes| !disk.contains(&key_bytes))
-                    });
-                if !disk_store_needed {
-                    continue;
-                }
+            let native_store_needed = native_store_enabled
+                && !self
+                    .native_prefix_cache
+                    .lock()
+                    .contains_exact_tokens(&key, tokens);
+            let disk_store_needed = is_largest
+                && self.disk_prefix_cache.as_ref().is_some_and(|disk| {
+                    self.disk_prefix_key_bytes(&key, tokens)
+                        .is_some_and(|key_bytes| !disk.contains(&key_bytes))
+                });
+            // A live standard-FA prefill boundary needs only a runner-local
+            // clone-and-pin. Portable serialization is deferred until prompt
+            // completion, matching mlxcel's separation between live paged
+            // ownership and detached/durable cache payloads. Unsupported or
+            // runtime-demoted layouts still fall back to the portable store.
+            let portable_store_phase = !native_store_enabled || prefill_completes_prompt;
+            if !portable_store_phase && !native_store_needed {
+                continue;
+            }
+            if portable_store_phase && l1_superseding && !disk_store_needed && !native_store_needed
+            {
+                continue;
             }
 
             let mut snapshot_cache = state.cache.clone();
             if !snapshot_cache.trim_to(prefix_len) {
                 telemetry.record_blocked_trim_failure();
+                continue;
+            }
+            let native_snapshot_eligible = native_store_enabled
+                && self
+                    .shared_fa_block_pool
+                    .as_ref()
+                    .is_some_and(|pool| snapshot_cache.uses_fa_block_pool(pool))
+                && snapshot_cache.is_native_fa_shareable();
+            let mut native_snapshot_ready = native_store_enabled && !native_store_needed;
+            if native_store_needed && native_snapshot_eligible {
+                let logical_kv_bytes = snapshot_cache.usage_snapshot().logical_bytes;
+                let native_outcome = self.native_prefix_cache.lock().insert(
+                    key.clone(),
+                    MlxNativePrefixSnapshot::new(
+                        snapshot_cache.clone(),
+                        tokens.to_vec(),
+                        logical_kv_bytes,
+                        snapshot_prefill_output_token,
+                    ),
+                );
+                native_snapshot_ready = native_outcome.stored;
+                if native_outcome.stored {
+                    telemetry.native_stores = telemetry.native_stores.saturating_add(1);
+                }
+                telemetry.native_evictions = telemetry
+                    .native_evictions
+                    .saturating_add(native_outcome.evictions);
+                // Release pool references only after the native-cache lock is
+                // gone (ADR-006 lock-order contract).
+                drop(native_outcome.retired);
+            }
+            if !portable_store_phase && native_snapshot_ready {
+                continue;
+            }
+            if l1_superseding && !disk_store_needed {
                 continue;
             }
             // F3 M2 — for the disk layer we want the largest valid
@@ -7846,6 +8208,19 @@ fn full_prefill_recompute_tokens_for_warmup_fallback(
     Some(tokens)
 }
 
+/// Number of leading item tokens already covered by a runner-side snapshot
+/// beyond the scheduler's absolute prefill position.
+///
+/// `position_range.start`, not `reused_prefix_token_slice.len()`, is the
+/// scheduler's complete expectation for how much context precedes this item.
+/// On an ordinary multi-step prefill both cache length and position start grow
+/// together (2K, 4K, ...), so the result must stay zero. Using only the reused
+/// slice length treated every later cold chunk as a probe bonus, discarded the
+/// whole input, and repeatedly rebuilt an isolated 2K cache.
+fn runner_probe_over_claim(cache_seq_len: usize, item: &ax_engine_core::ExecutionItem) -> usize {
+    cache_seq_len.saturating_sub(item.position_range.start as usize)
+}
+
 struct MlxItemRun {
     update: RequestExecutionUpdate,
     ngram_acceleration: NgramAccelerationTelemetry,
@@ -8196,6 +8571,105 @@ mod tests {
     };
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn request_states_share_only_the_runner_owned_fa_pool() {
+        let config = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 8,
+            hard_cap: true,
+        };
+        let shared = SharedFaBlockPool::new(config).expect("shared pool");
+        let left = RequestState::new_with_shared_fa_pool(2, 1, Some(config), Some(shared.clone()));
+        let right = RequestState::new_with_shared_fa_pool(2, 2, Some(config), Some(shared.clone()));
+        assert!(left.cache.shares_fa_block_pool_with(&right.cache));
+        assert!(left.cache.uses_fa_block_pool(&shared));
+
+        let private_left = RequestState::new(2, 3, Some(config));
+        let private_right = RequestState::new(2, 4, Some(config));
+        assert!(
+            !private_left
+                .cache
+                .shares_fa_block_pool_with(&private_right.cache)
+        );
+    }
+
+    #[test]
+    fn shared_fa_pool_alignment_counts_layer_block_slots() {
+        assert_eq!(aligned_fa_pool_max_blocks(100, 32, false, None), 100);
+        assert_eq!(aligned_fa_pool_max_blocks(100, 32, true, None), 3_200);
+        assert_eq!(aligned_fa_pool_max_blocks(100, 32, true, Some(17)), 17);
+        assert_eq!(aligned_fa_pool_max_blocks(0, 0, true, None), 1);
+        assert_eq!(
+            aligned_fa_pool_max_blocks(2, usize::MAX, true, None),
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn page_sharing_serializes_only_the_largest_aligned_prefix() {
+        let start = prefix_snapshot_start_tokens(16, 8192, false, true);
+        assert_eq!(start, 8192);
+        assert_eq!((start..=8192).step_by(16).count(), 1);
+
+        let portable_start = prefix_snapshot_start_tokens(16, 8192, false, false);
+        assert_eq!(portable_start, 16);
+        assert_eq!((portable_start..=8192).step_by(16).count(), 512);
+    }
+
+    #[test]
+    fn native_pressure_recomputes_cow_demand_after_eviction() {
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 1,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let mut producer = MlxKVCache::new_with_shared_fa_block_pool(1, pool.clone());
+        let k = mlx_sys::zeros(&[1, 1, 3, 2], mlx_sys::MlxDtype::Float32, None);
+        let v = mlx_sys::zeros(&[1, 1, 3, 2], mlx_sys::MlxDtype::Float32, None);
+        let _ = producer.append(0, k, v);
+        producer.advance(3);
+
+        let tokens = vec![1, 2, 3];
+        let key = MlxPrefixCacheKey {
+            model_id: "pressure-test".to_string(),
+            route_policy: "direct".to_string(),
+            layer_layout: "standard-fa".to_string(),
+            block_size_tokens: 4,
+            token_count: 3,
+            token_hash: 7,
+        };
+        let native = Mutex::new(MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 1,
+        }));
+        let outcome = native.lock().insert(
+            key.clone(),
+            MlxNativePrefixSnapshot::new(producer.clone(), tokens.clone(), 64, None),
+        );
+        drop(outcome.retired);
+        let (hit, matched_len) = native
+            .lock()
+            .get_longest_prefix(&key, &tokens)
+            .expect("native hit");
+        assert_eq!(matched_len, tokens.len());
+        let active = hit.cache.clone();
+        drop(hit);
+        drop(producer);
+
+        assert_eq!(pool.snapshot().available_blocks, 0);
+        assert_eq!(active.additional_fa_blocks_for_append(1), Some(1));
+        let evictions = reclaim_native_prefix_entries(&native, &pool, || {
+            active.additional_fa_blocks_for_append(1)
+        });
+        assert_eq!(evictions, 1);
+        assert_eq!(native.lock().stats().entries, 0);
+        assert_eq!(active.additional_fa_blocks_for_append(1), Some(0));
+        assert_eq!(pool.snapshot().allocated_blocks, 1);
+        drop(active);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
 
     #[test]
     fn skip_state_primary_token_reads_real_argmax_for_greedy() {
@@ -9628,6 +10102,38 @@ mod tests {
     }
 
     #[test]
+    fn probe_over_claim_uses_absolute_prefill_position() {
+        let mut later_cold_chunk = scheduler_claim_item(Vec::new());
+        later_cold_chunk.position_range = PositionRange {
+            start: 2048,
+            end_exclusive: 4096,
+        };
+        later_cold_chunk.scheduled_token_count = 2048;
+
+        assert_eq!(
+            runner_probe_over_claim(2048, &later_cold_chunk),
+            0,
+            "ordinary multi-step prefill must append the whole next chunk",
+        );
+
+        let mut first_chunk = scheduler_claim_item(Vec::new());
+        first_chunk.position_range = PositionRange {
+            start: 0,
+            end_exclusive: 2,
+        };
+        assert_eq!(
+            runner_probe_over_claim(6144, &first_chunk),
+            6144,
+            "only cache state beyond the scheduler's absolute start is a probe bonus",
+        );
+        assert_eq!(
+            runner_probe_over_claim(4, &later_cold_chunk),
+            0,
+            "a cache behind the planned position cannot cover item tokens",
+        );
+    }
+
+    #[test]
     fn discard_probe_shorter_than_scheduler_claim_rejects_partial_restore() {
         // Regression test: the scheduler's cumulative multi-turn block
         // tracking (ax-engine-core) claimed an 8-token reusable prefix, but
@@ -9725,6 +10231,9 @@ mod tests {
             warmup_tokens: 8,
             entries: 2,
             bytes: 4096,
+            native_hits: 11,
+            native_stores: 12,
+            native_evictions: 13,
             disk_hits: 6,
             disk_misses: 7,
             disk_inserts: 8,
@@ -9747,6 +10256,9 @@ mod tests {
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_trim_failure".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_evictions".into(), 5)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_bytes_kib".into(), 4)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_native_hits".into(), 11)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_native_stores".into(), 12)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_native_evictions".into(), 13)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_hits".into(), 6)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_misses".into(), 7)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_inserts".into(), 8)));
@@ -12875,6 +13387,14 @@ mod tests {
             linear_state_layers: 0,
             linear_state_bytes: 0,
             growth_count: 1,
+            paged_cow_copies: 1,
+            paged_pool_blocks_used: 3,
+            paged_pool_shared_blocks: 2,
+            paged_pool_slabs: 3,
+            paged_pool_slab_bytes: 4096,
+            paged_pool_slab_grow_events: 1,
+            paged_attention_calls: 4,
+            paged_attention_fallbacks: 1,
             ..MlxKVCacheUsage::default()
         });
         telemetry.merge_from(MlxKVCacheUsage {
@@ -12890,6 +13410,14 @@ mod tests {
             linear_state_layers: 1,
             linear_state_bytes: 936,
             growth_count: 2,
+            paged_cow_copies: 2,
+            paged_pool_blocks_used: 5,
+            paged_pool_shared_blocks: 1,
+            paged_pool_slabs: 5,
+            paged_pool_slab_bytes: 12288,
+            paged_pool_slab_grow_events: 2,
+            paged_attention_calls: 6,
+            paged_attention_fallbacks: 2,
             ..MlxKVCacheUsage::default()
         });
 
@@ -12949,6 +13477,38 @@ mod tests {
         );
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT),
+            Some(&3)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_PAGED_COW_COPIES),
+            Some(&3)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_BLOCKS_USED),
+            Some(&5)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SHARED_BLOCKS),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLABS),
+            Some(&5)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLAB_KIB),
+            Some(&12)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLAB_GROW_EVENTS),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_PAGED_ATTENTION_CALLS),
+            Some(&10)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_PAGED_ATTENTION_FALLBACKS),
             Some(&3)
         );
         assert!(

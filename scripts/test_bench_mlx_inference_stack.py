@@ -1183,6 +1183,75 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(run["decode_s"], 1.0)
         self.assertEqual(run["decode_tok_s"], 3.0)
 
+    def test_axengine_one_run_rejects_stream_without_terminal_response(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __iter__(self):
+                return iter(())
+
+        class FakeConnection:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def request(self, *_args, **_kwargs) -> None:
+                pass
+
+            def getresponse(self) -> FakeResponse:
+                return FakeResponse()
+
+            def close(self) -> None:
+                pass
+
+        with (
+            patch.object(bench.http.client, "HTTPConnection", FakeConnection),
+            patch.object(bench.time, "perf_counter", side_effect=[10.0, 10.1]),
+            self.assertRaisesRegex(RuntimeError, "without a terminal response"),
+        ):
+            bench.axengine_one_run(19091, [1, 2, 3, 4], 1)
+
+    def test_axengine_one_run_rejects_failed_terminal_response(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __iter__(self):
+                frame = {
+                    "response": {
+                        "status": "failed",
+                        "finish_reason": "runner_error",
+                        "step_count": 0,
+                        "output_tokens": [],
+                        "route": {
+                            "crossover_decisions": {
+                                "ax_mlx_kv_paged_pool_exhaustion_fallbacks": 1,
+                            }
+                        },
+                    }
+                }
+                yield b"event: response\n"
+                yield b"data: " + json.dumps(frame).encode() + b"\n"
+                yield b"\n"
+
+        class FakeConnection:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def request(self, *_args, **_kwargs) -> None:
+                pass
+
+            def getresponse(self) -> FakeResponse:
+                return FakeResponse()
+
+            def close(self) -> None:
+                pass
+
+        with (
+            patch.object(bench.http.client, "HTTPConnection", FakeConnection),
+            patch.object(bench.time, "perf_counter", side_effect=[10.0, 10.1]),
+            self.assertRaisesRegex(RuntimeError, "status='failed'"),
+        ):
+            bench.axengine_one_run(19091, [1, 2, 3, 4], 1)
+
     def test_axengine_summary_can_label_linear_attention_pack_row(self) -> None:
         runs = [
             {

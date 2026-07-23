@@ -147,6 +147,88 @@ def validate_prompt_hashes(
             )
 
 
+def validate_output_token_exactness(
+    path: Path,
+    artifact: dict[str, Any],
+    rows: list[ConcurrentPrefillRow],
+    *,
+    expected_generation_tokens: int,
+) -> None:
+    capture = artifact.get("capture_output_token_ids", False)
+    shared_prefix = artifact.get("shared_prefix", False)
+    if not isinstance(capture, bool):
+        raise ConcurrentPrefillArtifactError(
+            f"{path}.capture_output_token_ids must be a boolean"
+        )
+    if not isinstance(shared_prefix, bool):
+        raise ConcurrentPrefillArtifactError(f"{path}.shared_prefix must be a boolean")
+    if not capture:
+        return
+
+    canonical: list[int] | None = None
+    canonical_hash: str | None = None
+    for row in rows:
+        owner = f"{path}.rows[concurrency={row.concurrent_requests}]"
+        hashes = row.payload["prompt_token_ids_sha256"]
+        if shared_prefix:
+            for prompt_hash in hashes:
+                if canonical_hash is None:
+                    canonical_hash = prompt_hash
+                elif prompt_hash != canonical_hash:
+                    raise ConcurrentPrefillArtifactError(
+                        f"{owner} shared_prefix prompt hashes diverge"
+                    )
+
+        trials = row.payload.get("trials")
+        if not isinstance(trials, list) or len(trials) != row.payload["repetitions"]:
+            raise ConcurrentPrefillArtifactError(
+                f"{owner}.trials must contain one object per repetition"
+            )
+        for trial_index, trial in enumerate(trials):
+            if not isinstance(trial, dict):
+                raise ConcurrentPrefillArtifactError(
+                    f"{owner}.trials[{trial_index}] must be an object"
+                )
+            observations = trial.get("observations")
+            if not isinstance(observations, list) or len(observations) != row.concurrent_requests:
+                raise ConcurrentPrefillArtifactError(
+                    f"{owner}.trials[{trial_index}].observations must contain one response "
+                    "per concurrent request"
+                )
+            for observation_index, observation in enumerate(observations):
+                observation_owner = (
+                    f"{owner}.trials[{trial_index}].observations[{observation_index}]"
+                )
+                if not isinstance(observation, dict):
+                    raise ConcurrentPrefillArtifactError(
+                        f"{observation_owner} must be an object"
+                    )
+                tokens = observation.get("output_token_ids")
+                if (
+                    not isinstance(tokens, list)
+                    or len(tokens) != expected_generation_tokens
+                    or any(
+                        not isinstance(token, int)
+                        or isinstance(token, bool)
+                        or token < 0
+                        or token > 0xFFFF_FFFF
+                        for token in tokens
+                    )
+                ):
+                    raise ConcurrentPrefillArtifactError(
+                        f"{observation_owner}.output_token_ids must contain exactly "
+                        f"{expected_generation_tokens} u32 token IDs"
+                    )
+                if shared_prefix:
+                    if canonical is None:
+                        canonical = tokens
+                    elif tokens != canonical:
+                        raise ConcurrentPrefillArtifactError(
+                            f"{observation_owner}.output_token_ids diverge from the "
+                            "shared-prefix baseline"
+                        )
+
+
 def parse_row(
     path: Path,
     row: dict[str, Any],
@@ -338,6 +420,12 @@ def validate_mlx_concurrent_prefill_artifact(
         min_concurrency_levels=min_concurrency_levels,
         min_max_concurrent_requests=min_max_concurrent_requests,
         ratio_tolerance=ratio_tolerance,
+    )
+    validate_output_token_exactness(
+        path,
+        artifact,
+        rows,
+        expected_generation_tokens=generation_tokens,
     )
     return [f"concurrency={row.concurrent_requests}" for row in sorted(rows, key=lambda item: item.concurrent_requests)]
 
