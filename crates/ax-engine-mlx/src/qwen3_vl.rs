@@ -8,6 +8,11 @@ use ax_engine_core::vl_geometry::{
     MropeSections, deepstack_injection_layers, mrope_position_ids, scatter_merge_indices,
     vit_soft_token_count,
 };
+use mlx_sys::{
+    MlxArray, add, concatenate, gelu, layer_norm, matmul, multiply, reshape, slice, softmax,
+    transpose,
+};
+use mlx_sys::ops::cached_scalar;
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -214,4 +219,263 @@ mod tests {
         assert_eq!(select_decode_route("qwen3_vl", false).unwrap(), "qwen3");
         assert_eq!(select_decode_route("qwen3_vl", true).unwrap(), "qwen3_vl");
     }
+
+    fn f32_array(vals: &[f32], shape: &[i32]) -> MlxArray {
+        use mlx_sys::MlxDtype;
+        MlxArray::from_raw_data(
+            vals.as_ptr().cast(),
+            std::mem::size_of_val(vals),
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    #[test]
+    fn vision_encoder_forward_and_scatter_real_path() {
+        use mlx_sys::{MlxDtype, eval, zeros};
+        // Tiny ViT: H=8, heads=2, seq=4 patches, 1 layer
+        let h = 8usize;
+        let heads = 2usize;
+        let seq = 4i32;
+        let patch_dim = 6i32;
+        let layer = Qwen3VlVisionLayerWeights {
+            qkv: f32_array(&vec![0.01; h * 3 * h], &[(3 * h) as i32, h as i32]),
+            qkv_bias: Some(zeros(&[1, 1, (3 * h) as i32], MlxDtype::Float32, None)),
+            proj: f32_array(&vec![0.01; h * h], &[h as i32, h as i32]),
+            proj_bias: None,
+            norm1_weight: f32_array(&vec![1.0; h], &[h as i32]),
+            norm1_bias: Some(zeros(&[h as i32], MlxDtype::Float32, None)),
+            fc1: f32_array(&vec![0.01; h * 16], &[16, h as i32]),
+            fc1_bias: None,
+            fc2: f32_array(&vec![0.01; 16 * h], &[h as i32, 16]),
+            fc2_bias: None,
+            norm2_weight: f32_array(&vec![1.0; h], &[h as i32]),
+            norm2_bias: Some(zeros(&[h as i32], MlxDtype::Float32, None)),
+        };
+        let weights = Qwen3VlVisionWeights {
+            patch_embed: f32_array(&vec![0.01; h * patch_dim as usize], &[h as i32, patch_dim]),
+            patch_embed_bias: None,
+            layers: vec![layer],
+            merger: f32_array(&vec![0.01; h * h], &[h as i32, h as i32]),
+            merger_bias: None,
+            num_heads: heads,
+            hidden_size: h,
+            deepstack_indexes: vec![0],
+        };
+        let patches = f32_array(&vec![0.1; (seq * patch_dim) as usize], &[1, seq, patch_dim]);
+        let (soft, deep) = vision_encoder_forward(&weights, &patches).expect("vit forward");
+        eval(&[&soft]);
+        assert_eq!(soft.shape()[0], 1);
+        assert_eq!(soft.shape()[1], seq);
+        assert_eq!(soft.shape()[2], h as i32);
+        assert_eq!(deep.len(), 1);
+
+        let text = zeros(&[1, 6, h as i32], MlxDtype::Float32, None);
+        let positions = plan_image_scatter(
+            &[1],
+            &[Qwen3VlImageGeometry {
+                height: 28,
+                width: 28,
+                patch_size: 14,
+                spatial_merge_size: 1,
+                max_soft_tokens: 16,
+            }],
+        )
+        .unwrap();
+        // 4 soft tokens at placeholder 1 → positions 1..4
+        assert_eq!(positions, vec![1, 2, 3, 4]);
+        let merged = scatter_vision_into_text(&text, &soft, &positions).expect("scatter");
+        eval(&[&merged]);
+        assert_eq!(merged.shape()[1], 6);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal portable Qwen3-VL ViT forward (WS-V2)
+//
+// Implements patch-linear + stacked attention/MLP + spatial-merge projector
+// using MLX ops. Weights are explicit tensors so unit tests can drive the
+// real path without a full checkpoint. Production load will map HF names
+// into [`Qwen3VlVisionWeights`].
+// ---------------------------------------------------------------------------
+
+/// One vision transformer layer weights.
+#[derive(Clone, Debug)]
+pub struct Qwen3VlVisionLayerWeights {
+    pub qkv: MlxArray,
+    pub qkv_bias: Option<MlxArray>,
+    pub proj: MlxArray,
+    pub proj_bias: Option<MlxArray>,
+    pub norm1_weight: MlxArray,
+    pub norm1_bias: Option<MlxArray>,
+    pub fc1: MlxArray,
+    pub fc1_bias: Option<MlxArray>,
+    pub fc2: MlxArray,
+    pub fc2_bias: Option<MlxArray>,
+    pub norm2_weight: MlxArray,
+    pub norm2_bias: Option<MlxArray>,
+}
+
+/// Full vision tower weights for the portable encoder.
+#[derive(Clone, Debug)]
+pub struct Qwen3VlVisionWeights {
+    pub patch_embed: MlxArray,
+    pub patch_embed_bias: Option<MlxArray>,
+    pub layers: Vec<Qwen3VlVisionLayerWeights>,
+    pub merger: MlxArray,
+    pub merger_bias: Option<MlxArray>,
+    pub num_heads: usize,
+    pub hidden_size: usize,
+    pub deepstack_indexes: Vec<usize>,
+}
+
+fn ln(x: &MlxArray, weight: &MlxArray, bias: Option<&MlxArray>, eps: f32) -> MlxArray {
+    match bias {
+        Some(b) => layer_norm(x, weight, b, eps, None),
+        None => {
+            // layer_norm requires bias in this binding — use zeros-like weight.
+            let zero = cached_scalar(0.0, weight.dtype());
+            layer_norm(x, weight, &zero, eps, None)
+        }
+    }
+}
+
+fn linear(x: &MlxArray, w: &MlxArray, bias: Option<&MlxArray>) -> MlxArray {
+    // w is [out, in]; matmul x @ w^T
+    let mut y = matmul(x, &transpose(w, &[1, 0], None), None);
+    if let Some(b) = bias {
+        y = add(&y, b, None);
+    }
+    y
+}
+
+fn attention(
+    x: &MlxArray,
+    layer: &Qwen3VlVisionLayerWeights,
+    num_heads: usize,
+    hidden_size: usize,
+) -> MlxArray {
+    let seq = x.shape()[1] as usize;
+    let head_dim = hidden_size / num_heads;
+    let qkv = linear(x, &layer.qkv, layer.qkv_bias.as_ref());
+    // qkv: [1, S, 3*H] -> [1, S, 3, heads, head_dim]
+    let qkv = reshape(
+        &qkv,
+        &[
+            1,
+            seq as i32,
+            3,
+            num_heads as i32,
+            head_dim as i32,
+        ],
+        None,
+    );
+    let q = slice(&qkv, &[0, 0, 0, 0, 0], &[1, seq as i32, 1, num_heads as i32, head_dim as i32], &[1, 1, 1, 1, 1], None);
+    let k = slice(&qkv, &[0, 0, 1, 0, 0], &[1, seq as i32, 2, num_heads as i32, head_dim as i32], &[1, 1, 1, 1, 1], None);
+    let v = slice(&qkv, &[0, 0, 2, 0, 0], &[1, seq as i32, 3, num_heads as i32, head_dim as i32], &[1, 1, 1, 1, 1], None);
+    // [1, S, heads, dim] -> [1, heads, S, dim]
+    let q = transpose(&reshape(&q, &[1, seq as i32, num_heads as i32, head_dim as i32], None), &[0, 2, 1, 3], None);
+    let k = transpose(&reshape(&k, &[1, seq as i32, num_heads as i32, head_dim as i32], None), &[0, 2, 1, 3], None);
+    let v = transpose(&reshape(&v, &[1, seq as i32, num_heads as i32, head_dim as i32], None), &[0, 2, 1, 3], None);
+    let scale = (head_dim as f32).sqrt().recip();
+    let scores = matmul(&q, &transpose(&k, &[0, 1, 3, 2], None), None);
+    let scores = multiply(&scores, &cached_scalar(scale, scores.dtype()), None);
+    let probs = softmax(&scores, -1, None);
+    let ctx = matmul(&probs, &v, None);
+    // [1, heads, S, dim] -> [1, S, H]
+    let ctx = transpose(&ctx, &[0, 2, 1, 3], None);
+    let ctx = reshape(&ctx, &[1, seq as i32, hidden_size as i32], None);
+    linear(&ctx, &layer.proj, layer.proj_bias.as_ref())
+}
+
+fn mlp(x: &MlxArray, layer: &Qwen3VlVisionLayerWeights) -> MlxArray {
+    let h = linear(x, &layer.fc1, layer.fc1_bias.as_ref());
+    let h = gelu(&h, None);
+    linear(&h, &layer.fc2, layer.fc2_bias.as_ref())
+}
+
+/// Run the portable ViT encoder.
+///
+/// `patches`: `[1, num_patches, patch_dim]` float32/bf16.
+/// Returns soft tokens `[1, soft_tokens, out_dim]` after spatial merge projector.
+pub fn vision_encoder_forward(
+    weights: &Qwen3VlVisionWeights,
+    patches: &MlxArray,
+) -> Result<(MlxArray, Vec<MlxArray>), Qwen3VlError> {
+    if weights.layers.is_empty() || weights.num_heads == 0 || weights.hidden_size == 0 {
+        return Err(Qwen3VlError::InvalidGeometry(
+            "vision weights incomplete".into(),
+        ));
+    }
+    if !weights.hidden_size.is_multiple_of(weights.num_heads) {
+        return Err(Qwen3VlError::InvalidGeometry(
+            "hidden_size must divide num_heads".into(),
+        ));
+    }
+    let mut x = linear(patches, &weights.patch_embed, weights.patch_embed_bias.as_ref());
+    let mut deepstack_feats = Vec::new();
+    for (li, layer) in weights.layers.iter().enumerate() {
+        let n1 = ln(&x, &layer.norm1_weight, layer.norm1_bias.as_ref(), 1e-6);
+        let attn = attention(&n1, layer, weights.num_heads, weights.hidden_size);
+        x = add(&x, &attn, None);
+        let n2 = ln(&x, &layer.norm2_weight, layer.norm2_bias.as_ref(), 1e-6);
+        let ff = mlp(&n2, layer);
+        x = add(&x, &ff, None);
+        if weights.deepstack_indexes.contains(&li) {
+            deepstack_feats.push(x.clone());
+        }
+    }
+    // Spatial-merge style projector: flatten last dim via linear merger.
+    let soft = linear(&x, &weights.merger, weights.merger_bias.as_ref());
+    Ok((soft, deepstack_feats))
+}
+
+/// Scatter soft-token embeddings into a text residual stream (LLaVA-style).
+///
+/// `text_hidden`: `[1, T, H]`, `vision`: `[1, S, H]`, `positions`: length S absolute
+/// indices into the text sequence.
+pub fn scatter_vision_into_text(
+    text_hidden: &MlxArray,
+    vision: &MlxArray,
+    positions: &[usize],
+) -> Result<MlxArray, Qwen3VlError> {
+    if positions.is_empty() {
+        return Ok(text_hidden.clone());
+    }
+    let t = text_hidden.shape()[1] as usize;
+    let h = text_hidden.shape()[2] as usize;
+    let s = vision.shape()[1] as usize;
+    if positions.len() != s {
+        return Err(Qwen3VlError::Scatter(format!(
+            "positions {} != vision tokens {}",
+            positions.len(),
+            s
+        )));
+    }
+    // Portable scatter: rebuild sequence row-by-row (test-scale; production
+    // uses slice_update on the full tensor when available).
+    let mut rows: Vec<MlxArray> = Vec::with_capacity(t);
+    for i in 0..t {
+        if let Some(vi) = positions.iter().position(|&p| p == i) {
+            let v = slice(
+                vision,
+                &[0, vi as i32, 0],
+                &[1, (vi + 1) as i32, h as i32],
+                &[1, 1, 1],
+                None,
+            );
+            rows.push(v);
+        } else {
+            let row = slice(
+                text_hidden,
+                &[0, i as i32, 0],
+                &[1, (i + 1) as i32, h as i32],
+                &[1, 1, 1],
+                None,
+            );
+            rows.push(row);
+        }
+    }
+    let refs: Vec<&MlxArray> = rows.iter().collect();
+    Ok(concatenate(&refs, 1, None))
 }
