@@ -34,6 +34,12 @@ serving evidence, not a raw model-runtime throughput baseline.
 Use `bench_ax_multimodel_serving.py` for timed request/load/unload replay
 against one multi-model AX process. It adds per-model output identities,
 lifecycle latency, final route-counter contracts, and model-switch evidence.
+Use `bench_qwen_gemma_flip_target.py` when the same Qwen 3 + Gemma 4 replay
+must run through the OpenAI chat-completions streaming API on either AX or
+mlxcel. Its target file locks the host, model packages, sampling parameters,
+memory budget, protocol, and runtime revision. For mlxcel it also supervises
+one process per model so load/unload events retain their lifecycle meaning.
+The checked-in mlxcel target pins the official v0.4.2 source revision.
 Use `certify_row_exact_coalesced_decode.py` to compare the production
 Qwen/Gemma row-exact decode route with its independent sequential oracle and,
 optionally, the non-coalesced serving baseline.
@@ -281,13 +287,20 @@ throughput baselines.
   against a running AX server (`ax.multimodel_serving_benchmark.v1`). Emits
   focus-family tags for the Qwen 3 + Gemma 4 flip schedule, interactive
   stream-gap summaries, and request availability counters.
+- `bench_qwen_gemma_flip_target.py`: shared OpenAI SSE runner for AX and the
+  pinned official mlxcel peer. Target JSON controls process supervision,
+  exact model artifacts, host identity, sampling, and a common aggregate
+  memory cap; authoritative streamed usage is required for token accounting.
 - `check_ax_multimodel_serving_artifact.py`: fail-closed validator for
   multi-model artifacts. Supports `--require-focus-family`, interactive
   stream-gap caps, and HTTP 503 budgets used by the mlxcel flip plan.
 - `compare_qwen_gemma_flip.py`: compares candidate vs baseline multi-model
   artifacts with provisional throughput / TTFT / stream-gap / availability
-  gates. Use `--report-only` during Week-1 calibration.
+  gates. It fails closed unless scenario hashes, sampling, protocol, host,
+  comparison contract, and model-package signatures match. Use
+  `--report-only` during Week-1 calibration.
 - `test_bench_ax_multimodel_serving.py`,
+  `test_bench_qwen_gemma_flip_target.py`,
   `test_check_ax_multimodel_serving_artifact.py`,
   `test_compare_qwen_gemma_flip.py`: unit tests for the multi-model flip
   harness.

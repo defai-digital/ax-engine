@@ -107,6 +107,8 @@ def load_scenario(path: Path) -> list[ScenarioEvent]:
 
 def _validate_request_row(path: Path, line_no: int, raw: dict[str, Any]) -> None:
     input_text = raw.get("input_text")
+    input_text_pattern = raw.get("input_text_pattern")
+    input_text_repeats = raw.get("input_text_repeats")
     input_tokens = raw.get("input_tokens")
     input_token_pattern = raw.get("input_token_pattern")
     input_tokens_path = raw.get("input_tokens_path")
@@ -124,10 +126,18 @@ def _validate_request_row(path: Path, line_no: int, raw: dict[str, Any]) -> None
         and input_tokens_count > 0
     )
     has_token_file = isinstance(input_tokens_path, str) and bool(input_tokens_path)
-    if not isinstance(input_text, str) and not has_tokens and not has_pattern and not has_token_file:
+    has_text = isinstance(input_text, str) and bool(input_text)
+    has_text_pattern = (
+        isinstance(input_text_pattern, str)
+        and bool(input_text_pattern)
+        and isinstance(input_text_repeats, int)
+        and input_text_repeats > 0
+    )
+    if not any((has_text, has_text_pattern, has_tokens, has_pattern, has_token_file)):
         raise SystemExit(
-            f"{path}:{line_no}: request needs input_text, non-empty input_tokens, "
-            "input_tokens_path, or input_token_pattern with positive input_tokens_count"
+            f"{path}:{line_no}: request needs non-empty input_text, input_text_pattern "
+            "with positive input_text_repeats, non-empty input_tokens, input_tokens_path, "
+            "or input_token_pattern with positive input_tokens_count"
         )
     max_output_tokens = raw.get("max_output_tokens", 128)
     if not isinstance(max_output_tokens, int) or max_output_tokens <= 0:
@@ -139,6 +149,17 @@ def prompt_for_event(
     *,
     scenario_dir: Path | None = None,
 ) -> serving.PromptItem:
+    input_text = event.raw.get("input_text")
+    input_text_pattern = event.raw.get("input_text_pattern")
+    input_text_repeats = event.raw.get("input_text_repeats")
+    if (
+        input_text is None
+        and isinstance(input_text_pattern, str)
+        and input_text_pattern
+        and isinstance(input_text_repeats, int)
+        and input_text_repeats > 0
+    ):
+        input_text = input_text_pattern * input_text_repeats
     input_tokens = event.raw.get("input_tokens")
     input_token_pattern = event.raw.get("input_token_pattern")
     input_tokens_path = event.raw.get("input_tokens_path")
@@ -177,7 +198,7 @@ def prompt_for_event(
     return serving.PromptItem(
         id=event.id,
         category=event.category,
-        input_text=event.raw.get("input_text"),
+        input_text=input_text,
         input_tokens=input_tokens,
         input_tokens_count=requested_count if requested_count is not None else input_count,
         max_output_tokens=event.raw.get("max_output_tokens", 128),
@@ -380,9 +401,7 @@ def run_benchmark(
         }
     )
     interactive_requests = [
-        item
-        for item in request_observations
-        if item.get("category") == "interactive_decode"
+        item for item in request_observations if item.get("category") == "interactive_decode"
     ]
     interactive_intervals = [
         float(value)
@@ -390,9 +409,7 @@ def run_benchmark(
         for value in (item.get("stream_step_interval_ms") or [])
         if value is not None
     ]
-    request_http_503 = sum(
-        1 for item in request_observations if item.get("status") == 503
-    )
+    request_http_503 = sum(1 for item in request_observations if item.get("status") == 503)
     request_http_5xx = sum(
         1
         for item in request_observations

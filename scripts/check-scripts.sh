@@ -44,6 +44,8 @@ bash scripts/check-qa.sh
   scripts/test_bench_ax_serving.py \
   scripts/bench_ax_multimodel_serving.py \
   scripts/test_bench_ax_multimodel_serving.py \
+  scripts/bench_qwen_gemma_flip_target.py \
+  scripts/test_bench_qwen_gemma_flip_target.py \
   scripts/bench_embedding_models.py \
   scripts/bench_embedding_fair.py \
   scripts/bench_embedding_ingest_scale.py \
@@ -218,6 +220,7 @@ bash scripts/check-qa.sh
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
   scripts/test_bench_ax_multimodel_serving.py \
+  scripts/test_bench_qwen_gemma_flip_target.py \
   scripts/test_embedding_server_ports.py \
   scripts/test_bench_embedding_ingest_scale.py \
   scripts/test_ax_serving_benchmark_artifact.py \

@@ -101,6 +101,48 @@ class FlipCompareTests(unittest.TestCase):
             )
         self.assertEqual(code, 0)
 
+    def test_rejects_mismatched_scenario_contract(self) -> None:
+        candidate = fixtures._artifact()
+        baseline = fixtures._artifact()
+        baseline["scenario"]["sha256"] = "b" * 64  # type: ignore[index]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cand_path = Path(temp_dir) / "cand.json"
+            base_path = Path(temp_dir) / "base.json"
+            out_path = Path(temp_dir) / "report.json"
+            _write(cand_path, candidate)
+            _write(base_path, baseline)
+            code = compare.main(
+                [
+                    "--candidate",
+                    str(cand_path),
+                    "--baseline",
+                    str(base_path),
+                    "--output",
+                    str(out_path),
+                ]
+            )
+            report = json.loads(out_path.read_text())
+
+        self.assertEqual(code, 1)
+        self.assertIn("comparison_contract", report["failed_required_gates"])
+        self.assertIn(
+            "scenario.sha256",
+            "\n".join(report["comparison_contract"]["mismatches"]),
+        )
+
+    def test_rejects_different_model_package_path(self) -> None:
+        candidate = fixtures._artifact()
+        baseline = fixtures._artifact()
+        baseline["target"]["model_packages"]["qwen3.5-9b"]["path"] = "/models/other"  # type: ignore[index]
+
+        contract = compare.evaluate_comparison_contract(candidate, baseline)
+
+        self.assertFalse(contract["passed"])
+        self.assertIn(
+            "model package identity differs for qwen3.5-9b",
+            contract["mismatches"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

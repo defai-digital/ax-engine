@@ -13,9 +13,7 @@ from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).with_name("bench_ax_multimodel_serving.py")
 sys.path.insert(0, str(SCRIPT_PATH.parent))
-MODULE_SPEC = importlib.util.spec_from_file_location(
-    "bench_ax_multimodel_serving", SCRIPT_PATH
-)
+MODULE_SPEC = importlib.util.spec_from_file_location("bench_ax_multimodel_serving", SCRIPT_PATH)
 assert MODULE_SPEC and MODULE_SPEC.loader
 benchmark = importlib.util.module_from_spec(MODULE_SPEC)
 sys.modules["bench_ax_multimodel_serving"] = benchmark
@@ -186,6 +184,26 @@ class MultiModelServingBenchmarkTests(unittest.TestCase):
         prompt = benchmark.prompt_for_event(event)
         self.assertEqual(prompt.input_tokens, [3, 7, 11, 3, 7, 11, 3, 7])
         self.assertEqual(prompt.input_tokens_count, 8)
+
+    def test_compact_text_pattern_expands_deterministically(self) -> None:
+        event = benchmark.ScenarioEvent(
+            id="long-text",
+            kind="request",
+            at_s=0.0,
+            model_id="gemma",
+            category="long_prefill",
+            raw={
+                "input_text_pattern": "alpha beta ",
+                "input_text_repeats": 3,
+                "input_tokens_count": 6,
+                "max_output_tokens": 1,
+            },
+        )
+
+        prompt = benchmark.prompt_for_event(event)
+
+        self.assertEqual(prompt.input_text, "alpha beta alpha beta alpha beta ")
+        self.assertEqual(prompt.input_tokens_count, 6)
 
     def test_token_file_loads_relative_to_scenario(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

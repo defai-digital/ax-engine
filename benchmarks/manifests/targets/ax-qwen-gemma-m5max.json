@@ -1,0 +1,33 @@
+{
+  "schema_version": "ax.qwen_gemma_flip_target.v1",
+  "name": "ax-single-process-qwen-gemma",
+  "runtime": "ax-engine",
+  "runtime_revision_env": "AX_BENCH_RUNTIME_REVISION",
+  "official_source": "https://github.com/defai-digital/ax-engine",
+  "managed_processes": false,
+  "env": {
+    "AX_MLX_MEMORY_LIMIT": "103079215104"
+  },
+  "models": {
+    "qwen3.5-9b": {
+      "served_model": "qwen3.5-9b",
+      "base_url": "http://127.0.0.1:31418",
+      "model_path_env": "AX_BENCH_QWEN_MODEL_DIR",
+      "memory_cap_bytes": 103079215104
+    },
+    "gemma-4-12b-it": {
+      "served_model": "gemma-4-12b-it",
+      "base_url": "http://127.0.0.1:31418",
+      "model_path_env": "AX_BENCH_GEMMA_MODEL_DIR",
+      "memory_cap_bytes": 103079215104
+    }
+  },
+  "comparison_contract": {
+    "id": "qwen3-gemma4-m5max-openai-v1",
+    "hardware": "AKMBPM5MAXx/applegpu_g17s",
+    "scenario_suite": "S0-S3-text-v1",
+    "request_surface": "openai_chat_completions_sse",
+    "sampling": "temperature=0,top_p=1,top_k=0,seed=0",
+    "total_memory_cap_bytes": 103079215104
+  }
+}
