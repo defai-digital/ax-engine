@@ -45,6 +45,9 @@ The checked-in mlxcel target pins the official v0.4.2 source revision.
 Use `run_qwen_gemma_flip_campaign.py` to alternate both targets across three or
 more S0-S3 repetitions with a cooldown, validate every artifact, and prove the
 prompt-token and package contract for each paired trial.
+Use `summarize_qwen_gemma_flip_campaign.py` to compute the per-scenario medians,
+apply the locked gates, and write the explicit `flip` or `not_yet` JSON and
+Markdown decision.
 Use `certify_row_exact_coalesced_decode.py` to compare the production
 Qwen/Gemma row-exact decode route with its independent sequential oracle and,
 optionally, the non-coalesced serving baseline.
@@ -300,6 +303,9 @@ throughput baselines.
   a fresh process topology for every trial, alternates target order, enforces
   the cooldown and minimum repetition count, validates each artifact, and
   records per-pair comparison-contract verdicts.
+- `summarize_qwen_gemma_flip_campaign.py`: fail-closed median aggregator and
+  flip-decision renderer for a completed campaign. It requires at least three
+  trials per target/scenario and reports every failed gate.
 - `check_ax_multimodel_serving_artifact.py`: fail-closed validator for
   multi-model artifacts. Supports `--require-focus-family`, interactive
   stream-gap caps, and HTTP 503 budgets used by the mlxcel flip plan.
@@ -311,6 +317,7 @@ throughput baselines.
 - `test_bench_ax_multimodel_serving.py`,
   `test_bench_qwen_gemma_flip_target.py`,
   `test_run_qwen_gemma_flip_campaign.py`,
+  `test_summarize_qwen_gemma_flip_campaign.py`,
   `test_check_ax_multimodel_serving_artifact.py`,
   `test_compare_qwen_gemma_flip.py`: unit tests for the multi-model flip
   harness.

@@ -48,6 +48,8 @@ bash scripts/check-qa.sh
   scripts/test_bench_qwen_gemma_flip_target.py \
   scripts/run_qwen_gemma_flip_campaign.py \
   scripts/test_run_qwen_gemma_flip_campaign.py \
+  scripts/summarize_qwen_gemma_flip_campaign.py \
+  scripts/test_summarize_qwen_gemma_flip_campaign.py \
   scripts/bench_embedding_models.py \
   scripts/bench_embedding_fair.py \
   scripts/bench_embedding_ingest_scale.py \
@@ -224,6 +226,7 @@ bash scripts/check-qa.sh
   scripts/test_bench_ax_multimodel_serving.py \
   scripts/test_bench_qwen_gemma_flip_target.py \
   scripts/test_run_qwen_gemma_flip_campaign.py \
+  scripts/test_summarize_qwen_gemma_flip_campaign.py \
   scripts/test_embedding_server_ports.py \
   scripts/test_bench_embedding_ingest_scale.py \
   scripts/test_ax_serving_benchmark_artifact.py \
