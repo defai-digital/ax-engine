@@ -70,6 +70,20 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         "Engine jobs holding shared HTTP and gRPC admission capacity.",
         state.admission.active_jobs() as u64,
     );
+    append_model_gauge(
+        &mut body,
+        "ax_engine_model_jobs_in_flight",
+        "Engine jobs holding one loaded model generation's admission scope.",
+        &lives
+            .iter()
+            .map(|live| {
+                (
+                    live.model_id.as_ref().clone(),
+                    live.admission.active_jobs() as u64,
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
     append_gauge(
         &mut body,
         "ax_engine_generation_jobs_pending",
@@ -193,7 +207,350 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         );
     }
 
+    let mut arbiter_models = state.execution_arbiter_stats();
+    arbiter_models.retain(|(model_id, _, _)| loaded_model_ids.contains(model_id.as_str()));
+    if !arbiter_models.is_empty() {
+        append_arbiter_metric(
+            &mut body,
+            "ax_engine_model_execution_turns_total",
+            "Device execution turns acquired by model and work class.",
+            "counter",
+            &arbiter_models,
+            |stats| stats.turns_total,
+        );
+        append_arbiter_metric(
+            &mut body,
+            "ax_engine_model_execution_wait_microseconds_total",
+            "Total time spent waiting for the process-wide device arbiter.",
+            "counter",
+            &arbiter_models,
+            |stats| stats.wait_us_total,
+        );
+        append_arbiter_metric(
+            &mut body,
+            "ax_engine_model_execution_wait_microseconds_max",
+            "Longest observed wait for the process-wide device arbiter.",
+            "gauge",
+            &arbiter_models,
+            |stats| stats.wait_us_max,
+        );
+        append_arbiter_metric(
+            &mut body,
+            "ax_engine_model_execution_hold_microseconds_total",
+            "Total time spent holding the process-wide device arbiter.",
+            "counter",
+            &arbiter_models,
+            |stats| stats.hold_us_total,
+        );
+        append_arbiter_metric(
+            &mut body,
+            "ax_engine_model_execution_hold_microseconds_max",
+            "Longest observed process-wide device-arbiter turn.",
+            "gauge",
+            &arbiter_models,
+            |stats| stats.hold_us_max,
+        );
+    }
+
+    append_memory_metrics(&mut body, &lives, metrics);
+
     ([("content-type", "text/plain; version=0.0.4")], body).into_response()
+}
+
+#[derive(Clone)]
+struct ModelMemorySample {
+    model_id: String,
+    weight_artifact_bytes: u64,
+    weight_artifact_available: u64,
+    runner: Option<crate::app_state::ModelMemoryGauges>,
+}
+
+fn append_memory_metrics(
+    body: &mut String,
+    lives: &[crate::app_state::LiveState],
+    metrics: &crate::app_state::ServerMetrics,
+) {
+    let runner_by_model = metrics
+        .model_memory_gauges_per_model()
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let samples = lives
+        .iter()
+        .map(|live| {
+            let weight_artifact_bytes = live
+                .session_config
+                .mlx_model_artifacts_dir()
+                .and_then(crate::model_load::model_weight_bytes);
+            ModelMemorySample {
+                model_id: live.model_id.as_ref().clone(),
+                weight_artifact_bytes: weight_artifact_bytes.unwrap_or(0),
+                weight_artifact_available: u64::from(weight_artifact_bytes.is_some()),
+                runner: runner_by_model.get(live.model_id.as_ref()).copied(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let active_bytes = mlx_sys::device_active_bytes();
+
+    append_optional_gauge(
+        body,
+        "ax_engine_memory_mlx_active_bytes",
+        "Process-wide active bytes measured by mlx_get_active_memory; not attributable to one model by MLX.",
+        active_bytes,
+    );
+    append_optional_gauge(
+        body,
+        "ax_engine_memory_mlx_cache_bytes",
+        "Process-wide reusable allocator-cache bytes measured by mlx_get_cache_memory.",
+        mlx_sys::device_cache_bytes(),
+    );
+    append_optional_gauge(
+        body,
+        "ax_engine_memory_mlx_peak_bytes",
+        "Process-wide peak active bytes measured by mlx_get_peak_memory.",
+        mlx_sys::device_peak_bytes(),
+    );
+    append_optional_gauge(
+        body,
+        "ax_engine_memory_metal_recommended_working_set_bytes",
+        "Metal recommended maximum working-set size used as the server memory budget.",
+        mlx_sys::device_recommended_working_set_bytes(),
+    );
+    append_optional_gauge(
+        body,
+        "ax_engine_memory_host_resident_bytes",
+        "Current process resident bytes from task_info; this is host RSS, not MLX-only memory.",
+        mlx_sys::host_resident_bytes(),
+    );
+
+    append_model_gauge(
+        body,
+        "ax_engine_model_memory_weight_artifact_bytes",
+        "Exact bytes of safetensors files in each loaded model artifact directory; an on-disk attribution input, not an allocator measurement.",
+        &samples
+            .iter()
+            .map(|sample| (sample.model_id.clone(), sample.weight_artifact_bytes))
+            .collect::<Vec<_>>(),
+    );
+    append_model_gauge(
+        body,
+        "ax_engine_model_memory_weight_artifact_available",
+        "Whether exact safetensors artifact bytes are available for this model.",
+        &samples
+            .iter()
+            .map(|sample| (sample.model_id.clone(), sample.weight_artifact_available))
+            .collect::<Vec<_>>(),
+    );
+    append_model_gauge(
+        body,
+        "ax_engine_model_memory_kv_report_available",
+        "Whether the model has produced a native runner KV memory report.",
+        &samples
+            .iter()
+            .map(|sample| (sample.model_id.clone(), u64::from(sample.runner.is_some())))
+            .collect::<Vec<_>>(),
+    );
+
+    let runner_value =
+        |sample: &ModelMemorySample, value: fn(crate::app_state::ModelMemoryGauges) -> u64| {
+            sample.runner.map(value).unwrap_or(0)
+        };
+    for (name, help, value) in [
+        (
+            "ax_engine_model_memory_kv_logical_bytes",
+            "Logical KV bytes represented by request caches in the latest native runner report.",
+            (|memory: crate::app_state::ModelMemoryGauges| memory.kv_logical_bytes)
+                as fn(crate::app_state::ModelMemoryGauges) -> u64,
+        ),
+        (
+            "ax_engine_model_memory_kv_capacity_bytes",
+            "Allocated contiguous KV capacity bytes in the latest native runner report; paged views may overlap the pool slab metric.",
+            (|memory: crate::app_state::ModelMemoryGauges| memory.kv_capacity_bytes)
+                as fn(crate::app_state::ModelMemoryGauges) -> u64,
+        ),
+        (
+            "ax_engine_model_memory_kv_linear_state_bytes",
+            "Recurrent and convolution state bytes not included in attention KV capacity.",
+            (|memory: crate::app_state::ModelMemoryGauges| memory.kv_linear_state_bytes)
+                as fn(crate::app_state::ModelMemoryGauges) -> u64,
+        ),
+        (
+            "ax_engine_model_memory_kv_paged_pool_slab_bytes",
+            "Real fixed-slab bytes reserved by a model's shared physical FA block pool.",
+            (|memory: crate::app_state::ModelMemoryGauges| memory.kv_paged_pool_slab_bytes)
+                as fn(crate::app_state::ModelMemoryGauges) -> u64,
+        ),
+        (
+            "ax_engine_model_memory_kv_physical_bytes",
+            "Derived physical KV attribution: paged pool slabs or contiguous capacity, plus recurrent state, without double-counting paged views.",
+            crate::app_state::ModelMemoryGauges::physical_kv_bytes
+                as fn(crate::app_state::ModelMemoryGauges) -> u64,
+        ),
+        (
+            "ax_engine_model_memory_prefix_cache_payload_bytes",
+            "Portable in-memory prefix-cache payload bytes reported by the model runner; excludes disk files.",
+            (|memory: crate::app_state::ModelMemoryGauges| memory.prefix_cache_payload_bytes)
+                as fn(crate::app_state::ModelMemoryGauges) -> u64,
+        ),
+    ] {
+        append_model_gauge(
+            body,
+            name,
+            help,
+            &samples
+                .iter()
+                .map(|sample| (sample.model_id.clone(), runner_value(sample, value)))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    let attributed = samples
+        .iter()
+        .map(|sample| {
+            (
+                sample.model_id.clone(),
+                sample.weight_artifact_bytes.saturating_add(
+                    sample
+                        .runner
+                        .map(crate::app_state::ModelMemoryGauges::physical_kv_bytes)
+                        .unwrap_or(0),
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    append_model_gauge(
+        body,
+        "ax_engine_model_memory_attributed_device_lower_bound_bytes",
+        "Model-attributed lower bound from exact weight artifact bytes plus non-double-counted physical KV geometry; excludes graphs, temporary tensors, and allocator overhead.",
+        &attributed,
+    );
+    for sample in &samples {
+        if let Some(memory) = sample.runner {
+            append_model_topology_info(body, &sample.model_id, memory);
+        }
+    }
+
+    let attributed_total = attributed
+        .iter()
+        .map(|(_, bytes)| *bytes)
+        .fold(0u64, u64::saturating_add);
+    append_gauge(
+        body,
+        "ax_engine_memory_attributed_device_lower_bound_bytes",
+        "Sum of per-model weight-artifact plus physical-KV lower-bound attribution.",
+        attributed_total,
+    );
+    if let Some(active_bytes) = active_bytes {
+        append_gauge(
+            body,
+            "ax_engine_memory_unattributed_active_bytes",
+            "Measured MLX active bytes not covered by the model lower-bound attribution (graphs, temporaries, overhead, or unavailable artifacts).",
+            active_bytes.saturating_sub(attributed_total),
+        );
+        append_gauge(
+            body,
+            "ax_engine_memory_attribution_excess_bytes",
+            "Amount by which lower-bound attribution exceeds measured MLX active bytes; non-zero flags attribution assumptions that need review.",
+            attributed_total.saturating_sub(active_bytes),
+        );
+        let coverage_basis_points = if active_bytes == 0 {
+            0
+        } else {
+            ((u128::from(attributed_total) * 10_000) / u128::from(active_bytes)).min(10_000) as u64
+        };
+        append_gauge(
+            body,
+            "ax_engine_memory_attribution_coverage_basis_points",
+            "Attributed lower-bound share of measured MLX active bytes, capped at 10000 basis points; inspect excess_bytes when capped.",
+            coverage_basis_points,
+        );
+    }
+}
+
+fn append_model_topology_info(
+    body: &mut String,
+    model_id: &str,
+    memory: crate::app_state::ModelMemoryGauges,
+) {
+    let name = "ax_engine_model_kv_topology_info";
+    if !body.contains("# HELP ax_engine_model_kv_topology_info ") {
+        body.push_str("# HELP ");
+        body.push_str(name);
+        body.push_str(
+            " Typed hybrid-KV topology and rollback contract from the latest runner report.\n",
+        );
+        body.push_str("# TYPE ");
+        body.push_str(name);
+        body.push_str(" gauge\n");
+    }
+    body.push_str(name);
+    body.push_str("{model=\"");
+    body.push_str(&escape_label_value(model_id));
+    body.push_str("\",attention_storage=\"");
+    body.push_str(memory.attention_storage());
+    body.push_str("\",sliding_storage=\"");
+    body.push_str(memory.sliding_storage());
+    body.push_str("\",recurrent_state=\"");
+    body.push_str(if memory.linear_state_layers > 0 {
+        "present"
+    } else {
+        "none"
+    });
+    body.push_str("\",rollback_strategy=\"");
+    body.push_str(memory.rollback_strategy());
+    body.push_str("\"} 1\n");
+}
+
+fn append_model_gauge(body: &mut String, name: &str, help: &str, values: &[(String, u64)]) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+    for (model_id, value) in values {
+        body.push_str(name);
+        body.push_str("{model=\"");
+        body.push_str(&escape_label_value(model_id));
+        body.push_str("\"} ");
+        body.push_str(&value.to_string());
+        body.push('\n');
+    }
+}
+
+fn append_arbiter_metric(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    metric_type: &str,
+    values: &[(
+        String,
+        crate::generation::service::ExecutionWorkClass,
+        crate::generation::service::ModelExecutionStats,
+    )],
+    value: impl Fn(&crate::generation::service::ModelExecutionStats) -> u64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(metric_type);
+    body.push('\n');
+    for (model_id, work_class, stats) in values {
+        body.push_str(name);
+        body.push_str("{model=\"");
+        body.push_str(&escape_label_value(model_id));
+        body.push_str("\",work_class=\"");
+        body.push_str(work_class.as_str());
+        body.push_str("\"} ");
+        body.push_str(&value(stats).to_string());
+        body.push('\n');
+    }
 }
 
 /// One engine-step metric: HELP/TYPE once, then the unlabeled aggregate
@@ -244,6 +601,12 @@ fn append_counter(body: &mut String, name: &str, help: &str, value: u64) {
 
 fn append_gauge(body: &mut String, name: &str, help: &str, value: u64) {
     append_metric(body, name, help, "gauge", value);
+}
+
+fn append_optional_gauge(body: &mut String, name: &str, help: &str, value: Option<u64>) {
+    if let Some(value) = value {
+        append_gauge(body, name, help, value);
+    }
 }
 
 fn append_metric(body: &mut String, name: &str, help: &str, metric_type: &str, value: u64) {

@@ -4,12 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-import bench_ax_multimodel_serving as benchmark
+SCRIPT_PATH = Path(__file__).with_name("bench_ax_multimodel_serving.py")
+sys.path.insert(0, str(SCRIPT_PATH.parent))
+MODULE_SPEC = importlib.util.spec_from_file_location(
+    "bench_ax_multimodel_serving", SCRIPT_PATH
+)
+assert MODULE_SPEC and MODULE_SPEC.loader
+benchmark = importlib.util.module_from_spec(MODULE_SPEC)
+sys.modules["bench_ax_multimodel_serving"] = benchmark
+MODULE_SPEC.loader.exec_module(benchmark)
 
 
 class MultiModelServingBenchmarkTests(unittest.TestCase):
@@ -112,6 +122,23 @@ class MultiModelServingBenchmarkTests(unittest.TestCase):
         self.assertEqual(artifact["focus"]["policy"], "qwen3_gemma4_primary")
         self.assertEqual(artifact["availability"]["request_http_503"], 0)
         self.assertIn("request_error_rate", artifact["availability"])
+        self.assertTrue(artifact["route_contract"]["passed"])
+
+    def test_route_contract_fails_closed(self) -> None:
+        contract = benchmark.route_contract(
+            {"route_decisions": {"used": 2}},
+            [("used", 2), ("missing", 1)],
+        )
+        self.assertFalse(contract["passed"])
+        self.assertEqual(contract["observed"]["used"], 2)
+        self.assertIsNone(contract["observed"]["missing"])
+        self.assertIn("missing", contract["failures"][0])
+
+    def test_route_requirement_parser(self) -> None:
+        self.assertEqual(benchmark.parse_route_requirement("route"), ("route", 1))
+        self.assertEqual(benchmark.parse_route_requirement("route=3"), ("route", 3))
+        with self.assertRaises(argparse.ArgumentTypeError):
+            benchmark.parse_route_requirement("route=-1")
 
     def test_load_requires_model_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

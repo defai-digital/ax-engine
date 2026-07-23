@@ -1,5 +1,3 @@
-use std::sync::atomic::Ordering;
-
 use ax_engine_sdk::{EngineStepReport, SessionRequestReport};
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -8,7 +6,7 @@ use serde::Deserialize;
 
 use crate::app_state::{AppState, LiveState};
 use crate::errors::{
-    ErrorResponse, admission_error_response, error_response, map_generation_service_error,
+    ErrorResponse, admission_error_response, map_generation_service_error,
     request_not_found_response,
 };
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
@@ -18,18 +16,6 @@ pub(crate) async fn submit_request(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
 ) -> Result<(StatusCode, Json<SessionRequestReport>), (StatusCode, Json<ErrorResponse>)> {
-    // Return the lifecycle-specific conflict before request construction;
-    // generation-bound admission below remains the final race guard.
-    if state.loading.load(Ordering::Acquire) {
-        return Err(error_response(
-            StatusCode::CONFLICT,
-            "model_loading",
-            "a model load is in progress; new stepwise requests are rejected until it \
-             completes to avoid submitting into a session that is about to be replaced"
-                .to_string(),
-        ));
-    }
-
     let live = select_model(&state, request.model.as_deref())?;
     request.reject_video_inputs(&live)?;
 

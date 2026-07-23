@@ -268,6 +268,40 @@ impl EngineSession {
         ax_engine_mlx::clear_process_caches();
     }
 
+    /// Update bounded fair-prefill scheduling for this live session.
+    ///
+    /// Servers use this when a second model becomes resident: a long prefill
+    /// must be split into bounded engine turns so a sibling model's streaming
+    /// decode can reacquire the shared device between chunks.
+    pub fn set_multi_prefill_fair(
+        &mut self,
+        enabled: bool,
+        max_tokens_per_request_per_step: u32,
+        max_inflight_prefill_requests: u32,
+    ) {
+        self.core.set_multi_prefill_fair(
+            enabled,
+            max_tokens_per_request_per_step,
+            max_inflight_prefill_requests,
+        );
+        self.config.multi_prefill_fair = enabled;
+        self.config.max_prefill_tokens_per_request_per_step = max_tokens_per_request_per_step;
+        self.config.max_inflight_prefill_requests = max_inflight_prefill_requests;
+    }
+
+    /// Return the live fair-prefill policy.
+    ///
+    /// The server uses this to change only the token quantum that actually
+    /// differs when multi-model latency isolation moves between its
+    /// throughput and sibling-active modes.
+    pub fn multi_prefill_policy(&self) -> (bool, u32, u32) {
+        (
+            self.config.multi_prefill_fair,
+            self.config.max_prefill_tokens_per_request_per_step,
+            self.config.max_inflight_prefill_requests,
+        )
+    }
+
     fn uses_mlx_runtime(&self) -> bool {
         self.config.resolved_backend.selected_backend.is_mlx()
     }

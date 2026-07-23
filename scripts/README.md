@@ -31,6 +31,13 @@ streaming step intervals, E2E latency, request throughput, output-token
 throughput, queue delay, and SLO goodput over a JSONL prompt corpus. It is
 serving evidence, not a raw model-runtime throughput baseline.
 
+Use `bench_ax_multimodel_serving.py` for timed request/load/unload replay
+against one multi-model AX process. It adds per-model output identities,
+lifecycle latency, final route-counter contracts, and model-switch evidence.
+Use `certify_row_exact_coalesced_decode.py` to compare the production
+Qwen/Gemma row-exact decode route with its independent sequential oracle and,
+optionally, the non-coalesced serving baseline.
+
 Use `bench_embedding_fair.py` for published embedding comparisons between
 `mlx-lm` and ax-engine, or pass `--ax-only` for README-style AX-only refreshes.
 That harness excludes HTTP/cold-start paths and forces the measured engine(s) to
@@ -250,6 +257,14 @@ throughput baselines.
   concurrency or open-loop request-rate sweeps, and writes
   `ax.serving_benchmark.v1` artifacts with TTFT, TPOT, E2E, queue-delay,
   throughput, category, route-decision counters, and goodput summaries.
+- `bench_ax_multimodel_serving.py`: timed JSONL replay for request, model-load,
+  and model-unload events against one AX process. It records per-model
+  throughput and output hashes, lifecycle latency, stream gaps, and required
+  final route counters.
+- `certify_row_exact_coalesced_decode.py`: fail-closed Qwen/Gemma decode
+  coalescing matrix. It requires the independent forward oracle and row-exact
+  route, rejects diagnostic tensor batching, and can report speedup over the
+  non-coalesced baseline.
 - `build_serving_shared_prefix_corpus.py`: deterministic token-corpus builder
   for serving soaks that must exercise shared long prefixes, especially
   disk-durable prefix-cache promotion evidence.
@@ -283,6 +298,11 @@ throughput baselines.
   runtime-path-specific promotion claim.
 - `test_bench_ax_serving.py`: unit tests for the serving benchmark SSE parser,
   latency accounting, percentile/goodput summary, and artifact writer.
+- `test_bench_ax_multimodel_serving.py`: unit tests for timed multi-model
+  replay, output identities, lifecycle results, and route-counter gates.
+- `test_certify_row_exact_coalesced_decode.py`: unit tests for row-exact
+  certification environment, route verdicts, timing parsing, and artifact
+  writing.
 - `test_build_serving_shared_prefix_corpus.py`: unit tests for the deterministic
   shared-prefix serving corpus builder.
 - `test_run_disk_prefix_serving_soak.py`: unit tests for the disk-prefix

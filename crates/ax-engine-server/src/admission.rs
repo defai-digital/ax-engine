@@ -34,8 +34,10 @@ impl AdmissionController {
         self.active_jobs.fetch_add(1, Ordering::AcqRel);
         drop(draining);
         Ok(AdmissionPermit {
-            controller: Arc::clone(self),
-            semaphore_permit,
+            leases: vec![AdmissionLease {
+                controller: Arc::clone(self),
+                semaphore_permit,
+            }],
         })
     }
 
@@ -69,11 +71,28 @@ pub(crate) enum AdmissionError {
 }
 
 pub(crate) struct AdmissionPermit {
+    leases: Vec<AdmissionLease>,
+}
+
+impl AdmissionPermit {
+    /// Keep several admission scopes alive for one engine job.
+    ///
+    /// Multi-model serving acquires a model-local lease and the process-wide
+    /// hard-cap lease. They must have exactly the same lifetime: releasing one
+    /// early could let a target model retire while its job is still running or
+    /// let the process exceed its configured global capacity.
+    pub(crate) fn merge(mut self, mut other: Self) -> Self {
+        self.leases.append(&mut other.leases);
+        self
+    }
+}
+
+struct AdmissionLease {
     controller: Arc<AdmissionController>,
     semaphore_permit: Option<OwnedSemaphorePermit>,
 }
 
-impl Drop for AdmissionPermit {
+impl Drop for AdmissionLease {
     fn drop(&mut self) {
         // Return bounded capacity before publishing the job as inactive. This
         // keeps active_jobs() == 0 from racing with a still-held semaphore
@@ -167,6 +186,26 @@ mod tests {
         .await
         .expect("blocking job should release its permit");
         assert!(controller.try_admit().is_ok());
+    }
+
+    #[test]
+    fn merged_permit_holds_both_scopes_for_the_same_lifetime() {
+        let model = Arc::new(AdmissionController::new(Some(1)));
+        let process = Arc::new(AdmissionController::new(Some(1)));
+        let permit = model
+            .try_admit()
+            .expect("model lease should be admitted")
+            .merge(
+                process
+                    .try_admit()
+                    .expect("process lease should be admitted"),
+            );
+
+        assert_eq!(model.active_jobs(), 1);
+        assert_eq!(process.active_jobs(), 1);
+        drop(permit);
+        assert_eq!(model.active_jobs(), 0);
+        assert_eq!(process.active_jobs(), 0);
     }
 
     #[tokio::test]

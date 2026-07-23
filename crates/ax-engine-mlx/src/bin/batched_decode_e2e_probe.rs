@@ -215,28 +215,43 @@ fn runner_input(
 
 /// `request_id → output token` for one `run()` call.
 fn run_outputs(runner: &MlxRunner, input: RunnerInput) -> Vec<(u64, u32)> {
-    run_outputs_with_batched_forward_rows(runner, input).0
+    run_outputs_with_decode_route_rows(runner, input).0
 }
 
-/// Output tokens plus the number of rows that entered the shared forward.
-fn run_outputs_with_batched_forward_rows(
+#[derive(Clone, Copy, Debug, Default)]
+struct DecodeRouteRows {
+    tensor_forward: u32,
+    row_exact: u32,
+    row_exact_forward: u32,
+}
+
+/// Output tokens plus the number of rows that entered each production decode
+/// coalescing route. Tensor-forward and row-exact counters remain distinct so a
+/// row-exact pass can never accidentally mint a tensor-batch certificate.
+fn run_outputs_with_decode_route_rows(
     runner: &MlxRunner,
     input: RunnerInput,
-) -> (Vec<(u64, u32)>, u32) {
+) -> (Vec<(u64, u32)>, DecodeRouteRows) {
     let out = runner.run(input);
-    let batched_forward_rows = out
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .filter(|(name, _)| name == "ax_mlx_batched_decode_forward_rows")
-        .map(|(_, rows)| *rows)
-        .fold(0u32, u32::saturating_add);
+    let route_value = |target: &str| {
+        out.route_metadata
+            .crossover_decisions
+            .iter()
+            .filter(|(name, _)| name == target)
+            .map(|(_, rows)| *rows)
+            .fold(0u32, u32::saturating_add)
+    };
+    let route_rows = DecodeRouteRows {
+        tensor_forward: route_value("ax_mlx_batched_decode_forward_rows"),
+        row_exact: route_value("ax_mlx_row_exact_coalesced_decode_rows"),
+        row_exact_forward: route_value("ax_mlx_row_exact_coalesced_decode_forward_rows"),
+    };
     let tokens = out
         .request_updates
         .iter()
         .filter_map(|u| u.output_token.map(|t| (u.request_id.0, t)))
         .collect();
-    (tokens, batched_forward_rows)
+    (tokens, route_rows)
 }
 
 /// Reference: greedy decode via `model::forward` (the 2a-probe oracle path).
@@ -257,6 +272,14 @@ fn model_reference(
         MlxSamplingRequest::new(MlxSamplingParams::greedy(), prompt),
         &mut rng,
     );
+    // `MlxRunner::from_artifacts(..., disable_ngram_acceleration=true)` latches
+    // direct greedy Gemma decode onto the bounded physical sliding-KV ring
+    // after prefill. Mirror that physical topology in the independent
+    // `model::forward` oracle before crossing the sliding-window boundary.
+    // Otherwise the two mathematically equivalent paths can choose different
+    // greedy tokens at a near tie solely because one retains ordered K/V while
+    // the other rotates the same window into slot order.
+    cache.set_rotating_sliding_decode(ax_engine_mlx::fastpath::rotating_sliding_decode_enabled());
     let mut stream = vec![tok0];
     let mut tok = tok0;
     for _ in 0..gen_len {
@@ -456,7 +479,8 @@ fn run() -> Result<ExitCode, String> {
     );
     if batched_flag && !uncertified_override {
         eprintln!(
-            "  WARNING: AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED is off — the runner will use the per-item path, so BATCHED==SEQUENTIAL is vacuous."
+            "  NOTE: AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED is off — an uncertified \
+             Qwen/Gemma model uses row-exact coalescing, never the tensor-batch path."
         );
     }
     if !sampling.is_greedy() && batched_flag && !sampling_flag {
@@ -476,9 +500,12 @@ fn run() -> Result<ExitCode, String> {
             .collect()
     });
 
-    // Build a runner. run() uses interior mutability, so one runner drives all.
-    let runner = MlxRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK, true)
+    // Certification covers the direct target path. An attached MTP/assistant
+    // artifact is orthogonal: strict MTP requests remain on their speculative
+    // route and are profiled/certified separately.
+    let mut runner = MlxRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK, true)
         .map_err(|error| format!("failed to create batched runner: {error}"))?;
+    runner.set_mtp_requested(false);
 
     // Prefill every request (one run() per prefill item); record the first token.
     let mut cur: Vec<u32> = Vec::with_capacity(batch);
@@ -508,6 +535,9 @@ fn run() -> Result<ExitCode, String> {
     let decode_started = std::time::Instant::now();
     let mut batched_forward_steps = 0usize;
     let mut batched_forward_row_mismatch = false;
+    let mut row_exact_steps = 0usize;
+    let mut row_exact_row_mismatch = false;
+    let mut row_exact_forward_rows = 0usize;
     for s in 0..gen_len {
         let generated_len = s + 1; // prefill produced token #1
         let items: Vec<ExecutionItem> = (0..batch)
@@ -531,11 +561,17 @@ fn run() -> Result<ExitCode, String> {
                 )
             })
             .collect();
-        let (outs, batched_forward_rows) =
-            run_outputs_with_batched_forward_rows(&runner, runner_input(step_id, items, contexts));
-        if batched_forward_rows > 0 {
+        let (outs, route_rows) =
+            run_outputs_with_decode_route_rows(&runner, runner_input(step_id, items, contexts));
+        if route_rows.tensor_forward > 0 {
             batched_forward_steps += 1;
-            batched_forward_row_mismatch |= batched_forward_rows != batch as u32;
+            batched_forward_row_mismatch |= route_rows.tensor_forward != batch as u32;
+        }
+        if route_rows.row_exact > 0 {
+            row_exact_steps += 1;
+            row_exact_row_mismatch |= route_rows.row_exact != batch as u32;
+            row_exact_forward_rows =
+                row_exact_forward_rows.saturating_add(route_rows.row_exact_forward as usize);
         }
         step_id += 1;
         let mut seen = vec![false; batch];
@@ -581,6 +617,21 @@ fn run() -> Result<ExitCode, String> {
     } else {
         println!("BATCHED-PATH: SKIP (certification or diagnostic override did not engage it)");
     }
+    if row_exact_steps >= minimum_batched_forward_steps && !row_exact_row_mismatch {
+        println!(
+            "ROW-EXACT-COALESCED-PATH: PASS ({row_exact_steps}/{gen_len} decode steps, \
+             {row_exact_forward_rows} independently shaped rows submitted in groups)"
+        );
+    } else if row_exact_steps > 0 {
+        println!(
+            "ROW-EXACT-COALESCED-PATH: FAIL ({row_exact_steps}/{gen_len} coalesced steps, \
+             expected at least {minimum_batched_forward_steps}; \
+             row_mismatch={row_exact_row_mismatch})"
+        );
+        failed = true;
+    } else {
+        println!("ROW-EXACT-COALESCED-PATH: SKIP (tensor batch or per-item route selected)");
+    }
 
     // Verdict 1 (greedy only): harness fidelity vs the model::forward oracle.
     if let Some(refs) = &refs {
@@ -612,8 +663,9 @@ fn run() -> Result<ExitCode, String> {
     // This is the gate-3 promotion check — for sampled cohorts it proves the
     // batched sampler is token-exact with the single-sequence sampler, RNG and
     // tie-break included. A second runner keeps its own per-request KV/RNG state.
-    let seq_runner = MlxRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK, true)
+    let mut seq_runner = MlxRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK, true)
         .map_err(|error| format!("failed to create sequential runner: {error}"))?;
+    seq_runner.set_mtp_requested(false);
     let seq_streams = decode_sequential(&seq_runner, &prompts, &sampling, gen_len)?;
     let mut ok = true;
     for r in 0..batch {

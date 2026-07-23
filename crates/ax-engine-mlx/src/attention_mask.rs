@@ -61,11 +61,28 @@ pub fn create_causal_mask(seq_len: usize, offset: usize, window_size: Option<usi
 // Phase 2. Exercised now only by the token-exact SDPA oracle in tests.
 #[allow(dead_code)]
 pub fn batched_decode_validity_mask(valid_lengths: &[usize], key_len: usize) -> MlxArray {
+    batched_decode_validity_mask_with_window(valid_lengths, key_len, None)
+}
+
+/// Batched-decode validity mask with an optional per-layer sliding window.
+///
+/// `window_size=None` is identical to [`batched_decode_validity_mask`]. With a
+/// window, row `r` attends the half-open key interval
+/// `[valid_lengths[r] - window, valid_lengths[r])`, clamped at zero. This is
+/// the single-query form of [`create_causal_mask`]'s sliding rule.
+pub fn batched_decode_validity_mask_with_window(
+    valid_lengths: &[usize],
+    key_len: usize,
+    window_size: Option<usize>,
+) -> MlxArray {
     assert!(
         !valid_lengths.is_empty(),
         "batched decode mask requires at least one row"
     );
     assert!(key_len > 0, "batched decode mask requires key_len > 0");
+    if let Some(window) = window_size {
+        assert!(window > 0, "batched decode sliding window must be positive");
+    }
     let batch = valid_lengths.len() as i32;
     let lens_i32: Vec<i32> = valid_lengths
         .iter()
@@ -88,7 +105,27 @@ pub fn batched_decode_validity_mask(valid_lengths: &[usize], key_len: usize) -> 
         &[batch, 1, 1, 1],
         MlxDtype::Int32,
     );
-    let mask = less(&positions, &lengths, None);
+    let before_end = less(&positions, &lengths, None);
+    let mask = if let Some(window) = window_size {
+        let starts_i32: Vec<i32> = valid_lengths
+            .iter()
+            .map(|&len| len.saturating_sub(window) as i32)
+            .collect();
+        let starts = MlxArray::from_raw_data(
+            starts_i32.as_ptr().cast(),
+            std::mem::size_of_val(starts_i32.as_slice()),
+            &[batch, 1, 1, 1],
+            MlxDtype::Int32,
+        );
+        let after_start = greater_equal(&positions, &starts, None);
+        let mask = logical_and(&before_end, &after_start, None);
+        // `starts_i32` is borrowed by `starts`; force ownership before it
+        // leaves this branch.
+        eval(&[&mask]);
+        mask
+    } else {
+        before_end
+    };
     // Materialize while `lens_i32` is still alive so the mask owns its data and
     // does not dangle once the borrowed `valid_lengths` slice is gone.
     eval(&[&mask]);
@@ -201,6 +238,20 @@ mod tests {
 
         assert_eq!(mask.shape(), vec![2, 5]);
         assert_eq!(mask_data(&mask), vec![1, 1, 1, 1, 0, 1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn batched_decode_window_combines_ragged_validity_and_swa() {
+        let mask = batched_decode_validity_mask_with_window(&[3, 5], 5, Some(2));
+
+        assert_eq!(mask.shape(), vec![2, 1, 1, 5]);
+        assert_eq!(
+            mask_data(&mask),
+            vec![
+                0, 1, 1, 0, 0, // row 0: [3 - 2, 3)
+                0, 0, 0, 1, 1, // row 1: [5 - 2, 5)
+            ]
+        );
     }
 
     // ── Ring sliding mask ──

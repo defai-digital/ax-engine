@@ -267,6 +267,46 @@ def run_control_event(
     }
 
 
+def parse_route_requirement(value: str) -> tuple[str, int]:
+    name, separator, minimum_text = value.partition("=")
+    if not name:
+        raise argparse.ArgumentTypeError("route counter name must not be empty")
+    if not separator:
+        return name, 1
+    try:
+        minimum = int(minimum_text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("route counter minimum must be an integer") from error
+    if minimum < 0:
+        raise argparse.ArgumentTypeError("route counter minimum must be non-negative")
+    return name, minimum
+
+
+def route_contract(
+    summary: dict[str, Any],
+    requirements: list[tuple[str, int]],
+) -> dict[str, Any]:
+    observed = summary.get("route_decisions", {})
+    if not isinstance(observed, dict):
+        observed = {}
+    failures: list[str] = []
+    required: dict[str, int] = {}
+    selected_observed: dict[str, int | float | None] = {}
+    for name, minimum in requirements:
+        required[name] = max(required.get(name, 0), minimum)
+    for name, minimum in sorted(required.items()):
+        value = observed.get(name)
+        selected_observed[name] = value if isinstance(value, (int, float)) else None
+        if not isinstance(value, (int, float)) or value < minimum:
+            failures.append(f"{name}: observed {value!r}, required >= {minimum}")
+    return {
+        "passed": not failures,
+        "required": required,
+        "observed": selected_observed,
+        "failures": failures,
+    }
+
+
 def run_benchmark(
     args: argparse.Namespace,
     *,
@@ -359,7 +399,8 @@ def run_benchmark(
         if isinstance(item.get("status"), int) and 500 <= int(item["status"]) < 600
     )
 
-    return {
+    summary = summarize(request_observations)
+    artifact = {
         "schema_version": SCHEMA_VERSION,
         "created_at": serving.utc_now(),
         "methodology": {
@@ -387,7 +428,7 @@ def run_benchmark(
             "top_k": args.top_k,
             "seed": args.seed,
         },
-        "summary": summarize(request_observations),
+        "summary": summary,
         "by_model": {
             model_id: summarize(
                 [item for item in request_observations if item.get("model_id") == model_id]
@@ -417,6 +458,11 @@ def run_benchmark(
         },
         "observations": observations,
     }
+    artifact["route_contract"] = route_contract(
+        summary,
+        list(getattr(args, "require_route_counter", [])),
+    )
+    return artifact
 
 
 def classify_focus_family(model_id: str) -> str | None:
@@ -455,6 +501,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--slo-ttft-ms", type=optional_positive_float)
     parser.add_argument("--slo-tpot-ms", type=optional_positive_float)
     parser.add_argument("--slo-e2e-ms", type=optional_positive_float)
+    parser.add_argument(
+        "--require-route-counter",
+        action="append",
+        default=[],
+        type=parse_route_requirement,
+        metavar="NAME[=MIN]",
+        help="fail after writing the artifact unless an aggregate route counter reaches MIN",
+    )
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -468,7 +522,7 @@ def main() -> int:
         args.output.write_text(text + "\n")
     else:
         print(text)
-    return 0
+    return 0 if result["route_contract"]["passed"] else 2
 
 
 if __name__ == "__main__":
