@@ -41,7 +41,7 @@
     "id": "qwen3-gemma4-m5max-openai-v1",
     "hardware": "AKMBPM5MAXx/applegpu_g17s",
     "scenario_suite": "S0-S3-text-v1",
-    "request_surface": "openai_chat_completions_sse",
+    "request_surface": "openai_completions_sse",
     "sampling": "temperature=0,top_p=1,top_k=0,seed=0",
     "total_memory_cap_bytes": 103079215104
   }

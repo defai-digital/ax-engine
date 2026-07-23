@@ -24,6 +24,7 @@ REQUIRED_METHODOLOGY = {
 ALLOWED_REQUEST_ENDPOINTS = {
     "/v1/generate/stream",
     "/v1/chat/completions",
+    "/v1/completions",
 }
 PERCENTILE_KEYS = ["count", "min", "mean", "p50", "p75", "p90", "p95", "p99", "max"]
 SUMMARY_DISTRIBUTIONS = [

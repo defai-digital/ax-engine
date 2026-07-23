@@ -143,6 +143,19 @@ class FlipCompareTests(unittest.TestCase):
             contract["mismatches"],
         )
 
+    def test_rejects_different_prompt_tokenization(self) -> None:
+        candidate = fixtures._artifact()
+        baseline = fixtures._artifact()
+        baseline["observations"][0]["input_tokens"] = 31  # type: ignore[index]
+
+        contract = compare.evaluate_comparison_contract(candidate, baseline)
+
+        self.assertFalse(contract["passed"])
+        self.assertIn(
+            "per-event input token counts differ",
+            "\n".join(contract["mismatches"]),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -49,8 +49,8 @@ def _artifact() -> dict[str, object]:
         "schema_version": checker.SCHEMA_VERSION,
         "methodology": {
             "scope": "timed_multi_model_serving_and_lifecycle",
-            "request_endpoint": "/v1/chat/completions",
-            "protocol": "openai_chat_completions_sse",
+            "request_endpoint": "/v1/completions",
+            "protocol": "openai_completions_sse",
             "timing_scope": "client_observed",
         },
         "target": {
@@ -121,6 +121,7 @@ def _artifact() -> dict[str, object]:
                 "scheduled_at_s": 0.0,
                 "started_at_s": 0.0,
                 "e2e_latency_ms": 200.0,
+                "input_tokens": 32,
                 "stream_step_interval_ms": [18.0, 18.0],
             },
             {
@@ -133,6 +134,7 @@ def _artifact() -> dict[str, object]:
                 "scheduled_at_s": 0.05,
                 "started_at_s": 0.05,
                 "e2e_latency_ms": 220.0,
+                "input_tokens": 32,
                 "stream_step_interval_ms": [19.0, 19.0],
             },
         ],

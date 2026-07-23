@@ -35,7 +35,7 @@ Use `bench_ax_multimodel_serving.py` for timed request/load/unload replay
 against one multi-model AX process. It adds per-model output identities,
 lifecycle latency, final route-counter contracts, and model-switch evidence.
 Use `bench_qwen_gemma_flip_target.py` when the same Qwen 3 + Gemma 4 replay
-must run through the OpenAI chat-completions streaming API on either AX or
+must run through the raw OpenAI completions streaming API on either AX or
 mlxcel. Its target file locks the host, model packages, sampling parameters,
 memory budget, protocol, and runtime revision. For mlxcel it also supervises
 one process per model so load/unload events retain their lifecycle meaning;

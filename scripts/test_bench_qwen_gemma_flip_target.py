@@ -196,6 +196,29 @@ class FlipTargetBenchmarkTests(unittest.TestCase):
         self.assertEqual(observed["stream_step_interval_ms"], [100.0])
         self.assertEqual(observed["output_identity"]["kind"], "text_utf8")
 
+    def test_openai_payload_uses_raw_prompt_without_chat_template(self) -> None:
+        prompt = serving.PromptItem(
+            id="request",
+            category="interactive_decode",
+            input_text="exact shared text",
+            input_tokens=None,
+            input_tokens_count=None,
+            max_output_tokens=8,
+            metadata={},
+        )
+
+        payload = flip.openai_payload(
+            prompt,
+            served_model="qwen3.5-9b",
+            temperature=0.0,
+            top_p=1.0,
+            top_k=0,
+            seed=0,
+        )
+
+        self.assertEqual(payload["prompt"], "exact shared text")
+        self.assertNotIn("messages", payload)
+
     def test_openai_stream_fails_closed_without_usage(self) -> None:
         prompt = serving.PromptItem(
             id="request",

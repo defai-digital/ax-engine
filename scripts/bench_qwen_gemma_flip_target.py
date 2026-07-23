@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Replay Qwen/Gemma flip scenarios against AX or managed mlxcel processes.
 
-The benchmark uses the OpenAI chat-completions streaming surface for both
+The benchmark uses the raw OpenAI completions streaming surface for both
 runtimes. A target JSON maps the logical model ids in the shared S0-S3
 manifests to one AX endpoint or to one managed mlxcel process per model. The
 result keeps the existing ``ax.multimodel_serving_benchmark.v1`` schema so the
@@ -30,7 +30,7 @@ import bench_ax_multimodel_serving as multimodel
 import bench_ax_serving as serving
 
 TARGET_SCHEMA_VERSION = "ax.qwen_gemma_flip_target.v1"
-OPENAI_ENDPOINT = "/v1/chat/completions"
+OPENAI_ENDPOINT = "/v1/completions"
 
 
 @dataclass(frozen=True)
@@ -647,7 +647,7 @@ def openai_payload(
         )
     return {
         "model": served_model,
-        "messages": [{"role": "user", "content": prompt.input_text}],
+        "prompt": prompt.input_text,
         "max_tokens": prompt.max_output_tokens,
         "temperature": temperature,
         "top_p": top_p,
@@ -1039,7 +1039,7 @@ def main() -> int:
     else:
         process_audit = []
     artifact["methodology"]["request_endpoint"] = OPENAI_ENDPOINT
-    artifact["methodology"]["protocol"] = "openai_chat_completions_sse"
+    artifact["methodology"]["protocol"] = "openai_completions_sse"
     artifact["target"] = target_artifact_metadata(
         target,
         scenario_model_ids=scenario_model_ids,

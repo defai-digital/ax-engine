@@ -207,6 +207,30 @@ def evaluate_comparison_contract(
             elif cand_signature != base_signature:
                 mismatches.append(f"model package identity differs for {model_id}")
 
+    cand_input_tokens = {
+        str(item.get("event_id")): item.get("input_tokens")
+        for item in candidate.get("observations") or []
+        if item.get("kind") == "request"
+    }
+    base_input_tokens = {
+        str(item.get("event_id")): item.get("input_tokens")
+        for item in baseline.get("observations") or []
+        if item.get("kind") == "request"
+    }
+    if not cand_input_tokens or any(
+        not isinstance(value, int) for value in cand_input_tokens.values()
+    ):
+        mismatches.append("candidate authoritative per-event input token counts are missing")
+    if not base_input_tokens or any(
+        not isinstance(value, int) for value in base_input_tokens.values()
+    ):
+        mismatches.append("baseline authoritative per-event input token counts are missing")
+    if cand_input_tokens != base_input_tokens:
+        mismatches.append(
+            f"per-event input token counts differ: candidate={cand_input_tokens!r} "
+            f"baseline={base_input_tokens!r}"
+        )
+
     return {
         "passed": not mismatches,
         "mismatches": mismatches,
