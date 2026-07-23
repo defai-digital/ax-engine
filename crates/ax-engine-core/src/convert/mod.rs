@@ -735,6 +735,25 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         }
     }
 
+    // Qwen3-VL vision tower: visual.blocks.{i}.* layer roles + visual.* globals.
+    if matches!(family.family_name, "qwen3_vl" | "qwen3_vl_moe") {
+        if let Some((idx, role)) = match_qwen3_vl_vision_layer(name) {
+            return Some((role, Some(idx)));
+        }
+        // VL globals for MoE family (dense VL uses family.extra_tensor_map above).
+        if family.family_name == "qwen3_vl_moe" {
+            if let Some(result) = match_tensor_in_map(name, QWEN3_VL_EXTRA_TENSOR_MAP) {
+                return Some(result);
+            }
+        }
+        // Also accept language_model-prefixed visual tower names if present.
+        if let Some(stripped) = name.strip_prefix("model.") {
+            if let Some((idx, role)) = match_qwen3_vl_vision_layer(stripped) {
+                return Some((role, Some(idx)));
+            }
+        }
+    }
+
     // Try language_model.model.… prefix (Gemma4, Qwen3.5, Qwen3.6)
     if family.uses_language_model_prefix {
         if let Some(result) = match_tensor_in_map(name, LANGUAGE_MODEL_PREFIX_TENSOR_MAP) {

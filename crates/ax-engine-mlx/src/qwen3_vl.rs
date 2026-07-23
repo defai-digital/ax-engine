@@ -378,6 +378,145 @@ mod tests {
     }
 
     #[test]
+    fn load_qwen3_vl_vision_from_name_map_returns_some() {
+        use std::collections::HashMap;
+        let h = 8usize;
+        let patch_dim = 6i32;
+        let mut name_map = HashMap::new();
+        name_map.insert(
+            "visual.patch_embed.proj.weight".into(),
+            f32_array(&vec![0.01; h * patch_dim as usize], &[h as i32, patch_dim]),
+        );
+        name_map.insert(
+            "visual.merger.weight".into(),
+            f32_array(&vec![0.01; h * h], &[h as i32, h as i32]),
+        );
+        name_map.insert(
+            "visual.blocks.0.attn.qkv.weight".into(),
+            f32_array(&vec![0.01; h * 3 * h], &[(3 * h) as i32, h as i32]),
+        );
+        name_map.insert(
+            "visual.blocks.0.attn.proj.weight".into(),
+            f32_array(&vec![0.01; h * h], &[h as i32, h as i32]),
+        );
+        name_map.insert(
+            "visual.blocks.0.norm1.weight".into(),
+            f32_array(&vec![1.0; h], &[h as i32]),
+        );
+        name_map.insert(
+            "visual.blocks.0.norm2.weight".into(),
+            f32_array(&vec![1.0; h], &[h as i32]),
+        );
+        name_map.insert(
+            "visual.blocks.0.mlp.fc1.weight".into(),
+            f32_array(&vec![0.01; h * 16], &[16, h as i32]),
+        );
+        name_map.insert(
+            "visual.blocks.0.mlp.fc2.weight".into(),
+            f32_array(&vec![0.01; 16 * h], &[h as i32, 16]),
+        );
+        let loaded = load_qwen3_vl_vision_weights(&[], &mut name_map)
+            .expect("load")
+            .expect("Some vision weights");
+        assert_eq!(loaded.hidden_size, h);
+        assert_eq!(loaded.layers.len(), 1);
+        assert!(name_map.keys().all(|k| !k.starts_with("visual.")));
+
+        // Prefill path succeeds when ModelWeights carries the tower.
+        use crate::gemma4_assistant_mtp::Gemma4AssistantMtpStatus;
+        use crate::weights::QuantizedWeight;
+        use mlx_sys::zeros;
+        let dummy = || QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None);
+        // Token embed needs vocab rows × hidden for embed_tokens.
+        let te = QuantizedWeight::new(f32_array(&vec![0.01; 8 * h], &[8, h as i32]), None, None);
+        let weights = ModelWeights {
+            token_embedding: te,
+            final_norm: zeros(&[h as i32], MlxDtype::Float32, None),
+            lm_head: dummy(),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            gemma4_assistant_mtp: Gemma4AssistantMtpStatus::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
+            qwen3_vl_vision: Some(loaded),
+        };
+        let cfg = ModelConfig {
+            compile_cache_identity: 0,
+            model_family: "qwen3_vl".into(),
+            layer_count: 0,
+            hidden_size: h,
+            intermediate_size: 0,
+            n_heads: 1,
+            n_kv_heads: 1,
+            head_dim: h,
+            vocab_size: 8,
+            rope_theta: 10000.0,
+            rope_dims: 0,
+            attn_output_gate: false,
+            query_scale: 1.0,
+            final_logit_softcapping: None,
+            moe_expert_count: 0,
+            moe_experts_per_token: 0,
+            moe_expert_intermediate_size: 0,
+            layer_configs: Vec::new(),
+            global_sliding_window: None,
+            gemma4_moe_router: false,
+            uses_geglu: false,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
+            hidden_size_per_layer_input: 0,
+            linear_attention: None,
+            mla_attention: None,
+            glm_router: None,
+            rms_norm_eps: 1e-6,
+            rope_freqs: None,
+            rope_mscale: 1.0,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: 0.0,
+            attn_temperature_scale: 0.0,
+            intermediate_size_mlp: 0,
+            moe_layer_freq: 0,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 0,
+            moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 1.0,
+            moe_n_group: 1,
+            moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
+            diffusion: None,
+            gpt_oss_uses_mxfp4_experts: false,
+            generation_kind: ax_engine_core::GenerationKind::Autoregressive,
+        };
+        let inputs = Qwen3VlRuntimeInputs {
+            images: vec![ax_engine_core::qwen3_vl::Qwen3VlImageRuntimeInput {
+                placeholder_index: 1,
+                soft_token_count: 4,
+                patches: vec![0.1; 4 * patch_dim as usize],
+                num_patches: 4,
+                patch_dim: patch_dim as u32,
+                height: 28,
+                width: 28,
+                patch_size: 14,
+                spatial_merge_size: 1,
+            }],
+        };
+        let hidden =
+            build_vl_prefill_embeddings(&cfg, &weights, &[1, 2, 3, 4, 5, 6], &inputs).expect("ok");
+        assert_eq!(hidden.shape()[2], h as i32);
+    }
+
+    #[test]
     fn vision_encoder_forward_and_scatter_real_path() {
         use mlx_sys::{MlxDtype, eval, zeros};
         // Tiny ViT: H=8, heads=2, seq=4 patches, 1 layer
@@ -442,8 +581,8 @@ mod tests {
 //
 // Implements patch-linear + stacked attention/MLP + spatial-merge projector
 // using MLX ops. Weights are explicit tensors so unit tests can drive the
-// real path without a full checkpoint. Production load will map HF names
-// into [`Qwen3VlVisionWeights`].
+// real path without a full checkpoint. Production load maps HF `visual.*`
+// roles into [`Qwen3VlVisionWeights`] via [`load_qwen3_vl_vision_weights`].
 // ---------------------------------------------------------------------------
 
 /// One vision transformer layer weights.
@@ -476,12 +615,235 @@ pub struct Qwen3VlVisionWeights {
     pub deepstack_indexes: Vec<usize>,
 }
 
+/// Load Qwen3-VL vision tower from native tensor roles + leftover name_map
+/// keys. Returns `Ok(None)` when no vision tensors are present; `Ok(Some)`
+/// when a complete tower can be assembled; errors if roles are partially
+/// present (fail closed — never silent text-only).
+pub fn load_qwen3_vl_vision_weights(
+    specs: &[ax_engine_core::NativeTensorSpec],
+    name_map: &mut std::collections::HashMap<String, MlxArray>,
+) -> Result<Option<Qwen3VlVisionWeights>, crate::weights::WeightLoadError> {
+    use crate::weights::WeightLoadError;
+    use ax_engine_core::NativeTensorRole;
+
+    let has_patch = specs
+        .iter()
+        .any(|s| s.role == NativeTensorRole::Qwen3VlVisionPatchEmbed && s.layer_index.is_none())
+        || name_map.contains_key("visual.patch_embed.proj.weight");
+    let has_merger = specs
+        .iter()
+        .any(|s| s.role == NativeTensorRole::Qwen3VlVisionMerger && s.layer_index.is_none())
+        || name_map.keys().any(|k| k.starts_with("visual.merger"));
+    let has_layers = specs
+        .iter()
+        .any(|s| s.role == NativeTensorRole::Qwen3VlVisionLayerQkv)
+        || name_map.keys().any(|k| k.starts_with("visual.blocks."));
+    if !has_patch && !has_merger && !has_layers {
+        return Ok(None);
+    }
+    if !has_patch || !has_merger || !has_layers {
+        return Err(WeightLoadError::RoleMissing(
+            "qwen3_vl vision tower incomplete (need patch_embed + merger + blocks)".into(),
+        ));
+    }
+
+    fn take_named(
+        name_map: &mut std::collections::HashMap<String, MlxArray>,
+        names: &[String],
+    ) -> Result<MlxArray, WeightLoadError> {
+        for n in names {
+            if let Some(arr) = name_map.remove(n) {
+                return Ok(arr);
+            }
+        }
+        Err(WeightLoadError::TensorMissing(
+            names
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "qwen3_vl vision tensor".into()),
+        ))
+    }
+    fn take_role(
+        specs: &[ax_engine_core::NativeTensorSpec],
+        name_map: &mut std::collections::HashMap<String, MlxArray>,
+        role: NativeTensorRole,
+        layer: Option<u32>,
+    ) -> Option<MlxArray> {
+        let spec = specs
+            .iter()
+            .find(|s| s.role == role && s.layer_index == layer)?;
+        name_map.remove(&spec.name)
+    }
+    fn take_role_or_names(
+        specs: &[ax_engine_core::NativeTensorSpec],
+        name_map: &mut std::collections::HashMap<String, MlxArray>,
+        role: NativeTensorRole,
+        layer: Option<u32>,
+        names: &[String],
+    ) -> Result<MlxArray, WeightLoadError> {
+        if let Some(arr) = take_role(specs, name_map, role, layer) {
+            return Ok(arr);
+        }
+        take_named(name_map, names)
+    }
+
+    let patch_embed = take_role_or_names(
+        specs,
+        name_map,
+        NativeTensorRole::Qwen3VlVisionPatchEmbed,
+        None,
+        &[String::from("visual.patch_embed.proj.weight")],
+    )?;
+    let patch_embed_bias = name_map.remove("visual.patch_embed.proj.bias");
+
+    let merger = take_role_or_names(
+        specs,
+        name_map,
+        NativeTensorRole::Qwen3VlVisionMerger,
+        None,
+        &[
+            String::from("visual.merger.mlp.2.weight"),
+            String::from("visual.merger.mlp.0.weight"),
+            String::from("visual.merger.weight"),
+        ],
+    )?;
+    let merger_bias = name_map
+        .remove("visual.merger.mlp.2.bias")
+        .or_else(|| name_map.remove("visual.merger.bias"));
+
+    let hidden_size = patch_embed.shape().first().copied().unwrap_or(0) as usize;
+    if hidden_size == 0 {
+        return Err(WeightLoadError::InvalidLayer(
+            "qwen3_vl patch_embed hidden_size is 0".into(),
+        ));
+    }
+
+    let mut layer_idxs: Vec<u32> = specs
+        .iter()
+        .filter_map(|s| {
+            if s.role == NativeTensorRole::Qwen3VlVisionLayerQkv {
+                s.layer_index
+            } else {
+                None
+            }
+        })
+        .collect();
+    if layer_idxs.is_empty() {
+        for k in name_map.keys() {
+            if let Some(rest) = k.strip_prefix("visual.blocks.")
+                && let Some(idx_s) = rest.split('.').next()
+                && let Ok(i) = idx_s.parse::<u32>()
+            {
+                layer_idxs.push(i);
+            }
+        }
+    }
+    layer_idxs.sort_unstable();
+    layer_idxs.dedup();
+    if layer_idxs.is_empty() {
+        return Err(WeightLoadError::RoleMissing(
+            "qwen3_vl vision blocks missing".into(),
+        ));
+    }
+
+    let mut layers = Vec::with_capacity(layer_idxs.len());
+    for li in layer_idxs {
+        let qkv = take_role_or_names(
+            specs,
+            name_map,
+            NativeTensorRole::Qwen3VlVisionLayerQkv,
+            Some(li),
+            &[format!("visual.blocks.{li}.attn.qkv.weight")],
+        )?;
+        let proj = take_role_or_names(
+            specs,
+            name_map,
+            NativeTensorRole::Qwen3VlVisionLayerProj,
+            Some(li),
+            &[format!("visual.blocks.{li}.attn.proj.weight")],
+        )?;
+        let norm1 = take_role_or_names(
+            specs,
+            name_map,
+            NativeTensorRole::Qwen3VlVisionLayerNorm1,
+            Some(li),
+            &[format!("visual.blocks.{li}.norm1.weight")],
+        )?;
+        let norm2 = take_role_or_names(
+            specs,
+            name_map,
+            NativeTensorRole::Qwen3VlVisionLayerNorm2,
+            Some(li),
+            &[format!("visual.blocks.{li}.norm2.weight")],
+        )?;
+        let fc1 = take_role_or_names(
+            specs,
+            name_map,
+            NativeTensorRole::Qwen3VlVisionLayerFc1,
+            Some(li),
+            &[
+                format!("visual.blocks.{li}.mlp.fc1.weight"),
+                format!("visual.blocks.{li}.mlp.up_proj.weight"),
+            ],
+        )?;
+        let fc2 = take_role_or_names(
+            specs,
+            name_map,
+            NativeTensorRole::Qwen3VlVisionLayerFc2,
+            Some(li),
+            &[
+                format!("visual.blocks.{li}.mlp.fc2.weight"),
+                format!("visual.blocks.{li}.mlp.down_proj.weight"),
+            ],
+        )?;
+        layers.push(Qwen3VlVisionLayerWeights {
+            qkv,
+            qkv_bias: name_map.remove(&format!("visual.blocks.{li}.attn.qkv.bias")),
+            proj,
+            proj_bias: name_map.remove(&format!("visual.blocks.{li}.attn.proj.bias")),
+            norm1_weight: norm1,
+            norm1_bias: name_map.remove(&format!("visual.blocks.{li}.norm1.bias")),
+            fc1,
+            fc1_bias: name_map
+                .remove(&format!("visual.blocks.{li}.mlp.fc1.bias"))
+                .or_else(|| name_map.remove(&format!("visual.blocks.{li}.mlp.up_proj.bias"))),
+            fc2,
+            fc2_bias: name_map
+                .remove(&format!("visual.blocks.{li}.mlp.fc2.bias"))
+                .or_else(|| name_map.remove(&format!("visual.blocks.{li}.mlp.down_proj.bias"))),
+            norm2_weight: norm2,
+            norm2_bias: name_map.remove(&format!("visual.blocks.{li}.norm2.bias")),
+        });
+    }
+
+    // Prefer power-of-two head counts that divide hidden_size.
+    let num_heads = [16, 12, 8, 4, 2, 1]
+        .into_iter()
+        .find(|h| *h > 0 && hidden_size.is_multiple_of(*h))
+        .unwrap_or(1);
+
+    // Drop residual visual keys so they are not mistaken for language leftovers.
+    name_map.retain(|k, _| !k.starts_with("visual."));
+
+    Ok(Some(Qwen3VlVisionWeights {
+        patch_embed,
+        patch_embed_bias,
+        layers,
+        merger,
+        merger_bias,
+        num_heads,
+        hidden_size,
+        deepstack_indexes: vec![0],
+    }))
+}
+
 fn ln(x: &MlxArray, weight: &MlxArray, bias: Option<&MlxArray>, eps: f32) -> MlxArray {
     match bias {
         Some(b) => layer_norm(x, weight, b, eps, None),
         None => {
-            // layer_norm requires bias in this binding — use zeros-like weight.
-            let zero = cached_scalar(0.0, weight.dtype());
+            // layer_norm requires a bias tensor matching the last dim of `x`.
+            use mlx_sys::zeros;
+            let zero = zeros(&weight.shape(), weight.dtype(), None);
             layer_norm(x, weight, &zero, eps, None)
         }
     }

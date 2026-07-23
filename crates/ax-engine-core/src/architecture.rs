@@ -247,6 +247,8 @@ impl ArchitectureSpec {
                 NativeTensorRole::Gemma4UnifiedVisionPatchDense
                     | NativeTensorRole::Gemma4UnifiedVisionProjection
                     | NativeTensorRole::Gemma4UnifiedAudioProjection
+                    | NativeTensorRole::Qwen3VlVisionPatchEmbed
+                    | NativeTensorRole::Qwen3VlVisionMerger
             )
         });
         let mut capabilities = StructuralCapabilities::from_layers(

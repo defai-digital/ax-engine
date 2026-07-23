@@ -682,6 +682,55 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             max_depth: 1,
         },
     },
+    // WS-P2: E2B/E4B assistant-MTP packaging publication paths.
+    MtpDownloadTarget {
+        label: "gemma-4-e2b",
+        repo_id: "mlx-community/gemma-4-E2B-it-4bit",
+        aliases: &[
+            "gemma-4-e2b",
+            "gemma4-e2b",
+            "gemma-4-e2b-it",
+            "gemma-4-e2b-4bit",
+            "gemma4-e2b-4bit",
+        ],
+        kind: MtpDownloadKind::GemmaAssistant {
+            assistant_repo_id: "mlx-community/gemma-4-E2B-it-assistant-4bit",
+            target_model_id: "gemma-4-e2b-it",
+            assistant_model_id: "gemma-4-e2b-it-assistant",
+            max_depth: 2,
+        },
+    },
+    MtpDownloadTarget {
+        label: "gemma-4-e4b",
+        repo_id: "mlx-community/gemma-4-E4B-it-4bit",
+        aliases: &[
+            "gemma-4-e4b",
+            "gemma4-e4b",
+            "gemma-4-e4b-it",
+            "gemma-4-e4b-4bit",
+            "gemma4-e4b-4bit",
+        ],
+        kind: MtpDownloadKind::GemmaAssistant {
+            assistant_repo_id: "mlx-community/gemma-4-E4B-it-assistant-4bit",
+            target_model_id: "gemma-4-e4b-it",
+            assistant_model_id: "gemma-4-e4b-it-assistant",
+            max_depth: 2,
+        },
+    },
+    // WS-P2: Coder-Next MTP publication (Qwen fused sidecar from base).
+    MtpDownloadTarget {
+        label: "qwen3-coder-next",
+        repo_id: "mlx-community/Qwen3-Coder-Next-4bit",
+        aliases: &[
+            "qwen3-coder-next",
+            "qwen3-coder-next-4bit",
+            "qwen3_coder_next",
+            "coder-next",
+        ],
+        kind: MtpDownloadKind::QwenSidecar {
+            mtp_source: "Qwen/Qwen3-Coder-Next",
+        },
+    },
 ];
 
 fn main() -> ExitCode {
@@ -3152,7 +3201,15 @@ mod tests {
             assert!(target.repo_id.ends_with("6bit"));
             assert_eq!(target.kind, kind);
         }
-        assert!(mtp_download_target_for_model("qwen3-coder-next").is_none());
+        // WS-P2: Coder-Next publication path is registered.
+        let coder = mtp_download_target_for_model("qwen3-coder-next").unwrap();
+        assert_eq!(coder.label, "qwen3-coder-next");
+        assert!(matches!(coder.kind, MtpDownloadKind::QwenSidecar { .. }));
+        let e2b = mtp_download_target_for_model("gemma-4-e2b").unwrap();
+        assert_eq!(e2b.label, "gemma-4-e2b");
+        assert!(matches!(e2b.kind, MtpDownloadKind::GemmaAssistant { .. }));
+        let e4b = mtp_download_target_for_model("gemma4-e4b").unwrap();
+        assert_eq!(e4b.label, "gemma-4-e4b");
     }
 
     #[test]

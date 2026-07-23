@@ -165,6 +165,22 @@ pub enum NativeTensorRole {
     UnlimitedOcrImageNewline,
     /// Unlimited-OCR view separator embedding.
     UnlimitedOcrViewSeparator,
+    /// Qwen3-VL vision patch embed projection (visual.patch_embed.proj).
+    Qwen3VlVisionPatchEmbed,
+    /// Qwen3-VL vision spatial-merge projector (visual.merger).
+    Qwen3VlVisionMerger,
+    /// Qwen3-VL vision transformer block attention qkv (layer-indexed).
+    Qwen3VlVisionLayerQkv,
+    /// Qwen3-VL vision transformer block attention proj (layer-indexed).
+    Qwen3VlVisionLayerProj,
+    /// Qwen3-VL vision transformer block norm1 weight (layer-indexed).
+    Qwen3VlVisionLayerNorm1,
+    /// Qwen3-VL vision transformer block norm2 weight (layer-indexed).
+    Qwen3VlVisionLayerNorm2,
+    /// Qwen3-VL vision transformer block MLP fc1 (layer-indexed).
+    Qwen3VlVisionLayerFc1,
+    /// Qwen3-VL vision transformer block MLP fc2 (layer-indexed).
+    Qwen3VlVisionLayerFc2,
     FinalNorm,
     LmHead,
     RopeFreqs,
@@ -236,6 +252,12 @@ impl NativeTensorRole {
                 | Self::PerLayerInputGate
                 | Self::PerLayerInputProjection
                 | Self::PerLayerInputPostNorm
+                | Self::Qwen3VlVisionLayerQkv
+                | Self::Qwen3VlVisionLayerProj
+                | Self::Qwen3VlVisionLayerNorm1
+                | Self::Qwen3VlVisionLayerNorm2
+                | Self::Qwen3VlVisionLayerFc1
+                | Self::Qwen3VlVisionLayerFc2
         )
     }
 }

@@ -87,12 +87,14 @@ pub(crate) fn model_family_for_type(
         "qwen3_vl" | "qwen3-vl" | "qwen3_vl_text" => Ok(ModelFamily {
             family_name: "qwen3_vl",
             tensor_map: HF_STANDARD_TENSOR_MAP,
-            extra_tensor_map: None,
+            extra_tensor_map: Some(QWEN3_VL_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: true,
             uses_decoder_prefix: false,
         }),
         "qwen3_vl_moe" | "qwen3-vl-moe" => Ok(ModelFamily {
             family_name: "qwen3_vl_moe",
+            // MoE expert maps; vision globals/layers resolved via match_qwen3_vl_vision_layer
+            // and QWEN3_VL_EXTRA_TENSOR_MAP in resolve_tensor_mapping.
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(QWEN3_MOE_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: true,

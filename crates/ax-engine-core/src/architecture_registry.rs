@@ -479,6 +479,35 @@ mod tests {
         assert!(reg.dense_batched_decode_candidate);
     }
 
+    /// WS-T3: Gemma 4 must not flip dense batched-decode candidacy without
+    /// certification artifacts. Structural pilot still supports SWA helpers.
+    #[test]
+    fn gemma4_families_remain_non_candidates_until_cert() {
+        for label in ["gemma4", "gemma4_unified", "gemma4_vl", "gemma4_assistant"] {
+            let reg = lookup_architecture(label).expect(label);
+            assert!(
+                !reg.dense_batched_decode_candidate,
+                "{label} must stay non-candidate until SWA/SWA+MoE cert lands"
+            );
+            assert!(
+                !reg.cert_gate_note.is_empty(),
+                "{label} must document the cert gate"
+            );
+        }
+        // Structural readiness: SWA note present on text gemma4.
+        let g4 = lookup_architecture("gemma4").unwrap();
+        assert!(
+            g4.cert_gate_note.contains("SWA") || g4.cert_gate_note.contains("swa"),
+            "gemma4 cert note should mention SWA structural path"
+        );
+    }
+
+    #[test]
+    fn qwen3_vl_text_only_rides_certified_qwen3_batch_candidate() {
+        let q = lookup_architecture("qwen3_vl").unwrap();
+        assert!(q.dense_batched_decode_candidate);
+    }
+
     #[test]
     fn registry_default_generation_defers_to_manifest_diffusion() {
         let mut m = base_manifest("gemma4", 2);
