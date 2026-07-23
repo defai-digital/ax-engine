@@ -150,6 +150,7 @@ class FlipTargetBenchmarkTests(unittest.TestCase):
             ],
         )
         self.assertNotIn(str(gemma_dir.resolve()), command)
+        self.assertEqual(flip.control_base_url(target), "http://127.0.0.1:31418")
 
     def test_openai_stream_uses_authoritative_usage(self) -> None:
         prompt = serving.PromptItem(

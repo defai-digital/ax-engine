@@ -880,6 +880,15 @@ def referenced_models(events: list[multimodel.ScenarioEvent]) -> list[str]:
     return sorted({event.model_id for event in events})
 
 
+def control_base_url(target: TargetSpec) -> str:
+    if target.managed_processes:
+        return target.name
+    endpoints = {model.base_url for model in target.models.values()}
+    if len(endpoints) != 1:
+        raise RuntimeError("single-process target models must share one control endpoint")
+    return endpoints.pop()
+
+
 def target_artifact_metadata(
     target: TargetSpec,
     *,
@@ -996,7 +1005,7 @@ def main() -> int:
 
     benchmark_args = argparse.Namespace(
         scenario=args.scenario,
-        base_url=target.name,
+        base_url=control_base_url(target),
         workers=args.workers,
         input_kind="text",
         timeout=args.timeout,
