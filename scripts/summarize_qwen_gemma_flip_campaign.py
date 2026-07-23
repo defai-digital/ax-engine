@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import statistics
 import sys
@@ -14,6 +15,7 @@ import compare_qwen_gemma_flip as comparator
 
 CAMPAIGN_SCHEMA_VERSION = "ax.qwen_gemma_flip_campaign.v1"
 SCHEMA_VERSION = "ax.qwen_gemma_flip_campaign_summary.v1"
+GATES_SCHEMA_VERSION = "ax.qwen_gemma_flip_gates.v1"
 
 
 class SummaryError(RuntimeError):
@@ -38,6 +40,28 @@ def resolve_artifact_path(campaign_path: Path, recorded: str) -> Path:
     if fallback.is_file():
         return fallback
     raise SummaryError(f"campaign artifact is missing: {recorded}")
+
+
+def load_gate_thresholds(path: Path) -> dict[str, float]:
+    payload = load_json(path)
+    if payload.get("schema_version") != GATES_SCHEMA_VERSION:
+        raise SummaryError(f"gate schema must be {GATES_SCHEMA_VERSION}")
+    thresholds = payload.get("thresholds")
+    if not isinstance(thresholds, dict):
+        raise SummaryError("gate thresholds are missing")
+    required = (
+        "min_throughput_ratio",
+        "max_ttft_p95_ratio",
+        "max_stream_gap_p95_ratio",
+        "max_stream_gap_p95_ms",
+    )
+    resolved: dict[str, float] = {}
+    for key in required:
+        value = thresholds.get(key)
+        if not isinstance(value, (int, float)) or float(value) <= 0:
+            raise SummaryError(f"gate threshold {key} must be positive")
+        resolved[key] = float(value)
+    return resolved
 
 
 def metric(artifact: dict[str, Any], name: str) -> float:
@@ -257,6 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("campaign", type=Path)
     parser.add_argument("--candidate-label", default="ax-engine")
     parser.add_argument("--baseline-label", default="mlxcel")
+    parser.add_argument("--gates", type=Path)
     parser.add_argument("--min-throughput-ratio", type=float, default=1.15)
     parser.add_argument("--max-ttft-p95-ratio", type=float, default=0.90)
     parser.add_argument("--max-stream-gap-p95-ratio", type=float, default=0.90)
@@ -270,6 +295,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        gate_path = args.gates.resolve() if args.gates is not None else None
+        if gate_path is not None:
+            thresholds = load_gate_thresholds(gate_path)
+            min_throughput_ratio = thresholds["min_throughput_ratio"]
+            max_ttft_p95_ratio = thresholds["max_ttft_p95_ratio"]
+            max_stream_gap_p95_ratio = thresholds["max_stream_gap_p95_ratio"]
+            max_stream_gap_p95_ms: float | None = thresholds["max_stream_gap_p95_ms"]
+        else:
+            min_throughput_ratio = args.min_throughput_ratio
+            max_ttft_p95_ratio = args.max_ttft_p95_ratio
+            max_stream_gap_p95_ratio = args.max_stream_gap_p95_ratio
+            max_stream_gap_p95_ms = args.max_stream_gap_p95_ms
         campaign_path = args.campaign.resolve()
         campaign = load_json(campaign_path)
         if campaign.get("schema_version") != CAMPAIGN_SCHEMA_VERSION:
@@ -305,10 +342,10 @@ def main(argv: list[str] | None = None) -> int:
                     scenario_id=scenario_id,
                     candidate=[item[1] for item in candidate_rows],
                     baseline=[item[1] for item in baseline_rows],
-                    min_throughput_ratio=args.min_throughput_ratio,
-                    max_ttft_p95_ratio=args.max_ttft_p95_ratio,
-                    max_stream_gap_p95_ratio=args.max_stream_gap_p95_ratio,
-                    max_stream_gap_p95_ms=args.max_stream_gap_p95_ms,
+                    min_throughput_ratio=min_throughput_ratio,
+                    max_ttft_p95_ratio=max_ttft_p95_ratio,
+                    max_stream_gap_p95_ratio=max_stream_gap_p95_ratio,
+                    max_stream_gap_p95_ms=max_stream_gap_p95_ms,
                 )
             )
     except (SummaryError, ValueError, KeyError) as error:
@@ -324,11 +361,19 @@ def main(argv: list[str] | None = None) -> int:
         "candidate_label": args.candidate_label,
         "baseline_label": args.baseline_label,
         "repetitions": repetitions,
+        "gates": (
+            {
+                "path": str(gate_path),
+                "sha256": hashlib.sha256(gate_path.read_bytes()).hexdigest(),
+            }
+            if gate_path is not None
+            else None
+        ),
         "thresholds": {
-            "min_throughput_ratio": args.min_throughput_ratio,
-            "max_ttft_p95_ratio": args.max_ttft_p95_ratio,
-            "max_stream_gap_p95_ratio": args.max_stream_gap_p95_ratio,
-            "max_stream_gap_p95_ms": args.max_stream_gap_p95_ms,
+            "min_throughput_ratio": min_throughput_ratio,
+            "max_ttft_p95_ratio": max_ttft_p95_ratio,
+            "max_stream_gap_p95_ratio": max_stream_gap_p95_ratio,
+            "max_stream_gap_p95_ms": max_stream_gap_p95_ms,
         },
         "scenarios": rows,
     }

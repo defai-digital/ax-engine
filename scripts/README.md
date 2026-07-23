@@ -47,7 +47,9 @@ more S0-S3 repetitions with a cooldown, validate every artifact, and prove the
 prompt-token and package contract for each paired trial.
 Use `summarize_qwen_gemma_flip_campaign.py` to compute the per-scenario medians,
 apply the locked gates, and write the explicit `flip` or `not_yet` JSON and
-Markdown decision.
+Markdown decision. Pass
+`--gates benchmarks/manifests/qwen_gemma_flip_gates.v1.json` so the decision
+records the checked-in threshold-manifest hash.
 Use `certify_row_exact_coalesced_decode.py` to compare the production
 Qwen/Gemma row-exact decode route with its independent sequential oracle and,
 optionally, the non-coalesced serving baseline.

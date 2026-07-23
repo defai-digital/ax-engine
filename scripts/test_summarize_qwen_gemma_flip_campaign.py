@@ -4,13 +4,37 @@
 from __future__ import annotations
 
 import copy
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import summarize_qwen_gemma_flip_campaign as summary
 import test_check_ax_multimodel_serving_artifact as fixtures
 
 
 class QwenGemmaFlipCampaignSummaryTests(unittest.TestCase):
+    def test_load_gate_thresholds_uses_locked_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "gates.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": summary.GATES_SCHEMA_VERSION,
+                        "thresholds": {
+                            "min_throughput_ratio": 1.15,
+                            "max_ttft_p95_ratio": 0.9,
+                            "max_stream_gap_p95_ratio": 0.9,
+                            "max_stream_gap_p95_ms": 50.0,
+                        },
+                    }
+                )
+            )
+
+            thresholds = summary.load_gate_thresholds(path)
+
+        self.assertEqual(thresholds["max_stream_gap_p95_ms"], 50.0)
+
     def test_aggregate_scenario_uses_medians_and_passes_green_ratios(self) -> None:
         candidate = []
         baseline = []

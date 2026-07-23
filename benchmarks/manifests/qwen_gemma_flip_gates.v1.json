@@ -1,0 +1,37 @@
+{
+  "schema_version": "ax.qwen_gemma_flip_gates.v1",
+  "locked_at": "2026-07-23",
+  "comparison_contract_id": "qwen3-gemma4-m5max-openai-v1",
+  "primary_host": "AKMBPM5MAXx/applegpu_g17s",
+  "minimum_repetitions": 3,
+  "reported_stat": "median",
+  "thresholds": {
+    "min_throughput_ratio": 1.15,
+    "max_ttft_p95_ratio": 0.9,
+    "max_stream_gap_p95_ratio": 0.9,
+    "max_stream_gap_p95_ms": 50.0,
+    "max_candidate_request_error_rate": 0.0,
+    "max_candidate_http_503": 0,
+    "max_candidate_lifecycle_errors": 0
+  },
+  "scenario_focus_families": {
+    "s0": [
+      "qwen3"
+    ],
+    "s1": [
+      "qwen3",
+      "gemma4"
+    ],
+    "s2": [
+      "qwen3"
+    ],
+    "s3": [
+      "qwen3",
+      "gemma4"
+    ]
+  },
+  "notes": [
+    "The absolute 50 ms stream-gap cap leaves operating headroom over the 28.75 ms p95 adaptive-isolation calibration and remains strict enough to reject the historical second-scale stall.",
+    "All ratio gates are the plan's provisional bars, locked without relaxation after primary-host calibration."
+  ]
+}
