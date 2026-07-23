@@ -107,6 +107,7 @@ def load_scenario(path: Path) -> list[ScenarioEvent]:
 
 def _validate_request_row(path: Path, line_no: int, raw: dict[str, Any]) -> None:
     input_text = raw.get("input_text")
+    input_text_prefix = raw.get("input_text_prefix")
     input_text_pattern = raw.get("input_text_pattern")
     input_text_repeats = raw.get("input_text_repeats")
     input_tokens = raw.get("input_tokens")
@@ -133,6 +134,8 @@ def _validate_request_row(path: Path, line_no: int, raw: dict[str, Any]) -> None
         and isinstance(input_text_repeats, int)
         and input_text_repeats > 0
     )
+    if input_text_prefix is not None and not isinstance(input_text_prefix, str):
+        raise SystemExit(f"{path}:{line_no}: input_text_prefix must be a string")
     if not any((has_text, has_text_pattern, has_tokens, has_pattern, has_token_file)):
         raise SystemExit(
             f"{path}:{line_no}: request needs non-empty input_text, input_text_pattern "
@@ -150,6 +153,7 @@ def prompt_for_event(
     scenario_dir: Path | None = None,
 ) -> serving.PromptItem:
     input_text = event.raw.get("input_text")
+    input_text_prefix = event.raw.get("input_text_prefix", "")
     input_text_pattern = event.raw.get("input_text_pattern")
     input_text_repeats = event.raw.get("input_text_repeats")
     if (
@@ -160,6 +164,8 @@ def prompt_for_event(
         and input_text_repeats > 0
     ):
         input_text = input_text_pattern * input_text_repeats
+    if isinstance(input_text, str) and isinstance(input_text_prefix, str):
+        input_text = input_text_prefix + input_text
     input_tokens = event.raw.get("input_tokens")
     input_token_pattern = event.raw.get("input_token_pattern")
     input_tokens_path = event.raw.get("input_tokens_path")

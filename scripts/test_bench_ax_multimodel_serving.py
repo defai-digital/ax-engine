@@ -205,6 +205,25 @@ class MultiModelServingBenchmarkTests(unittest.TestCase):
         self.assertEqual(prompt.input_text, "alpha beta alpha beta alpha beta ")
         self.assertEqual(prompt.input_tokens_count, 6)
 
+    def test_text_prefix_precedes_expanded_pattern(self) -> None:
+        event = benchmark.ScenarioEvent(
+            id="gemma",
+            kind="request",
+            at_s=0.0,
+            model_id="gemma-4-12b-it",
+            category="long_prefill",
+            raw={
+                "input_text_prefix": "<bos>",
+                "input_text_pattern": "alpha ",
+                "input_text_repeats": 2,
+                "max_output_tokens": 1,
+            },
+        )
+
+        prompt = benchmark.prompt_for_event(event)
+
+        self.assertEqual(prompt.input_text, "<bos>alpha alpha ")
+
     def test_token_file_loads_relative_to_scenario(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             scenario_dir = Path(temp_dir)
