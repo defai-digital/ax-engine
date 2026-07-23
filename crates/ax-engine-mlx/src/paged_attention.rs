@@ -373,12 +373,12 @@ mod tests {
         let cpu_oracle = [
             0.117_967_15,
             1.236_099_1,
-            2.236_099_0,
-            3.236_099_0,
+            2.236_099,
+            3.236_099,
             -0.101_205_83,
-            1.088_636_0,
-            2.088_636_0,
-            3.088_636_0,
+            1.088_636,
+            2.088_636,
+            3.088_636,
         ];
         let max_abs_diff = |left: &[f32], right: &[f32]| {
             left.iter()
@@ -386,15 +386,15 @@ mod tests {
                 .map(|(a, b)| (a - b).abs())
                 .fold(0.0_f32, f32::max)
         };
-        let native_vs_cpu = max_abs_diff(&actual_data, &cpu_oracle);
+        let native_vs_cpu = max_abs_diff(actual_data, &cpu_oracle);
         assert!(native_vs_cpu <= 2.0e-5, "native_vs_cpu={native_vs_cpu}");
 
         // MLX's fused SDPA uses a lower-precision reduction on newer Metal
         // devices. Keep it as a layout oracle, but independently require the
         // native kernel to match the scalar f64 calculation above.
-        let dense_vs_cpu = max_abs_diff(&expected_data, &cpu_oracle);
+        let dense_vs_cpu = max_abs_diff(expected_data, &cpu_oracle);
         assert!(dense_vs_cpu <= 2.0e-3, "dense_vs_cpu={dense_vs_cpu}");
-        let native_vs_dense = max_abs_diff(&actual_data, &expected_data);
+        let native_vs_dense = max_abs_diff(actual_data, expected_data);
         assert!(
             native_vs_dense <= 2.0e-3,
             "native_vs_dense={native_vs_dense}"
