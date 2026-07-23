@@ -368,9 +368,8 @@ generally not accepted — open an issue first. See [CONTRIBUTING.md](CONTRIBUTI
 
 ## Acknowledgments
 
-Thanks to **[Samuel Faj](https://www.samuelfaj.com/en/)**
-([lightning-mlx](https://github.com/samuelfaj/lightning-mlx)) for support during
-MTP peer-comparison work. Also see **[Remote Code](https://www.remotecode.io/)**.
+AX Engine is grateful to the open-source foundations, benchmarking peers, and
+community contributors listed in [Acknowledgments](docs/ACKNOWLEDGMENTS.md).
 
 ## License
 
