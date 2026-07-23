@@ -768,6 +768,44 @@ impl EngineCore {
             ));
         }
 
+        // Prefix reuse mutates both prompt progress and KV ownership before
+        // replanning. A phase change can make that request route-incompatible
+        // with the final batch, so leaving the mutation in place would make a
+        // later step enter decode without ever restoring the runner's prefix
+        // state. Roll back every adopted prefix that the fixed-point plan did
+        // not actually select. Keep the lookup in `prefix_reuse` so telemetry
+        // still records the observed-but-blocked reuse attempt.
+        let selected_request_ids = schedule_plan
+            .execution_batch
+            .as_ref()
+            .map(|batch| {
+                batch
+                    .items
+                    .iter()
+                    .map(|item| item.request_id)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let rolled_back_prefixes = prefix_reuse
+            .iter()
+            .filter(|(request_id, _)| !selected_request_ids.contains(request_id))
+            .map(|(request_id, lookup)| (*request_id, lookup))
+            .collect::<Vec<_>>();
+        for (request_id, lookup) in &rolled_back_prefixes {
+            self.kv_manager.rollback_prefix_share(*request_id, lookup)?;
+            self.request_manager
+                .rollback_prefix_reuse(*request_id, lookup.matched_token_count)?;
+            self.sync_request_block_table(*request_id)?;
+            debug!(
+                request_id = request_id.0,
+                matched_tokens = lookup.matched_token_count,
+                "rolled back prefix reuse deferred by fixed-point replanning"
+            );
+        }
+        if !rolled_back_prefixes.is_empty() {
+            self.refresh_execution_plan_refs()?;
+        }
+
         Ok((prefix_reuse, schedule_plan))
     }
 
@@ -1547,9 +1585,12 @@ pub enum EngineCoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plan::ExecutionPlanBinding;
     use crate::ids::{ModelId, SequenceNo};
+    use crate::request::RequestSnapshot;
     use crate::runner::{RunnerInput, RunnerOutput};
     use crate::sampling::StopReason;
+    use crate::scheduler::RouteMetadata;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
@@ -1557,6 +1598,40 @@ mod tests {
     #[derive(Debug)]
     struct DelayedRunner {
         delay_ms: u64,
+    }
+
+    /// Prefill and decode routes can share a mixed batch, but two decode
+    /// routes are deliberately incompatible. A full prefix hit therefore
+    /// changes request 2 from an admitted prefill into a deferred decode.
+    #[derive(Debug)]
+    struct PrefixReuseRouteSplitResolver;
+
+    impl ExecutionPlanResolver for PrefixReuseRouteSplitResolver {
+        fn resolve(&self, snapshot: &RequestSnapshot) -> Option<ExecutionPlanBinding> {
+            let phase = if snapshot.processed_prompt_tokens < snapshot.prompt_len {
+                "prefill"
+            } else if snapshot.generated_len < snapshot.max_output_tokens {
+                if snapshot.request_id == RequestId(1) {
+                    "seed_decode"
+                } else {
+                    "reused_decode"
+                }
+            } else {
+                return None;
+            };
+            let execution_plan_ref = format!("test.{phase}");
+            Some(ExecutionPlanBinding {
+                execution_plan_ref: execution_plan_ref.clone(),
+                route_metadata: RouteMetadata {
+                    execution_plan: Some(execution_plan_ref),
+                    attention_route: Some(phase.into()),
+                    kv_mode: Some("paged_metadata".into()),
+                    prefix_cache_path: None,
+                    barrier_mode: Some("serial".into()),
+                    crossover_decisions: Vec::new(),
+                },
+            })
+        }
     }
 
     impl ExecutionRunner for DelayedRunner {
@@ -3168,6 +3243,57 @@ mod tests {
                 && item.prefix_blocks_reused == 2
                 && item.reused_prefix_token_slice == shared_prompt
         }));
+    }
+
+    #[test]
+    fn prefix_reuse_rolls_back_when_replanning_defers_the_request() {
+        let mut engine = EngineCore::with_runtime_components_and_planner(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+            PrefixReuseRouteSplitResolver,
+            DeterministicRunner,
+            DeterministicSampler,
+        );
+        let shared_prompt = vec![10, 11, 12, 13, 14, 15, 16, 17];
+
+        engine
+            .submit(make_submission_with_prompt(1, 1, shared_prompt.clone(), 4))
+            .expect("seed request submission");
+        engine.step(8, true).expect("seed prefill");
+        engine
+            .submit(make_submission_with_prompt(2, 2, shared_prompt, 4))
+            .expect("repeated request submission");
+
+        let outcome = engine.step(9, true).expect("route-split step");
+        let batch = outcome
+            .schedule_plan
+            .execution_batch
+            .as_ref()
+            .expect("seed decode should execute");
+
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(batch.items[0].request_id, RequestId(1));
+        assert!(
+            outcome
+                .schedule_plan
+                .deferred_requests
+                .contains(&RequestId(2))
+        );
+        // A prefix lookup did hit, even though route compatibility deferred
+        // execution. Keep that attempt visible while rolling back its state.
+        assert_eq!(outcome.metrics.prefix_hits, 1);
+        let repeated = engine
+            .request_manager()
+            .snapshot(RequestId(2))
+            .expect("repeated request snapshot");
+        assert_eq!(repeated.state, RequestState::Runnable);
+        assert_eq!(repeated.processed_prompt_tokens, 0);
+        assert_eq!(repeated.execution_plan_ref.as_deref(), Some("test.prefill"));
+        let block_table = engine
+            .kv_manager()
+            .block_table_snapshot(RequestId(2))
+            .expect("repeated request block table");
+        assert!(block_table.block_ids.is_empty());
+        assert_eq!(block_table.logical_token_count, 0);
     }
 
     #[test]

@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 
 SCHEMA_VERSION = "ax.mlx_concurrent_prefill.v1"
 PROMPT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -41,9 +41,12 @@ class ConcurrentPrefillRow:
 
 
 def load_json(path: Path) -> dict[str, Any]:
+    def reject_non_finite_constant(value: str) -> None:
+        raise ValueError(f"non-finite numeric literal {value!r}")
+
     try:
-        payload = json.loads(path.read_text())
-    except json.JSONDecodeError as error:
+        payload = json.loads(path.read_text(), parse_constant=reject_non_finite_constant)
+    except (json.JSONDecodeError, ValueError) as error:
         raise ConcurrentPrefillArtifactError(f"{path} is not valid JSON: {error}") from error
     if not isinstance(payload, dict):
         raise ConcurrentPrefillArtifactError(f"{path} must contain a JSON object")
@@ -66,23 +69,35 @@ def require_non_empty_str(payload: dict[str, Any], key: str, *, owner: str) -> s
 
 def require_positive_int(payload: dict[str, Any], key: str, *, owner: str) -> int:
     value = payload.get(key)
-    if not isinstance(value, int) or value <= 0:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ConcurrentPrefillArtifactError(f"{owner} lacks positive integer field {key!r}")
     return value
 
 
+def finite_float(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        converted = float(value)
+    except OverflowError:
+        return None
+    return converted if math.isfinite(converted) else None
+
+
 def require_non_negative_float(payload: dict[str, Any], key: str, *, owner: str) -> float:
     value = payload.get(key)
-    if not isinstance(value, (int, float)) or float(value) < 0.0:
+    converted = finite_float(value)
+    if converted is None or converted < 0.0:
         raise ConcurrentPrefillArtifactError(f"{owner} lacks non-negative numeric field {key!r}")
-    return float(value)
+    return converted
 
 
 def require_positive_float(payload: dict[str, Any], key: str, *, owner: str) -> float:
     value = payload.get(key)
-    if not isinstance(value, (int, float)) or float(value) <= 0.0:
+    converted = finite_float(value)
+    if converted is None or converted <= 0.0:
         raise ConcurrentPrefillArtifactError(f"{owner} lacks positive numeric field {key!r}")
-    return float(value)
+    return converted
 
 
 def require_metric(
@@ -104,7 +119,8 @@ def require_metric(
 def validate_top_level(path: Path, artifact: dict[str, Any]) -> tuple[int, int]:
     if artifact.get("schema_version") != SCHEMA_VERSION:
         raise ConcurrentPrefillArtifactError(
-            f"{path} has schema_version={artifact.get('schema_version')!r}, expected {SCHEMA_VERSION}"
+            f"{path} has schema_version={artifact.get('schema_version')!r}, "
+            f"expected {SCHEMA_VERSION}"
         )
 
     model = require_mapping(artifact, "model", owner=str(path))
@@ -157,9 +173,7 @@ def validate_output_token_exactness(
     capture = artifact.get("capture_output_token_ids", False)
     shared_prefix = artifact.get("shared_prefix", False)
     if not isinstance(capture, bool):
-        raise ConcurrentPrefillArtifactError(
-            f"{path}.capture_output_token_ids must be a boolean"
-        )
+        raise ConcurrentPrefillArtifactError(f"{path}.capture_output_token_ids must be a boolean")
     if not isinstance(shared_prefix, bool):
         raise ConcurrentPrefillArtifactError(f"{path}.shared_prefix must be a boolean")
     if not capture:
@@ -200,9 +214,7 @@ def validate_output_token_exactness(
                     f"{owner}.trials[{trial_index}].observations[{observation_index}]"
                 )
                 if not isinstance(observation, dict):
-                    raise ConcurrentPrefillArtifactError(
-                        f"{observation_owner} must be an object"
-                    )
+                    raise ConcurrentPrefillArtifactError(f"{observation_owner} must be an object")
                 tokens = observation.get("output_token_ids")
                 if (
                     not isinstance(tokens, list)
@@ -242,9 +254,7 @@ def parse_row(
     if require_non_empty_str(row, "engine", owner=owner) != "ax_engine_mlx":
         raise ConcurrentPrefillArtifactError(f"{owner}.engine must be ax_engine_mlx")
     if row.get("ax_decode_policy") != "direct_no_ngram_acceleration":
-        raise ConcurrentPrefillArtifactError(
-            f"{owner} must use direct_no_ngram_acceleration"
-        )
+        raise ConcurrentPrefillArtifactError(f"{owner} must use direct_no_ngram_acceleration")
     route = require_mapping(row, "route", owner=owner)
     require_non_empty_str(route, "selected_backend", owner=f"{owner}.route")
 
@@ -271,12 +281,17 @@ def parse_row(
     peak_memory_gb_max = require_metric(row, "peak_memory_gb", "max", owner=owner)
 
     overlap = require_mapping(row, "prefill_overlap", owner=owner)
-    classification = require_non_empty_str(overlap, "classification", owner=f"{owner}.prefill_overlap")
+    classification = require_non_empty_str(
+        overlap, "classification", owner=f"{owner}.prefill_overlap"
+    )
     if classification not in OVERLAP_CLASSIFICATIONS:
+        expected_classifications = sorted(OVERLAP_CLASSIFICATIONS)
         raise ConcurrentPrefillArtifactError(
-            f"{owner}.prefill_overlap.classification must be one of {sorted(OVERLAP_CLASSIFICATIONS)}"
+            f"{owner}.prefill_overlap.classification must be one of {expected_classifications}"
         )
-    require_metric(overlap, "overlap_efficiency", "median", owner=f"{owner}.prefill_overlap", positive=False)
+    require_metric(
+        overlap, "overlap_efficiency", "median", owner=f"{owner}.prefill_overlap", positive=False
+    )
     scheduler_evidence = row.get("scheduler_evidence")
     if scheduler_evidence is None and not require_scheduler_evidence:
         scheduler_evidence = {}
@@ -285,7 +300,7 @@ def parse_row(
     if require_scheduler_evidence:
         for key in sorted(SCHEDULER_EVIDENCE_KEYS):
             value = scheduler_evidence.get(key)
-            if not isinstance(value, int) or value < 0:
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ConcurrentPrefillArtifactError(
                     f"{owner}.scheduler_evidence.{key} must be a non-negative integer"
                 )
@@ -313,18 +328,25 @@ def assert_ratio_matches(
     ratios = row.payload.get("ratios_to_single_request")
     if not isinstance(ratios, dict):
         raise ConcurrentPrefillArtifactError(
-            f"{row.artifact_path} concurrency={row.concurrent_requests} lacks ratios_to_single_request"
+            f"{row.artifact_path} concurrency={row.concurrent_requests} "
+            "lacks ratios_to_single_request"
         )
     value = ratios.get(ratio_key)
-    if not isinstance(value, (int, float)):
+    converted = finite_float(value)
+    if converted is None:
         raise ConcurrentPrefillArtifactError(
             f"{row.artifact_path} concurrency={row.concurrent_requests} "
-            f"lacks numeric ratios_to_single_request.{ratio_key}"
+            f"lacks finite numeric ratios_to_single_request.{ratio_key}"
         )
-    if abs(float(value) - expected) > tolerance:
+    if not math.isfinite(expected):
+        raise ConcurrentPrefillArtifactError(
+            f"{row.artifact_path} concurrency={row.concurrent_requests} "
+            f"has non-finite derived {ratio_key} ratio"
+        )
+    if abs(converted - expected) > tolerance:
         raise ConcurrentPrefillArtifactError(
             f"{row.artifact_path} stale {ratio_key} ratio for "
-            f"concurrency={row.concurrent_requests}: artifact={float(value):.6f} "
+            f"concurrency={row.concurrent_requests}: artifact={converted:.6f} "
             f"expected={expected:.6f} against concurrency=1"
         )
 
@@ -393,6 +415,16 @@ def validate_mlx_concurrent_prefill_artifact(
     ratio_tolerance: float = 0.0005,
     require_scheduler_evidence: bool = True,
 ) -> list[str]:
+    for name, value in (
+        ("min_concurrency_levels", min_concurrency_levels),
+        ("min_max_concurrent_requests", min_max_concurrent_requests),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ConcurrentPrefillArtifactError(f"{name} must be a positive integer")
+    finite_ratio_tolerance = finite_float(ratio_tolerance)
+    if finite_ratio_tolerance is None or finite_ratio_tolerance < 0.0:
+        raise ConcurrentPrefillArtifactError("ratio_tolerance must be a finite non-negative number")
+
     artifact = load_json(path)
     context_tokens, generation_tokens = validate_top_level(path, artifact)
     rows_payload = artifact.get("rows")
@@ -419,7 +451,7 @@ def validate_mlx_concurrent_prefill_artifact(
         rows,
         min_concurrency_levels=min_concurrency_levels,
         min_max_concurrent_requests=min_max_concurrent_requests,
-        ratio_tolerance=ratio_tolerance,
+        ratio_tolerance=finite_ratio_tolerance,
     )
     validate_output_token_exactness(
         path,
@@ -427,7 +459,10 @@ def validate_mlx_concurrent_prefill_artifact(
         rows,
         expected_generation_tokens=generation_tokens,
     )
-    return [f"concurrency={row.concurrent_requests}" for row in sorted(rows, key=lambda item: item.concurrent_requests)]
+    return [
+        f"concurrency={row.concurrent_requests}"
+        for row in sorted(rows, key=lambda item: item.concurrent_requests)
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -458,10 +493,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
-    print(
-        f"validated {args.artifact} "
-        f"({SCHEMA_VERSION}; {', '.join(checked)})"
-    )
+    print(f"validated {args.artifact} ({SCHEMA_VERSION}; {', '.join(checked)})")
     return 0
 
 

@@ -50,9 +50,7 @@ def row(
         "concurrent_requests": concurrent_requests,
         "context_tokens": 8192,
         "generation_tokens": 1,
-        "prompt_token_ids_sha256": [
-            prompt_hash(index + 1) for index in range(concurrent_requests)
-        ],
+        "prompt_token_ids_sha256": [prompt_hash(index + 1) for index in range(concurrent_requests)],
         "repetitions": 3,
         "request_ttft_ms": metric(request_ttft_ms),
         "total_wall_ms": metric(total_wall_ms),
@@ -130,11 +128,7 @@ def add_exact_shared_prefix_outputs(
         concurrency = row_payload["concurrent_requests"]
         row_payload["prompt_token_ids_sha256"] = [prompt_hash(1)] * concurrency
         row_payload["trials"] = [
-            {
-                "observations": [
-                    {"output_token_ids": list(expected)} for _ in range(concurrency)
-                ]
-            }
+            {"observations": [{"output_token_ids": list(expected)} for _ in range(concurrency)]}
             for _ in range(row_payload["repetitions"])
         ]
 
@@ -154,6 +148,56 @@ class ConcurrentPrefillArtifactTests(unittest.TestCase):
         checked = checker.validate_mlx_concurrent_prefill_artifact(path)
 
         self.assertEqual(checked, ["concurrency=1", "concurrency=4"])
+
+    def test_boolean_is_not_accepted_as_an_integer(self) -> None:
+        artifact = valid_artifact()
+        artifact["benchmark"]["batch_size"] = True
+        path = self.write_fixture(artifact)
+
+        with self.assertRaisesRegex(checker.ConcurrentPrefillArtifactError, "positive integer"):
+            checker.validate_mlx_concurrent_prefill_artifact(path)
+
+    def test_non_finite_metric_is_rejected(self) -> None:
+        artifact = valid_artifact()
+        artifact["rows"][1]["request_ttft_ms"]["median"] = float("nan")
+        path = self.write_fixture(artifact)
+
+        with self.assertRaises(checker.ConcurrentPrefillArtifactError):
+            checker.validate_mlx_concurrent_prefill_artifact(path)
+
+    def test_overflowed_standard_json_number_is_rejected(self) -> None:
+        artifact = valid_artifact()
+        artifact["rows"][1]["request_ttft_ms"]["median"] = "overflow-marker"
+        path = self.write_fixture(artifact)
+        path.write_text(path.read_text().replace('"overflow-marker"', "1e999"))
+
+        with self.assertRaisesRegex(checker.ConcurrentPrefillArtifactError, "positive numeric"):
+            checker.validate_mlx_concurrent_prefill_artifact(path)
+
+    def test_boolean_is_not_accepted_as_scheduler_evidence(self) -> None:
+        artifact = valid_artifact()
+        artifact["rows"][1]["scheduler_evidence"]["scheduled_prefill_tokens"] = True
+        path = self.write_fixture(artifact)
+
+        with self.assertRaisesRegex(checker.ConcurrentPrefillArtifactError, "non-negative integer"):
+            checker.validate_mlx_concurrent_prefill_artifact(path)
+
+    def test_boolean_is_not_accepted_as_a_ratio(self) -> None:
+        artifact = valid_artifact()
+        artifact["rows"][1]["request_ttft_ms"]["median"] = 900.0
+        artifact["rows"][1]["ratios_to_single_request"]["request_ttft_ms"] = True
+        path = self.write_fixture(artifact)
+
+        with self.assertRaisesRegex(checker.ConcurrentPrefillArtifactError, "numeric"):
+            checker.validate_mlx_concurrent_prefill_artifact(path)
+
+    def test_non_finite_ratio_tolerance_cannot_disable_ratio_validation(self) -> None:
+        artifact = valid_artifact()
+        artifact["rows"][1]["ratios_to_single_request"]["request_ttft_ms"] = 1.0
+        path = self.write_fixture(artifact)
+
+        with self.assertRaisesRegex(checker.ConcurrentPrefillArtifactError, "ratio_tolerance"):
+            checker.validate_mlx_concurrent_prefill_artifact(path, ratio_tolerance=float("nan"))
 
     def test_missing_single_request_baseline_fails(self) -> None:
         artifact = valid_artifact()
@@ -221,7 +265,9 @@ class ConcurrentPrefillArtifactTests(unittest.TestCase):
         }
         path = self.write_fixture(artifact)
 
-        with self.assertRaisesRegex(checker.ConcurrentPrefillArtifactError, "stale request_ttft_ms"):
+        with self.assertRaisesRegex(
+            checker.ConcurrentPrefillArtifactError, "stale request_ttft_ms"
+        ):
             checker.validate_mlx_concurrent_prefill_artifact(path)
 
     def test_captured_shared_prefix_outputs_are_validated_exactly(self) -> None:
@@ -263,8 +309,7 @@ class ConcurrentPrefillArtifactTests(unittest.TestCase):
             [sys.executable, str(SCRIPT_PATH), str(path)],
             check=True,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
 
         self.assertIn("ax.mlx_concurrent_prefill.v1", completed.stdout)
