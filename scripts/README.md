@@ -38,7 +38,9 @@ Use `bench_qwen_gemma_flip_target.py` when the same Qwen 3 + Gemma 4 replay
 must run through the OpenAI chat-completions streaming API on either AX or
 mlxcel. Its target file locks the host, model packages, sampling parameters,
 memory budget, protocol, and runtime revision. For mlxcel it also supervises
-one process per model so load/unload events retain their lifecycle meaning.
+one process per model so load/unload events retain their lifecycle meaning;
+the AX target supervises one fresh multi-model process per artifact so repeated
+runs cannot inherit prompt-cache state.
 The checked-in mlxcel target pins the official v0.4.2 source revision.
 Use `certify_row_exact_coalesced_decode.py` to compare the production
 Qwen/Gemma row-exact decode route with its independent sequential oracle and,

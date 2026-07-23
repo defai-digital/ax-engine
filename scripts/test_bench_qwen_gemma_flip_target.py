@@ -93,6 +93,64 @@ class FlipTargetBenchmarkTests(unittest.TestCase):
         self.assertIn("qwen3.5-9b", command)
         self.assertEqual(command[-4:], ["--parallel", "4", "--max-batch-prefill", "4"])
 
+    def test_managed_ax_command_uses_one_primary_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            qwen_dir = root / "qwen"
+            gemma_dir = root / "gemma"
+            qwen_dir.mkdir()
+            gemma_dir.mkdir()
+            target_path = root / "target.json"
+            target_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": flip.TARGET_SCHEMA_VERSION,
+                        "name": "ax-candidate",
+                        "runtime": "ax-engine",
+                        "runtime_revision": "deadbeef",
+                        "managed_single_process": True,
+                        "primary_model_id": "qwen3.5-9b",
+                        "binary": "/usr/bin/true",
+                        "common_args": ["--port", "31418"],
+                        "models": {
+                            "qwen3.5-9b": {
+                                "model_path": str(qwen_dir),
+                                "base_url": "http://127.0.0.1:31418",
+                                "memory_cap_bytes": 1024,
+                            },
+                            "gemma-4-12b-it": {
+                                "model_path": str(gemma_dir),
+                                "base_url": "http://127.0.0.1:31418",
+                                "memory_cap_bytes": 1024,
+                            },
+                        },
+                        "comparison_contract": {
+                            "id": "test",
+                            "total_memory_cap_bytes": 1024,
+                        },
+                    }
+                )
+            )
+            target = flip.load_target(target_path)
+            supervisor = flip.SingleProcessSupervisor(target, root / "logs")
+
+            command = supervisor.command()
+
+        self.assertTrue(target.managed_single_process)
+        self.assertEqual(command[0], "/usr/bin/true")
+        self.assertEqual(
+            command[1:7],
+            [
+                "--model-id",
+                "qwen3.5-9b",
+                "--mlx",
+                "--mlx-model-artifacts-dir",
+                str(qwen_dir.resolve()),
+                "--port",
+            ],
+        )
+        self.assertNotIn(str(gemma_dir.resolve()), command)
+
     def test_openai_stream_uses_authoritative_usage(self) -> None:
         prompt = serving.PromptItem(
             id="request",

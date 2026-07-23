@@ -53,6 +53,8 @@ class TargetSpec:
     runtime_revision: str
     official_source: str | None
     managed_processes: bool
+    managed_single_process: bool
+    primary_model_id: str | None
     binary: str | None
     host: str
     health_path: str
@@ -141,12 +143,17 @@ def load_target(path: Path) -> TargetSpec:
     managed = raw.get("managed_processes", False)
     if not isinstance(managed, bool):
         raise SystemExit("managed_processes must be a boolean")
+    managed_single = raw.get("managed_single_process", False)
+    if not isinstance(managed_single, bool):
+        raise SystemExit("managed_single_process must be a boolean")
+    if managed and managed_single:
+        raise SystemExit("only one process-management mode may be enabled")
     binary = _resolve_env_or_value(
         raw,
         value_key="binary",
         env_key="binary_env",
         field="binary",
-        required=managed,
+        required=managed or managed_single,
     )
     if binary is not None:
         resolved_binary = shutil.which(binary)
@@ -193,7 +200,7 @@ def load_target(path: Path) -> TargetSpec:
             value_key="model_path",
             env_key="model_path_env",
             field=f"models.{model_id}.model_path",
-            required=managed,
+            required=managed or managed_single,
         )
         model_path = Path(model_path_value).resolve() if model_path_value else None
         if model_path is not None and not model_path.is_dir():
@@ -215,8 +222,19 @@ def load_target(path: Path) -> TargetSpec:
     if managed and any(model.port is None for model in models.values()):
         raise SystemExit("every managed model requires a port")
 
+    primary_model_id = raw.get("primary_model_id")
+    if primary_model_id is not None:
+        primary_model_id = _non_empty_string(primary_model_id, field="primary_model_id")
+    if managed_single:
+        if runtime != "ax-engine":
+            raise SystemExit("managed_single_process is supported only for ax-engine")
+        if primary_model_id not in models:
+            raise SystemExit("managed_single_process requires primary_model_id in models")
+        if len({model.base_url for model in models.values()}) != 1:
+            raise SystemExit("managed_single_process models must share one base_url")
+
     target_env = _string_map(raw.get("env"), field="env")
-    if not managed:
+    if not managed and not managed_single:
         mismatched_env = [
             key for key, value in sorted(target_env.items()) if os.environ.get(key) != value
         ]
@@ -252,6 +270,8 @@ def load_target(path: Path) -> TargetSpec:
         runtime_revision=runtime_revision,
         official_source=official_source,
         managed_processes=managed,
+        managed_single_process=managed_single,
+        primary_model_id=primary_model_id,
         binary=binary,
         host=host,
         health_path=health_path,
@@ -448,6 +468,168 @@ class ProcessSupervisor:
     def audit(self) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(item) for item in self._audit]
+
+
+class SingleProcessSupervisor:
+    def __init__(self, target: TargetSpec, log_dir: Path) -> None:
+        self.target = target
+        self.log_dir = log_dir
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self._process: subprocess.Popen[bytes] | None = None
+        self._log: Any = None
+        self._audit: dict[str, Any] | None = None
+
+    def command(self) -> list[str]:
+        primary_id = self.target.primary_model_id
+        if self.target.binary is None or primary_id is None:
+            raise RuntimeError("managed single-process configuration is incomplete")
+        model = self.target.models[primary_id]
+        if model.model_path is None:
+            raise RuntimeError(f"managed model path is missing for {primary_id}")
+        return [
+            self.target.binary,
+            "--model-id",
+            model.model_id,
+            "--mlx",
+            "--mlx-model-artifacts-dir",
+            str(model.model_path),
+            *self.target.common_args,
+            *model.args,
+        ]
+
+    def start(self) -> tuple[bool, dict[str, Any]]:
+        if self._process is not None and self._process.poll() is None:
+            return False, {"error": "single managed process is already running"}
+        primary_id = self.target.primary_model_id
+        assert primary_id is not None
+        primary = self.target.models[primary_id]
+        command = self.command()
+        log_path = self.log_dir / "ax-single-process.log"
+        self._log = log_path.open("wb")
+        environment = os.environ.copy()
+        environment.update(self.target.env)
+        environment.update(primary.env)
+        started = time.perf_counter()
+        self._process = subprocess.Popen(
+            command,
+            stdout=self._log,
+            stderr=subprocess.STDOUT,
+            env=environment,
+            start_new_session=True,
+        )
+        self._audit = {
+            "model_id": primary_id,
+            "pid": self._process.pid,
+            "command": command,
+            "log_path": str(log_path),
+            "start_latency_ms": None,
+            "ready": False,
+            "exit_code": None,
+            "forced_kill": False,
+            "initial_model_loads": [],
+        }
+        ready, error = self._wait_ready(primary)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        self._audit["start_latency_ms"] = latency_ms
+        self._audit["ready"] = ready
+        if self._process.poll() is not None:
+            self._audit["exit_code"] = self._process.returncode
+        if not ready:
+            pid = self._process.pid
+            self.stop()
+            return False, {
+                "error": error,
+                "pid": pid,
+                "log_path": str(log_path),
+                "latency_ms": latency_ms,
+            }
+        return True, {
+            "pid": self._process.pid,
+            "log_path": str(log_path),
+            "latency_ms": latency_ms,
+        }
+
+    def _wait_ready(self, model: ModelTarget) -> tuple[bool, str | None]:
+        assert self._process is not None
+        deadline = time.monotonic() + self.target.startup_timeout_s
+        url = f"{model.base_url}{self.target.health_path}"
+        last_error: str | None = None
+        while time.monotonic() < deadline:
+            exit_code = self._process.poll()
+            if exit_code is not None:
+                return False, f"process exited before readiness with code {exit_code}"
+            try:
+                request = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(request, timeout=2.0) as response:
+                    if 200 <= response.status < 300:
+                        return True, None
+                    last_error = f"health status {response.status}"
+            except (OSError, urllib.error.URLError) as error:
+                last_error = str(error)
+            time.sleep(0.25)
+        return False, f"health check timed out: {last_error or 'no response'}"
+
+    def load_model(self, model_id: str) -> tuple[bool, dict[str, Any]]:
+        if self._process is None or self._process.poll() is not None:
+            return False, {"error": "single managed process is not running"}
+        model = self.target.models.get(model_id)
+        if model is None or model.model_path is None:
+            return False, {"error": f"managed model configuration is missing for {model_id}"}
+        started = time.perf_counter()
+        try:
+            status, response = multimodel.post_json(
+                f"{model.base_url}/v1/model/load",
+                {
+                    "model_id": model.model_id,
+                    "model_path": str(model.model_path),
+                    "load_mode": "add",
+                    "load_policy": "availability_first",
+                    "make_default": False,
+                },
+                self.target.startup_timeout_s,
+            )
+            error = None
+        except Exception as caught:  # noqa: BLE001 - preserve setup failure in audit.
+            status, response, error = None, None, str(caught)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        ok = status is not None and 200 <= status < 300 and error is None
+        record = {
+            "model_id": model_id,
+            "status": status,
+            "ok": ok,
+            "error": error,
+            "latency_ms": latency_ms,
+            "response": response,
+        }
+        assert self._audit is not None
+        self._audit["initial_model_loads"].append(record)
+        return ok, record
+
+    def stop(self) -> None:
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        started = time.perf_counter()
+        forced = False
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=self.target.shutdown_timeout_s)
+            except subprocess.TimeoutExpired:
+                forced = True
+                process.kill()
+                process.wait(timeout=self.target.shutdown_timeout_s)
+        if self._log is not None:
+            self._log.close()
+            self._log = None
+        if self._audit is not None:
+            self._audit["exit_code"] = process.returncode
+            self._audit["forced_kill"] = forced
+            self._audit["stop_latency_ms"] = (time.perf_counter() - started) * 1000.0
+
+    def audit(self) -> list[dict[str, Any]]:
+        return [dict(self._audit)] if self._audit is not None else []
 
 
 def openai_payload(
@@ -730,6 +912,7 @@ def target_artifact_metadata(
         "runtime_revision": target.runtime_revision,
         "official_source": target.official_source,
         "managed_processes": target.managed_processes,
+        "managed_single_process": target.managed_single_process,
         "process_count": process_count,
         "target_config_path": str(target.path),
         "target_config_sha256": hashlib.sha256(target.path.read_bytes()).hexdigest(),
@@ -739,7 +922,7 @@ def target_artifact_metadata(
         "memory_cap_enforcement": {
             "mode": (
                 "managed_process_environment"
-                if target.managed_processes
+                if target.managed_processes or target.managed_single_process
                 else "required_parent_environment"
             ),
             "environment_keys": sorted(
@@ -788,6 +971,7 @@ def main() -> int:
         raise SystemExit(f"target is missing scenario models: {missing}")
 
     supervisor: ProcessSupervisor | None = None
+    single_supervisor: SingleProcessSupervisor | None = None
     if target.managed_processes:
         supervisor = ProcessSupervisor(target, args.log_dir)
         for model_id in scenario_model_ids:
@@ -795,6 +979,20 @@ def main() -> int:
             if not ok:
                 supervisor.stop_all()
                 raise SystemExit(f"failed to start {model_id}: {response.get('error', response)}")
+    elif target.managed_single_process:
+        single_supervisor = SingleProcessSupervisor(target, args.log_dir)
+        ok, response = single_supervisor.start()
+        if not ok:
+            raise SystemExit(
+                f"failed to start managed AX server: {response.get('error', response)}"
+            )
+        for model_id in scenario_model_ids:
+            if model_id == target.primary_model_id:
+                continue
+            ok, response = single_supervisor.load_model(model_id)
+            if not ok:
+                single_supervisor.stop()
+                raise SystemExit(f"failed to preload {model_id}: {response.get('error', response)}")
 
     benchmark_args = argparse.Namespace(
         scenario=args.scenario,
@@ -831,8 +1029,15 @@ def main() -> int:
     finally:
         if supervisor is not None:
             supervisor.stop_all()
+        if single_supervisor is not None:
+            single_supervisor.stop()
 
-    process_audit = supervisor.audit() if supervisor is not None else []
+    if supervisor is not None:
+        process_audit = supervisor.audit()
+    elif single_supervisor is not None:
+        process_audit = single_supervisor.audit()
+    else:
+        process_audit = []
     artifact["methodology"]["request_endpoint"] = OPENAI_ENDPOINT
     artifact["methodology"]["protocol"] = "openai_chat_completions_sse"
     artifact["target"] = target_artifact_metadata(

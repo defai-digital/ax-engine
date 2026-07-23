@@ -5,6 +5,21 @@
   "runtime_revision_env": "AX_BENCH_RUNTIME_REVISION",
   "official_source": "https://github.com/defai-digital/ax-engine",
   "managed_processes": false,
+  "managed_single_process": true,
+  "primary_model_id": "qwen3.5-9b",
+  "binary_env": "AX_SERVER_BIN",
+  "host": "127.0.0.1",
+  "health_path": "/health",
+  "startup_timeout_s": 900,
+  "shutdown_timeout_s": 30,
+  "common_args": [
+    "--port",
+    "31418",
+    "--max-concurrent-requests",
+    "8",
+    "--max-concurrent-requests-per-model",
+    "4"
+  ],
   "env": {
     "AX_MLX_MEMORY_LIMIT": "103079215104"
   },
