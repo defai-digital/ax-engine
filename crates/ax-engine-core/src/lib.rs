@@ -16,6 +16,7 @@ pub mod mempressure;
 pub mod metal;
 pub mod model;
 pub mod multimodal_adapter;
+pub mod qwen3_vl;
 pub mod request;
 pub mod request_manager;
 pub mod runner;
@@ -77,6 +78,7 @@ pub use model::{
     NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 pub use multimodal_adapter::{MultimodalPrefillAdapter, PrefillModality};
+pub use qwen3_vl::{Qwen3VlImageRuntimeInput, Qwen3VlRuntimeInputError, Qwen3VlRuntimeInputs};
 pub use request::{
     RequestMultimodalInputError, RequestMultimodalInputs, RequestRecord, RequestSnapshot,
     RequestState, RequestSubmission, RequestWorkloadHints, StateTransitionError,

@@ -159,6 +159,7 @@ fn unlimited_ocr_inputs_from_py(
             cropping,
             images,
         }),
+        qwen3_vl: None,
     }))
 }
 

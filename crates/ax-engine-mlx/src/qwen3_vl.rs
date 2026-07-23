@@ -4,16 +4,20 @@
 //! LLaVA-style scatter merge into certified qwen3 / qwen3-MoE graphs.
 //! Text-only prompts on a VL checkpoint must route identically to qwen3.
 
+use ax_engine_core::qwen3_vl::Qwen3VlRuntimeInputs;
 use ax_engine_core::vl_geometry::{
     MropeSections, deepstack_injection_layers, mrope_position_ids, scatter_merge_indices,
     vit_soft_token_count,
 };
-use mlx_sys::{
-    MlxArray, add, concatenate, gelu, layer_norm, matmul, multiply, reshape, slice, softmax,
-    transpose,
-};
 use mlx_sys::ops::cached_scalar;
+use mlx_sys::{
+    MlxArray, MlxDtype, add, concatenate, gelu, layer_norm, matmul, multiply, reshape, slice,
+    softmax, transpose,
+};
 use thiserror::Error;
+
+use crate::model::{ModelConfig, embed_tokens};
+use crate::weights::ModelWeights;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Qwen3VlError {
@@ -135,6 +139,57 @@ pub fn require_vision_for_images(
     Ok(())
 }
 
+/// True when the loaded checkpoint carries a Qwen3-VL vision tower.
+pub fn has_vision_tower(weights: &ModelWeights) -> bool {
+    weights.qwen3_vl_vision.is_some()
+}
+
+/// Prefill-side soft-token injection for qwen3_vl (ADR-038 adapter).
+///
+/// Fails closed if the request carries images but vision tower weights are
+/// absent. When weights are present, runs the portable ViT and scatters soft
+/// tokens into the text residual stream.
+pub(crate) fn build_vl_prefill_embeddings(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    inputs: &Qwen3VlRuntimeInputs,
+) -> Result<MlxArray, Qwen3VlError> {
+    if !inputs.images.is_empty() && !has_vision_tower(weights) {
+        return Err(Qwen3VlError::MissingVisionWeights);
+    }
+    let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
+    if inputs.images.is_empty() {
+        return Ok(hidden);
+    }
+    let vision_w = weights
+        .qwen3_vl_vision
+        .as_ref()
+        .ok_or(Qwen3VlError::MissingVisionWeights)?;
+    for image in &inputs.images {
+        let patches = MlxArray::from_raw_data(
+            image.patches.as_ptr().cast(),
+            std::mem::size_of_val(image.patches.as_slice()),
+            &[1, image.num_patches as i32, image.patch_dim as i32],
+            MlxDtype::Float32,
+        );
+        let (soft, _deep) = vision_encoder_forward(vision_w, &patches)?;
+        let geometry = Qwen3VlImageGeometry {
+            height: image.height,
+            width: image.width,
+            patch_size: image.patch_size,
+            spatial_merge_size: image.spatial_merge_size,
+            max_soft_tokens: image.soft_token_count.max(1),
+        };
+        let positions = plan_image_scatter(&[image.placeholder_index], &[geometry])?;
+        // Expand text length when soft tokens exceed a single placeholder slot.
+        // For the portable path, scatter only into existing prompt indices that
+        // match the planned positions (caller must expand tokens accordingly).
+        hidden = scatter_vision_into_text(&hidden, &soft, &positions)?;
+    }
+    Ok(hidden)
+}
+
 /// Decode-route selection for a loaded VL checkpoint.
 pub fn select_decode_route(
     model_family: &str,
@@ -218,6 +273,98 @@ mod tests {
         assert!(require_vision_for_images(false, false).is_ok());
         assert_eq!(select_decode_route("qwen3_vl", false).unwrap(), "qwen3");
         assert_eq!(select_decode_route("qwen3_vl", true).unwrap(), "qwen3_vl");
+    }
+
+    #[test]
+    fn build_vl_rejects_images_without_vision_weights() {
+        use crate::gemma4_assistant_mtp::Gemma4AssistantMtpStatus;
+        use crate::weights::QuantizedWeight;
+        use mlx_sys::zeros;
+        let dummy = || QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None);
+        let weights = ModelWeights {
+            token_embedding: dummy(),
+            final_norm: zeros(&[1], MlxDtype::Float32, None),
+            lm_head: dummy(),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            gemma4_assistant_mtp: Gemma4AssistantMtpStatus::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
+        };
+        let cfg = ModelConfig {
+            compile_cache_identity: 0,
+            model_family: "qwen3_vl".into(),
+            layer_count: 0,
+            hidden_size: 1,
+            intermediate_size: 0,
+            n_heads: 1,
+            n_kv_heads: 1,
+            head_dim: 1,
+            vocab_size: 1,
+            rope_theta: 10000.0,
+            rope_dims: 0,
+            attn_output_gate: false,
+            query_scale: 1.0,
+            final_logit_softcapping: None,
+            moe_expert_count: 0,
+            moe_experts_per_token: 0,
+            moe_expert_intermediate_size: 0,
+            layer_configs: Vec::new(),
+            global_sliding_window: None,
+            gemma4_moe_router: false,
+            uses_geglu: false,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
+            hidden_size_per_layer_input: 0,
+            linear_attention: None,
+            mla_attention: None,
+            glm_router: None,
+            rms_norm_eps: 1e-6,
+            rope_freqs: None,
+            rope_mscale: 1.0,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: 0.0,
+            attn_temperature_scale: 0.0,
+            intermediate_size_mlp: 0,
+            moe_layer_freq: 0,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 0,
+            moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 1.0,
+            moe_n_group: 1,
+            moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
+            diffusion: None,
+            gpt_oss_uses_mxfp4_experts: false,
+            generation_kind: ax_engine_core::GenerationKind::Autoregressive,
+        };
+        let inputs = Qwen3VlRuntimeInputs {
+            images: vec![ax_engine_core::qwen3_vl::Qwen3VlImageRuntimeInput {
+                placeholder_index: 0,
+                soft_token_count: 4,
+                patches: vec![0.1; 24],
+                num_patches: 4,
+                patch_dim: 6,
+                height: 28,
+                width: 28,
+                patch_size: 14,
+                spatial_merge_size: 1,
+            }],
+        };
+        let err = build_vl_prefill_embeddings(&cfg, &weights, &[1, 2, 3], &inputs).unwrap_err();
+        assert!(matches!(err, Qwen3VlError::MissingVisionWeights));
     }
 
     fn f32_array(vals: &[f32], shape: &[i32]) -> MlxArray {
@@ -361,22 +508,58 @@ fn attention(
     // qkv: [1, S, 3*H] -> [1, S, 3, heads, head_dim]
     let qkv = reshape(
         &qkv,
-        &[
-            1,
-            seq as i32,
-            3,
-            num_heads as i32,
-            head_dim as i32,
-        ],
+        &[1, seq as i32, 3, num_heads as i32, head_dim as i32],
         None,
     );
-    let q = slice(&qkv, &[0, 0, 0, 0, 0], &[1, seq as i32, 1, num_heads as i32, head_dim as i32], &[1, 1, 1, 1, 1], None);
-    let k = slice(&qkv, &[0, 0, 1, 0, 0], &[1, seq as i32, 2, num_heads as i32, head_dim as i32], &[1, 1, 1, 1, 1], None);
-    let v = slice(&qkv, &[0, 0, 2, 0, 0], &[1, seq as i32, 3, num_heads as i32, head_dim as i32], &[1, 1, 1, 1, 1], None);
+    let q = slice(
+        &qkv,
+        &[0, 0, 0, 0, 0],
+        &[1, seq as i32, 1, num_heads as i32, head_dim as i32],
+        &[1, 1, 1, 1, 1],
+        None,
+    );
+    let k = slice(
+        &qkv,
+        &[0, 0, 1, 0, 0],
+        &[1, seq as i32, 2, num_heads as i32, head_dim as i32],
+        &[1, 1, 1, 1, 1],
+        None,
+    );
+    let v = slice(
+        &qkv,
+        &[0, 0, 2, 0, 0],
+        &[1, seq as i32, 3, num_heads as i32, head_dim as i32],
+        &[1, 1, 1, 1, 1],
+        None,
+    );
     // [1, S, heads, dim] -> [1, heads, S, dim]
-    let q = transpose(&reshape(&q, &[1, seq as i32, num_heads as i32, head_dim as i32], None), &[0, 2, 1, 3], None);
-    let k = transpose(&reshape(&k, &[1, seq as i32, num_heads as i32, head_dim as i32], None), &[0, 2, 1, 3], None);
-    let v = transpose(&reshape(&v, &[1, seq as i32, num_heads as i32, head_dim as i32], None), &[0, 2, 1, 3], None);
+    let q = transpose(
+        &reshape(
+            &q,
+            &[1, seq as i32, num_heads as i32, head_dim as i32],
+            None,
+        ),
+        &[0, 2, 1, 3],
+        None,
+    );
+    let k = transpose(
+        &reshape(
+            &k,
+            &[1, seq as i32, num_heads as i32, head_dim as i32],
+            None,
+        ),
+        &[0, 2, 1, 3],
+        None,
+    );
+    let v = transpose(
+        &reshape(
+            &v,
+            &[1, seq as i32, num_heads as i32, head_dim as i32],
+            None,
+        ),
+        &[0, 2, 1, 3],
+        None,
+    );
     let scale = (head_dim as f32).sqrt().recip();
     let scores = matmul(&q, &transpose(&k, &[0, 1, 3, 2], None), None);
     let scores = multiply(&scores, &cached_scalar(scale, scores.dtype()), None);
@@ -412,7 +595,11 @@ pub fn vision_encoder_forward(
             "hidden_size must divide num_heads".into(),
         ));
     }
-    let mut x = linear(patches, &weights.patch_embed, weights.patch_embed_bias.as_ref());
+    let mut x = linear(
+        patches,
+        &weights.patch_embed,
+        weights.patch_embed_bias.as_ref(),
+    );
     let mut deepstack_feats = Vec::new();
     for (li, layer) in weights.layers.iter().enumerate() {
         let n1 = ln(&x, &layer.norm1_weight, layer.norm1_bias.as_ref(), 1e-6);

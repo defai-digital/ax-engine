@@ -62,6 +62,7 @@ fn sample_gemma4_multimodal_inputs() -> RequestMultimodalInputs {
             videos: Vec::new(),
         }),
         unlimited_ocr: None,
+        qwen3_vl: None,
     }
 }
 

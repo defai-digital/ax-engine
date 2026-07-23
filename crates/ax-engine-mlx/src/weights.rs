@@ -59,6 +59,9 @@ pub struct ModelWeights {
     pub glm_mtp: Option<GlmMtpWeights>,
     /// Unlimited-OCR dual vision (SAM-ViT-B + CLIP-L) + projector.
     pub unlimited_ocr_vision: Option<crate::unlimited_ocr::UnlimitedOcrVisionWeights>,
+    /// Qwen3-VL portable ViT tower (WS-V2). `None` until HF vision weights are
+    /// mapped for the checkpoint; image prefill fail-closes when media is present.
+    pub qwen3_vl_vision: Option<crate::qwen3_vl::Qwen3VlVisionWeights>,
 }
 
 /// Gemma4 Unified vision path, matching vLLM's
@@ -1155,6 +1158,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         diffusion_self_conditioning,
         glm_mtp,
         unlimited_ocr_vision,
+        // HF vision-tower name map residual: stay None until convert roles land.
+        qwen3_vl_vision: None,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;

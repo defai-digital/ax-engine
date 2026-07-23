@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use ax_engine_core::gemma4_unified::Gemma4UnifiedRuntimeInputs;
+use ax_engine_core::qwen3_vl::Qwen3VlRuntimeInputs;
 use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
 
 use crate::gemma4_unified::build_chunk_embeddings;
@@ -457,6 +458,60 @@ pub fn chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
     };
     clear_cache();
     Ok((tok, mtp_hidden, history_tokens))
+}
+
+/// Prefill Qwen3-VL with portable ViT soft tokens scattered into the text
+/// residual stream (ADR-038). Fail-closes when images are present without a
+/// mapped vision tower (`qwen3_vl_vision`).
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_qwen3_vl_with_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    inputs: &Qwen3VlRuntimeInputs,
+    cache: &mut MlxKVCache,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> Result<u32, String> {
+    let sampling = sampling_request.params;
+    let hidden = crate::qwen3_vl::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
+        .map_err(|e| e.to_string())?;
+    // After scatter, soft tokens sit in the text sequence; ordinary causal
+    // attention applies (same pattern as Unlimited-OCR / LLaVA).
+    let media_ranges = [];
+    let logits = forward_with_initial_hidden_and_media_ranges(
+        cfg,
+        weights,
+        prompt_tokens,
+        hidden,
+        &media_ranges,
+        cache,
+        0,
+        FinalLogitsMode::Full,
+    );
+    cache.advance(prompt_tokens.len());
+
+    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
+        sample_prefill_token_gpu_first(
+            &logits,
+            sampling,
+            sampling_request.repetition_tokens,
+            rng,
+            || eval_with_kv_refs(&logits, cache),
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
+        )
+    } else {
+        let token_arr = argmax(&logits, None);
+        eval_with_kv_refs(&token_arr, cache);
+        token_arr.first_u32_unchecked()
+    };
+    clear_cache();
+    Ok(tok)
 }
 
 /// Prefill Unlimited-OCR with dual-vision image features injected at `<image>`

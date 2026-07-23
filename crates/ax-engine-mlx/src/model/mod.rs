@@ -3629,6 +3629,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
 
         let per_layer = compute_per_layer_inputs_arr(&cfg, &weights, &ids_scalar, &hidden)
@@ -4230,6 +4231,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
         let cache = MlxKVCache::new(0);
         let hidden = zeros(&[1, 1, 16], MlxDtype::Bfloat16, None);
@@ -4282,6 +4284,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -4413,6 +4416,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -4492,6 +4496,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -5266,6 +5271,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
         let mut cache = MlxKVCache::new(cfg.layer_count);
 

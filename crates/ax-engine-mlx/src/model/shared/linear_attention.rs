@@ -713,51 +713,70 @@ fn linear_attention_inputs_packed_direct(
 }
 
 // ---------------------------------------------------------------------------
-// Tier 3A: Whole-layer Metal kernel for linear-attention decode.
+// Tier 3A: Whole-layer linear-attention decode (compositional Metal path).
 //
-// Fuses the entire linear-attention decode path into one Metal dispatch:
-// RMSNorm + packed QKVZ/BA projection + conv1d + SiLU + per-head RMSNorm +
-// gated-delta recurrent update + output projection.
-//
-// Status: scaffold — the kernel body requires multi-week Metal engineering
-// combining quantized matmul dequantization, conv1d state update, and
-// recurrent state management in one kernel. The dispatch function and
-// fastpath flag (`AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL`) are in place;
-// the kernel source needs to be authored.
+// When `AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL` is on, decode runs the
+// existing Metal-accelerated gated-delta + gate pipeline under one outer
+// entry. A true single-dispatch mega-kernel that also fuses quantized
+// projections remains residual (hardware/kernel engineering).
 // ---------------------------------------------------------------------------
 
 /// Attempt whole-layer Metal dispatch for linear-attention decode.
 ///
-/// Returns `Some(output)` if the fused kernel succeeds, `None` to fall back
-/// to the standard multi-dispatch path.
+/// Returns `Some(output)` if the compositional Metal path succeeds, `None` to
+/// fall back to the standard multi-dispatch path.
 ///
 /// Gated by `AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL` (default OFF).
 pub(crate) fn try_linear_attention_whole_layer_metal(
-    _cfg: &ModelConfig,
-    _w: &LayerWeights,
-    _x: &MlxArray,
-    _cache: &mut MlxKVCache,
-    _layer_idx: usize,
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
 ) -> Option<MlxArray> {
     if !fastpath::linear_attention_whole_layer_metal_enabled() {
         return None;
     }
-    // TODO(kernel): implement whole-layer Metal kernel for linear-attention
-    // decode. The kernel must fuse:
-    //   1. RMSNorm on input
-    //   2. Packed QKVZ/BA quantized matmul projection
-    //   3. Conv1d state update + SiLU activation
-    //   4. Split QKVZ into q, k, v, z
-    //   5. Per-head RMSNorm on q, k
-    //   6. GatedDelta recurrent update (reuse qwen35_gated_delta_decode_v1)
-    //   7. Output projection (quantized matmul)
-    //
-    // Key challenges:
-    //   - Quantized matmul dequantization (4/5/8-bit) inside Metal kernel
-    //   - Recurrent state update requires float32 accumulation
-    //   - Conv1d state must be updated before the recurrent step
-    //   - Output projection is a separate quantized matmul
-    None
+    // Compositional whole-layer decode entry: run the Metal-accelerated
+    // gated-delta pipeline (existing qwen35_gated_delta_decode_v1 + Metal
+    // conv/gate helpers) under one outer barrier. A single-dispatch mega
+    // kernel that also fuses quantized projections remains residual.
+    if x.shape().get(1).copied().unwrap_or(0) != 1 {
+        return None;
+    }
+    let linear_cfg = cfg.linear_attention.as_ref()?;
+    let linear_w = w.linear_attn.as_ref()?;
+    let seq = x.shape()[1];
+    let (qkv, z, a, b) = linear_attention_inputs(cfg, linear_cfg, linear_w, x, seq, false);
+    let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
+    let (q, k, v, new_conv_state) =
+        linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, conv_state, false);
+    let a_log_f32 = linear_w.a_log.clone();
+    let dt_bias_f32 = linear_w.dt_bias.clone();
+    let state = recurrent_state.cloned().unwrap_or_else(|| {
+        zeros(
+            &[
+                1,
+                linear_cfg.num_value_heads as i32,
+                linear_cfg.value_head_dim as i32,
+                linear_cfg.key_head_dim as i32,
+            ],
+            MlxDtype::Float32,
+            None,
+        )
+    });
+    let (out, new_recurrent_state) =
+        gated_delta_kernel(&q, &k, &v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
+    cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
+    let out = rms_norm_gated_with_full_gate_policy(
+        &out,
+        &z,
+        &linear_w.norm,
+        cfg.rms_norm_eps,
+        linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx),
+    );
+    let flat = reshape(&out, &[1, seq, linear_cfg.value_dim() as i32], None);
+    Some(qw(&flat, &linear_w.out_proj))
 }
 
 #[cfg(test)]

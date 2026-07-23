@@ -536,6 +536,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         }
     }
 
@@ -624,6 +625,24 @@ mod tests {
         let err =
             image_embeddings(&text_only_config(), &text_only_weights(), &stub_image()).unwrap_err();
         assert!(matches!(err, Gemma4UnifiedError::MissingVisionWeights));
+    }
+
+    #[test]
+    fn gemma4_vl_build_rejects_images_without_vision_weights() {
+        use crate::gemma4_vl::{Gemma4VlError, build_vl_prefill_embeddings};
+        let inputs = Gemma4UnifiedRuntimeInputs {
+            images: vec![stub_image()],
+            audios: Vec::new(),
+            videos: Vec::new(),
+        };
+        let err = build_vl_prefill_embeddings(
+            &text_only_config(),
+            &text_only_weights(),
+            &[1, 2, 3],
+            &inputs,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Gemma4VlError::MissingVisionWeights));
     }
 
     #[test]
