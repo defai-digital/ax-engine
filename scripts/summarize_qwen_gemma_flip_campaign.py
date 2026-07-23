@@ -273,7 +273,7 @@ def render_markdown(summary: dict[str, Any]) -> str:
     ]
     if failed:
         lines.extend(["Failed gates:", "", *[f"- {item}" for item in failed], ""])
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip()
 
 
 def build_parser() -> argparse.ArgumentParser:

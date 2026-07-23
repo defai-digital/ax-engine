@@ -25,4 +25,3 @@ Failed gates:
 - S1: median_throughput_ratio, median_ttft_p95_ratio, median_stream_gap_p95_ratio
 - S2: median_throughput_ratio, median_ttft_p95_ratio, median_stream_gap_p95_ratio
 - S3: median_throughput_ratio, median_ttft_p95_ratio, median_stream_gap_p95_ratio, absolute_stream_gap_p95
-

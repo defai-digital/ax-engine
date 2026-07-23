@@ -1,7 +1,9 @@
 # Qwen 3 + Gemma 4 vs mlxcel v0.4.2 flip decision
 
-Date: 2026-07-23  
-Status: implementation complete; competitive flip rejected (`not_yet`)  
+Date: 2026-07-23
+
+Status: implementation complete; competitive flip rejected (`not_yet`)
+
 Primary host: `AKMBPM5MAXx` (`applegpu_g17s`, 128 GB unified memory)
 
 ## Decision

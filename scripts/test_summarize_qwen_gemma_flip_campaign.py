@@ -14,6 +14,25 @@ import test_check_ax_multimodel_serving_artifact as fixtures
 
 
 class QwenGemmaFlipCampaignSummaryTests(unittest.TestCase):
+    def test_render_markdown_leaves_final_newline_to_the_writer(self) -> None:
+        rendered = summary.render_markdown(
+            {
+                "decision": "not_yet",
+                "candidate_label": "ax-engine",
+                "baseline_label": "mlxcel",
+                "repetitions": 3,
+                "thresholds": {
+                    "min_throughput_ratio": 1.15,
+                    "max_ttft_p95_ratio": 0.9,
+                    "max_stream_gap_p95_ratio": 0.9,
+                    "max_stream_gap_p95_ms": 50.0,
+                },
+                "scenarios": [],
+            }
+        )
+
+        self.assertFalse(rendered.endswith("\n"))
+
     def test_load_gate_thresholds_uses_locked_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "gates.json"
