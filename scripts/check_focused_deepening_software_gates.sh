@@ -31,7 +31,13 @@ rg -q "chunked_prefill_qwen3_vl_with_sampling_buffers" crates/ax-engine-mlx/src/
   || fail "missing qwen3_vl prefill generate path"
 rg -q "qwen3_vl_inputs" crates/ax-engine-mlx/src/runner/mod.rs \
   || fail "runner missing qwen3_vl prefill branch"
-pass "WS-V2 load + serve wiring present"
+rg -q "render_qwen3_vl_chat_with_media" crates/ax-engine-server/src/openai/chat_requests.rs \
+  || fail "missing render_qwen3_vl_chat_with_media"
+rg -q "multimodal_inputs.qwen3_vl" crates/ax-engine-server/src/openai/requests.rs \
+  || fail "OpenAI chat does not set multimodal_inputs.qwen3_vl"
+rg -q "openai_chat_request_decodes_inline_image_into_qwen3_vl" crates/ax-engine-server/src/tests/openai_chat.rs \
+  || fail "missing OpenAI chat→qwen3_vl integration test"
+pass "WS-V2 load + serve wiring present (including OpenAI chat)"
 
 # --- WS-V1: gemma4_vl fail-closed + generate wire ---
 rg -q "build_vl_prefill_embeddings" crates/ax-engine-mlx/src/gemma4_vl.rs \

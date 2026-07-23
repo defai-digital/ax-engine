@@ -24,8 +24,9 @@ pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 use crate::openai::chat_requests::{
-    ChatPromptRenderOptions, messages_contain_inline_media, reject_video_chat_content,
-    render_gemma4_unified_chat_with_media, render_openai_chat_prompt_with_options,
+    ChatPromptRenderOptions, is_qwen3_vl_model_id, messages_contain_inline_media,
+    reject_video_chat_content, render_gemma4_unified_chat_with_media,
+    render_openai_chat_prompt_with_options, render_qwen3_vl_chat_with_media,
 };
 pub(crate) use crate::openai::chat_requests::{
     chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
@@ -471,11 +472,12 @@ pub(crate) fn build_openai_chat_request(
         None
     } else {
         validate_native_chat_artifacts(live)?;
-        // On native MLX, decode inline base64 image/audio parts into Gemma 4
-        // unified soft-token spans + tensors. Falls back to text-only rendering
-        // when there is no inline media.
-        let media_prompt = if live.runtime_report.selected_backend == SelectedBackend::Mlx
+        // On native MLX, decode inline base64 image/audio parts into the
+        // family-specific multimodal schema. Qwen3-VL → qwen3_vl; otherwise
+        // Gemma 4 unified. Falls back to text-only when there is no media.
+        let media_rendered = if live.runtime_report.selected_backend == SelectedBackend::Mlx
             && multimodal_inputs.is_empty()
+            && messages_contain_inline_media(&request.messages)
         {
             let model_dir = live.session_config.mlx_model_artifacts_dir().ok_or_else(|| {
                 error_response(
@@ -484,36 +486,50 @@ pub(crate) fn build_openai_chat_request(
                     "native MLX multimodal chat requires mlx_model_artifacts_dir with tokenizer.json and config".to_string(),
                 )
             })?;
-            render_gemma4_unified_chat_with_media(
-                live.model_id.as_ref(),
-                model_dir,
-                &request.messages,
-            )?
-        } else {
-            None
-        };
-        match media_prompt {
-            Some(prompt) => {
+            let model_id = live.model_id.as_ref();
+            if is_qwen3_vl_model_id(model_id)
+                || crate::metadata::model_family_from_artifacts(live)
+                    .as_deref()
+                    .is_some_and(|f| f == "qwen3_vl" || f == "qwen3_vl_moe")
+            {
+                if let Some(prompt) =
+                    render_qwen3_vl_chat_with_media(model_id, model_dir, &request.messages)?
+                {
+                    input_tokens = prompt.input_tokens;
+                    multimodal_inputs.qwen3_vl = Some(prompt.runtime_inputs);
+                    true
+                } else {
+                    false
+                }
+            } else if let Some(prompt) =
+                render_gemma4_unified_chat_with_media(model_id, model_dir, &request.messages)?
+            {
                 input_tokens = prompt.input_tokens;
                 multimodal_inputs.gemma4_unified = Some(prompt.runtime_inputs);
-                None
+                true
+            } else {
+                false
             }
-            None => {
-                // Gemma 4: request.reasoning enables the official
-                // enable_thinking path (`<|think|>` + open thought channel).
-                // Other families keep their existing thinking defaults.
-                let enable_thinking = matches!(
-                    chat::ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
-                    chat::ChatPromptTemplate::Gemma4
-                ) && openai_reasoning_is_enabled(request.reasoning.as_ref());
-                Some(render_openai_chat_prompt_with_options(
-                    live.model_id.as_ref(),
-                    &request.messages,
-                    request.tools.as_ref(),
-                    request.tool_choice.as_ref(),
-                    ChatPromptRenderOptions { enable_thinking },
-                )?)
-            }
+        } else {
+            false
+        };
+        if media_rendered {
+            None
+        } else {
+            // Gemma 4: request.reasoning enables the official
+            // enable_thinking path (`<|think|>` + open thought channel).
+            // Other families keep their existing thinking defaults.
+            let enable_thinking = matches!(
+                chat::ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+                chat::ChatPromptTemplate::Gemma4
+            ) && openai_reasoning_is_enabled(request.reasoning.as_ref());
+            Some(render_openai_chat_prompt_with_options(
+                live.model_id.as_ref(),
+                &request.messages,
+                request.tools.as_ref(),
+                request.tool_choice.as_ref(),
+                ChatPromptRenderOptions { enable_thinking },
+            )?)
         }
     };
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());

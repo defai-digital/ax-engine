@@ -304,9 +304,13 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         return NativeProcessedMultimodalSupport::default();
     };
 
-    let image = GEMMA4_UNIFIED_VISION_ROLES
+    let gemma4_image = GEMMA4_UNIFIED_VISION_ROLES
         .iter()
         .all(|role| has_global_tensor_role(tensors, role));
+    let qwen3_vl_image = has_global_tensor_role(tensors, QWEN3_VL_VISION_PATCH_EMBED_ROLE)
+        || has_global_tensor_role(tensors, QWEN3_VL_VISION_MERGER_ROLE)
+        || family_from_manifest(&manifest).is_some_and(|f| f == "qwen3_vl" || f == "qwen3_vl_moe");
+    let image = gemma4_image || qwen3_vl_image;
     let audio = has_global_tensor_role(tensors, GEMMA4_UNIFIED_AUDIO_ROLE);
     // WS-M1: advertise video only for gemma4_unified manifests that already
     // have vision roles, have no convert-time media drops, and are not
@@ -317,10 +321,7 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         .and_then(|d| d.get("media_role_hits"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let family = manifest
-        .get("model_family")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let family = family_from_manifest(&manifest).unwrap_or_default();
     let video_env_off = matches!(
         std::env::var("AX_MLX_GEMMA4_VIDEO")
             .unwrap_or_else(|_| "on".into())
@@ -329,7 +330,7 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
             .as_str(),
         "0" | "false" | "off" | "no"
     );
-    let video = image
+    let video = gemma4_image
         && !video_env_off
         && media_drops == 0
         && (family == "gemma4" || family == "gemma4_unified" || family.starts_with("gemma4"));
@@ -338,6 +339,25 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         audio,
         video,
     }
+}
+
+fn family_from_manifest(manifest: &Value) -> Option<String> {
+    manifest
+        .get("model_family")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Read `model_family` from the live session's model-manifest.json when present.
+pub(crate) fn model_family_from_artifacts(live: &LiveState) -> Option<String> {
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx {
+        return None;
+    }
+    let artifacts_dir = live.session_config.mlx_model_artifacts_dir()?;
+    let manifest_path = artifacts_dir.join("model-manifest.json");
+    let bytes = std::fs::read(manifest_path).ok()?;
+    let manifest: Value = serde_json::from_slice(&bytes).ok()?;
+    family_from_manifest(&manifest)
 }
 
 fn has_global_tensor_role(tensors: &[Value], role: &str) -> bool {
@@ -363,6 +383,9 @@ const GEMMA4_UNIFIED_VISION_ROLES: &[&str] = &[
 ];
 
 const GEMMA4_UNIFIED_AUDIO_ROLE: &str = "gemma4_unified_audio_projection";
+
+const QWEN3_VL_VISION_PATCH_EMBED_ROLE: &str = "qwen3_vl_vision_patch_embed";
+const QWEN3_VL_VISION_MERGER_ROLE: &str = "qwen3_vl_vision_merger";
 
 fn openai_text_supported_live(live: &LiveState) -> bool {
     // Keep this in sync with `validate_openai_text_backend` in `openai::validation`:

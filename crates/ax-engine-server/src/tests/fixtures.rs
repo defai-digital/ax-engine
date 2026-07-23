@@ -518,6 +518,75 @@ pub(super) fn gemma4_unified_artifact(label: &str) -> PathBuf {
     dir
 }
 
+/// Minimal native-MLX artifact for Qwen3-VL chat image path tests.
+pub(super) fn qwen3_vl_artifact(label: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ax-engine-server-{label}-{unique}"));
+    fs::create_dir_all(&dir).expect("artifact dir should create");
+    fs::write(
+        dir.join("config.json"),
+        r#"{
+  "model_type": "qwen3_vl",
+  "eos_token_id": 2
+}"#,
+    )
+    .expect("config should write");
+    fs::write(
+        dir.join("model-manifest.json"),
+        r#"{
+  "schema_version": "ax.native_model.v1",
+  "model_family": "qwen3_vl",
+  "tensor_format": "safetensors",
+  "layer_count": 1,
+  "hidden_size": 8,
+  "intermediate_size": 16,
+  "attention_head_count": 2,
+  "attention_head_dim": 4,
+  "kv_head_count": 2,
+  "vocab_size": 32,
+  "tie_word_embeddings": false,
+  "tensors": [
+    {"name": "visual.patch_embed.proj.weight", "role": "qwen3_vl_vision_patch_embed", "dtype": "f32", "shape": [8, 6], "file": "w.safetensors", "offset_bytes": 0, "length_bytes": 192},
+    {"name": "visual.merger.weight", "role": "qwen3_vl_vision_merger", "dtype": "f32", "shape": [8, 8], "file": "w.safetensors", "offset_bytes": 192, "length_bytes": 256}
+  ]
+}"#,
+    )
+    .expect("manifest should write");
+    fs::write(
+        dir.join("tokenizer.json"),
+        r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {"id": 10, "content": "<|image_pad|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {"type": "Whitespace"},
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "[UNK]": 0,
+      "describe": 1,
+      "user": 2,
+      "assistant": 3,
+      "<|im_start|>": 4,
+      "<|im_end|>": 5,
+      "<|image_pad|>": 10
+    },
+    "unk_token": "[UNK]"
+  }
+}"#,
+    )
+    .expect("tokenizer should write");
+    dir
+}
+
 pub(super) fn spawn_llama_cpp_completion_server(
     response_body: String,
     assert_request: impl FnMut(Value) + Send + 'static,

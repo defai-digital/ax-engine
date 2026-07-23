@@ -1909,6 +1909,68 @@ async fn openai_chat_request_decodes_inline_image_into_gemma4_unified_tensors() 
 }
 
 #[tokio::test]
+async fn openai_chat_request_decodes_inline_image_into_qwen3_vl_inputs() {
+    use crate::tests::fixtures::qwen3_vl_artifact;
+    use base64::Engine as _;
+
+    let artifact_dir = qwen3_vl_artifact("native-openai-chat-qwen3-vl-image");
+    let state = native_mlx_openai_builder_state("Qwen/Qwen3-VL-8B-Instruct", &artifact_dir);
+    let live = state.snapshot();
+
+    let png = include_bytes!("fixtures/gemma4_golden/image_noresize.png");
+    let data_uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen/Qwen3-VL-8B-Instruct",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": data_uri}}
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("qwen3_vl chat request should deserialize");
+
+    let built =
+        build_openai_chat_request(&live, request).expect("qwen3_vl inline image chat should build");
+
+    assert!(
+        built
+            .generate_request
+            .multimodal_inputs
+            .gemma4_unified
+            .is_none(),
+        "qwen3_vl chat must not attach gemma4_unified tensors"
+    );
+    let inputs = built
+        .generate_request
+        .multimodal_inputs
+        .qwen3_vl
+        .expect("inline image should attach RequestMultimodalInputs.qwen3_vl");
+    assert_eq!(inputs.images.len(), 1);
+    assert!(inputs.images[0].soft_token_count > 0);
+    assert_eq!(
+        inputs.images[0].patches.len(),
+        inputs.images[0].num_patches as usize * inputs.images[0].patch_dim as usize
+    );
+    assert!(
+        !built.generate_request.input_tokens.is_empty(),
+        "tokenized prompt must be non-empty"
+    );
+    assert!(
+        built.generate_request.input_tokens.iter().any(|&t| t == 10),
+        "expanded prompt should contain image pad token id 10"
+    );
+    assert_eq!(built.generate_request.input_text, None);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_chat_media_build_offloads_to_blocking_pool_and_matches_inline_build() {
     use base64::Engine as _;
 

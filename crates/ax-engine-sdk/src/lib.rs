@@ -25,6 +25,9 @@ pub use ax_engine_core::gemma4_unified::{
     Gemma4UnifiedRuntimeInputs, Gemma4UnifiedSoftTokenRange, Gemma4UnifiedTokenSpan,
     Gemma4UnifiedVideoInput, Gemma4UnifiedVideoRuntimeInput, Gemma4UnifiedVisionProcessor,
 };
+pub use ax_engine_core::qwen3_vl::{
+    Qwen3VlImageRuntimeInput, Qwen3VlRuntimeInputError, Qwen3VlRuntimeInputs,
+};
 pub use ax_engine_core::{
     CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvManagerConfig, NativeDiffusionConfig,
     NativeLinearAttentionConfig, NativeMlaAttentionConfig, RequestMultimodalInputError,
