@@ -887,7 +887,10 @@ fn mark_model_production_warmup_needed(model_id: &str) -> bool {
     set.insert(model_id.to_string())
 }
 
-fn run_production_path_warmup(generation_service: &NativeGenerationService, model_id: &str) {
+pub(crate) fn run_production_path_warmup(
+    generation_service: &NativeGenerationService,
+    model_id: &str,
+) {
     // Flip S0 prompt (~34) + short decode burst + medium prefill. Keep the
     // load path short: long 8k warms made S2 reload thr ~0.29× on M5 Max.
     let shapes: [(u64, usize, u32); 3] = [

@@ -13,7 +13,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use crate::app_state::{AppState, build_live_state, build_replacement_live_state};
+use crate::app_state::{
+    AppState, build_live_state, build_replacement_live_state, run_production_path_warmup,
+};
 use crate::errors::{ErrorResponse, error_response, map_generation_service_error};
 use crate::generation::service::{
     ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP, GenerationServiceError, NativeGenerationService,
@@ -270,6 +272,24 @@ pub(crate) async fn load_model(
                     .generation_service
                     .set_adaptive_prefill_isolation(true);
             }
+            if multi_model_after_load {
+                for resident in state_clone.snapshots() {
+                    if resident.model_id.as_ref() == published_model_id.as_ref() {
+                        continue;
+                    }
+                    if resident
+                        .session_config
+                        .resolved_backend
+                        .selected_backend
+                        .is_mlx()
+                    {
+                        run_production_path_warmup(
+                            &resident.generation_service,
+                            resident.model_id.as_ref(),
+                        );
+                    }
+                }
+            }
             if let Some(previous) = previous {
                 // Replacing a live same-id entry should still retire the
                 // outgoing generation; soft-park is only for unload→reload.
@@ -376,6 +396,28 @@ pub(crate) async fn load_model(
                     published
                         .generation_service
                         .set_adaptive_prefill_isolation(true);
+                }
+                // Dual-resident weight pressure can cool the interactive model's
+                // first-token path (flip S2 TTFT ~67 ms vs S0 ~57 ms). Re-warm
+                // sibling residents after multi-model publish so interactive
+                // TTFT stays on the S0 warm envelope.
+                if multi_model_after_load {
+                    for resident in state_clone.snapshots() {
+                        if resident.model_id.as_ref() == published_model_id.as_ref() {
+                            continue;
+                        }
+                        if resident
+                            .session_config
+                            .resolved_backend
+                            .selected_backend
+                            .is_mlx()
+                        {
+                            run_production_path_warmup(
+                                &resident.generation_service,
+                                resident.model_id.as_ref(),
+                            );
+                        }
+                    }
                 }
                 if let Some(previous) = previous {
                     previous.retire().await.map_err(|error| {
