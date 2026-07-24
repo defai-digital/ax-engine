@@ -294,6 +294,25 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_ROTATING_SLIDING_PREFILL` — use rotating sliding-window KV
+    /// during multi-token prefill (not only decode).
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_ROTATING_SLIDING_PREFILL=0`).
+    ///
+    /// Without this, prefill keeps ordered O(context) contiguous SWA buffers
+    /// and only trims the *view* handed to SDPA (`MULTI_TOKEN_WINDOW_VIEWS`).
+    /// Writes still pay O(context) bandwidth per sliding layer. Enabling
+    /// rotation during prefill (with slack ≥ prefill chunk / isolation quantum)
+    /// mirrors `mlx_lm` `RotatingKVCache` prefill trim: physical SWA storage
+    /// stays O(window + slack). Requires `ROTATING_SLIDING_DECODE` and a
+    /// rollback-free route (greedy, no n-gram). Prefix-cache portable store
+    /// fails closed on rotated layers and recomputes ordered KV.
+    rotating_sliding_prefill_enabled,
+    "AX_MLX_ROTATING_SLIDING_PREFILL"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_ROTATING_BOUNDED_ROLLBACK` — extend rotating sliding-window
     /// KV to n-gram-active and sampled (non-greedy) requests via
     /// bounded-rollback rings.

@@ -2198,6 +2198,7 @@ impl MlxRunner {
                     state.rotating_sliding_latch,
                     self.rotating_sliding_decode,
                     true,
+                    self.prefill_chunk,
                 );
                 state.cache.set_rotating_sliding_decode(rotate_sliding);
                 state.cache.set_rotating_sliding_slack(rotate_slack);
@@ -4158,17 +4159,19 @@ impl MlxRunner {
             self.reclaim_native_prefix_capacity(&state.cache, item.input_token_slice.len()),
         );
 
-        // Apply the request's rotating sliding-KV decision. Every prefill item
-        // stays ordered, including scheduler-split prompts; the final item
-        // latches decode rotation in `initialize_generation_state`. The latch
-        // must win on every later decode run: rotation is irreversible per
-        // request, so resetting it after conversion would grow slot-ordered
-        // storage through the ordered path and scramble token order.
+        // Apply the request's rotating sliding-KV decision. Prefill may rotate
+        // when `AX_MLX_ROTATING_SLIDING_PREFILL` is on (default): SWA layers
+        // then keep O(window+slack) physical storage instead of O(context)
+        // contiguous buffers (mlx_lm RotatingKVCache prefill trim). Slack is
+        // sized to the session prefill chunk so multi-token isolation quanta
+        // and cold chunks fit. Decode still latches in
+        // `initialize_generation_state`; the latch wins on later runs.
         let (rotate_sliding, rotate_slack) = cache_rotation_for_execution(
             item.mode,
             state.rotating_sliding_latch,
             self.rotating_sliding_decode,
             is_greedy,
+            self.prefill_chunk,
         );
         state.cache.set_rotating_sliding_decode(rotate_sliding);
         state.cache.set_rotating_sliding_slack(rotate_slack);
@@ -9592,8 +9595,20 @@ fn cache_rotation_for_execution(
     request_latch: Option<(bool, usize)>,
     session_rotating_decode: bool,
     is_greedy: bool,
+    prefill_chunk: usize,
 ) -> (bool, usize) {
     if mode == ExecutionMode::Prefill {
+        // Ordered prefill is the historical default (portable prefix snapshots).
+        // When prefill rotation is enabled, size slack so multi-token chunks
+        // (isolation quantum or cold prefill_chunk) fit the ring eligibility
+        // gate in `sliding_ring_layout` (seq <= rotating_slack).
+        if session_rotating_decode
+            && is_greedy
+            && crate::fastpath::rotating_sliding_prefill_enabled()
+        {
+            let slack = prefill_chunk.max(64);
+            return (true, slack);
+        }
         return (false, 0);
     }
     request_latch.unwrap_or((session_rotating_decode && is_greedy, 0))
@@ -12194,21 +12209,39 @@ mod tests {
     }
 
     #[test]
-    fn split_prefill_never_inherits_decode_ring_rotation() {
+    fn prefill_rotation_follows_prefill_flag_and_decode_latch() {
+        // Prefill: rotate when session rotating + greedy + prefill flag (default ON).
+        // Slack sized to prefill_chunk (min 64).
         assert_eq!(
-            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, true),
+            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, true, 1536),
+            (true, 1536)
+        );
+        assert_eq!(
+            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, true, 32),
+            (true, 64)
+        );
+        // Prefill latch ignored: prefill does not inherit decode latch pair.
+        assert_eq!(
+            cache_rotation_for_execution(
+                ExecutionMode::Prefill,
+                Some((true, 8)),
+                true,
+                true,
+                1536
+            ),
+            (true, 1536)
+        );
+        // Non-greedy prefill stays ordered.
+        assert_eq!(
+            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, false, 1536),
             (false, 0)
         );
         assert_eq!(
-            cache_rotation_for_execution(ExecutionMode::Prefill, Some((true, 8)), true, true),
-            (false, 0)
-        );
-        assert_eq!(
-            cache_rotation_for_execution(ExecutionMode::Decode, Some((true, 8)), false, false),
+            cache_rotation_for_execution(ExecutionMode::Decode, Some((true, 8)), false, false, 1536),
             (true, 8)
         );
         assert_eq!(
-            cache_rotation_for_execution(ExecutionMode::Decode, None, true, true),
+            cache_rotation_for_execution(ExecutionMode::Decode, None, true, true, 1536),
             (true, 0)
         );
     }
