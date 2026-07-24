@@ -1,72 +1,53 @@
-# Qwen/Gemma mlxcel flip status — 2026-07-24 (late)
+# Qwen/Gemma mlxcel flip status — 2026-07-24 (evening)
 
-**Decision: `not_yet`** — S0 formal flip; S1 thr/TTFT still short of locked 1.15 / 0.90 after exact-S1 warm.
+**Decision: `not_yet`** — S0 formal flip; S1 TTFT+gap green after exact-text warm; thr still short of locked 1.15× under exclusive single-GPU physics.
 
-## Scenario ledger
+## Scenario ledger (best locked-gate evidence)
 
 | Scenario | thr | TTFT | gap | Status |
 | --- | ---: | ---: | ---: | --- |
 | **S0** | **1.157–1.169×** | **0.739–0.755×** | **0.830–0.850×** | **PASS** |
-| **S1** | **0.983–0.991×** (exact warm) / **1.05–1.07×** (concurrent arbiter, gap FAIL) | **0.913–0.925×** | **0.25×** exclusive / **~9.8×** concurrent | thr+TTFT short exclusive; concurrent thr↑ gap blown |
-| **S2** | **1.783×** | **0.819×** | **0.774×** | **PASS** (triple warm) |
+| **S1** | **1.010×** | **0.900×** | **0.234×** | thr FAIL only (TTFT/gap PASS) |
+| **S2** | **1.783×** | **0.819×** | **0.774×** | **PASS** (prior triple warm) |
 | **S3** | **~0.82×** | **~7.6×** | **~1.83×** | FAIL |
 
-Evidence: `2026-07-24-s1-exact-text-warm`, `2026-07-24-s1-exact-warm-addrms`, `2026-07-24-s0-exact-warm-reg`, `2026-07-24-s1-concurrent-arbiter`, `2026-07-24-s1-concurrent-fair`.
+Best S1: `2026-07-24-s1-exact-warm-v2` (exclusive arbiter, exact S1 text warm, compiled silu/gelu/add_rms).
 
-## S1 physics (trial-level)
+## S1 trial anatomy (exact-warm-v2)
 
-Formal exact-warm trial anatomy (AX vs mlxcel):
-
-| Side | Qwen e2e | Gemma e2e | thr wall | thr |
+| Side | Qwen e2e | Gemma e2e | Wall | thr |
 | --- | ---: | ---: | ---: | ---: |
-| AX exclusive | ~10.5–10.8 s | ~9.4–9.6 s | **Qwen-bound ~10.6 s** | ~18.0 |
-| mlxcel multi-process | ~5.6 s | ~10.3–10.5 s | **Gemma-bound ~10.4 s** | ~18.2 |
+| AX exclusive | ~10.7 s | ~9.5 s | Qwen-bound | ~18.0 |
+| mlxcel multi-process | ~5.6 s | ~10.3 s | Gemma-bound | ~17.8 |
 
-- thr = sum(output tokens=193) / max(e2e). Gate 1.15× needs wall ≤ ~9.2 s.
-- Exclusive AX serializes device turns → wall ≈ pure-sum (~10.3–10.6 s) → thr ceiling ~18 tok/s ≈ 0.99× mlxcel.
-- mlxcel multi-process finishes Qwen in ~5.6 s under concurrent Metal time-slicing; wall is pure-Gemma-ish.
+Gate 1.15× needs AX wall ≤ ~9.3 s (thr ≥ ~20.4). Exclusive wall ≈ pure Gemma + pure Qwen (~10.3–10.7 s). **~14–15% pure-sum reduction required.**
 
-## Experiments this session
+## Experiments (this session)
 
-### Exact S1 text warm (shipped)
-
-`run_exact_s1_gemma_long_prefill_warmup` after multi-model publish closes cold-first tax (thr 0.74 → ~0.99). Gap excellent (0.25×).
-
-### Concurrent execution arbiter (opt-in)
-
-`AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT=2` lets distinct model workers hold turns together (each already has a dedicated `MlxStream::new_gpu` on its owner thread).
-
-| Config | thr ratio | TTFT ratio | gap ratio | Notes |
+| Config | thr | TTFT | gap | Notes |
 | --- | ---: | ---: | ---: | --- |
-| Concurrent, fair-prefill off | 1.054× | 0.915× | **9.8×** | gap p95 ~340 ms |
-| Concurrent + fair quantum | 1.067× | 0.913× | **9.8×** | gap p50 ~9 ms, p95 ~340 ms (spike tail) |
-| Exclusive + exact warm | 0.99× | 0.92× | **0.25×** | gap PASS |
+| Exclusive + exact warm (v2) | **1.010×** | **0.900×** | **0.23×** | Best locked-gate envelope |
+| Exclusive + q96/SLO45 | 0.959× | 0.952× | 0.25× | No thr win; TTFT slips |
+| Concurrent dual-hold (cold) | ~1.05–1.07× | ~0.91× | **~9.8×** | Gap p95 ~340 ms |
+| Concurrent + exact warm + q48 | **1.033×** | 0.929× | **~10×** | Gap still spikes; Qwen e2e still ~10 s (not 5.6 s) |
+| Dummy warm only | 0.72× | 1.39× | ~1.0× | Cold-first tax |
 
-**Conclusion:** concurrent holds do **not** reproduce mlxcel multi-process Qwen e2e (~5.6 s); AX Qwen stays ~10 s. Unified-memory / MLX contention plus long Gemma kernels create p95 gap spikes. Flip target stays exclusive (`max_concurrent=1` default). Concurrent arbiter remains opt-in for further research.
+**Concurrent dual-hold does not reproduce mlxcel multi-process Qwen e2e (~5.6 s).** Flip target stays exclusive.
 
-### Compiled elementwise activations (shipped)
+## Code landed (branch `codex/mlxcel-s1-concurrent-fair-composites`)
 
-`silu_mul` and `gelu_approx_mul` use mlxcel-style `mx::compile(shapeless=true)` with fail-closed fallback (matmul stays outside). Requires `#include "mlx/compile.h"`.
+1. Exact S1 Gemma text warm after multi-model publish (`run_exact_s1_gemma_long_prefill_warmup`).
+2. Compiled shapeless `silu_mul`, `gelu_approx_mul`, `add_rms_norm_pair`.
+3. Standard-family post-attn residual fused via `add_rms_norm_pair`.
+4. Concurrent arbiter opt-in (`AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT`); fair prefill retained when sibling active.
+5. Adaptive sibling prefill quantum default 64 / gap SLO 32 ms (exclusive flip baseline).
 
-## Code landed
+## Next for S1 thr ≥1.15×
 
-1. Exact S1 Gemma text warm after multi-model publish.
-2. Concurrent multi-model execution arbiter (`AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT`, default 1).
-3. Compiled shapeless `silu_mul` + `gelu_approx_mul` composites.
-4. Adaptive prefill quantum (default 64, gap SLO 32 ms) under exclusive isolation.
+1. Pure Gemma (+Qwen) prefill/decode host+Metal path −14–15% so exclusive wall ≤9.3 s.
+2. Or a true multi-stream overlap that cuts Qwen concurrent e2e → ~5–6 s **without** gap p95 spikes (deeper than dual arbiter holds).
+3. Then full ≥3-rep S0–S3 campaign.
 
-## Next for S1 thr ≥1.15× and TTFT ≤0.90×
+## Physics note
 
-1. **Pure Gemma prefill −12–15%** (Metal attention/FFN, MLX pin audit R2, more elementwise composites, host graph reduction). Exclusive physics: wall must drop from ~10.5 s → ≤9.2 s without multi-process free lunch.
-2. **Deeper multi-stream overlap** if concurrent is revisited: need Qwen e2e → ~5–6 s under load without gap p95 spikes (kernel-level fairness, not just arbiter dual-hold).
-3. Confirm S0/S2 still green after pure-path changes.
-4. S3 arbiter/batch after S1.
-
-## Report alignment
-
-Deep review (`.internal/reports/mlxcel-deep-review-2026-07-24.zh-TW.md`):
-
-- P0 composites: partial (add-style residual path history + silu/gelu compile).
-- P2 wall-time quantum: landed adaptive 64-token / 32 ms SLO (exclusive).
-- S1 architecture note confirmed: multi-process isolation is half the mlxcel S1 story; AX single-process must solve in-process device turns.
-- Do **not** abandon single-process multi-model product shape for the flip.
+Locked thr 1.15× against mlxcel multi-process S1 is a pure-path problem under AX exclusive single-GPU serialization. Policy/quantum tuning alone cannot clear the bar once TTFT/gap are already green at thr ~1.0×.
