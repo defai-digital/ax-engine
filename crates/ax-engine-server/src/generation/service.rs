@@ -210,17 +210,22 @@ struct ModelExecutionTarget {
 ///   long prefill attention cost grows with position, so fixed-token quanta
 ///   are not wall-time-safe mid-prompt.
 ///
-/// Default **8** is only the *initial* quantum. When adaptive isolation is
-/// on, [`advance_shared_engine`] sizes the next quantum from measured
-/// µs/token so one sibling prefill turn stays under the stream-gap SLO budget
-/// ([`ADAPTIVE_PREFILL_GAP_SLO_US`]). Override the start point via
+/// Default **64** is the *initial* sibling-active quantum (≈ 40–50 ms on M5
+/// Max Gemma-12B 4-bit at ~0.66–0.8 ms/tok). When adaptive isolation is on,
+/// [`advance_shared_engine`] re-sizes from measured µs/token so one sibling
+/// prefill turn stays under the stream-gap SLO budget
+/// ([`ADAPTIVE_PREFILL_GAP_SLO_US`]). Override via
 /// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS`.
-pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 8;
+pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
 /// Interactive p95 stream-gap SLO used as the wall-time budget for one sibling
-/// prefill turn (flip gate: absolute ≤ 50 ms). Keep a safety margin.
-const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 40_000;
-const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
+/// prefill turn (flip gate: absolute ≤ 50 ms). 45 ms leaves a small safety
+/// margin without capping early-prompt quanta as hard as 40 ms did.
+const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 45_000;
+/// Allow up to 128 tokens/turn while adaptive feedback still shrinks mid-prompt
+/// as attention cost grows. Hard-capping at 64 left early prefill under-fed
+/// even when measured µs/tok would fit more work under the gap SLO.
+const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 128;
 const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
@@ -1776,11 +1781,11 @@ mod tests {
     fn adaptive_prefill_latency_quantum_defaults_to_wall_time_slo_proxy() {
         // Must not regress to the historical 1-token sibling quantum that
         // serialized long prefills into thousands of arbiter turns (flip S1).
-        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 8);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 8);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 8);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 8);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 8);
+        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 64);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("96")), 96);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("1")), 1);
         assert!(
@@ -1797,11 +1802,11 @@ mod tests {
     fn adjust_adaptive_prefill_tokens_targets_gap_slo_from_us_per_tok() {
         // No measurement yet → hold.
         assert_eq!(adjust_adaptive_prefill_tokens(16, 0), 16);
-        // 16 tokens took 16 ms → 1 ms/tok → target ≈ 40; blend up from 16.
+        // 16 tokens took 16 ms → 1 ms/tok → target ≈ 45; blend up from 16.
         let up = adjust_adaptive_prefill_tokens_with_work(16, 16_000, 16);
-        assert!(up > 16 && up <= 40, "up={up}");
-        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 8).
-        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 8);
+        assert!(up > 16 && up <= 45, "up={up}");
+        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 9).
+        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 9);
         // Very expensive → snap to 1.
         assert_eq!(adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4), 1);
         // Cap at max.

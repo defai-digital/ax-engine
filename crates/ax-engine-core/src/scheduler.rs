@@ -346,9 +346,21 @@ impl TokenBudgetTelemetry {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scheduler;
 
+/// Hard pressure (exhausted / unknown): one token so decode can still progress.
 const MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP: u32 = 1;
+/// Soft pressure (`kv_low_free_blocks:*`): keep prefill productive. Forcing 1
+/// token here made multi-model long-prefill (flip S1 Gemma ~14k tok) take ~35s
+/// vs ~8.6s pure — fair multi-prefill was also disabled under any pressure.
+///
+/// Use the same 256-token throughput quantum as
+/// `ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP` so soft pressure does not
+/// re-introduce a slower ceiling than the no-pressure path. Stream-gap
+/// isolation still comes from the sibling-active adaptive quantum in the
+/// generation service (≤ ~40–50 ms wall per turn), not from this soft cap.
+const MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP: u32 = 256;
 const MEMORY_PRESSURE_KV_EXHAUSTED: &str = "kv_exhausted";
 const MEMORY_PRESSURE_KV_EXHAUSTED_RECLAIMABLE_CACHE: &str = "kv_exhausted_reclaimable_cache";
+const MEMORY_PRESSURE_KV_LOW_PREFIX: &str = "kv_low_free_blocks:";
 
 impl Scheduler {
     pub fn new() -> Self {
@@ -731,6 +743,9 @@ fn prefill_budget_for_memory_pressure(memory_pressure: Option<&str>) -> Option<u
         Some(MEMORY_PRESSURE_KV_EXHAUSTED) => Some(0),
         Some(MEMORY_PRESSURE_KV_EXHAUSTED_RECLAIMABLE_CACHE) => {
             Some(MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP)
+        }
+        Some(label) if label.starts_with(MEMORY_PRESSURE_KV_LOW_PREFIX) => {
+            Some(MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP)
         }
         Some(_) => Some(MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP),
     }
@@ -1433,11 +1448,13 @@ mod tests {
             vec![RequestId(2), RequestId(1)]
         );
         let execution_batch = schedule_plan.execution_batch.unwrap();
-        assert_eq!(execution_batch.total_scheduled_tokens, 2);
+        // Soft pressure allows up to SOFT prefill tokens; decode still first.
         assert_eq!(execution_batch.items[0].mode, ExecutionMode::Decode);
         assert_eq!(execution_batch.items[0].scheduled_token_count, 1);
         assert_eq!(execution_batch.items[1].mode, ExecutionMode::Prefill);
-        assert_eq!(execution_batch.items[1].scheduled_token_count, 1);
+        // Remaining budget after decode is 7; prompt has 4 left → schedule 4.
+        assert_eq!(execution_batch.items[1].scheduled_token_count, 4);
+        assert_eq!(execution_batch.total_scheduled_tokens, 5);
 
         let decisions = execution_batch
             .route_metadata
@@ -1450,11 +1467,11 @@ mod tests {
         );
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS),
-            Some(&1)
+            Some(&4)
         );
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS),
-            Some(&3)
+            Some(&0)
         );
     }
 
@@ -1982,11 +1999,15 @@ mod tests {
         input.total_kv_blocks = 64;
 
         let schedule_plan = scheduler.plan(&input);
-        // Pressure path: one token total for prefill, greedy oldest-only.
+        // Soft pressure keeps prefill productive (64 tok budget) but fair
+        // multi-prefill still stays off — greedy fill within the soft cap.
         let batch = schedule_plan.execution_batch.expect("batch");
-        assert_eq!(batch.total_scheduled_tokens, 1);
-        assert_eq!(batch.items.len(), 1);
+        assert_eq!(batch.total_scheduled_tokens, 64);
+        assert_eq!(batch.items.len(), 2);
         assert_eq!(batch.items[0].request_id, RequestId(1));
+        assert_eq!(batch.items[0].scheduled_token_count, 32);
+        assert_eq!(batch.items[1].request_id, RequestId(2));
+        assert_eq!(batch.items[1].scheduled_token_count, 32);
         let decisions: std::collections::BTreeMap<_, _> = batch
             .route_metadata
             .crossover_decisions

@@ -18,7 +18,11 @@
     "--max-concurrent-requests",
     "8",
     "--max-concurrent-requests-per-model",
-    "4"
+    "4",
+    "--total-blocks",
+    "4096",
+    "--max-batch-tokens",
+    "4096"
   ],
   "env": {
     "AX_MLX_MEMORY_LIMIT": "103079215104",
