@@ -64,8 +64,10 @@ profile = "release-pyext"
 strip = true
 # Bundle pre-compiled Metal kernel assets so pip-installed ax-engine works out of the box.
 # Maturin collects .py files automatically; binary and data files need explicit inclusion.
-# mlx.metallib must live next to libmlx.dylib (ax_engine.dylibs/) so that MLX's
-# current_binary_dir() discovery finds it; stripping python/ prefix places it correctly.
+# Maturin stages mlx.metallib in a temporary top-level directory because
+# delocate refuses to vendor dylibs into a package directory that already
+# exists. scripts/build-pypi-wheel.sh moves it next to delocate's libmlx.dylib
+# and regenerates RECORD before accepting the release wheel.
 include = [
     { path = "python/ax_engine/_metal/build/ax_phase1_dense_path.metallib", format = ["wheel"] },
     { path = "python/ax_engine/_metal/build/ax_phase1_dense_path.air", format = ["wheel"] },

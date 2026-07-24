@@ -170,10 +170,11 @@ chmod +x "$SCRIPTS_DIR/ax-engine"
 echo "    staged: $SCRIPTS_DIR/ax-engine"
 
 # ── 3b. Stage mlx.metallib so the wheel ships MLX's Metal shader library. ──
-# pyproject.toml includes python/ax_engine.dylibs/mlx.metallib in the wheel and
-# the guard below verifies it post-delocate. Copy it from the same pip MLX
-# resolved in step 0 (not Homebrew — see the file header) so the build is
-# self-contained and consistent on CI runners as well as local machines.
+# pyproject.toml stages python/ax_engine.dylibs/mlx.metallib in the wheel.
+# Delocate cannot start with ax_engine/.dylibs already present, so step 5 moves
+# the staged file beside delocate's bundled libmlx.dylib and regenerates RECORD.
+# Copy it from the same pip MLX resolved in step 0 (not Homebrew — see the file
+# header) so the build is self-contained and consistent on CI and local Macs.
 echo "==> Staging mlx.metallib into the wheel data dir..."
 MLX_METALLIB="${MLX_METALLIB:-$MLX_LIB_DIR/mlx.metallib}"
 if [[ ! -f "$MLX_METALLIB" ]]; then
@@ -245,9 +246,15 @@ echo "==> Bundled dependencies:"
 delocate-listdeps "$DELOCATED"
 
 # MLX resolves mlx.metallib relative to libmlx.dylib's current binary dir.
-# Keep this guard after delocate so a release cannot silently regress native pip inference.
+# Maturin staged it outside the package so delocate could create .dylibs; now
+# atomically move it beside libmlx and regenerate the wheel RECORD.
+echo "==> Placing mlx.metallib beside bundled libmlx.dylib..."
+python3 scripts/repair_mlx_metallib_wheel.py "$DELOCATED"
+
+# Keep this guard after repair so a release cannot silently regress native pip inference.
 echo "==> Verifying bundled MLX runtime assets..."
-verify_wheel_member "$DELOCATED" "ax_engine.dylibs/mlx.metallib"
+verify_wheel_member "$DELOCATED" "ax_engine/.dylibs/libmlx.dylib"
+verify_wheel_member "$DELOCATED" "ax_engine/.dylibs/mlx.metallib"
 
 echo "==> Verifying bundled AX Metal runtime assets..."
 verify_wheel_member "$DELOCATED" "ax_engine/_metal/build/ax_phase1_dense_path.metallib"
