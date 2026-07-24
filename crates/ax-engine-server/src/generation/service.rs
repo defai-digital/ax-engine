@@ -59,9 +59,17 @@ impl ModelExecutionArbiter {
         self.max_concurrent
     }
 
-    /// Mark that a multi-token prefill quantum just ran so dual-hold stays
-    /// closed for a short isolation window (stream-gap SLO envelope).
+    /// Optionally force exclusive dual-hold after a multi-token prefill quantum.
+    ///
+    /// Default **on** when `max_concurrent > 1`: M5 dual-hold A/B without this
+    /// window measured S1 gap p95 160–220 ms and thr regression under Metal
+    /// contention. Adaptive quantum alone does not keep absolute gap ≤50 ms
+    /// while both models submit. Set `AX_SERVER_LONG_PREFILL_EXCLUSIVE=0` to
+    /// re-open dual-hold for experimental thr A/Bs.
     pub(crate) fn mark_long_prefill_quantum(&self) {
+        if !long_prefill_exclusive_enabled() {
+            return;
+        }
         // Cover late S1 quanta + grace so interactive decode re-enters exclusive
         // mode before the next prefill chunk is submitted under dual-hold.
         const LONG_PREFILL_EXCLUSIVE_GRACE: Duration = Duration::from_millis(80);
@@ -121,6 +129,27 @@ pub(crate) fn exec_arbiter_max_concurrent_from_env() -> usize {
         .filter(|n| *n >= 1)
         .map(|n| n.min(8))
         .unwrap_or(1)
+}
+
+/// When true, multi-token prefill quanta force exclusive arbiter turns for a
+/// short grace window (see [`ModelExecutionArbiter::mark_long_prefill_quantum`]).
+///
+/// Default **true** (kill-switch `AX_SERVER_LONG_PREFILL_EXCLUSIVE=0`). Dual-hold
+/// without this window failed S1 gap (160–220 ms p95) and thr on M5; keep
+/// exclusive isolation for long sibling prefills and rely on pure GPU cuts
+/// for thr ≥1.15×.
+fn long_prefill_exclusive_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_SERVER_LONG_PREFILL_EXCLUSIVE") {
+            Ok(raw) => {
+                let v = raw.trim();
+                // Explicit off only.
+                !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
+            }
+            Err(_) => true,
+        }
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1096,6 +1125,8 @@ const STREAM_ENGINE_STEP_BURST: usize = 64;
 /// locked gap p95 is ~9 ms vs a ~33 ms ratio budget (and 50 ms absolute), so
 /// a small multi-step hold amortizes arbiter reacquire without consuming the
 /// gap headroom. Override via `AX_SERVER_SIBLING_ENGINE_STEP_BURST`.
+/// Default **4**: exclusive multi-model thr envelope (not 1 = thr tax, not full
+/// HOL burst). Concurrent dual-hold A/Bs may set 1 via env.
 const SIBLING_ENGINE_STEP_BURST_DEFAULT: usize = 4;
 
 fn sibling_engine_step_burst() -> usize {
@@ -1392,10 +1423,10 @@ fn advance_shared_engine(
             service_state
                 .adaptive_prefill_tokens
                 .store(adjusted, Ordering::Release);
-            // While sibling-active fair multi-prefill is engaged, force exclusive
-            // dual-hold so long Gemma prefills cannot dual-submit with Qwen
-            // decode (S1 gap). Short multi-stream decode after fair turns off
-            // re-opens concurrent slots for S3.
+            // Optional exclusive window (AX_SERVER_LONG_PREFILL_EXCLUSIVE=1):
+            // force single-hold after multi-token quanta for gap-first isolation.
+            // Default off so dual-hold can hide interactive decode under long
+            // Gemma prefill (S1 thr). Adaptive quantum sizes the turn for gap.
             target.arbiter.mark_long_prefill_quantum();
             if !enabled || current_tokens != adjusted {
                 session.set_multi_prefill_fair(true, adjusted, inflight);
@@ -1971,6 +2002,12 @@ mod tests {
         // Cap at max.
         let capped = adjust_adaptive_prefill_tokens_with_work(100, 1_000, 100);
         assert!(capped <= ADAPTIVE_PREFILL_MAX_TOKENS);
+    }
+
+    #[test]
+    fn long_prefill_exclusive_defaults_on_for_gap_isolation() {
+        // Dual-hold without exclusive failed S1 gap; default stays isolation-on.
+        assert!(long_prefill_exclusive_enabled());
     }
 
     fn delegated_config() -> EngineSessionConfig {

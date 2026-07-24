@@ -2154,11 +2154,30 @@ fn prefer_split_dense_ffn_gate_up(
     leading_elements: i64,
     has_split_gate_up: bool,
 ) -> bool {
+    // Gemma4 long-prefill historically preferred split gate/up (two qmatmuls)
+    // over packed fixed-shape. Kill-switch `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN=0`
+    // forces packed + prefill-compile for pure thr A/B on M5 (S1 residual).
+    let gemma4_split_prefill = model_family == "gemma4"
+        && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
+        && leading_elements >= i64::from(GEMMA4_SPLIT_PREFILL_MIN_SEQ)
+        && gemma4_split_prefill_ffn_enabled();
     has_split_gate_up
-        && ((qwen_dense_ffn && seq == 1 && leading_elements == 1)
-            || (model_family == "gemma4"
-                && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
-                && leading_elements >= i64::from(GEMMA4_SPLIT_PREFILL_MIN_SEQ)))
+        && ((qwen_dense_ffn && seq == 1 && leading_elements == 1) || gemma4_split_prefill)
+}
+
+fn gemma4_split_prefill_ffn_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_MLX_GEMMA4_SPLIT_PREFILL_FFN") {
+            Ok(raw) => {
+                let v = raw.trim();
+                !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
+            }
+            // Default ON: prior 128/512/2048 A/B preferred split gate/up for
+            // Gemma4 publication-shape prefill.
+            Err(_) => true,
+        }
+    })
 }
 
 fn dense_ffn_prefill_compile_supported(model_family: &str) -> bool {
