@@ -853,8 +853,10 @@ fn build_live_state_inner(
         // warm. Reloads (flip S2) skip it — OS page cache + prior JIT already
         // paid, and re-warming dominated S2 thr (~8s/load with long shapes).
         if mark_model_production_warmup_needed(&model_id) {
-            // Two short passes stabilize first-token TTFT under process cold-start
-            // variance (flip S0 sometimes 0.84× pass, sometimes 0.94× fail).
+            // Three short passes stabilize first-token TTFT under process cold-start
+            // variance (flip S0 thr/gap pass but TTFT often 0.94–0.98× on 3-rep
+            // medians; 5-rep alone has cleared ≤0.90×).
+            run_production_path_warmup(&generation_service, &model_id);
             run_production_path_warmup(&generation_service, &model_id);
             run_production_path_warmup(&generation_service, &model_id);
             // Opt-in long prefill warm (flip S1 shape JIT). Default off: measured

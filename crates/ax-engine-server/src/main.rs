@@ -256,9 +256,11 @@ fn new_instance_id() -> String {
 const HTTP_WARMUP_PROMPT: &str = "Act as a coding assistant. Implement a deterministic Rust ring buffer with tests, explain its invariants, and continue for at least 256 tokens without concluding early.";
 
 async fn warm_http_completions_path(app: &axum::Router, state: &AppState, model_id: &str) {
-    // Two short streams: first warms tokenize+SSE; second exercises the
+    // Three short streams: first warms tokenize+SSE; later passes exercise the
     // warmed direct-decode path so fresh-process flip S0 TTFT is stable.
-    for max_tokens in [4_u32, 16_u32] {
+    // A third pass reduced residual first-client spikes after dual warm
+    // (M5 Max Qwen S0 TTFT median sometimes still ~0.94× on 3-rep).
+    for max_tokens in [4_u32, 16_u32, 32_u32] {
         let body = serde_json::json!({
             "model": model_id,
             "prompt": HTTP_WARMUP_PROMPT,
