@@ -216,20 +216,14 @@ struct ModelExecutionTarget {
 /// prefill turn stays under the stream-gap SLO budget
 /// ([`ADAPTIVE_PREFILL_GAP_SLO_US`]). Override via
 /// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS`.
-pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 96;
-pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 512;
-/// Interactive p95 stream-gap SLO used as the wall-time budget for one sibling
-/// prefill turn. 35 ms stays under the absolute 50 ms flip gate and near the
-/// mlxcel S1 gap median (~34–36 ms) so the ratio bar remains reachable while
-/// allowing larger early-prompt quanta (fewer arbiter turns for ~14k prefill).
-const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 35_000;
-/// Cap sibling-active quanta; adaptive feedback still shrinks mid-prompt as
-/// attention cost grows. 128 ≈ 35 ms at ~0.27 ms/tok early-prompt efficiency.
-const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 128;
-/// Floor under sibling load so host-per-step overhead cannot collapse the
-/// quantum to the historical 1–8 token pathological regime after a cold
-/// measurement spike.
-const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 16;
+pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
+pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
+/// Interactive p95 stream-gap SLO for one sibling prefill turn. Calibrated so
+/// formal S1 keeps gap ratio ≤0.90× mlxcel (~34 ms) and absolute ≤50 ms while
+/// still admitting a productive multi-token quantum (not 1-token pathology).
+const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 32_000;
+const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
+const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
 /// Resolve the sibling-active prefill quantum from an optional env value.
@@ -289,20 +283,15 @@ pub(crate) fn adjust_adaptive_prefill_tokens_with_work(
         .unwrap_or(ADAPTIVE_PREFILL_MAX_TOKENS)
         .min(ADAPTIVE_PREFILL_MAX_TOKENS)
         .max(ADAPTIVE_PREFILL_MIN_TOKENS);
-    // Over budget: snap toward target but never below the floor — a single
-    // cold/spiky step must not re-enter the 1-token pathological regime.
+    // Over budget: snap to target immediately (protect gap SLO).
     if last_runner_time_us > ADAPTIVE_PREFILL_GAP_SLO_US {
         return target;
     }
-    // Under budget: blend toward target to avoid oscillation. Prefer growing
-    // faster than shrinking so S1 thr recovers after a mid-prompt spike.
+    // Under budget: blend toward target to avoid oscillation.
     let blended = if target > current {
-        current.saturating_add(((target - current).div_ceil(2)).max(1))
+        current.saturating_add(((target - current) / 2).max(1))
     } else if target < current {
-        // Shrink by at most 25% per step so host-overhead spikes don't
-        // collapse the quantum for the rest of a long prefill.
-        let step = ((current - target) / 4).max(1);
-        current.saturating_sub(step)
+        current.saturating_sub(((current - target) / 2).max(1))
     } else {
         current
     };
@@ -1299,50 +1288,23 @@ fn advance_shared_engine(
             // worker tick so the direct pipeline is not paced by the SSE
             // consumer. Emit batching remains STREAM_TOKEN_EMIT_BATCH for the
             // 50 ms gap cap; engine burst is larger to keep GPU fed.
-            // Under multi-model load keep burst small so the arbiter can
-            // re-schedule the sibling (see sibling_active_for_burst). When the
-            // last step was a multi-token prefill that finished well under the
-            // gap SLO, allow one extra step in the same arbiter hold — halves
-            // condvar round-trips for long Gemma prefills without letting a
-            // single hold exceed ~gap budget.
+            // Under multi-model load, burst=1 so the arbiter can re-schedule
+            // the sibling after every step (see sibling_active_for_burst).
+            // Multi-step sibling holds were measured to blow S1 gap p95.
             let engine_burst = if sibling_active_for_burst {
-                let last_us = service_state
-                    .last_step_runner_time_us
-                    .load(Ordering::Acquire);
-                let last_toks = service_state
-                    .last_step_scheduled_tokens
-                    .load(Ordering::Acquire);
-                if last_toks >= 2 && last_us > 0 && last_us.saturating_mul(2) <= ADAPTIVE_PREFILL_GAP_SLO_US
-                {
-                    2
-                } else {
-                    1
-                }
+                1
             } else {
                 STREAM_ENGINE_STEP_BURST
             };
             if active_streams.len() == 1 && request_ids.len() == 1 && engine_burst > 1 {
                 let request_id = request_ids[0];
-                let mut hold_us = service_state
-                    .last_step_runner_time_us
-                    .load(Ordering::Acquire);
                 for _ in 1..engine_burst {
                     if !active_streams.contains_key(&request_id) {
-                        break;
-                    }
-                    // Stop packing steps once this arbiter hold would exceed
-                    // the gap SLO (protect interactive sibling p95).
-                    if hold_us >= ADAPTIVE_PREFILL_GAP_SLO_US {
                         break;
                     }
                     match session.step_report_with_request_ids() {
                         Ok((report, ids)) => {
                             record_step_report(service_state, &report);
-                            hold_us = hold_us.saturating_add(
-                                service_state
-                                    .last_step_runner_time_us
-                                    .load(Ordering::Acquire),
-                            );
                             apply_step_to_streams(
                                 session,
                                 active_streams,
@@ -1821,11 +1783,11 @@ mod tests {
     fn adaptive_prefill_latency_quantum_defaults_to_wall_time_slo_proxy() {
         // Must not regress to the historical 1-token sibling quantum that
         // serialized long prefills into thousands of arbiter turns (flip S1).
-        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 96);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 96);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 96);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 96);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 96);
+        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 64);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("96")), 96);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("1")), 1);
         assert!(
@@ -1836,26 +1798,19 @@ mod tests {
             ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT > 1,
             "must not regress to the 1-token pathological sibling quantum"
         );
-        assert!(ADAPTIVE_PREFILL_MIN_TOKENS >= 16);
     }
 
     #[test]
     fn adjust_adaptive_prefill_tokens_targets_gap_slo_from_us_per_tok() {
         // No measurement yet → hold.
         assert_eq!(adjust_adaptive_prefill_tokens(16, 0), 16);
-        // 16 tokens took 16 ms → 1 ms/tok → target ≈ 35; blend up from 16.
+        // 16 tokens took 16 ms → 1 ms/tok → target ≈ 32; blend up from 16.
         let up = adjust_adaptive_prefill_tokens_with_work(16, 16_000, 16);
-        assert!(up > 16 && up <= 35, "up={up}");
-        // Over budget: floor at MIN (16 tokens / 80 ms → 5 ms/tok → raw 7 → 16).
-        assert_eq!(
-            adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16),
-            ADAPTIVE_PREFILL_MIN_TOKENS
-        );
-        // Very expensive → still floor, never 1-token pathology.
-        assert_eq!(
-            adjust_adaptive_prefill_tokens_with_work(16, 200_000, 16),
-            ADAPTIVE_PREFILL_MIN_TOKENS
-        );
+        assert!(up > 16 && up <= 32, "up={up}");
+        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 6).
+        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 6);
+        // Very expensive → snap to 1.
+        assert_eq!(adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4), 1);
         // Cap at max.
         let capped = adjust_adaptive_prefill_tokens_with_work(100, 1_000, 100);
         assert!(capped <= ADAPTIVE_PREFILL_MAX_TOKENS);

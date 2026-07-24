@@ -354,9 +354,9 @@ const MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP: u32 = 1;
 ///
 /// Keep soft pressure productive. Stream-gap isolation still comes from the
 /// sibling-active adaptive quantum in the generation service, not this cap.
-/// 512 matches the idle multi-model throughput quantum so soft pressure does
-/// not re-throttle long prefills after KV free drops below 20%.
-const MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP: u32 = 512;
+/// 256 matches idle multi-model throughput quantum so soft pressure does not
+/// re-throttle long prefills after KV free drops below 20%.
+const MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP: u32 = 256;
 const MEMORY_PRESSURE_KV_EXHAUSTED: &str = "kv_exhausted";
 const MEMORY_PRESSURE_KV_EXHAUSTED_RECLAIMABLE_CACHE: &str = "kv_exhausted_reclaimable_cache";
 const MEMORY_PRESSURE_KV_LOW_PREFIX: &str = "kv_low_free_blocks:";
