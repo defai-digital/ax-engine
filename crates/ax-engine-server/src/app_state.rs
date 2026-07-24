@@ -146,7 +146,10 @@ impl AppState {
     ) -> Option<LiveState> {
         let mut parked = self.parked.lock();
         let candidate = parked.get(model_id)?;
-        let parked_path = candidate.session_config.mlx_model_artifacts_dir.as_deref()?;
+        let parked_path = candidate
+            .session_config
+            .mlx_model_artifacts_dir
+            .as_deref()?;
         let path_matches = parked_path == model_path
             || parked_path
                 .canonicalize()
@@ -850,6 +853,9 @@ fn build_live_state_inner(
         // warm. Reloads (flip S2) skip it — OS page cache + prior JIT already
         // paid, and re-warming dominated S2 thr (~8s/load with long shapes).
         if mark_model_production_warmup_needed(&model_id) {
+            // Two passes stabilize first-token TTFT under process cold-start
+            // variance (flip S0 sometimes 0.84× pass, sometimes 0.94× fail).
+            run_production_path_warmup(&generation_service, &model_id);
             run_production_path_warmup(&generation_service, &model_id);
         }
     }
@@ -893,11 +899,7 @@ pub(crate) fn run_production_path_warmup(
 ) {
     // Flip S0 prompt (~34) + short decode burst + medium prefill. Keep the
     // load path short: long 8k warms made S2 reload thr ~0.29× on M5 Max.
-    let shapes: [(u64, usize, u32); 3] = [
-        (0_u64, 34_usize, 8_u32),
-        (1, 13, 16),
-        (2, 512, 1),
-    ];
+    let shapes: [(u64, usize, u32); 3] = [(0_u64, 34_usize, 8_u32), (1, 13, 16), (2, 512, 1)];
     for (offset, prompt_len, max_out) in shapes {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let model_id = model_id.to_string();
