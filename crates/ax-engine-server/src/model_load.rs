@@ -1101,7 +1101,11 @@ fn rewarm_published_long_prefill(state: &AppState, model_id: &str) {
     {
         return;
     }
-    run_long_prefill_production_warmup(&resident.generation_service, model_id);
+    crate::app_state::run_exact_s1_gemma_long_prefill_warmup(
+        &resident.generation_service,
+        resident.session_config.as_ref(),
+        model_id,
+    );
 }
 
 /// Maximum time to wait for one model generation to drain. A timeout fails the

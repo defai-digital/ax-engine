@@ -24,7 +24,7 @@
     "--max-batch-tokens",
     "4096",
     "--prefill-chunk",
-    "2048"
+    "1536"
   ],
   "env": {
     "AX_MLX_MEMORY_LIMIT": "103079215104",
