@@ -51,6 +51,8 @@ pub struct EngineSessionConfig {
     pub llama_backend: Option<LlamaCppConfig>,
     pub mlx_lm_backend: Option<MlxLmConfig>,
     pub edge_llm_backend: Option<EdgeLlmConfig>,
+    /// TensorRT-LLM OpenAI L2 server (desktop/datacenter). Wire shape matches Edge-LLM.
+    pub tensor_rt_llm_backend: Option<EdgeLlmConfig>,
     pub mlx_runtime_artifacts_dir: Option<PathBuf>,
     pub mlx_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
@@ -155,6 +157,7 @@ pub struct ResolvedSessionConfigRequest {
     pub llama_backend: Option<LlamaCppConfig>,
     pub mlx_lm_backend: Option<MlxLmConfig>,
     pub edge_llm_backend: Option<EdgeLlmConfig>,
+    pub tensor_rt_llm_backend: Option<EdgeLlmConfig>,
     pub mlx_runtime_artifacts_dir: Option<PathBuf>,
     pub mlx_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
@@ -183,6 +186,7 @@ impl Default for ResolvedSessionConfigRequest {
             llama_backend: default.llama_backend,
             mlx_lm_backend: default.mlx_lm_backend,
             edge_llm_backend: default.edge_llm_backend,
+            tensor_rt_llm_backend: default.tensor_rt_llm_backend,
             mlx_runtime_artifacts_dir: default.mlx_runtime_artifacts_dir,
             mlx_runtime_artifacts_source: default.mlx_runtime_artifacts_source,
             mlx_model_artifacts_dir: default.mlx_model_artifacts_dir,
@@ -221,6 +225,7 @@ impl Default for EngineSessionConfig {
             llama_backend: None,
             mlx_lm_backend: None,
             edge_llm_backend: None,
+            tensor_rt_llm_backend: None,
             mlx_runtime_artifacts_dir: mlx_runtime_artifacts
                 .as_ref()
                 .map(|selection| selection.dir.clone()),
@@ -338,6 +343,7 @@ impl EngineSessionConfig {
             llama_backend: resolution.llama_backend,
             mlx_lm_backend: resolution.mlx_lm_backend,
             edge_llm_backend: resolution.edge_llm_backend,
+            tensor_rt_llm_backend: resolution.tensor_rt_llm_backend,
             mlx_runtime_artifacts_dir: mlx_runtime_artifacts
                 .as_ref()
                 .map(|selection| selection.dir.clone())
@@ -397,6 +403,7 @@ impl EngineSessionConfig {
             llama_backend: request.llama_backend,
             mlx_lm_backend: request.mlx_lm_backend,
             edge_llm_backend: request.edge_llm_backend,
+            tensor_rt_llm_backend: request.tensor_rt_llm_backend,
             mlx_runtime_artifacts_dir: request.mlx_runtime_artifacts_dir,
             mlx_runtime_artifacts_source: request.mlx_runtime_artifacts_source,
             mlx_model_artifacts_dir: request.mlx_model_artifacts_dir,
@@ -441,7 +448,7 @@ impl EngineSessionConfig {
         }
 
         // Native MLX requires Apple Silicon. Delegated backends (llama.cpp,
-        // mlx-lm, TensorRT Edge-LLM) may run on Linux hosts such as Jetson Thor.
+        // mlx-lm, TensorRT Edge-LLM, TensorRT-LLM) may run on Linux CUDA hosts.
         if self.resolved_backend.selected_backend.is_mlx() {
             if let Err(detected_host) = host::validate_local_host() {
                 return Err(EngineSessionError::UnsupportedHostHardware { detected_host });
@@ -467,6 +474,11 @@ impl EngineSessionConfig {
                     .as_ref()
                     .ok_or(EngineSessionError::MissingEdgeLlmConfig)?;
             }
+            SelectedBackend::TensorRtLlm => {
+                self.tensor_rt_llm_backend
+                    .as_ref()
+                    .ok_or(EngineSessionError::MissingTensorRtLlmConfig)?;
+            }
         }
 
         Ok(())
@@ -484,6 +496,10 @@ impl EngineSessionConfig {
         }
         if let Some(edge_llm_backend) = self.edge_llm_backend.as_ref() {
             runtime.capabilities = CapabilityReport::for_edge_llm_backend(edge_llm_backend);
+        }
+        if let Some(tensor_rt_llm_backend) = self.tensor_rt_llm_backend.as_ref() {
+            runtime.capabilities =
+                CapabilityReport::for_tensor_rt_llm_backend(tensor_rt_llm_backend);
         }
         runtime
     }

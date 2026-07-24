@@ -751,6 +751,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         )),
         mlx_lm_backend: None,
         edge_llm_backend: None,
+        tensor_rt_llm_backend: None,
         mlx_runtime_artifacts_dir: Some(Path::new("/tmp/ax-metal").to_path_buf()),
         mlx_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
         mlx_model_artifacts_dir: Some(Path::new("/tmp/ax-model").to_path_buf()),

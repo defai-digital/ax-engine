@@ -45,6 +45,14 @@ pub(super) fn run_delegated_generate_prevalidated(
             run_edge_llm_generate(request_id, runtime, edge_llm_backend, request)
                 .map_err(EngineSessionError::from)
         }
+        SelectedBackend::TensorRtLlm => {
+            let tensor_rt_llm_backend = config
+                .tensor_rt_llm_backend
+                .as_ref()
+                .ok_or(EngineSessionError::MissingTensorRtLlmConfig)?;
+            run_edge_llm_generate(request_id, runtime, tensor_rt_llm_backend, request)
+                .map_err(EngineSessionError::from)
+        }
         SelectedBackend::Mlx => {
             let mut session = EngineSession::new(config.clone())?;
             session.generate_with_request_id(request_id, request.clone())

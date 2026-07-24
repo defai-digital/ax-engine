@@ -7,14 +7,25 @@ use ax_engine_sdk::{
 use crate::app_state::LiveState;
 
 pub(crate) fn is_selected(live: &LiveState) -> bool {
-    live.runtime_report.selected_backend == SelectedBackend::TensorRtEdgeLlm
+    matches!(
+        live.runtime_report.selected_backend,
+        SelectedBackend::TensorRtEdgeLlm | SelectedBackend::TensorRtLlm
+    )
 }
 
 pub(crate) fn config(live: &LiveState) -> Result<EdgeLlmConfig, EngineSessionError> {
-    live.session_config
-        .edge_llm_backend
-        .clone()
-        .ok_or(EngineSessionError::MissingEdgeLlmConfig)
+    match live.runtime_report.selected_backend {
+        SelectedBackend::TensorRtLlm => live
+            .session_config
+            .tensor_rt_llm_backend
+            .clone()
+            .ok_or(EngineSessionError::MissingTensorRtLlmConfig),
+        _ => live
+            .session_config
+            .edge_llm_backend
+            .clone()
+            .ok_or(EngineSessionError::MissingEdgeLlmConfig),
+    }
 }
 
 pub(crate) fn run_chat_generate(

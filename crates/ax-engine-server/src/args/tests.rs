@@ -63,6 +63,7 @@ fn base_args() -> ServerArgs {
         llama_server_url: None,
         mlx_lm_server_url: None,
         edge_llm_server_url: None,
+        tensor_rt_llm_server_url: None,
         delegated_http_connect_timeout_secs: DelegatedHttpTimeouts::default_connect_secs(),
         delegated_http_read_timeout_secs: DelegatedHttpTimeouts::default_io_secs(),
         delegated_http_write_timeout_secs: DelegatedHttpTimeouts::default_io_secs(),
@@ -147,6 +148,38 @@ fn preview_support_tier_maps_to_sdk_support_tier() {
     assert_eq!(
         PreviewSupportTier::TensorRtEdgeLlm.as_sdk_support_tier(),
         SupportTier::TensorRtEdgeLlm
+    );
+    assert_eq!(
+        PreviewSupportTier::TensorRtLlm.as_sdk_support_tier(),
+        SupportTier::TensorRtLlm
+    );
+}
+
+#[test]
+fn tensor_rt_llm_session_config_wires_server_url() {
+    let args = ServerArgs {
+        support_tier: PreviewSupportTier::TensorRtLlm,
+        tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
+        model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0".to_string(),
+        ..base_args()
+    };
+    let config = args
+        .session_config()
+        .expect("tensorrt-llm session config should resolve");
+    assert_eq!(
+        config.resolved_backend.selected_backend,
+        ax_engine_sdk::SelectedBackend::TensorRtLlm
+    );
+    assert_eq!(
+        config.resolved_backend.support_tier,
+        SupportTier::TensorRtLlm
+    );
+    assert!(config.tensor_rt_llm_backend.is_some());
+    assert!(config.edge_llm_backend.is_none());
+    let runtime = config.runtime_report();
+    assert_eq!(
+        runtime.selected_backend,
+        ax_engine_sdk::SelectedBackend::TensorRtLlm
     );
 }
 

@@ -72,6 +72,8 @@ pub enum EngineSessionError {
     MissingMlxLmConfig,
     #[error("tensor_rt_edge_llm backend requires edge_llm_backend config")]
     MissingEdgeLlmConfig,
+    #[error("tensor_rt_llm backend requires tensor_rt_llm_backend config")]
+    MissingTensorRtLlmConfig,
     #[error("delegated backend {selected_backend:?} is missing runtime report")]
     MissingDelegatedRuntime { selected_backend: SelectedBackend },
     #[error(
@@ -89,6 +91,10 @@ pub enum EngineSessionError {
         "tensor_rt_edge_llm backend does not support {operation} via EngineSession lifecycle yet; use OpenAI chat routes"
     )]
     EdgeLlmDoesNotSupportLifecycle { operation: &'static str },
+    #[error(
+        "tensor_rt_llm backend does not support {operation} via EngineSession lifecycle yet; use OpenAI chat routes"
+    )]
+    TensorRtLlmDoesNotSupportLifecycle { operation: &'static str },
     #[error(
         "stateless streaming is not supported for the native MLX backend ({selected_backend:?}); \
          use EngineSession streaming methods instead"

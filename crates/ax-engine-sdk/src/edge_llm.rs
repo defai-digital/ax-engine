@@ -227,7 +227,7 @@ pub fn start_streaming_generate(
 
     match config {
         EdgeLlmConfig::ServerCompletion(config) => {
-            start_edge_llm_server_completion_stream(config, request)
+            start_edge_llm_server_completion_stream(config, request, runtime.selected_backend)
         }
     }
 }
@@ -241,7 +241,7 @@ pub fn start_streaming_chat_generate(
 
     match config {
         EdgeLlmConfig::ServerCompletion(config) => {
-            start_edge_llm_server_chat_completion_stream(config, request)
+            start_edge_llm_server_chat_completion_stream(config, request, runtime.selected_backend)
         }
     }
 }
@@ -249,10 +249,11 @@ pub fn start_streaming_chat_generate(
 fn start_edge_llm_server_completion_stream(
     config: &EdgeLlmServerCompletionConfig,
     request: &GenerateRequest,
+    selected_backend: SelectedBackend,
 ) -> Result<EdgeLlmStreamHandle, EdgeLlmBackendError> {
     let endpoint = config.completions_url();
     let prompt = completion_prompt_text(request)?;
-    let payload = build_edge_llm_completion_request(request, &prompt, true);
+    let payload = build_edge_llm_completion_request(request, &prompt, true, selected_backend);
 
     let response = send_edge_llm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
@@ -260,7 +261,12 @@ fn start_edge_llm_server_completion_stream(
 }
 
 fn ensure_edge_llm_backend(runtime: &RuntimeReport) -> Result<(), EdgeLlmBackendError> {
-    if runtime.selected_backend != SelectedBackend::TensorRtEdgeLlm {
+    // Shared OpenAI-compatible L2 adapter for both TensorRT Edge-LLM (Thor)
+    // and TensorRT-LLM (`trtllm-serve` on desktop/datacenter CUDA).
+    if !matches!(
+        runtime.selected_backend,
+        SelectedBackend::TensorRtEdgeLlm | SelectedBackend::TensorRtLlm
+    ) {
         return Err(EdgeLlmBackendError::BackendConfigMismatch {
             configured_backend: SelectedBackend::TensorRtEdgeLlm,
             resolved_backend: runtime.selected_backend,
@@ -270,12 +276,27 @@ fn ensure_edge_llm_backend(runtime: &RuntimeReport) -> Result<(), EdgeLlmBackend
     Ok(())
 }
 
+fn trt_openai_execution_plan(backend: SelectedBackend, kind: &str) -> String {
+    let prefix = match backend {
+        SelectedBackend::TensorRtLlm => "tensor_rt_llm",
+        _ => "tensor_rt_edge_llm",
+    };
+    format!("{prefix}.{kind}")
+}
+
+fn should_coerce_edge_sampler(backend: SelectedBackend) -> bool {
+    // Edge-LLM C++ sampler rejects top_k==0 && top_p>=1.0; TRT-LLM OpenAI
+    // server accepts standard OpenAI disabled defaults.
+    matches!(backend, SelectedBackend::TensorRtEdgeLlm)
+}
+
 fn start_edge_llm_server_chat_completion_stream(
     config: &EdgeLlmServerCompletionConfig,
     request: &EdgeLlmChatGenerateRequest,
+    selected_backend: SelectedBackend,
 ) -> Result<EdgeLlmStreamHandle, EdgeLlmBackendError> {
     let endpoint = config.chat_completions_url();
-    let payload = build_edge_llm_chat_completion_request(request, true);
+    let payload = build_edge_llm_chat_completion_request(request, true, selected_backend);
 
     let response = send_edge_llm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
@@ -368,7 +389,8 @@ fn run_edge_llm_server_completion_generate(
 ) -> Result<GenerateResponse, EdgeLlmBackendError> {
     let endpoint = config.completions_url();
     let prompt = completion_prompt_text(request)?;
-    let payload = build_edge_llm_completion_request(request, &prompt, false);
+    let payload =
+        build_edge_llm_completion_request(request, &prompt, false, runtime.selected_backend);
 
     let response = send_edge_llm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let response: EdgeLlmCompletionResponse = parse_edge_llm_json_response(response, &endpoint)?;
@@ -383,7 +405,7 @@ fn run_edge_llm_server_completion_generate(
         response.usage.as_ref().map(|usage| usage.prompt_tokens),
         response.usage.as_ref().map(|usage| usage.completion_tokens),
         finish_reason_from_edge_llm(choice.finish_reason.as_deref()),
-        "tensor_rt_edge_llm.server_completion",
+        &trt_openai_execution_plan(runtime.selected_backend, "server_completion"),
     ))
 }
 
@@ -394,7 +416,7 @@ fn run_edge_llm_server_chat_completion_generate(
     request: &EdgeLlmChatGenerateRequest,
 ) -> Result<GenerateResponse, EdgeLlmBackendError> {
     let endpoint = config.chat_completions_url();
-    let payload = build_edge_llm_chat_completion_request(request, false);
+    let payload = build_edge_llm_chat_completion_request(request, false, runtime.selected_backend);
 
     let response = send_edge_llm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let response: EdgeLlmChatCompletionResponse = parse_edge_llm_json_response(response, &endpoint)?;
@@ -409,7 +431,7 @@ fn run_edge_llm_server_chat_completion_generate(
         response.usage.as_ref().map(|usage| usage.prompt_tokens),
         response.usage.as_ref().map(|usage| usage.completion_tokens),
         finish_reason_from_edge_llm(choice.finish_reason.as_deref()),
-        "tensor_rt_edge_llm.server_chat_completion",
+        &trt_openai_execution_plan(runtime.selected_backend, "server_chat_completion"),
     ))
 }
 
@@ -448,8 +470,10 @@ fn build_edge_llm_completion_request<'a>(
     request: &'a GenerateRequest,
     prompt: &'a str,
     stream: bool,
+    selected_backend: SelectedBackend,
 ) -> EdgeLlmCompletionRequest<'a> {
-    let (top_k, top_p) = edge_llm_sampling_topk_topp(&request.sampling);
+    let (top_k, top_p) =
+        edge_llm_sampling_topk_topp(&request.sampling, should_coerce_edge_sampler(selected_backend));
     EdgeLlmCompletionRequest {
         model: None,
         prompt,
@@ -481,10 +505,14 @@ fn completion_prompt_text(request: &GenerateRequest) -> Result<String, EdgeLlmBa
 
 /// Edge-LLM C++ sampler requires `top_k > 0` **or** `top_p < 1.0`. OpenAI-style
 /// defaults (`top_k=0`, `top_p=1.0`) therefore fail closed unless coerced.
-fn edge_llm_sampling_topk_topp(sampling: &crate::generate::GenerateSampling) -> (u32, f32) {
+/// TensorRT-LLM OpenAI servers do not need this coercion.
+fn edge_llm_sampling_topk_topp(
+    sampling: &crate::generate::GenerateSampling,
+    coerce_for_edge_sampler: bool,
+) -> (u32, f32) {
     let mut top_k = sampling.top_k;
     let mut top_p = sampling.top_p;
-    if top_k == 0 && top_p >= 1.0 {
+    if coerce_for_edge_sampler && top_k == 0 && top_p >= 1.0 {
         // Match experimental Edge-LLM API defaults when both are "disabled".
         top_k = 50;
         top_p = 0.9;
@@ -495,8 +523,10 @@ fn edge_llm_sampling_topk_topp(sampling: &crate::generate::GenerateSampling) -> 
 fn build_edge_llm_chat_completion_request(
     request: &EdgeLlmChatGenerateRequest,
     stream: bool,
+    selected_backend: SelectedBackend,
 ) -> EdgeLlmChatCompletionRequest<'_> {
-    let (top_k, top_p) = edge_llm_sampling_topk_topp(&request.sampling);
+    let (top_k, top_p) =
+        edge_llm_sampling_topk_topp(&request.sampling, should_coerce_edge_sampler(selected_backend));
     EdgeLlmChatCompletionRequest {
         // Edge-LLM servers typically require an explicit model id.
         model: Some(request.model_id.as_str()),
@@ -942,6 +972,64 @@ mod tests {
             &BackendPolicy::allow_tensor_rt_edge_llm(),
             &ResolvedBackend::tensor_rt_edge_llm("test delegated route"),
         )
+    }
+
+    fn tensor_rt_llm_runtime_report() -> RuntimeReport {
+        RuntimeReport::from_resolution(
+            &BackendPolicy::allow_tensor_rt_llm(),
+            &ResolvedBackend::tensor_rt_llm("test tensorrt-llm delegated route"),
+        )
+    }
+
+    #[test]
+    fn blocking_chat_generate_labels_tensor_rt_llm_execution_plan() {
+        let response_body = r#"{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}"#.to_string();
+        let (server_url, handle) = spawn_completion_server(response_body, |payload| {
+            assert_eq!(payload["model"], "qwen3");
+            assert_eq!(payload["stream"], false);
+        });
+
+        let response = run_blocking_chat_generate(
+            21,
+            &tensor_rt_llm_runtime_report(),
+            &EdgeLlmConfig::server_completion(server_url),
+            &chat_request(),
+        )
+        .expect("tensorrt-llm delegated chat completion should succeed");
+
+        assert_eq!(response.output_text.as_deref(), Some("hi"));
+        assert_eq!(
+            response.route.execution_plan.as_deref(),
+            Some("tensor_rt_llm.server_chat_completion")
+        );
+        assert_eq!(
+            response.runtime.selected_backend,
+            SelectedBackend::TensorRtLlm
+        );
+        handle.join().expect("server thread should finish");
+    }
+
+    #[test]
+    fn tensor_rt_llm_chat_payload_preserves_openai_disabled_topk_topp() {
+        // Unlike Edge-LLM C++ sampler, TRT-LLM OpenAI path keeps top_k=0 / top_p=1.0.
+        let response_body = r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#.to_string();
+        let (server_url, handle) = spawn_completion_server(response_body, |payload| {
+            assert_eq!(payload["top_k"], 0);
+            assert_eq!(payload["top_p"], 1.0);
+        });
+
+        let mut request = chat_request();
+        request.sampling.top_k = 0;
+        request.sampling.top_p = 1.0;
+
+        run_blocking_chat_generate(
+            22,
+            &tensor_rt_llm_runtime_report(),
+            &EdgeLlmConfig::server_completion(server_url),
+            &request,
+        )
+        .expect("tensorrt-llm must accept OpenAI-style disabled sampling");
+        handle.join().expect("server thread should finish");
     }
 
     fn text_request(prompt: &str) -> GenerateRequest {

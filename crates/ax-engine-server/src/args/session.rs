@@ -22,6 +22,7 @@ impl PreviewSupportTier {
             Self::MlxLmDelegated => SupportTier::MlxLmDelegated,
             Self::LlamaCpp => SupportTier::LlamaCpp,
             Self::TensorRtEdgeLlm => SupportTier::TensorRtEdgeLlm,
+            Self::TensorRtLlm => SupportTier::TensorRtLlm,
         }
     }
 }
@@ -100,6 +101,7 @@ impl ServerArgs {
                 llama_server_url: self.llama_server_url.clone(),
                 mlx_lm_server_url: self.mlx_lm_server_url.clone(),
                 edge_llm_server_url: self.edge_llm_server_url.clone(),
+                tensor_rt_llm_server_url: self.tensor_rt_llm_server_url.clone(),
                 delegated_http_timeouts,
                 ..PreviewBackendRequest::default()
             }

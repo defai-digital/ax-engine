@@ -395,6 +395,7 @@ fn openai_text_supported_live(live: &LiveState) -> bool {
         SelectedBackend::LlamaCpp
             | SelectedBackend::MlxLmDelegated
             | SelectedBackend::TensorRtEdgeLlm
+            | SelectedBackend::TensorRtLlm
             | SelectedBackend::Mlx
     )
 }

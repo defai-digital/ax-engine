@@ -289,6 +289,7 @@ pub(super) fn base_server_args() -> ServerArgs {
         llama_server_url: None,
         mlx_lm_server_url: None,
         edge_llm_server_url: None,
+        tensor_rt_llm_server_url: None,
         delegated_http_connect_timeout_secs:
             ax_engine_sdk::DelegatedHttpTimeouts::default_connect_secs(),
         delegated_http_read_timeout_secs: ax_engine_sdk::DelegatedHttpTimeouts::default_io_secs(),

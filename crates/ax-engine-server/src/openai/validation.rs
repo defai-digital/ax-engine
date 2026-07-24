@@ -46,6 +46,7 @@ pub(crate) fn validate_openai_text_backend(
         SelectedBackend::LlamaCpp
             | SelectedBackend::MlxLmDelegated
             | SelectedBackend::TensorRtEdgeLlm
+            | SelectedBackend::TensorRtLlm
             | SelectedBackend::Mlx
     ) {
         return Err(error_response(

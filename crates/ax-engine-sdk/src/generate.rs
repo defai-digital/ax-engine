@@ -650,6 +650,9 @@ mod tests {
                 SupportTier::TensorRtEdgeLlm,
                 ResolutionPolicy::AllowTensorRtEdgeLlm,
             ),
+            SelectedBackend::TensorRtLlm => {
+                (SupportTier::TensorRtLlm, ResolutionPolicy::AllowTensorRtLlm)
+            }
         };
 
         RuntimeReport {
