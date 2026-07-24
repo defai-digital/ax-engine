@@ -160,6 +160,8 @@ fn tensor_rt_llm_session_config_wires_server_url() {
     let args = ServerArgs {
         support_tier: PreviewSupportTier::TensorRtLlm,
         tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
+        // Sibling Edge URL must not be selected for TensorRT-LLM.
+        edge_llm_server_url: Some("http://127.0.0.1:8090".to_string()),
         model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0".to_string(),
         ..base_args()
     };
@@ -180,6 +182,36 @@ fn tensor_rt_llm_session_config_wires_server_url() {
     assert_eq!(
         runtime.selected_backend,
         ax_engine_sdk::SelectedBackend::TensorRtLlm
+    );
+}
+
+#[test]
+fn tensor_rt_edge_llm_session_config_wires_server_url() {
+    let args = ServerArgs {
+        support_tier: PreviewSupportTier::TensorRtEdgeLlm,
+        edge_llm_server_url: Some("http://127.0.0.1:8090".to_string()),
+        // Sibling TRT-LLM URL must not be selected for Edge-LLM.
+        tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
+        model_id: "qwen3".to_string(),
+        ..base_args()
+    };
+    let config = args
+        .session_config()
+        .expect("tensorrt edge-llm session config should resolve");
+    assert_eq!(
+        config.resolved_backend.selected_backend,
+        ax_engine_sdk::SelectedBackend::TensorRtEdgeLlm
+    );
+    assert_eq!(
+        config.resolved_backend.support_tier,
+        SupportTier::TensorRtEdgeLlm
+    );
+    assert!(config.edge_llm_backend.is_some());
+    assert!(config.tensor_rt_llm_backend.is_none());
+    let runtime = config.runtime_report();
+    assert_eq!(
+        runtime.selected_backend,
+        ax_engine_sdk::SelectedBackend::TensorRtEdgeLlm
     );
 }
 

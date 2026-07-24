@@ -14,17 +14,22 @@ pub(crate) fn is_selected(live: &LiveState) -> bool {
 }
 
 pub(crate) fn config(live: &LiveState) -> Result<EdgeLlmConfig, EngineSessionError> {
+    // Keep Edge-LLM and TensorRT-LLM server URLs strictly separate: never fall
+    // back from one config field to the other.
     match live.runtime_report.selected_backend {
         SelectedBackend::TensorRtLlm => live
             .session_config
             .tensor_rt_llm_backend
             .clone()
             .ok_or(EngineSessionError::MissingTensorRtLlmConfig),
-        _ => live
+        SelectedBackend::TensorRtEdgeLlm => live
             .session_config
             .edge_llm_backend
             .clone()
             .ok_or(EngineSessionError::MissingEdgeLlmConfig),
+        other => Err(EngineSessionError::MissingDelegatedRuntime {
+            selected_backend: other,
+        }),
     }
 }
 

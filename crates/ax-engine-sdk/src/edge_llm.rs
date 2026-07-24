@@ -263,17 +263,16 @@ fn start_edge_llm_server_completion_stream(
 fn ensure_edge_llm_backend(runtime: &RuntimeReport) -> Result<(), EdgeLlmBackendError> {
     // Shared OpenAI-compatible L2 adapter for both TensorRT Edge-LLM (Thor)
     // and TensorRT-LLM (`trtllm-serve` on desktop/datacenter CUDA).
-    if !matches!(
-        runtime.selected_backend,
-        SelectedBackend::TensorRtEdgeLlm | SelectedBackend::TensorRtLlm
-    ) {
-        return Err(EdgeLlmBackendError::BackendConfigMismatch {
+    match runtime.selected_backend {
+        SelectedBackend::TensorRtEdgeLlm | SelectedBackend::TensorRtLlm => Ok(()),
+        other => Err(EdgeLlmBackendError::BackendConfigMismatch {
+            // Report the caller's resolved backend; configured stays product-
+            // specific only when we can infer it (Edge vs TRT). Prefer Edge
+            // label when unknown — historical field on the error type.
             configured_backend: SelectedBackend::TensorRtEdgeLlm,
-            resolved_backend: runtime.selected_backend,
-        });
+            resolved_backend: other,
+        }),
     }
-
-    Ok(())
 }
 
 fn trt_openai_execution_plan(backend: SelectedBackend, kind: &str) -> String {

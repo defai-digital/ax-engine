@@ -1063,6 +1063,44 @@ mod tests {
     }
 
     #[test]
+    fn preview_resolution_tensor_rt_edge_llm_server_url_uses_sdk_contract() {
+        let resolution = resolve_preview_backend(PreviewBackendRequest {
+            support_tier: SupportTier::TensorRtEdgeLlm,
+            edge_llm_server_url: Some("http://127.0.0.1:8090".to_string()),
+            // Wrong-product URL must not be consumed for Edge-LLM resolution.
+            tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
+            ..PreviewBackendRequest::default()
+        })
+        .expect("tensorrt edge-llm resolution should succeed");
+
+        assert_eq!(
+            resolution.backend_policy,
+            BackendPolicy::allow_tensor_rt_edge_llm()
+        );
+        assert_eq!(
+            resolution.resolved_backend.selected_backend,
+            SelectedBackend::TensorRtEdgeLlm
+        );
+        assert_eq!(
+            resolution.edge_llm_backend,
+            Some(EdgeLlmConfig::server_completion("http://127.0.0.1:8090"))
+        );
+        assert!(resolution.tensor_rt_llm_backend.is_none());
+    }
+
+    #[test]
+    fn preview_resolution_tensor_rt_edge_llm_requires_server_url() {
+        let error = resolve_preview_backend(PreviewBackendRequest {
+            support_tier: SupportTier::TensorRtEdgeLlm,
+            tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
+            ..PreviewBackendRequest::default()
+        })
+        .expect_err("edge-llm must not accept tensor_rt_llm_server_url as a substitute");
+
+        assert_eq!(error, PreviewBackendResolutionError::MissingEdgeLlmServerUrl);
+    }
+
+    #[test]
     fn preview_resolution_tensor_rt_llm_server_url_uses_sdk_contract() {
         let resolution = resolve_preview_backend(PreviewBackendRequest {
             support_tier: SupportTier::TensorRtLlm,

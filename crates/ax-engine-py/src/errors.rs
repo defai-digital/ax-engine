@@ -1,4 +1,6 @@
-use ax_engine_sdk::{EngineSessionError, LlamaCppBackendError, MlxLmBackendError};
+use ax_engine_sdk::{
+    EdgeLlmBackendError, EngineSessionError, LlamaCppBackendError, MlxLmBackendError,
+};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
@@ -46,6 +48,8 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxMtpRequiredButUnavailable
         | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportLifecycle { .. }
+        | EngineSessionError::EdgeLlmDoesNotSupportLifecycle { .. }
+        | EngineSessionError::TensorRtLlmDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportStreaming
         | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
@@ -60,12 +64,17 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingInputText)
         | EngineSessionError::MlxLm(MlxLmBackendError::UnsupportedTokenPrompt)
-        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. }) => {
+        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingInputText)
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::UnsupportedTokenPrompt)
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::BackendConfigMismatch { .. }) => {
             PyValueError::new_err(error.to_string())
         }
         EngineSessionError::BackendContract(_)
         | EngineSessionError::MissingLlamaCppConfig { .. }
         | EngineSessionError::MissingMlxLmConfig
+        | EngineSessionError::MissingEdgeLlmConfig
+        | EngineSessionError::MissingTensorRtLlmConfig
         | EngineSessionError::MissingDelegatedRuntime { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })
@@ -84,7 +93,15 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::SseRead { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::InvalidStreamChunk { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. }) => {
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::SerializeRequestJson { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::HttpRequest { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::HttpStatus { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::InvalidResponseJson { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingCompletionChoice { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::SseRead { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::InvalidStreamChunk { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingStreamChoice { .. }) => {
             EngineBackendError::new_err(error.to_string())
         }
         EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
@@ -141,6 +158,31 @@ mod tests {
             let validation_error = to_py_runtime_error(EngineSessionError::EmptyInputTokens);
             assert!(validation_error.is_instance_of::<PyValueError>(py));
             assert!(!validation_error.is_instance_of::<EngineError>(py));
+
+            // Edge-LLM / TensorRT-LLM L2 errors must map (non-exhaustive match would
+            // fail to compile; these assert the intended exception class).
+            let edge_missing = to_py_runtime_error(EngineSessionError::MissingEdgeLlmConfig);
+            assert!(edge_missing.is_instance_of::<EngineBackendError>(py));
+            let trt_missing = to_py_runtime_error(EngineSessionError::MissingTensorRtLlmConfig);
+            assert!(trt_missing.is_instance_of::<EngineBackendError>(py));
+            let edge_http = to_py_runtime_error(EngineSessionError::EdgeLlm(
+                EdgeLlmBackendError::HttpStatus {
+                    endpoint: "http://127.0.0.1:8000/v1/chat/completions".to_string(),
+                    status: 502,
+                    body: "bad gateway".to_string(),
+                },
+            ));
+            assert!(edge_http.is_instance_of::<EngineBackendError>(py));
+            let edge_lifecycle =
+                to_py_runtime_error(EngineSessionError::EdgeLlmDoesNotSupportLifecycle {
+                    operation: "submit_generate",
+                });
+            assert!(edge_lifecycle.is_instance_of::<PyValueError>(py));
+            let trt_lifecycle =
+                to_py_runtime_error(EngineSessionError::TensorRtLlmDoesNotSupportLifecycle {
+                    operation: "stream_generate",
+                });
+            assert!(trt_lifecycle.is_instance_of::<PyValueError>(py));
         });
     }
 }
