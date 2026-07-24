@@ -54,6 +54,7 @@ impl ModelExecutionArbiter {
         }
     }
 
+    #[allow(dead_code)] // retained for concurrent-mode diagnostics / future policy
     pub(crate) fn max_concurrent(&self) -> usize {
         self.max_concurrent
     }
@@ -291,10 +292,10 @@ struct ModelExecutionTarget {
 /// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS`.
 pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
-/// Interactive p95 stream-gap SLO for one sibling prefill turn. Best locked
-/// S1 envelope (rotating prefill + exact warm, 2026-07-24): thr 1.057×,
-/// TTFT 0.855×, gap ~9 ms. Keep 32 ms / max 64 — larger quanta (96/128)
-/// degraded median thr via cold outliers without closing 1.15×.
+/// Interactive p95 stream-gap SLO for one sibling prefill turn.
+/// Exclusive + prefill-chunk 512 (2026-07-24): thr ~1.09×, gap ~9 ms.
+/// Keep 32 ms / max 64 — raising to 40/96 regressed S1 thr via cold outliers
+/// without closing 1.15× (excl-c512-q96 thr ratio ~1.02).
 const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 32_000;
 const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
 const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
@@ -1042,6 +1043,27 @@ const STREAM_TOKEN_EMIT_BATCH: usize = 1;
 /// when the async SSE consumer is slightly behind.
 const STREAM_ENGINE_STEP_BURST: usize = 64;
 
+/// Sibling-active exclusive-arbiter engine step burst.
+///
+/// Under exclusive multi-model load, a full [`STREAM_ENGINE_STEP_BURST`] HOL
+/// blows interactive gap. Burst=1 was the historical safe default, but S1
+/// locked gap p95 is ~9 ms vs a ~33 ms ratio budget (and 50 ms absolute), so
+/// a small multi-step hold amortizes arbiter reacquire without consuming the
+/// gap headroom. Override via `AX_SERVER_SIBLING_ENGINE_STEP_BURST`.
+const SIBLING_ENGINE_STEP_BURST_DEFAULT: usize = 4;
+
+fn sibling_engine_step_burst() -> usize {
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_SERVER_SIBLING_ENGINE_STEP_BURST")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .filter(|n: &usize| *n > 0)
+            .unwrap_or(SIBLING_ENGINE_STEP_BURST_DEFAULT)
+            .min(STREAM_ENGINE_STEP_BURST)
+    })
+}
+
 fn handle_command(
     command: ServiceCommand,
     session: &mut EngineSession,
@@ -1276,18 +1298,16 @@ fn advance_shared_engine(
 ) -> SessionResult<EngineStepReport> {
     maintain_streams(session, active_streams, service_state);
     let execution_target = service_state.execution_target.read().clone();
-    // When a sibling is active under exclusive arbitration (max=1), cap
-    // engine-step burst so one model cannot HOL the single device turn for a
-    // full STREAM_ENGINE_STEP_BURST. Concurrent arbitration (max>1) lets each
-    // model hold its own dedicated GPU stream, so decode burst can stay high
-    // (Metal time-slices concurrent submissions). Fair prefill quanta still
-    // apply under concurrent mode: unbounded Gemma prefill chunks were
-    // measured to blow interactive gap p95 to ~340 ms (S1 concurrent-arbiter
-    // campaign 2026-07-24) even with dual holds — chunk wall time must stay
-    // under the stream-gap SLO so Qwen keeps getting GPU turns.
-    let concurrent_device = execution_target
-        .as_ref()
-        .is_some_and(|target| target.arbiter.max_concurrent() > 1);
+    // When a sibling is active, cap engine-step burst so one model cannot
+    // flood Metal with a full STREAM_ENGINE_STEP_BURST of quanta.
+    //
+    // Exclusive (max=1): large multi-step holds HOL the single device turn.
+    // Concurrent (max>1): dual holds still share one GPU — an uncapped
+    // prefill worker that loops 64 steps × 64-token quanta dumps ~4k tokens
+    // of Gemma work into the Metal queue and was measured to blow S1 gap
+    // p95 to ~350–500 ms (concurrent-rotating 2026-07-24). Fair prefill
+    // quanta alone are not enough; the worker-level burst must also stay
+    // under the stream-gap SLO so Qwen decode kernels keep getting airtime.
     let mut sibling_active_for_burst = false;
     if let Some(target) = execution_target.as_ref().filter(|_| {
         service_state
@@ -1298,8 +1318,8 @@ fn advance_shared_engine(
             target.model_id.as_ref(),
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
-        // Only force burst=1 under exclusive arbitration.
-        sibling_active_for_burst = sibling_active && !concurrent_device;
+        // Cap burst whenever a sibling is active (exclusive or concurrent).
+        sibling_active_for_burst = sibling_active;
         let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
         if sibling_active {
             // Feedback-control quantum from last turn's runner wall time so
@@ -1359,11 +1379,12 @@ fn advance_shared_engine(
             // worker tick so the direct pipeline is not paced by the SSE
             // consumer. Emit batching remains STREAM_TOKEN_EMIT_BATCH for the
             // 50 ms gap cap; engine burst is larger to keep GPU fed.
-            // Under multi-model load, burst=1 so the arbiter can re-schedule
-            // the sibling after every step (see sibling_active_for_burst).
-            // Multi-step sibling holds were measured to blow S1 gap p95.
+            // Under multi-model load (sibling active), use a small sibling
+            // burst so the Metal queue is not flooded with prefill quanta
+            // and the interactive stream keeps gap headroom (see
+            // sibling_engine_step_burst).
             let engine_burst = if sibling_active_for_burst {
-                1
+                sibling_engine_step_burst()
             } else {
                 STREAM_ENGINE_STEP_BURST
             };
@@ -1849,6 +1870,14 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn sibling_engine_step_burst_defaults_between_one_and_full_burst() {
+        // Exclusive multi-model: not 1 (arbiter thr tax) and not full HOL burst.
+        assert!(SIBLING_ENGINE_STEP_BURST_DEFAULT >= 2);
+        assert!(SIBLING_ENGINE_STEP_BURST_DEFAULT < STREAM_ENGINE_STEP_BURST);
+        assert_eq!(SIBLING_ENGINE_STEP_BURST_DEFAULT, 4);
+    }
 
     #[test]
     fn adaptive_prefill_latency_quantum_defaults_to_wall_time_slo_proxy() {

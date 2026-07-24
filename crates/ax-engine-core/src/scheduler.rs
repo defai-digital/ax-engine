@@ -428,10 +428,16 @@ impl Scheduler {
         let mut token_budget = TokenBudgetTelemetry::default();
         let mut pressure_prefill_budget =
             prefill_budget_for_memory_pressure(input.memory_pressure.as_deref());
-        // Fair multi-prefill is decode-progress-preserving and only engages
-        // when there is no KV memory pressure. Under pressure the existing
-        // one-token / defer policy remains the sole prefill throttle.
-        let fair_active = input.multi_prefill_fair && pressure_prefill_budget.is_none();
+        // Fair multi-prefill must stay active under *soft* KV pressure.
+        // Disabling it on `kv_low_free_blocks:*` reverts the step to the soft
+        // 256-token pressure budget, which mid-prompt on Gemma-12B long
+        // prefill is hundreds of ms and blew S1 concurrent gap p95 to
+        // ~350–500 ms (2026-07-24). Soft pressure still caps via
+        // `pressure_prefill_budget` (min with fair_chunk below); only hard
+        // exhausted / reclaimable-hard policies turn fair off so the
+        // one-token / defer path remains the sole throttle.
+        let fair_active = input.multi_prefill_fair
+            && !is_hard_memory_pressure_prefill_budget(pressure_prefill_budget);
         let mut admitted_prefill_requests: u32 = 0;
         // fair_chunk / prefill_request_cap are sized lazily, right before the
         // first prefill candidate is considered, from whatever budget is left
@@ -520,6 +526,13 @@ impl Scheduler {
                     token_budget.record_skipped(mode, requested_tokens);
                     deferred_requests.push(snapshot.request_id);
                     continue;
+                }
+                (ExecutionMode::Prefill, Some(prefill_budget))
+                    if fair_active && !snapshot.has_multimodal_inputs =>
+                {
+                    // Soft pressure + fair: keep the sibling-active quantum
+                    // (fair_chunk) and still honor the soft pressure ceiling.
+                    remaining_budget.min(prefill_budget).min(fair_chunk)
                 }
                 (ExecutionMode::Prefill, Some(prefill_budget)) => {
                     remaining_budget.min(prefill_budget)
@@ -747,6 +760,17 @@ fn prefill_budget_for_memory_pressure(memory_pressure: Option<&str>) -> Option<u
             Some(MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP)
         }
         Some(_) => Some(MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP),
+    }
+}
+
+/// Hard pressure budgets that must disable fair multi-prefill so the
+/// exhausted / one-token reclaim path is the sole throttle. Soft
+/// `kv_low_free_blocks:*` (budget == SOFT) keeps fair active.
+fn is_hard_memory_pressure_prefill_budget(pressure_prefill_budget: Option<u32>) -> bool {
+    match pressure_prefill_budget {
+        None => false,
+        Some(budget) if budget == MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP => false,
+        Some(_) => true,
     }
 }
 
@@ -1979,7 +2003,7 @@ mod tests {
     }
 
     #[test]
-    fn fair_multi_prefill_disabled_under_memory_pressure() {
+    fn fair_multi_prefill_stays_active_under_soft_memory_pressure() {
         let scheduler = Scheduler::new();
         let mut input = SchedulerInput::new(
             StepId(32),
@@ -1991,6 +2015,7 @@ mod tests {
             64,
         );
         input.multi_prefill_fair = true;
+        // Sibling-active adaptive quantum (stream-gap SLO proxy).
         input.max_prefill_tokens_per_request_per_step = 16;
         input.max_inflight_prefill_requests = 4;
         input.block_size_tokens = 16;
@@ -1998,23 +2023,55 @@ mod tests {
         input.total_kv_blocks = 64;
 
         let schedule_plan = scheduler.plan(&input);
-        // Soft pressure keeps prefill productive (64 tok budget) but fair
-        // multi-prefill still stays off — greedy fill within the soft cap.
+        // Soft pressure no longer disables fair: each prefill is capped at the
+        // fair quantum (16), so two prefills schedule 16+16 within the step.
         let batch = schedule_plan.execution_batch.expect("batch");
-        assert_eq!(batch.total_scheduled_tokens, 64);
+        assert_eq!(batch.total_scheduled_tokens, 32);
         assert_eq!(batch.items.len(), 2);
         assert_eq!(batch.items[0].request_id, RequestId(1));
-        assert_eq!(batch.items[0].scheduled_token_count, 32);
+        assert_eq!(batch.items[0].scheduled_token_count, 16);
         assert_eq!(batch.items[1].request_id, RequestId(2));
-        assert_eq!(batch.items[1].scheduled_token_count, 32);
+        assert_eq!(batch.items[1].scheduled_token_count, 16);
         let decisions: std::collections::BTreeMap<_, _> = batch
             .route_metadata
             .crossover_decisions
             .into_iter()
             .collect();
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED),
+            Some(&1),
+            "fair multi-prefill must stay on under soft KV pressure"
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_CHUNK_TOKENS),
+            Some(&16)
+        );
+    }
+
+    #[test]
+    fn fair_multi_prefill_disabled_under_hard_memory_pressure() {
+        let scheduler = Scheduler::new();
+        let mut input = SchedulerInput::new(
+            StepId(33),
+            vec![make_snapshot(1, 1, "qwen3", &[10; 32], 0, &[], 16)],
+            Some(MEMORY_PRESSURE_KV_EXHAUSTED.into()),
+            64,
+        );
+        input.multi_prefill_fair = true;
+        input.max_prefill_tokens_per_request_per_step = 16;
+
+        let schedule_plan = scheduler.plan(&input);
+        // Exhausted: prefill budget 0 → no batch / all deferred.
+        assert!(schedule_plan.execution_batch.is_none() || {
+            schedule_plan
+                .execution_batch
+                .as_ref()
+                .is_some_and(|b| b.total_scheduled_tokens == 0)
+        });
         assert!(
-            !decisions.contains_key(ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED),
-            "fair telemetry must not engage under pressure"
+            !schedule_plan.deferred_requests.is_empty()
+                || !schedule_plan.memory_blocked_requests.is_empty()
+                || schedule_plan.execution_batch.is_none()
         );
     }
 
