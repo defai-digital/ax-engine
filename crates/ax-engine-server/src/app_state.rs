@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ax_engine_sdk::{
-    EmbeddingPooling, EngineSessionConfig, EngineSessionError, EngineStepReport, RuntimeReport,
-    StatelessGenerateContext,
+    EmbeddingPooling, EngineSessionConfig, EngineSessionError, EngineStepReport, EngineTokenizer,
+    GenerateRequest, GenerateSampling, RuntimeReport, StatelessGenerateContext,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -783,6 +783,12 @@ fn build_live_state_inner(
     replacement: bool,
 ) -> Result<LiveState, GenerationServiceStartError> {
     session_config.probe_vllm_readiness()?;
+    // Parse tokenizer.json before the first HTTP request. The file is ~20 MB for
+    // Qwen-class models and the first uncached load costs tens to hundreds of
+    // milliseconds of TTFT under the fresh-process flip contract.
+    if let Some(model_dir) = session_config.mlx_model_artifacts_dir() {
+        let _ = EngineTokenizer::prewarm_model_dir(model_dir);
+    }
     let stateless_generate_context =
         StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
     let (generation_service, runtime_report) = if replacement {
@@ -790,6 +796,16 @@ fn build_live_state_inner(
     } else {
         NativeGenerationService::spawn(session_config.clone())?
     };
+    // Full native-MLX production-path warm-up: first external request under a
+    // fresh process otherwise still pays ~80 ms of engine/request setup that
+    // the constructor JIT path does not cover (measured on M5 Max Qwen3.5-9B
+    // flip S0 shapes). Delegated backends must never receive an implicit
+    // generation POST during control-plane startup; they use readiness probes
+    // only. Failure is non-fatal — the model remains usable and the caller just
+    // sees cold TTFT.
+    if session_config.resolved_backend.selected_backend.is_mlx() {
+        run_production_path_warmup(&generation_service, &model_id);
+    }
     let embedding_batcher = EmbeddingMicroBatcher::spawn(generation_service.clone());
     Ok(LiveState {
         generation: 0,
@@ -802,6 +818,50 @@ fn build_live_state_inner(
         embedding_batcher,
         last_used: Arc::new(AtomicU64::new(unix_now_secs())),
     })
+}
+
+/// Run a short greedy generate on the worker thread so first client request TTFT
+/// matches the warmed path. Uses 34 prompt tokens (flip S0) and a few outputs.
+///
+/// Request id is taken from a reserved high range so it cannot collide with
+/// `AppState::allocate_request_id` which starts at 1.
+const PRODUCTION_PATH_WARMUP_REQUEST_ID: u64 = u64::MAX / 2;
+
+fn run_production_path_warmup(generation_service: &NativeGenerationService, model_id: &str) {
+    // Two shapes: flip S0 prompt length (~34) and a short decode burst long
+    // enough to establish the double-buffer direct pipeline (bootstrap +
+    // catch-up + steady). A single 4-token warm left cold first-token
+    // variance on fresh-process S0 trials.
+    for (offset, prompt_len, max_out) in [(0_u64, 34_usize, 8_u32), (1, 13, 16)] {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let model_id = model_id.to_string();
+        let request_id = PRODUCTION_PATH_WARMUP_REQUEST_ID.saturating_add(offset);
+        if generation_service
+            .submit(move |session| {
+                let request = GenerateRequest {
+                    model_id,
+                    input_tokens: vec![1_u32; prompt_len],
+                    input_text: None,
+                    multimodal_inputs: Default::default(),
+                    max_output_tokens: max_out,
+                    sampling: GenerateSampling {
+                        ignore_eos: true,
+                        ..GenerateSampling::default()
+                    },
+                    stop_sequences: Vec::new(),
+                    metadata: None,
+                };
+                let result = session
+                    .generate_with_request_id(request_id, request)
+                    .map(|_| ());
+                let _ = tx.send(result);
+            })
+            .is_err()
+        {
+            return;
+        }
+        let _ = rx.recv();
+    }
 }
 
 pub(crate) fn unix_now_secs() -> u64 {

@@ -52,7 +52,7 @@ use crate::gemma4_assistant_mtp::{
     resolve_gemma4_assistant_mtp_deep_gate, resolve_gemma4_assistant_mtp_first_gate,
 };
 use crate::generate::{
-    DirectPipelineTimings, advance_direct_pipeline_with_timings, chunked_prefill,
+    DirectPipelineTimings, advance_direct_pipeline_with_timings,
     chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers,
     chunked_prefill_qwen3_vl_with_sampling_buffers,
     chunked_prefill_unlimited_ocr_with_sampling_buffers,
@@ -1425,6 +1425,14 @@ impl MlxRunner {
         // populate process-wide JIT caches (Metal shader + mlx compile), which
         // the first build through the cell already did — re-running it would
         // re-impose the per-request forward-pass tax Option A removes.
+        //
+        // Short-prompt serving (e.g. the Qwen/Gemma flip S0 contract of ~34
+        // prompt tokens) historically paid 200+ ms of first-request TTFT after
+        // an 8-token-only warm-up because SDPA/linear-attention graphs and the
+        // direct-pipeline bootstrap are shape-sensitive. Warm the production
+        // prefill sizes and one start_direct_pipeline+advance pair so cold
+        // first-request TTFT matches the warmed path under the fresh-process
+        // contract.
         if cfg.model_family != "embeddinggemma" && !reused_shared_weights {
             let mut dummy_cache = MlxKVCache::new(cfg.layer_count);
             let mut dummy_rng = Xorshift64::new(0);
@@ -1437,20 +1445,43 @@ impl MlxRunner {
                 &mut dummy_rng,
             );
             dummy_cache.reset();
-            let dummy_token_count = crate::fastpath::prefill_warmup_token_count(
+            let warmup_lengths = crate::fastpath::prefill_warmup_token_lengths(
                 cfg.mla_attention.is_some(),
                 prefill_chunk,
             );
-            let dummy_tokens: Vec<u32> = vec![0u32; dummy_token_count];
-            chunked_prefill(
-                &cfg,
-                &weights,
-                &dummy_tokens,
-                &mut dummy_cache,
-                prefill_chunk,
-                MlxSamplingRequest::new(MlxSamplingParams::greedy(), &dummy_tokens),
-                &mut dummy_rng,
-            );
+            let mut sampling_probs_buf = Vec::new();
+            let mut sampling_logits_buf = Vec::new();
+            let mut sampling_candidates_buf = Vec::new();
+            for &token_count in &warmup_lengths {
+                let token_count = token_count.max(1);
+                let dummy_tokens: Vec<u32> = vec![0u32; token_count];
+                let prefill_tok = chunked_prefill_with_sampling_buffers(
+                    &cfg,
+                    &weights,
+                    &dummy_tokens,
+                    &mut dummy_cache,
+                    prefill_chunk,
+                    MlxSamplingRequest::new(MlxSamplingParams::greedy(), &dummy_tokens),
+                    &mut dummy_rng,
+                    &mut sampling_probs_buf,
+                    &mut sampling_logits_buf,
+                    &mut sampling_candidates_buf,
+                );
+                // Prime the direct double-buffer path at the prefill/decode
+                // boundary for the largest short-prompt warm-up (matches the
+                // greedy serving bootstrap used when n-gram is disabled).
+                if token_count == *warmup_lengths.last().unwrap_or(&token_count) {
+                    let pending =
+                        start_direct_pipeline(&cfg, &weights, prefill_tok, &mut dummy_cache);
+                    let _ = advance_direct_pipeline_with_timings(
+                        &cfg,
+                        &weights,
+                        &pending,
+                        &mut dummy_cache,
+                    );
+                }
+                dummy_cache.reset();
+            }
             // Warm up MTP Metal shaders so first-request TTFT does not include
             // JIT compilation overhead for the MTP head (~50-200 ms).
             if weights.mtp.is_some() {
@@ -2985,49 +3016,57 @@ impl ExecutionRunner for MlxRunner {
                 }
             }
         }
-        if tensor_batched_rows > 0 {
-            route_metadata.crossover_decisions.push((
-                "ax_mlx_batched_decode_rows".into(),
-                tensor_batched_rows as u32,
-            ));
+        let pure_single_token_decode = input.execution_batch.items.iter().all(|item| {
+            matches!(item.mode, ExecutionMode::Decode) && item.input_token_slice.len() == 1
+        });
+        let skip_route_telemetry =
+            pure_single_token_decode && crate::fastpath::skip_decode_route_telemetry();
+
+        if !skip_route_telemetry {
+            if tensor_batched_rows > 0 {
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_batched_decode_rows".into(),
+                    tensor_batched_rows as u32,
+                ));
+            }
+            if batched_forward_rows > 0 {
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_batched_decode_forward_rows".into(),
+                    batched_forward_rows as u32,
+                ));
+            }
+            if row_exact_coalesced_rows > 0 {
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_row_exact_coalesced_decode_rows".into(),
+                    row_exact_coalesced_rows as u32,
+                ));
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_row_exact_coalesced_decode_forward_rows".into(),
+                    row_exact_coalesced_forward_rows as u32,
+                ));
+                route_metadata
+                    .crossover_decisions
+                    .push(("ax_mlx_row_exact_coalesced_decode_eval_barriers".into(), 1));
+            }
+            if gemma4_assistant_mtp_coalesced_rows > 0 {
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_gemma4_assistant_mtp_coalesced_verify_rows".into(),
+                    gemma4_assistant_mtp_coalesced_rows as u32,
+                ));
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_gemma4_assistant_mtp_coalesced_verify_forward_rows".into(),
+                    gemma4_assistant_mtp_coalesced_rows as u32,
+                ));
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_gemma4_assistant_mtp_coalesced_verify_eval_barriers".into(),
+                    1,
+                ));
+            }
+            route_metadata.crossover_decisions.extend([
+                ("ax_mtp_available".into(), u32::from(self.has_mtp())),
+                ("ax_mtp_requested".into(), u32::from(self.mtp_requested)),
+            ]);
         }
-        if batched_forward_rows > 0 {
-            route_metadata.crossover_decisions.push((
-                "ax_mlx_batched_decode_forward_rows".into(),
-                batched_forward_rows as u32,
-            ));
-        }
-        if row_exact_coalesced_rows > 0 {
-            route_metadata.crossover_decisions.push((
-                "ax_mlx_row_exact_coalesced_decode_rows".into(),
-                row_exact_coalesced_rows as u32,
-            ));
-            route_metadata.crossover_decisions.push((
-                "ax_mlx_row_exact_coalesced_decode_forward_rows".into(),
-                row_exact_coalesced_forward_rows as u32,
-            ));
-            route_metadata
-                .crossover_decisions
-                .push(("ax_mlx_row_exact_coalesced_decode_eval_barriers".into(), 1));
-        }
-        if gemma4_assistant_mtp_coalesced_rows > 0 {
-            route_metadata.crossover_decisions.push((
-                "ax_mlx_gemma4_assistant_mtp_coalesced_verify_rows".into(),
-                gemma4_assistant_mtp_coalesced_rows as u32,
-            ));
-            route_metadata.crossover_decisions.push((
-                "ax_mlx_gemma4_assistant_mtp_coalesced_verify_forward_rows".into(),
-                gemma4_assistant_mtp_coalesced_rows as u32,
-            ));
-            route_metadata.crossover_decisions.push((
-                "ax_mlx_gemma4_assistant_mtp_coalesced_verify_eval_barriers".into(),
-                1,
-            ));
-        }
-        route_metadata.crossover_decisions.extend([
-            ("ax_mtp_available".into(), u32::from(self.has_mtp())),
-            ("ax_mtp_requested".into(), u32::from(self.mtp_requested)),
-        ]);
 
         for (item_idx, item) in input.execution_batch.items.iter().enumerate() {
             if batched_idx.contains(&item_idx) {
@@ -3061,7 +3100,7 @@ impl ExecutionRunner for MlxRunner {
             prefix_cache.merge_from(result.prefix_cache);
             request_updates.push(result.update);
         }
-        {
+        if !skip_route_telemetry {
             let mut route_decisions =
                 IndexedRouteDecisions::new(&mut route_metadata.crossover_decisions);
             ngram_acceleration.append_route_decisions(&mut route_decisions);
@@ -6265,13 +6304,38 @@ impl MlxRunner {
     }
 
     fn run_direct_pipeline_bootstrap(&self, state: &mut RequestState, last_token: u32) -> u32 {
+        // First generated token: single forward + eval only (TTFT path).
+        // The historical start+advance bootstrap paid two full model forwards
+        // before the first SSE text frame. After token 1, re-enter Bootstrap
+        // once more to establish the double-buffer (start+advance) so the
+        // remaining stream overlaps host graph build with GPU work.
         let bootstrap_started = Instant::now();
-        let bootstrap_token =
+        let first_lazy =
             start_direct_pipeline(&self.cfg, &self.weights, last_token, &mut state.cache);
         state
             .decode_telemetry
             .record_direct_bootstrap(elapsed_us(bootstrap_started));
-        self.run_direct_pipeline_once(state, bootstrap_token)
+        if state.direct_pipeline_emitted_tokens == 0 {
+            let branch_started = Instant::now();
+            let (tok, pending_eval_wall_us, pending_read_wall_us) =
+                finish_pending_token(&first_lazy);
+            state
+                .decode_telemetry
+                .record_direct_pipeline(elapsed_us(branch_started));
+            state
+                .decode_telemetry
+                .record_direct_pipeline_timings(DirectPipelineTimings {
+                    pending_eval_wall_us,
+                    pending_read_wall_us,
+                    ..DirectPipelineTimings::default()
+                });
+            state.decode_telemetry.record_production_decode_eval();
+            state.pending_direct = None;
+            state.direct_pipeline_emitted_tokens = 1;
+            return tok;
+        }
+        // Second entry: catch up to double-buffer for the rest of the stream.
+        self.run_direct_pipeline_once(state, first_lazy)
     }
 
     fn run_direct_pipeline_bootstrap_final(

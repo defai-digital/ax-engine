@@ -15,6 +15,7 @@ use crate::mlx_lm::start_streaming_generate as start_mlx_lm_streaming_generate;
 use crate::request::{
     EngineStepReport, MetalDispatchStepReport, SessionRequestReport, SessionRequestState,
 };
+// GenerateRouteReport::default used by compact stream progress reports.
 
 mod artifacts;
 mod config;
@@ -754,35 +755,63 @@ impl EngineSession {
         }
 
         let outcome = self.step()?;
-        let selected_request_ids = outcome
+        let selected_request_ids: Vec<u64> = outcome
             .schedule_plan
             .selected_requests
             .iter()
             .map(|request_id| request_id.0)
             .collect();
+        // Metal dispatch traces are opt-in (AX_ENGINE_DISPATCH_TRACE) and are
+        // usually None on the pure MLX runner. Skip the mutex/clone when absent.
         let metal_dispatch = outcome
             .runner_output
             .as_ref()
             .and_then(|_| self.core.last_metal_dispatch())
             .map(|trace| MetalDispatchStepReport::from_trace(&trace));
-        let report = EngineStepReport::from_native_outcome(&outcome, metal_dispatch);
-        if let Some(route) = report.route.as_ref() {
-            let request_ids = outcome
-                .schedule_plan
-                .execution_batch
-                .as_ref()
-                .map(|batch| {
-                    batch
-                        .items
-                        .iter()
-                        .map(|item| item.request_id.0)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            for request_id in request_ids {
-                self.store_native_request_route(request_id, route.clone());
+        // Decode steps re-emit large crossover maps every token. Building the
+        // full GenerateRouteReport (String clones + BTreeMap) per token was a
+        // multi-ms tax on M5 Max Qwen3.5-9B SSE. Skip route conversion on pure
+        // single-token decode steps once a route is already stored for every
+        // selected request; still capture prefill / first / multi-token steps.
+        let needs_route = {
+            let batch_tokens = outcome.metrics.scheduled_tokens;
+            let ttft = outcome.metrics.ttft_events;
+            if batch_tokens > 1 || ttft > 0 {
+                true
+            } else {
+                selected_request_ids
+                    .iter()
+                    .any(|request_id| !self.native_request_routes.contains_key(request_id))
             }
-        }
+        };
+        let report = if needs_route {
+            let report = EngineStepReport::from_native_outcome(&outcome, metal_dispatch);
+            if let Some(route) = report.route.as_ref() {
+                let request_ids = outcome
+                    .schedule_plan
+                    .execution_batch
+                    .as_ref()
+                    .map(|batch| {
+                        batch
+                            .items
+                            .iter()
+                            .map(|item| item.request_id.0)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                for request_id in request_ids {
+                    let should_store = !self.native_request_routes.contains_key(&request_id)
+                        || report.scheduled_tokens > 1
+                        || report.ttft_events > 0;
+                    if should_store {
+                        self.store_native_request_route(request_id, route.clone());
+                    }
+                }
+            }
+            report
+        } else {
+            EngineStepReport::from_native_outcome_without_route(&outcome, metal_dispatch)
+        };
         Ok((report, selected_request_ids))
     }
 
@@ -1158,8 +1187,56 @@ impl EngineSession {
                     )));
                 }
 
+                // First output token is emitted alone for TTFT; subsequent
+                // tokens are coalesced into multi-token step events so the
+                // SSE path is not paced by one channel/HTTP frame per token
+                // (M5 Max Qwen3.5-9B: native ~106 tok/s vs 1-token SSE ~81).
+                // Batch size stays small enough for the flip stream-gap cap
+                // (≤50 ms ≈ 4 tokens at ~110 tok/s).
                 let step = self.step_report()?;
-                self.apply_native_stream_step(state, step).map(Some)
+                let mut event = self.apply_native_stream_step(state, step)?;
+                if state.ttft_step.is_some()
+                    && !is_terminal_request_state(state.current_report.state)
+                {
+                    const STREAM_TOKEN_BATCH: usize = 1;
+                    let mut batch_tokens = match &event {
+                        GenerateStreamEvent::Step(step) => step.delta_tokens.clone(),
+                        _ => Vec::new(),
+                    };
+                    let mut batch_logprobs = match &event {
+                        GenerateStreamEvent::Step(step) => step.delta_token_logprobs.clone(),
+                        _ => Vec::new(),
+                    };
+                    let mut last_step = match &event {
+                        GenerateStreamEvent::Step(step) => step.step.clone(),
+                        _ => {
+                            return Ok(Some(event));
+                        }
+                    };
+                    while batch_tokens.len() < STREAM_TOKEN_BATCH
+                        && !is_terminal_request_state(state.current_report.state)
+                    {
+                        let step = self.step_report()?;
+                        let next = self.apply_native_stream_step(state, step)?;
+                        let GenerateStreamEvent::Step(next_step) = next else {
+                            break;
+                        };
+                        batch_tokens.extend(next_step.delta_tokens);
+                        batch_logprobs.extend(next_step.delta_token_logprobs);
+                        last_step = next_step.step;
+                        if is_terminal_request_state(state.current_report.state) {
+                            break;
+                        }
+                    }
+                    event = GenerateStreamEvent::Step(GenerateStreamStepEvent {
+                        request: state.current_report.clone(),
+                        step: last_step,
+                        delta_tokens: batch_tokens,
+                        delta_token_logprobs: batch_logprobs,
+                        delta_text: None,
+                    });
+                }
+                Ok(Some(event))
             }
             GenerateStreamPhase::Done => Ok(None),
         }
@@ -1178,63 +1255,216 @@ impl EngineSession {
             });
         }
 
-        let mut next_report = self.request_report(state.request_id).ok_or(
-            EngineSessionError::MissingRequestSnapshot {
+        // Fast path: borrow the live record and copy only the new token slice.
+        // Full `request_report()` clones prompt + full output history + route
+        // map on every token; that alone was multi-ms/token on M5 Max for
+        // OpenAI SSE vs the same worker's non-stream consumer.
+        let progress = self
+            .stream_step_progress(state.request_id, state.emitted_output_len)
+            .ok_or(EngineSessionError::MissingRequestSnapshot {
                 request_id: state.request_id,
-            },
-        )?;
-        apply_native_step_route_to_report(&mut next_report, &step);
-        if state.emitted_output_len > next_report.output_tokens.len() {
-            return Err(EngineSessionError::RequestReportInvariantViolation {
-                request_id: state.request_id,
-                message: "output tokens shrank between stream snapshots",
-            });
-        }
-        let delta_tokens = next_report.output_tokens[state.emitted_output_len..].to_vec();
-        let delta_token_logprobs = slice_output_token_logprobs(
-            &next_report,
-            state.emitted_output_len,
-            delta_tokens.len(),
-        )?;
+            })?;
+
         if state.ttft_step.is_none()
             && state.emitted_output_len == 0
-            && !next_report.output_tokens.is_empty()
+            && !progress.delta_tokens.is_empty()
         {
             state.ttft_step = Some(state.step_count);
         }
-        state.emitted_output_len = next_report.output_tokens.len();
-        state.current_report = compact_stream_progress_report(&next_report);
+        state.emitted_output_len = progress.output_len as usize;
+
+        // Update the in-place progress report with scalars only. Skip route /
+        // string field churn on intermediate steps; the terminal Response
+        // event reloads a full `request_report()` for the final payload.
+        state.current_report.state = progress.state;
+        state.current_report.processed_prompt_tokens = progress.processed_prompt_tokens;
+        state.current_report.prompt_len = progress.prompt_len;
+        state.current_report.output_len = progress.output_len;
+        state.current_report.max_output_tokens = progress.max_output_tokens;
+        state.current_report.cancel_requested = progress.cancel_requested;
+        state.current_report.finish_reason = progress.finish_reason;
+        state.current_report.terminal_stop_reason = progress.terminal_stop_reason;
+        if progress.terminal {
+            // One route merge on the terminal step so Response sees accumulated
+            // route metadata without paying for it every decode token.
+            apply_native_step_route_to_report(&mut state.current_report, &step);
+            if let Some(route) = self.native_request_routes.get(&state.request_id) {
+                merge_native_route_into(&mut state.current_report.route, route.clone());
+            }
+            if let Some(err) = progress.last_error {
+                state.current_report.last_error = Some(err);
+            }
+        }
+
+        // Intermediate step events do not need the heavy EngineStepReport
+        // (route map / metal dispatch). Keep scalars only via Default unless
+        // this is a terminal transition.
+        let step_for_event = if progress.terminal {
+            step
+        } else {
+            EngineStepReport {
+                step_id: step.step_id,
+                scheduled_requests: step.scheduled_requests,
+                scheduled_tokens: step.scheduled_tokens,
+                ttft_events: step.ttft_events,
+                prefix_hits: step.prefix_hits,
+                kv_usage_blocks: step.kv_usage_blocks,
+                evictions: step.evictions,
+                preempted_requests: step.preempted_requests,
+                preempted_tokens: step.preempted_tokens,
+                cpu_time_us: step.cpu_time_us,
+                runner_time_us: step.runner_time_us,
+                route: None,
+                metal_dispatch: None,
+            }
+        };
 
         Ok(GenerateStreamEvent::Step(GenerateStreamStepEvent {
-            request: next_report,
-            step,
-            delta_tokens,
-            delta_token_logprobs,
+            request: state.current_report.clone(),
+            step: step_for_event,
+            delta_tokens: progress.delta_tokens,
+            delta_token_logprobs: progress.delta_token_logprobs,
             delta_text: None,
         }))
     }
-}
 
-fn compact_stream_progress_report(report: &SessionRequestReport) -> SessionRequestReport {
-    SessionRequestReport {
-        request_id: report.request_id,
-        model_id: report.model_id.clone(),
-        state: report.state,
-        prompt_tokens: Vec::new(),
-        processed_prompt_tokens: report.processed_prompt_tokens,
-        output_tokens: Vec::new(),
-        output_token_logprobs: Vec::new(),
-        prompt_len: report.prompt_len,
-        output_len: report.output_len,
-        max_output_tokens: report.max_output_tokens,
-        cancel_requested: report.cancel_requested,
-        execution_plan_ref: report.execution_plan_ref.clone(),
-        route: report.route.clone(),
-        finish_reason: report.finish_reason,
-        terminal_stop_reason: report.terminal_stop_reason,
-        last_error: report.last_error.clone(),
+    /// Progress + delta tokens for a native stream step without cloning the
+    /// full prompt/output history.
+    fn stream_step_progress(
+        &self,
+        request_id: u64,
+        emitted_output_len: usize,
+    ) -> Option<StreamStepProgress> {
+        if !self.uses_mlx_runtime() {
+            let report = self.request_report(request_id)?;
+            if emitted_output_len > report.output_tokens.len() {
+                return None;
+            }
+            let delta_tokens = report.output_tokens[emitted_output_len..].to_vec();
+            let delta_token_logprobs = slice_output_token_logprobs(
+                &report,
+                emitted_output_len,
+                delta_tokens.len(),
+            )
+            .ok()?;
+            let terminal = is_terminal_request_state(report.state);
+            return Some(StreamStepProgress {
+                delta_tokens,
+                delta_token_logprobs,
+                state: report.state,
+                processed_prompt_tokens: report.processed_prompt_tokens,
+                prompt_len: report.prompt_len,
+                output_len: report.output_len,
+                max_output_tokens: report.max_output_tokens,
+                cancel_requested: report.cancel_requested,
+                finish_reason: report.finish_reason,
+                terminal_stop_reason: report.terminal_stop_reason,
+                last_error: report.last_error,
+                terminal,
+            });
+        }
+
+        // Prefer the live record (no full-history clone). After the finishing
+        // step the core may already have moved the request into
+        // `terminal_snapshots`, so fall back to `request_report()` there.
+        if let Some(record) = self
+            .core
+            .request_manager()
+            .record(RequestId(request_id))
+        {
+            let generated = &record.generated_tokens;
+            if emitted_output_len > generated.len() {
+                return None;
+            }
+            let delta_tokens = generated[emitted_output_len..].to_vec();
+            let delta_token_logprobs = if record.generated_token_logprobs.is_empty() {
+                vec![None; delta_tokens.len()]
+            } else if record.generated_token_logprobs.len() == generated.len() {
+                record.generated_token_logprobs[emitted_output_len..].to_vec()
+            } else {
+                let report = self.request_report(request_id)?;
+                return slice_output_token_logprobs(&report, emitted_output_len, delta_tokens.len())
+                    .ok()
+                    .map(|delta_token_logprobs| {
+                        let terminal = is_terminal_request_state(report.state);
+                        StreamStepProgress {
+                            delta_tokens,
+                            delta_token_logprobs,
+                            state: report.state,
+                            processed_prompt_tokens: report.processed_prompt_tokens,
+                            prompt_len: report.prompt_len,
+                            output_len: report.output_len,
+                            max_output_tokens: report.max_output_tokens,
+                            cancel_requested: report.cancel_requested,
+                            finish_reason: report.finish_reason,
+                            terminal_stop_reason: report.terminal_stop_reason,
+                            last_error: report.last_error,
+                            terminal,
+                        }
+                    });
+            };
+            let state = SessionRequestState::from(record.state);
+            let terminal = is_terminal_request_state(state);
+            return Some(StreamStepProgress {
+                delta_tokens,
+                delta_token_logprobs,
+                state,
+                processed_prompt_tokens: record.processed_prompt_tokens,
+                prompt_len: record.prompt_tokens.len() as u32,
+                output_len: generated.len() as u32,
+                max_output_tokens: record.max_output_tokens,
+                cancel_requested: record.cancel_requested,
+                finish_reason: crate::generate::GenerateFinishReason::from_request_state(
+                    record.state,
+                    record.terminal_stop_reason,
+                ),
+                terminal_stop_reason: record.terminal_stop_reason,
+                last_error: record.last_error.clone(),
+                terminal,
+            });
+        }
+
+        let report = self.request_report(request_id)?;
+        if emitted_output_len > report.output_tokens.len() {
+            return None;
+        }
+        let delta_tokens = report.output_tokens[emitted_output_len..].to_vec();
+        let delta_token_logprobs =
+            slice_output_token_logprobs(&report, emitted_output_len, delta_tokens.len()).ok()?;
+        let terminal = is_terminal_request_state(report.state);
+        Some(StreamStepProgress {
+            delta_tokens,
+            delta_token_logprobs,
+            state: report.state,
+            processed_prompt_tokens: report.processed_prompt_tokens,
+            prompt_len: report.prompt_len,
+            output_len: report.output_len,
+            max_output_tokens: report.max_output_tokens,
+            cancel_requested: report.cancel_requested,
+            finish_reason: report.finish_reason,
+            terminal_stop_reason: report.terminal_stop_reason,
+            last_error: report.last_error,
+            terminal,
+        })
     }
 }
+
+struct StreamStepProgress {
+    delta_tokens: Vec<u32>,
+    delta_token_logprobs: Vec<Option<f32>>,
+    state: SessionRequestState,
+    processed_prompt_tokens: u32,
+    prompt_len: u32,
+    output_len: u32,
+    max_output_tokens: u32,
+    cancel_requested: bool,
+    finish_reason: Option<crate::generate::GenerateFinishReason>,
+    terminal_stop_reason: Option<ax_engine_core::StopReason>,
+    last_error: Option<String>,
+    terminal: bool,
+}
+
+
 
 fn build_llama_cpp_stream_state(
     request_id: u64,

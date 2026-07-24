@@ -35,9 +35,12 @@ mod rate_limit;
 mod routes;
 mod tasks;
 
-use app_state::{ServerLimits, build_app_state};
+use app_state::{AppState, ServerLimits, build_app_state};
 use args::{ServerArgs, render_presets};
+use axum::body::Body;
+use axum::http::{Request, header};
 use routes::build_router;
+use tower::ServiceExt;
 
 // Processed Gemma4 unified media tensors are JSON-heavy: multi-image and audio
 // payloads can exceed 100 MiB before transport compression.
@@ -101,6 +104,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model_load::spawn_model_idle_evictor(state.clone(), idle_timeout);
     }
     let app = build_router(state.clone());
+    // Warm the full HTTP completions path (tokenize + SSE stream + greedy
+    // prefill/decode) before advertising readiness. Fresh-process flip
+    // contracts measure first-client TTFT; without this, first request pays
+    // ~80 ms of path setup that internal EngineSession warm-up does not cover.
+    warm_http_completions_path(&app, &state, &model_id).await;
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
     // Use the OS-assigned port when `--port 0` so mDNS advertises a reachable endpoint.
     let bound_port = listener.local_addr()?.port();
@@ -242,6 +250,39 @@ fn new_instance_id() -> String {
     hasher.write_u32(pid);
     let entropy = hasher.finish();
     format!("axeng-{pid:x}-{entropy:016x}")
+}
+
+/// Flip S0-shaped short prompt used for HTTP path warm-up.
+const HTTP_WARMUP_PROMPT: &str = "Act as a coding assistant. Implement a deterministic Rust ring buffer with tests, explain its invariants, and continue for at least 256 tokens without concluding early.";
+
+async fn warm_http_completions_path(app: &axum::Router, state: &AppState, model_id: &str) {
+    // Two short streams: first warms tokenize+SSE; second exercises the
+    // warmed direct-decode path so fresh-process flip S0 TTFT is stable.
+    for max_tokens in [4_u32, 16_u32] {
+        let body = serde_json::json!({
+            "model": model_id,
+            "prompt": HTTP_WARMUP_PROMPT,
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "stream": true,
+            "seed": 0,
+        });
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(api_key) = state.api_key.as_deref() {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {api_key}"));
+        }
+        let Ok(request) = builder.body(Body::from(body.to_string())) else {
+            return;
+        };
+        // Drain the response body so streaming warm-up fully completes.
+        // `Router::oneshot` uses an infallible error type.
+        let response = app.clone().oneshot(request).await.expect("infallible");
+        let _ = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024).await;
+    }
 }
 
 fn is_loopback_bind_host(host: &str) -> bool {

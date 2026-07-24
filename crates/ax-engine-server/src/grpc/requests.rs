@@ -334,8 +334,8 @@ mod tests {
             generate.input_text.is_none(),
             "native MLX must clear input_text after tokenization"
         );
-        // Shared OpenAI MLX policy: qwen at temperature 0 uses 1.1.
-        assert_eq!(generate.sampling.repetition_penalty, 1.1);
+        // Shared OpenAI MLX policy: greedy keeps identity penalty for direct decode.
+        assert_eq!(generate.sampling.repetition_penalty, 1.0);
 
         let _ = fs::remove_dir_all(artifact_dir);
     }

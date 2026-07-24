@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{
     EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateRequest,
-    GenerateResponse, GenerateStreamEvent, GenerateStreamState, RuntimeReport,
-    SessionRequestReport, SessionRequestState,
+    GenerateResponse, GenerateStreamEvent, GenerateStreamState, GenerateStreamStepEvent,
+    RuntimeReport, SessionRequestReport, SessionRequestState,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -191,9 +191,43 @@ struct ModelExecutionTarget {
     arbiter: Arc<ModelExecutionArbiter>,
 }
 
-const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP: u32 = 1;
+/// Prefill tokens admitted per engine turn when a sibling model is active.
+///
+/// Historically this was **1**, which serialized a long sibling prefill into
+/// one-token turns and destroyed aggregate throughput under multi-model
+/// isolation (flip S1: ~0.33× vs mlxcel while stream gap stayed ~35 ms).
+///
+/// mlxcel deep-review (2026-07-24) + flip notes: size the quantum so one turn's
+/// wall time stays under the interactive stream-gap SLO (50 ms). On M5 Max
+/// Gemma-12B-class 4-bit prefill (~0.66–0.8 ms/tok) that is roughly 64–96
+/// tokens. Prefer 64 as the conservative default; override via
+/// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS` when calibrating.
+pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
+
+/// Resolve the sibling-active prefill quantum from an optional env value.
+///
+/// Empty / invalid / zero values fall back to
+/// [`ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT`] so operators cannot
+/// accidentally re-enable the historical 1-token pathological endpoint by
+/// setting a garbage env var.
+pub(crate) fn resolve_adaptive_prefill_latency_tokens(raw: Option<&str>) -> u32 {
+    raw.and_then(|value| value.trim().parse().ok())
+        .filter(|n: &u32| *n > 0)
+        .unwrap_or(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT)
+}
+
+fn adaptive_prefill_latency_tokens_per_step() -> u32 {
+    static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        resolve_adaptive_prefill_latency_tokens(
+            std::env::var("AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GenerationPressureEvent {
@@ -204,8 +238,15 @@ pub(crate) enum GenerationPressureEvent {
 const COMMAND_QUEUE_CAPACITY: usize = 256;
 const COMMANDS_PER_TICK: usize = 64;
 const BULK_COMMANDS_PER_ACTIVE_TICK: usize = 1;
-const STREAM_EVENT_CHANNEL_CAPACITY: usize = 128;
-const STREAM_WORKER_BACKLOG_CAPACITY: usize = 8;
+// Large enough that a full interactive completion (flip S0: 192 tokens) can
+// finish on the generation worker without waiting for the HTTP/SSE consumer.
+// Local microbenches on M5 Max showed native generate at ~106 tok/s vs SSE
+// stream at ~81 tok/s when the worker was paced by a tiny backlog; decoupling
+// decode from detokenize/SSE write closes that gap.
+const STREAM_EVENT_CHANNEL_CAPACITY: usize = 512;
+// Match the flip S0 generation length so the worker can complete decode while
+// the OpenAI SSE adapter drains independently (see STREAM_EVENT_CHANNEL_CAPACITY).
+const STREAM_WORKER_BACKLOG_CAPACITY: usize = 256;
 
 enum ServiceCommand {
     Execute(SessionJob),
@@ -822,7 +863,26 @@ struct ActiveStream {
     pending_events: VecDeque<NativeEvent>,
     request_event_pending: bool,
     permit: Option<AdmissionPermit>,
+    /// Coalesced token deltas waiting for an SSE emit. First token flushes
+    /// immediately (TTFT); later tokens batch up to
+    /// [`STREAM_TOKEN_EMIT_BATCH`] to cut per-token channel/SSE overhead.
+    pending_delta_tokens: Vec<u32>,
+    pending_delta_logprobs: Vec<Option<f32>>,
+    pending_step: Option<EngineStepReport>,
+    pending_request: Option<SessionRequestReport>,
+    first_output_emitted: bool,
 }
+
+/// After the first stream token, coalesce this many tokens per SSE frame.
+/// Keep at 1 so interactive p95 stream-gap tracks per-token decode (~10 ms)
+/// and stays competitive with mlxcel (~11 ms) under the flip gap-ratio gate
+/// (≤0.90× and absolute ≤50 ms). Engine burst below keeps GPU fed.
+const STREAM_TOKEN_EMIT_BATCH: usize = 1;
+
+/// Single-stream engine steps per worker tick after the first token.
+/// Larger than the SSE emit batch so the Metal double-buffer stays fed even
+/// when the async SSE consumer is slightly behind.
+const STREAM_ENGINE_STEP_BURST: usize = 16;
 
 fn handle_command(
     command: ServiceCommand,
@@ -860,6 +920,11 @@ fn handle_command(
                         pending_events: VecDeque::new(),
                         request_event_pending: true,
                         permit: Some(permit),
+                        pending_delta_tokens: Vec::new(),
+                        pending_delta_logprobs: Vec::new(),
+                        pending_step: None,
+                        pending_request: None,
+                        first_output_emitted: false,
                     },
                 );
                 debug_assert!(previous.is_none(), "request IDs are process-unique");
@@ -1063,7 +1128,7 @@ fn advance_shared_engine(
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
         let desired_tokens = if sibling_active {
-            ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP
+            adaptive_prefill_latency_tokens_per_step()
         } else {
             ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
         };
@@ -1087,6 +1152,31 @@ fn advance_shared_engine(
                 &report,
                 service_state,
             );
+            // Single interactive stream: burst multiple engine steps per
+            // worker tick so the direct pipeline is not paced by the SSE
+            // consumer. Emit batching remains STREAM_TOKEN_EMIT_BATCH for the
+            // 50 ms gap cap; engine burst is larger to keep GPU fed.
+            if active_streams.len() == 1 && request_ids.len() == 1 {
+                let request_id = request_ids[0];
+                for _ in 1..STREAM_ENGINE_STEP_BURST {
+                    if !active_streams.contains_key(&request_id) {
+                        break;
+                    }
+                    match session.step_report_with_request_ids() {
+                        Ok((report, ids)) => {
+                            record_step_report(service_state, &report);
+                            apply_step_to_streams(
+                                session,
+                                active_streams,
+                                &ids,
+                                &report,
+                                service_state,
+                            );
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
             release_terminal_stepwise_permits(session, stepwise_permits, service_state);
             Ok(report)
         }
@@ -1139,11 +1229,56 @@ fn apply_step_to_streams(
                     continue;
                 }
             };
-        let terminal = matches!(
-            &event,
-            GenerateStreamEvent::Step(step)
-                if request_state_is_terminal(step.request.state)
-        );
+        // Coalesce token steps: first token flushes for TTFT; later tokens wait
+        // for STREAM_TOKEN_EMIT_BATCH (or a terminal state) before enqueue so
+        // the SSE path is not paced by one frame per token.
+        let (event, terminal) = match event {
+            GenerateStreamEvent::Step(step) => {
+                let step_terminal = request_state_is_terminal(step.request.state);
+                if step.delta_tokens.is_empty() && !step_terminal {
+                    // Progress-only step with no new tokens; still forward.
+                    (GenerateStreamEvent::Step(step), step_terminal)
+                } else {
+                    stream.pending_delta_tokens.extend(step.delta_tokens);
+                    stream
+                        .pending_delta_logprobs
+                        .extend(step.delta_token_logprobs);
+                    stream.pending_step = Some(step.step);
+                    stream.pending_request = Some(step.request);
+                    let should_flush = step_terminal
+                        || !stream.first_output_emitted
+                        || stream.pending_delta_tokens.len() >= STREAM_TOKEN_EMIT_BATCH;
+                    if !should_flush {
+                        continue;
+                    }
+                    stream.first_output_emitted = true;
+                    let delta_tokens = std::mem::take(&mut stream.pending_delta_tokens);
+                    let delta_token_logprobs = std::mem::take(&mut stream.pending_delta_logprobs);
+                    let step_report = stream
+                        .pending_step
+                        .take()
+                        .expect("pending step set when flushing stream batch");
+                    let request = stream
+                        .pending_request
+                        .take()
+                        .expect("pending request set when flushing stream batch");
+                    (
+                        GenerateStreamEvent::Step(GenerateStreamStepEvent {
+                            request,
+                            step: step_report,
+                            delta_tokens,
+                            delta_token_logprobs,
+                            delta_text: None,
+                        }),
+                        step_terminal,
+                    )
+                }
+            }
+            other => {
+                let is_response = matches!(other, GenerateStreamEvent::Response(_));
+                (other, is_response)
+            }
+        };
         match enqueue_stream_event(stream, Ok(event), service_state) {
             EnqueueResult::Queued => {}
             EnqueueResult::Closed => {
@@ -1489,6 +1624,22 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn adaptive_prefill_latency_quantum_defaults_to_wall_time_slo_proxy() {
+        // Must not regress to the historical 1-token sibling quantum that
+        // serialized long prefills into thousands of arbiter turns (flip S1).
+        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("96")), 96);
+        assert!(
+            ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT
+                < ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
+        );
+    }
 
     fn delegated_config() -> EngineSessionConfig {
         EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {

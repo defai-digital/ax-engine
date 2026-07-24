@@ -2562,7 +2562,7 @@ async fn delegated_openai_chat_rejects_tool_result_history() {
 }
 
 #[tokio::test]
-async fn openai_qwen_chat_uses_greedy_repetition_penalty_default() {
+async fn openai_qwen_chat_uses_identity_repetition_penalty_for_greedy() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-rp-tokenizer");
     let state = native_mlx_openai_builder_state("Qwen3.6-35B-A3B-4bit", &artifact_dir);
     let live = state.snapshot();
@@ -2576,7 +2576,8 @@ async fn openai_qwen_chat_uses_greedy_repetition_penalty_default() {
 
     let built = build_openai_chat_request(&live, request).expect("chat request should build");
 
-    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.1);
+    // Greedy must keep penalty 1.0 so the MLX direct-decode pipeline engages.
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.0);
 
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }

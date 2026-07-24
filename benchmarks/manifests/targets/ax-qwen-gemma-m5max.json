@@ -21,7 +21,8 @@
     "4"
   ],
   "env": {
-    "AX_MLX_MEMORY_LIMIT": "103079215104"
+    "AX_MLX_MEMORY_LIMIT": "103079215104",
+    "AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS": "0"
   },
   "models": {
     "qwen3.5-9b": {

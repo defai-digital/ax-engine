@@ -1748,6 +1748,40 @@ fn ffn_swiglu_with_policy(
     } else {
         let gate_w = w.gate_proj.as_ref().unwrap();
         let up_w = w.up_proj.as_ref().unwrap();
+        // Qwen decode keeps split gate/up (see prefer_split). Still compile the
+        // full split FFN graph so host encoding is not rebuilt every token —
+        // matches the packed path's apply_layer_dense_ffn_decode benefit.
+        if !cfg.uses_geglu
+            && seq == 1
+            && leading_elements == 1
+            && fastpath::dense_ffn_compile_enabled()
+            && let Some(down_w) = w.down_proj.as_ref()
+            && let Some((inputs, schema)) =
+                flatten_split_dense_ffn_inputs(x, gate_w, up_w, down_w, post_norm)
+        {
+            let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+            let eps = cfg.rms_norm_eps;
+            let projection_policy = projection_policy;
+            let body = move |inputs: &MlxVectorArray| {
+                let x = inputs.get(0);
+                let (gate_qw, up_qw, down_qw, post_norm_w) = schema.rebuild(inputs);
+                let gate = qw_with_policy(&x, &gate_qw, projection_policy);
+                let up = qw_with_policy(&x, &up_qw, projection_policy);
+                let hidden = silu_mul(&gate, &up, None);
+                let out = qw_with_policy(&hidden, &down_qw, projection_policy);
+                if let Some(norm_w) = post_norm_w {
+                    vec![rms_norm(&out, Some(&norm_w), eps, None)]
+                } else {
+                    vec![out]
+                }
+            };
+            if let Some(result) =
+                apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
+                    .and_then(|r| r.into_iter().next())
+            {
+                return result;
+            }
+        }
         if let Some(ffn_hidden) = qwen_dense_ffn_gate_up_swiglu_metal(cfg, x, gate_w, up_w) {
             forward_profile_eval_elapsed(
                 profile_decode,
@@ -3081,6 +3115,34 @@ impl CompiledDenseFfnSchema {
     }
 }
 
+/// Index layout for Qwen-style **split** gate/up dense FFN compile.
+///
+/// Qwen decode prefers split gate/up so the optional matvec Metal kernel can
+/// engage, which previously skipped the packed-gate_up compile path entirely.
+/// Compiling the split graph (gate + up + SwiGLU + down) cuts per-step host
+/// graph encoding for those layers on M5 Max Qwen3.5-9B.
+#[derive(Clone, Copy)]
+pub(crate) struct CompiledSplitDenseFfnSchema {
+    gate: QuantInputSlot,
+    up: QuantInputSlot,
+    down: QuantInputSlot,
+    post_norm: Option<usize>,
+}
+
+impl CompiledSplitDenseFfnSchema {
+    pub(crate) fn rebuild(
+        &self,
+        inputs: &MlxVectorArray,
+    ) -> (QuantizedWeight, QuantizedWeight, QuantizedWeight, Option<MlxArray>) {
+        (
+            self.gate.rebuild(inputs),
+            self.up.rebuild(inputs),
+            self.down.rebuild(inputs),
+            self.post_norm.map(|i| inputs.get(i)),
+        )
+    }
+}
+
 /// Flatten every MLX array the dense FFN forward depends on into an explicit
 /// input vector, returning the vector plus a [`CompiledDenseFfnSchema`] that
 /// records where each tensor landed.
@@ -3102,6 +3164,30 @@ pub(crate) fn flatten_dense_ffn_inputs(
             post_norm: post_norm_idx,
         },
     )
+}
+
+/// Flatten split gate/up/down weights for compiled Qwen decode FFN.
+pub(crate) fn flatten_split_dense_ffn_inputs(
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+    down: &QuantizedWeight,
+    post_norm: Option<&MlxArray>,
+) -> Option<(Vec<MlxArray>, CompiledSplitDenseFfnSchema)> {
+    let mut inputs: Vec<MlxArray> = vec![x.clone()];
+    let gate_slot = push_quant_inputs(&mut inputs, Some(gate))?;
+    let up_slot = push_quant_inputs(&mut inputs, Some(up))?;
+    let down_slot = push_quant_inputs(&mut inputs, Some(down))?;
+    let post_norm_idx = push_optional_input(&mut inputs, post_norm);
+    Some((
+        inputs,
+        CompiledSplitDenseFfnSchema {
+            gate: gate_slot,
+            up: up_slot,
+            down: down_slot,
+            post_norm: post_norm_idx,
+        },
+    ))
 }
 
 // ---------------------------------------------------------------------------

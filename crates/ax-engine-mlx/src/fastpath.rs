@@ -98,6 +98,16 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
+env_flag!(
+    /// `AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY` — on pure single-token decode
+    /// steps, skip appending the large crossover-decision map (profile
+    /// counters, layout telemetry, ngram/MTP counters). Prefill / multi-token
+    /// steps and the first request still get full route metadata. Opt-in for
+    /// competitive single-stream decode (M5 Max Qwen3.5-9B SSE).
+    skip_decode_route_telemetry,
+    "AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_DECODE_SAMPLING_GPU_TOPK` — route exact top-k sampling through
     /// MLX `argpartition_axis` and gather only the top-k full-domain
@@ -923,6 +933,22 @@ pub fn prefill_warmup_token_count(
     } else {
         8
     }
+}
+
+/// Prefill lengths to JIT at runner construction.
+///
+/// Always includes the historical lightweight warm-up plus short interactive
+/// prompt shapes (32/34/64). The flip S0 contract uses 34 prompt tokens; those
+/// graphs are shape-sensitive on hybrid Qwen3.5 (linear + full attention).
+pub fn prefill_warmup_token_lengths(
+    has_mla_attention: bool,
+    effective_prefill_chunk: usize,
+) -> Vec<usize> {
+    let base = prefill_warmup_token_count(has_mla_attention, effective_prefill_chunk).max(1);
+    let mut lengths = vec![base, 32, 34, 64];
+    lengths.sort_unstable();
+    lengths.dedup();
+    lengths
 }
 
 /// Disk prefix-cache directory. When `AX_MLX_PREFIX_CACHE_DIR=<path>`
@@ -1814,5 +1840,19 @@ mod tests {
     #[test]
     fn prefill_warmup_token_count_clamps_mla_zero() {
         assert_eq!(prefill_warmup_token_count(true, 0), 1);
+    }
+
+    #[test]
+    fn prefill_warmup_token_lengths_cover_short_prompt_serving_shapes() {
+        let lengths = prefill_warmup_token_lengths(false, 256);
+        assert!(lengths.contains(&8), "historical lightweight warm-up");
+        assert!(lengths.contains(&32));
+        assert!(lengths.contains(&34), "flip S0 prompt length must be warm");
+        assert!(lengths.contains(&64));
+        // Sorted unique
+        let mut sorted = lengths.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(lengths, sorted);
     }
 }
