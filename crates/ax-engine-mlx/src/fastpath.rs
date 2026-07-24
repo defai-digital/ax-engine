@@ -939,6 +939,27 @@ pub fn select_prefill_chunk_for_request(
     }
 }
 
+/// Long-prompt Metal-friendly prefill chunk (M5 Max Gemma-12B 4-bit pure
+/// sweep 2026-07-24: 512 tok/s-best; 1536/2048 slower).
+pub const LONG_PROMPT_PREFILL_CHUNK: usize = 512;
+/// Remaining-prompt threshold that engages [`LONG_PROMPT_PREFILL_CHUNK`].
+pub const LONG_PROMPT_PREFILL_THRESHOLD: usize = 2048;
+
+/// Scale a base prefill chunk for the remaining prompt length.
+///
+/// Long remaining prompts clamp to [`LONG_PROMPT_PREFILL_CHUNK`] so formal S1
+/// thr keeps the pure envelope when the session base is larger (e.g. 1536).
+/// Short prompts keep `base_chunk` (S0 34-token prompts are a single chunk
+/// either way, so TTFT is dominated by warmup/host, not chunk size).
+pub fn scale_prefill_chunk_for_remaining(base_chunk: usize, remaining_tokens: usize) -> usize {
+    let base = base_chunk.max(1);
+    if remaining_tokens >= LONG_PROMPT_PREFILL_THRESHOLD {
+        base.min(LONG_PROMPT_PREFILL_CHUNK).max(1)
+    } else {
+        base
+    }
+}
+
 /// Token count for constructor JIT warm-up. Non-MLA models keep the historical
 /// small warm-up prompt. MLA models warm at least one full effective chunk so
 /// the compiled prefill graph matches the default chunk-aligned runtime path.
@@ -1764,6 +1785,20 @@ mod tests {
                 "expected invalid sparse threshold for {value:?}"
             );
         }
+    }
+
+    #[test]
+    fn scale_prefill_chunk_for_remaining_clamps_long_prompts_only() {
+        assert_eq!(scale_prefill_chunk_for_remaining(1536, 34), 1536);
+        assert_eq!(scale_prefill_chunk_for_remaining(512, 34), 512);
+        assert_eq!(scale_prefill_chunk_for_remaining(1024, 512), 1024);
+        assert_eq!(
+            scale_prefill_chunk_for_remaining(1536, LONG_PROMPT_PREFILL_THRESHOLD),
+            LONG_PROMPT_PREFILL_CHUNK
+        );
+        assert_eq!(scale_prefill_chunk_for_remaining(1536, 13_826), 512);
+        assert_eq!(scale_prefill_chunk_for_remaining(256, 13_826), 256);
+        assert_eq!(scale_prefill_chunk_for_remaining(0, 100), 1);
     }
 
     #[test]

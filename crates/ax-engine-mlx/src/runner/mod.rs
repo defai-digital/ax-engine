@@ -4649,11 +4649,18 @@ impl MlxRunner {
                     // path) or start from an empty KV cache (cold → caller's
                     // larger chunk for prefill throughput). For MLA models the
                     // two values differ; for non-MLA models they're identical.
-                    let (prefill_chunk_for_request, prefill_chunk_mode) =
+                    let (base_prefill_chunk, prefill_chunk_mode) =
                         crate::fastpath::select_prefill_chunk_for_request(
                             state.cache.seq_len(),
                             self.cold_prefill_chunk,
                             self.prefill_chunk,
+                        );
+                    // Long remaining prompts clamp to the pure-thr chunk (512);
+                    // short prompts keep the session base (e.g. 1536 for S0 TTFT).
+                    let prefill_chunk_for_request =
+                        crate::fastpath::scale_prefill_chunk_for_remaining(
+                            base_prefill_chunk,
+                            prefill_tokens.len(),
                         );
                     state.decode_telemetry.record_prefill_chunk_selection(
                         prefill_chunk_for_request,
@@ -4716,11 +4723,16 @@ impl MlxRunner {
                             state.prompt_prefix_tokens.clear();
                             effective_prefill_token_count = token_ids.len();
                             // After reset, entry-point matrix requires the cold trail.
-                            let (recompute_chunk, recompute_mode) =
+                            let (base_recompute_chunk, recompute_mode) =
                                 crate::fastpath::select_prefill_chunk_for_request(
                                     state.cache.seq_len(),
                                     self.cold_prefill_chunk,
                                     self.prefill_chunk,
+                                );
+                            let recompute_chunk =
+                                crate::fastpath::scale_prefill_chunk_for_remaining(
+                                    base_recompute_chunk,
+                                    token_ids.len(),
                                 );
                             state.decode_telemetry.record_prefill_chunk_selection(
                                 recompute_chunk,

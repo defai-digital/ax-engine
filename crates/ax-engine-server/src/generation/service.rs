@@ -298,7 +298,10 @@ pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
 /// without closing 1.15× (excl-c512-q96 thr ratio ~1.02).
 const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 32_000;
 const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
-const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
+/// Floor under sibling-active adaptive quanta. Min=1 re-introduces pathological
+/// turn counts late in long prefills; 16 still gap-safe on M5 while cutting
+/// arbiter thr tax (exclusive pure-sum is already the thr ceiling).
+const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 16;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
 /// Resolve the sibling-active prefill quantum from an optional env value.
@@ -1909,10 +1912,17 @@ mod tests {
         // 16 tokens took 16 ms → 1 ms/tok → target ≈ 32; blend up from 16.
         let up = adjust_adaptive_prefill_tokens_with_work(16, 16_000, 16);
         assert!(up > 16 && up <= 32, "up={up}");
-        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 6).
-        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 6);
-        // Very expensive → snap to 1.
-        assert_eq!(adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4), 1);
+        // Over budget: snap to target then clamp to min floor
+        // (16 tokens / 80 ms → 5 ms/tok → target 6 → floor 16).
+        assert_eq!(
+            adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16),
+            ADAPTIVE_PREFILL_MIN_TOKENS
+        );
+        // Very expensive → snap to min floor (not historical 1-token pathology).
+        assert_eq!(
+            adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4),
+            ADAPTIVE_PREFILL_MIN_TOKENS
+        );
         // Cap at max.
         let capped = adjust_adaptive_prefill_tokens_with_work(100, 1_000, 100);
         assert!(capped <= ADAPTIVE_PREFILL_MAX_TOKENS);
