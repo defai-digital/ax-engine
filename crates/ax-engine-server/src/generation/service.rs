@@ -202,7 +202,12 @@ struct ModelExecutionTarget {
 /// Gemma-12B-class 4-bit prefill (~0.66–0.8 ms/tok) that is roughly 64–96
 /// tokens. Prefer 64 as the conservative default; override via
 /// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS` when calibrating.
-pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
+/// Calibrated on M5 Max dual-model S1 (Qwen stream + Gemma 13.8k prefill):
+/// 64-token quanta produced ~810 ms interactive gap (far over the 50 ms SLO)
+/// because arbiter-held sibling prefill chunks exceed the pure-prefill estimate.
+/// 16 tokens keeps gap under the historical 1-token isolation envelope while
+/// cutting turn count 16× vs the pathological 1-token quantum.
+pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 16;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
@@ -1629,15 +1634,19 @@ mod tests {
     fn adaptive_prefill_latency_quantum_defaults_to_wall_time_slo_proxy() {
         // Must not regress to the historical 1-token sibling quantum that
         // serialized long prefills into thousands of arbiter turns (flip S1).
-        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 64);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 64);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 64);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 64);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 64);
+        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 16);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 16);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 16);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 16);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 16);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("96")), 96);
         assert!(
             ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT
                 < ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
+        );
+        assert!(
+            ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT > 1,
+            "must not regress to the 1-token pathological sibling quantum"
         );
     }
 

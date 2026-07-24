@@ -39,9 +39,19 @@ Per scenario (median, ≥3 fresh-process reps): thr ≥ 1.15×, p95 TTFT ≤ 0.9
 2. **Stream path**: larger SSE/event backlog, single-stream engine step burst, lightweight stream progress reports, skip intermediate route maps.
 3. **TTFT**: multi-shape prefill warmup + direct pipeline prime; first generated token is single-forward then double-buffer catch-up.
 4. **Split dense FFN compile** for Qwen decode (gate/up/down SwiGLU under `AX_MLX_DENSE_FFN_COMPILE`).
-5. **Sibling prefill quantum** raised from **1 → 64** tokens under adaptive isolation (wall-time SLO proxy for ≤50 ms gap on M5 Gemma-class prefill ≈ 0.66–0.8 ms/tok).
+5. **Sibling prefill quantum** raised from **1 → 16** tokens under adaptive isolation (M5 dual-model S1: 64-token quanta blew interactive gap to ~810 ms under arbiter hold; 16 tokens cuts turn count 16× vs 1-token without busting the 50 ms SLO envelope). Override with `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS`.
 6. Flip target keeps `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS=0` where packing regressed the certified S0 path.
+7. Linear-attention n-gram no longer permanently disables after short no-draft streaks (cooldowns only).
 
-## Honest residual
+## Honest residual (2026-07-24 M5 measurements)
 
-Pure decode on M5 Qwen3.5-9B-MLX-4bit sits ~107 tok/s GPU-bound; mlxcel S0 e2e ~94.7 tok/s. Serving after the greedy/stream fixes tracks near the pure ceiling (~105 tok/s e2e). Clearing **1.15× thr** still needs remaining composite/overlap gains or multi-token amortisation; S1 is primarily the quantum policy above; S3 may still need the batched-decode product decision (P4).
+| Metric | Value |
+| --- | ---: |
+| Pure decode-trace | ~107.0–107.5 tok/s |
+| AX S0 OpenAI e2e (fresh) | ~104.9–105.7 tok/s |
+| mlxcel S0 e2e (fresh) | ~94.5–94.7 tok/s |
+| Max thr ratio (pure / mlx) | **~1.14× < 1.15 gate** |
+| S0 TTFT ratio | ~0.73× **PASS** |
+| S0 gap ratio | ~0.85× **PASS** (≤50 ms abs) |
+
+S0 **thr ≥ 1.15× is blocked by the pure GPU/BW ceiling** while mlxcel remains ~94.6 tok/s: even TTFT→0 cannot clear the locked thr bar without ~+2–3% pure decode or multi-token thr that currently hurts hybrid linear-attention Qwen. S1/S3 still need further quantum/arbiter/batch work beyond the 16-token default.
