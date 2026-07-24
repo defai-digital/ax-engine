@@ -22,7 +22,7 @@ Primary host: `AKMBPM5MAXx` / Apple M5 Max (`applegpu_g17s`).
 
 ## OUT OF SCOPE (explicit don't)
 
-- **TurboQuant** KV compression (mlxcel self-measured slower; AX already removed).
+- **Retired KV compression path** (mlxcel self-measured slower; AX already removed it under ADR-002).
 - **Paged pool default-on** on M5 without new positive evidence (M5 pool was neutral/slower).
 - **Monolith restructure** / llama-server flag surface for speed (not a speed lever).
 - **Model-breadth chase** (VLM/OCR/audio/TP-PP product surface).
