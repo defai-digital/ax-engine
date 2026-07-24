@@ -334,11 +334,12 @@ struct ModelExecutionTarget {
 pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
 /// Interactive p95 stream-gap SLO for one sibling prefill turn.
-/// Exclusive + prefill-chunk 512 (2026-07-24): thr ~1.09×, gap ~9 ms.
-/// Keep 32 ms / max 64 — raising to 40/96 regressed S1 thr via cold outliers
-/// without closing 1.15× (excl-c512-q96 thr ratio ~1.02).
-const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 32_000;
-const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
+/// Exclusive S1 gap p95 is ~9 ms vs ~37 ms mlxcel (ratio budget ~33 ms).
+/// Use 40 ms / max 128 so early cheap positions take large quanta (fewer
+/// arbiter turns). Adaptive shrinks from measured µs/tok as attention cost
+/// grows. Cold outliers previously hurt at fixed 96; adaptive start stays 64.
+const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 40_000;
+const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 128;
 /// Floor under sibling-active adaptive quanta. Concurrent dual-hold needs the
 /// floor at 1 so late long-context quanta can shrink under the 50 ms gap SLO
 /// (8-token floor still measured ~160 ms p95 on M5). Exclusive thr is pure-sum
@@ -1956,11 +1957,15 @@ mod tests {
     fn adjust_adaptive_prefill_tokens_targets_gap_slo_from_us_per_tok() {
         // No measurement yet → hold.
         assert_eq!(adjust_adaptive_prefill_tokens(16, 0), 16);
-        // 16 tokens took 16 ms → 1 ms/tok → target ≈ 32; blend up from 16.
+        // 16 tokens took 16 ms → 1 ms/tok → target ≈ SLO/1ms; blend up from 16.
         let up = adjust_adaptive_prefill_tokens_with_work(16, 16_000, 16);
-        assert!(up > 16 && up <= 32, "up={up}");
-        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 6).
-        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 6);
+        let slo_tok = (ADAPTIVE_PREFILL_GAP_SLO_US / 1_000) as u32;
+        assert!(up > 16 && up <= slo_tok, "up={up} slo_tok={slo_tok}");
+        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 8 @ 40ms SLO).
+        assert_eq!(
+            adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16),
+            (ADAPTIVE_PREFILL_GAP_SLO_US / 5_000) as u32
+        );
         // Very expensive → snap to 1.
         assert_eq!(adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4), 1);
         // Cap at max.

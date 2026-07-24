@@ -37,3 +37,11 @@ Exclusive single-process wall ≈ pure_Gemma + pure_Qwen:
 
 1. **S1 thr ≥ 1.15**: need ≥~4% pure Gemma prefill GPU cut (new Metal/composite beyond existing stack) or a concurrent Metal path that keeps gap ≤33 ms.
 2. **S3 thr+gap**: dual-hold not enough; need batch formation / emit path cut for absolute gap ≤50 ms and thr ≥1.15.
+
+## Adaptive quantum max 128 / SLO 40 ms (2026-07-24 night)
+
+S1 5-rep hybrid concurrent + exclusive long-prefill window:
+- gap p95 stays **~9 ms** (ratio ~0.19) — headroom confirmed
+- thr ratio **inflated** when mlxcel cold (14.7 tok/s); AX absolute thr still **~18.2**
+- need AX absolute thr **~21** vs stable mlxcel **~18.2** for locked 1.15×
+
