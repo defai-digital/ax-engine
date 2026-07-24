@@ -1,14 +1,10 @@
 #include "ax_shim_internal.h"
 
-#include <functional>
 #include <optional>
 #include <tuple>
-#include <vector>
 
-#include "mlx/compile.h"
 #include "mlx/fast.h"
 #include "mlx/ops.h"
-#include "mlx/transforms.h"
 
 namespace {
 
@@ -442,37 +438,6 @@ std::pair<mx::array, mx::array> add_rms_norm_pair_impl(
     const mx::array& norm_weight,
     float eps,
     mx::StreamOrDevice stream) {
-  // mlxcel-style shapeless compile for residual-add + pre-norm RMSNorm.
-  // One static compiled closure per eps; matmul stays outside the boundary.
-  // Fall back to uncompiled ops if compile/apply fails.
-  using CompiledFn =
-      std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
-  struct CompiledAddRms {
-    float eps = 0.0f;
-    CompiledFn fn;
-  };
-  static thread_local std::optional<CompiledAddRms> compiled;
-  try {
-    if (!compiled || compiled->eps != eps) {
-      mx::enable_compile();
-      const float e = eps;
-      auto body = [e](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
-        auto residual = mx::add(inputs[0], inputs[1]);
-        auto normed = mx::fast::rms_norm(residual, inputs[2], e);
-        return {std::move(residual), std::move(normed)};
-      };
-      compiled = CompiledAddRms{
-          eps,
-          mx::compile(body, /*shapeless=*/true),
-      };
-    }
-    auto out = compiled->fn({x, y, norm_weight});
-    if (out.size() == 2) {
-      return {std::move(out[0]), std::move(out[1])};
-    }
-  } catch (...) {
-    compiled.reset();
-  }
   auto residual = mx::add(x, y, stream);
   auto normed = mx::fast::rms_norm(residual, norm_weight, eps, stream);
   return {residual, normed};
