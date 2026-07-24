@@ -1442,7 +1442,15 @@ pub(crate) fn default_native_mlx_openai_repetition_penalty(
     live: &LiveState,
     temperature: f32,
 ) -> f32 {
-    if live.runtime_report.selected_backend != SelectedBackend::Mlx || temperature > 0.0 {
+    // Greedy OpenAI requests (temperature <= 0) must keep
+    // `repetition_penalty == 1.0` so
+    // `sampling_params_allow_deterministic_argmax_fast_path` stays true and
+    // the MLX double-buffer direct pipeline engages. A historical default of
+    // 1.1 for Qwen/Gemma greedy completions silently disabled that path and
+    // cost ~25% decode on M5 Max Qwen3.5-9B (OpenAI SSE ~81 tok/s vs native
+    // generate ~107 tok/s). Clients that want a non-default penalty still set
+    // `repetition_penalty` explicitly.
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx || temperature <= 0.0 {
         return 1.0;
     }
 
@@ -1451,6 +1459,7 @@ pub(crate) fn default_native_mlx_openai_repetition_penalty(
         return 1.0;
     }
     if model_id.contains("qwen") || model_id.contains("gemma") {
+        // Mild default for *sampled* OpenAI requests only.
         return 1.1;
     }
     1.0

@@ -13,7 +13,10 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use crate::app_state::{AppState, build_live_state, build_replacement_live_state};
+use crate::app_state::{
+    AppState, build_live_state, build_replacement_live_state, run_long_prefill_production_warmup,
+    run_production_path_warmup,
+};
 use crate::errors::{ErrorResponse, error_response, map_generation_service_error};
 use crate::generation::service::{
     ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP, GenerationServiceError, NativeGenerationService,
@@ -254,6 +257,40 @@ pub(crate) async fn load_model(
     let state_clone = state.clone();
     let load_task = tokio::spawn(async move {
         let _loading_guard = loading_guard;
+        // Fast path: soft-parked same-id reload (flip S2). Republish without
+        // rebuild so sibling interactive decode is not GPU-stalled.
+        if load_mode == LoadModelMode::Add
+            && let Some(parked) = state_clone.take_parked_live(&model_id, &model_path)
+        {
+            let ctx_len = crate::metadata::context_length(&parked);
+            let published_model_id = Arc::clone(&parked.model_id);
+            let previous = state_clone.publish_live(parked, make_default);
+            if enforce_prefill_isolation
+                && let Some(published) =
+                    state_clone.snapshot_for_model(Some(published_model_id.as_ref()))
+            {
+                published
+                    .generation_service
+                    .set_adaptive_prefill_isolation(true);
+            }
+            if multi_model_after_load {
+                rewarm_sibling_residents(&state_clone, published_model_id.as_ref());
+            }
+            if let Some(previous) = previous {
+                // Replacing a live same-id entry should still retire the
+                // outgoing generation; soft-park is only for unload→reload.
+                previous.retire().await.map_err(|error| {
+                    error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        format!(
+                            "parked model republished but previous generation failed to retire: {error}"
+                        ),
+                    )
+                })?;
+            }
+            return Ok(ctx_len);
+        }
         // MemoryConstrained retires the previous service before the build; a
         // failed build would otherwise leave the registry pointing at a dead
         // LiveState, so keep what a rollback respawn needs.
@@ -345,6 +382,18 @@ pub(crate) async fn load_model(
                     published
                         .generation_service
                         .set_adaptive_prefill_isolation(true);
+                }
+                // Dual-resident weight pressure can cool the interactive model's
+                // first-token path (flip S2 TTFT ~67 ms vs S0 ~57 ms). Re-warm
+                // sibling residents after multi-model publish so interactive
+                // TTFT stays on the S0 warm envelope.
+                if multi_model_after_load {
+                    rewarm_sibling_residents(&state_clone, published_model_id.as_ref());
+                    // Flip S1: formal concurrent as first long work pays a large
+                    // cold tax (~15s Gemma TTFT thr ~0.74×). A full long prefill
+                    // under adaptive isolation after multi-model publish matches
+                    // the warm-process microbench envelope (~9.4s / thr ~18).
+                    rewarm_published_long_prefill(&state_clone, published_model_id.as_ref());
                 }
                 if let Some(previous) = previous {
                     previous.retire().await.map_err(|error| {
@@ -552,7 +601,12 @@ async fn perform_unload(
                     format!("model {unload_model_id} is not loaded"),
                 ),
             })?;
-        live.retire().await.map_err(map_generation_service_error)
+        // Soft-park instead of hard retire: flip S2 reloads the same sibling
+        // within ~250 ms. Rebuilding weights stalls interactive decode gaps
+        // (~25–55 ms spikes). Parking keeps weights resident for instant
+        // republish while the model is absent from the live registry.
+        state_clone.park_live(live);
+        Ok(())
     });
 
     match task.await {
@@ -881,6 +935,16 @@ fn max_recommended_working_set_size() -> u64 {
     0
 }
 
+#[cfg(feature = "mlx-native-server")]
+fn mlx_device_active_bytes() -> Option<u64> {
+    mlx_sys::device_active_bytes()
+}
+
+#[cfg(not(feature = "mlx-native-server"))]
+fn mlx_device_active_bytes() -> Option<u64> {
+    None
+}
+
 /// Memory admission for model loads (ADR-040 D4). Runs synchronously before
 /// drain, preserving the no-side-effects-on-reject preflight contract. Skips
 /// (never blocks) when the device budget or the incoming weight layout is
@@ -935,7 +999,7 @@ fn validate_load_memory_preflight(
     // manifests. The latter misses compiled graphs and live temporaries and
     // can double-count shared storage; it remains a deterministic fallback
     // when MLX has no device probe (for example a delegated CPU backend).
-    let measured_active = mlx_sys::device_active_bytes();
+    let measured_active = mlx_device_active_bytes();
     let resident_accounted = measured_active.unwrap_or(resident_total);
     let peak = projected_peak_bytes(
         resident_accounted,
@@ -992,6 +1056,52 @@ fn validate_unload_preflight(state: &AppState, model_id: &str) -> Result<(), Htt
         ));
     }
     Ok(())
+}
+
+/// Re-run production-path warmup on every resident except `skip_model_id`.
+/// Dual-resident memory pressure can cool interactive first-token latency;
+/// two warm passes stabilize S2 TTFT toward the S0 envelope.
+fn rewarm_sibling_residents(state: &AppState, skip_model_id: &str) {
+    for resident in state.snapshots() {
+        if resident.model_id.as_ref() == skip_model_id {
+            continue;
+        }
+        if !resident
+            .session_config
+            .resolved_backend
+            .selected_backend
+            .is_mlx()
+        {
+            continue;
+        }
+        for _ in 0..2 {
+            run_production_path_warmup(&resident.generation_service, resident.model_id.as_ref());
+        }
+    }
+}
+
+/// After multi-model publish + adaptive isolation is on, run the long S1
+/// prefill geometry on the newly published model (Gemma) so formal concurrent
+/// is not the first long work. No-op when long warm is disabled.
+fn rewarm_published_long_prefill(state: &AppState, model_id: &str) {
+    if !crate::app_state::long_prefill_warmup_enabled() {
+        return;
+    }
+    if !model_id.to_ascii_lowercase().contains("gemma") {
+        return;
+    }
+    let Some(resident) = state.snapshot_for_model(Some(model_id)) else {
+        return;
+    };
+    if !resident
+        .session_config
+        .resolved_backend
+        .selected_backend
+        .is_mlx()
+    {
+        return;
+    }
+    run_long_prefill_production_warmup(&resident.generation_service, model_id);
 }
 
 /// Maximum time to wait for one model generation to drain. A timeout fails the

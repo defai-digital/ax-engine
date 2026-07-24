@@ -461,6 +461,7 @@ fn packed_ffn_activation(
 static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN3_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -526,24 +527,37 @@ const PACKED_SWIGLU_KERNEL_SOURCE: &str = r#"
     out[idx] = static_cast<T>(activated * up_v);
 "#;
 
+/// Decode matvec: affine-4bit gate/up + SwiGLU for one token.
+///
+/// v1d: 256 threads per output row (8 simdgroups). Cross-simdgroup reduction
+/// uses only 8 floats of TG memory (not a full x cache — full x TG caching
+/// regressed thr to ~41 tok/s). More K-parallelism for PackedCols=512/1536.
 const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
-    uint row = thread_position_in_grid.x / 32;
-    uint lane = thread_index_in_simdgroup;
+    // grid.x = OutDim * 256, threadgroup = 256
+    uint flat = thread_position_in_grid.x;
+    uint row = flat / 256;
+    uint tid = flat % 256; // 0..255 within the row's threadgroup
+    uint lane = tid % 32;
+    uint sg = tid / 32; // 0..7
     if (row >= OutDim) {
         return;
     }
 
     float gate_acc = 0.0f;
     float up_acc = 0.0f;
-    for (uint packed_col = lane; packed_col < PackedCols; packed_col += 32) {
-        uint gate_packed = gate_weight[row * PackedCols + packed_col];
-        uint up_packed = up_weight[row * PackedCols + packed_col];
+    const uint row_base = row * PackedCols;
+    const uint scale_row = row * GroupCount;
+
+    // 256-wide stride over packed columns.
+    for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
+        uint gate_packed = gate_weight[row_base + packed_col];
+        uint up_packed = up_weight[row_base + packed_col];
         for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
             uint input_col = packed_col * PackFactor + packed_lane;
             uint gate_q = (gate_packed >> (packed_lane * Bits)) & QuantMask;
             uint up_q = (up_packed >> (packed_lane * Bits)) & QuantMask;
             uint group = input_col / GroupSize;
-            uint scale_idx = row * GroupCount + group;
+            uint scale_idx = scale_row + group;
             float x_v = static_cast<float>(x[input_col]);
             float gate_scale = static_cast<float>(gate_scales[scale_idx]);
             float gate_bias = static_cast<float>(gate_biases[scale_idx]);
@@ -556,9 +570,69 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
 
     float gate_sum = simd_sum(gate_acc);
     float up_sum = simd_sum(up_acc);
+
+    // Cross-simdgroup reduce via tiny TG buffers (8 floats each).
+    threadgroup float gate_partials[8];
+    threadgroup float up_partials[8];
     if (lane == 0) {
-        float activated = gate_sum / (1.0f + exp(-gate_sum));
-        out[row] = static_cast<OutT>(activated * up_sum);
+        gate_partials[sg] = gate_sum;
+        up_partials[sg] = up_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float g = 0.0f;
+        float u = 0.0f;
+        for (uint i = 0; i < 8; ++i) {
+            g += gate_partials[i];
+            u += up_partials[i];
+        }
+        float activated = g / (1.0f + exp(-g));
+        out[row] = static_cast<OutT>(activated * u);
+    }
+"#;
+
+/// Single-matrix affine-4bit decode matvec (FFN down_proj).
+/// v1d: 256 threads per output row (same layout as gate/up).
+const QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE: &str = r#"
+    uint flat = thread_position_in_grid.x;
+    uint row = flat / 256;
+    uint tid = flat % 256;
+    uint lane = tid % 32;
+    uint sg = tid / 32;
+    if (row >= OutDim) {
+        return;
+    }
+
+    float acc = 0.0f;
+    const uint row_base = row * PackedCols;
+    const uint scale_row = row * GroupCount;
+
+    for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
+        uint packed = weight[row_base + packed_col];
+        for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
+            uint input_col = packed_col * PackFactor + packed_lane;
+            uint q = (packed >> (packed_lane * Bits)) & QuantMask;
+            uint group = input_col / GroupSize;
+            uint scale_idx = scale_row + group;
+            float x_v = static_cast<float>(x[input_col]);
+            float scale = static_cast<float>(scales[scale_idx]);
+            float bias = static_cast<float>(biases[scale_idx]);
+            acc = fma(x_v, static_cast<float>(q) * scale + bias, acc);
+        }
+    }
+
+    float sum = simd_sum(acc);
+    threadgroup float partials[8];
+    if (lane == 0) {
+        partials[sg] = sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float total = 0.0f;
+        for (uint i = 0; i < 8; ++i) {
+            total += partials[i];
+        }
+        out[row] = static_cast<OutT>(total);
     }
 "#;
 
@@ -1014,11 +1088,10 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
 
     let mut out_shape = x_shape;
     *out_shape.last_mut()? = out_dim;
-    let element_count = out_dim;
     let quant_mask = (1_i32 << gate.bits) - 1;
     let kernel = QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_qwen_dense_ffn_gate_up_swiglu_simd_v1",
+            "ax_qwen_dense_ffn_gate_up_swiglu_simd_v1d",
             &[
                 "x",
                 "gate_weight",
@@ -1083,8 +1156,118 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
                     value: quant_mask,
                 },
             ],
-            (element_count.saturating_mul(32), 1, 1),
-            (32, 1, 1),
+            // 256 threads (8 simdgroups) per output row.
+            (out_dim.saturating_mul(256), 1, 1),
+            (256, 1, 1),
+            None,
+        )
+        .ok()?;
+    outputs.pop()
+}
+
+/// Decode-only affine-4bit matvec for FFN down_proj (intermediate → hidden).
+fn qwen_dense_ffn_down_matvec_metal_impl(x: &MlxArray, down: &QuantizedWeight) -> Option<MlxArray> {
+    if !matches!(
+        x.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let x_shape = x.shape();
+    let input_dim = *x_shape.last()?;
+    if input_dim <= 0 {
+        return None;
+    }
+    let leading_elements = x_shape[..x_shape.len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    if leading_elements != 1 {
+        return None;
+    }
+    let (Some(scales), Some(biases)) = (down.scales.as_ref(), down.biases.as_ref()) else {
+        return None;
+    };
+    if down.bits != 4 || down.group_size <= 0 {
+        return None;
+    }
+    let weight_shape = down.weight.shape();
+    if weight_shape.len() != 2 {
+        return None;
+    }
+    let out_dim = weight_shape[0];
+    let packed_cols = weight_shape[1];
+    if out_dim <= 0 || packed_cols <= 0 {
+        return None;
+    }
+    let pack_factor = 32 / down.bits;
+    if packed_cols.checked_mul(pack_factor)? != input_dim {
+        return None;
+    }
+    if input_dim % down.group_size != 0 {
+        return None;
+    }
+    let group_count = input_dim / down.group_size;
+    let expected_sidecar = vec![out_dim, group_count];
+    if scales.shape() != expected_sidecar || biases.shape() != expected_sidecar {
+        return None;
+    }
+
+    let mut out_shape = x_shape;
+    *out_shape.last_mut()? = out_dim;
+    let quant_mask = (1_i32 << down.bits) - 1;
+    let kernel = QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen_dense_ffn_down_matvec_simd_v1d",
+            &["x", "weight", "scales", "biases"],
+            &["out"],
+            QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[x, &down.weight, scales, biases],
+            &[KernelOutputSpec {
+                shape: out_shape,
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "OutDim",
+                    value: out_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackedCols",
+                    value: packed_cols,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupSize",
+                    value: down.group_size,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupCount",
+                    value: group_count,
+                },
+                KernelTemplateArg::Int {
+                    name: "Bits",
+                    value: down.bits,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackFactor",
+                    value: pack_factor,
+                },
+                KernelTemplateArg::Int {
+                    name: "QuantMask",
+                    value: quant_mask,
+                },
+            ],
+            (out_dim.saturating_mul(256), 1, 1),
+            (256, 1, 1),
             None,
         )
         .ok()?;
@@ -1748,6 +1931,10 @@ fn ffn_swiglu_with_policy(
     } else {
         let gate_w = w.gate_proj.as_ref().unwrap();
         let up_w = w.up_proj.as_ref().unwrap();
+        // Prefer the fused gate/up+SwiGLU Metal matvec kernel on Qwen decode
+        // *before* the host-side split-FFN compile path. Compile used to win
+        // first and permanently shadow the kernel, costing ~3–4% pure decode
+        // on M5 Max Qwen3.5-9B (107 → 110+ tok/s with kernel first).
         if let Some(ffn_hidden) = qwen_dense_ffn_gate_up_swiglu_metal(cfg, x, gate_w, up_w) {
             forward_profile_eval_elapsed(
                 profile_decode,
@@ -1769,6 +1956,23 @@ fn ffn_swiglu_with_policy(
                 .down_proj
                 .as_ref()
                 .expect("dense FFN layer must have down_proj");
+            // Prefer the matching decode matvec Metal path for down_proj so the
+            // full FFN stays on the custom 4-bit matvec kernels (gate/up/down).
+            // Measured ~111.3 pure tok/s on M5 Max Qwen3.5-9B vs ~110.7 when
+            // post-norm fusion shadowed the custom down path.
+            if let Some(down_out) = qwen_dense_ffn_down_matvec_metal_impl(&ffn_hidden, down) {
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnDown,
+                    down_started,
+                    &[&down_out],
+                );
+                return match post_norm {
+                    Some(norm_w) => rms_norm(&down_out, Some(norm_w), cfg.rms_norm_eps, None),
+                    None => down_out,
+                };
+            }
             if let Some(norm_w) = post_norm {
                 if !profile_decode
                     && !profile_prefill
@@ -1815,6 +2019,42 @@ fn ffn_swiglu_with_policy(
                 &[&out],
             );
             return out;
+        }
+        // Fallback when the matvec kernel is off or rejects the shape: compile
+        // the full split FFN graph so host encoding is not rebuilt every token.
+        if !cfg.uses_geglu
+            && seq == 1
+            && leading_elements == 1
+            && fastpath::dense_ffn_compile_enabled()
+            && let Some(down_w) = w.down_proj.as_ref()
+            && let Some((inputs, schema)) =
+                flatten_split_dense_ffn_inputs(x, gate_w, up_w, down_w, post_norm)
+        {
+            let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+            let eps = cfg.rms_norm_eps;
+            let body = move |inputs: &MlxVectorArray| {
+                let x = inputs.get(0);
+                let (gate_qw, up_qw, down_qw, post_norm_w) = schema.rebuild(inputs);
+                let gate = qw_with_policy(&x, &gate_qw, projection_policy);
+                let up = qw_with_policy(&x, &up_qw, projection_policy);
+                let hidden = silu_mul(&gate, &up, None);
+                let out = qw_with_policy(&hidden, &down_qw, projection_policy);
+                if let Some(norm_w) = post_norm_w {
+                    vec![rms_norm(&out, Some(&norm_w), eps, None)]
+                } else {
+                    vec![out]
+                }
+            };
+            if let Some(result) = apply_layer_dense_ffn_decode(
+                cfg.compile_cache_identity,
+                layer_idx,
+                &input_refs,
+                body,
+            )
+            .and_then(|r| r.into_iter().next())
+            {
+                return result;
+            }
         }
         packed_gate_up = None;
         let gate = qw_with_policy(x, gate_w, projection_policy);
@@ -3081,6 +3321,39 @@ impl CompiledDenseFfnSchema {
     }
 }
 
+/// Index layout for Qwen-style **split** gate/up dense FFN compile.
+///
+/// Qwen decode prefers split gate/up so the optional matvec Metal kernel can
+/// engage, which previously skipped the packed-gate_up compile path entirely.
+/// Compiling the split graph (gate + up + SwiGLU + down) cuts per-step host
+/// graph encoding for those layers on M5 Max Qwen3.5-9B.
+#[derive(Clone, Copy)]
+pub(crate) struct CompiledSplitDenseFfnSchema {
+    gate: QuantInputSlot,
+    up: QuantInputSlot,
+    down: QuantInputSlot,
+    post_norm: Option<usize>,
+}
+
+impl CompiledSplitDenseFfnSchema {
+    pub(crate) fn rebuild(
+        &self,
+        inputs: &MlxVectorArray,
+    ) -> (
+        QuantizedWeight,
+        QuantizedWeight,
+        QuantizedWeight,
+        Option<MlxArray>,
+    ) {
+        (
+            self.gate.rebuild(inputs),
+            self.up.rebuild(inputs),
+            self.down.rebuild(inputs),
+            self.post_norm.map(|i| inputs.get(i)),
+        )
+    }
+}
+
 /// Flatten every MLX array the dense FFN forward depends on into an explicit
 /// input vector, returning the vector plus a [`CompiledDenseFfnSchema`] that
 /// records where each tensor landed.
@@ -3102,6 +3375,30 @@ pub(crate) fn flatten_dense_ffn_inputs(
             post_norm: post_norm_idx,
         },
     )
+}
+
+/// Flatten split gate/up/down weights for compiled Qwen decode FFN.
+pub(crate) fn flatten_split_dense_ffn_inputs(
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+    down: &QuantizedWeight,
+    post_norm: Option<&MlxArray>,
+) -> Option<(Vec<MlxArray>, CompiledSplitDenseFfnSchema)> {
+    let mut inputs: Vec<MlxArray> = vec![x.clone()];
+    let gate_slot = push_quant_inputs(&mut inputs, Some(gate))?;
+    let up_slot = push_quant_inputs(&mut inputs, Some(up))?;
+    let down_slot = push_quant_inputs(&mut inputs, Some(down))?;
+    let post_norm_idx = push_optional_input(&mut inputs, post_norm);
+    Some((
+        inputs,
+        CompiledSplitDenseFfnSchema {
+            gate: gate_slot,
+            up: up_slot,
+            down: down_slot,
+            post_norm: post_norm_idx,
+        },
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -4219,6 +4516,7 @@ mod tests {
 
         let metal = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up)
             .expect("4-bit affine gate/up SwiGLU matvec should be eligible");
+        assert_eq!(metal.shape(), vec![1, 1, 16]);
         let gate_ref = quantized_matmul(
             &x,
             &gate_q[0],
@@ -4263,6 +4561,44 @@ mod tests {
 
         assert!(qwen_dense_ffn_gate_up_swiglu_metal_impl(&batched, &weight, &weight).is_none());
         assert!(qwen_dense_ffn_gate_up_swiglu_metal_impl(&prefill, &weight, &weight).is_none());
+    }
+
+    #[test]
+    fn qwen_dense_ffn_down_matvec_metal_matches_quantized_matmul() {
+        // Intermediate → hidden decode matvec (tiled TG path for InputDim > 4096).
+        // Use intermediate=64, out=16, group_size=32 to exercise multi-tile packing.
+        let x_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.015625).collect();
+        let weight_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 400.0) * 0.00125).collect();
+        let x = array_f32(&x_data, &[1, 1, 64]);
+        let weight = array_f32(&weight_data, &[16, 64]);
+        let q = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        let down = QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: Some(q[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+        };
+
+        let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down)
+            .expect("4-bit affine down matvec should be eligible");
+        let reference =
+            quantized_matmul(&x, &q[0], &q[1], Some(&q[2]), true, Some(32), Some(4), None);
+        mlx_sys::transforms::try_eval(&[&metal, &reference])
+            .expect("Qwen dense FFN down matvec Metal kernel must compile and evaluate");
+
+        assert_eq!(metal.shape(), vec![1, 1, 16]);
+        assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
     }
 
     #[test]

@@ -98,6 +98,16 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
+env_flag!(
+    /// `AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY` — on pure single-token decode
+    /// steps, skip appending the large crossover-decision map (profile
+    /// counters, layout telemetry, ngram/MTP counters). Prefill / multi-token
+    /// steps and the first request still get full route metadata. Opt-in for
+    /// competitive single-stream decode (M5 Max Qwen3.5-9B SSE).
+    skip_decode_route_telemetry,
+    "AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_DECODE_SAMPLING_GPU_TOPK` — route exact top-k sampling through
     /// MLX `argpartition_axis` and gather only the top-k full-domain
@@ -222,15 +232,17 @@ env_flag_default_on!(
     "AX_MLX_DENSE_SWIGLU_PACKED_METAL"
 );
 
-env_flag!(
-    /// `AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL` — opt in to AX's
-    /// decode-only Qwen dense FFN gate/up affine-quantized SwiGLU kernel.
+env_flag_default_on!(
+    /// `AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL` — decode-only Qwen dense
+    /// FFN gate/up affine-quantized SwiGLU Metal kernel.
     ///
-    /// **Default: OFF**. This is deliberately separate from loader-time
-    /// `AX_MLX_PACK_DENSE_FFN_GATE_UP`: Qwen3.6 dense FFNs stay on split
-    /// gate/up weights, while decode may fuse both split projections and the
-    /// SwiGLU activation behind a custom Metal kernel. Unsupported shapes fall
-    /// back to the existing two MLX quantized matmuls plus activation.
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL=0`).
+    ///
+    /// On M5 Max Qwen3.5-9B-MLX-4bit, this path with the split-FFN compile
+    /// short-circuit below measures ~110–111 tok/s pure decode vs ~107 when the
+    /// host-side compiled split-FFN graph wins the race and skips the kernel.
+    /// Unsupported shapes still fall back to two MLX quantized matmuls + SwiGLU.
     qwen_dense_ffn_gate_up_matvec_metal_enabled,
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
 );
@@ -925,6 +937,22 @@ pub fn prefill_warmup_token_count(
     }
 }
 
+/// Prefill lengths to JIT at runner construction.
+///
+/// Always includes the historical lightweight warm-up plus short interactive
+/// prompt shapes (32/34/64). The flip S0 contract uses 34 prompt tokens; those
+/// graphs are shape-sensitive on hybrid Qwen3.5 (linear + full attention).
+pub fn prefill_warmup_token_lengths(
+    has_mla_attention: bool,
+    effective_prefill_chunk: usize,
+) -> Vec<usize> {
+    let base = prefill_warmup_token_count(has_mla_attention, effective_prefill_chunk).max(1);
+    let mut lengths = vec![base, 32, 34, 64];
+    lengths.sort_unstable();
+    lengths.dedup();
+    lengths
+}
+
 /// Disk prefix-cache directory. When `AX_MLX_PREFIX_CACHE_DIR=<path>`
 /// is set (and `AX_MLX_PREFIX_CACHE_DISK_DISABLED` is not engaged),
 /// `MlxRunner` opens an L2 file-backed prefix cache rooted at that
@@ -1485,15 +1513,15 @@ mod tests {
     }
 
     #[test]
-    fn qwen_dense_ffn_gate_up_matvec_metal_uses_opt_in_contract() {
-        assert!(!parse_bool_env(
+    fn qwen_dense_ffn_gate_up_matvec_metal_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
             "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_UNSET"
         ));
-        assert!(!probe(
+        assert!(!probe_default_on(
             "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_DISABLED",
             "0"
         ));
-        assert!(probe(
+        assert!(probe_default_on(
             "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENABLED",
             "1"
         ));
@@ -1814,5 +1842,19 @@ mod tests {
     #[test]
     fn prefill_warmup_token_count_clamps_mla_zero() {
         assert_eq!(prefill_warmup_token_count(true, 0), 1);
+    }
+
+    #[test]
+    fn prefill_warmup_token_lengths_cover_short_prompt_serving_shapes() {
+        let lengths = prefill_warmup_token_lengths(false, 256);
+        assert!(lengths.contains(&8), "historical lightweight warm-up");
+        assert!(lengths.contains(&32));
+        assert!(lengths.contains(&34), "flip S0 prompt length must be warm");
+        assert!(lengths.contains(&64));
+        // Sorted unique
+        let mut sorted = lengths.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(lengths, sorted);
     }
 }

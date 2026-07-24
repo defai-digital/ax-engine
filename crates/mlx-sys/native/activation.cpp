@@ -1,5 +1,6 @@
 #include "ax_shim_internal.h"
 
+#include <optional>
 #include <tuple>
 
 #include "mlx/fast.h"

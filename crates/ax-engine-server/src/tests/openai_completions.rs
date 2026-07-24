@@ -405,7 +405,7 @@ async fn openai_completion_request_rejects_gemma4_multimodal_inputs_on_delegated
 }
 
 #[tokio::test]
-async fn openai_qwen_completion_uses_greedy_repetition_penalty_default() {
+async fn openai_qwen_completion_uses_identity_repetition_penalty_for_greedy() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-qwen-rp-tokenizer");
     let state = native_mlx_openai_builder_state("Qwen3.6-27B-4bit", &artifact_dir);
     let live = state.snapshot();
@@ -420,6 +420,30 @@ async fn openai_qwen_completion_uses_greedy_repetition_penalty_default() {
     let built =
         build_openai_completion_request(&live, request).expect("completion request should build");
 
+    // Greedy must keep penalty 1.0 so the MLX direct-decode pipeline engages.
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.0);
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_qwen_completion_keeps_mild_penalty_for_sampled_requests() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-qwen-rp-sampled");
+    let state = native_mlx_openai_builder_state("Qwen3.6-27B-4bit", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "prompt": "hello openai completion",
+        "max_tokens": 32,
+        "temperature": 0.7
+    }))
+    .expect("sample completion request should deserialize");
+
+    let built =
+        build_openai_completion_request(&live, request).expect("completion request should build");
+
+    // Sampled Qwen/Gemma defaults keep the mild 1.1 penalty; only greedy is forced
+    // to 1.0 for the direct-pipeline fast path.
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.1);
 
     std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");

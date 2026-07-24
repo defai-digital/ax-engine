@@ -27,14 +27,6 @@ benchmark contract, or a published performance result where none exists.
   EmbeddingGemma reference implementation and correctness oracle, and provides
   paired embedding benchmark reference runs.
 
-## Engineering and multi-model serving references
-
-- [MLXcel](https://github.com/lablup/mlxcel) is a reference for the AX
-  multi-model serving comparison work and for KV-cache engineering exploration.
-  AX does not vendor or depend on MLXcel source code. The repository contains
-  comparison tooling for an MLXcel baseline; that tooling alone does not claim
-  a published AX-versus-MLXcel result.
-
 ## People and community
 
 - Thanks to [Samuel Faj](https://www.samuelfaj.com/en/), author of

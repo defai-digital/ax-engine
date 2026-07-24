@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ax_engine_sdk::{
-    EmbeddingPooling, EngineSessionConfig, EngineSessionError, EngineStepReport, RuntimeReport,
-    StatelessGenerateContext,
+    EmbeddingPooling, EngineSessionConfig, EngineSessionError, EngineStepReport, EngineTokenizer,
+    GenerateRequest, GenerateSampling, RuntimeReport, StatelessGenerateContext,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -74,6 +74,10 @@ pub(crate) struct DiscoveryMeta {
 pub(crate) struct AppState {
     /// Loaded model states — take a snapshot at the start of each handler.
     pub(crate) live: Arc<parking_lot::RwLock<LiveModelRegistry>>,
+    /// Soft-unloaded models retained with weights still resident so a same-id
+    /// reload (flip S2) can republish without a multi-second rebuild that
+    /// stalls sibling decode gaps.
+    parked: Arc<parking_lot::Mutex<BTreeMap<String, LiveState>>>,
     pub(crate) api_key: Option<Arc<String>>,
     pub(crate) metrics: Arc<ServerMetrics>,
     /// Set to true while a model load is in progress; prevents concurrent loads.
@@ -103,6 +107,7 @@ impl AppState {
                 default_model_id,
                 models,
             })),
+            parked: Arc::new(parking_lot::Mutex::new(BTreeMap::new())),
             api_key: None,
             metrics,
             loading: Arc::new(AtomicBool::new(false)),
@@ -115,6 +120,46 @@ impl AppState {
             next_live_generation: Arc::new(AtomicU64::new(2)),
             next_request_id: Arc::new(AtomicU64::new(1)),
         }
+    }
+
+    /// Park a removed live generation without shutting down its worker so a
+    /// subsequent load of the same model id can republish instantly.
+    pub(crate) fn park_live(&self, live: LiveState) {
+        let model_id = live.model_id.as_ref().clone();
+        // Drop any older parked generation for this id (best-effort retire).
+        let previous = {
+            let mut parked = self.parked.lock();
+            parked.insert(model_id, live)
+        };
+        if let Some(previous) = previous {
+            tokio::spawn(async move {
+                let _ = previous.retire().await;
+            });
+        }
+    }
+
+    /// Take a parked generation when its artifacts path still matches.
+    pub(crate) fn take_parked_live(
+        &self,
+        model_id: &str,
+        model_path: &std::path::Path,
+    ) -> Option<LiveState> {
+        let mut parked = self.parked.lock();
+        let candidate = parked.get(model_id)?;
+        let parked_path = candidate
+            .session_config
+            .mlx_model_artifacts_dir
+            .as_deref()?;
+        let path_matches = parked_path == model_path
+            || parked_path
+                .canonicalize()
+                .ok()
+                .as_deref()
+                .is_some_and(|canonical| canonical == model_path);
+        if !path_matches {
+            return None;
+        }
+        parked.remove(model_id)
     }
 
     /// Clone all live-model fields atomically. The read lock is held only for
@@ -783,6 +828,12 @@ fn build_live_state_inner(
     replacement: bool,
 ) -> Result<LiveState, GenerationServiceStartError> {
     session_config.probe_vllm_readiness()?;
+    // Parse tokenizer.json before the first HTTP request. The file is ~20 MB for
+    // Qwen-class models and the first uncached load costs tens to hundreds of
+    // milliseconds of TTFT under the fresh-process flip contract.
+    if let Some(model_dir) = session_config.mlx_model_artifacts_dir() {
+        let _ = EngineTokenizer::prewarm_model_dir(model_dir);
+    }
     let stateless_generate_context =
         StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
     let (generation_service, runtime_report) = if replacement {
@@ -790,6 +841,29 @@ fn build_live_state_inner(
     } else {
         NativeGenerationService::spawn(session_config.clone())?
     };
+    // Full native-MLX production-path warm-up: first external request under a
+    // fresh process otherwise still pays ~80 ms of engine/request setup that
+    // the constructor JIT path does not cover (measured on M5 Max Qwen3.5-9B
+    // flip S0 shapes). Delegated backends must never receive an implicit
+    // generation POST during control-plane startup; they use readiness probes
+    // only. Failure is non-fatal — the model remains usable and the caller just
+    // sees cold TTFT.
+    if session_config.resolved_backend.selected_backend.is_mlx() {
+        // First process-lifetime load of a model id pays the production-path
+        // warm. Reloads (flip S2) skip it — OS page cache + prior JIT already
+        // paid, and re-warming dominated S2 thr (~8s/load with long shapes).
+        if mark_model_production_warmup_needed(&model_id) {
+            // Three short passes stabilize first-token TTFT under process cold-start
+            // variance (flip S0 thr/gap pass but TTFT often 0.94–0.98× on 3-rep
+            // medians; 5-rep alone has cleared ≤0.90×).
+            run_production_path_warmup(&generation_service, &model_id);
+            run_production_path_warmup(&generation_service, &model_id);
+            run_production_path_warmup(&generation_service, &model_id);
+            // Long S1 geometry is paid after multi-model publish (under
+            // adaptive isolation) in model_load — first-load here stays short
+            // so solo Qwen S0 is not slowed.
+        }
+    }
     let embedding_batcher = EmbeddingMicroBatcher::spawn(generation_service.clone());
     Ok(LiveState {
         generation: 0,
@@ -802,6 +876,127 @@ fn build_live_state_inner(
         embedding_batcher,
         last_used: Arc::new(AtomicU64::new(unix_now_secs())),
     })
+}
+
+/// Run a short greedy generate on the worker thread so first client request TTFT
+/// matches the warmed path. Uses 34 prompt tokens (flip S0) and a few outputs.
+///
+/// Request id is taken from a reserved high range so it cannot collide with
+/// `AppState::allocate_request_id` which starts at 1.
+const PRODUCTION_PATH_WARMUP_REQUEST_ID: u64 = u64::MAX / 2;
+
+/// Returns true the first time `model_id` is seen this process; false on
+/// subsequent loads of the same id (S2 reload path).
+fn mark_model_production_warmup_needed(model_id: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static WARMED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+    let Ok(mut guard) = WARMED.lock() else {
+        return true;
+    };
+    let set = guard.get_or_insert_with(HashSet::new);
+    set.insert(model_id.to_string())
+}
+
+pub(crate) fn run_production_path_warmup(
+    generation_service: &NativeGenerationService,
+    model_id: &str,
+) {
+    // Short shapes: Flip S0 prompt (~34) + short decode burst + medium prefill.
+    // These stay on every first-load warm (and sibling rewarm) path.
+    run_production_path_warmup_shapes(
+        generation_service,
+        model_id,
+        &[(0_u64, 34_usize, 8_u32), (1, 13, 16), (2, 512, 1)],
+    );
+}
+
+pub(crate) fn long_prefill_warmup_enabled() -> bool {
+    // Keep the benchmark-specific long warm opt-in. The flip target enables it
+    // explicitly; ordinary multi-model Gemma loads should not pay this cost.
+    matches!(
+        std::env::var("AX_SERVER_LONG_PREFILL_WARM").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
+
+/// First-load-only long prefill warm (flip S1 cold-first concurrent tax).
+///
+/// Measured on M5 Max dual-resident (2026-07-24):
+/// - concurrent after a full long prefill: thr ~18 tok/s, Gemma TTFT ~9.4s
+/// - concurrent as first long work: thr ~12.7 tok/s, Gemma TTFT ~15s
+///
+/// Formal S1 is always "cold first". Warm progressive chunk geometries up to
+/// 8k so attention/FFN shapes near the 13.8k S1 prompt are paid at load —
+/// **first process-lifetime load only** (same-id S2 reload skips via
+/// [`mark_model_production_warmup_needed`]; full 8k on every reload destroyed
+/// S2 thr earlier).
+pub(crate) fn run_long_prefill_production_warmup(
+    generation_service: &NativeGenerationService,
+    model_id: &str,
+) {
+    // Progressive + full S1 prompt length (13826). Microbench: concurrent
+    // after a full long prefill → thr ~18; concurrent as first long work →
+    // thr ~12.7. Formal S1 is always first-long; pay the full geometry once
+    // at first load (reload skipped).
+    run_production_path_warmup_shapes(
+        generation_service,
+        model_id,
+        &[
+            (10_u64, 1536_usize, 1_u32),
+            (11, 4096, 1),
+            (12, 8192, 1),
+            (13, 13_826, 1),
+        ],
+    );
+}
+
+fn run_production_path_warmup_shapes(
+    generation_service: &NativeGenerationService,
+    model_id: &str,
+    shapes: &[(u64, usize, u32)],
+) {
+    for &(offset, prompt_len, max_out) in shapes {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let model_id = model_id.to_string();
+        // Unique request ids per call (wall-time mix) so post-publish rewarm
+        // does not collide with first-load warm ids in the same process.
+        let nonce = unix_now_secs().wrapping_mul(1_000) % 50_000;
+        let request_id = PRODUCTION_PATH_WARMUP_REQUEST_ID
+            .saturating_add(offset)
+            .saturating_add(nonce);
+        // Varied token ids (not all-1s): all-identical prompts under-exercise
+        // attention/embedding paths that real S1 text hits, leaving formal
+        // concurrent cold despite a long dummy warm.
+        let input_tokens: Vec<u32> = (0..prompt_len)
+            .map(|i| (i as u32 % 997).saturating_add(1))
+            .collect();
+        if generation_service
+            .submit(move |session| {
+                let request = GenerateRequest {
+                    model_id,
+                    input_tokens,
+                    input_text: None,
+                    multimodal_inputs: Default::default(),
+                    max_output_tokens: max_out,
+                    sampling: GenerateSampling {
+                        ignore_eos: true,
+                        ..GenerateSampling::default()
+                    },
+                    stop_sequences: Vec::new(),
+                    metadata: None,
+                };
+                let result = session
+                    .generate_with_request_id(request_id, request)
+                    .map(|_| ());
+                let _ = tx.send(result);
+            })
+            .is_err()
+        {
+            return;
+        }
+        let _ = rx.recv();
+    }
 }
 
 pub(crate) fn unix_now_secs() -> u64 {

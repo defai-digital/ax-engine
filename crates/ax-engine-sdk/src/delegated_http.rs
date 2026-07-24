@@ -1,7 +1,8 @@
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::{Cursor, Read};
+use std::io::Read;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -319,9 +320,8 @@ fn delegated_http_policy_agents() -> &'static Mutex<BTreeMap<DelegatedHttpAgentK
 }
 
 fn validate_ca_pem(ca_pem: &[u8]) -> Result<(), DelegatedHttpConfigError> {
-    let mut reader = Cursor::new(ca_pem);
     let mut count = 0_usize;
-    for certificate in rustls_pemfile::certs(&mut reader) {
+    for certificate in CertificateDer::pem_slice_iter(ca_pem) {
         certificate.map_err(|error| DelegatedHttpConfigError::InvalidCaFile(error.to_string()))?;
         count = count.saturating_add(1);
     }
@@ -372,8 +372,7 @@ fn build_policy_agent(
     if let DelegatedTlsPolicy::SystemRootsWithCustomCa { ca_pem, .. } = &key.tls {
         let mut roots =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let mut reader = Cursor::new(ca_pem);
-        for certificate in rustls_pemfile::certs(&mut reader) {
+        for certificate in CertificateDer::pem_slice_iter(ca_pem) {
             let certificate = certificate
                 .map_err(|error| DelegatedHttpConfigError::InvalidCaFile(error.to_string()))?;
             roots

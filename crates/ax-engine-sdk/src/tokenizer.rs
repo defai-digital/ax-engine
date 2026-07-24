@@ -74,6 +74,14 @@ impl EngineTokenizer {
         })
     }
 
+    /// Eagerly populate the process-level tokenizer cache for `model_dir`.
+    ///
+    /// Call this at model load so first-request TTFT under a fresh process does
+    /// not include the multi-tens-of-milliseconds `tokenizer.json` parse.
+    pub fn prewarm_model_dir(model_dir: &Path) -> Result<(), EngineTokenizerError> {
+        Self::from_model_dir_cached(model_dir).map(|_| ())
+    }
+
     /// Like [`Self::from_model_dir`], but backed by a process-level cache
     /// keyed by the model directory and the `tokenizer.json` modification
     /// time. Parsing a large `tokenizer.json` costs tens to hundreds of
@@ -214,5 +222,21 @@ impl EngineTokenizer {
         self.inner
             .decode(token_ids, skip_special_tokens)
             .map_err(|e| EngineTokenizerError::Decode(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn prewarm_model_dir_reports_missing_tokenizer() {
+        let err = EngineTokenizer::prewarm_model_dir(Path::new("/no/such/ax-engine-model-dir"))
+            .expect_err("missing model dir must fail closed");
+        assert!(
+            matches!(err, EngineTokenizerError::NotFound(_)),
+            "expected NotFound, got {err:?}"
+        );
     }
 }

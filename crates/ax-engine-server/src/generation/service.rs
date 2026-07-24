@@ -1,13 +1,13 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{
     EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateRequest,
-    GenerateResponse, GenerateStreamEvent, GenerateStreamState, RuntimeReport,
-    SessionRequestReport, SessionRequestState,
+    GenerateResponse, GenerateStreamEvent, GenerateStreamState, GenerateStreamStepEvent,
+    RuntimeReport, SessionRequestReport, SessionRequestState,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -22,19 +22,64 @@ type StepObserver = Arc<dyn Fn(&EngineStepReport) + Send + Sync + 'static>;
 type PressureObserver = Arc<dyn Fn(GenerationPressureEvent) + Send + Sync + 'static>;
 type StepwiseTerminalObserver = Arc<dyn Fn(u64) + Send + Sync + 'static>;
 
-#[derive(Default)]
+/// Process-wide Metal/MLX turn arbiter.
+///
+/// Default is exclusive (max concurrent = 1): one model holds the device turn
+/// at a time. That protects stream-gap under multi-model load but serializes
+/// GPU work and caps S1 thr near pure-sum (≈0.99× mlxcel multi-process).
+///
+/// Set `AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT=2` to let distinct model workers
+/// hold turns together. Each worker already owns a dedicated GPU stream created
+/// on its thread (`MlxStream::new_gpu`), so concurrent holds map to concurrent
+/// Metal submissions — the same device-layer overlap mlxcel gets from one
+/// process per model. Same-model re-entry stays exclusive.
 pub(crate) struct ModelExecutionArbiter {
     state: parking_lot::Mutex<ModelExecutionState>,
     ready: parking_lot::Condvar,
+    max_concurrent: usize,
+}
+
+impl Default for ModelExecutionArbiter {
+    fn default() -> Self {
+        Self::with_max_concurrent(exec_arbiter_max_concurrent_from_env())
+    }
+}
+
+impl ModelExecutionArbiter {
+    pub(crate) fn with_max_concurrent(max_concurrent: usize) -> Self {
+        Self {
+            state: parking_lot::Mutex::new(ModelExecutionState::default()),
+            ready: parking_lot::Condvar::new(),
+            max_concurrent: max_concurrent.max(1),
+        }
+    }
+
+    pub(crate) fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+    }
 }
 
 #[derive(Default)]
 struct ModelExecutionState {
-    held_model: Option<String>,
+    /// Models currently holding an execution turn. Size ≤ max_concurrent.
+    held_models: BTreeSet<String>,
     last_served: Option<String>,
     last_activity: BTreeMap<String, Instant>,
     waiters: BTreeMap<String, usize>,
     stats: BTreeMap<(String, ExecutionWorkClass), ModelExecutionStats>,
+}
+
+/// Resolve `AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT` (default 1 = exclusive).
+///
+/// Values < 1 fall back to 1. Cap at 8 so a mis-set env cannot unbounded-open
+/// device contention on large multi-model hosts.
+pub(crate) fn exec_arbiter_max_concurrent_from_env() -> usize {
+    std::env::var("AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .map(|n| n.min(8))
+        .unwrap_or(1)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -73,8 +118,10 @@ impl ModelExecutionArbiter {
         let wait_started_at = Instant::now();
         let mut state = self.state.lock();
         *state.waiters.entry(model_id.to_string()).or_default() += 1;
-        while state.held_model.is_some() || next_waiting_model(&state).as_deref() != Some(model_id)
-        {
+        // Exclusive (max=1): classic round-robin on the single slot.
+        // Concurrent (max>1): distinct models may hold together; same model
+        // never re-enters while already held.
+        while !can_acquire_turn(&state, model_id, self.max_concurrent) {
             self.ready.wait(&mut state);
         }
         let remove_waiter = if let Some(waiters) = state.waiters.get_mut(model_id) {
@@ -86,7 +133,7 @@ impl ModelExecutionArbiter {
         if remove_waiter {
             state.waiters.remove(model_id);
         }
-        state.held_model = Some(model_id.to_string());
+        state.held_models.insert(model_id.to_string());
         state.last_served = Some(model_id.to_string());
         state
             .last_activity
@@ -123,6 +170,7 @@ impl ModelExecutionArbiter {
             .retain(|(stats_model_id, _), _| stats_model_id != model_id);
         state.last_activity.remove(model_id);
         state.waiters.remove(model_id);
+        state.held_models.remove(model_id);
         if state.last_served.as_deref() == Some(model_id) {
             state.last_served = None;
         }
@@ -132,9 +180,9 @@ impl ModelExecutionArbiter {
         let now = Instant::now();
         let state = self.state.lock();
         state
-            .held_model
-            .as_deref()
-            .is_some_and(|held_model| held_model != model_id)
+            .held_models
+            .iter()
+            .any(|held_model| held_model.as_str() != model_id)
             || state
                 .waiters
                 .iter()
@@ -155,17 +203,42 @@ impl Drop for ModelExecutionTurn<'_> {
             .or_default();
         stats.hold_us_total = stats.hold_us_total.saturating_add(hold_us);
         stats.hold_us_max = stats.hold_us_max.max(hold_us);
-        state.held_model = None;
+        state.held_models.remove(&self.model_id);
         state
             .last_activity
             .insert(self.model_id.clone(), Instant::now());
         drop(state);
-        // Wake all waiters: fairness is enforced by next_waiting_model(), but
-        // notify_one could wake the wrong model which would re-wait without
-        // waking the correct one. Model count is typically small (1-3), so the
-        // thundering herd cost is negligible.
+        // Wake all waiters: exclusive mode relies on next_waiting_model();
+        // concurrent mode needs broadcast so every eligible waiter re-checks
+        // free capacity. Model count is typically small (1-3).
         self.arbiter.ready.notify_all();
     }
+}
+
+/// Whether `model_id` may enter a turn under the current hold set.
+fn can_acquire_turn(state: &ModelExecutionState, model_id: &str, max_concurrent: usize) -> bool {
+    if state.held_models.contains(model_id) {
+        return false;
+    }
+    if state.held_models.len() >= max_concurrent {
+        return false;
+    }
+    if max_concurrent <= 1 {
+        // Strict exclusive fairness: only the round-robin head may enter.
+        return next_waiting_model(state).as_deref() == Some(model_id);
+    }
+    // Concurrent: any non-held model may fill a free slot. When more distinct
+    // waiters exist than free slots, prefer the round-robin head so one model
+    // cannot monopolize re-entry after a release.
+    let free_slots = max_concurrent.saturating_sub(state.held_models.len());
+    if free_slots == 0 {
+        return false;
+    }
+    let distinct_waiters = state.waiters.len();
+    if distinct_waiters <= free_slots {
+        return true;
+    }
+    next_waiting_model(state).as_deref() == Some(model_id)
 }
 
 fn duration_us(duration: Duration) -> u64 {
@@ -191,9 +264,106 @@ struct ModelExecutionTarget {
     arbiter: Arc<ModelExecutionArbiter>,
 }
 
-const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP: u32 = 1;
+/// Prefill tokens admitted per engine turn when a sibling model is active.
+///
+/// Historically this was **1**, which serialized a long sibling prefill into
+/// one-token turns and destroyed aggregate throughput under multi-model
+/// isolation (flip S1: ~0.33× vs mlxcel while stream gap stayed ~35 ms).
+///
+/// mlxcel deep-review (2026-07-24) + flip notes: size the quantum so one turn's
+/// wall time stays under the interactive stream-gap SLO (50 ms). On M5 Max
+/// Gemma-12B-class 4-bit prefill (~0.66–0.8 ms/tok) that is roughly 64–96
+/// tokens. Prefer 64 as the conservative default; override via
+/// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS` when calibrating.
+/// Sibling-active prefill quantum (tokens per engine turn) — starting point.
+///
+/// M5 dual-model S1 calibration:
+/// - 1 token: historical isolation envelope (gap ~35–150 ms depending on path)
+/// - 16/64 fixed tokens: interactive gap p95 ballooned to 0.6–0.8 s because
+///   long prefill attention cost grows with position, so fixed-token quanta
+///   are not wall-time-safe mid-prompt.
+///
+/// Default **64** is the *initial* sibling-active quantum (≈ 40–50 ms on M5
+/// Max Gemma-12B 4-bit at ~0.66–0.8 ms/tok). When adaptive isolation is on,
+/// [`advance_shared_engine`] re-sizes from measured µs/token so one sibling
+/// prefill turn stays under the stream-gap SLO budget
+/// ([`ADAPTIVE_PREFILL_GAP_SLO_US`]). Override via
+/// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS`.
+pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
+/// Interactive p95 stream-gap SLO for one sibling prefill turn. Calibrated so
+/// formal S1 keeps gap ratio ≤0.90× mlxcel (~34 ms) and absolute ≤50 ms while
+/// still admitting a productive multi-token quantum (not 1-token pathology).
+const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 32_000;
+const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
+const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
+
+/// Resolve the sibling-active prefill quantum from an optional env value.
+///
+/// Empty / invalid / zero values fall back to
+/// [`ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT`] so operators cannot
+/// accidentally re-enable the historical 1-token pathological endpoint by
+/// setting a garbage env var. Explicit `1` is allowed for gap-tight A/Bs.
+pub(crate) fn resolve_adaptive_prefill_latency_tokens(raw: Option<&str>) -> u32 {
+    raw.and_then(|value| value.trim().parse().ok())
+        .filter(|n: &u32| *n > 0)
+        .unwrap_or(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT)
+}
+
+fn adaptive_prefill_latency_tokens_per_step() -> u32 {
+    static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        resolve_adaptive_prefill_latency_tokens(
+            std::env::var("AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// Size the next sibling prefill quantum from measured µs/token so one turn's
+/// wall time targets [`ADAPTIVE_PREFILL_GAP_SLO_US`].
+///
+/// Using rate (us/tok) instead of binary grow/shrink keeps mid-prefill quanta
+/// large enough for S1 thr while still respecting the 50 ms gap SLO as
+/// attention cost grows with position.
+#[allow(dead_code)]
+pub(crate) fn adjust_adaptive_prefill_tokens(current_tokens: u32, last_runner_time_us: u64) -> u32 {
+    adjust_adaptive_prefill_tokens_with_work(current_tokens, last_runner_time_us, current_tokens)
+}
+
+/// Like [`adjust_adaptive_prefill_tokens`] but uses the actual tokens scheduled
+/// on the previous turn when available (more accurate µs/tok).
+pub(crate) fn adjust_adaptive_prefill_tokens_with_work(
+    current_tokens: u32,
+    last_runner_time_us: u64,
+    last_scheduled_tokens: u32,
+) -> u32 {
+    let current = current_tokens.clamp(ADAPTIVE_PREFILL_MIN_TOKENS, ADAPTIVE_PREFILL_MAX_TOKENS);
+    let work = last_scheduled_tokens.max(1);
+    if last_runner_time_us == 0 {
+        return current;
+    }
+    let us_per_tok = last_runner_time_us.div_ceil(u64::from(work)).max(1);
+    let target = (ADAPTIVE_PREFILL_GAP_SLO_US / us_per_tok).max(1);
+    let target = u32::try_from(target)
+        .unwrap_or(ADAPTIVE_PREFILL_MAX_TOKENS)
+        .clamp(ADAPTIVE_PREFILL_MIN_TOKENS, ADAPTIVE_PREFILL_MAX_TOKENS);
+    // Over budget: snap to target immediately (protect gap SLO).
+    if last_runner_time_us > ADAPTIVE_PREFILL_GAP_SLO_US {
+        return target;
+    }
+    // Under budget: blend toward target to avoid oscillation.
+    let blended = if target > current {
+        current.saturating_add(((target - current) / 2).max(1))
+    } else if target < current {
+        current.saturating_sub(((current - target) / 2).max(1))
+    } else {
+        current
+    };
+    blended.clamp(ADAPTIVE_PREFILL_MIN_TOKENS, ADAPTIVE_PREFILL_MAX_TOKENS)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GenerationPressureEvent {
@@ -204,8 +374,15 @@ pub(crate) enum GenerationPressureEvent {
 const COMMAND_QUEUE_CAPACITY: usize = 256;
 const COMMANDS_PER_TICK: usize = 64;
 const BULK_COMMANDS_PER_ACTIVE_TICK: usize = 1;
-const STREAM_EVENT_CHANNEL_CAPACITY: usize = 128;
-const STREAM_WORKER_BACKLOG_CAPACITY: usize = 8;
+// Large enough that a full interactive completion (flip S0: 192 tokens) can
+// finish on the generation worker without waiting for the HTTP/SSE consumer.
+// Local microbenches on M5 Max showed native generate at ~106 tok/s vs SSE
+// stream at ~81 tok/s when the worker was paced by a tiny backlog; decoupling
+// decode from detokenize/SSE write closes that gap.
+const STREAM_EVENT_CHANNEL_CAPACITY: usize = 512;
+// Match the flip S0 generation length so the worker can complete decode while
+// the OpenAI SSE adapter drains independently (see STREAM_EVENT_CHANNEL_CAPACITY).
+const STREAM_WORKER_BACKLOG_CAPACITY: usize = 256;
 
 enum ServiceCommand {
     Execute(SessionJob),
@@ -256,6 +433,13 @@ struct ServiceState {
     stepwise_terminal_observer: parking_lot::RwLock<Option<StepwiseTerminalObserver>>,
     execution_target: parking_lot::RwLock<Option<ModelExecutionTarget>>,
     adaptive_prefill_isolation: AtomicBool,
+    /// Last engine-step runner wall time (µs) used to feedback-control the
+    /// sibling prefill quantum under adaptive isolation.
+    last_step_runner_time_us: AtomicU64,
+    /// Tokens scheduled on the last engine step (for µs/tok estimation).
+    last_step_scheduled_tokens: AtomicU32,
+    /// Current sibling-active prefill quantum (tokens/turn).
+    adaptive_prefill_tokens: AtomicU32,
 }
 
 pub(crate) struct NativeGenerationService {
@@ -320,6 +504,11 @@ impl NativeGenerationService {
             stepwise_terminal_observer: parking_lot::RwLock::new(None),
             execution_target: parking_lot::RwLock::new(None),
             adaptive_prefill_isolation: AtomicBool::new(false),
+            last_step_runner_time_us: AtomicU64::new(0),
+            last_step_scheduled_tokens: AtomicU32::new(0),
+            adaptive_prefill_tokens: AtomicU32::new(
+                ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT,
+            ),
         });
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
@@ -544,6 +733,15 @@ impl NativeGenerationService {
         self.state
             .adaptive_prefill_isolation
             .store(enabled, Ordering::Release);
+        if enabled {
+            let start = adaptive_prefill_latency_tokens_per_step();
+            self.state
+                .adaptive_prefill_tokens
+                .store(start, Ordering::Release);
+            self.state
+                .last_step_runner_time_us
+                .store(0, Ordering::Release);
+        }
     }
 
     pub(crate) async fn shutdown(&self) -> Result<(), GenerationServiceError> {
@@ -822,7 +1020,26 @@ struct ActiveStream {
     pending_events: VecDeque<NativeEvent>,
     request_event_pending: bool,
     permit: Option<AdmissionPermit>,
+    /// Coalesced token deltas waiting for an SSE emit. First token flushes
+    /// immediately (TTFT); later tokens batch up to
+    /// [`STREAM_TOKEN_EMIT_BATCH`] to cut per-token channel/SSE overhead.
+    pending_delta_tokens: Vec<u32>,
+    pending_delta_logprobs: Vec<Option<f32>>,
+    pending_step: Option<EngineStepReport>,
+    pending_request: Option<SessionRequestReport>,
+    first_output_emitted: bool,
 }
+
+/// After the first stream token, coalesce this many tokens per SSE frame.
+/// Keep at 1 so interactive p95 stream-gap tracks per-token decode (~10 ms)
+/// and stays competitive with mlxcel (~11 ms) under the flip gap-ratio gate
+/// (≤0.90× and absolute ≤50 ms). Engine burst below keeps GPU fed.
+const STREAM_TOKEN_EMIT_BATCH: usize = 1;
+
+/// Single-stream engine steps per worker tick after the first token.
+/// Larger than the SSE emit batch so the Metal double-buffer stays fed even
+/// when the async SSE consumer is slightly behind.
+const STREAM_ENGINE_STEP_BURST: usize = 64;
 
 fn handle_command(
     command: ServiceCommand,
@@ -860,6 +1077,11 @@ fn handle_command(
                         pending_events: VecDeque::new(),
                         request_event_pending: true,
                         permit: Some(permit),
+                        pending_delta_tokens: Vec::new(),
+                        pending_delta_logprobs: Vec::new(),
+                        pending_step: None,
+                        pending_request: None,
+                        first_output_emitted: false,
                     },
                 );
                 debug_assert!(previous.is_none(), "request IDs are process-unique");
@@ -1053,6 +1275,18 @@ fn advance_shared_engine(
 ) -> SessionResult<EngineStepReport> {
     maintain_streams(session, active_streams, service_state);
     let execution_target = service_state.execution_target.read().clone();
+    // Exclusive arbiter (max_concurrent=1): when a sibling is active, cap
+    // engine-step burst so one model cannot HOL the single device turn for a
+    // full STREAM_ENGINE_STEP_BURST (64) decode steps — that starved sibling
+    // prefill (flip S1 Gemma e2e ~28s vs ~10s). Concurrent arbiter (max>1)
+    // lets each model hold its own GPU stream turn, so burst and fair-prefill
+    // quanta no longer mediate cross-model Metal time — restore full decode
+    // burst and non-fair prefill (device-layer overlap, mlxcel multi-process
+    // equivalent).
+    let concurrent_device = execution_target
+        .as_ref()
+        .is_some_and(|target| target.arbiter.max_concurrent() > 1);
+    let mut sibling_active_for_burst = false;
     if let Some(target) = execution_target.as_ref().filter(|_| {
         service_state
             .adaptive_prefill_isolation
@@ -1062,14 +1296,49 @@ fn advance_shared_engine(
             target.model_id.as_ref(),
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
-        let desired_tokens = if sibling_active {
-            ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP
-        } else {
-            ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
-        };
+        // Only force burst=1 under exclusive arbitration.
+        sibling_active_for_burst = sibling_active && !concurrent_device;
         let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
-        if !enabled || current_tokens != desired_tokens {
-            session.set_multi_prefill_fair(true, desired_tokens, inflight);
+        if sibling_active && !concurrent_device {
+            // Feedback-control quantum from last turn's runner wall time so
+            // one prefill chunk stays under the stream-gap SLO mid-prompt
+            // (fixed large quanta blow gap late in long Gemma prefills).
+            let last_us = service_state
+                .last_step_runner_time_us
+                .load(Ordering::Acquire);
+            let last_toks = service_state
+                .last_step_scheduled_tokens
+                .load(Ordering::Acquire);
+            let current = service_state
+                .adaptive_prefill_tokens
+                .load(Ordering::Acquire)
+                .max(ADAPTIVE_PREFILL_MIN_TOKENS);
+            // Only re-size from multi-token steps (prefill quanta). Single-token
+            // decode steps have a different cost model and would otherwise push
+            // the quantum to MAX after a cheap 1-token decode.
+            let adjusted = if last_toks >= 2 {
+                adjust_adaptive_prefill_tokens_with_work(current, last_us, last_toks)
+            } else {
+                current
+            };
+            service_state
+                .adaptive_prefill_tokens
+                .store(adjusted, Ordering::Release);
+            if !enabled || current_tokens != adjusted {
+                session.set_multi_prefill_fair(true, adjusted, inflight);
+            }
+        } else {
+            // Sibling idle, or concurrent multi-model device: restore
+            // single-model prefill throughput (fair off / full chunk). Concurrent
+            // mode relies on Metal time-slicing across dedicated streams rather
+            // than fair-token quanta for stream-gap isolation.
+            let start = adaptive_prefill_latency_tokens_per_step();
+            service_state
+                .adaptive_prefill_tokens
+                .store(start, Ordering::Release);
+            if enabled {
+                session.set_multi_prefill_fair(false, 0, inflight);
+            }
         }
     }
     let _turn = execution_target.as_ref().map(|target| {
@@ -1087,6 +1356,39 @@ fn advance_shared_engine(
                 &report,
                 service_state,
             );
+            // Single interactive stream: burst multiple engine steps per
+            // worker tick so the direct pipeline is not paced by the SSE
+            // consumer. Emit batching remains STREAM_TOKEN_EMIT_BATCH for the
+            // 50 ms gap cap; engine burst is larger to keep GPU fed.
+            // Under multi-model load, burst=1 so the arbiter can re-schedule
+            // the sibling after every step (see sibling_active_for_burst).
+            // Multi-step sibling holds were measured to blow S1 gap p95.
+            let engine_burst = if sibling_active_for_burst {
+                1
+            } else {
+                STREAM_ENGINE_STEP_BURST
+            };
+            if active_streams.len() == 1 && request_ids.len() == 1 && engine_burst > 1 {
+                let request_id = request_ids[0];
+                for _ in 1..engine_burst {
+                    if !active_streams.contains_key(&request_id) {
+                        break;
+                    }
+                    match session.step_report_with_request_ids() {
+                        Ok((report, ids)) => {
+                            record_step_report(service_state, &report);
+                            apply_step_to_streams(
+                                session,
+                                active_streams,
+                                &ids,
+                                &report,
+                                service_state,
+                            );
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
             release_terminal_stepwise_permits(session, stepwise_permits, service_state);
             Ok(report)
         }
@@ -1139,11 +1441,56 @@ fn apply_step_to_streams(
                     continue;
                 }
             };
-        let terminal = matches!(
-            &event,
-            GenerateStreamEvent::Step(step)
-                if request_state_is_terminal(step.request.state)
-        );
+        // Coalesce token steps: first token flushes for TTFT; later tokens wait
+        // for STREAM_TOKEN_EMIT_BATCH (or a terminal state) before enqueue so
+        // the SSE path is not paced by one frame per token.
+        let (event, terminal) = match event {
+            GenerateStreamEvent::Step(step) => {
+                let step_terminal = request_state_is_terminal(step.request.state);
+                if step.delta_tokens.is_empty() && !step_terminal {
+                    // Progress-only step with no new tokens; still forward.
+                    (GenerateStreamEvent::Step(step), step_terminal)
+                } else {
+                    stream.pending_delta_tokens.extend(step.delta_tokens);
+                    stream
+                        .pending_delta_logprobs
+                        .extend(step.delta_token_logprobs);
+                    stream.pending_step = Some(step.step);
+                    stream.pending_request = Some(step.request);
+                    let should_flush = step_terminal
+                        || !stream.first_output_emitted
+                        || stream.pending_delta_tokens.len() >= STREAM_TOKEN_EMIT_BATCH;
+                    if !should_flush {
+                        continue;
+                    }
+                    stream.first_output_emitted = true;
+                    let delta_tokens = std::mem::take(&mut stream.pending_delta_tokens);
+                    let delta_token_logprobs = std::mem::take(&mut stream.pending_delta_logprobs);
+                    let step_report = stream
+                        .pending_step
+                        .take()
+                        .expect("pending step set when flushing stream batch");
+                    let request = stream
+                        .pending_request
+                        .take()
+                        .expect("pending request set when flushing stream batch");
+                    (
+                        GenerateStreamEvent::Step(GenerateStreamStepEvent {
+                            request,
+                            step: step_report,
+                            delta_tokens,
+                            delta_token_logprobs,
+                            delta_text: None,
+                        }),
+                        step_terminal,
+                    )
+                }
+            }
+            other => {
+                let is_response = matches!(other, GenerateStreamEvent::Response(_));
+                (other, is_response)
+            }
+        };
         match enqueue_stream_event(stream, Ok(event), service_state) {
             EnqueueResult::Queued => {}
             EnqueueResult::Closed => {
@@ -1408,6 +1755,20 @@ fn rollback_failed_enqueue(state: &ServiceState) {
 }
 
 fn record_step_report(state: &ServiceState, report: &EngineStepReport) {
+    // Prefer runner_time_us (GPU/host model work); fall back to cpu_time_us.
+    let wall_us = if report.runner_time_us > 0 {
+        report.runner_time_us
+    } else {
+        report.cpu_time_us
+    };
+    if wall_us > 0 {
+        state
+            .last_step_runner_time_us
+            .store(wall_us, Ordering::Release);
+        state
+            .last_step_scheduled_tokens
+            .store(report.scheduled_tokens.max(1), Ordering::Release);
+    }
     let observer = state.step_observer.read().clone();
     if let Some(observer) = observer {
         observer(report);
@@ -1489,6 +1850,45 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn adaptive_prefill_latency_quantum_defaults_to_wall_time_slo_proxy() {
+        // Must not regress to the historical 1-token sibling quantum that
+        // serialized long prefills into thousands of arbiter turns (flip S1).
+        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 64);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("96")), 96);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("1")), 1);
+        const {
+            assert!(
+                ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT
+                    < ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
+            );
+            assert!(
+                ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT > 1,
+                "must not regress to the 1-token pathological sibling quantum"
+            );
+        }
+    }
+
+    #[test]
+    fn adjust_adaptive_prefill_tokens_targets_gap_slo_from_us_per_tok() {
+        // No measurement yet → hold.
+        assert_eq!(adjust_adaptive_prefill_tokens(16, 0), 16);
+        // 16 tokens took 16 ms → 1 ms/tok → target ≈ 32; blend up from 16.
+        let up = adjust_adaptive_prefill_tokens_with_work(16, 16_000, 16);
+        assert!(up > 16 && up <= 32, "up={up}");
+        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 6).
+        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 6);
+        // Very expensive → snap to 1.
+        assert_eq!(adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4), 1);
+        // Cap at max.
+        let capped = adjust_adaptive_prefill_tokens_with_work(100, 1_000, 100);
+        assert!(capped <= ADAPTIVE_PREFILL_MAX_TOKENS);
+    }
 
     fn delegated_config() -> EngineSessionConfig {
         EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
@@ -1717,8 +2117,22 @@ mod tests {
     }
 
     #[test]
+    fn execution_arbiter_concurrent_allows_distinct_models() {
+        let arbiter = Arc::new(ModelExecutionArbiter::with_max_concurrent(2));
+        let alpha = arbiter.acquire("alpha", ExecutionWorkClass::EngineStep);
+        // Distinct model must enter without waiting for alpha to drop.
+        let beta = arbiter.acquire("beta", ExecutionWorkClass::EngineStep);
+        assert_eq!(arbiter.max_concurrent(), 2);
+        assert!(arbiter.has_recent_sibling_activity("alpha", Duration::from_secs(1)));
+        assert!(arbiter.has_recent_sibling_activity("beta", Duration::from_secs(1)));
+        drop(alpha);
+        drop(beta);
+    }
+
+    #[test]
     fn execution_arbiter_rotates_between_waiting_models() {
-        let arbiter = Arc::new(ModelExecutionArbiter::default());
+        // Exclusive default: round-robin fairness on a single device slot.
+        let arbiter = Arc::new(ModelExecutionArbiter::with_max_concurrent(1));
         let first_turn = arbiter.acquire("alpha", ExecutionWorkClass::EngineStep);
         let (acquired_tx, acquired_rx) = std_mpsc::channel();
         let mut workers = Vec::new();
@@ -1796,6 +2210,11 @@ mod tests {
             stepwise_terminal_observer: parking_lot::RwLock::new(None),
             execution_target: parking_lot::RwLock::new(None),
             adaptive_prefill_isolation: AtomicBool::new(false),
+            last_step_runner_time_us: AtomicU64::new(0),
+            last_step_scheduled_tokens: AtomicU32::new(0),
+            adaptive_prefill_tokens: AtomicU32::new(
+                ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT,
+            ),
         };
 
         rollback_failed_enqueue(&state);

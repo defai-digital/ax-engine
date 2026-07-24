@@ -255,6 +255,15 @@ impl EngineStepReport {
 
         Self::from_step_metrics(&outcome.metrics, route, metal_dispatch)
     }
+
+    /// Metrics-only step report for hot decode loops that already stored a
+    /// route earlier in the request. Avoids cloning the large crossover map.
+    pub fn from_native_outcome_without_route(
+        outcome: &EngineStepOutcome,
+        metal_dispatch: Option<MetalDispatchStepReport>,
+    ) -> Self {
+        Self::from_step_metrics(&outcome.metrics, None, metal_dispatch)
+    }
 }
 
 impl From<StepMetrics> for EngineStepReport {

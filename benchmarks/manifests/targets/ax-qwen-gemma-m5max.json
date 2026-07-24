@@ -18,10 +18,24 @@
     "--max-concurrent-requests",
     "8",
     "--max-concurrent-requests-per-model",
-    "4"
+    "4",
+    "--total-blocks",
+    "4096",
+    "--max-batch-tokens",
+    "4096",
+    "--prefill-chunk",
+    "1536"
   ],
   "env": {
-    "AX_MLX_MEMORY_LIMIT": "103079215104"
+    "AX_MLX_MEMORY_LIMIT": "103079215104",
+    "AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS": "0",
+    "AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY": "1",
+    "AX_NO_SPEC": "1",
+    "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL": "1",
+    "AX_MLX_DENSE_FFN_COMPILE": "0",
+    "AX_MLX_BATCHED_DECODE": "1",
+    "AX_SERVER_LONG_PREFILL_WARM": "1",
+    "AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT": "2"
   },
   "models": {
     "qwen3.5-9b": {

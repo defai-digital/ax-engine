@@ -1140,7 +1140,35 @@ impl IncrementalDecoder {
     }
 
     pub(crate) fn push(&mut self, delta_tokens: &[u32]) -> Result<String, EngineTokenizerError> {
+        if delta_tokens.is_empty() {
+            return Ok(String::new());
+        }
         self.tokens.extend_from_slice(delta_tokens);
+
+        // Fast path: empty held window and a single complete piece. One decode
+        // instead of two; covers most ASCII-heavy coding streams token-by-token
+        // and every multi-token batch whose held window is empty.
+        if self.prefix_offset == self.read_offset {
+            let whole = self
+                .tokenizer
+                .decode(&self.tokens[self.prefix_offset..], true)?;
+            if !whole.is_empty() && !whole.ends_with('\u{FFFD}') {
+                self.prefix_offset = self.read_offset;
+                self.read_offset = self.tokens.len();
+                // After a complete emit the held window is the tokens just
+                // finished; next push starts a fresh window at read_offset.
+                // Mirror the dual-decode path: advance prefix to previous end.
+                self.prefix_offset = self.read_offset;
+                return Ok(whole);
+            }
+            // Incomplete multi-byte sequence: fall through is not possible with
+            // prefix_offset == read_offset and a growing window that includes
+            // only new tokens — use dual-decode with empty prefix.
+            if whole.ends_with('\u{FFFD}') {
+                return Ok(String::new());
+            }
+        }
+
         // `prefix` is the already-emitted, codepoint-complete head of the window;
         // `whole` extends it with the newly appended tokens.
         let prefix = self

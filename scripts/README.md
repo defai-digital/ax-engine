@@ -380,6 +380,9 @@ throughput baselines.
   candidate roots pass so the checker can live in CI before a candidate exists.
 - `test_check_decode_hot_path_kernel_admission.py`: unit tests for the decode
   hot-path admission validator.
+- `check_no_mlxcel_public_docs.py`: keeps MLXcel-specific Markdown in
+  `.internal/` by failing when a Markdown filename or file under `docs/`
+  references MLXcel.
 - `check_no_turboquant_references.py`: repo-wide guard for the KV-quantization
   runtime path retired by ADR-002 in favor of the durable tiered prefix cache.
   It fails when references to the retired path appear outside historical
