@@ -232,15 +232,17 @@ env_flag_default_on!(
     "AX_MLX_DENSE_SWIGLU_PACKED_METAL"
 );
 
-env_flag!(
-    /// `AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL` — opt in to AX's
-    /// decode-only Qwen dense FFN gate/up affine-quantized SwiGLU kernel.
+env_flag_default_on!(
+    /// `AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL` — decode-only Qwen dense
+    /// FFN gate/up affine-quantized SwiGLU Metal kernel.
     ///
-    /// **Default: OFF**. This is deliberately separate from loader-time
-    /// `AX_MLX_PACK_DENSE_FFN_GATE_UP`: Qwen3.6 dense FFNs stay on split
-    /// gate/up weights, while decode may fuse both split projections and the
-    /// SwiGLU activation behind a custom Metal kernel. Unsupported shapes fall
-    /// back to the existing two MLX quantized matmuls plus activation.
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL=0`).
+    ///
+    /// On M5 Max Qwen3.5-9B-MLX-4bit, this path with the split-FFN compile
+    /// short-circuit below measures ~110–111 tok/s pure decode vs ~107 when the
+    /// host-side compiled split-FFN graph wins the race and skips the kernel.
+    /// Unsupported shapes still fall back to two MLX quantized matmuls + SwiGLU.
     qwen_dense_ffn_gate_up_matvec_metal_enabled,
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
 );
@@ -1511,15 +1513,15 @@ mod tests {
     }
 
     #[test]
-    fn qwen_dense_ffn_gate_up_matvec_metal_uses_opt_in_contract() {
-        assert!(!parse_bool_env(
+    fn qwen_dense_ffn_gate_up_matvec_metal_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
             "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_UNSET"
         ));
-        assert!(!probe(
+        assert!(!probe_default_on(
             "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_DISABLED",
             "0"
         ));
-        assert!(probe(
+        assert!(probe_default_on(
             "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENABLED",
             "1"
         ));

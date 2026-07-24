@@ -1748,40 +1748,10 @@ fn ffn_swiglu_with_policy(
     } else {
         let gate_w = w.gate_proj.as_ref().unwrap();
         let up_w = w.up_proj.as_ref().unwrap();
-        // Qwen decode keeps split gate/up (see prefer_split). Still compile the
-        // full split FFN graph so host encoding is not rebuilt every token —
-        // matches the packed path's apply_layer_dense_ffn_decode benefit.
-        if !cfg.uses_geglu
-            && seq == 1
-            && leading_elements == 1
-            && fastpath::dense_ffn_compile_enabled()
-            && let Some(down_w) = w.down_proj.as_ref()
-            && let Some((inputs, schema)) =
-                flatten_split_dense_ffn_inputs(x, gate_w, up_w, down_w, post_norm)
-        {
-            let input_refs: Vec<&MlxArray> = inputs.iter().collect();
-            let eps = cfg.rms_norm_eps;
-            let projection_policy = projection_policy;
-            let body = move |inputs: &MlxVectorArray| {
-                let x = inputs.get(0);
-                let (gate_qw, up_qw, down_qw, post_norm_w) = schema.rebuild(inputs);
-                let gate = qw_with_policy(&x, &gate_qw, projection_policy);
-                let up = qw_with_policy(&x, &up_qw, projection_policy);
-                let hidden = silu_mul(&gate, &up, None);
-                let out = qw_with_policy(&hidden, &down_qw, projection_policy);
-                if let Some(norm_w) = post_norm_w {
-                    vec![rms_norm(&out, Some(&norm_w), eps, None)]
-                } else {
-                    vec![out]
-                }
-            };
-            if let Some(result) =
-                apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
-                    .and_then(|r| r.into_iter().next())
-            {
-                return result;
-            }
-        }
+        // Prefer the fused gate/up+SwiGLU Metal matvec kernel on Qwen decode
+        // *before* the host-side split-FFN compile path. Compile used to win
+        // first and permanently shadow the kernel, costing ~3–4% pure decode
+        // on M5 Max Qwen3.5-9B (107 → 110+ tok/s with kernel first).
         if let Some(ffn_hidden) = qwen_dense_ffn_gate_up_swiglu_metal(cfg, x, gate_w, up_w) {
             forward_profile_eval_elapsed(
                 profile_decode,
@@ -1849,6 +1819,39 @@ fn ffn_swiglu_with_policy(
                 &[&out],
             );
             return out;
+        }
+        // Fallback when the matvec kernel is off or rejects the shape: compile
+        // the full split FFN graph so host encoding is not rebuilt every token.
+        if !cfg.uses_geglu
+            && seq == 1
+            && leading_elements == 1
+            && fastpath::dense_ffn_compile_enabled()
+            && let Some(down_w) = w.down_proj.as_ref()
+            && let Some((inputs, schema)) =
+                flatten_split_dense_ffn_inputs(x, gate_w, up_w, down_w, post_norm)
+        {
+            let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+            let eps = cfg.rms_norm_eps;
+            let projection_policy = projection_policy;
+            let body = move |inputs: &MlxVectorArray| {
+                let x = inputs.get(0);
+                let (gate_qw, up_qw, down_qw, post_norm_w) = schema.rebuild(inputs);
+                let gate = qw_with_policy(&x, &gate_qw, projection_policy);
+                let up = qw_with_policy(&x, &up_qw, projection_policy);
+                let hidden = silu_mul(&gate, &up, None);
+                let out = qw_with_policy(&hidden, &down_qw, projection_policy);
+                if let Some(norm_w) = post_norm_w {
+                    vec![rms_norm(&out, Some(&norm_w), eps, None)]
+                } else {
+                    vec![out]
+                }
+            };
+            if let Some(result) =
+                apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
+                    .and_then(|r| r.into_iter().next())
+            {
+                return result;
+            }
         }
         packed_gate_up = None;
         let gate = qw_with_policy(x, gate_w, projection_policy);

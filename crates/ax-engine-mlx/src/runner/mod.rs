@@ -1477,9 +1477,11 @@ impl MlxRunner {
                     &mut sampling_candidates_buf,
                 );
                 // Prime the direct double-buffer path at the prefill/decode
-                // boundary for the largest short-prompt warm-up (matches the
-                // greedy serving bootstrap used when n-gram is disabled).
-                if token_count == *warmup_lengths.last().unwrap_or(&token_count) {
+                // boundary for short-prompt and largest warm-up lengths so the
+                // Qwen gate/up SwiGLU matvec Metal kernel is JIT-hot before the
+                // first client request under the fresh-process flip contract.
+                if token_count == 34 || token_count == *warmup_lengths.last().unwrap_or(&token_count)
+                {
                     let pending =
                         start_direct_pipeline(&cfg, &weights, prefill_tok, &mut dummy_cache);
                     let _ = advance_direct_pipeline_with_timings(
