@@ -29,12 +29,11 @@ exception.
 
 ## Native multimodal and speech support
 
-This table describes the repo-owned MLX implementations, not every architecture
-mlxcel can load. AX selects high-use models whose text backbone, media tower,
-preprocessor, token expansion, cache behavior, and server contract can all be
-validated locally. A family name alone is not enough: `/v1/models` derives its
-media capabilities from the loaded manifest and fails closed when required
-tower tensors are absent.
+This table describes the repo-owned MLX implementations. AX selects high-use
+models whose text backbone, media tower, preprocessor, token expansion, cache
+behavior, and server contract can all be validated locally. A family name alone
+is not enough: `/v1/models` derives its media capabilities from the loaded
+manifest and fails closed when required tower tensors are absent.
 
 | Priority | Model / manifest family | Accepted input | Native surface | Implementation and validation boundary |
 | --- | --- | --- | --- | --- |
