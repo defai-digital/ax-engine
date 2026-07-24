@@ -58,9 +58,32 @@ impl ModelExecutionArbiter {
     pub(crate) fn max_concurrent(&self) -> usize {
         self.max_concurrent
     }
+
+    /// Mark that a multi-token prefill quantum just ran so dual-hold stays
+    /// closed for a short isolation window (stream-gap SLO envelope).
+    pub(crate) fn mark_long_prefill_quantum(&self) {
+        // Cover late S1 quanta + grace so interactive decode re-enters exclusive
+        // mode before the next prefill chunk is submitted under dual-hold.
+        const LONG_PREFILL_EXCLUSIVE_GRACE: Duration = Duration::from_millis(80);
+        let mut state = self.state.lock();
+        state.long_prefill_exclusive_until = Some(Instant::now() + LONG_PREFILL_EXCLUSIVE_GRACE);
+    }
+
+    fn effective_max_concurrent(&self, state: &ModelExecutionState) -> usize {
+        if self.max_concurrent <= 1 {
+            return 1;
+        }
+        let long_prefill_active = state
+            .long_prefill_exclusive_until
+            .is_some_and(|until| Instant::now() < until);
+        if long_prefill_active {
+            1
+        } else {
+            self.max_concurrent
+        }
+    }
 }
 
-#[derive(Default)]
 struct ModelExecutionState {
     /// Models currently holding an execution turn. Size ≤ max_concurrent.
     held_models: BTreeSet<String>,
@@ -68,6 +91,23 @@ struct ModelExecutionState {
     last_activity: BTreeMap<String, Instant>,
     waiters: BTreeMap<String, usize>,
     stats: BTreeMap<(String, ExecutionWorkClass), ModelExecutionStats>,
+    /// When set, force exclusive (max=1) until this instant so long sibling
+    /// prefill cannot dual-hold with interactive decode (S1 gap). Short
+    /// multi-stream decode (S3) keeps concurrent slots after this expires.
+    long_prefill_exclusive_until: Option<Instant>,
+}
+
+impl Default for ModelExecutionState {
+    fn default() -> Self {
+        Self {
+            held_models: BTreeSet::new(),
+            last_served: None,
+            last_activity: BTreeMap::new(),
+            waiters: BTreeMap::new(),
+            stats: BTreeMap::new(),
+            long_prefill_exclusive_until: None,
+        }
+    }
 }
 
 /// Resolve `AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT` (default 1 = exclusive).
@@ -121,8 +161,9 @@ impl ModelExecutionArbiter {
         *state.waiters.entry(model_id.to_string()).or_default() += 1;
         // Exclusive (max=1): classic round-robin on the single slot.
         // Concurrent (max>1): distinct models may hold together; same model
-        // never re-enters while already held.
-        while !can_acquire_turn(&state, model_id, self.max_concurrent) {
+        // never re-enters while already held. Long multi-token prefill forces
+        // exclusive until the isolation window expires (S1 gap vs S3 thr).
+        while !can_acquire_turn(&state, model_id, self.effective_max_concurrent(&state)) {
             self.ready.wait(&mut state);
         }
         let remove_waiter = if let Some(waiters) = state.waiters.get_mut(model_id) {
@@ -298,10 +339,11 @@ pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
 /// without closing 1.15× (excl-c512-q96 thr ratio ~1.02).
 const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 32_000;
 const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
-/// Floor under sibling-active adaptive quanta. Min=1 re-introduces pathological
-/// turn counts late in long prefills; 16 still gap-safe on M5 while cutting
-/// arbiter thr tax (exclusive pure-sum is already the thr ceiling).
-const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 16;
+/// Floor under sibling-active adaptive quanta. Concurrent dual-hold needs the
+/// floor at 1 so late long-context quanta can shrink under the 50 ms gap SLO
+/// (8-token floor still measured ~160 ms p95 on M5). Exclusive thr is pure-sum
+/// limited; tiny late quanta cost thr less than a failed gap gate.
+const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
 /// Resolve the sibling-active prefill quantum from an optional env value.
@@ -1349,6 +1391,11 @@ fn advance_shared_engine(
             service_state
                 .adaptive_prefill_tokens
                 .store(adjusted, Ordering::Release);
+            // While sibling-active fair multi-prefill is engaged, force exclusive
+            // dual-hold so long Gemma prefills cannot dual-submit with Qwen
+            // decode (S1 gap). Short multi-stream decode after fair turns off
+            // re-opens concurrent slots for S3.
+            target.arbiter.mark_long_prefill_quantum();
             if !enabled || current_tokens != adjusted {
                 session.set_multi_prefill_fair(true, adjusted, inflight);
             }
@@ -1912,17 +1959,10 @@ mod tests {
         // 16 tokens took 16 ms → 1 ms/tok → target ≈ 32; blend up from 16.
         let up = adjust_adaptive_prefill_tokens_with_work(16, 16_000, 16);
         assert!(up > 16 && up <= 32, "up={up}");
-        // Over budget: snap to target then clamp to min floor
-        // (16 tokens / 80 ms → 5 ms/tok → target 6 → floor 16).
-        assert_eq!(
-            adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16),
-            ADAPTIVE_PREFILL_MIN_TOKENS
-        );
-        // Very expensive → snap to min floor (not historical 1-token pathology).
-        assert_eq!(
-            adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4),
-            ADAPTIVE_PREFILL_MIN_TOKENS
-        );
+        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 6).
+        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 6);
+        // Very expensive → snap to 1.
+        assert_eq!(adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4), 1);
         // Cap at max.
         let capped = adjust_adaptive_prefill_tokens_with_work(100, 1_000, 100);
         assert!(capped <= ADAPTIVE_PREFILL_MAX_TOKENS);

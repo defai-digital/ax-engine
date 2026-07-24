@@ -1,44 +1,39 @@
-# Qwen/Gemma mlxcel flip status — 2026-07-24 (final cool)
+# Qwen/Gemma mlxcel flip status — 2026-07-24 (session end)
 
 **Decision: `not_yet`**
 
-## Campaign `2026-07-24-full-final-cool` (M5 Max, exclusive, chunk 512, min quantum 16, burst 4)
+## Best full cool campaign (exclusive stack)
 
-| Scenario | thr | TTFT | gap | gap abs | Status |
-| --- | ---: | ---: | ---: | ---: | --- |
-| **S0** | **1.171×** | **0.750×** | **0.795×** | 8.8 ms | **PASS** |
-| **S1** | **1.053×** | **0.860×** | **0.255×** | 8.9 ms | thr FAIL only |
-| **S2** | **1.361×** | **0.772×** | **0.783×** | 9.0 ms | **PASS** |
-| **S3** | **0.936×** | **0.120×** | **1.580×** | 57.8 ms | thr+gap FAIL |
+`2026-07-24-full-final-cool`:
 
-## Progress vs start of day
+| Scenario | thr | TTFT | gap | Status |
+| --- | ---: | ---: | ---: | --- |
+| **S0** | **1.171×** | **0.750×** | **0.795×** | **PASS** |
+| **S1** | **1.053×** | **0.860×** | **0.255×** | thr FAIL |
+| **S2** | **1.361×** | **0.772×** | **0.783×** | **PASS** |
+| **S3** | **0.936×** | **0.120×** | **1.580×** / 58 ms | thr+gap FAIL |
 
-| Gate | Before | Now |
-| --- | --- | --- |
-| S0 thr/TTFT/gap | thr short / mixed | **all PASS** |
-| S1 thr | 0.33× historical → 1.047 rotating | **1.053–1.089** (still <1.15) |
-| S1 gap | often fail under concurrent | **PASS ~9 ms** exclusive |
-| S2 | mixed | **PASS** |
-| S3 | fail | still thr+gap fail |
-
-## Physics locking S1 thr
+## S1 thr physics (locked)
 
 Exclusive single-process wall ≈ pure_Gemma + pure_Qwen:
 
-- Pure Gemma 13.8k prefill @ chunk 512: **~7.8–8.3 s**
-- Pure Qwen 192 decode: **~1.75 s**
-- Floor wall **~9.55 s** → thr ceiling **~20.2** vs mlxcel S1 **~18.2** → **~1.08–1.12× < 1.15**
+- Pure Gemma 13.8k @ chunk 512: **~7.8–8.4 s** (best knobs; rotating/FFN/Metal already on)
+- Pure Qwen ~192 tok: **~1.75 s**
+- Pure sum **~9.55 s** → thr ceiling **~20.2** vs mlxcel S1 **~18.2** → **~1.08–1.12× < 1.15**
+- Best S1 A/B thr: **1.089×**; cool medians **1.05×**
+- Concurrent dual-hold thr ~1.07× but gap **150–380 ms** FAIL
+- `gemma4_post_attn_ffn` C++ composite **slower** pure prefill (8971 vs 8409 ms) — leave OFF
+- Spec/n-gram **regresses** thr
 
-Concurrent dual-hold thr ~1.07× but gap **160–380 ms** (Metal queue). Spec/n-gram **hurts** S0/S1 thr.
+## Code landed this session
 
-## Code shipped (branch tip)
+1. Long-prompt prefill chunk scale (512 clamp)
+2. Fair multi-prefill under soft KV pressure  
+3. Sibling engine-step burst (flip: 4)
+4. Hybrid concurrent arbiter: `max_concurrent=2` with **long-prefill exclusive window** when sibling-active fair multi-prefill is on (S1 gap isolation; S3 can dual-hold after fair ends)
+5. Wired (opt-in) `gemma4_post_attn_ffn` into `layer_shell_post_attention` for re-A/B
 
-- Fair multi-prefill under soft KV pressure
-- Sibling engine-step burst (flip: 4)
-- Prefill-chunk 512 + long-prompt scale helper
-- Adaptive prefill min floor 16
+## Residual to flip
 
-## Next to flip
-
-1. **S1 thr ≥ 1.15**: pure GPU/composite cut ≥~4% on Gemma prefill (or concurrent Metal scheduling that keeps gap ≤33 ms).
-2. **S3 thr+gap**: row-exact batch formation / optional server batched-decode product note.
+1. **S1 thr ≥ 1.15**: need ≥~4% pure Gemma prefill GPU cut (new Metal/composite beyond existing stack) or a concurrent Metal path that keeps gap ≤33 ms.
+2. **S3 thr+gap**: dual-hold not enough; need batch formation / emit path cut for absolute gap ≤50 ms and thr ≥1.15.

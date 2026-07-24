@@ -109,7 +109,6 @@ fn layer_shell_post_attention(
 ) -> MlxArray {
     // 15. Residual (+ optional fused pre-FFN RMSNorm).
     let residual_norm_started = profile_forward_layer.then(Instant::now);
-    let last_only_active = last_position_only_after_attention && seq > 1;
 
     // Cache-only terminal layer: attention already wrote full-seq KV; FFN
     // residual is discarded before the completing decode_step. Return here.
@@ -134,6 +133,65 @@ fn layer_shell_post_attention(
             );
         }
         return hidden;
+    }
+
+    // Direct C++ post-attn FFN composite (Gemma dense packed GEGLU): residual +
+    // pre-FFN RMSNorm + gate_up qmatmul + gelu_approx_mul + down qmatmul +
+    // residual. One FFI boundary for the whole post-attention dense block.
+    // Opt-in via `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` (prior decode A/B was
+    // neutral-to-negative; re-enabled for pure long-prefill thr A/B on M5).
+    let last_only_active = last_position_only_after_attention && seq > 1;
+    if !last_only_active
+        && !profile_forward_layer
+        && !profile_decode_layer
+        && !profile_prefill_layer
+        && !profile_gemma4_moe_decode
+        && w.router_proj.is_none()
+        && per_layer_input.is_none()
+        && w.per_layer_gate.is_none()
+        && cfg.uses_geglu
+        && fastpath::direct_cpp_gemma4_post_attn_ffn_enabled()
+        && let Some(gate_up) = w.gate_up_packed.as_ref()
+        && let Some(gu_scales) = gate_up.scales.as_ref()
+        && let Some(down) = w.down_proj.as_ref()
+        && let Some(down_scales) = down.scales.as_ref()
+    {
+        let out = mlx_sys::gemma4_post_attn_ffn_block(
+            hidden,
+            attn_proj,
+            &w.ffn_norm,
+            w.ffn_post_norm.as_ref(),
+            w.layer_scalar.as_ref(),
+            &gate_up.weight,
+            gu_scales,
+            gate_up.biases.as_ref(),
+            &down.weight,
+            down_scales,
+            down.biases.as_ref(),
+            gate_up.group_size,
+            gate_up.bits,
+            cfg.rms_norm_eps,
+            None,
+        );
+        if let Some(started) = residual_norm_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::PostAttnResidualNorm,
+                started,
+                &[&out],
+            );
+        }
+        if let Some(started) = post_attn_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::PostAttn,
+                started,
+                &[&out],
+            );
+        }
+        return out;
     }
 
     // 15a. Optional last-position-only slice for the terminal prefill layer
