@@ -1,39 +1,32 @@
-# Qwen/Gemma mlxcel flip status — 2026-07-24
+# Qwen/Gemma mlxcel flip status — 2026-07-24 (matvec path)
 
-**Decision: `not_yet`** (locked gates not all met)
+**Decision: `not_yet`**
 
-Primary host: AKMBPM5MAXx (Apple M5 Max). Gates:
-`benchmarks/manifests/qwen_gemma_flip_gates.v1.json` (thresholds **not** relaxed).
+Campaign: `benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-24-full-matvec/`
 
-Campaign: `benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-24-full-s0s3/`
+## Locked-gate medians (3 reps, matvec-first thr path)
 
-## Median ratios (3 fresh-process reps)
-
-| Scenario | thr | TTFT | gap | Result |
+| Scenario | thr | TTFT | gap | Notes |
 | --- | ---: | ---: | ---: | --- |
-| S0 | **1.109×** (need ≥1.15) | **0.731× PASS** | **0.852× PASS** (9.4 ms) | thr only fail |
-| S1 | 0.288× | 3.54× | 23.7× (811 ms) | fail |
-| S2 | 1.071× | 0.769× PASS | 1.88× | thr+gap fail |
-| S3 | 0.835× | 4.04× | 1.41× | fail |
+| S0 | **1.138×** | **0.729× PASS** | **0.877× PASS** | thr short by ~1% |
+| S1 | 0.349× | 2.91× | **0.273× PASS** | quantum=1 restores gap |
+| S2 | 1.075× | **0.755× PASS** | 1.93× | thr+gap |
+| S3 | 0.676× | 16.9× | 1.97× | batch/TTFT |
 
-## S0 thr ceiling (structural)
+## S0 thr path
 
-- Pure `decode-trace`: **107.0–107.5 tok/s**
-- AX OpenAI SSE e2e: **~105 tok/s**
-- mlxcel e2e: **~94.6 tok/s**
-- Max thr ratio ≈ pure/mlx = **1.14 < 1.15** even with TTFT→0
-- Host-sleep 4 ms fully absorbed → GPU/BW bound; hybrid n-gram multi-token **hurts** thr
+- Pure decode **~110.5–111.4 tok/s** after preferring Qwen gate/up SwiGLU **matvec Metal** over split-FFN compile (was ~107).
+- Fresh e2e **~108.3–108.5 tok/s** vs mlxcel **~94.8–95.2** → thr ratio **~1.14 < 1.15**.
+- Need ~+0.7% e2e thr or pure ~112+ to clear thr gate.
 
-## Path fixes landed this cycle
+## Code landed
 
-- Greedy OpenAI `repetition_penalty=1.0` (direct pipeline)
-- Stream backlog + engine step burst + lightweight progress
-- Short-prompt warmup + first-token TTFT bootstrap
-- Sibling prefill quantum 1→16 (64 exploded S1 gap under arbiter)
-- Linear n-gram: no permanent LinearNoDraft disable
+- Matvec Metal default-on; compile runs only if matvec misses
+- Greedy OpenAI penalty 1.0; stream burst 64; thr-critical target env
+- Sibling prefill quantum env-calibratable (S1 gap needs ≤~4 tokens fixed)
 
-## Next levers (still open)
+## Next
 
-1. **S0 thr:** Metal/BW composite kernels to push pure past ~110 tok/s, or thr-positive multi-token for hybrid linear attention
-2. **S1:** wall-time adaptive quantum (measure chunk wall ≤50 ms) + fairer arbiter interleave; multi-process isolation is mlxcel's free lunch
-3. **S3:** arbiter hold profiling + optional server-mode batched-decode drift product decision (P4)
+1. Fuse down_proj into matvec kernel or other BW fusion for last S0 thr %
+2. Wall-time adaptive S1 quantum (fixed tokens unsafe mid-prefill)
+3. S3 arbiter/batch (+ optional tensor-batch drift product decision)
