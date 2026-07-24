@@ -1,54 +1,50 @@
 # Qwen/Gemma mlxcel flip status — 2026-07-24 (night)
 
-**Decision: `not_yet`** — S1 thr still short of 1.15×; S0/S2 pass on last full campaign.
+**Decision: `not_yet`**
 
-## Physics (exclusive single-process)
+## Full campaign (`2026-07-24-full-excl-c512`, exclusive + prefill-chunk 512)
 
-Under exclusive arbiter, S1 wall ≈ pure_Gemma_prefill + pure_Qwen_decode (single GPU, software serial).
+| Scenario | thr | TTFT | gap | gap abs | Status |
+| --- | ---: | ---: | ---: | ---: | --- |
+| **S0** | **1.151×** | **0.956×** | **0.849×** | 8.8 ms | thr+gap PASS; **TTFT FAIL** |
+| **S1** | **1.043×** | **0.866×** | **0.259×** | 8.9 ms | TTFT+gap PASS; **thr FAIL** |
+| **S2** | **1.366×** | **0.718×** | **0.777×** | 8.9 ms | **PASS** |
+| **S3** | **0.942×** | **0.104×** | **1.566×** | 57 ms | thr+gap FAIL (TTFT PASS) |
 
-| Measurement | Value |
+Compare prior full-rotating-q64 (chunk 1536): S0 thr/ttft/gap all PASS (thr 1.158, TTFT 0.839); S1 thr 1.047.
+
+## Best S1 A/B (3-rep exclusive)
+
+| Config | thr ratio | gap abs | Notes |
+| --- | ---: | ---: | --- |
+| full-rotating-q64 (chunk 1536) | **1.047×** | 9 ms | prior full campaign |
+| **excl-c512-b2 (chunk 512)** | **1.089×** | **9 ms** | best S1 thr so far |
+| excl-c512-q96 (SLO 40/max 96) | 1.019× | 9 ms | cold outliers |
+| concurrent + fair-soft + q32 | 1.079× | **379 ms FAIL** | dual-hold gap untamed |
+
+## Physics
+
+Exclusive single-process: wall ≈ pure_Gemma + pure_Qwen.
+
+| Pure measurement | Value |
 | --- | ---: |
-| Pure Gemma prefill (13826 tok, chunk 512) | **~7.8–8.3 s** (~1765 tok/s best) |
-| Pure Qwen decode (~192 tok @ ~110 tok/s) | **~1.75 s** |
-| Theoretical exclusive floor | **~9.6–10.0 s** → thr ceiling **~19.5–20.1** |
-| mlxcel multi-process S1 thr (typical) | **~17.6–18.3** |
-| Exclusive thr ratio ceiling (no pure cut) | **~1.08–1.12× < 1.15** |
+| Gemma 13826-tok prefill, chunk **512** | **~7.8–8.3 s** (best pure) |
+| Gemma same, chunk 1536/2048 | ~8.5–9.0 s (slower) |
+| Qwen 192-tok decode | ~1.75 s |
+| Exclusive thr ceiling vs mlxcel S1 | **~1.08–1.12× < 1.15** without further pure cut |
 
-Concurrent dual-hold can raise thr slightly (~1.08×) but gap p95 stays **~350–400 ms** (Metal dual-stream long prefill) — gap gate fails hard.
+Concurrent dual-hold cannot clear gap (Metal long-prefill monopolizes ~350–400 ms p95) even after fair multi-prefill is kept under soft KV pressure and sibling burst is capped.
 
-## Best S1 so far (3-rep exclusive)
+## Code landed (commit `730b8f98`)
 
-| Config | thr ratio | gap abs | gem e2e | qw e2e |
-| --- | ---: | ---: | ---: | ---: |
-| full-rotating-q64 (chunk 1536) | **1.047×** | 9 ms | 8.9 s | 10.1 s |
-| **excl-c512-b2 (chunk 512)** | **1.089×** | **9 ms** | **8.9 s** | **10.1 s** |
-| concurrent + fair-soft + q32 | 1.079× | **379 ms FAIL** | 8.7 s | 10.0 s |
+1. Fair multi-prefill **stays active under soft KV pressure**; hard exhausted still disables fair.
+2. Sibling engine-step burst env (`AX_SERVER_SIBLING_ENGINE_STEP_BURST`, default 4); applies for exclusive **and** concurrent sibling-active load.
+3. Flip target: exclusive, **prefill-chunk 512**, sibling burst 2.
+4. Adaptive prefill remains SLO 32 ms / max 64 (40/96 regressed thr).
 
-Need thr ~20.2 vs mlx ~17.6 → still **~5% pure-sum cut**.
+## Residual to flip
 
-## Prefill-chunk pure sweep (solo Gemma)
-
-| chunk | e2e ms | prefill tok/s |
-| ---: | ---: | ---: |
-| 256 | 8809 | 1570 |
-| 384 | 8670 | 1595 |
-| **512** | **7832–8297** | **1666–1765** |
-| 768 | 8494 | 1628 |
-| 1536 | 8519 | 1623 |
-| 2048 | 9002 | 1536 |
-
-**Default flip target now uses `--prefill-chunk 512`.**
-
-## Code landed this session
-
-1. **Sibling engine-step burst** configurable (`AX_SERVER_SIBLING_ENGINE_STEP_BURST`, default 4; flip uses 2). Applies whenever a sibling is active (exclusive **and** concurrent) so concurrent prefill workers cannot flood Metal with 64×quantum steps.
-2. **Fair multi-prefill stays active under soft KV pressure** (`kv_low_free_blocks:*`). Previously soft pressure disabled fair and fell back to a 256-token soft budget (S1 concurrent gap ~380 ms). Hard exhausted still disables fair.
-3. Adaptive prefill gap SLO **40 ms / max 96** tokens (was 32/64) to use exclusive gap headroom.
-4. Flip target: exclusive arbiter, prefill-chunk **512**, sibling burst 2.
-
-## Next
-
-1. Further pure Gemma/Qwen cuts (~5% wall) — compiled attention residual, NA tile, more Metal fuse.
-2. Re-run formal ≥3-rep S0–S3 with chunk-512 exclusive stack.
-3. S3 thr/gap still open from last full campaign.
-4. Commit + push evidence when S1 thr ≥ 1.15 or stack stabilizes as new best.
+1. **S1 thr ≥ 1.15×** needs ~5% more pure-sum cut (or a concurrent path that keeps gap ≤50 ms and ≤0.90×).
+2. **S0 TTFT** with chunk 512 slipped to 0.956× in the full campaign — verify whether chunk 512 hurts short-prompt TTFT vs noise; may need shape-sensitive chunk or keep 1536 for S0.
+3. **S3** thr + gap still open (row-exact batch / arbiter).
+4. Re-run full ≥3-rep until `flip-decision=flip`.
