@@ -254,6 +254,37 @@ pub(crate) async fn load_model(
     let state_clone = state.clone();
     let load_task = tokio::spawn(async move {
         let _loading_guard = loading_guard;
+        // Fast path: soft-parked same-id reload (flip S2). Republish without
+        // rebuild so sibling interactive decode is not GPU-stalled.
+        if load_mode == LoadModelMode::Add
+            && let Some(parked) = state_clone.take_parked_live(&model_id, &model_path)
+        {
+            let ctx_len = crate::metadata::context_length(&parked);
+            let published_model_id = Arc::clone(&parked.model_id);
+            let previous = state_clone.publish_live(parked, make_default);
+            if enforce_prefill_isolation
+                && let Some(published) =
+                    state_clone.snapshot_for_model(Some(published_model_id.as_ref()))
+            {
+                published
+                    .generation_service
+                    .set_adaptive_prefill_isolation(true);
+            }
+            if let Some(previous) = previous {
+                // Replacing a live same-id entry should still retire the
+                // outgoing generation; soft-park is only for unload→reload.
+                previous.retire().await.map_err(|error| {
+                    error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        format!(
+                            "parked model republished but previous generation failed to retire: {error}"
+                        ),
+                    )
+                })?;
+            }
+            return Ok(ctx_len);
+        }
         // MemoryConstrained retires the previous service before the build; a
         // failed build would otherwise leave the registry pointing at a dead
         // LiveState, so keep what a rollback respawn needs.
@@ -552,7 +583,12 @@ async fn perform_unload(
                     format!("model {unload_model_id} is not loaded"),
                 ),
             })?;
-        live.retire().await.map_err(map_generation_service_error)
+        // Soft-park instead of hard retire: flip S2 reloads the same sibling
+        // within ~250 ms. Rebuilding weights stalls interactive decode gaps
+        // (~25–55 ms spikes). Parking keeps weights resident for instant
+        // republish while the model is absent from the live registry.
+        state_clone.park_live(live);
+        Ok(())
     });
 
     match task.await {

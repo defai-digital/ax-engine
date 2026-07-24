@@ -74,6 +74,10 @@ pub(crate) struct DiscoveryMeta {
 pub(crate) struct AppState {
     /// Loaded model states — take a snapshot at the start of each handler.
     pub(crate) live: Arc<parking_lot::RwLock<LiveModelRegistry>>,
+    /// Soft-unloaded models retained with weights still resident so a same-id
+    /// reload (flip S2) can republish without a multi-second rebuild that
+    /// stalls sibling decode gaps.
+    parked: Arc<parking_lot::Mutex<BTreeMap<String, LiveState>>>,
     pub(crate) api_key: Option<Arc<String>>,
     pub(crate) metrics: Arc<ServerMetrics>,
     /// Set to true while a model load is in progress; prevents concurrent loads.
@@ -103,6 +107,7 @@ impl AppState {
                 default_model_id,
                 models,
             })),
+            parked: Arc::new(parking_lot::Mutex::new(BTreeMap::new())),
             api_key: None,
             metrics,
             loading: Arc::new(AtomicBool::new(false)),
@@ -115,6 +120,43 @@ impl AppState {
             next_live_generation: Arc::new(AtomicU64::new(2)),
             next_request_id: Arc::new(AtomicU64::new(1)),
         }
+    }
+
+    /// Park a removed live generation without shutting down its worker so a
+    /// subsequent load of the same model id can republish instantly.
+    pub(crate) fn park_live(&self, live: LiveState) {
+        let model_id = live.model_id.as_ref().clone();
+        // Drop any older parked generation for this id (best-effort retire).
+        let previous = {
+            let mut parked = self.parked.lock();
+            parked.insert(model_id, live)
+        };
+        if let Some(previous) = previous {
+            tokio::spawn(async move {
+                let _ = previous.retire().await;
+            });
+        }
+    }
+
+    /// Take a parked generation when its artifacts path still matches.
+    pub(crate) fn take_parked_live(
+        &self,
+        model_id: &str,
+        model_path: &std::path::Path,
+    ) -> Option<LiveState> {
+        let mut parked = self.parked.lock();
+        let candidate = parked.get(model_id)?;
+        let parked_path = candidate.session_config.mlx_model_artifacts_dir.as_deref()?;
+        let path_matches = parked_path == model_path
+            || parked_path
+                .canonicalize()
+                .ok()
+                .as_deref()
+                .is_some_and(|canonical| canonical == model_path);
+        if !path_matches {
+            return None;
+        }
+        parked.remove(model_id)
     }
 
     /// Clone all live-model fields atomically. The read lock is held only for
