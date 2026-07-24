@@ -5,6 +5,8 @@ use crate::gemma4_unified::Gemma4UnifiedRuntimeInputs;
 use crate::generation::GenerationKind;
 use crate::ids::{ModelId, RequestId, SequenceNo};
 use crate::kv::BlockTable;
+use crate::minicpm_v::{MiniCpmV46RuntimeInputError, MiniCpmV46RuntimeInputs};
+use crate::nemotron_omni::{NemotronOmniRuntimeInputError, NemotronOmniRuntimeInputs};
 use crate::qwen3_vl::{Qwen3VlRuntimeInputError, Qwen3VlRuntimeInputs};
 use crate::sampling::{SamplingParams, StopReason};
 use crate::scheduler::RouteMetadata;
@@ -48,6 +50,10 @@ pub struct RequestMultimodalInputs {
     pub unlimited_ocr: Option<UnlimitedOcrRuntimeInputs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qwen3_vl: Option<Qwen3VlRuntimeInputs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minicpm_v46: Option<MiniCpmV46RuntimeInputs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nemotron_omni: Option<NemotronOmniRuntimeInputs>,
 }
 
 impl RequestMultimodalInputs {
@@ -61,6 +67,14 @@ impl RequestMultimodalInputs {
                 .is_none_or(|inputs| inputs.is_empty())
             && self
                 .qwen3_vl
+                .as_ref()
+                .is_none_or(|inputs| inputs.is_empty())
+            && self
+                .minicpm_v46
+                .as_ref()
+                .is_none_or(|inputs| inputs.is_empty())
+            && self
+                .nemotron_omni
                 .as_ref()
                 .is_none_or(|inputs| inputs.is_empty())
     }
@@ -81,14 +95,31 @@ impl RequestMultimodalInputs {
             .qwen3_vl
             .as_ref()
             .is_some_and(|inputs| !inputs.is_empty());
+        let minicpm_v46_active = self
+            .minicpm_v46
+            .as_ref()
+            .is_some_and(|inputs| !inputs.is_empty());
+        let nemotron_omni_active = self
+            .nemotron_omni
+            .as_ref()
+            .is_some_and(|inputs| !inputs.is_empty());
         let active_providers = usize::from(gemma4_active)
             + usize::from(unlimited_ocr_active)
-            + usize::from(qwen3_vl_active);
+            + usize::from(qwen3_vl_active)
+            + usize::from(minicpm_v46_active)
+            + usize::from(nemotron_omni_active);
         if active_providers > 1 {
             return Err(RequestMultimodalInputError::MultipleProviders);
         }
         if let Some(inputs) = self
             .gemma4_unified
+            .as_ref()
+            .filter(|inputs| !inputs.is_empty())
+        {
+            inputs.validate_for_prompt_len(prompt_tokens.len())?;
+        }
+        if let Some(inputs) = self
+            .nemotron_omni
             .as_ref()
             .filter(|inputs| !inputs.is_empty())
         {
@@ -102,6 +133,13 @@ impl RequestMultimodalInputs {
             inputs.validate_for_prompt_tokens(prompt_tokens)?;
         }
         if let Some(inputs) = self.qwen3_vl.as_ref().filter(|inputs| !inputs.is_empty()) {
+            inputs.validate_for_prompt_len(prompt_tokens.len())?;
+        }
+        if let Some(inputs) = self
+            .minicpm_v46
+            .as_ref()
+            .filter(|inputs| !inputs.is_empty())
+        {
             inputs.validate_for_prompt_len(prompt_tokens.len())?;
         }
         Ok(())
@@ -118,6 +156,10 @@ pub enum RequestMultimodalInputError {
     UnlimitedOcr(#[from] UnlimitedOcrRuntimeInputError),
     #[error(transparent)]
     Qwen3Vl(#[from] Qwen3VlRuntimeInputError),
+    #[error(transparent)]
+    MiniCpmV46(#[from] MiniCpmV46RuntimeInputError),
+    #[error(transparent)]
+    NemotronOmni(#[from] NemotronOmniRuntimeInputError),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

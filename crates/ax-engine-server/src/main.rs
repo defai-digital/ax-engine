@@ -16,6 +16,7 @@ mod admission;
 mod anthropic;
 mod app_state;
 mod args;
+mod audio;
 mod backends;
 mod chat;
 mod embeddings;

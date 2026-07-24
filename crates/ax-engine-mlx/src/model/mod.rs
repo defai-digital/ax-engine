@@ -647,6 +647,7 @@ fn forward_and_logits_mode(
     logits_mode: FinalLogitsMode,
 ) -> MlxArray {
     let profile_prefill = token_ids.len() > 1 && prefill_profile_enabled();
+    let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
 
     // Build ids_1d once; reused for both embedding and per-layer-input projection
     // (Gemma4 2B/4B), avoiding a duplicate CPU→GPU token-ID upload.
@@ -788,10 +789,17 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     token_offset: usize,
     logits_mode: FinalLogitsMode,
 ) -> MlxArray {
+    // Gemma 4 E-series derives a separate embedding for every language
+    // layer. Media placeholder IDs are outside that auxiliary embedding
+    // vocabulary; the reference model substitutes token 0 at visual/audio
+    // positions before the gather while retaining the already-scattered
+    // multimodal residual stream.
+    let per_layer_token_ids =
+        mask_media_token_ids_for_per_layer_inputs(token_ids, media_ranges, token_offset);
     let ids_1d = MlxArray::from_raw_data(
-        token_ids.as_ptr() as *const u8,
-        std::mem::size_of_val(token_ids),
-        &[token_ids.len() as i32],
+        per_layer_token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(per_layer_token_ids.as_slice()),
+        &[per_layer_token_ids.len() as i32],
         MlxDtype::Uint32,
     );
     let seq = token_ids.len();
@@ -865,6 +873,123 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     let logits = qw(&normed, &weights.lm_head);
     let logits = finalize_lm_head_logits(cfg, &logits, logits_mode);
     reshape(&logits, &[cfg.vocab_size as i32], None)
+}
+
+fn mask_media_token_ids_for_per_layer_inputs(
+    token_ids: &[u32],
+    media_ranges: &[(usize, usize)],
+    token_offset: usize,
+) -> Vec<u32> {
+    let mut masked = token_ids.to_vec();
+    let chunk_end = token_offset.saturating_add(masked.len());
+    for &(start, end_inclusive) in media_ranges {
+        let end_exclusive = end_inclusive.saturating_add(1);
+        let overlap_start = start.max(token_offset);
+        let overlap_end = end_exclusive.min(chunk_end);
+        if overlap_start < overlap_end {
+            masked[overlap_start - token_offset..overlap_end - token_offset].fill(0);
+        }
+    }
+    masked
+}
+
+/// Full visual prefill for unified Qwen checkpoints.
+///
+/// This keeps AX's existing hybrid-language implementation (including
+/// Qwen3.5 GatedDelta layers) and substitutes explicit interleaved MRoPE only
+/// on full-attention layers. Qwen3-VL DeepStack maps are injected after
+/// language layers 0, 1, ... exactly once during the initial prefill.
+pub(crate) fn forward_qwen_visual_prefill(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    prepared: crate::qwen3_vl::Qwen3VlPrefillEmbeddings,
+    cache: &mut MlxKVCache,
+) -> Result<MlxArray, String> {
+    let crate::qwen3_vl::Qwen3VlPrefillEmbeddings {
+        hidden,
+        mrope,
+        rope_delta,
+        deepstack,
+    } = prepared;
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let seq = token_ids.len();
+    let masks = build_layer_masks_with_media_ranges(cfg, weights.layers.len(), seq, seq, &[]);
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
+    let mut hidden = hidden;
+
+    for (layer_index, layer_weights) in weights.layers.iter().enumerate() {
+        let per_layer_input = per_layer_inputs.as_ref().map(|values| &values[layer_index]);
+        hidden = if cfg.is_linear_attention_layer(layer_index) {
+            layer_forward(
+                cfg,
+                layer_weights,
+                &hidden,
+                cache,
+                layer_index,
+                0,
+                per_layer_input,
+                Some(&masks[layer_index]),
+            )
+        } else if let Some(mrope) = mrope.as_ref() {
+            families::standard::layer_forward_with_mrope(
+                cfg,
+                layer_weights,
+                &hidden,
+                cache,
+                layer_index,
+                0,
+                per_layer_input,
+                Some(&masks[layer_index]),
+                false,
+                false,
+                mrope,
+            )
+        } else {
+            layer_forward(
+                cfg,
+                layer_weights,
+                &hidden,
+                cache,
+                layer_index,
+                0,
+                per_layer_input,
+                Some(&masks[layer_index]),
+            )
+        };
+        if let Some(deepstack) = deepstack.as_ref()
+            && let Some(feature) = deepstack.features.get(layer_index)
+        {
+            hidden =
+                crate::qwen3_vl::add_deepstack_into_text(&hidden, feature, &deepstack.positions)
+                    .map_err(|error| error.to_string())?;
+        }
+    }
+
+    cache.set_mrope_position_delta(rope_delta);
+    let last = (seq.saturating_sub(1)) as i32;
+    let hidden_size = cfg.hidden_size as i32;
+    let last_hidden = slice(
+        &hidden,
+        &[0, last, 0],
+        &[1, last + 1, hidden_size],
+        &[1, 1, 1],
+        None,
+    );
+    let normed = rms_norm(
+        &last_hidden,
+        Some(&weights.final_norm),
+        cfg.rms_norm_eps,
+        None,
+    );
+    let logits = qw(&normed, &weights.lm_head);
+    let logits = finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::Full);
+    Ok(reshape(&logits, &[cfg.vocab_size as i32], None))
 }
 
 /// Forward all positions only far enough to update cache state.
@@ -1030,10 +1155,12 @@ pub fn forward_with_initial_hidden_media_post_norm_last_lm_head(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    let per_layer_token_ids =
+        mask_media_token_ids_for_per_layer_inputs(token_ids, media_ranges, token_offset);
     let ids_1d = MlxArray::from_raw_data(
-        token_ids.as_ptr() as *const u8,
-        std::mem::size_of_val(token_ids),
-        &[token_ids.len() as i32],
+        per_layer_token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(per_layer_token_ids.as_slice()),
+        &[per_layer_token_ids.len() as i32],
         MlxDtype::Uint32,
     );
     let seq = token_ids.len();
@@ -2985,6 +3112,7 @@ fn forward_lazy_single_and_logits_mode(
     lazy_mode: LazySingleTokenMode,
 ) -> MlxArray {
     let profile_decode = decode_profile_enabled();
+    let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
 
     // The generic lazy path accepts scalar or vector token arrays and keeps the
     // historical normalization. The direct-pipeline argmax path already passes
@@ -3077,6 +3205,18 @@ fn forward_lazy_single_and_logits_mode(
         record_decode_profile_step(weights.layers.len() as u32);
     }
     logits
+}
+
+fn qwen_visual_rope_offset(
+    weights: &ModelWeights,
+    cache: &MlxKVCache,
+    token_offset: usize,
+) -> usize {
+    if weights.qwen3_vl_vision.is_some() && cache.mrope_position_delta() != 0 {
+        cache.mrope_decode_position(token_offset)
+    } else {
+        token_offset
+    }
 }
 
 // ── private helpers ──────────────────────────────────────────────────────────
@@ -3200,6 +3340,23 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Mutex, OnceLock};
 
+    #[test]
+    fn gemma4_per_layer_media_ids_are_zeroed_with_chunk_offsets() {
+        let token_ids = [10, 11, 12, 13, 14, 15];
+        assert_eq!(
+            mask_media_token_ids_for_per_layer_inputs(&token_ids, &[(2, 4)], 0),
+            vec![10, 11, 0, 0, 0, 15]
+        );
+        assert_eq!(
+            mask_media_token_ids_for_per_layer_inputs(&token_ids, &[(8, 10)], 6),
+            vec![10, 11, 0, 0, 0, 15]
+        );
+        assert_eq!(
+            mask_media_token_ids_for_per_layer_inputs(&token_ids, &[(0, 1), (20, 25)], 6),
+            token_ids
+        );
+    }
+
     /// Serialize GPU-numeric oracle tests that materialize Metal results.
     /// Parallel suites on CI can otherwise race MLX streams and produce
     /// catastrophic (non-tolerance) mismatches on bit-sensitive RoPE checks.
@@ -3231,6 +3388,7 @@ mod tests {
             moe_expert_intermediate_size: 0,
             layer_configs: Vec::new(),
             global_sliding_window: None,
+            protected_prefix_sliding_window: None,
             gemma4_moe_router: false,
             uses_geglu: false,
             hidden_states_scale: None,
@@ -3627,9 +3785,12 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
         };
 
         let per_layer = compute_per_layer_inputs_arr(&cfg, &weights, &ids_scalar, &hidden)
@@ -4229,9 +4390,12 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
         };
         let cache = MlxKVCache::new(0);
         let hidden = zeros(&[1, 1, 16], MlxDtype::Bfloat16, None);
@@ -4282,9 +4446,12 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -4414,9 +4581,12 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -4494,9 +4664,12 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -5269,9 +5442,12 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
         };
         let mut cache = MlxKVCache::new(cfg.layer_count);
 

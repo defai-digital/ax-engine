@@ -145,4 +145,12 @@ pub enum EngineSessionError {
     EmbeddingNotSupported,
     #[error("embedding failed: {message}")]
     EmbeddingFailed { message: &'static str },
+    #[error("speech transcription requires a loaded native Whisper model")]
+    WhisperUnavailable,
+    #[error("Whisper models support speech transcription/translation, not text generation")]
+    WhisperTextGenerationUnsupported,
+    #[error("unsupported Whisper language: {language}")]
+    WhisperInvalidLanguage { language: String },
+    #[error("Whisper inference failed: {message}")]
+    WhisperFailed { message: String },
 }

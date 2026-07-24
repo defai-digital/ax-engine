@@ -943,7 +943,8 @@ class WrapperContractTests(unittest.TestCase):
 
             manifest_calls: list[Path] = []
 
-            def fake_generate(target: Path) -> bool:
+            def fake_generate(target: Path, *, force: bool = False) -> bool:
+                self.assertFalse(force)
                 manifest_calls.append(Path(target))
                 (Path(target) / "model-manifest.json").write_text('{"fresh":true}')
                 return True
@@ -1012,6 +1013,101 @@ class WrapperContractTests(unittest.TestCase):
                 (dest / "model-manifest.json").read_text(), '{"published":true}'
             )
 
+    def test_download_model_repairs_published_qwen_visual_manifest(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            (dest / "config.json").write_text(
+                json.dumps({"model_type": "qwen3_5_moe", "vision_config": {}})
+            )
+            (dest / "model.safetensors").write_bytes(b"placeholder")
+            (dest / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "language_model.model.embed_tokens.weight": "model.safetensors",
+                            "vision_tower.patch_embed.proj.weight": "model.safetensors",
+                        }
+                    }
+                )
+            )
+            (dest / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "qwen3_5",
+                        "tensors": [
+                            {
+                                "name": "language_model.model.embed_tokens.weight",
+                                "role": "token_embedding",
+                            }
+                        ],
+                    }
+                )
+            )
+            calls: list[tuple[Path, bool]] = []
+
+            def fake_generate(target: Path, *, force: bool = False) -> bool:
+                calls.append((Path(target), force))
+                (Path(target) / "model-manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "model_family": "qwen3_5",
+                            "tensors": [
+                                {"name": "vision_tower.patch_embed.proj.weight"}
+                            ],
+                        }
+                    )
+                )
+                return True
+
+            with patch.object(
+                self.ax_engine, "_try_generate_manifest", side_effect=fake_generate
+            ):
+                resolved = self.ax_engine.download_model(
+                    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
+                    dest=dest,
+                )
+
+            self.assertEqual(resolved, dest)
+            self.assertEqual(calls, [(dest, True)])
+
+    def test_manifest_media_rebuild_requires_gemma_tower_and_projection(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "gemma4", "vision_config": {}})
+            )
+            (model_dir / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "vision_tower.patch_embedder.input_proj.weight": "model.safetensors",
+                            "embed_vision.embedding_projection.weight": "model.safetensors",
+                        }
+                    }
+                )
+            )
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "tensors": [
+                            {
+                                "name": "vision_tower.patch_embedder.input_proj.weight"
+                            }
+                        ]
+                    }
+                )
+            )
+
+            self.assertTrue(
+                self.ax_engine._manifest_needs_media_rebuild(model_dir)
+            )
+
     def test_try_generate_manifest_prefers_bundled_binary_over_path(self) -> None:
         import subprocess
         import tempfile
@@ -1035,6 +1131,39 @@ class WrapperContractTests(unittest.TestCase):
             # The bundled binary is used; the stale PATH binary is never invoked.
             self.assertEqual(
                 calls, [[str(bundled), "generate-manifest", str(model_dir)]]
+            )
+
+    def test_try_generate_manifest_force_replaces_existing_manifest(self) -> None:
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            bundled = Path("/wheel/ax_engine/_bin/ax-engine-bench")
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+            with (
+                patch.object(self.ax_engine, "_bundled_binary", return_value=bundled),
+                patch("subprocess.run", fake_run),
+            ):
+                self.assertTrue(
+                    self.ax_engine._try_generate_manifest(model_dir, force=True)
+                )
+
+            self.assertEqual(
+                calls,
+                [
+                    [
+                        str(bundled),
+                        "generate-manifest",
+                        "--force",
+                        str(model_dir),
+                    ]
+                ],
             )
 
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:

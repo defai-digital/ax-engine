@@ -718,6 +718,7 @@ fn generate_manifest_args_accept_json_flag_after_model_dir() {
         .expect("generate-manifest args should parse");
 
     assert_eq!(args.model_dir, PathBuf::from("/tmp/model"));
+    assert!(!args.force);
     assert!(args.json);
     assert!(!args.validate);
 }
@@ -728,6 +729,7 @@ fn generate_manifest_args_accept_json_flag_before_model_dir() {
         .expect("generate-manifest args should parse");
 
     assert_eq!(args.model_dir, PathBuf::from("/tmp/model"));
+    assert!(!args.force);
     assert!(args.json);
     assert!(!args.validate);
 }
@@ -742,7 +744,23 @@ fn generate_manifest_args_accept_validate_flag() {
     .expect("generate-manifest args should parse");
 
     assert_eq!(args.model_dir, PathBuf::from("/tmp/model"));
+    assert!(!args.force);
     assert!(args.json);
+    assert!(args.validate);
+}
+
+#[test]
+fn generate_manifest_args_accept_force_flag() {
+    let args = parse_generate_manifest_args(&[
+        "--force".to_string(),
+        "/tmp/model".to_string(),
+        "--validate".to_string(),
+    ])
+    .expect("generate-manifest args should parse");
+
+    assert_eq!(args.model_dir, PathBuf::from("/tmp/model"));
+    assert!(args.force);
+    assert!(!args.json);
     assert!(args.validate);
 }
 
@@ -752,7 +770,7 @@ fn generate_manifest_args_reject_missing_model_dir() {
         .expect_err("missing model directory should fail");
 
     assert!(
-        matches!(error, CliError::Usage(message) if message.contains("generate-manifest <model-dir> [--json] [--validate]"))
+        matches!(error, CliError::Usage(message) if message.contains("generate-manifest <model-dir> [--force] [--json] [--validate]"))
     );
 }
 

@@ -9,7 +9,7 @@ use super::config::MlxMtpPolicy;
 use super::errors::EngineSessionError;
 
 #[cfg(feature = "mlx-native")]
-use ax_engine_mlx::{MlxPrefixCacheStore, MlxSharedWeightsCell};
+use ax_engine_mlx::{MlxPrefixCacheStore, MlxSharedWeightsCell, WhisperModel};
 
 #[cfg(any(feature = "mlx-native", test))]
 const PREFIX_REUSE_DISABLED_ENV: &str = "AX_ENGINE_PREFIX_REUSE_DISABLED";
@@ -104,6 +104,16 @@ fn build_mlx_core(
     let artifacts = NativeModelArtifacts::from_dir(model_dir)
         .map_err(|e| EngineSessionError::MetalRuntime(e.into()))?;
 
+    // Whisper is an encoder/decoder speech model with its own decoding loop,
+    // not an autoregressive `ExecutionRunner`. Keep the scheduler/session
+    // shell alive for server lifecycle management while `EngineSession`
+    // owns the dedicated speech runtime.
+    if artifacts.manifest().model_family == "whisper" {
+        let mut core = EngineCore::with_kv_config(config.kv_config);
+        apply_scheduler_policy(&mut core, config);
+        return Ok(core);
+    }
+
     let prefill_chunk = config
         .mlx_prefill_chunk
         .map(|n| n.max(1))
@@ -139,6 +149,28 @@ fn build_mlx_core(
     // diffusion models (and PrefillChunk / TokenDecode for AR) per request.
     core.set_generation_kind(artifacts.manifest().generation_kind());
     Ok(core)
+}
+
+#[cfg(feature = "mlx-native")]
+pub(super) fn load_native_whisper_model(
+    config: &EngineSessionConfig,
+) -> Result<Option<WhisperModel>, EngineSessionError> {
+    if config.resolved_backend.selected_backend != crate::backend::SelectedBackend::Mlx {
+        return Ok(None);
+    }
+    let model_dir = config
+        .mlx_model_artifacts_dir()
+        .ok_or(EngineSessionError::MlxRuntimeArtifactsRequired)?;
+    let artifacts = ax_engine_core::NativeModelArtifacts::from_dir(model_dir)
+        .map_err(|error| EngineSessionError::MetalRuntime(error.into()))?;
+    if artifacts.manifest().model_family != "whisper" {
+        return Ok(None);
+    }
+    WhisperModel::load(&artifacts)
+        .map(Some)
+        .map_err(|error| EngineSessionError::WhisperFailed {
+            message: error.to_string(),
+        })
 }
 
 #[cfg(test)]

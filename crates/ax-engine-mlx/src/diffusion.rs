@@ -2055,6 +2055,7 @@ mod tests {
             moe_expert_intermediate_size: 0,
             layer_configs: Vec::new(),
             global_sliding_window: None,
+            protected_prefix_sliding_window: None,
             gemma4_moe_router: false,
             uses_geglu: false,
             hidden_states_scale: None,
@@ -2123,9 +2124,12 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
         }
     }
 

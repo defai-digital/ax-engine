@@ -96,6 +96,8 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::VllmDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportStreaming
         | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
+        | EngineSessionError::WhisperTextGenerationUnsupported
+        | EngineSessionError::WhisperInvalidLanguage { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
         | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::MissingRequestSnapshot { .. } => error_response(
@@ -160,6 +162,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxLmStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxRuntimeArtifactsRequired
+        | EngineSessionError::WhisperUnavailable
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandTimedOut { .. })
@@ -200,6 +203,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_)
         | EngineSessionError::MlxRuntimeUnavailable
+        | EngineSessionError::WhisperFailed { .. }
         | EngineSessionError::Vllm(VllmBackendError::SerializeRequestJson { .. }) => {
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,

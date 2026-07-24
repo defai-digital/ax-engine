@@ -239,16 +239,31 @@ impl ArchitectureSpec {
                     NativeTensorRole::PerLayerInputGate | NativeTensorRole::PerLayerInputProjection
                 )
             });
-        let is_multimodal_capable = manifest.tensors.iter().any(|t| {
-            matches!(
-                t.role,
-                NativeTensorRole::Gemma4UnifiedVisionPatchDense
-                    | NativeTensorRole::Gemma4UnifiedVisionProjection
-                    | NativeTensorRole::Gemma4UnifiedAudioProjection
-                    | NativeTensorRole::Qwen3VlVisionPatchEmbed
-                    | NativeTensorRole::Qwen3VlVisionMerger
-            )
+        let has_named_media_tower = manifest.tensors.iter().any(|t| {
+            t.name.starts_with("vision_tower.")
+                || t.name.starts_with("visual.")
+                || t.name.starts_with("model.visual.")
+                || t.name.starts_with("model.vision_tower.")
+                || t.name.starts_with("model.vpm.")
+                || t.name.starts_with("vision_model.")
+                || t.name.starts_with("sound_encoder.")
+                || t.name.starts_with("sound_projection.")
         });
+        let is_multimodal_capable = matches!(
+            manifest.model_family.as_str(),
+            "qwen3_vl" | "qwen3_vl_moe" | "minicpmv4_6" | "unlimited_ocr"
+        ) || has_named_media_tower
+            || manifest.tensors.iter().any(|t| {
+                matches!(
+                    t.role,
+                    NativeTensorRole::Gemma4UnifiedVisionPatchDense
+                        | NativeTensorRole::Gemma4UnifiedVisionProjection
+                        | NativeTensorRole::Gemma4UnifiedAudioProjection
+                        | NativeTensorRole::UnlimitedOcrProjector
+                        | NativeTensorRole::Qwen3VlVisionPatchEmbed
+                        | NativeTensorRole::Qwen3VlVisionMerger
+                )
+            });
         let mut capabilities = StructuralCapabilities::from_layers(
             &layers,
             generation,
@@ -297,7 +312,7 @@ fn uses_mxfp4_moe(family: &str) -> bool {
 fn family_uses_batched_qwen3_moe_router(family: &str) -> bool {
     matches!(
         family,
-        "qwen3" | "qwen3_moe" | "qwen3_5" | "qwen3_next" | "mixtral"
+        "qwen3" | "qwen3_moe" | "qwen3_5" | "qwen3_next" | "minicpmv4_6" | "mixtral"
     )
 }
 
@@ -530,6 +545,23 @@ mod tests {
         assert_eq!(spec.layers[3].attention, AttentionKind::Full);
         assert!(spec.capabilities.has_linear_attention);
         assert!(spec.capabilities.has_full_attention);
+    }
+
+    #[test]
+    fn multimodal_families_are_structurally_visible_without_legacy_roles() {
+        for family in ["qwen3_vl", "qwen3_vl_moe", "minicpmv4_6", "unlimited_ocr"] {
+            let spec = ArchitectureSpec::from_manifest(&base_manifest(family, 2));
+            assert!(
+                spec.capabilities.is_multimodal_capable,
+                "{family} should advertise its media tower structurally"
+            );
+        }
+        assert!(
+            !ArchitectureSpec::from_manifest(&base_manifest("qwen3_5", 2))
+                .capabilities
+                .is_multimodal_capable,
+            "text-only Qwen3.5 must not be promoted to multimodal"
+        );
     }
 
     #[test]

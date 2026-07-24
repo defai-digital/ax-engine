@@ -473,6 +473,69 @@ pub(crate) fn layer_forward(
     last_position_only_after_attention: bool,
     skip_post_attention_ffn: bool,
 ) -> MlxArray {
+    layer_forward_internal(
+        cfg,
+        w,
+        hidden,
+        cache,
+        layer_idx,
+        token_offset,
+        per_layer_input,
+        shared_mask,
+        last_position_only_after_attention,
+        skip_post_attention_ffn,
+        None,
+    )
+}
+
+/// Standard transformer layer with explicit Qwen multimodal rotary factors.
+///
+/// Linear-attention layers never call this entry point. Full-attention layers
+/// share the exact post-attention/FFN path with [`layer_forward`]; only Q/K
+/// rotary application differs during the initial visual prefill.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn layer_forward_with_mrope(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    token_offset: usize,
+    per_layer_input: Option<&MlxArray>,
+    shared_mask: Option<&Option<MlxArray>>,
+    last_position_only_after_attention: bool,
+    skip_post_attention_ffn: bool,
+    mrope: &crate::qwen3_vl::QwenMropeCosSin,
+) -> MlxArray {
+    layer_forward_internal(
+        cfg,
+        w,
+        hidden,
+        cache,
+        layer_idx,
+        token_offset,
+        per_layer_input,
+        shared_mask,
+        last_position_only_after_attention,
+        skip_post_attention_ffn,
+        Some(mrope),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layer_forward_internal(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    token_offset: usize,
+    per_layer_input: Option<&MlxArray>,
+    shared_mask: Option<&Option<MlxArray>>,
+    last_position_only_after_attention: bool,
+    skip_post_attention_ffn: bool,
+    mrope: Option<&crate::qwen3_vl::QwenMropeCosSin>,
+) -> MlxArray {
     let (
         head_dim,
         rope_theta,
@@ -484,6 +547,10 @@ pub(crate) fn layer_forward(
     ) = layer_params(cfg, layer_idx);
 
     let seq = hidden.shape()[1] as usize;
+    let protected_prefix_window =
+        (cfg.model_family == "unlimited_ocr" && seq == 1 && cache.seq_len() > 0)
+            .then_some(cfg.protected_prefix_sliding_window)
+            .flatten();
 
     // Cache-only terminal layer: residual/logits are discarded. Only KV (or
     // linear-state) side effects matter. KV-shared consumers write nothing, so
@@ -520,10 +587,11 @@ pub(crate) fn layer_forward(
         let (rope_base, rope_freqs_ref) = rope_freqs
             .map(|f| (None, Some(f)))
             .unwrap_or((Some(rope_theta), None));
-        let use_direct_k_rope = direct_qk_norm_rope_route_enabled_for_family(
-            cfg.model_family.as_str(),
-            w.k_norm.as_ref(),
-        );
+        let use_direct_k_rope = mrope.is_none()
+            && direct_qk_norm_rope_route_enabled_for_family(
+                cfg.model_family.as_str(),
+                w.k_norm.as_ref(),
+            );
         let k_rope = if use_direct_k_rope {
             qk_norm_rope_bhsd_from_proj_with_route(
                 &k_raw,
@@ -547,16 +615,20 @@ pub(crate) fn layer_forward(
                 seq,
                 cfg.rms_norm_eps,
             );
-            rope(
-                &k,
-                rope_dims as i32,
-                false,
-                rope_base,
-                1.0,
-                token_offset as i32,
-                rope_freqs_ref,
-                None,
-            )
+            if let Some(mrope) = mrope {
+                crate::qwen3_vl::apply_interleaved_mrope(&k, mrope, rope_dims)
+            } else {
+                rope(
+                    &k,
+                    rope_dims as i32,
+                    false,
+                    rope_base,
+                    1.0,
+                    token_offset as i32,
+                    rope_freqs_ref,
+                    None,
+                )
+            }
         };
         let retained_window = if seq == 1 || ring_layout.is_some() {
             sliding_window
@@ -568,7 +640,12 @@ pub(crate) fn layer_forward(
         } else {
             None
         };
-        let _ = cache.append_with_retained_window(layer_idx, k_rope, v, retained_window);
+        if let Some(window) = protected_prefix_window {
+            let _ = cache
+                .append_with_protected_prefix_window_for_attention(layer_idx, k_rope, v, window);
+        } else {
+            let _ = cache.append_with_retained_window(layer_idx, k_rope, v, retained_window);
+        }
         return hidden.clone();
     }
 
@@ -597,10 +674,11 @@ pub(crate) fn layer_forward(
             let (rope_base, rope_freqs_ref) = rope_freqs
                 .map(|f| (None, Some(f)))
                 .unwrap_or((Some(rope_theta), None));
-            let direct_q_rope = direct_qk_norm_rope_route_enabled_for_family(
-                cfg.model_family.as_str(),
-                w.q_norm.as_ref(),
-            );
+            let direct_q_rope = mrope.is_none()
+                && direct_qk_norm_rope_route_enabled_for_family(
+                    cfg.model_family.as_str(),
+                    w.q_norm.as_ref(),
+                );
             let q_rope = if direct_q_rope {
                 let qk_norm_started = profile_forward_layer.then(Instant::now);
                 let q_rope = qk_norm_rope_bhsd_from_proj_with_route(
@@ -646,16 +724,20 @@ pub(crate) fn layer_forward(
                     );
                 }
                 let rope_kv_started = profile_forward_layer.then(Instant::now);
-                let q_rope = rope(
-                    &q,
-                    rope_dims as i32,
-                    false,
-                    rope_base,
-                    1.0,
-                    token_offset as i32,
-                    rope_freqs_ref,
-                    None,
-                );
+                let q_rope = if let Some(mrope) = mrope {
+                    crate::qwen3_vl::apply_interleaved_mrope(&q, mrope, rope_dims)
+                } else {
+                    rope(
+                        &q,
+                        rope_dims as i32,
+                        false,
+                        rope_base,
+                        1.0,
+                        token_offset as i32,
+                        rope_freqs_ref,
+                        None,
+                    )
+                };
                 if let Some(started) = rope_kv_started {
                     forward_profile_eval_elapsed(
                         profile_decode_layer,
@@ -703,14 +785,16 @@ pub(crate) fn layer_forward(
             let (rope_base, rope_freqs_ref) = rope_freqs
                 .map(|f| (None, Some(f)))
                 .unwrap_or((Some(rope_theta), None));
-            let use_direct_q_rope = direct_qk_norm_rope_route_enabled_for_family(
-                cfg.model_family.as_str(),
-                w.q_norm.as_ref(),
-            );
-            let use_direct_k_rope = direct_qk_norm_rope_route_enabled_for_family(
-                cfg.model_family.as_str(),
-                w.k_norm.as_ref(),
-            );
+            let use_direct_q_rope = mrope.is_none()
+                && direct_qk_norm_rope_route_enabled_for_family(
+                    cfg.model_family.as_str(),
+                    w.q_norm.as_ref(),
+                );
+            let use_direct_k_rope = mrope.is_none()
+                && direct_qk_norm_rope_route_enabled_for_family(
+                    cfg.model_family.as_str(),
+                    w.k_norm.as_ref(),
+                );
             let use_direct_qk_rope = use_direct_q_rope || use_direct_k_rope;
             let (q_rope, k_rope) = if use_direct_qk_rope {
                 let qk_norm_started = profile_forward_layer.then(Instant::now);
@@ -778,26 +862,35 @@ pub(crate) fn layer_forward(
                     );
                 }
                 let rope_kv_started = profile_forward_layer.then(Instant::now);
-                let q_rope = rope(
-                    &q,
-                    rope_dims as i32,
-                    false,
-                    rope_base,
-                    1.0,
-                    token_offset as i32,
-                    rope_freqs_ref,
-                    None,
-                );
-                let k_rope = rope(
-                    &k,
-                    rope_dims as i32,
-                    false,
-                    rope_base,
-                    1.0,
-                    token_offset as i32,
-                    rope_freqs_ref,
-                    None,
-                );
+                let (q_rope, k_rope) = if let Some(mrope) = mrope {
+                    (
+                        crate::qwen3_vl::apply_interleaved_mrope(&q, mrope, rope_dims),
+                        crate::qwen3_vl::apply_interleaved_mrope(&k, mrope, rope_dims),
+                    )
+                } else {
+                    (
+                        rope(
+                            &q,
+                            rope_dims as i32,
+                            false,
+                            rope_base,
+                            1.0,
+                            token_offset as i32,
+                            rope_freqs_ref,
+                            None,
+                        ),
+                        rope(
+                            &k,
+                            rope_dims as i32,
+                            false,
+                            rope_base,
+                            1.0,
+                            token_offset as i32,
+                            rope_freqs_ref,
+                            None,
+                        ),
+                    )
+                };
                 if let Some(started) = rope_kv_started {
                     forward_profile_eval_elapsed(
                         profile_decode_layer,
@@ -821,12 +914,17 @@ pub(crate) fn layer_forward(
             } else {
                 None
             };
-            let attention_kv = cache.append_with_retained_window_for_attention(
-                layer_idx,
-                k_rope,
-                v,
-                retained_window,
-            );
+            let attention_kv = if let Some(window) = protected_prefix_window {
+                cache
+                    .append_with_protected_prefix_window_for_attention(layer_idx, k_rope, v, window)
+            } else {
+                cache.append_with_retained_window_for_attention(
+                    layer_idx,
+                    k_rope,
+                    v,
+                    retained_window,
+                )
+            };
             if let Some(started) = rope_kv_started {
                 match &attention_kv {
                     MlxAttentionKv::Dense { k, v } => forward_profile_eval_elapsed(

@@ -378,6 +378,66 @@ async fn models_advertises_processed_gemma4_unified_modalities_for_native_mlx() 
     );
 }
 
+#[tokio::test]
+async fn models_advertises_named_qwen_and_minicpm_media_towers() {
+    let qwen_dir = minimal_tokenizer_artifact("qwen-vl-named-tower-metadata");
+    fs::write(
+        qwen_dir.join("model-manifest.json"),
+        json!({
+            "model_family": "qwen3_vl",
+            "tensors": [
+                {"name": "vision_tower.patch_embed.proj.weight", "role": "other"},
+                {"name": "vision_tower.merger.linear_fc1.weight", "role": "other"}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("Qwen3-VL manifest should write");
+    let qwen_app = build_router(native_mlx_openai_builder_state("qwen3-vl-4b", &qwen_dir));
+    let (status, json) = json_response(
+        &qwen_app,
+        Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .expect("request should build"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["data"][0]["capabilities"]["input"]["image"], true);
+    assert_eq!(json["data"][0]["capabilities"]["input"]["video"], true);
+
+    let minicpm_dir = minimal_tokenizer_artifact("minicpm-v46-named-tower-metadata");
+    fs::write(
+        minicpm_dir.join("model-manifest.json"),
+        json!({
+            "model_family": "minicpmv4_6",
+            "tensors": [
+                {"name": "vision_tower.embeddings.patch_embedding.weight", "role": "other"},
+                {"name": "vit_merger.layers.0.mlp.fc1.weight", "role": "other"}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("MiniCPM-V manifest should write");
+    let minicpm_app = build_router(native_mlx_openai_builder_state(
+        "minicpm-v-4.6",
+        &minicpm_dir,
+    ));
+    let (status, json) = json_response(
+        &minicpm_app,
+        Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .expect("request should build"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["data"][0]["capabilities"]["input"]["image"], true);
+    assert_eq!(json["data"][0]["capabilities"]["input"]["video"], false);
+}
+
 fn write_gemma4_unified_manifest(artifact_dir: &Path) {
     let manifest = json!({
         "tensors": [

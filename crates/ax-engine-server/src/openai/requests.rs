@@ -29,8 +29,10 @@ pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 use crate::openai::chat_requests::{
-    ChatPromptRenderOptions, is_qwen3_vl_model_id, messages_contain_inline_media,
+    ChatPromptRenderOptions, is_minicpm_v46_model_id, is_nemotron_omni_model_dir,
+    is_nemotron_omni_model_id, is_qwen3_vl_model_id, messages_contain_inline_media,
     reject_video_chat_content, render_gemma4_unified_chat_with_media,
+    render_minicpm_v46_chat_with_media, render_nemotron_omni_chat_with_media,
     render_openai_chat_prompt_with_options, render_qwen3_vl_chat_with_media,
 };
 pub(crate) use crate::openai::chat_requests::{
@@ -498,8 +500,9 @@ pub(crate) fn build_openai_chat_request(
     } else {
         validate_native_chat_artifacts(live)?;
         // On native MLX, decode inline base64 image/audio parts into the
-        // family-specific multimodal schema. Qwen3-VL → qwen3_vl; otherwise
-        // Gemma 4 unified. Falls back to text-only when there is no media.
+        // family-specific multimodal schema. Qwen3-VL/Qwen3.5/Qwen 3.6 use
+        // qwen3_vl; other capable families select their own renderer below.
+        // Falls back to text-only when there is no media.
         let media_rendered = if live.runtime_report.selected_backend == SelectedBackend::Mlx
             && multimodal_inputs.is_empty()
             && messages_contain_inline_media(&request.messages)
@@ -512,10 +515,33 @@ pub(crate) fn build_openai_chat_request(
                 )
             })?;
             let model_id = live.model_id.as_ref();
-            if is_qwen3_vl_model_id(model_id)
-                || crate::metadata::model_family_from_artifacts(live)
+            let artifact_family = crate::metadata::model_family_from_artifacts(live);
+            if is_minicpm_v46_model_id(model_id)
+                || artifact_family.as_deref() == Some("minicpmv4_6")
+            {
+                if let Some(prompt) =
+                    render_minicpm_v46_chat_with_media(model_id, model_dir, &request.messages)?
+                {
+                    input_tokens = prompt.input_tokens;
+                    multimodal_inputs.minicpm_v46 = Some(prompt.runtime_inputs);
+                    true
+                } else {
+                    false
+                }
+            } else if is_nemotron_omni_model_id(model_id) || is_nemotron_omni_model_dir(model_dir) {
+                if let Some(prompt) =
+                    render_nemotron_omni_chat_with_media(model_id, model_dir, &request.messages)?
+                {
+                    input_tokens = prompt.input_tokens;
+                    multimodal_inputs.nemotron_omni = Some(prompt.runtime_inputs);
+                    true
+                } else {
+                    false
+                }
+            } else if is_qwen3_vl_model_id(model_id)
+                || artifact_family
                     .as_deref()
-                    .is_some_and(|f| f == "qwen3_vl" || f == "qwen3_vl_moe")
+                    .is_some_and(|f| f == "qwen3_vl" || f == "qwen3_vl_moe" || f == "qwen3_5")
             {
                 if let Some(prompt) =
                     render_qwen3_vl_chat_with_media(model_id, model_dir, &request.messages)?

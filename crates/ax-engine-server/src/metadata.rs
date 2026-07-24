@@ -76,6 +76,8 @@ struct AxEngineModelMetadata {
     native_generate_supported: bool,
     openai_completions_supported: bool,
     openai_chat_completions_supported: bool,
+    openai_audio_transcriptions_supported: bool,
+    openai_audio_translations_supported: bool,
     openai_tool_calling_supported: bool,
     openai_text_input_supported: bool,
     native_multimodal_input_supported: bool,
@@ -145,11 +147,21 @@ pub(crate) async fn discovery_info(
     }
     let live = state.snapshot();
     let auth_required = state.api_key.is_some();
-    let mut operations = vec![
-        "chat_completions".to_string(),
-        "completions".to_string(),
-        "embeddings".to_string(),
-    ];
+    let snapshots = state.snapshots();
+    let mut operations = Vec::new();
+    if snapshots.iter().any(openai_text_supported_live) {
+        operations.extend([
+            "chat_completions".to_string(),
+            "completions".to_string(),
+            "embeddings".to_string(),
+        ]);
+    }
+    if snapshots.iter().any(whisper_supported_live) {
+        operations.extend([
+            "audio_transcriptions".to_string(),
+            "audio_translations".to_string(),
+        ]);
+    }
     operations.sort();
     Ok(Json(json!({
         "schema": "ax.engine.discovery.v1",
@@ -183,6 +195,7 @@ fn model_card(live: &LiveState) -> ModelCard {
     let context_length = context_length(live);
     let max_output_tokens = max_output_tokens_live(live, context_length);
     let openai_text = openai_text_supported_live(live);
+    let whisper = whisper_supported_live(live);
     let native_multimodal = native_processed_multimodal_support_live(live);
     let delegated_multimodal = delegated_multimodal_support_live(live);
     let advertised_multimodal = NativeProcessedMultimodalSupport {
@@ -195,7 +208,12 @@ fn model_card(live: &LiveState) -> ModelCard {
         id: live.model_id.to_string(),
         object: "model",
         owned_by: MODEL_OWNER,
-        capabilities: model_capabilities(openai_text, advertised_multimodal, openai_tool_calling),
+        capabilities: model_capabilities(
+            openai_text,
+            advertised_multimodal,
+            openai_tool_calling,
+            whisper,
+        ),
         limit: ModelLimit {
             context: context_length,
             output: max_output_tokens,
@@ -207,6 +225,7 @@ fn model_card(live: &LiveState) -> ModelCard {
             openai_text,
             native_multimodal,
             openai_tool_calling,
+            whisper,
         ),
         runtime: live.runtime_report.clone(),
     }
@@ -227,27 +246,28 @@ fn model_capabilities(
     openai_text: bool,
     native_multimodal: NativeProcessedMultimodalSupport,
     openai_tool_calling: bool,
+    whisper: bool,
 ) -> ModelCapabilities {
     ModelCapabilities {
         temperature: openai_text,
         reasoning: false,
-        attachment: native_multimodal.any(),
+        attachment: native_multimodal.any() || whisper,
         toolcall: openai_tool_calling,
         input: ModelModalities {
             text: openai_text,
-            audio: native_multimodal.audio,
+            audio: native_multimodal.audio || whisper,
             image: native_multimodal.image,
             video: native_multimodal.video,
             pdf: false,
         },
         output: ModelModalities {
-            text: openai_text,
+            text: openai_text || whisper,
             audio: false,
             image: false,
             video: false,
             pdf: false,
         },
-        interleaved: native_multimodal.any(),
+        interleaved: native_multimodal.any() && !whisper,
     }
 }
 
@@ -256,6 +276,7 @@ fn ax_engine_model_metadata(
     openai_text: bool,
     native_multimodal: NativeProcessedMultimodalSupport,
     openai_tool_calling: bool,
+    whisper: bool,
 ) -> AxEngineModelMetadata {
     let native_multimodal_input = native_multimodal.any();
     let coding_only = chat::is_qwen_coder_model(model_id);
@@ -265,15 +286,23 @@ fn ax_engine_model_metadata(
             ChatPromptTemplate::QwenChatMl
         );
     AxEngineModelMetadata {
-        native_generate_supported: true,
+        native_generate_supported: !whisper,
         openai_completions_supported: openai_text,
         openai_chat_completions_supported: openai_text,
+        openai_audio_transcriptions_supported: whisper,
+        openai_audio_translations_supported: whisper,
         openai_tool_calling_supported: openai_tool_calling,
         openai_text_input_supported: openai_text,
         native_multimodal_input_supported: native_multimodal_input,
         gemma4_unified_multimodal_input_supported: native_multimodal_input,
         openai_tokenized_multimodal_input_supported: native_multimodal_input,
-        primary_use: if coding_only { "coding" } else { "general" },
+        primary_use: if whisper {
+            "speech_recognition"
+        } else if coding_only {
+            "coding"
+        } else {
+            "general"
+        },
         chat_default: openai_text && !coding_only,
         coding_supported,
         coding_only,
@@ -313,24 +342,47 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         return NativeProcessedMultimodalSupport::default();
     };
 
-    let gemma4_image = GEMMA4_UNIFIED_VISION_ROLES
+    let gemma4_unified_image = GEMMA4_UNIFIED_VISION_ROLES
         .iter()
         .all(|role| has_global_tensor_role(tensors, role));
-    let qwen3_vl_image = has_global_tensor_role(tensors, QWEN3_VL_VISION_PATCH_EMBED_ROLE)
-        || has_global_tensor_role(tensors, QWEN3_VL_VISION_MERGER_ROLE)
-        || family_from_manifest(&manifest).is_some_and(|f| f == "qwen3_vl" || f == "qwen3_vl_moe");
-    let image = gemma4_image || qwen3_vl_image;
-    let audio = has_global_tensor_role(tensors, GEMMA4_UNIFIED_AUDIO_ROLE);
-    // WS-M1: advertise video only for gemma4_unified manifests that already
-    // have vision roles, have no convert-time media drops, and are not
-    // disabled via AX_MLX_GEMMA4_VIDEO=off. Media is data-URI only (no remote
-    // fetch). Frame caps keep expanded soft tokens under atomic max_batch_tokens.
+    let family = family_from_manifest(&manifest).unwrap_or_default();
+    let gemma4_standard_image = family == "gemma4"
+        && (has_tensor_name_prefix(tensors, "vision_tower.")
+            || has_tensor_name_prefix(tensors, "model.vision_tower."))
+        && (has_tensor_name_prefix(tensors, "embed_vision.")
+            || has_tensor_name_prefix(tensors, "model.embed_vision."));
+    let qwen3_vl_image = (matches!(family.as_str(), "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5")
+        && (has_tensor_name_prefix(tensors, "vision_tower.")
+            || has_tensor_name_prefix(tensors, "visual.")
+            || has_tensor_name_prefix(tensors, "model.visual.")))
+        || has_global_tensor_role(tensors, QWEN3_VL_VISION_PATCH_EMBED_ROLE)
+        || has_global_tensor_role(tensors, QWEN3_VL_VISION_MERGER_ROLE);
+    let minicpm_v46_image = family == "minicpmv4_6"
+        && (has_tensor_name_prefix(tensors, "vision_tower.")
+            || has_tensor_name_prefix(tensors, "model.vision_tower.")
+            || has_tensor_name_prefix(tensors, "model.vpm."))
+        && (has_tensor_name_prefix(tensors, "vit_merger.")
+            || has_tensor_name_prefix(tensors, "merger.")
+            || has_tensor_name_prefix(tensors, "model.vit_merger.")
+            || has_tensor_name_prefix(tensors, "model.merger."));
+    let nemotron_omni_image = has_tensor_name_prefix(tensors, "vision_model.radio_model.")
+        && has_tensor_name_prefix(tensors, "mlp1.");
+    let nemotron_omni_audio = has_tensor_name_prefix(tensors, "sound_encoder.")
+        && has_tensor_name_prefix(tensors, "sound_projection.");
+    let image = gemma4_unified_image
+        || gemma4_standard_image
+        || qwen3_vl_image
+        || minicpm_v46_image
+        || nemotron_omni_image;
+    let audio = has_global_tensor_role(tensors, GEMMA4_UNIFIED_AUDIO_ROLE) || nemotron_omni_audio;
+    // Advertise video only when the loaded tower has the corresponding native
+    // frame path: Gemma4 unified or Qwen3-VL/Qwen3.5. Media is data-URI only
+    // (no remote fetch), and convert-time media drops fail the capability closed.
     let media_drops = manifest
         .get("dropped_tensors")
         .and_then(|d| d.get("media_role_hits"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let family = family_from_manifest(&manifest).unwrap_or_default();
     let video_env_off = matches!(
         std::env::var("AX_MLX_GEMMA4_VIDEO")
             .unwrap_or_else(|_| "on".into())
@@ -339,10 +391,16 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
             .as_str(),
         "0" | "false" | "off" | "no"
     );
-    let video = gemma4_image
-        && !video_env_off
-        && media_drops == 0
-        && (family == "gemma4" || family == "gemma4_unified" || family.starts_with("gemma4"));
+    // Standard Gemma checkpoints may intentionally omit the optional
+    // Conformer audio tower. That must not suppress their independent
+    // per-frame ViT video path.
+    let gemma4_video = !video_env_off
+        && (gemma4_standard_image
+            || (gemma4_unified_image
+                && media_drops == 0
+                && (family == "gemma4_unified" || family.starts_with("gemma4"))));
+    let qwen3_vl_video = qwen3_vl_image && media_drops == 0;
+    let video = gemma4_video || qwen3_vl_video;
     NativeProcessedMultimodalSupport {
         image,
         audio,
@@ -393,6 +451,15 @@ fn has_global_tensor_role(tensors: &[Value], role: &str) -> bool {
     })
 }
 
+fn has_tensor_name_prefix(tensors: &[Value], prefix: &str) -> bool {
+    tensors.iter().any(|tensor| {
+        tensor
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name.starts_with(prefix))
+    })
+}
+
 const GEMMA4_UNIFIED_VISION_ROLES: &[&str] = &[
     "gemma4_unified_vision_patch_dense",
     "gemma4_unified_vision_patch_dense_bias",
@@ -414,15 +481,21 @@ const QWEN3_VL_VISION_MERGER_ROLE: &str = "qwen3_vl_vision_merger";
 fn openai_text_supported_live(live: &LiveState) -> bool {
     // Keep this in sync with `validate_openai_text_backend` in `openai::validation`:
     // every backend that serves the OpenAI text endpoints must advertise them here.
-    matches!(
-        live.runtime_report.selected_backend,
-        SelectedBackend::LlamaCpp
-            | SelectedBackend::MlxLmDelegated
-            | SelectedBackend::TensorRtEdgeLlm
-            | SelectedBackend::TensorRtLlm
-            | SelectedBackend::Vllm
-            | SelectedBackend::Mlx
-    )
+    !whisper_supported_live(live)
+        && matches!(
+            live.runtime_report.selected_backend,
+            SelectedBackend::LlamaCpp
+                | SelectedBackend::MlxLmDelegated
+                | SelectedBackend::TensorRtEdgeLlm
+                | SelectedBackend::TensorRtLlm
+                | SelectedBackend::Vllm
+                | SelectedBackend::Mlx
+        )
+}
+
+fn whisper_supported_live(live: &LiveState) -> bool {
+    live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && model_family_from_artifacts(live).as_deref() == Some("whisper")
 }
 
 /// Computes context length from the caller's `LiveState` snapshot — callers

@@ -70,6 +70,7 @@ pub(crate) fn resolve_model_type(config: &serde_json::Value) -> Result<String, C
     // Normalize hyphenated HF types to snake_case family labels.
     Ok(match raw.as_str() {
         "unlimited-ocr" => "unlimited_ocr".to_string(),
+        "NemotronH_Nano_Omni_Reasoning_V3" => "nemotron_h_nano_omni".to_string(),
         other => other.to_string(),
     })
 }
@@ -107,6 +108,8 @@ pub(crate) fn uses_text_config(model_type: &str) -> bool {
             | "qwen3-vl"
             | "qwen3_vl_moe"
             | "qwen3-vl-moe"
+            | "minicpmv4_6"
+            | "nemotron_h_nano_omni"
             | "mistral3"
             // Unlimited-OCR nests language fields under language_config (alias text_config).
             | "unlimited-ocr"
@@ -126,7 +129,7 @@ pub(crate) fn is_unlimited_ocr(model_type: &str) -> bool {
 pub(crate) fn is_qwen3_5_family(model_type: &str) -> bool {
     matches!(
         model_type,
-        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text"
+        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text" | "minicpmv4_6"
     )
 }
 
@@ -167,7 +170,7 @@ pub(crate) fn is_glm4_moe_lite(model_type: &str) -> bool {
 
 /// NVIDIA Nemotron-H hybrid (`model_type: nemotron_h`): Mamba-2 + GQA + MoE.
 pub(crate) fn is_nemotron_h(model_type: &str) -> bool {
-    model_type == "nemotron_h"
+    matches!(model_type, "nemotron_h" | "nemotron_h_nano_omni")
 }
 
 /// Parse diffusion-specific config fields from config.json.
@@ -307,6 +310,7 @@ pub(crate) fn arch_u64(config: &serde_json::Value, model_type: &str, field: &str
             config
                 .get("text_config")
                 .or_else(|| config.get("language_config"))
+                .or_else(|| config.get("llm_config"))
                 .and_then(|tc| tc.get(field))
                 .and_then(|v| v.as_u64())
         } else {
@@ -321,6 +325,7 @@ pub(crate) fn arch_bool(config: &serde_json::Value, model_type: &str, field: &st
             config
                 .get("text_config")
                 .or_else(|| config.get("language_config"))
+                .or_else(|| config.get("llm_config"))
                 .and_then(|tc| tc.get(field))
                 .and_then(|v| v.as_bool())
         } else {
@@ -335,6 +340,7 @@ pub(crate) fn arch_f64(config: &serde_json::Value, model_type: &str, field: &str
             config
                 .get("text_config")
                 .or_else(|| config.get("language_config"))
+                .or_else(|| config.get("llm_config"))
                 .and_then(|tc| tc.get(field))
                 .and_then(|v| v.as_f64())
         } else {
@@ -625,6 +631,8 @@ pub(crate) fn parse_rope_scaling(
     let rs = if uses_text_config(model_type) {
         config
             .get("text_config")
+            .or_else(|| config.get("language_config"))
+            .or_else(|| config.get("llm_config"))
             .and_then(|tc| tc.get("rope_scaling"))
     } else {
         config.get("rope_scaling")
@@ -685,6 +693,7 @@ pub(crate) fn parse_layer_types(
         .or_else(|| {
             config
                 .get("text_config")
+                .or_else(|| config.get("llm_config"))
                 .and_then(|tc| tc.get("layer_types"))
         })
         .and_then(|v| v.as_array())
@@ -740,6 +749,7 @@ pub(crate) fn parse_nemotron_hybrid_pattern(
     config: &serde_json::Value,
     layer_count: u32,
 ) -> Vec<String> {
+    let config = config.get("llm_config").unwrap_or(config);
     let chars: Option<Vec<char>> = if let Some(s) = config
         .get("hybrid_override_pattern")
         .and_then(|v| v.as_str())
@@ -890,6 +900,25 @@ pub(crate) fn resolve_architecture(
     config: &serde_json::Value,
     model_type: &str,
 ) -> Result<ArchitectureParams, ConvertError> {
+    if model_type == "whisper" {
+        let hidden_size = require_arch_u64(config, model_type, "n_audio_state")? as u32;
+        let attention_head_count = require_arch_u64(config, model_type, "n_audio_head")? as u32;
+        let layer_count = require_arch_u64(config, model_type, "n_audio_layer")? as u32;
+        let vocab_size = require_arch_u64(config, model_type, "n_vocab")? as u32;
+        let attention_head_dim = hidden_size
+            .checked_div(attention_head_count)
+            .unwrap_or_default();
+        return Ok(ArchitectureParams {
+            layer_count,
+            hidden_size,
+            intermediate_size: hidden_size.saturating_mul(4),
+            attention_head_count,
+            attention_head_dim,
+            kv_head_count: attention_head_count,
+            vocab_size,
+        });
+    }
+
     let hidden_size = require_arch_u64(config, model_type, "hidden_size")? as u32;
     let attention_head_count = require_arch_u64(config, model_type, "num_attention_heads")? as u32;
     let kv_head_count = arch_u64(config, model_type, "num_key_value_heads")

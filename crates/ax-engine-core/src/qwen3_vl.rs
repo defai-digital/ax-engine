@@ -34,10 +34,28 @@ pub struct Qwen3VlImageRuntimeInput {
     pub num_patches: u32,
     /// Patch feature dim (last dim of patch embed input).
     pub patch_dim: u32,
+    /// Temporal grid entries consumed by the vision tower. Still images use
+    /// one; videos use one entry per temporal patch group.
+    #[serde(default = "default_grid_t")]
+    pub grid_t: u32,
     pub height: u32,
     pub width: u32,
     pub patch_size: u32,
+    /// Frames folded into each Conv3D patch (two for Qwen3-VL/Qwen3.5).
+    #[serde(default = "default_temporal_patch_size")]
+    pub temporal_patch_size: u32,
     pub spatial_merge_size: u32,
+    /// Selects the checkpoint's video token when constructing MRoPE axes.
+    #[serde(default)]
+    pub is_video: bool,
+}
+
+const fn default_grid_t() -> u32 {
+    1
+}
+
+const fn default_temporal_patch_size() -> u32 {
+    2
 }
 
 impl Qwen3VlImageRuntimeInput {
@@ -58,6 +76,41 @@ impl Qwen3VlImageRuntimeInput {
             return Err(Qwen3VlRuntimeInputError::InvalidGeometry(
                 "num_patches and patch_dim must be > 0".into(),
             ));
+        }
+        if self.grid_t == 0
+            || self.patch_size == 0
+            || self.temporal_patch_size == 0
+            || self.spatial_merge_size == 0
+        {
+            return Err(Qwen3VlRuntimeInputError::InvalidGeometry(
+                "grid_t, patch_size, temporal_patch_size, and spatial_merge_size must be > 0"
+                    .into(),
+            ));
+        }
+        if !self.height.is_multiple_of(self.patch_size)
+            || !self.width.is_multiple_of(self.patch_size)
+        {
+            return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
+                "{}x{} is not divisible by patch_size {}",
+                self.height, self.width, self.patch_size
+            )));
+        }
+        let grid_h = self.height / self.patch_size;
+        let grid_w = self.width / self.patch_size;
+        if !grid_h.is_multiple_of(self.spatial_merge_size)
+            || !grid_w.is_multiple_of(self.spatial_merge_size)
+        {
+            return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
+                "patch grid {grid_h}x{grid_w} is not divisible by spatial_merge_size {}",
+                self.spatial_merge_size
+            )));
+        }
+        let expected_patches = self.grid_t.saturating_mul(grid_h).saturating_mul(grid_w);
+        if self.num_patches != expected_patches {
+            return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
+                "num_patches {} != grid_t*grid_h*grid_w {}",
+                self.num_patches, expected_patches
+            )));
         }
         let expected = (self.num_patches as usize).saturating_mul(self.patch_dim as usize);
         if self.patches.len() != expected {
@@ -121,10 +174,13 @@ mod tests {
             patches: vec![0.1; 4 * 6],
             num_patches: 4,
             patch_dim: 6,
+            grid_t: 1,
             height: 28,
             width: 28,
             patch_size: 14,
+            temporal_patch_size: 2,
             spatial_merge_size: 1,
+            is_video: false,
         }
     }
 

@@ -54,6 +54,8 @@ pub struct ModelWeights {
     pub gemma4_unified_vision: Option<Gemma4UnifiedVisionWeights>,
     /// Gemma4 Unified encoder-free audio connector.
     pub gemma4_unified_audio: Option<Gemma4UnifiedAudioWeights>,
+    /// Standard Gemma 4 ViT tower + vision-to-language projection.
+    pub gemma4_vl_vision: Option<crate::gemma4_vl::Gemma4VlVisionWeights>,
     pub diffusion_self_conditioning: Option<DiffusionSelfConditioningWeights>,
     /// MTP weights for GLM 4.7 Flash: separate sidecar with MLA-based head.
     pub glm_mtp: Option<GlmMtpWeights>,
@@ -62,6 +64,10 @@ pub struct ModelWeights {
     /// Qwen3-VL portable ViT tower (WS-V2). `None` until HF vision weights are
     /// mapped for the checkpoint; image prefill fail-closes when media is present.
     pub qwen3_vl_vision: Option<crate::qwen3_vl::Qwen3VlVisionWeights>,
+    /// MiniCPM-V 4.6 SigLIP + VitMerger + pixel-shuffle merger.
+    pub minicpm_v46_vision: Option<crate::minicpm_v::MiniCpmV46VisionWeights>,
+    /// Nemotron H Nano Omni RADIO vision and Parakeet media towers.
+    pub nemotron_omni: Option<crate::nemotron_omni::NemotronOmniWeights>,
 }
 
 /// Gemma4 Unified vision path, matching vLLM's
@@ -516,6 +522,11 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
 
     let specs = artifacts.tensor_specs();
     let layer_count = artifacts.manifest().layer_count as usize;
+    // Family-specific towers need geometry that is intentionally kept in the
+    // source config rather than duplicated into the language manifest.
+    let source_config = std::fs::read(artifacts.root_dir().join("config.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
 
     // Raw HuggingFace checkpoints store RMSNorm weights as zero-centered deltas
     // and conv1d weights in a different axis order than MLX expects. The MLX
@@ -662,6 +673,11 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     };
     let gemma4_unified_vision = load_gemma4_unified_vision_weights(specs, &mut name_map)?;
     let gemma4_unified_audio = load_gemma4_unified_audio_weights(specs, &mut name_map)?;
+    let gemma4_vl_vision = crate::gemma4_vl::load_gemma4_vl_vision_weights(
+        specs,
+        &mut name_map,
+        source_config.as_ref(),
+    )?;
     let diffusion_self_conditioning =
         load_diffusion_self_conditioning_weights(specs, &mut name_map)?;
     // Unlimited-OCR: projector roles + leftover sam_model.*/vision_model.* keys.
@@ -670,7 +686,15 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let unlimited_ocr_vision =
         crate::unlimited_ocr::load_unlimited_ocr_vision_weights(specs, &mut name_map)?;
     // Qwen3-VL vision tower (WS-V2): roles + visual.* leftovers → Some when present.
-    let qwen3_vl_vision = crate::qwen3_vl::load_qwen3_vl_vision_weights(specs, &mut name_map)?;
+    let qwen3_vl_vision = crate::qwen3_vl::load_qwen3_vl_vision_weights(
+        specs,
+        &mut name_map,
+        source_config.as_ref(),
+    )?;
+    let minicpm_v46_vision =
+        crate::minicpm_v::load_minicpm_v46_vision_weights(&mut name_map, source_config.as_ref())?;
+    let nemotron_omni =
+        crate::nemotron_omni::load_nemotron_omni_weights(&mut name_map, source_config.as_ref())?;
 
     let mut layers = Vec::with_capacity(layer_count);
     for li in 0..layer_count {
@@ -1157,10 +1181,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         embedding_dense_1,
         gemma4_unified_vision,
         gemma4_unified_audio,
+        gemma4_vl_vision,
         diffusion_self_conditioning,
         glm_mtp,
         unlimited_ocr_vision,
         qwen3_vl_vision,
+        minicpm_v46_vision,
+        nemotron_omni,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;
@@ -3607,8 +3634,31 @@ fn take_weight(
         .iter()
         .find(|s| s.role == role && s.layer_index == layer_index)
         .ok_or_else(|| WeightLoadError::RoleMissing(format!("{label}[{layer_index:?}]")))?;
-    let name = spec.name.clone();
+    take_weight_spec(name_map, spec)
+}
 
+/// Load a quantized or dense linear by its exact checkpoint tensor name.
+///
+/// Multimodal towers are intentionally retained as `Other` manifest roles, so
+/// their loaders resolve the original names while still honoring each
+/// tensor's manifest quantization metadata.
+pub(crate) fn take_named_weight(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    name: &str,
+) -> Result<QuantizedWeight, WeightLoadError> {
+    let spec = specs
+        .iter()
+        .find(|spec| spec.name == name)
+        .ok_or_else(|| WeightLoadError::TensorMissing(name.to_string()))?;
+    take_weight_spec(name_map, spec)
+}
+
+fn take_weight_spec(
+    name_map: &mut HashMap<String, MlxArray>,
+    spec: &NativeTensorSpec,
+) -> Result<QuantizedWeight, WeightLoadError> {
+    let name = spec.name.clone();
     let weight = name_map
         .remove(&name)
         .ok_or_else(|| WeightLoadError::TensorMissing(name.clone()))?;

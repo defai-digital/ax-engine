@@ -224,6 +224,21 @@ let batch = session.embed_batch(&[tokens1, tokens2], EmbeddingPooling::Last, fal
 dot-product similarity. Delegated backends return
 `EngineSessionError::EmbeddingNotSupported`.
 
+### Speech transcription (native Whisper only)
+
+```rust
+let result = session.transcribe_audio(&mono_samples_16k, Some("en"), false)?;
+println!("{}", result.text);
+
+// translate=true asks multilingual Whisper to emit English.
+let translated = session.transcribe_audio(&mono_samples_16k, None, true)?;
+```
+
+The caller supplies mono 16 kHz `f32` samples. The dedicated Whisper runtime
+returns `SpeechTranscription { text, language }`; it does not expose the model
+through `generate`. Loading a non-Whisper session returns
+`EngineSessionError::WhisperUnavailable`.
+
 ---
 
 ## StatelessGenerateContext: Stateless API
@@ -439,6 +454,7 @@ to import `ax-engine-core` to handle session errors.
 | `submit_generate` + `step_report` | Yes | No | Yes (no `step`) |
 | `stream_request` (attach to submitted) | Yes | No | No |
 | `embed` / `embed_batch` | Yes | No | No |
+| `transcribe_audio` (Whisper) | Yes | No | No |
 | Deterministic mode | Yes | No | No |
 | Prefix reuse | Yes | No | No |
 | Per-step delta tokens | Yes | Yes (stream) | Yes (stream) |

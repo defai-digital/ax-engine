@@ -56,7 +56,9 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
         | EngineSessionError::RequestDidNotTerminate { .. }
-        | EngineSessionError::MissingRequestSnapshot { .. } => {
+        | EngineSessionError::MissingRequestSnapshot { .. }
+        | EngineSessionError::WhisperTextGenerationUnsupported
+        | EngineSessionError::WhisperInvalidLanguage { .. } => {
             PyValueError::new_err(error.to_string())
         }
         EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingInputText { .. })
@@ -118,6 +120,8 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::StreamEndedWithoutResponse { .. }
         | EngineSessionError::EmbeddingNotSupported
         | EngineSessionError::EmbeddingFailed { .. }
+        | EngineSessionError::WhisperUnavailable
+        | EngineSessionError::WhisperFailed { .. }
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_) => EngineInferenceError::new_err(error.to_string()),
     }

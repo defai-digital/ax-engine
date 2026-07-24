@@ -300,6 +300,66 @@ class DownloadModelScriptTest(unittest.TestCase):
                 (dest / "model-manifest.json").read_text(), '{"published":true}'
             )
 
+    def test_qwen_visual_manifest_is_marked_for_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "qwen3_5_moe", "vision_config": {}})
+            )
+            (model_dir / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "language_model.model.embed_tokens.weight": "model.safetensors",
+                            "vision_tower.patch_embed.proj.weight": "model.safetensors",
+                        }
+                    }
+                )
+            )
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "tensors": [
+                            {
+                                "name": "language_model.model.embed_tokens.weight"
+                            }
+                        ]
+                    }
+                )
+            )
+
+            self.assertTrue(download_model.manifest_needs_media_rebuild(model_dir))
+
+    def test_gemma_visual_manifest_requires_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "gemma4", "vision_config": {}})
+            )
+            (model_dir / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "vision_tower.patch_embedder.input_proj.weight": "model.safetensors",
+                            "embed_vision.embedding_projection.weight": "model.safetensors",
+                        }
+                    }
+                )
+            )
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "tensors": [
+                            {
+                                "name": "vision_tower.patch_embedder.input_proj.weight"
+                            }
+                        ]
+                    }
+                )
+            )
+
+            self.assertTrue(download_model.manifest_needs_media_rebuild(model_dir))
+
     def test_embedding_repos_use_standard_download_flow(self) -> None:
         repo_id = "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit"
         with tempfile.TemporaryDirectory() as tmp:
@@ -406,6 +466,40 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             # The bundled binary is used; the stale PATH binary is never invoked.
             self.assertEqual(calls, [[bundled, "generate-manifest", str(model_dir)]])
+
+    def test_manifest_generation_force_replaces_existing_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp) / "model"
+            model_dir.mkdir()
+            bundled = "/wheel/ax_engine/_bin/ax-engine-bench"
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                return subprocess.CompletedProcess(
+                    command, 0, stdout="ok\n", stderr=""
+                )
+
+            with patch.object(
+                download_model, "_bundled_bench_bin", return_value=bundled
+            ), patch.object(download_model.subprocess, "run", fake_run):
+                self.assertTrue(
+                    download_model._try_generate_manifest(
+                        model_dir, quiet=True, force=True
+                    )
+                )
+
+            self.assertEqual(
+                calls,
+                [
+                    [
+                        bundled,
+                        "generate-manifest",
+                        "--force",
+                        str(model_dir),
+                    ]
+                ],
+            )
 
     def test_validation_rejects_missing_shards_declared_by_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

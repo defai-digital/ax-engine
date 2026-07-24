@@ -11,7 +11,7 @@ Usage:
   ax-engine-bench baseline --source <path> --name <name> --output-root <path> [--json]
   ax-engine-bench matrix --manifest <path> --output-root <path> [--json] [--no-trace]
   ax-engine-bench doctor [--json] [--mlx-model-artifacts-dir <path>]
-  ax-engine-bench generate-manifest <model-dir> [--json] [--validate]
+  ax-engine-bench generate-manifest <model-dir> [--force] [--json] [--validate]
   ax-engine-bench metal-build [--manifest <path>] [--output-dir <path>]
   ax-engine-bench serving-stress --workload <name> [--mlx-model-artifacts-dir <path>] [--model-id <id>] [--prefill-tokens <n>] [--decode-tokens <n>] [--concurrent-short-requests <n>] [--short-prefix-tokens <n>] [--seed <n>] [--output-path <path>] [--json]
 "#;
@@ -20,9 +20,10 @@ Usage:
 }
 
 pub(crate) fn generate_manifest_usage() -> String {
-    "Usage: ax-engine-bench generate-manifest <model-dir> [--json] [--validate]\n\n\
+    "Usage: ax-engine-bench generate-manifest <model-dir> [--force] [--json] [--validate]\n\n\
      Generates model-manifest.json for an MLX model snapshot. Required before \
-     ax-engine can load the model. With --validate, reads the generated \
-     model-manifest.json back through the native model artifact validator."
+     ax-engine can load the model. With --force, replaces an existing manifest. \
+     With --validate, reads the generated model-manifest.json back through the \
+     native model artifact validator."
         .to_string()
 }

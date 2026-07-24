@@ -54,6 +54,8 @@ use crate::gemma4_assistant_mtp::{
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings,
     chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers,
+    chunked_prefill_minicpm_v46_with_sampling_buffers,
+    chunked_prefill_nemotron_omni_with_sampling_buffers,
     chunked_prefill_qwen3_vl_with_sampling_buffers,
     chunked_prefill_unlimited_ocr_with_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
@@ -4059,9 +4061,17 @@ impl MlxRunner {
         let qwen3_vl_inputs = multimodal_inputs
             .and_then(|inputs| inputs.qwen3_vl.as_ref())
             .filter(|inputs| !inputs.is_empty());
+        let minicpm_v46_inputs = multimodal_inputs
+            .and_then(|inputs| inputs.minicpm_v46.as_ref())
+            .filter(|inputs| !inputs.is_empty());
+        let nemotron_omni_inputs = multimodal_inputs
+            .and_then(|inputs| inputs.nemotron_omni.as_ref())
+            .filter(|inputs| !inputs.is_empty());
         let multimodal_provider_count = usize::from(gemma4_unified_inputs.is_some())
             + usize::from(unlimited_ocr_inputs.is_some())
-            + usize::from(qwen3_vl_inputs.is_some());
+            + usize::from(qwen3_vl_inputs.is_some())
+            + usize::from(minicpm_v46_inputs.is_some())
+            + usize::from(nemotron_omni_inputs.is_some());
         if multimodal_provider_count > 1 {
             return errored_item_run(
                 item.request_id,
@@ -4071,9 +4081,13 @@ impl MlxRunner {
         let has_gemma4_unified_multimodal_prefill = is_prefill && gemma4_unified_inputs.is_some();
         let has_unlimited_ocr_multimodal_prefill = is_prefill && unlimited_ocr_inputs.is_some();
         let has_qwen3_vl_multimodal_prefill = is_prefill && qwen3_vl_inputs.is_some();
+        let has_minicpm_v46_multimodal_prefill = is_prefill && minicpm_v46_inputs.is_some();
+        let has_nemotron_omni_multimodal_prefill = is_prefill && nemotron_omni_inputs.is_some();
         let has_native_multimodal_prefill = has_gemma4_unified_multimodal_prefill
             || has_unlimited_ocr_multimodal_prefill
-            || has_qwen3_vl_multimodal_prefill;
+            || has_qwen3_vl_multimodal_prefill
+            || has_minicpm_v46_multimodal_prefill
+            || has_nemotron_omni_multimodal_prefill;
         // ADR-038 Phase 4: multimodal is a prefill adapter into the same
         // generation strategy — never a parallel generation engine.
         if let Some(inputs) = multimodal_inputs {
@@ -4281,6 +4295,172 @@ impl MlxRunner {
                         state.repetition_history(&full_prompt_tokens, sampling);
                     let prefill_forward_started = Instant::now();
                     let tok = match chunked_prefill_qwen3_vl_with_sampling_buffers(
+                        &self.cfg,
+                        &self.weights,
+                        &full_prompt_tokens,
+                        inputs,
+                        &mut state.cache,
+                        MlxSamplingRequest::new(sampling, &repetition_history),
+                        &mut state.rng,
+                        &mut state.sampling_probs_buf,
+                        &mut state.sampling_logits_buf,
+                        &mut state.sampling_candidates_buf,
+                    ) {
+                        Ok(tok) => tok,
+                        Err(error) => return errored_item_run(item.request_id, error),
+                    };
+                    let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
+                    state.prompt_prefix_tokens = full_prompt_tokens;
+
+                    let mut prefill_prefix_cache_wall_us = 0u32;
+                    if multimodal_prefix_reuse_enabled() {
+                        let prefix_cache_started = Instant::now();
+                        let cold_prefill_us = elapsed_us(prefill_started);
+                        prefix_cache.merge_from(self.store_prompt_prefix_snapshots(
+                            model_id,
+                            block_size_tokens,
+                            &state,
+                            PromptPrefixSnapshotStoreOptions {
+                                linear_boundary_snapshot: None,
+                                prefill_completes_prompt: true,
+                                greedy_prefill_output_token:
+                                    prefill_output_token_cacheable(ctx, sampling).then_some(tok),
+                                cold_prefill_us: u64::from(cold_prefill_us),
+                                media_key: &media_key,
+                            },
+                        ));
+                        prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
+                    }
+
+                    state
+                        .decode_telemetry
+                        .record_prefill(elapsed_us(prefill_started));
+                    let generation_state_started = Instant::now();
+                    self.initialize_generation_state(
+                        &mut state,
+                        max_output,
+                        Some(tok),
+                        is_greedy,
+                        sampling.temperature,
+                    );
+                    let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
+                    state.decode_telemetry.record_prefill_eval_barrier();
+                    state.decode_telemetry.record_prefill_breakdown(
+                        prefill_forward_wall_us,
+                        prefill_prefix_cache_wall_us,
+                        prefill_generation_state_wall_us,
+                    );
+                    Some(tok)
+                } else if let Some(inputs) = minicpm_v46_inputs {
+                    if !prefill_completes_prompt {
+                        return errored_item_run(
+                            item.request_id,
+                            "MiniCPM-V 4.6 multimodal prefill requires the complete prompt in one execution item",
+                        );
+                    }
+                    state.cache.reset();
+                    state.prompt_prefix_tokens.clear();
+                    state.cached_prefill_output_token = None;
+                    state.mtp_prefill_hidden = None;
+                    state.mtp_prefill_history_tokens.clear();
+
+                    let mut full_prompt_tokens = Vec::with_capacity(
+                        item.reused_prefix_token_slice
+                            .len()
+                            .saturating_add(token_ids.len()),
+                    );
+                    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
+                    full_prompt_tokens.extend_from_slice(token_ids);
+                    if let Err(error) = inputs.validate_for_prompt_len(full_prompt_tokens.len()) {
+                        return errored_item_run(item.request_id, error.to_string());
+                    }
+                    let repetition_history =
+                        state.repetition_history(&full_prompt_tokens, sampling);
+                    let prefill_forward_started = Instant::now();
+                    let tok = match chunked_prefill_minicpm_v46_with_sampling_buffers(
+                        &self.cfg,
+                        &self.weights,
+                        &full_prompt_tokens,
+                        inputs,
+                        &mut state.cache,
+                        MlxSamplingRequest::new(sampling, &repetition_history),
+                        &mut state.rng,
+                        &mut state.sampling_probs_buf,
+                        &mut state.sampling_logits_buf,
+                        &mut state.sampling_candidates_buf,
+                    ) {
+                        Ok(tok) => tok,
+                        Err(error) => return errored_item_run(item.request_id, error),
+                    };
+                    let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
+                    state.prompt_prefix_tokens = full_prompt_tokens;
+
+                    let mut prefill_prefix_cache_wall_us = 0u32;
+                    if multimodal_prefix_reuse_enabled() {
+                        let prefix_cache_started = Instant::now();
+                        let cold_prefill_us = elapsed_us(prefill_started);
+                        prefix_cache.merge_from(self.store_prompt_prefix_snapshots(
+                            model_id,
+                            block_size_tokens,
+                            &state,
+                            PromptPrefixSnapshotStoreOptions {
+                                linear_boundary_snapshot: None,
+                                prefill_completes_prompt: true,
+                                greedy_prefill_output_token:
+                                    prefill_output_token_cacheable(ctx, sampling).then_some(tok),
+                                cold_prefill_us: u64::from(cold_prefill_us),
+                                media_key: &media_key,
+                            },
+                        ));
+                        prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
+                    }
+
+                    state
+                        .decode_telemetry
+                        .record_prefill(elapsed_us(prefill_started));
+                    let generation_state_started = Instant::now();
+                    self.initialize_generation_state(
+                        &mut state,
+                        max_output,
+                        Some(tok),
+                        is_greedy,
+                        sampling.temperature,
+                    );
+                    let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
+                    state.decode_telemetry.record_prefill_eval_barrier();
+                    state.decode_telemetry.record_prefill_breakdown(
+                        prefill_forward_wall_us,
+                        prefill_prefix_cache_wall_us,
+                        prefill_generation_state_wall_us,
+                    );
+                    Some(tok)
+                } else if let Some(inputs) = nemotron_omni_inputs {
+                    if !prefill_completes_prompt {
+                        return errored_item_run(
+                            item.request_id,
+                            "Nemotron H Nano Omni multimodal prefill requires the complete prompt in one execution item",
+                        );
+                    }
+                    state.cache.reset();
+                    state.prompt_prefix_tokens.clear();
+                    state.cached_prefill_output_token = None;
+                    state.mtp_prefill_hidden = None;
+                    state.mtp_prefill_history_tokens.clear();
+
+                    let mut full_prompt_tokens = Vec::with_capacity(
+                        item.reused_prefix_token_slice
+                            .len()
+                            .saturating_add(token_ids.len()),
+                    );
+                    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
+                    full_prompt_tokens.extend_from_slice(token_ids);
+                    if let Err(error) = inputs.validate_for_prompt_len(full_prompt_tokens.len()) {
+                        return errored_item_run(item.request_id, error.to_string());
+                    }
+                    let repetition_history =
+                        state.repetition_history(&full_prompt_tokens, sampling);
+                    let prefill_forward_started = Instant::now();
+                    let tok = match chunked_prefill_nemotron_omni_with_sampling_buffers(
                         &self.cfg,
                         &self.weights,
                         &full_prompt_tokens,
@@ -4891,6 +5071,8 @@ impl MlxRunner {
             && self.weights.gemma4_unified_vision.is_none()
             && self.weights.gemma4_unified_audio.is_none()
             && self.weights.unlimited_ocr_vision.is_none()
+            && self.weights.minicpm_v46_vision.is_none()
+            && self.weights.nemotron_omni.is_none()
     }
 
     fn reclaim_native_prefix_capacity(&self, cache: &MlxKVCache, new_tokens: usize) -> u32 {
@@ -5002,6 +5184,12 @@ impl MlxRunner {
         }
         if let Some(q) = inputs.qwen3_vl.as_ref().filter(|q| !q.is_empty()) {
             return q.media_prefix_key(&fp);
+        }
+        if let Some(minicpm) = inputs.minicpm_v46.as_ref().filter(|v| !v.is_empty()) {
+            return minicpm.media_prefix_key(&fp);
+        }
+        if let Some(omni) = inputs.nemotron_omni.as_ref().filter(|v| !v.is_empty()) {
+            return omni.media_prefix_key(&fp);
         }
         String::new()
     }
@@ -12154,9 +12342,12 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
         }
     }
 
@@ -13025,6 +13216,21 @@ mod tests {
             .expect_err("linear attention should fail closed");
 
         assert!(error.to_string().contains("qwen3_5/qwen3_next"));
+    }
+
+    #[test]
+    fn nemotron_router_correction_bias_is_not_misclassified_as_mla() {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "nemotron_h".to_string();
+        manifest.tensors.push(tensor(
+            "backbone.layers.0.mixer.gate.e_score_correction_bias",
+            NativeTensorRole::FfnGateInpCorrectionBias,
+            Some(0),
+            vec![4],
+        ));
+        let artifacts = write_artifacts(manifest);
+
+        assert!(!has_glm_mla_tensors(&artifacts));
     }
 
     #[test]
@@ -14480,6 +14686,8 @@ mod tests {
             "gpt_oss",
             "gemma4_unified",
             "nemotron_h",
+            "qwen3_vl",
+            "qwen3_vl_moe",
         ] {
             assert!(
                 is_mlx_supported_model_family(family),

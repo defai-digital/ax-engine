@@ -34,6 +34,91 @@ READY_STATUS = "ready"
 MANIFEST_MISSING_STATUS = "manifest_missing"
 INVALID_STATUS = "invalid"
 DOWNLOAD_FAILED_STATUS = "download_failed"
+MAX_SAFETENSORS_HEADER_BYTES = 64 * 1024 * 1024
+
+
+def _weight_tensor_names(model_dir: Path) -> set[str]:
+    """Read tensor names without loading model payloads."""
+    index_path = model_dir / "model.safetensors.index.json"
+    if index_path.is_file():
+        try:
+            payload = json.loads(index_path.read_bytes())
+            weight_map = payload.get("weight_map", {})
+            if isinstance(weight_map, dict):
+                return {name for name in weight_map if isinstance(name, str)}
+        except (OSError, ValueError, TypeError):
+            return set()
+
+    names: set[str] = set()
+    for path in model_dir.glob("*.safetensors"):
+        try:
+            with path.open("rb") as handle:
+                header_size_bytes = handle.read(8)
+                if len(header_size_bytes) != 8:
+                    continue
+                header_size = int.from_bytes(header_size_bytes, "little")
+                if not 0 < header_size <= MAX_SAFETENSORS_HEADER_BYTES:
+                    continue
+                header = json.loads(handle.read(header_size))
+                if isinstance(header, dict):
+                    names.update(
+                        name
+                        for name in header
+                        if isinstance(name, str) and name != "__metadata__"
+                    )
+        except (OSError, ValueError, TypeError):
+            continue
+    return names
+
+
+def manifest_needs_media_rebuild(model_dir: Path) -> bool:
+    """Detect published manifests that silently omitted declared media towers."""
+    try:
+        config = json.loads((model_dir / "config.json").read_bytes())
+        manifest = json.loads((model_dir / MODEL_MANIFEST_FILE).read_bytes())
+    except (OSError, ValueError, TypeError):
+        return False
+    model_type = config.get("model_type")
+    if not isinstance(model_type, str) or not isinstance(config.get("vision_config"), dict):
+        return False
+
+    if model_type in {
+        "qwen3_5",
+        "qwen3_5_moe",
+        "qwen3_vl",
+        "qwen3_vl_moe",
+        "qwen3-vl",
+        "qwen3-vl-moe",
+    }:
+        required_prefix_groups = (
+            ("vision_tower.", "visual.", "model.visual."),
+        )
+    elif model_type in {"gemma4", "gemma4_vl", "gemma4-vl"}:
+        required_prefix_groups = (
+            ("vision_tower.", "model.vision_tower."),
+            ("embed_vision.", "model.embed_vision."),
+        )
+    else:
+        return False
+
+    source_names = _weight_tensor_names(model_dir)
+    if not source_names:
+        return False
+    tensors = manifest.get("tensors")
+    if not isinstance(tensors, list):
+        manifest_names: set[str] = set()
+    else:
+        manifest_names = {
+            name
+            for tensor in tensors
+            if isinstance(tensor, dict)
+            and isinstance((name := tensor.get("name")), str)
+        }
+    return any(
+        any(name.startswith(prefixes) for name in source_names)
+        and not any(name.startswith(prefixes) for name in manifest_names)
+        for prefixes in required_prefix_groups
+    )
 
 
 def _slug(repo_id: str) -> str:
@@ -440,15 +525,22 @@ def _bundled_bench_bin() -> str | None:
     return None
 
 
-def _try_generate_manifest(dest: Path, *, quiet: bool = False) -> bool:
+def _try_generate_manifest(
+    dest: Path, *, quiet: bool = False, force: bool = False
+) -> bool:
     """Try bundled, installed, and source-checkout manifest generators. Returns True on success."""
+    force_args = ["--force"] if force else []
     if (bundled := _bundled_bench_bin()) is not None:
-        command = [bundled, "generate-manifest", str(dest)]
-        if _run_manifest_command(command, quiet=quiet, label="bundled ax-engine-bench generate-manifest"):
+        command = [bundled, "generate-manifest", *force_args, str(dest)]
+        if _run_manifest_command(
+            command,
+            quiet=quiet,
+            label="bundled ax-engine-bench generate-manifest",
+        ):
             return True
 
     if shutil.which("ax-engine-bench"):
-        command = ["ax-engine-bench", "generate-manifest", str(dest)]
+        command = ["ax-engine-bench", "generate-manifest", *force_args, str(dest)]
         if _run_manifest_command(command, quiet=quiet, label="ax-engine-bench generate-manifest"):
             return True
 
@@ -458,7 +550,7 @@ def _try_generate_manifest(dest: Path, *, quiet: bool = False) -> bool:
     ):
         if local_bin.is_file():
             if _run_manifest_command(
-                [str(local_bin), str(dest)],
+                [str(local_bin), *force_args, str(dest)],
                 quiet=quiet,
                 label=str(local_bin),
             ):
@@ -470,7 +562,7 @@ def _try_generate_manifest(dest: Path, *, quiet: bool = False) -> bool:
                 "cargo", "run", "-q",
                 "-p", "ax-engine-core",
                 "--bin", "generate-manifest",
-                "--", str(dest),
+                "--", *force_args, str(dest),
             ],
             quiet=quiet,
             cwd=REPO_ROOT,
@@ -640,12 +732,18 @@ def main() -> int:
     if not args.json:
         print(f"  safetensors shards: {len(list(dest.glob('*.safetensors')))}")
 
-    if not (dest / MODEL_MANIFEST_FILE).exists():
+    rebuild_media_manifest = (
+        (dest / MODEL_MANIFEST_FILE).exists()
+        and manifest_needs_media_rebuild(dest)
+    )
+    if not (dest / MODEL_MANIFEST_FILE).exists() or rebuild_media_manifest:
         if not args.json:
             print("  generating manifest...")
         if args.progress_json:
             _emit_progress(90, 100, "Generating manifest")
-        if not _try_generate_manifest(dest, quiet=args.json):
+        if not _try_generate_manifest(
+            dest, quiet=args.json, force=rebuild_media_manifest
+        ):
             if args.json:
                 summary = _summary(args.repo_id, dest, status=MANIFEST_MISSING_STATUS)
                 if args.progress_json:

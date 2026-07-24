@@ -1178,6 +1178,7 @@ mod tests {
             moe_expert_intermediate_size: 0,
             layer_configs: vec![layer(Some(2)), layer(None)],
             global_sliding_window: None,
+            protected_prefix_sliding_window: None,
             gemma4_moe_router: false,
             uses_geglu: true,
             hidden_states_scale: None,

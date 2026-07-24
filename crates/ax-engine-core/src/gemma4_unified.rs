@@ -664,46 +664,74 @@ impl Gemma4UnifiedProcessorConfig {
         let feature_extractor = processor_config
             .get("feature_extractor")
             .or_else(|| processor_config.get("audio_feature_extractor"));
+        let audio_config = model_config
+            .get("audio_config")
+            .filter(|config| !config.is_null());
+        // Standard 26B/31B Gemma 4 processor files still include a generic
+        // feature-extractor block even though `audio_config` is explicitly
+        // null. Unified/legacy configs without a model_type historically use
+        // that block as the audio-capability signal, so preserve that contract.
+        let is_standard_gemma4 =
+            model_config.get("model_type").and_then(Value::as_str) == Some("gemma4");
+        let has_audio =
+            audio_config.is_some() || (!is_standard_gemma4 && feature_extractor.is_some());
+        let patch_size = optional_nested_u32(image_processor, "patch_size")
+            .or_else(|| optional_u32(vision_config, "patch_size"))
+            .ok_or(Gemma4UnifiedError::MissingField("vision.patch_size"))?;
+        let pooling_kernel_size = optional_nested_u32(image_processor, "pooling_kernel_size")
+            .or_else(|| optional_u32(vision_config, "pooling_kernel_size"))
+            .ok_or(Gemma4UnifiedError::MissingField(
+                "vision.pooling_kernel_size",
+            ))?;
+        let model_patch_size = optional_nested_u32(image_processor, "model_patch_size")
+            .or_else(|| optional_u32(vision_config, "model_patch_size"))
+            .or_else(|| patch_size.checked_mul(pooling_kernel_size))
+            .ok_or(Gemma4UnifiedError::MissingField("vision.model_patch_size"))?;
 
         Ok(Self {
             tokens: Gemma4UnifiedSpecialTokens {
                 image_token_id: required_u32(model_config, "image_token_id")?,
-                audio_token_id: required_u32(model_config, "audio_token_id")?,
+                audio_token_id: if has_audio {
+                    required_u32(model_config, "audio_token_id")?
+                } else {
+                    optional_u32(model_config, "audio_token_id").unwrap_or(0)
+                },
                 video_token_id: optional_u32(model_config, "video_token_id").unwrap_or(0),
                 boi_token_id: required_u32(model_config, "boi_token_id")?,
                 eoi_token_id: required_u32(model_config, "eoi_token_id")?,
-                boa_token_id: required_u32(model_config, "boa_token_id")?,
-                eoa_token_id: required_u32(model_config, "eoa_token_index")
-                    .or_else(|_| required_u32(model_config, "eoa_token_id"))?,
+                boa_token_id: if has_audio {
+                    required_u32(model_config, "boa_token_id")?
+                } else {
+                    optional_u32(model_config, "boa_token_id").unwrap_or(0)
+                },
+                eoa_token_id: if has_audio {
+                    required_u32(model_config, "eoa_token_index")
+                        .or_else(|_| required_u32(model_config, "eoa_token_id"))?
+                } else {
+                    optional_u32(model_config, "eoa_token_index")
+                        .or_else(|| optional_u32(model_config, "eoa_token_id"))
+                        .unwrap_or(0)
+                },
             },
             vision: Gemma4UnifiedVisionProcessor {
-                patch_size: optional_nested_u32(image_processor, "patch_size")
-                    .or_else(|| optional_u32(vision_config, "patch_size"))
-                    .ok_or(Gemma4UnifiedError::MissingField("vision.patch_size"))?,
-                model_patch_size: optional_nested_u32(image_processor, "model_patch_size")
-                    .or_else(|| optional_u32(vision_config, "model_patch_size"))
-                    .ok_or(Gemma4UnifiedError::MissingField("vision.model_patch_size"))?,
-                pooling_kernel_size: optional_nested_u32(image_processor, "pooling_kernel_size")
-                    .or_else(|| optional_u32(vision_config, "pooling_kernel_size"))
-                    .ok_or(Gemma4UnifiedError::MissingField(
-                        "vision.pooling_kernel_size",
-                    ))?,
+                patch_size,
+                model_patch_size,
+                pooling_kernel_size,
                 max_soft_tokens: optional_nested_u32(image_processor, "max_soft_tokens")
                     .or_else(|| optional_u32(vision_config, "num_soft_tokens"))
                     .or_else(|| optional_u32(vision_config, "default_output_length"))
                     .ok_or(Gemma4UnifiedError::MissingField("vision.max_soft_tokens"))?,
             },
-            audio: feature_extractor.map(|feature_extractor| {
-                let audio_config = model_config.get("audio_config");
+            audio: has_audio.then(|| {
                 Gemma4UnifiedAudioProcessor {
-                    sampling_rate: optional_u32(feature_extractor, "sampling_rate")
+                    sampling_rate: optional_nested_u32(feature_extractor, "sampling_rate")
                         .unwrap_or(16000),
                     audio_samples_per_token: optional_nested_u32(
                         audio_config,
                         "audio_samples_per_token",
                     )
-                    .or_else(|| optional_u32(feature_extractor, "audio_samples_per_token"))
-                    .or_else(|| optional_u32(feature_extractor, "feature_size"))
+                    .or_else(|| optional_nested_u32(feature_extractor, "audio_samples_per_token"))
+                    .or_else(|| optional_nested_u32(feature_extractor, "feature_size"))
                     .or_else(|| optional_nested_u32(audio_config, "audio_embed_dim"))
                     .unwrap_or(640),
                     // The reference Gemma4UnifiedProcessor caps audio at
@@ -1147,6 +1175,39 @@ mod tests {
             .unwrap(),
             280
         );
+    }
+
+    #[test]
+    fn standard_gemma4_derives_effective_patch_and_ignores_generic_audio_processor() {
+        let model = json!({
+            "model_type": "gemma4",
+            "image_token_id": 258880,
+            "video_token_id": 258884,
+            "boi_token_id": 255999,
+            "eoi_token_id": 258882,
+            "audio_config": null,
+            "vision_config": {
+                "patch_size": 16,
+                "pooling_kernel_size": 3,
+                "default_output_length": 280
+            }
+        });
+        let processor = json!({
+            "image_processor": {
+                "patch_size": 16,
+                "pooling_kernel_size": 3,
+                "max_soft_tokens": 280
+            },
+            "feature_extractor": {
+                "sampling_rate": 16000
+            }
+        });
+        let parsed =
+            Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model, &processor)
+                .expect("standard Gemma 4 processor should parse");
+        assert_eq!(parsed.vision.model_patch_size, 48);
+        assert!(parsed.audio.is_none());
+        assert_eq!(parsed.tokens.audio_token_id, 0);
     }
 
     #[test]

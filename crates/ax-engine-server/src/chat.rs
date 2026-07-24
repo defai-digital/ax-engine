@@ -89,7 +89,7 @@ impl ChatUnsupportedFamily {
 impl ChatPromptTemplate {
     pub(crate) fn for_model_id(model_id: &str) -> Self {
         let normalized = model_id.to_ascii_lowercase();
-        if normalized.contains("qwen") {
+        if normalized.contains("qwen") || normalized.contains("minicpm") {
             Self::QwenChatMl
         } else if normalized.contains("gemma-4")
             || normalized.contains("gemma4")

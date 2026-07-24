@@ -39,7 +39,7 @@ pub use errors::EngineSessionError;
 use llama_lifecycle::{LlamaCppLifecycleRequest, LlamaCppLifecycleRequestSlot};
 use native::build_native_core;
 #[cfg(feature = "mlx-native")]
-use native::build_native_core_with_mlx_shares;
+use native::{build_native_core_with_mlx_shares, load_native_whisper_model};
 use routes::{apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into};
 pub use stream::{GenerateStream, GenerateStreamState};
 use stream::{
@@ -55,6 +55,13 @@ const MAX_NATIVE_ROUTE_REPORTS: usize = 1024;
 // Native streaming advances through prompt prefill, decode, and occasional scheduler
 // bookkeeping steps; keep the guard explicit so it is not an unexplained literal.
 const NATIVE_STREAM_STEP_GUARD_BUFFER: u64 = 256;
+
+/// Text and detected/resolved language returned by a native speech model.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpeechTranscription {
+    pub text: String,
+    pub language: Option<String>,
+}
 
 /// Stateless generation helper for delegated backends.
 ///
@@ -267,6 +274,8 @@ pub struct EngineSession {
     core: EngineCore,
     config: EngineSessionConfig,
     runtime: RuntimeReport,
+    #[cfg(feature = "mlx-native")]
+    whisper: Option<ax_engine_mlx::WhisperModel>,
     next_request_id: u64,
     native_request_routes: BTreeMap<u64, GenerateRouteReport>,
     native_route_report_order: VecDeque<u64>,
@@ -551,6 +560,8 @@ impl EngineSession {
             core,
             runtime: config.runtime_report(),
             config,
+            #[cfg(feature = "mlx-native")]
+            whisper: None,
             next_request_id: 1,
             native_request_routes: BTreeMap::new(),
             native_route_report_order: VecDeque::new(),
@@ -586,6 +597,8 @@ impl EngineSession {
         config: EngineSessionConfig,
         core: EngineCore,
     ) -> Result<Self, EngineSessionError> {
+        #[cfg(feature = "mlx-native")]
+        let whisper = load_native_whisper_model(&config)?;
         let runtime = config
             .runtime_report()
             .with_mlx_model(resolve_native_model_report(&config, &core));
@@ -593,6 +606,8 @@ impl EngineSession {
             core,
             config,
             runtime,
+            #[cfg(feature = "mlx-native")]
+            whisper,
             next_request_id: 1,
             native_request_routes: BTreeMap::new(),
             native_route_report_order: VecDeque::new(),
@@ -876,6 +891,10 @@ impl EngineSession {
         request_id: u64,
         request: GenerateRequest,
     ) -> Result<u64, EngineSessionError> {
+        #[cfg(feature = "mlx-native")]
+        if self.whisper.is_some() {
+            return Err(EngineSessionError::WhisperTextGenerationUnsupported);
+        }
         Self::validate_generate_request_for_backend(
             self.config.resolved_backend.selected_backend,
             self.config.max_batch_tokens,
@@ -928,6 +947,42 @@ impl EngineSession {
 
         self.submit(submission)?;
         Ok(request_id.0)
+    }
+
+    /// Transcribe or translate a mono, 16 kHz waveform with the loaded native
+    /// Whisper runtime.
+    pub fn transcribe_audio(
+        &self,
+        samples_16k: &[f32],
+        language: Option<&str>,
+        translate: bool,
+    ) -> Result<SpeechTranscription, EngineSessionError> {
+        #[cfg(feature = "mlx-native")]
+        {
+            let whisper = self
+                .whisper
+                .as_ref()
+                .ok_or(EngineSessionError::WhisperUnavailable)?;
+            whisper
+                .transcribe(samples_16k, language, translate)
+                .map(|result| SpeechTranscription {
+                    text: result.text,
+                    language: result.language,
+                })
+                .map_err(|error| match error {
+                    ax_engine_mlx::WhisperError::Language(language) => {
+                        EngineSessionError::WhisperInvalidLanguage { language }
+                    }
+                    other => EngineSessionError::WhisperFailed {
+                        message: other.to_string(),
+                    },
+                })
+        }
+        #[cfg(not(feature = "mlx-native"))]
+        {
+            let _ = (samples_16k, language, translate);
+            Err(EngineSessionError::WhisperUnavailable)
+        }
     }
 
     pub fn stream_generate(

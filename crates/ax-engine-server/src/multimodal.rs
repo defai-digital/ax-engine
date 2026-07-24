@@ -166,9 +166,16 @@ pub(crate) fn load_processor_config(model_dir: &Path) -> Result<MediaProcessors,
     let model_cfg = read_json(&model_dir.join("config.json"))?;
     let processor_cfg = read_json(&model_dir.join("preprocessor_config.json"))
         .or_else(|_| read_json(&model_dir.join("processor_config.json")))?;
-    let config =
+    let mut config =
         Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model_cfg, &processor_cfg)
             .map_err(|error| MediaError::Config(error.to_string()))?;
+    // Standard Gemma 4 E-series uses a Conformer audio tower, not the
+    // encoder-free projection consumed by this processor. The native runtime
+    // currently retains only the standard ViT, so fail audio at request
+    // preparation instead of constructing incompatible connector features.
+    if model_cfg.get("model_type").and_then(Value::as_str) == Some("gemma4") {
+        config.audio = None;
+    }
     let normalization = image_normalization_from(&processor_cfg)?;
     let (video_vision, video_max_frames) = video_processor_from(&processor_cfg, &config.vision);
     Ok(MediaProcessors {
@@ -827,6 +834,54 @@ pub(crate) fn preprocess_audio(
     Err(MediaError::Unsupported(
         "inline audio must be PCM WAV or MP3; other formats require pre-computed audio tensors via /v1/generate".to_string(),
     ))
+}
+
+/// Decode WAV/MP3 media to a bounded mono waveform at `target_rate`.
+///
+/// Used by encoder-backed audio models (Nemotron Omni and Whisper), whose
+/// native runtimes consume waveform samples rather than Gemma's preframed
+/// connector input.
+pub(crate) fn decode_audio_waveform(
+    bytes: &[u8],
+    target_rate: u32,
+    max_samples: usize,
+) -> Result<Vec<f32>, MediaError> {
+    if target_rate == 0 || max_samples == 0 {
+        return Err(MediaError::Config(
+            "audio target rate and sample cap must be positive".to_string(),
+        ));
+    }
+    let (mono, source_rate) = if bytes.starts_with(b"RIFF") {
+        let reader = hound::WavReader::new(std::io::Cursor::new(bytes))
+            .map_err(|error| MediaError::Decode(format!("failed to decode WAV audio: {error}")))?;
+        let spec = reader.spec();
+        let channels = spec.channels.max(1) as usize;
+        let interleaved = read_wav_samples(reader, spec)?;
+        (downmix_to_mono(&interleaved, channels), spec.sample_rate)
+    } else if looks_like_mp3(bytes) {
+        let cap = u32::try_from(max_samples).unwrap_or(u32::MAX);
+        let limits = Gemma4UnifiedAudioProcessor {
+            sampling_rate: target_rate,
+            audio_samples_per_token: 1,
+            audio_seq_length: Some(cap),
+        };
+        decode_mp3_mono(bytes, &limits)?
+    } else {
+        return Err(MediaError::Unsupported(
+            "inline audio must be PCM WAV or MP3".to_string(),
+        ));
+    };
+    let mut resampled = resample_linear(&mono, source_rate, target_rate);
+    resampled.truncate(max_samples);
+    if resampled.is_empty() {
+        return Err(MediaError::Decode("audio contains no samples".to_string()));
+    }
+    if resampled.iter().any(|sample| !sample.is_finite()) {
+        return Err(MediaError::Decode(
+            "decoded audio contains non-finite samples".to_string(),
+        ));
+    }
+    Ok(resampled)
 }
 
 /// MP3 streams start with an ID3v2 tag or directly with an MPEG audio frame

@@ -399,6 +399,9 @@ pub struct ModelConfig {
     /// window (Mistral3, Mixtral). `None` for families with no SWA or interleaved
     /// SWA (which use `layer_configs` instead).
     pub global_sliding_window: Option<usize>,
+    /// Decode-only ring window that retains the complete prefill as a protected
+    /// prefix. Unlimited-OCR uses this instead of ordinary uniform SWA.
+    pub protected_prefix_sliding_window: Option<usize>,
     /// True → Gemma4 dual-path MoE routing (rms_norm → proj → softmax).
     /// False → Qwen3 MoE routing (proj → softmax, no rms_norm).
     pub gemma4_moe_router: bool,
@@ -498,11 +501,17 @@ impl ModelConfig {
         // Uniform SWA: used by families where every layer has the same window
         // (e.g. Mistral3, Mixtral). Set only when layer_types is empty (no
         // interleaved pattern) and sliding_window_size is present.
-        let global_sliding_window = if layer_configs.is_empty() {
+        let protected_prefix_sliding_window = if m.model_family == "unlimited_ocr" {
             m.sliding_window_size.map(|w| w as usize)
         } else {
             None
         };
+        let global_sliding_window =
+            if layer_configs.is_empty() && protected_prefix_sliding_window.is_none() {
+                m.sliding_window_size.map(|w| w as usize)
+            } else {
+                None
+            };
 
         // Scaled RoPE frequencies, precomputed once at model load.
         // llama3: LLaMA-3 smooth wavelength correction.
@@ -564,6 +573,7 @@ impl ModelConfig {
             moe_expert_intermediate_size: m.moe.expert_intermediate_size.unwrap_or(0) as usize,
             layer_configs,
             global_sliding_window,
+            protected_prefix_sliding_window,
             gemma4_moe_router: is_gemma4,
             uses_geglu,
             hidden_states_scale: m.hidden_states_scale,
@@ -659,7 +669,7 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
     // qwen3_5 linear-attention models also emit <think> when reasoning mode
     // is enabled.
     match m.model_family.as_str() {
-        "qwen3" | "qwen3_5" | "qwen3_next" => {
+        "qwen3" | "qwen3_5" | "qwen3_next" | "minicpmv4_6" => {
             if m.vocab_size >= 200_000 {
                 (Some(248_068), Some(248_069))
             } else {
@@ -674,6 +684,7 @@ fn default_rms_norm_eps(model_family: &str) -> f32 {
     // DeepSeek-V2/V3 and Unlimited-OCR use 1e-6 (configuration_deepseek_v2 /
     // DeepseekV3Config). Qwen and Gemma share the same default.
     if model_family.starts_with("qwen")
+        || model_family == "minicpmv4_6"
         || model_family.starts_with("gemma")
         || model_family == "diffusion_gemma"
         || model_family == "unlimited_ocr"

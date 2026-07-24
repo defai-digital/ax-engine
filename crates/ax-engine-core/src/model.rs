@@ -294,7 +294,7 @@ impl NativeLinearAttentionConfig {
 
     pub fn resolved_full_attention_interval(&self, model_family: &str) -> Option<u32> {
         self.full_attention_interval.or_else(|| {
-            let is_hybrid_family = matches!(model_family, "qwen3_5" | "qwen3_next");
+            let is_hybrid_family = matches!(model_family, "qwen3_5" | "qwen3_next" | "minicpmv4_6");
             (self.is_enabled() && is_hybrid_family)
                 .then_some(QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL)
         })
@@ -1263,7 +1263,12 @@ fn validate_native_model_manifest(
                 message: format!("duplicate tensor name {}", tensor.name),
             });
         }
-        if tensor.shape.is_empty() || tensor.shape.contains(&0) {
+        // Safetensors permits rank-0 scalars. Keep structural language roles
+        // rank-positive, but allow extension tensors such as Gemma 4 ViT
+        // clipping thresholds to preserve their native scalar shape.
+        if (tensor.shape.is_empty() && tensor.role != NativeTensorRole::Other)
+            || tensor.shape.contains(&0)
+        {
             return Err(NativeModelError::InvalidManifest {
                 message: format!("tensor {} must have only positive dimensions", tensor.name),
             });
@@ -1305,6 +1310,11 @@ fn validate_native_model_manifest(
             }
             global_roles.push(tensor.role);
         }
+    }
+
+    if manifest.model_family == "whisper" {
+        validate_whisper_manifest(root_dir, manifest)?;
+        return Ok(());
     }
 
     require_global_role(
@@ -1754,6 +1764,179 @@ fn validate_native_model_manifest(
 
     validate_native_model_tensor_shapes(manifest)?;
 
+    Ok(())
+}
+
+fn validate_whisper_manifest(
+    root_dir: &Path,
+    manifest: &NativeModelManifest,
+) -> Result<(), NativeModelError> {
+    if manifest
+        .tensors
+        .iter()
+        .any(|tensor| tensor.role != NativeTensorRole::Other || tensor.layer_index.is_some())
+    {
+        return Err(NativeModelError::InvalidManifest {
+            message: "Whisper tensors must preserve exact checkpoint names with role=other"
+                .to_string(),
+        });
+    }
+    if manifest
+        .tensors
+        .iter()
+        .any(|tensor| tensor.source_quantized)
+    {
+        return Err(NativeModelError::InvalidManifest {
+            message: "Whisper native runtime currently requires floating-point weights".to_string(),
+        });
+    }
+
+    let config_path = root_dir.join("config.json");
+    let config_bytes = fs::read(&config_path).map_err(|source| NativeModelError::ReadManifest {
+        path: config_path.clone(),
+        source,
+    })?;
+    let config: serde_json::Value = serde_json::from_slice(&config_bytes).map_err(|source| {
+        NativeModelError::ParseManifest {
+            path: config_path,
+            source,
+        }
+    })?;
+    let field = |name: &'static str| -> Result<u32, NativeModelError> {
+        config
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| NativeModelError::InvalidManifest {
+                message: format!("Whisper config requires positive {name}"),
+            })
+    };
+    if config.get("model_type").and_then(serde_json::Value::as_str) != Some("whisper") {
+        return Err(NativeModelError::InvalidManifest {
+            message: "Whisper manifest requires config.json model_type=whisper".to_string(),
+        });
+    }
+    let n_mels = field("n_mels")?;
+    let n_audio_ctx = field("n_audio_ctx")?;
+    let n_audio_state = field("n_audio_state")?;
+    let n_audio_head = field("n_audio_head")?;
+    let n_audio_layer = field("n_audio_layer")?;
+    let n_vocab = field("n_vocab")?;
+    let n_text_ctx = field("n_text_ctx")?;
+    let n_text_state = field("n_text_state")?;
+    let n_text_head = field("n_text_head")?;
+    let n_text_layer = field("n_text_layer")?;
+    if n_audio_state != n_text_state {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "Whisper audio/text state widths must match, got {n_audio_state}/{n_text_state}"
+            ),
+        });
+    }
+    if !n_audio_state.is_multiple_of(n_audio_head) || !n_text_state.is_multiple_of(n_text_head) {
+        return Err(NativeModelError::InvalidManifest {
+            message: "Whisper state widths must divide evenly across attention heads".to_string(),
+        });
+    }
+    if !matches!(n_vocab, 51_865 | 51_866) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "Whisper native tokenizer supports multilingual vocabularies 51865/51866, got {n_vocab}"
+            ),
+        });
+    }
+    if manifest.layer_count != n_audio_layer
+        || manifest.hidden_size != n_audio_state
+        || manifest.attention_head_count != n_audio_head
+        || manifest.attention_head_dim != n_audio_state / n_audio_head
+        || manifest.vocab_size != n_vocab
+    {
+        return Err(NativeModelError::InvalidManifest {
+            message: "Whisper manifest architecture does not match config.json".to_string(),
+        });
+    }
+
+    let require_shape = |name: &str, expected: &[u64]| -> Result<(), NativeModelError> {
+        let tensor = manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.name == name)
+            .ok_or_else(|| NativeModelError::InvalidManifest {
+                message: format!("Whisper manifest is missing tensor {name}"),
+            })?;
+        if tensor.shape != expected {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "Whisper tensor {name} shape {:?}, expected {expected:?}",
+                    tensor.shape
+                ),
+            });
+        }
+        Ok(())
+    };
+    require_shape(
+        "encoder.conv1.weight",
+        &[u64::from(n_audio_state), 3, u64::from(n_mels)],
+    )?;
+    require_shape(
+        "encoder.conv2.weight",
+        &[u64::from(n_audio_state), 3, u64::from(n_audio_state)],
+    )?;
+    require_shape("encoder.ln_post.weight", &[u64::from(n_audio_state)])?;
+    require_shape(
+        "decoder.token_embedding.weight",
+        &[u64::from(n_vocab), u64::from(n_text_state)],
+    )?;
+    require_shape(
+        "decoder.positional_embedding",
+        &[u64::from(n_text_ctx), u64::from(n_text_state)],
+    )?;
+    require_shape("decoder.ln.weight", &[u64::from(n_text_state)])?;
+
+    for layer in 0..n_audio_layer {
+        require_shape(
+            &format!("encoder.blocks.{layer}.attn.query.weight"),
+            &[u64::from(n_audio_state), u64::from(n_audio_state)],
+        )?;
+        require_shape(
+            &format!("encoder.blocks.{layer}.mlp1.weight"),
+            &[
+                u64::from(n_audio_state).saturating_mul(4),
+                u64::from(n_audio_state),
+            ],
+        )?;
+        require_shape(
+            &format!("encoder.blocks.{layer}.mlp2.weight"),
+            &[
+                u64::from(n_audio_state),
+                u64::from(n_audio_state).saturating_mul(4),
+            ],
+        )?;
+    }
+    for layer in 0..n_text_layer {
+        for name in [
+            "attn.query.weight",
+            "cross_attn.query.weight",
+            "cross_attn.key.weight",
+            "cross_attn.value.weight",
+        ] {
+            require_shape(
+                &format!("decoder.blocks.{layer}.{name}"),
+                &[u64::from(n_text_state), u64::from(n_text_state)],
+            )?;
+        }
+    }
+    // These two dimensions are not represented in the decoder-only manifest
+    // schema, so exercising them here keeps malformed configs from reaching
+    // the MLX graph builder.
+    if n_audio_ctx != 1_500 || n_text_ctx > 448 {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "Whisper runtime expects n_audio_ctx=1500 and n_text_ctx<=448, got {n_audio_ctx}/{n_text_ctx}"
+            ),
+        });
+    }
     Ok(())
 }
 
@@ -4478,6 +4661,23 @@ mod tests {
                 moe_active_experts: None,
             }
         );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_scalar_other_tensors() {
+        let mut manifest = packed_layer_manifest();
+        manifest.tensors.push(tensor(
+            "vision_tower.encoder.layers.0.self_attn.q_proj.input_min",
+            NativeTensorRole::Other,
+            None,
+            Vec::new(),
+        ));
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("rank-0 extension tensors should remain valid safetensors");
 
         let _ = fs::remove_dir_all(dir);
     }
