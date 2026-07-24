@@ -421,8 +421,12 @@ pub fn chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
     use crate::model::forward_with_initial_hidden_media_post_norm_last_lm_head;
 
     let sampling = sampling_request.params;
-    // gemma4_vl reuses unified connector weights but fail-closes on missing towers.
-    let chunk = if crate::gemma4_vl::is_gemma4_vl_family(&cfg.model_family) {
+    // Standard Gemma 4 checkpoints carry a full ViT even though their text
+    // family remains `gemma4`; legacy `gemma4_vl` packages use the older
+    // connector compatibility route.
+    let chunk = if weights.gemma4_vl_vision.is_some()
+        || crate::gemma4_vl::is_gemma4_vl_family(&cfg.model_family)
+    {
         crate::gemma4_vl::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
             .map_err(|e| e.to_string())?
     } else {

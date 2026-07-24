@@ -66,6 +66,9 @@ pub(crate) fn is_qwen3_vl_model_id(model_id: &str) -> bool {
         || lower.contains("qwen3_vl_moe")
         || lower.contains("qwen3.5")
         || lower.contains("qwen3_5")
+        || lower.contains("qwen3.6")
+        || lower.contains("qwen3_6")
+        || lower.contains("qwen3-6")
 }
 
 /// True when the model id / family label is MiniCPM-V 4.6.
@@ -104,7 +107,8 @@ const QWEN3_VL_DEFAULT_TEMPORAL_PATCH_SIZE: u32 = 2;
 const QWEN3_VL_DEFAULT_SPATIAL_MERGE: u32 = 2;
 const QWEN3_VL_DEFAULT_MAX_SOFT: u32 = 1024;
 /// Full chat-template markup and the individual token expanded into soft
-/// tokens. Keeping vision_start/end is required by both Qwen3-VL and Qwen3.5.
+/// tokens. Keeping vision_start/end is required by Qwen3-VL, Qwen3.5, and
+/// Qwen 3.6.
 const QWEN3_VL_IMAGE_MARKUP: &str = "<|vision_start|><|image_pad|><|vision_end|>";
 const QWEN3_VL_IMAGE_PLACEHOLDER: &str = "<|image_pad|>";
 const QWEN3_VL_VIDEO_MARKUP: &str = "<|vision_start|><|video_pad|><|vision_end|>";
@@ -2119,6 +2123,11 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
 
     let image_placeholder = placeholder_string(&tokenizer, config.tokens.image_token_id, "image")?;
     let audio_placeholder = placeholder_string(&tokenizer, config.tokens.audio_token_id, "audio")?;
+    let video_placeholder = if config.tokens.video_token_id == 0 {
+        image_placeholder.clone()
+    } else {
+        placeholder_string(&tokenizer, config.tokens.video_token_id, "video")?
+    };
     // Render the prompt with one placeholder token per media item, collecting the
     // raw bytes in document order so they line up with the placeholder positions.
     let mut collected = CollectedMedia::default();
@@ -2129,7 +2138,7 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
             message.content.as_ref(),
             &image_placeholder,
             &audio_placeholder,
-            &image_placeholder,
+            &video_placeholder,
             &mut collected,
         )?;
         pairs.push((role.to_string(), content));
@@ -2243,7 +2252,7 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
         return Err(empty_chat_messages_error());
     }
 
-    // Qwen3-VL and unified Qwen3.5 accept vision media but not audio.
+    // Qwen3-VL, visual Qwen3.5, and Qwen 3.6 accept vision media but not audio.
     for part in messages
         .iter()
         .filter_map(|m| match &m.content {
@@ -4394,7 +4403,7 @@ mod media_tests {
         assert!(is_qwen3_vl_model_id("Qwen/Qwen3.5-4B"));
         assert!(is_qwen3_vl_model_id("ax-qwen3_vl-4bit"));
         assert!(is_qwen3_vl_model_id("qwen3-vl-moe"));
-        assert!(!is_qwen3_vl_model_id("qwen3.6-27b"));
+        assert!(is_qwen3_vl_model_id("qwen3.6-27b"));
         assert!(!is_qwen3_vl_model_id("gemma4-unified"));
     }
 

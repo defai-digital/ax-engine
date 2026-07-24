@@ -38,12 +38,14 @@ tower tensors are absent.
 
 | Priority | Model / manifest family | Accepted input | Native surface | Implementation and validation boundary |
 | --- | --- | --- | --- | --- |
+| P0 | Qwen 3.6 27B / 35B-A3B (`qwen3_5` manifest with `vision_tower.*`) | Image, multi-image, video | OpenAI chat and `/v1/generate` | Qwen ViT/merger plus multimodal RoPE on the hybrid gated-delta language graph; 27B image and video paths smoke-tested with the real 4-bit checkpoint on Apple M3 Max |
 | P0 | Qwen3-VL dense / MoE (`qwen3_vl`, `qwen3_vl_moe`) | Image, multi-image, video | OpenAI chat and `/v1/generate` | Conv3D temporal patches, factorized position interpolation, complete vision blocks and merger, DeepStack injection, and multimodal RoPE; dense 4B image path smoke-tested on Apple M3 |
 | P0 | Visual Qwen3.5 (`qwen3_5` with `vision_tower.*`) | Image, multi-image, video | OpenAI chat and `/v1/generate` | Shares the Qwen visual stack with the Qwen3.5 gated-delta text backbone; text-only Qwen3.5 manifests do not advertise media; 4B image path smoke-tested on Apple M3 |
 | P0 | MiniCPM-V 4.6 (`minicpmv4_6`) | Image, multi-image | OpenAI chat and `/v1/generate` | Dynamic SigLIP grid, 27-layer tower, layer-6 `VitMerger`, final pixel-shuffle merger, and version-specific placeholder expansion; OCR smoke-tested on Apple M3 |
+| P1 | Standard Gemma 4 E2B/E4B/26B/31B (`gemma4` with `vision_tower.*` + `embed_vision.*`) | Image, multi-image, video | OpenAI chat and `/v1/generate` | Full bidirectional ViT, clipped linears where configured, 2-D RoPE, 3×3 spatial pooling, checkpoint `std_bias`/`std_scale`, and pre-projection RMSNorm; E2B image and video paths smoke-tested with the real 4-bit checkpoint on Apple M3 Max; E-series Conformer audio remains unsupported |
 | P1 | NVIDIA Nemotron 3 Nano Omni 30B-A3B (`nemotron_h` with media tensors) | Image, audio, ordered image+audio | OpenAI chat and `/v1/generate` | RADIO vision, connector MLP, Parakeet/Conformer audio, exact STFT framing, and mixed-media spans; image, JFK audio, and combined prompts smoke-tested on Apple M3 |
 | P1 | Unlimited-OCR (`unlimited_ocr`) | Image | Processed native runtime input; OpenAI inline-image compatibility through the explicit vLLM Unlimited-OCR profile | SAM+CLIP dual vision and DeepSeek MoE language graph. Protected-prefix R-SWA keeps the entire image/text prefill and rotates only generated-token KV |
-| P2 | Gemma 4 unified 12B (`gemma4` manifest with unified media roles) | Image, audio, video | OpenAI chat and `/v1/generate` | Encoder-free image/audio connector and sampled video frames. Gemma 4 E2B/E4B/26B/31B text manifests remain text-only unless their manifest actually contains compatible media roles |
+| P2 | Gemma 4 unified 12B (`gemma4` manifest with unified media roles) | Image, audio, video | OpenAI chat and `/v1/generate` | Encoder-free image/audio connector and sampled video frames; capability discovery requires the unified media roles |
 | P2 | Whisper large-v3-turbo (`whisper`) | Audio | `/v1/audio/transcriptions`, `/v1/audio/translations`, `EngineSession::transcribe_audio` | Dedicated encoder-decoder ASR runtime, canonical multilingual vocabulary, log-mel frontend, KV-cached greedy decoding, transcribe/translate, WAV/MP3 decode; JFK transcription smoke-tested through both native and HTTP paths on Apple M3 |
 
 Whisper is intentionally not exposed through text generation endpoints.
@@ -103,6 +105,8 @@ Two recommended sources:
 
 `ax-engine download`, `download_model()`, and `scripts/download_model.py`
 download weights and auto-generate the manifest when a repo does not ship one.
+They also compare a shipped manifest with the source tensor index and
+regenerate stale Qwen/Gemma manifests that omitted a declared vision tower.
 
 List managed download aliases:
 
@@ -305,6 +309,12 @@ generation directly:
 ax-engine-bench generate-manifest /path/to/model
 ```
 
+Use `--force` to replace an older manifest after updating AX Engine:
+
+```text
+ax-engine-bench generate-manifest --force /path/to/model
+```
+
 Source-tree workflows are covered in the
 [Getting Started installation guide](GETTING-STARTED.md#source).
 
@@ -332,7 +342,7 @@ Current direct-support LLM families:
 | Family | Direct model IDs | Current scope | Notes |
 | --- | --- | --- | --- |
 | Gemma 4 unified | `gemma-4-12b-it` | Repo-owned MLX runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging; processed image/audio/video on server routes only when the manifest contains all required media roles | Unified 12B connector; sliding-window + full attention; K=V full-attention layers; logit softcapping |
-| Gemma 4 text | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned text runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters | Per-layer embedding, dense, and MoE variants; no media capability is inferred from the Gemma family name |
+| Standard Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned text plus manifest-authoritative image/video runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters | Per-layer embedding, dense, and MoE variants; full ViT + projection when both standard media prefixes are present; Conformer audio is not yet native |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` / `qwen3.5-9b` preset; visual checkpoints with `vision_tower.*` | Repo-owned MLX runtime; MLX affine 4-bit and OptiQ mixed 4/8-bit weights; image/video when the tower is present | GatedDeltaNet linear attention + dense SwiGLU FFN; `attn_output_gate` per-head interleaving; visual variants reuse the Qwen3-VL tower |
 | Qwen3-VL | Dense and MoE `qwen3_vl*` MLX checkpoints | Repo-owned image/video chat runtime | Conv3D patch embed, full vision stack and merger, DeepStack, multimodal RoPE |
@@ -340,7 +350,8 @@ Current direct-support LLM families:
 | Nemotron 3 Nano Omni | `nemotron_h` manifests containing `vision_model.*` / `sound_encoder.*` | Repo-owned image/audio/mixed chat runtime | RADIO vision + Parakeet audio on the Nemotron-H hybrid backbone |
 | Unlimited-OCR | `unlimited_ocr` | Preview repo-owned processed-image runtime | Dual vision, DeepSeek MoE, protected-prefix decode ring |
 | Whisper large-v3-turbo | `whisper` | Repo-owned speech transcription/translation runtime | Dedicated audio endpoints; not a chat/text-generation model |
-| Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
+| Qwen 3.6 | `Qwen3.6-35B-A3B` 4/6-bit MLX, `Qwen3.6-27B` 4/5/6-bit MLX | Repo-owned hybrid language plus manifest-authoritative image/video runtime | Official `qwen3_5` / `qwen3_5_moe` configs: GatedDelta linear attention, gated full attention, optional sparse MoE, Qwen ViT/merger, and multimodal RoPE |
+| Qwen3-Coder-Next | `Qwen3-Coder-Next-4bit` | Repo-owned text runtime | `qwen3_next` hybrid sparse-MoE coding model; no media tower is inferred |
 | GLM 4.7 Flash | `glm4_moe_lite` / `glm4.7-flash-4bit` | Repo-owned MLX runtime; MLX affine 4-bit weights | Flash MLA attention, sigmoid-routed MoE with dense+MoE layer split, shared expert; post-attention RMS norm |
 
 **Secondary (preview direct — serve aliases + server presets; share standard / family graphs)**
@@ -506,7 +517,8 @@ into AX-owned support claims.
 | You have Gemma4 unified image/audio/video inputs already preprocessed into AX's validated `multimodal_inputs.gemma4_unified` tensor contract | Direct support | Native MLX can consume processed media tensors without raw media decoding in the hot path; manual OpenAI-shaped extension payloads require pre-tokenized prompt tokens for span alignment |
 | You need client-side preprocessing for image URLs/data URIs, WAV audio URLs/data URIs, or OpenAI-style `input_audio` WAV base64 | Direct support through the Python helper | The helper prepares the processed tensor contract before the request reaches the optimized runtime |
 | You need server-side raw OpenAI media content-part decoding on native Gemma4 unified chat | Direct support for image/audio/video | Inline PNG/JPEG, WAV/MP3, and bounded sampled GIF/MP4/WebM are decoded into AX's processed tensor contract before the optimized runtime |
-| You need Qwen3-VL or visual Qwen3.5 image/video chat | Direct support | The manifest must contain the Qwen vision tower; inline media is expanded into ordered image/video spans |
+| You need standard Gemma 4 image/video chat | Direct support | The manifest must contain both the standard ViT and `embed_vision` projection; E-series Conformer audio currently fails closed |
+| You need Qwen3-VL, visual Qwen3.5, or Qwen 3.6 image/video chat | Direct support | The manifest must contain the Qwen vision tower; inline media is expanded into ordered image/video spans |
 | You need MiniCPM-V 4.6 OCR or multi-image chat | Direct support | The version-specific SigLIP/merger and placeholder path is selected from the manifest |
 | You need Nemotron Omni image, audio, or mixed-media chat | Direct support | Both media towers are discovered from the loaded manifest; video is unsupported |
 | You need local Whisper large-v3-turbo transcription or translation | Direct support | Use the dedicated OpenAI audio endpoints or Rust SDK; text generation fails closed |

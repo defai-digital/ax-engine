@@ -320,7 +320,7 @@ fn embed_audio_features(
     ))
 }
 
-fn overwrite_span(
+pub(crate) fn overwrite_span(
     hidden: MlxArray,
     embeddings: &MlxArray,
     span: &Gemma4UnifiedTokenSpan,
@@ -363,7 +363,7 @@ fn overwrite_span(
     ))
 }
 
-fn overwrite_video_spans(
+pub(crate) fn overwrite_video_spans(
     hidden: MlxArray,
     embeddings: &MlxArray,
     video: &Gemma4UnifiedVideoRuntimeInput,
@@ -440,7 +440,10 @@ fn overwrite_soft_token_ranges(
     Ok(hidden)
 }
 
-fn push_media_range(ranges: &mut Vec<Gemma4UnifiedMediaRange>, span: &Gemma4UnifiedTokenSpan) {
+pub(crate) fn push_media_range(
+    ranges: &mut Vec<Gemma4UnifiedMediaRange>,
+    span: &Gemma4UnifiedTokenSpan,
+) {
     if span.soft_token_count == 0 {
         return;
     }
@@ -451,7 +454,7 @@ fn push_media_range(ranges: &mut Vec<Gemma4UnifiedMediaRange>, span: &Gemma4Unif
     });
 }
 
-fn push_video_media_ranges(
+pub(crate) fn push_video_media_ranges(
     ranges: &mut Vec<Gemma4UnifiedMediaRange>,
     video: &Gemma4UnifiedVideoRuntimeInput,
 ) {
@@ -534,6 +537,7 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,

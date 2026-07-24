@@ -342,10 +342,15 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         return NativeProcessedMultimodalSupport::default();
     };
 
-    let gemma4_image = GEMMA4_UNIFIED_VISION_ROLES
+    let gemma4_unified_image = GEMMA4_UNIFIED_VISION_ROLES
         .iter()
         .all(|role| has_global_tensor_role(tensors, role));
     let family = family_from_manifest(&manifest).unwrap_or_default();
+    let gemma4_standard_image = family == "gemma4"
+        && (has_tensor_name_prefix(tensors, "vision_tower.")
+            || has_tensor_name_prefix(tensors, "model.vision_tower."))
+        && (has_tensor_name_prefix(tensors, "embed_vision.")
+            || has_tensor_name_prefix(tensors, "model.embed_vision."));
     let qwen3_vl_image = (matches!(family.as_str(), "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5")
         && (has_tensor_name_prefix(tensors, "vision_tower.")
             || has_tensor_name_prefix(tensors, "visual.")
@@ -364,7 +369,11 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         && has_tensor_name_prefix(tensors, "mlp1.");
     let nemotron_omni_audio = has_tensor_name_prefix(tensors, "sound_encoder.")
         && has_tensor_name_prefix(tensors, "sound_projection.");
-    let image = gemma4_image || qwen3_vl_image || minicpm_v46_image || nemotron_omni_image;
+    let image = gemma4_unified_image
+        || gemma4_standard_image
+        || qwen3_vl_image
+        || minicpm_v46_image
+        || nemotron_omni_image;
     let audio = has_global_tensor_role(tensors, GEMMA4_UNIFIED_AUDIO_ROLE) || nemotron_omni_audio;
     // Advertise video only when the loaded tower has the corresponding native
     // frame path: Gemma4 unified or Qwen3-VL/Qwen3.5. Media is data-URI only
@@ -382,10 +391,14 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
             .as_str(),
         "0" | "false" | "off" | "no"
     );
-    let gemma4_video = gemma4_image
-        && !video_env_off
-        && media_drops == 0
-        && (family == "gemma4" || family == "gemma4_unified" || family.starts_with("gemma4"));
+    // Standard Gemma checkpoints may intentionally omit the optional
+    // Conformer audio tower. That must not suppress their independent
+    // per-frame ViT video path.
+    let gemma4_video = !video_env_off
+        && (gemma4_standard_image
+            || (gemma4_unified_image
+                && media_drops == 0
+                && (family == "gemma4_unified" || family.starts_with("gemma4"))));
     let qwen3_vl_video = qwen3_vl_image && media_drops == 0;
     let video = gemma4_video || qwen3_vl_video;
     NativeProcessedMultimodalSupport {

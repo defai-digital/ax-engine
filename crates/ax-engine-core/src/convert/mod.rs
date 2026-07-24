@@ -760,6 +760,19 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         return Some((NativeTensorRole::Other, None));
     }
 
+    // Standard Gemma 4 checkpoints (E2B/E4B/26B/31B) carry an encoder-based
+    // ViT and projection, distinct from gemma4_unified's encoder-free roles.
+    // Preserve the exact names so the config-driven native vision loader can
+    // consume both MLX and raw-HF prefix layouts.
+    if matches!(family.family_name, "gemma4" | "gemma4_vl")
+        && (name.starts_with("vision_tower.")
+            || name.starts_with("model.vision_tower.")
+            || name.starts_with("embed_vision.")
+            || name.starts_with("model.embed_vision."))
+    {
+        return Some((NativeTensorRole::Other, None));
+    }
+
     if family.family_name == "minicpmv4_6"
         && (name.starts_with("vision_tower.")
             || name.starts_with("model.vision_tower.")

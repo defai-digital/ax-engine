@@ -12266,6 +12266,7 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,

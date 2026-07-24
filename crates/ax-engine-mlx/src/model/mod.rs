@@ -789,10 +789,17 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     token_offset: usize,
     logits_mode: FinalLogitsMode,
 ) -> MlxArray {
+    // Gemma 4 E-series derives a separate embedding for every language
+    // layer. Media placeholder IDs are outside that auxiliary embedding
+    // vocabulary; the reference model substitutes token 0 at visual/audio
+    // positions before the gather while retaining the already-scattered
+    // multimodal residual stream.
+    let per_layer_token_ids =
+        mask_media_token_ids_for_per_layer_inputs(token_ids, media_ranges, token_offset);
     let ids_1d = MlxArray::from_raw_data(
-        token_ids.as_ptr() as *const u8,
-        std::mem::size_of_val(token_ids),
-        &[token_ids.len() as i32],
+        per_layer_token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(per_layer_token_ids.as_slice()),
+        &[per_layer_token_ids.len() as i32],
         MlxDtype::Uint32,
     );
     let seq = token_ids.len();
@@ -866,6 +873,24 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     let logits = qw(&normed, &weights.lm_head);
     let logits = finalize_lm_head_logits(cfg, &logits, logits_mode);
     reshape(&logits, &[cfg.vocab_size as i32], None)
+}
+
+fn mask_media_token_ids_for_per_layer_inputs(
+    token_ids: &[u32],
+    media_ranges: &[(usize, usize)],
+    token_offset: usize,
+) -> Vec<u32> {
+    let mut masked = token_ids.to_vec();
+    let chunk_end = token_offset.saturating_add(masked.len());
+    for &(start, end_inclusive) in media_ranges {
+        let end_exclusive = end_inclusive.saturating_add(1);
+        let overlap_start = start.max(token_offset);
+        let overlap_end = end_exclusive.min(chunk_end);
+        if overlap_start < overlap_end {
+            masked[overlap_start - token_offset..overlap_end - token_offset].fill(0);
+        }
+    }
+    masked
 }
 
 /// Full visual prefill for unified Qwen checkpoints.
@@ -1130,10 +1155,12 @@ pub fn forward_with_initial_hidden_media_post_norm_last_lm_head(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    let per_layer_token_ids =
+        mask_media_token_ids_for_per_layer_inputs(token_ids, media_ranges, token_offset);
     let ids_1d = MlxArray::from_raw_data(
-        token_ids.as_ptr() as *const u8,
-        std::mem::size_of_val(token_ids),
-        &[token_ids.len() as i32],
+        per_layer_token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(per_layer_token_ids.as_slice()),
+        &[per_layer_token_ids.len() as i32],
         MlxDtype::Uint32,
     );
     let seq = token_ids.len();
@@ -3313,6 +3340,23 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Mutex, OnceLock};
 
+    #[test]
+    fn gemma4_per_layer_media_ids_are_zeroed_with_chunk_offsets() {
+        let token_ids = [10, 11, 12, 13, 14, 15];
+        assert_eq!(
+            mask_media_token_ids_for_per_layer_inputs(&token_ids, &[(2, 4)], 0),
+            vec![10, 11, 0, 0, 0, 15]
+        );
+        assert_eq!(
+            mask_media_token_ids_for_per_layer_inputs(&token_ids, &[(8, 10)], 6),
+            vec![10, 11, 0, 0, 0, 15]
+        );
+        assert_eq!(
+            mask_media_token_ids_for_per_layer_inputs(&token_ids, &[(0, 1), (20, 25)], 6),
+            token_ids
+        );
+    }
+
     /// Serialize GPU-numeric oracle tests that materialize Metal results.
     /// Parallel suites on CI can otherwise race MLX streams and produce
     /// catastrophic (non-tolerance) mismatches on bit-sensitive RoPE checks.
@@ -3741,6 +3785,7 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
@@ -4345,6 +4390,7 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
@@ -4400,6 +4446,7 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
@@ -4534,6 +4581,7 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
@@ -4616,6 +4664,7 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,
@@ -5393,6 +5442,7 @@ mod tests {
             embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
             qwen3_vl_vision: None,

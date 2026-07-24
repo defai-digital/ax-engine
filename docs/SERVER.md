@@ -547,7 +547,8 @@ repo-owned manifest contains the corresponding tower tensors. Inline chat media
 is available for:
 
 - Gemma 4 unified: image, audio, and bounded sampled video
-- Qwen3-VL and visual Qwen3.5: image and bounded sampled video
+- Standard Gemma 4 E2B/E4B/26B/31B: image and bounded sampled video
+- Qwen3-VL, visual Qwen3.5, and Qwen 3.6: image and bounded sampled video
 - MiniCPM-V 4.6: image and multi-image
 - Nemotron 3 Nano Omni: image, audio, and ordered image+audio
 
@@ -577,13 +578,16 @@ Multimodal serving contract limits:
   `preprocessor_config.json` (Gemma 4 12B: up to 280 soft tokens per image).
   Chat may override via OpenAI `detail` (`low`/`high`/`auto`) or extension
   `max_soft_tokens` ∈ {70,140,280,560,1120}; unknown values are HTTP 400.
-- **Audio.** WAV and MP3 input is downmixed to mono and resampled to the
+- **Audio.** Gemma 4 unified and Nemotron audio inputs accept WAV/MP3,
+  downmix to mono, and resample to the
   model rate (16 kHz). The container is sniffed from magic bytes, not the
   declared `format` field. Other formats (AAC/OGG/FLAC) are rejected; send
   pre-computed audio tensors via `/v1/generate` instead. Audio longer than
   the model's `audio_seq_length` cap (750 frames × 40 ms = 30 s by default)
-  is silently truncated, and MP3 decoding stops at that cap.
-- **Video.** When the loaded manifest is Gemma4 unified or Qwen3-VL/Qwen3.5
+  is silently truncated, and MP3 decoding stops at that cap. Standard Gemma 4
+  E-series Conformer audio is not yet native and fails closed.
+- **Video.** When the loaded manifest is Gemma 4 unified/standard or a
+  Qwen3-VL/Qwen3.5/Qwen 3.6 checkpoint
   with an intact vision tower, chat routes accept `video_url` **data URIs
   only** (no remote `http(s)`, no bare filesystem paths). The frame cap is 24;
   Gemma video can also be disabled with `AX_MLX_GEMMA4_VIDEO=off`. Otherwise
@@ -595,7 +599,7 @@ Multimodal serving contract limits:
   is stripped from chat content; raw `/v1/completions` output stays
   verbatim.
 
-`scripts/qa_gemma4_multimodal.py --strict` runs an end-to-end probe set
+`scripts/qa_gemma4_multimodal.py --strict` runs the unified Gemma 4 end-to-end probe set
 (image color, image description, audio smoke, speech transcription) against a
 live server and fails on thinking-channel leaks or content
 mismatches.

@@ -500,8 +500,9 @@ pub(crate) fn build_openai_chat_request(
     } else {
         validate_native_chat_artifacts(live)?;
         // On native MLX, decode inline base64 image/audio parts into the
-        // family-specific multimodal schema. Qwen3-VL → qwen3_vl; otherwise
-        // Gemma 4 unified. Falls back to text-only when there is no media.
+        // family-specific multimodal schema. Qwen3-VL/Qwen3.5/Qwen 3.6 use
+        // qwen3_vl; other capable families select their own renderer below.
+        // Falls back to text-only when there is no media.
         let media_rendered = if live.runtime_report.selected_backend == SelectedBackend::Mlx
             && multimodal_inputs.is_empty()
             && messages_contain_inline_media(&request.messages)

@@ -1933,6 +1933,32 @@ fn unified_qwen_language_and_vision_names_are_preserved() {
 }
 
 #[test]
+fn standard_gemma4_vision_names_are_preserved() {
+    let family = model_family_for_type("gemma4", &serde_json::json!({"model_type": "gemma4"}))
+        .expect("gemma4 family");
+
+    for name in [
+        "vision_tower.patch_embedder.input_proj.weight",
+        "vision_tower.encoder.layers.0.self_attn.q_proj.linear.weight",
+        "vision_tower.std_scale",
+        "embed_vision.embedding_projection.weight",
+        "model.vision_tower.patch_embedder.position_embedding_table",
+        "model.embed_vision.embedding_projection.weight",
+    ] {
+        assert_eq!(
+            match_tensor(name, &family),
+            Some((NativeTensorRole::Other, None)),
+            "{name} should remain available to the standard Gemma 4 vision loader"
+        );
+    }
+    assert_eq!(
+        match_tensor("audio_tower.layers.0.norm_out.weight", &family),
+        None,
+        "standard Gemma 4 audio stays fail-closed until its Conformer path is native"
+    );
+}
+
+#[test]
 fn qwen3_5_moe_config_detected_from_num_experts_in_text_config() {
     let config = serde_json::json!({
         "model_type": "qwen3_5",

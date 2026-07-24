@@ -17,7 +17,7 @@ pub(crate) fn handle_generate_manifest(args: &[String]) -> Result<(), CliError> 
         )));
     }
     let manifest_path = model_dir.join(ax_engine_core::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let status = if manifest_path.exists() {
+    let status = if manifest_path.exists() && !args.force {
         GenerateManifestStatus::AlreadyExists
     } else {
         let manifest = ax_engine_core::convert::convert_hf_model_dir(&model_dir)
@@ -65,6 +65,7 @@ pub(crate) fn handle_generate_manifest(args: &[String]) -> Result<(), CliError> 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct GenerateManifestArgs {
     pub(crate) model_dir: PathBuf,
+    pub(crate) force: bool,
     pub(crate) json: bool,
     pub(crate) validate: bool,
 }
@@ -73,11 +74,13 @@ pub(crate) fn parse_generate_manifest_args(
     args: &[String],
 ) -> Result<GenerateManifestArgs, CliError> {
     let mut model_dir = None;
+    let mut force = false;
     let mut json = false;
     let mut validate = false;
 
     for arg in args {
         match arg.as_str() {
+            "--force" => force = true,
             "--json" => json = true,
             "--validate" => validate = true,
             value if value.starts_with('-') => {
@@ -104,6 +107,7 @@ pub(crate) fn parse_generate_manifest_args(
 
     Ok(GenerateManifestArgs {
         model_dir,
+        force,
         json,
         validate,
     })

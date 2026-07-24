@@ -166,9 +166,16 @@ pub(crate) fn load_processor_config(model_dir: &Path) -> Result<MediaProcessors,
     let model_cfg = read_json(&model_dir.join("config.json"))?;
     let processor_cfg = read_json(&model_dir.join("preprocessor_config.json"))
         .or_else(|_| read_json(&model_dir.join("processor_config.json")))?;
-    let config =
+    let mut config =
         Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model_cfg, &processor_cfg)
             .map_err(|error| MediaError::Config(error.to_string()))?;
+    // Standard Gemma 4 E-series uses a Conformer audio tower, not the
+    // encoder-free projection consumed by this processor. The native runtime
+    // currently retains only the standard ViT, so fail audio at request
+    // preparation instead of constructing incompatible connector features.
+    if model_cfg.get("model_type").and_then(Value::as_str) == Some("gemma4") {
+        config.audio = None;
+    }
     let normalization = image_normalization_from(&processor_cfg)?;
     let (video_vision, video_max_frames) = video_processor_from(&processor_cfg, &config.vision);
     Ok(MediaProcessors {

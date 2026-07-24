@@ -1263,7 +1263,12 @@ fn validate_native_model_manifest(
                 message: format!("duplicate tensor name {}", tensor.name),
             });
         }
-        if tensor.shape.is_empty() || tensor.shape.contains(&0) {
+        // Safetensors permits rank-0 scalars. Keep structural language roles
+        // rank-positive, but allow extension tensors such as Gemma 4 ViT
+        // clipping thresholds to preserve their native scalar shape.
+        if (tensor.shape.is_empty() && tensor.role != NativeTensorRole::Other)
+            || tensor.shape.contains(&0)
+        {
             return Err(NativeModelError::InvalidManifest {
                 message: format!("tensor {} must have only positive dimensions", tensor.name),
             });
@@ -4656,6 +4661,23 @@ mod tests {
                 moe_active_experts: None,
             }
         );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_scalar_other_tensors() {
+        let mut manifest = packed_layer_manifest();
+        manifest.tensors.push(tensor(
+            "vision_tower.encoder.layers.0.self_attn.q_proj.input_min",
+            NativeTensorRole::Other,
+            None,
+            Vec::new(),
+        ));
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("rank-0 extension tensors should remain valid safetensors");
 
         let _ = fs::remove_dir_all(dir);
     }

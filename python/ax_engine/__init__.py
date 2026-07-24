@@ -1320,6 +1320,95 @@ def _normalize_chat_message(message: ChatMessage | dict[str, str]) -> ChatMessag
 
 
 _MODEL_MANIFEST_FILE = "model-manifest.json"
+_MAX_SAFETENSORS_HEADER_BYTES = 64 * 1024 * 1024
+
+
+def _weight_tensor_names(model_dir: Path) -> set[str]:
+    """Read tensor names without loading model payloads."""
+    import json
+
+    index_path = model_dir / "model.safetensors.index.json"
+    if index_path.is_file():
+        try:
+            payload = json.loads(index_path.read_bytes())
+            weight_map = payload.get("weight_map", {})
+            if isinstance(weight_map, dict):
+                return {name for name in weight_map if isinstance(name, str)}
+        except (OSError, ValueError, TypeError):
+            return set()
+
+    names: set[str] = set()
+    for path in model_dir.glob("*.safetensors"):
+        try:
+            with path.open("rb") as handle:
+                header_size_bytes = handle.read(8)
+                if len(header_size_bytes) != 8:
+                    continue
+                header_size = int.from_bytes(header_size_bytes, "little")
+                if not 0 < header_size <= _MAX_SAFETENSORS_HEADER_BYTES:
+                    continue
+                header = json.loads(handle.read(header_size))
+                if isinstance(header, dict):
+                    names.update(
+                        name
+                        for name in header
+                        if isinstance(name, str) and name != "__metadata__"
+                    )
+        except (OSError, ValueError, TypeError):
+            continue
+    return names
+
+
+def _manifest_needs_media_rebuild(model_dir: Path) -> bool:
+    """Detect published manifests that silently omitted declared media towers."""
+    import json
+
+    try:
+        config = json.loads((model_dir / "config.json").read_bytes())
+        manifest = json.loads((model_dir / _MODEL_MANIFEST_FILE).read_bytes())
+    except (OSError, ValueError, TypeError):
+        return False
+    model_type = config.get("model_type")
+    if not isinstance(model_type, str) or not isinstance(config.get("vision_config"), dict):
+        return False
+
+    if model_type in {
+        "qwen3_5",
+        "qwen3_5_moe",
+        "qwen3_vl",
+        "qwen3_vl_moe",
+        "qwen3-vl",
+        "qwen3-vl-moe",
+    }:
+        required_prefix_groups = (
+            ("vision_tower.", "visual.", "model.visual."),
+        )
+    elif model_type in {"gemma4", "gemma4_vl", "gemma4-vl"}:
+        required_prefix_groups = (
+            ("vision_tower.", "model.vision_tower."),
+            ("embed_vision.", "model.embed_vision."),
+        )
+    else:
+        return False
+
+    source_names = _weight_tensor_names(model_dir)
+    if not source_names:
+        return False
+    tensors = manifest.get("tensors")
+    if not isinstance(tensors, list):
+        manifest_names: set[str] = set()
+    else:
+        manifest_names = {
+            name
+            for tensor in tensors
+            if isinstance(tensor, dict)
+            and isinstance((name := tensor.get("name")), str)
+        }
+    return any(
+        any(name.startswith(prefixes) for name in source_names)
+        and not any(name.startswith(prefixes) for name in manifest_names)
+        for prefixes in required_prefix_groups
+    )
 
 
 def _slug_repo_id(repo_id: str) -> str:
@@ -1446,6 +1535,7 @@ def download_model(
         safetensors = list(dest.glob("*.safetensors"))
         if safetensors and (dest / _MODEL_MANIFEST_FILE).exists():
             _validate_downloaded_model_dir(dest)
+            _ensure_manifest(dest)
             return dest
         if safetensors:
             _validate_downloaded_model_dir(dest)
@@ -1497,14 +1587,16 @@ def _ensure_manifest(dest: Path) -> None:
             of :func:`download_model` never receive a path to a model that is not
             actually AX-ready.
     """
-    if (dest / _MODEL_MANIFEST_FILE).exists():
+    manifest_path = dest / _MODEL_MANIFEST_FILE
+    rebuild_media_manifest = manifest_path.exists() and _manifest_needs_media_rebuild(dest)
+    if manifest_path.exists() and not rebuild_media_manifest:
         return
-    if _try_generate_manifest(dest):
+    if _try_generate_manifest(dest, force=rebuild_media_manifest):
         return
     raise RuntimeError(_manifest_failure_message(dest))
 
 
-def _try_generate_manifest(dest: Path) -> bool:
+def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
     """Try to run generate-manifest via the bundled, installed, or cargo binary.
 
     Returns True on success.
@@ -1522,8 +1614,12 @@ def _try_generate_manifest(dest: Path) -> bool:
         else ("ax-engine-bench" if shutil.which("ax-engine-bench") else None)
     )
     if bench is not None:
+        command = [bench, "generate-manifest"]
+        if force:
+            command.append("--force")
+        command.append(str(dest))
         result = subprocess.run(
-            [bench, "generate-manifest", str(dest)],
+            command,
             capture_output=True,
             text=True,
         )
@@ -1549,6 +1645,7 @@ def _try_generate_manifest(dest: Path) -> bool:
                 except OSError:
                     pass
         if repo_root:
+            generate_args = ["--force", str(dest)] if force else [str(dest)]
             result = subprocess.run(
                 [
                     "cargo",
@@ -1559,7 +1656,7 @@ def _try_generate_manifest(dest: Path) -> bool:
                     "--bin",
                     "generate-manifest",
                     "--",
-                    str(dest),
+                    *generate_args,
                 ],
                 cwd=str(repo_root),
                 capture_output=True,
