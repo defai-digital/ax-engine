@@ -289,13 +289,14 @@ struct ModelExecutionTarget {
 /// prefill turn stays under the stream-gap SLO budget
 /// ([`ADAPTIVE_PREFILL_GAP_SLO_US`]). Override via
 /// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS`.
-pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
+pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 96;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
-/// Interactive p95 stream-gap SLO for one sibling prefill turn. Calibrated so
-/// formal S1 keeps gap ratio ≤0.90× mlxcel (~34 ms) and absolute ≤50 ms while
-/// still admitting a productive multi-token quantum (not 1-token pathology).
-const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 32_000;
-const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
+/// Interactive p95 stream-gap SLO for one sibling prefill turn. Formal S1 with
+/// exact warm + exclusive arbiter measured gap p95 ~9 ms (budget ≤ ~31 ms for
+/// 0.90× mlxcel and ≤50 ms absolute). Raise SLO so adaptive quanta stay large
+/// enough to cut S1 wall / thr without blowing the locked gap gates.
+const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 45_000;
+const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 128;
 const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
@@ -1853,11 +1854,11 @@ mod tests {
     fn adaptive_prefill_latency_quantum_defaults_to_wall_time_slo_proxy() {
         // Must not regress to the historical 1-token sibling quantum that
         // serialized long prefills into thousands of arbiter turns (flip S1).
-        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 64);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 64);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 64);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 64);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 64);
+        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 96);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 96);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 96);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 96);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 96);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("96")), 96);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("1")), 1);
         const {

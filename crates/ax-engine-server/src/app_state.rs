@@ -945,6 +945,7 @@ pub(crate) fn s1_gemma_long_prefill_text() -> String {
 ///
 /// Prefer [`run_exact_s1_gemma_long_prefill_warmup`] after multi-model publish
 /// for formal S1 — dummy tokens alone left concurrent thr ~0.74×.
+#[allow(dead_code)]
 pub(crate) fn run_long_prefill_production_warmup(
     generation_service: &NativeGenerationService,
     model_id: &str,
