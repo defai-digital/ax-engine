@@ -1275,14 +1275,15 @@ fn advance_shared_engine(
 ) -> SessionResult<EngineStepReport> {
     maintain_streams(session, active_streams, service_state);
     let execution_target = service_state.execution_target.read().clone();
-    // Exclusive arbiter (max_concurrent=1): when a sibling is active, cap
+    // When a sibling is active under exclusive arbitration (max=1), cap
     // engine-step burst so one model cannot HOL the single device turn for a
-    // full STREAM_ENGINE_STEP_BURST (64) decode steps — that starved sibling
-    // prefill (flip S1 Gemma e2e ~28s vs ~10s). Concurrent arbiter (max>1)
-    // lets each model hold its own GPU stream turn, so burst and fair-prefill
-    // quanta no longer mediate cross-model Metal time — restore full decode
-    // burst and non-fair prefill (device-layer overlap, mlxcel multi-process
-    // equivalent).
+    // full STREAM_ENGINE_STEP_BURST. Concurrent arbitration (max>1) lets each
+    // model hold its own dedicated GPU stream, so decode burst can stay high
+    // (Metal time-slices concurrent submissions). Fair prefill quanta still
+    // apply under concurrent mode: unbounded Gemma prefill chunks were
+    // measured to blow interactive gap p95 to ~340 ms (S1 concurrent-arbiter
+    // campaign 2026-07-24) even with dual holds — chunk wall time must stay
+    // under the stream-gap SLO so Qwen keeps getting GPU turns.
     let concurrent_device = execution_target
         .as_ref()
         .is_some_and(|target| target.arbiter.max_concurrent() > 1);
@@ -1299,7 +1300,7 @@ fn advance_shared_engine(
         // Only force burst=1 under exclusive arbitration.
         sibling_active_for_burst = sibling_active && !concurrent_device;
         let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
-        if sibling_active && !concurrent_device {
+        if sibling_active {
             // Feedback-control quantum from last turn's runner wall time so
             // one prefill chunk stays under the stream-gap SLO mid-prompt
             // (fixed large quanta blow gap late in long Gemma prefills).
@@ -1328,10 +1329,7 @@ fn advance_shared_engine(
                 session.set_multi_prefill_fair(true, adjusted, inflight);
             }
         } else {
-            // Sibling idle, or concurrent multi-model device: restore
-            // single-model prefill throughput (fair off / full chunk). Concurrent
-            // mode relies on Metal time-slicing across dedicated streams rather
-            // than fair-token quanta for stream-gap isolation.
+            // Sibling idle: restore single-model prefill throughput.
             let start = adaptive_prefill_latency_tokens_per_step();
             service_state
                 .adaptive_prefill_tokens
