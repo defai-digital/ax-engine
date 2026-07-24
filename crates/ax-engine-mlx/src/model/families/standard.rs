@@ -987,15 +987,25 @@ fn layer_forward_internal(
         let mask_opt: &Option<MlxArray> = if let Some(m) = shared_mask {
             m
         } else {
+            // Ring mask is only valid when the KV view is the full ring buffer
+            // (key_len == capacity). Multi-token prefill can still take the
+            // ordered retained-window path for a cold layer (ring requires an
+            // existing contiguous entry), which returns key_len ≈ window while
+            // `ring_layout` is Some — pairing that with a capacity-wide ring
+            // mask panics MLX SDPA (`broadcast_shapes`). Fall back to the
+            // ordered causal/window mask whenever key length disagrees.
             local_mask = match ring_layout {
-                Some(ring) if ring.needs_mask(seq) => Some(create_ring_sliding_mask(
-                    seq,
-                    ring.window,
-                    ring.capacity,
-                    ring.write_start,
-                )),
-                Some(_) => None,
-                None => attention_mask_array(seq, key_len, sliding_window),
+                Some(ring)
+                    if ring.needs_mask(seq) && key_len == ring.capacity =>
+                {
+                    Some(create_ring_sliding_mask(
+                        seq,
+                        ring.window,
+                        ring.capacity,
+                        ring.write_start,
+                    ))
+                }
+                Some(_) | None => attention_mask_array(seq, key_len, sliding_window),
             };
             &local_mask
         };

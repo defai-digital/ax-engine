@@ -293,19 +293,20 @@ env_flag_default_on!(
     "AX_MLX_ROTATING_SLIDING_DECODE"
 );
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_ROTATING_SLIDING_PREFILL` — use rotating sliding-window KV
     /// during multi-token prefill (not only decode).
     ///
-    /// **Default: OFF** (opt-in via `AX_MLX_ROTATING_SLIDING_PREFILL=1`).
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_ROTATING_SLIDING_PREFILL=0`).
     ///
     /// Without this, prefill keeps ordered O(context) contiguous SWA buffers
     /// and only trims the *view* handed to SDPA (`MULTI_TOKEN_WINDOW_VIEWS`).
-    /// Enabling rotation during prefill (slack ≥ prefill chunk) aims to keep
-    /// physical SWA storage O(window + slack) like mlx_lm RotatingKVCache.
-    /// M5 S1 probe (2026-07-24) found multi-token ring + SDPA mask broadcast
-    /// failures (`[broadcast_shapes] (1536,2560) vs (1,16,1536,1024)`), so the
-    /// path stays opt-in until ring mask / multi-token append is fixed.
+    /// Enabling rotation (slack ≥ prefill chunk) keeps physical SWA storage
+    /// O(window + slack) like mlx_lm RotatingKVCache after the first ordered
+    /// chunk past the window. SDPA ring masks are only applied when
+    /// `key_len == capacity` (standard layer path), so cold ordered layers
+    /// that still return a windowed view never pair with a capacity mask.
     rotating_sliding_prefill_enabled,
     "AX_MLX_ROTATING_SLIDING_PREFILL"
 );
