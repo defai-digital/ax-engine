@@ -930,6 +930,7 @@ fn write_valid_native_model_fixture() -> PathBuf {
         think_start_token_id: None,
         think_end_token_id: None,
         diffusion: ax_engine_core::NativeDiffusionConfig::default(),
+        dropped_tensors: Default::default(),
         tensors: vec![
             native_model_tensor(
                 "model.embed_tokens.weight",
@@ -1126,6 +1127,7 @@ fn write_projection_native_model_fixture() -> PathBuf {
         think_start_token_id: None,
         think_end_token_id: None,
         diffusion: ax_engine_core::NativeDiffusionConfig::default(),
+        dropped_tensors: Default::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -2309,6 +2311,7 @@ fn serialize_runtime_metadata_prefers_actual_runtime_report_over_config_side_met
             source_q6_k_binding_count: 0,
             source_q8_0_binding_count: 0,
         }),
+        delegated_runtime: None,
     };
 
     let runtime_json = serialize_runtime_metadata(&runtime, Some(&actual_runtime));

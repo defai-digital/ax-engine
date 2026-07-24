@@ -36,8 +36,8 @@ pub(crate) async fn generate_stream(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
 ) -> Result<Sse<ReceiverStream<StreamEvent>>, (StatusCode, Json<ErrorResponse>)> {
-    request.reject_video_inputs()?;
     let live = select_model(&state, request.model.as_deref())?;
+    request.reject_video_inputs(&live)?;
 
     let request = build_generate_request(&live, request);
     let stream_context = build_stream_state(&state, &live, request).await?;

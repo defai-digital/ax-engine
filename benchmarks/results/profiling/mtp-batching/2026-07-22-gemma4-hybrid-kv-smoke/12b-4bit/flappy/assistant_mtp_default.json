@@ -1,0 +1,83 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "/Volumes/Ext4T/models/hub/models--AutomatosX--AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP/snapshots/48139a086799d42ce1609071189cd9bf63b794ae",
+  "model_repo_id": "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--AutomatosX--AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP/snapshots/48139a086799d42ce1609071189cd9bf63b794ae",
+  "output_path": "benchmarks/results/profiling/mtp-batching/2026-07-22-gemma4-hybrid-kv-smoke/12b-4bit/flappy/assistant_mtp_default.json",
+  "benchmark_window": {
+    "started_at": "2026-07-23T01:32:19-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 21.535,
+        "five_minutes": 19.232,
+        "fifteen_minutes": 17.819
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=23658595)\t100%; charged; 0:00 remaining present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 87705,
+          "state": "R",
+          "cpu_percent": 440.0,
+          "command": "qemu-system-x86_64"
+        },
+        {
+          "pid": 85653,
+          "state": "R",
+          "cpu_percent": 272.6,
+          "command": "etcher-util"
+        },
+        {
+          "pid": 85632,
+          "state": "R",
+          "cpu_percent": 187.8,
+          "command": "chrome_crashpad_handler"
+        },
+        {
+          "pid": 64732,
+          "state": "R",
+          "cpu_percent": 82.6,
+          "command": "spotlightknowledged.updater"
+        },
+        {
+          "pid": 421,
+          "state": "Ss",
+          "cpu_percent": 65.4,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 8253,
+          "state": "S",
+          "cpu_percent": 52.8,
+          "command": "CapCut"
+        },
+        {
+          "pid": 79616,
+          "state": "Ss",
+          "cpu_percent": 45.4,
+          "command": "BackgroundShortcutRunner"
+        },
+        {
+          "pid": 49488,
+          "state": "Rs",
+          "cpu_percent": 28.1,
+          "command": "com.apple.WebKit.WebContent"
+        }
+      ]
+    }
+  }
+}

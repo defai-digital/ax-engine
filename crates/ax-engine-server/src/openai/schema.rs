@@ -1,4 +1,4 @@
-use ax_engine_sdk::RequestMultimodalInputs;
+use ax_engine_sdk::{RequestMultimodalInputs, VllmXargs};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -91,6 +91,12 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     pub(crate) repetition_penalty: Option<f32>,
     #[serde(default)]
     pub(crate) repetition_context_size: Option<u32>,
+    /// vLLM extension. Rejected unless the selected backend is vLLM.
+    #[serde(default)]
+    pub(crate) skip_special_tokens: Option<bool>,
+    /// Typed vLLM-only n-gram extension. Unknown keys fail deserialization.
+    #[serde(default)]
+    pub(crate) vllm_xargs: Option<VllmXargs>,
     #[serde(default)]
     pub(crate) stop: Option<OpenAiStopInput>,
     #[serde(default)]
@@ -149,6 +155,12 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) repetition_penalty: Option<f32>,
     #[serde(default)]
     pub(crate) repetition_context_size: Option<u32>,
+    /// vLLM extension. Rejected unless the selected backend is vLLM.
+    #[serde(default)]
+    pub(crate) skip_special_tokens: Option<bool>,
+    /// Typed vLLM-only n-gram extension. Unknown keys fail deserialization.
+    #[serde(default)]
+    pub(crate) vllm_xargs: Option<VllmXargs>,
     #[serde(default)]
     pub(crate) stop: Option<OpenAiStopInput>,
     #[serde(default)]
@@ -246,6 +258,8 @@ pub(crate) struct OpenAiChatContentPart {
     pub(crate) text: Option<String>,
     #[serde(default)]
     pub(crate) image_url: Option<Value>,
+    #[serde(default)]
+    pub(crate) video_url: Option<Value>,
     #[serde(default)]
     pub(crate) input_audio: Option<Value>,
     #[serde(default)]

@@ -1,21 +1,27 @@
+#[cfg(feature = "mlx-native")]
 use std::env;
 
 use ax_engine_core::EngineCore;
 
-use super::config::{EngineSessionConfig, MlxMtpPolicy};
+use super::config::EngineSessionConfig;
+#[cfg(feature = "mlx-native")]
+use super::config::MlxMtpPolicy;
 use super::errors::EngineSessionError;
 
 #[cfg(feature = "mlx-native")]
 use ax_engine_mlx::{MlxPrefixCacheStore, MlxSharedWeightsCell};
 
+#[cfg(any(feature = "mlx-native", test))]
 const PREFIX_REUSE_DISABLED_ENV: &str = "AX_ENGINE_PREFIX_REUSE_DISABLED";
 
+#[cfg(any(feature = "mlx-native", test))]
 fn prefix_reuse_disabled_value(value: &str) -> bool {
     matches!(value.trim(), "1")
         || value.trim().eq_ignore_ascii_case("true")
         || value.trim().eq_ignore_ascii_case("yes")
 }
 
+#[cfg(feature = "mlx-native")]
 fn native_prefix_reuse_enabled() -> bool {
     !env::var(PREFIX_REUSE_DISABLED_ENV)
         .ok()

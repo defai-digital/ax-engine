@@ -3,10 +3,13 @@ use super::MetalDispatchArena;
 #[cfg(target_os = "macos")]
 use super::buffer_io::read_shared_buffer_prefix;
 use super::{
-    MetalDispatchKvCacheSeed, MetalDispatchKvCacheSnapshot, MetalDispatchNumericTrace,
-    MetalDispatchStagedInputs, MetalDispatchWorkload, MetalNumericValidationSummary,
-    MetalRuntimeError, ReferenceAttentionConfig, merge_copy_targets_into_cache_snapshot,
-    synthetic_staged_inputs,
+    MetalDispatchKvCacheSeed, MetalDispatchStagedInputs, MetalDispatchWorkload,
+    ReferenceAttentionConfig, synthetic_staged_inputs,
+};
+#[cfg(target_os = "macos")]
+use super::{
+    MetalDispatchKvCacheSnapshot, MetalDispatchNumericTrace, MetalNumericValidationSummary,
+    MetalRuntimeError, merge_copy_targets_into_cache_snapshot,
 };
 
 #[derive(Clone, Debug)]

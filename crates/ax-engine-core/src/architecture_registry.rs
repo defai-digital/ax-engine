@@ -132,6 +132,27 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         cert_gate_note: "multimodal prefill adapters feed AR generation",
     },
     ArchitectureRegistration {
+        family_label: "gemma4_vl",
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "Gemma 4 E2B/E4B ViT+Conformer towers into gemma4 AR backbone (WS-V1)",
+    },
+    ArchitectureRegistration {
+        family_label: "qwen3_vl",
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: true,
+        cert_gate_note: "Qwen3-VL dense: text path rides certified qwen3 batched decode when text-only",
+    },
+    ArchitectureRegistration {
+        family_label: "qwen3_vl_moe",
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "Qwen3-VL-MoE; text decode shares qwen3-MoE graphs; batch cert separate",
+    },
+    ArchitectureRegistration {
         family_label: "diffusion_gemma",
         default_generation: GenerationKind::BlockDiffusion,
         layer_forward_route: LayerForwardRoute::Standard,
@@ -301,6 +322,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
             tensors: Vec::new(),
         }
     }
@@ -455,6 +477,35 @@ mod tests {
         );
         let reg = lookup_architecture("qwen3").expect("registered");
         assert!(reg.dense_batched_decode_candidate);
+    }
+
+    /// WS-T3: Gemma 4 must not flip dense batched-decode candidacy without
+    /// certification artifacts. Structural pilot still supports SWA helpers.
+    #[test]
+    fn gemma4_families_remain_non_candidates_until_cert() {
+        for label in ["gemma4", "gemma4_unified", "gemma4_vl", "gemma4_assistant"] {
+            let reg = lookup_architecture(label).expect(label);
+            assert!(
+                !reg.dense_batched_decode_candidate,
+                "{label} must stay non-candidate until SWA/SWA+MoE cert lands"
+            );
+            assert!(
+                !reg.cert_gate_note.is_empty(),
+                "{label} must document the cert gate"
+            );
+        }
+        // Structural readiness: SWA note present on text gemma4.
+        let g4 = lookup_architecture("gemma4").unwrap();
+        assert!(
+            g4.cert_gate_note.contains("SWA") || g4.cert_gate_note.contains("swa"),
+            "gemma4 cert note should mention SWA structural path"
+        );
+    }
+
+    #[test]
+    fn qwen3_vl_text_only_rides_certified_qwen3_batch_candidate() {
+        let q = lookup_architecture("qwen3_vl").unwrap();
+        assert!(q.dense_batched_decode_candidate);
     }
 
     #[test]

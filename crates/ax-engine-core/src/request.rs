@@ -5,6 +5,7 @@ use crate::gemma4_unified::Gemma4UnifiedRuntimeInputs;
 use crate::generation::GenerationKind;
 use crate::ids::{ModelId, RequestId, SequenceNo};
 use crate::kv::BlockTable;
+use crate::qwen3_vl::{Qwen3VlRuntimeInputError, Qwen3VlRuntimeInputs};
 use crate::sampling::{SamplingParams, StopReason};
 use crate::scheduler::RouteMetadata;
 use crate::unlimited_ocr::{UnlimitedOcrRuntimeInputError, UnlimitedOcrRuntimeInputs};
@@ -45,6 +46,8 @@ pub struct RequestMultimodalInputs {
     pub gemma4_unified: Option<Gemma4UnifiedRuntimeInputs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unlimited_ocr: Option<UnlimitedOcrRuntimeInputs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qwen3_vl: Option<Qwen3VlRuntimeInputs>,
 }
 
 impl RequestMultimodalInputs {
@@ -54,6 +57,10 @@ impl RequestMultimodalInputs {
             .is_none_or(|inputs| inputs.is_empty())
             && self
                 .unlimited_ocr
+                .as_ref()
+                .is_none_or(|inputs| inputs.is_empty())
+            && self
+                .qwen3_vl
                 .as_ref()
                 .is_none_or(|inputs| inputs.is_empty())
     }
@@ -70,7 +77,14 @@ impl RequestMultimodalInputs {
             .unlimited_ocr
             .as_ref()
             .is_some_and(|inputs| !inputs.is_empty());
-        if gemma4_active && unlimited_ocr_active {
+        let qwen3_vl_active = self
+            .qwen3_vl
+            .as_ref()
+            .is_some_and(|inputs| !inputs.is_empty());
+        let active_providers = usize::from(gemma4_active)
+            + usize::from(unlimited_ocr_active)
+            + usize::from(qwen3_vl_active);
+        if active_providers > 1 {
             return Err(RequestMultimodalInputError::MultipleProviders);
         }
         if let Some(inputs) = self
@@ -87,6 +101,9 @@ impl RequestMultimodalInputs {
         {
             inputs.validate_for_prompt_tokens(prompt_tokens)?;
         }
+        if let Some(inputs) = self.qwen3_vl.as_ref().filter(|inputs| !inputs.is_empty()) {
+            inputs.validate_for_prompt_len(prompt_tokens.len())?;
+        }
         Ok(())
     }
 }
@@ -99,6 +116,8 @@ pub enum RequestMultimodalInputError {
     Gemma4Unified(#[from] crate::gemma4_unified::Gemma4UnifiedRuntimeInputError),
     #[error(transparent)]
     UnlimitedOcr(#[from] UnlimitedOcrRuntimeInputError),
+    #[error(transparent)]
+    Qwen3Vl(#[from] Qwen3VlRuntimeInputError),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

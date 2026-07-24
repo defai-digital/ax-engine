@@ -247,6 +247,8 @@ impl ArchitectureSpec {
                 NativeTensorRole::Gemma4UnifiedVisionPatchDense
                     | NativeTensorRole::Gemma4UnifiedVisionProjection
                     | NativeTensorRole::Gemma4UnifiedAudioProjection
+                    | NativeTensorRole::Qwen3VlVisionPatchEmbed
+                    | NativeTensorRole::Qwen3VlVisionMerger
             )
         });
         let mut capabilities = StructuralCapabilities::from_layers(
@@ -453,6 +455,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
             tensors: Vec::new(),
         }
     }

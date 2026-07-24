@@ -3345,54 +3345,81 @@ fn expert_parallel_eligible(
 }
 
 // ---------------------------------------------------------------------------
-// Tier 2A: Deep expert-block fusion — decode-only.
+// Tier 2A: Deep expert-block fusion — decode-only (compositional Metal).
 //
-// Fuses gather_qmm(gate_up) + SwiGLU + gather_qmm(down) + weighted-sum into
-// a single Metal kernel dispatch, achieving dense-class bandwidth utilization
-// for MoE layers. Each expert’s weights are streamed through registers,
-// with activation applied inline, emitting only the final weighted-sum output.
-//
-// Status: scaffold — the kernel body requires multi-week Metal engineering.
-// The dispatch function and fastpath flag
-// (`AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL`) are in place; the kernel source
-// needs to be authored.
+// When `AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL` is on, decode runs gather_qmm
+// gate_up → Metal fused activation/unsort → gather_qmm down → Metal
+// weighted-sum under one outer entry. A true single-dispatch 4-bit
+// mega-kernel remains residual.
 // ---------------------------------------------------------------------------
 
 /// Attempt deep expert-block fusion for MoE decode.
 ///
-/// Returns `Some(output)` if the fused kernel succeeds, `None` to fall back
-/// to the standard multi-dispatch path.
+/// Returns `Some(output)` if the compositional Metal path succeeds, `None` to
+/// fall back to the standard multi-dispatch path.
 ///
 /// Gated by `AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL` (default OFF).
 fn try_moe_deep_expert_block_metal(
-    _cfg: &ModelConfig,
-    _w: &LayerWeights,
-    _x: &MlxArray,
-    _top_k_indices: &MlxArray,
-    _top_k_weights: &MlxArray,
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    top_k_indices: &MlxArray,
+    top_k_weights: &MlxArray,
 ) -> Option<MlxArray> {
     if !fastpath::moe_deep_expert_block_metal_enabled() {
         return None;
     }
-    // TODO(kernel): implement deep expert-block fusion Metal kernel.
-    // The kernel must fuse:
-    //   1. gather_qmm for packed gate_up (4-bit dequant + scatter-gather)
-    //   2. Inline SwiGLU activation (split + silu + multiply)
-    //   3. gather_qmm for down projection
-    //   4. Inline weighted-sum with top-k weights
-    //
-    // Key parameters (Qwen3-Coder-Next):
-    //   - hidden_dim: 2048
-    //   - expert_intermediate_size: 512
-    //   - num_experts: 256
-    //   - top_k: 10
-    //   - quantization: 4-bit affine, group_size=32
-    //
-    // Key challenges:
-    //   - Must beat MLX's general gather_qmm for fixed top_k=10
-    //   - 4-bit affine dequant + scatter-gather + activation in one kernel
-    //   - Down projection gather_qmm requires separate weight layout
-    //   - Weighted-sum across top_k experts with float32 accumulation
+    // Compositional deep expert block (decode): gather_qmm gate_up → fused
+    // Metal activation/unsort → gather_qmm down → Metal weighted-sum.
+    // Single-dispatch 4-bit mega-kernel remains residual for further TTFT
+    // gains; this path still uses the shipped Metal kernels end-to-end when
+    // eligible and fails closed (None) otherwise.
+    let seq = x.shape().get(1).copied().unwrap_or(1) as usize;
+    let batch = x.shape().first().copied().unwrap_or(1) as usize;
+    if seq != 1 || batch != 1 {
+        return None;
+    }
+    let packed = w.gate_up_exps_packed.as_ref()?;
+    let down_exps = w.down_exps.as_ref()?;
+    let x_exp = expand_dims_axes(x, &[-2, -3], None);
+    let gather_inputs = switch_gather_inputs(&x_exp, top_k_indices);
+    if gather_inputs.sorted_indices {
+        // Fused activation/unsort path expects unsorted gather.
+        return None;
+    }
+    let gate_up = qw_gather(
+        &gather_inputs.x,
+        packed,
+        &gather_inputs.indices,
+        gather_inputs.sorted_indices,
+    );
+    let half = cfg.moe_expert_intermediate_size as i32;
+    let top_k = top_k_indices.shape().last().copied().unwrap_or(0);
+    let activated = moe_fused_activation_unsort_metal(
+        &gate_up,
+        gather_inputs.inv_order.as_ref().unwrap_or(top_k_indices),
+        half,
+        top_k,
+        gate_up.dtype(),
+        cfg.uses_geglu,
+    )?;
+    // Down projection via gather on activated expert tokens.
+    let activated_exp = expand_dims_axes(&activated, &[-2], None);
+    let down_gather = switch_gather_inputs(&activated_exp, top_k_indices);
+    let down_out = qw_gather(
+        &down_gather.x,
+        down_exps,
+        &down_gather.indices,
+        down_gather.sorted_indices,
+    );
+    // Prefer Metal weighted sum when available.
+    if let Some(summed) = qwen3_moe_weighted_sum_metal(&down_out, top_k_weights, down_out.dtype()) {
+        return Some(summed);
+    }
+    if let Some(summed) = gemma4_moe_weighted_sum_metal(&down_out, top_k_weights, down_out.dtype())
+    {
+        return Some(summed);
+    }
     None
 }
 

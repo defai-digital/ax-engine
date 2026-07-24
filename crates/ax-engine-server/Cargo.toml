@@ -5,11 +5,19 @@ license.workspace = true
 publish = false
 version.workspace = true
 
+[features]
+# Preserve the historical Mac shipping build while allowing Linux control-plane
+# artifacts to compile without linking MLX. Delegated-only builds must opt in
+# explicitly with `--no-default-features --features delegated-server`.
+default = ["mlx-native-server"]
+mlx-native-server = ["ax-engine-sdk/mlx-native", "dep:mlx-sys"]
+delegated-server = []
+
 [dependencies]
-ax-engine-sdk = { path = "../ax-engine-sdk", features = ["mlx-native", "tokenizer"] }
+ax-engine-sdk = { path = "../ax-engine-sdk", features = ["tokenizer"] }
 # Direct dependency (already in the graph via sdk) so build.rs receives
 # DEP_MLX_LIB_DIR and can embed the libmlx rpath in the server binary.
-mlx-sys = { path = "../mlx-sys" }
+mlx-sys = { path = "../mlx-sys", optional = true }
 axum = "0.7"
 base64.workspace = true
 clap = { version = "4", features = ["derive"] }

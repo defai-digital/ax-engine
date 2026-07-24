@@ -1140,6 +1140,12 @@ fn ffn_batched(
         !cfg.gemma4_moe_router,
         "batched decode: gemma4 MoE router unsupported"
     );
+    // WS-T1 Decision A: per-row MoE for bit-exact B>1 certification.
+    // Shared gather_qmm amortization is intentionally uncertified (see
+    // docs/performance/batched-hybrid-moe-linear-decode.md).
+    if crate::batched_decode_policy::row_exact_moe_enabled(&cfg.model_family) {
+        return ffn_batched_moe_row_exact(cfg, w, normed2);
+    }
     let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
         moe_router_glm(cfg, w, normed2)
     } else if cfg.moe_sigmoid_routing {
@@ -1154,6 +1160,65 @@ fn ffn_batched(
         moe_experts_forward(cfg, w, normed2, &top_k_indices, &top_k_weights)
     };
     rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
+}
+
+/// Per-row MoE expert path (Decision A RowExact): each batch row is isolated so
+/// gather_qmm reduction order cannot introduce cross-row drift.
+fn ffn_batched_moe_row_exact(cfg: &ModelConfig, w: &LayerWeights, normed2: &MlxArray) -> MlxArray {
+    use mlx_sys::{concatenate, slice};
+    let shape = normed2.shape();
+    let batch = *shape.first().unwrap_or(&1) as usize;
+    if batch <= 1 {
+        let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
+            moe_router_glm(cfg, w, normed2)
+        } else if cfg.moe_sigmoid_routing {
+            moe_router_deepseek_v3(cfg, w, normed2)
+        } else {
+            moe_router_qwen3(cfg, w, normed2)
+        };
+        let out = if w.shared_gate_proj.is_some() {
+            let shared = shared_expert_forward(cfg, w, normed2);
+            moe_experts_forward_with_shared(
+                cfg,
+                w,
+                normed2,
+                &top_k_indices,
+                &top_k_weights,
+                &shared,
+            )
+        } else {
+            moe_experts_forward(cfg, w, normed2, &top_k_indices, &top_k_weights)
+        };
+        return rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
+    }
+    let hidden = cfg.hidden_size as i32;
+    let mut rows = Vec::with_capacity(batch);
+    for r in 0..batch {
+        let row = slice(
+            normed2,
+            &[r as i32, 0, 0],
+            &[(r + 1) as i32, 1, hidden],
+            &[1, 1, 1],
+            None,
+        );
+        let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
+            moe_router_glm(cfg, w, &row)
+        } else if cfg.moe_sigmoid_routing {
+            moe_router_deepseek_v3(cfg, w, &row)
+        } else {
+            moe_router_qwen3(cfg, w, &row)
+        };
+        let out = if w.shared_gate_proj.is_some() {
+            let shared = shared_expert_forward(cfg, w, &row);
+            moe_experts_forward_with_shared(cfg, w, &row, &top_k_indices, &top_k_weights, &shared)
+        } else {
+            moe_experts_forward(cfg, w, &row, &top_k_indices, &top_k_weights)
+        };
+        let out = rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
+        rows.push(out);
+    }
+    let refs: Vec<&MlxArray> = rows.iter().collect();
+    concatenate(&refs, 0, None)
 }
 
 /// Batched decode forward for a linear-attention (gated-delta) layer — the

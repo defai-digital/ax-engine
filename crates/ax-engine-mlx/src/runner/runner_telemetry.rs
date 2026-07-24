@@ -1,5 +1,17 @@
 use super::*;
 
+/// Process gate for multimodal prefix reuse (WS-M3 / R-M3).
+/// Default off until fixtures promote; set `AX_MLX_MULTIMODAL_PREFIX_REUSE=1`.
+pub(crate) fn multimodal_prefix_reuse_enabled() -> bool {
+    match std::env::var("AX_MLX_MULTIMODAL_PREFIX_REUSE") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on" || v == "yes"
+        }
+        Err(_) => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Gemma4UnifiedMultimodalTelemetry {
     pub(crate) prefill_requests: u32,
@@ -27,10 +39,14 @@ impl Gemma4UnifiedMultimodalTelemetry {
         self.visual_inputs = self
             .visual_inputs
             .saturating_add(image_inputs.saturating_add(video_inputs));
-        self.prefix_cache_disabled = self.prefix_cache_disabled.saturating_add(1);
-        if mtp_available {
-            self.mtp_prefill_warmup_skipped = self.mtp_prefill_warmup_skipped.saturating_add(1);
+        // WS-M3: prefix cache may be enabled when multimodal prefix reuse is on;
+        // record disable only when the process gate is off (default).
+        if !multimodal_prefix_reuse_enabled() {
+            self.prefix_cache_disabled = self.prefix_cache_disabled.saturating_add(1);
         }
+        // WS-M5: MTP warmup now runs for multimodal when the model has an MTP
+        // head; the skipped counter is reserved for failure / unavailable paths.
+        let _ = mtp_available;
     }
 
     pub(crate) fn merge_from(&mut self, other: Self) {

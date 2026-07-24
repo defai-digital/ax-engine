@@ -2,11 +2,18 @@
 // contracts. Keeping these signatures explicit is safer than hiding them behind
 // broad parameter bags while the native runtime is still stabilizing.
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
+// Delegated-only Linux builds retain the public Metal report/error types used
+// by the SDK contract, but cannot construct the macOS runtime paths that
+// consume their private helpers.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+#[cfg(target_os = "macos")]
 use std::fs;
+#[cfg(target_os = "macos")]
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(target_os = "macos")]
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -34,7 +41,9 @@ use crate::sampling::{
     SampledToken, SamplerInput, SamplerRequest, StopReason, TokenSampler,
     sample_argmax_with_logprob,
 };
-use crate::scheduler::{ExecutionItem, ExecutionMode, RouteMetadata};
+#[cfg(target_os = "macos")]
+use crate::scheduler::ExecutionItem;
+use crate::scheduler::{ExecutionMode, RouteMetadata};
 
 #[cfg(target_os = "macos")]
 mod buffer_io;
@@ -880,6 +889,7 @@ impl MetalMoeExpertGateUpBindings {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 struct FfnGateUpProjectionBindings<'a> {
     gate: &'a MetalNativeTensorBufferBinding,
@@ -889,6 +899,7 @@ struct FfnGateUpProjectionBindings<'a> {
     is_packed: bool,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 struct FusedFfnProjectionBindings<'a> {
     gate_weight: &'a MetalNativeTensorBufferBinding,
@@ -899,6 +910,7 @@ struct FusedFfnProjectionBindings<'a> {
     up_cols: usize,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 struct MoeExpertGateUpProjectionBindings<'a> {
     gate: &'a MetalNativeTensorBufferBinding,
@@ -1020,6 +1032,14 @@ enum NativeDenseKernelCoverageBucket {
     F16,
     BF16,
     Ignore,
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_dense_effective_dtype(dtype: NativeTensorDataType) -> NativeTensorDataType {
+    match dtype {
+        NativeTensorDataType::I8 | NativeTensorDataType::U8 => NativeTensorDataType::F32,
+        _ => dtype,
+    }
 }
 
 fn native_dense_kernel_coverage_bucket(
@@ -1738,7 +1758,6 @@ impl MetalDispatchKvCacheSnapshot {
     }
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Debug, Default, PartialEq)]
 struct ModelBoundDirectDecodeResult {
     tokens: Vec<(crate::ids::RequestId, u32)>,
@@ -1759,7 +1778,6 @@ struct MetalBringupExecutionFlags {
     direct_decode_native_dense_tally: DirectDecodeNativeDenseTally,
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct DirectDecodeNativeDenseTally {
     native_projection_rows: u32,
@@ -2213,13 +2231,13 @@ impl MetalBringupRunner {
 
     fn staged_inputs_for_workload(
         &self,
-        input: &RunnerInput,
+        _input: &RunnerInput,
         workload: &MetalDispatchWorkload,
     ) -> Result<MetalDispatchStagedInputs, MetalRuntimeError> {
         #[cfg(target_os = "macos")]
         {
             resolve_runtime_staged_inputs(
-                input,
+                _input,
                 workload,
                 self.model_artifacts.as_ref(),
                 self.model_bindings.as_ref(),
@@ -2544,10 +2562,10 @@ impl ExecutionRunner for MetalBringupRunner {
         self.last_dispatch()
     }
 
-    fn release_request_state(&self, request_id: crate::ids::RequestId) {
+    fn release_request_state(&self, _request_id: crate::ids::RequestId) {
         #[cfg(target_os = "macos")]
         if let Ok(mut states) = self.linear_request_states.lock() {
-            states.remove(&request_id);
+            states.remove(&_request_id);
         }
     }
 
@@ -3317,7 +3335,6 @@ fn decode_token_from_attention_bits(bits: &[u32]) -> u32 {
     projected.round().clamp(1.0, u32::MAX as f32) as u32
 }
 
-#[cfg(target_os = "macos")]
 fn prefill_completion_request_ids(input: &RunnerInput) -> BTreeSet<crate::ids::RequestId> {
     input
         .execution_batch
@@ -7559,7 +7576,6 @@ fn cache_seed_from_arena(
     })
 }
 
-#[cfg(target_os = "macos")]
 fn merge_copy_targets_into_cache_snapshot(
     workload: &MetalDispatchWorkload,
     key_cache: &mut [f32],
@@ -7724,7 +7740,6 @@ fn self_contained_owned_cache_seed_from_staged_inputs(
     owned_cache_seed_with_staged_inputs_and_copy_targets(workload, staged_inputs, None)
 }
 
-#[cfg(target_os = "macos")]
 fn propagate_copy_targets_in_cache(
     workload: &MetalDispatchWorkload,
     key_cache: &mut [f32],
@@ -7784,7 +7799,6 @@ fn propagate_copy_targets_in_cache(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn propagate_initialized_copy_targets(
     workload: &MetalDispatchWorkload,
     initialized_slots: &mut [bool],

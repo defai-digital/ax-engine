@@ -1,0 +1,87 @@
+{
+  "artifact_fingerprint_sha256": "e233ce4f791d1b163ce101a50178a8f49f499e0f01a4fb24f86dca06cc8371d0",
+  "device_architecture": "applegpu_g15s",
+  "engine_version": "6.11.1",
+  "mlx_version": "0.32.0",
+  "model_family": "gemma4",
+  "numerics_env_sha256": "189b241fa2360e3a8771c5be40e7bd024f5c33a0b698968b0d91f3fe0d66ab59",
+  "runtime_contract": "ax.mlx.batched_decode.runtime.v3",
+  "scenarios": [
+    {
+      "batch": 2,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 0 MISMATCH at Some(14): | req 0 MISMATCH at Some(14):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 0 MISMATCH at Some(14): | req 0 MISMATCH at Some(14):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 2 MISMATCH at Some(56): | req 3 MISMATCH at Some(2):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 0 MISMATCH at Some(64): | req 0 MISMATCH at Some(64):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 128,
+      "prompt_seed": 1,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 512,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": true,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 2,
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 992,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    }
+  ],
+  "schema_version": "ax.mlx.batched_decode_certification.v1",
+  "verdict": "fail"
+}

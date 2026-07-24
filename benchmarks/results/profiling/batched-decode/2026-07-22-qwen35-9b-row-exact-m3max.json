@@ -1,0 +1,118 @@
+{
+  "artifact_fingerprint_sha256": "77472a18eeb00fb4acc294377bef73e0b991fc96ed88be9f9bb49ab740bf8271",
+  "device_architecture": "applegpu_g15s",
+  "engine_version": "6.11.1",
+  "mlx_version": "0.32.0",
+  "model_family": "qwen3_5",
+  "numerics_env_sha256": "189b241fa2360e3a8771c5be40e7bd024f5c33a0b698968b0d91f3fe0d66ab59",
+  "runtime_contract": "ax.mlx.row_exact_coalesced_decode.runtime.v1",
+  "scenarios": [
+    {
+      "batch": 2,
+      "coalesced": {
+        "seconds": 1.552,
+        "tokens": 128,
+        "tokens_per_second": 82.5
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "coalesced": {
+        "seconds": 2.863,
+        "tokens": 256,
+        "tokens_per_second": 89.4
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "coalesced": {
+        "seconds": 2.973,
+        "tokens": 256,
+        "tokens_per_second": 86.1
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "coalesced": {
+        "seconds": 2.962,
+        "tokens": 256,
+        "tokens_per_second": 86.4
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 1,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "coalesced": {
+        "seconds": 3.19,
+        "tokens": 256,
+        "tokens_per_second": 80.2
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 512,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "coalesced": {
+        "seconds": 3.121,
+        "tokens": 256,
+        "tokens_per_second": 82.0
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": true,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 2,
+      "coalesced": {
+        "seconds": 1.775,
+        "tokens": 128,
+        "tokens_per_second": 72.1
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 992,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    }
+  ],
+  "schema_version": "ax.mlx.row_exact_coalesced_decode_certification.v1",
+  "verdict": "pass"
+}

@@ -8,6 +8,8 @@ pub(crate) struct MlxPrefixCacheKey {
     pub(crate) block_size_tokens: u32,
     pub(crate) token_count: u32,
     pub(crate) token_hash: u64,
+    /// Ordered media digests (WS-M3). Empty for text-only prefixes.
+    pub(crate) media_key: String,
 }
 
 #[derive(Clone)]
@@ -1353,6 +1355,7 @@ mod tests {
             block_size_tokens: 4,
             token_count: 4,
             token_hash: u64::from(token),
+            media_key: String::new(),
         }
     }
 

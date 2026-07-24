@@ -580,7 +580,7 @@ impl GenerateFinishReason {
     ) -> Option<Self> {
         match state {
             RequestState::Finished => match terminal_stop_reason {
-                Some(StopReason::EosToken) => Some(Self::Stop),
+                Some(StopReason::EosToken) | Some(StopReason::LoopDetected) => Some(Self::Stop),
                 Some(StopReason::MaxOutputTokens) | None => Some(Self::MaxOutputTokens),
                 Some(StopReason::Cancelled) => Some(Self::Cancelled),
                 Some(StopReason::Error) => Some(Self::Error),
@@ -600,7 +600,7 @@ impl GenerateFinishReason {
     ) -> Option<Self> {
         match state {
             SessionRequestState::Finished => match terminal_stop_reason {
-                Some(StopReason::EosToken) => Some(Self::Stop),
+                Some(StopReason::EosToken) | Some(StopReason::LoopDetected) => Some(Self::Stop),
                 Some(StopReason::MaxOutputTokens) | None => Some(Self::MaxOutputTokens),
                 Some(StopReason::Cancelled) => Some(Self::Cancelled),
                 Some(StopReason::Error) => Some(Self::Error),
@@ -646,6 +646,14 @@ mod tests {
                 ResolutionPolicy::AllowMlxLmDelegated,
             ),
             SelectedBackend::LlamaCpp => (SupportTier::LlamaCpp, ResolutionPolicy::AllowLlamaCpp),
+            SelectedBackend::TensorRtEdgeLlm => (
+                SupportTier::TensorRtEdgeLlm,
+                ResolutionPolicy::AllowTensorRtEdgeLlm,
+            ),
+            SelectedBackend::TensorRtLlm => {
+                (SupportTier::TensorRtLlm, ResolutionPolicy::AllowTensorRtLlm)
+            }
+            SelectedBackend::Vllm => (SupportTier::Vllm, ResolutionPolicy::AllowVllm),
         };
 
         RuntimeReport {
@@ -658,6 +666,7 @@ mod tests {
             metal_toolchain: Default::default(),
             mlx_runtime: None,
             mlx_model: None,
+            delegated_runtime: None,
         }
     }
 
@@ -853,6 +862,12 @@ mod tests {
         );
 
         assert_eq!(response.finish_reason, Some(GenerateFinishReason::Stop));
+
+        let looped = GenerateFinishReason::from_request_state(
+            RequestState::Finished,
+            Some(StopReason::LoopDetected),
+        );
+        assert_eq!(looped, Some(GenerateFinishReason::Stop));
     }
 
     #[test]

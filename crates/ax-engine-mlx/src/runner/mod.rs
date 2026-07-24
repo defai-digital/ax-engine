@@ -53,7 +53,8 @@ use crate::gemma4_assistant_mtp::{
 };
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings, chunked_prefill,
-    chunked_prefill_gemma4_unified_with_sampling_buffers,
+    chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers,
+    chunked_prefill_qwen3_vl_with_sampling_buffers,
     chunked_prefill_unlimited_ocr_with_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
     decode_step, start_direct_pipeline,
@@ -500,6 +501,8 @@ struct PromptPrefixSnapshotStoreOptions<'a> {
     prefill_completes_prompt: bool,
     greedy_prefill_output_token: Option<u32>,
     cold_prefill_us: u64,
+    /// WS-M3 media digests folded into prefix keys (empty for text-only).
+    media_key: &'a str,
 }
 
 impl RequestState {
@@ -3106,7 +3109,13 @@ impl MlxRunner {
         let unlimited_ocr_inputs = multimodal_inputs
             .and_then(|inputs| inputs.unlimited_ocr.as_ref())
             .filter(|inputs| !inputs.is_empty());
-        if gemma4_unified_inputs.is_some() && unlimited_ocr_inputs.is_some() {
+        let qwen3_vl_inputs = multimodal_inputs
+            .and_then(|inputs| inputs.qwen3_vl.as_ref())
+            .filter(|inputs| !inputs.is_empty());
+        let multimodal_provider_count = usize::from(gemma4_unified_inputs.is_some())
+            + usize::from(unlimited_ocr_inputs.is_some())
+            + usize::from(qwen3_vl_inputs.is_some());
+        if multimodal_provider_count > 1 {
             return errored_item_run(
                 item.request_id,
                 "multimodal request may select only one provider schema",
@@ -3114,8 +3123,10 @@ impl MlxRunner {
         }
         let has_gemma4_unified_multimodal_prefill = is_prefill && gemma4_unified_inputs.is_some();
         let has_unlimited_ocr_multimodal_prefill = is_prefill && unlimited_ocr_inputs.is_some();
-        let has_native_multimodal_prefill =
-            has_gemma4_unified_multimodal_prefill || has_unlimited_ocr_multimodal_prefill;
+        let has_qwen3_vl_multimodal_prefill = is_prefill && qwen3_vl_inputs.is_some();
+        let has_native_multimodal_prefill = has_gemma4_unified_multimodal_prefill
+            || has_unlimited_ocr_multimodal_prefill
+            || has_qwen3_vl_multimodal_prefill;
         // ADR-038 Phase 4: multimodal is a prefill adapter into the same
         // generation strategy — never a parallel generation engine.
         if let Some(inputs) = multimodal_inputs {
@@ -3165,18 +3176,23 @@ impl MlxRunner {
                 )
             })
         };
-        let mut prefix_cache = if has_native_multimodal_prefill {
-            MlxPrefixCacheTelemetry::default()
-        } else {
-            self.restore_reused_prefix_state(
-                &mut state,
-                item,
-                ctx,
-                model_id,
-                block_size_tokens,
-                sampling,
-            )
-        };
+        // WS-M3: when multimodal prefix reuse is enabled, restore like text
+        // (media identity is folded into the prefix key via media_key).
+        let media_key = self.media_key_from_inputs(multimodal_inputs);
+        let mut prefix_cache =
+            if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
+                MlxPrefixCacheTelemetry::default()
+            } else {
+                self.restore_reused_prefix_state(
+                    &mut state,
+                    item,
+                    ctx,
+                    model_id,
+                    block_size_tokens,
+                    sampling,
+                    &media_key,
+                )
+            };
         prefix_cache.native_evictions = prefix_cache.native_evictions.saturating_add(
             self.reclaim_native_prefix_capacity(&state.cache, item.input_token_slice.len()),
         );
@@ -3221,23 +3237,54 @@ impl MlxRunner {
                     let repetition_history =
                         state.repetition_history(&full_prompt_tokens, sampling);
                     let prefill_forward_started = Instant::now();
-                    let tok = match chunked_prefill_gemma4_unified_with_sampling_buffers(
-                        &self.cfg,
-                        &self.weights,
-                        &full_prompt_tokens,
-                        &mut state.cache,
-                        inputs,
-                        MlxSamplingRequest::new(sampling, &repetition_history),
-                        &mut state.rng,
-                        &mut state.sampling_probs_buf,
-                        &mut state.sampling_logits_buf,
-                        &mut state.sampling_candidates_buf,
-                    ) {
-                        Ok(tok) => tok,
-                        Err(error) => return errored_item_run(item.request_id, error),
-                    };
+                    // WS-M5: capture MTP post-norm when the model has an MTP head.
+                    let capture_mtp = self.weights.mtp.is_some();
+                    let tok =
+                        match chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
+                            &self.cfg,
+                            &self.weights,
+                            &full_prompt_tokens,
+                            &mut state.cache,
+                            inputs,
+                            MlxSamplingRequest::new(sampling, &repetition_history),
+                            &mut state.rng,
+                            &mut state.sampling_probs_buf,
+                            &mut state.sampling_logits_buf,
+                            &mut state.sampling_candidates_buf,
+                            capture_mtp,
+                        ) {
+                            Ok((tok, mtp_hidden, history_tokens)) => {
+                                if let Some(hidden) = mtp_hidden {
+                                    state.mtp_prefill_hidden = Some(hidden);
+                                    state.mtp_prefill_history_tokens = history_tokens;
+                                }
+                                tok
+                            }
+                            Err(error) => return errored_item_run(item.request_id, error),
+                        };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
                     state.prompt_prefix_tokens = full_prompt_tokens;
+
+                    // WS-M3: store multimodal prefix under media-keyed identity when enabled.
+                    let mut prefill_prefix_cache_wall_us = 0u32;
+                    if multimodal_prefix_reuse_enabled() {
+                        let prefix_cache_started = Instant::now();
+                        let cold_prefill_us = elapsed_us(prefill_started);
+                        prefix_cache.merge_from(self.store_prompt_prefix_snapshots(
+                            model_id,
+                            block_size_tokens,
+                            &state,
+                            PromptPrefixSnapshotStoreOptions {
+                                linear_boundary_snapshot: None,
+                                prefill_completes_prompt: true,
+                                greedy_prefill_output_token:
+                                    prefill_output_token_cacheable(ctx, sampling).then_some(tok),
+                                cold_prefill_us: u64::from(cold_prefill_us),
+                                media_key: &media_key,
+                            },
+                        ));
+                        prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
+                    }
 
                     state
                         .decode_telemetry
@@ -3254,7 +3301,90 @@ impl MlxRunner {
                     state.decode_telemetry.record_prefill_eval_barrier();
                     state.decode_telemetry.record_prefill_breakdown(
                         prefill_forward_wall_us,
-                        0,
+                        prefill_prefix_cache_wall_us,
+                        prefill_generation_state_wall_us,
+                    );
+                    Some(tok)
+                } else if let Some(inputs) = qwen3_vl_inputs {
+                    if !prefill_completes_prompt {
+                        return errored_item_run(
+                            item.request_id,
+                            "Qwen3-VL multimodal prefill requires the complete prompt in one execution item",
+                        );
+                    }
+                    state.cache.reset();
+                    state.prompt_prefix_tokens.clear();
+                    state.cached_prefill_output_token = None;
+                    state.mtp_prefill_hidden = None;
+                    state.mtp_prefill_history_tokens.clear();
+
+                    let mut full_prompt_tokens = Vec::with_capacity(
+                        item.reused_prefix_token_slice
+                            .len()
+                            .saturating_add(token_ids.len()),
+                    );
+                    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
+                    full_prompt_tokens.extend_from_slice(token_ids);
+                    if let Err(error) = inputs.validate_for_prompt_len(full_prompt_tokens.len()) {
+                        return errored_item_run(item.request_id, error.to_string());
+                    }
+                    let repetition_history =
+                        state.repetition_history(&full_prompt_tokens, sampling);
+                    let prefill_forward_started = Instant::now();
+                    let tok = match chunked_prefill_qwen3_vl_with_sampling_buffers(
+                        &self.cfg,
+                        &self.weights,
+                        &full_prompt_tokens,
+                        inputs,
+                        &mut state.cache,
+                        MlxSamplingRequest::new(sampling, &repetition_history),
+                        &mut state.rng,
+                        &mut state.sampling_probs_buf,
+                        &mut state.sampling_logits_buf,
+                        &mut state.sampling_candidates_buf,
+                    ) {
+                        Ok(tok) => tok,
+                        Err(error) => return errored_item_run(item.request_id, error),
+                    };
+                    let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
+                    state.prompt_prefix_tokens = full_prompt_tokens;
+
+                    let mut prefill_prefix_cache_wall_us = 0u32;
+                    if multimodal_prefix_reuse_enabled() {
+                        let prefix_cache_started = Instant::now();
+                        let cold_prefill_us = elapsed_us(prefill_started);
+                        prefix_cache.merge_from(self.store_prompt_prefix_snapshots(
+                            model_id,
+                            block_size_tokens,
+                            &state,
+                            PromptPrefixSnapshotStoreOptions {
+                                linear_boundary_snapshot: None,
+                                prefill_completes_prompt: true,
+                                greedy_prefill_output_token:
+                                    prefill_output_token_cacheable(ctx, sampling).then_some(tok),
+                                cold_prefill_us: u64::from(cold_prefill_us),
+                                media_key: &media_key,
+                            },
+                        ));
+                        prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
+                    }
+
+                    state
+                        .decode_telemetry
+                        .record_prefill(elapsed_us(prefill_started));
+                    let generation_state_started = Instant::now();
+                    self.initialize_generation_state(
+                        &mut state,
+                        max_output,
+                        Some(tok),
+                        is_greedy,
+                        sampling.temperature,
+                    );
+                    let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
+                    state.decode_telemetry.record_prefill_eval_barrier();
+                    state.decode_telemetry.record_prefill_breakdown(
+                        prefill_forward_wall_us,
+                        prefill_prefix_cache_wall_us,
                         prefill_generation_state_wall_us,
                     );
                     Some(tok)
@@ -3571,6 +3701,7 @@ impl MlxRunner {
                                     .then_some(tok)
                                     .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
                                 cold_prefill_us: u64::from(cold_prefill_us),
+                                media_key: &media_key,
                             },
                         ),
                     );
@@ -3680,7 +3811,14 @@ impl MlxRunner {
             max_output,
             terminal_token_ids,
         );
-        if stop_reason.is_none() {
+        let (sampled_tokens, stop_reason) = apply_loop_detection_stop(
+            sampled_tokens,
+            stop_reason,
+            &state.generated_tokens,
+            loop_detection_config_for_family(&self.cfg.model_family),
+        );
+        // Keep tokens for LoopDetected (and continuing decode).
+        if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
             for &sampled_token in &sampled_tokens {
                 state.generated_tokens.push(sampled_token);
                 update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
@@ -3898,19 +4036,45 @@ impl MlxRunner {
         ))
     }
 
-    fn prefix_cache_key(
+    /// Model fingerprint used for media digests (artifact identity when known).
+    fn media_model_fingerprint(&self) -> String {
+        self.artifact_fingerprint
+            .clone()
+            .unwrap_or_else(|| self.model_artifacts_root.clone())
+    }
+
+    fn media_key_from_inputs(&self, multimodal_inputs: Option<&RequestMultimodalInputs>) -> String {
+        let Some(inputs) = multimodal_inputs else {
+            return String::new();
+        };
+        let fp = self.media_model_fingerprint();
+        if let Some(g) = inputs.gemma4_unified.as_ref().filter(|g| !g.is_empty()) {
+            return g.media_prefix_key(&fp);
+        }
+        if let Some(q) = inputs.qwen3_vl.as_ref().filter(|q| !q.is_empty()) {
+            return q.media_prefix_key(&fp);
+        }
+        String::new()
+    }
+
+    fn prefix_cache_key_with_media(
         &self,
         model_id: &str,
         block_size_tokens: u32,
         tokens: &[u32],
+        media_key: &str,
     ) -> MlxPrefixCacheKey {
+        // Fold media digests into layer_layout so disk L2 v3 keys also
+        // domain-separate without a schema bump (WS-M3).
+        let layer_layout = format_prefix_layer_layout(&self.prefix_cache_layer_layout(), media_key);
         MlxPrefixCacheKey {
             model_id: model_id.to_string(),
             route_policy: self.prefix_cache_route_policy(),
-            layer_layout: self.prefix_cache_layer_layout(),
+            layer_layout,
             block_size_tokens,
             token_count: saturating_u32(tokens.len()),
             token_hash: hash_prefix_tokens(tokens),
+            media_key: media_key.to_string(),
         }
     }
 
@@ -3985,8 +4149,10 @@ impl MlxRunner {
         model_id: &str,
         block_size_tokens: u32,
         input: &[u32],
+        media_key: &str,
     ) -> Option<Vec<u32>> {
-        let requested_key = self.prefix_cache_key(model_id, block_size_tokens, input);
+        let requested_key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
         let native_len = self
             .native_fa_prefix_sharing_enabled()
             .then(|| {
@@ -4003,7 +4169,12 @@ impl MlxRunner {
         // no correctness reason.
         let portable =
             Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
-                let key = self.prefix_cache_key(model_id, block_size_tokens, prefix);
+                let key = self.prefix_cache_key_with_media(
+                    model_id,
+                    block_size_tokens,
+                    prefix,
+                    media_key,
+                );
                 if self.prefix_cache.lock().contains_exact_tokens(&key, prefix) {
                     return true;
                 }
@@ -4060,6 +4231,7 @@ impl MlxRunner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn restore_reused_prefix_state(
         &self,
         state: &mut RequestState,
@@ -4068,6 +4240,7 @@ impl MlxRunner {
         model_id: &str,
         block_size_tokens: u32,
         sampling: MlxSamplingParams,
+        media_key: &str,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         // Scheduler annotation comes from `ax-engine-core`'s prefix-lookup
@@ -4095,8 +4268,13 @@ impl MlxRunner {
             && !probe_upper_bound.is_empty()
             && matches!(item.mode, ExecutionMode::Prefill)
         {
-            self.probe_runner_snapshot_for_prefix(model_id, block_size_tokens, probe_upper_bound)
-                .unwrap_or_default()
+            self.probe_runner_snapshot_for_prefix(
+                model_id,
+                block_size_tokens,
+                probe_upper_bound,
+                media_key,
+            )
+            .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -4147,7 +4325,8 @@ impl MlxRunner {
             return telemetry;
         }
 
-        let key = self.prefix_cache_key(model_id, block_size_tokens, reused_tokens);
+        let key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, reused_tokens, media_key);
         let native_hit = if self.native_fa_prefix_sharing_enabled() {
             self.native_prefix_cache
                 .lock()
@@ -4530,6 +4709,7 @@ impl MlxRunner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn store_linear_boundary_snapshot(
         &self,
         model_id: &str,
@@ -4538,10 +4718,11 @@ impl MlxRunner {
         prefix_len: usize,
         snapshot_cache: &MlxKVCache,
         cold_prefill_us: u64,
+        media_key: &str,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         let tokens = &state.prompt_prefix_tokens[..prefix_len];
-        let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
+        let key = self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, media_key);
         // The boundary snapshot is by construction the largest aligned
         // prefix, so it follows the main store path's disk policy: mirror it
         // to the L2 disk layer when one is open. Compute the disk key up
@@ -4639,6 +4820,7 @@ impl MlxRunner {
             prefill_completes_prompt,
             greedy_prefill_output_token,
             cold_prefill_us,
+            media_key,
         } = options;
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         if block_size_tokens == 0 || state.prompt_prefix_tokens.is_empty() {
@@ -4709,6 +4891,7 @@ impl MlxRunner {
                     *boundary_len,
                     boundary_cache,
                     cold_prefill_us,
+                    media_key,
                 ));
                 return telemetry;
             }
@@ -4725,7 +4908,8 @@ impl MlxRunner {
 
         for prefix_len in (snapshot_start_tokens..=full_block_tokens).step_by(block_size) {
             let tokens = &state.prompt_prefix_tokens[..prefix_len];
-            let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
+            let key =
+                self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, media_key);
             let is_largest = prefix_len == full_block_tokens;
             let snapshot_prefill_output_token = (prefix_len == available_tokens)
                 .then_some(greedy_prefill_output_token)
@@ -8116,6 +8300,52 @@ fn truncate_sampled_tokens_for_stop(
     (sampled_tokens, None)
 }
 
+/// Apply n-gram loop detection after EOS/max-output truncation (WS-C2).
+///
+/// Keeps emitted tokens and sets [`StopReason::LoopDetected`] (maps to OpenAI
+/// `finish_reason=stop`). Does not invent an EOS token id. Distinct from
+/// `no_repeat_ngram_size` logit bans.
+fn apply_loop_detection_stop(
+    sampled_tokens: Vec<u32>,
+    stop_reason: Option<StopReason>,
+    generated_history: &[u32],
+    loop_cfg: Option<ax_engine_core::LoopDetectionConfig>,
+) -> (Vec<u32>, Option<StopReason>) {
+    if stop_reason.is_some() || sampled_tokens.is_empty() {
+        return (sampled_tokens, stop_reason);
+    }
+    let Some(cfg) = loop_cfg.filter(|c| c.is_enabled()) else {
+        return (sampled_tokens, stop_reason);
+    };
+    let mut probe =
+        Vec::with_capacity(generated_history.len().saturating_add(sampled_tokens.len()));
+    probe.extend_from_slice(generated_history);
+    probe.extend_from_slice(&sampled_tokens);
+    if ax_engine_core::detects_loop(&probe, cfg) {
+        return (sampled_tokens, Some(StopReason::LoopDetected));
+    }
+    (sampled_tokens, stop_reason)
+}
+
+/// Resolve loop-detection config for this model family (default-on Gemma 4 only).
+fn loop_detection_config_for_family(
+    model_family: &str,
+) -> Option<ax_engine_core::LoopDetectionConfig> {
+    let env = std::env::var("AX_GEMMA4_LOOP_DETECTION")
+        .unwrap_or_else(|_| "on".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    match env.as_str() {
+        "off" | "0" | "false" | "no" => return None,
+        "force" => {
+            return Some(ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT);
+        }
+        _ => {}
+    }
+    let is_gemma4 = model_family.starts_with("gemma4");
+    is_gemma4.then_some(ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT)
+}
+
 fn token_is_terminal(token: u32, terminal_token_ids: &[u32]) -> bool {
     terminal_token_ids.contains(&token)
 }
@@ -8168,6 +8398,17 @@ fn hash_prefix_tokens(tokens: &[u32]) -> u64 {
         hash = hash.wrapping_mul(0x1000_0000_01b3);
     }
     hash ^ (tokens.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+}
+
+/// Fold media digests into the prefix-cache layer layout string (WS-M3).
+///
+/// Empty `media_key` keeps the base layout unchanged (text-only path).
+pub(crate) fn format_prefix_layer_layout(base_layout: &str, media_key: &str) -> String {
+    if media_key.is_empty() {
+        base_layout.to_string()
+    } else {
+        format!("{base_layout};media={media_key}")
+    }
 }
 
 fn extend_prompt_prefix_tokens(
@@ -8639,6 +8880,7 @@ mod tests {
             block_size_tokens: 4,
             token_count: 3,
             token_hash: 7,
+            media_key: String::new(),
         };
         let native = Mutex::new(MlxNativePrefixCache::new(MlxPrefixCachePolicy {
             max_bytes: 1024,
@@ -9867,7 +10109,40 @@ mod tests {
             block_size_tokens: 4,
             token_count: 4,
             token_hash: hash_prefix_tokens(&[token; 4]),
+            media_key: String::new(),
         }
+    }
+
+    #[test]
+    fn multimodal_prefix_layout_folds_media_digest() {
+        let base = "layers=12;ordered-prefix-v2";
+        assert_eq!(format_prefix_layer_layout(base, ""), base);
+        let with_media = format_prefix_layer_layout(base, "abc123");
+        assert_eq!(with_media, "layers=12;ordered-prefix-v2;media=abc123");
+        // Different images → different keys (via media_prefix_key + layout fold).
+        let a = ax_engine_core::gemma4_unified::Gemma4UnifiedRuntimeInputs {
+            images: vec![
+                ax_engine_core::gemma4_unified::Gemma4UnifiedImageRuntimeInput {
+                    span: ax_engine_core::gemma4_unified::Gemma4UnifiedTokenSpan {
+                        modality: ax_engine_core::gemma4_unified::Gemma4UnifiedModality::Image,
+                        placeholder_index: 0,
+                        replacement_start: 0,
+                        soft_token_count: 4,
+                        replacement_token_count: 6,
+                    },
+                    pixel_values: vec![0.1, 0.2],
+                    pixel_position_ids: vec![[0, 0]; 4],
+                },
+            ],
+            audios: Vec::new(),
+            videos: Vec::new(),
+        };
+        let mut b = a.clone();
+        b.images[0].pixel_values = vec![0.9, 0.8];
+        let ka = format_prefix_layer_layout(base, &a.media_prefix_key("fp"));
+        let kb = format_prefix_layer_layout(base, &b.media_prefix_key("fp"));
+        assert_ne!(ka, kb);
+        assert!(ka.contains(";media="));
     }
 
     fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefixSnapshot {
@@ -10758,6 +11033,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         }
     }
 
@@ -11008,13 +11284,16 @@ mod tests {
             decisions.get("ax_mlx_gemma4_unified_visual_inputs"),
             Some(&2)
         );
+        // Prefix reuse default-off → still counts as disabled for multimodal.
         assert_eq!(
             decisions.get("ax_mlx_gemma4_unified_prefix_cache_disabled"),
             Some(&1)
         );
+        // WS-M5: MTP warmup is no longer auto-skipped when the model has MTP;
+        // the skipped counter stays at 0 for the success path.
         assert_eq!(
             decisions.get("ax_mlx_gemma4_unified_mtp_prefill_warmup_skipped"),
-            Some(&1)
+            Some(&0)
         );
     }
 
@@ -11216,6 +11495,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

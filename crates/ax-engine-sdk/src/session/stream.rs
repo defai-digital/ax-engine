@@ -916,6 +916,7 @@ mod tests {
             metal_toolchain: Default::default(),
             mlx_runtime: None,
             mlx_model: None,
+            delegated_runtime: None,
         };
         MlxLmGenerateStreamState::new(1, runtime, sample_finished_request_report(1), None, stream)
     }

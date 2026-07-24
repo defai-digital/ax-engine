@@ -64,6 +64,14 @@ impl MultimodalPrefillAdapter {
         {
             modalities.push(PrefillModality::Vision);
         }
+        if inputs
+            .qwen3_vl
+            .as_ref()
+            .is_some_and(|vl| !vl.images.is_empty())
+            && !modalities.contains(&PrefillModality::Vision)
+        {
+            modalities.push(PrefillModality::Vision);
+        }
 
         Self {
             modalities,
@@ -152,6 +160,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
             tensors: Vec::new(),
         }
     }
@@ -188,6 +197,7 @@ mod tests {
                 videos: Vec::new(),
             }),
             unlimited_ocr: None,
+            qwen3_vl: None,
         };
 
         let backbone = GenerationKind::Autoregressive;

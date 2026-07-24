@@ -10,16 +10,20 @@ pub mod generation;
 pub mod gguf;
 pub mod ids;
 pub mod kv;
+pub mod loop_detection;
+pub mod media_digest;
 pub mod mempressure;
 pub mod metal;
 pub mod model;
 pub mod multimodal_adapter;
+pub mod qwen3_vl;
 pub mod request;
 pub mod request_manager;
 pub mod runner;
 pub mod sampling;
 pub mod scheduler;
 pub mod unlimited_ocr;
+pub mod vl_geometry;
 
 pub use architecture::{
     ArchitectureSpec, AttentionKind, CacheKind, FfnKind, LayerSpec, StructuralCapabilities,
@@ -32,7 +36,12 @@ pub use engine::{EngineCore, EngineCoreError, EngineEvent, EngineStepOutcome, St
 pub use execution_plan::{
     DeterministicExecutionPlanResolver, ExecutionPlanBinding, ExecutionPlanResolver,
 };
-pub use gemma4_unified::Gemma4UnifiedRuntimeInputError;
+pub use gemma4_unified::{
+    AudioWindow, DEFAULT_VIDEO_MAX_FRAMES, DEFAULT_VIDEO_SOFT_TOKENS_PER_FRAME,
+    Gemma4UnifiedRuntimeInputError, ImageDetail, SOFT_TOKEN_BUDGET_CEILING,
+    SOFT_TOKEN_BUDGET_LADDER, max_frames_for_atomic_budget, plan_audio_windows,
+    resolve_soft_token_budget, validate_soft_token_budget,
+};
 pub use generation::{
     FirstVisibleEventKind, GenerationKind, GenerationProgress, GenerationStrategyDescriptor,
     WorkUnitKind,
@@ -42,6 +51,8 @@ pub use kv::{
     AllocationPlan, AllocationStatus, AppendMode, BlockTable, BlockTableView, FreeResult,
     KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
 };
+pub use loop_detection::{LoopDetectionConfig, detects_loop};
+pub use media_digest::{media_digest, media_digest_f32, ordered_media_digests_key};
 pub use mempressure::{
     DeviceResidentSnapshot, HostRssSnapshot, PressureLevel, PressureObservation, PressureThresholds,
 };
@@ -60,13 +71,14 @@ pub use metal::{
 };
 pub use model::{
     AX_ENGINE_3BIT_EXPERIMENTAL_ENV, AX_NATIVE_MODEL_MANIFEST_FILE,
-    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeDiffusionConfig, NativeLinearAttentionConfig,
-    NativeMlaAttentionConfig, NativeModelArtifacts, NativeModelArtifactsSummary, NativeModelError,
-    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
-    NativeTensorFormat, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
-    WeightSanitize,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, DroppedTensorsProvenance, NativeDiffusionConfig,
+    NativeLinearAttentionConfig, NativeMlaAttentionConfig, NativeModelArtifacts,
+    NativeModelArtifactsSummary, NativeModelError, NativeModelManifest, NativeMoeConfig,
+    NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization,
+    NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 pub use multimodal_adapter::{MultimodalPrefillAdapter, PrefillModality};
+pub use qwen3_vl::{Qwen3VlImageRuntimeInput, Qwen3VlRuntimeInputError, Qwen3VlRuntimeInputs};
 pub use request::{
     RequestMultimodalInputError, RequestMultimodalInputs, RequestRecord, RequestSnapshot,
     RequestState, RequestSubmission, RequestWorkloadHints, StateTransitionError,
@@ -114,4 +126,8 @@ pub use unlimited_ocr::{
     UNLIMITED_OCR_MAX_LOCAL_TILES, UNLIMITED_OCR_MAX_RGB_BYTES, UnlimitedOcrImageRuntimeInput,
     UnlimitedOcrRuntimeInputError, UnlimitedOcrRuntimeInputs, unlimited_ocr_crop_grid,
     unlimited_ocr_soft_token_count,
+};
+pub use vl_geometry::{
+    MropeSections, deepstack_injection_layers, mrope_position_ids, scatter_merge_indices,
+    vit_soft_token_count,
 };

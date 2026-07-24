@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use ax_engine_core::gemma4_unified::Gemma4UnifiedRuntimeInputs;
+use ax_engine_core::qwen3_vl::Qwen3VlRuntimeInputs;
 use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
 
 use crate::gemma4_unified::build_chunk_embeddings;
@@ -365,19 +366,127 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
+    let (tok, _, _) = chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
+        cfg,
+        weights,
+        prompt_tokens,
+        cache,
+        inputs,
+        sampling_request,
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+        false,
+    )?;
+    Ok(tok)
+}
+
+/// Gemma4 unified multimodal prefill with optional MTP post-norm capture (WS-M5).
+///
+/// When `capture_mtp_history` is true (and MTP weights exist), returns post-norm
+/// hidden for every prompt position so `initialize_generation_state` can warm
+/// the MTP head. When false, still uses the full-seq path for consistent numerics.
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    inputs: &Gemma4UnifiedRuntimeInputs,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+    capture_mtp_history: bool,
+) -> Result<(u32, Option<MlxArray>, Vec<u32>), String> {
+    use crate::model::forward_with_initial_hidden_media_post_norm_last_lm_head;
+
     let sampling = sampling_request.params;
-    let chunk = build_chunk_embeddings(cfg, weights, prompt_tokens, 0, inputs)
-        .map_err(|e| e.to_string())?;
+    // gemma4_vl reuses unified connector weights but fail-closes on missing towers.
+    let chunk = if crate::gemma4_vl::is_gemma4_vl_family(&cfg.model_family) {
+        crate::gemma4_vl::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
+            .map_err(|e| e.to_string())?
+    } else {
+        build_chunk_embeddings(cfg, weights, prompt_tokens, 0, inputs).map_err(|e| e.to_string())?
+    };
     let media_ranges: Vec<(usize, usize)> = chunk
         .media_ranges
         .iter()
         .map(|range| (range.start, range.end_inclusive))
         .collect();
-    let logits = forward_with_initial_hidden_and_media_ranges(
+    let (logits, post_norm) = forward_with_initial_hidden_media_post_norm_last_lm_head(
         cfg,
         weights,
         prompt_tokens,
         chunk.hidden,
+        &media_ranges,
+        cache,
+        0,
+    );
+    cache.advance(prompt_tokens.len());
+
+    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
+        sample_prefill_token_gpu_first(
+            &logits,
+            sampling,
+            sampling_request.repetition_tokens,
+            rng,
+            || eval_with_kv_refs(&logits, cache),
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
+        )
+    } else {
+        let token_arr = argmax(&logits, None);
+        eval_with_kv_refs(&token_arr, cache);
+        token_arr.first_u32_unchecked()
+    };
+
+    let mut history_tokens = Vec::new();
+    let mtp_hidden = if capture_mtp_history && weights.mtp.is_some() {
+        // History tokens: prompt[1..] + sampled first decode token (matches text path).
+        if prompt_tokens.len() > 1 {
+            history_tokens.extend_from_slice(&prompt_tokens[1..]);
+        }
+        history_tokens.push(tok);
+        eval(&[&post_norm]);
+        Some(post_norm)
+    } else {
+        None
+    };
+    clear_cache();
+    Ok((tok, mtp_hidden, history_tokens))
+}
+
+/// Prefill Qwen3-VL with portable ViT soft tokens scattered into the text
+/// residual stream (ADR-038). Fail-closes when images are present without a
+/// mapped vision tower (`qwen3_vl_vision`).
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_qwen3_vl_with_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    inputs: &Qwen3VlRuntimeInputs,
+    cache: &mut MlxKVCache,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> Result<u32, String> {
+    let sampling = sampling_request.params;
+    let hidden = crate::qwen3_vl::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
+        .map_err(|e| e.to_string())?;
+    // After scatter, soft tokens sit in the text sequence; ordinary causal
+    // attention applies (same pattern as Unlimited-OCR / LLaVA).
+    let media_ranges = [];
+    let logits = forward_with_initial_hidden_and_media_ranges(
+        cfg,
+        weights,
+        prompt_tokens,
+        hidden,
         &media_ranges,
         cache,
         0,

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ax-engine-vllm-runtime"
+version = "0.1.0"
+description = "Pinned, fail-closed vLLM runtime profiles for AX Engine"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "packaging>=24,<26",
+    "vllm==0.25.1; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2,<2",
+    "pytest>=8,<9",
+    "ruff>=0.11,<1",
+]
+
+[project.scripts]
+ax-engine-vllm-runtime = "ax_engine_vllm_runtime.cli:main"
+
+[project.entry-points."vllm.general_plugins"]
+ax_engine_vllm_a100_wna16_compat = "ax_engine_vllm_runtime.a100_wna16_compat:register"
+ax_engine_vllm_thor_compat = "ax_engine_vllm_runtime.thor_compat:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ax_engine_vllm_runtime"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"locks/requirements-runtime-amd64.lock" = "ax_engine_vllm_runtime/locks/requirements-runtime-amd64.lock"
+"locks/requirements-runtime-arm64.lock" = "ax_engine_vllm_runtime/locks/requirements-runtime-arm64.lock"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/ax_engine_vllm_runtime/_thor_runtime.py" = ["E501"]

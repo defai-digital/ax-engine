@@ -689,6 +689,47 @@ pub(crate) const EMBEDDINGGEMMA_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// Extra tensors for Qwen3-VL vision tower (WS-V2).
+///
+/// HF names under `visual.*` (language_model prefix is stripped by convert).
+/// Layer-indexed block tensors use the synthetic layer index carried in the
+/// mapped name `blocks.{i}.*` via [`match_qwen3_vl_vision_layer`].
+pub(crate) const QWEN3_VL_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "visual.patch_embed.proj.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen3VlVisionPatchEmbed),
+    ),
+    (
+        "visual.merger.mlp.0.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen3VlVisionMerger),
+    ),
+    (
+        "visual.merger.mlp.2.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen3VlVisionMerger),
+    ),
+    (
+        "visual.merger.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen3VlVisionMerger),
+    ),
+];
+
+/// Map `visual.blocks.{i}.{suffix}` patterns for Qwen3-VL vision layers.
+pub(crate) fn match_qwen3_vl_vision_layer(name: &str) -> Option<(u32, NativeTensorRole)> {
+    let rest = name.strip_prefix("visual.blocks.")?;
+    let (idx_s, suffix) = rest.split_once('.')?;
+    let idx: u32 = idx_s.parse().ok()?;
+    let role = match suffix {
+        "attn.qkv.weight" => NativeTensorRole::Qwen3VlVisionLayerQkv,
+        "attn.proj.weight" => NativeTensorRole::Qwen3VlVisionLayerProj,
+        "norm1.weight" => NativeTensorRole::Qwen3VlVisionLayerNorm1,
+        "norm2.weight" => NativeTensorRole::Qwen3VlVisionLayerNorm2,
+        "mlp.fc1.weight" | "mlp.up_proj.weight" => NativeTensorRole::Qwen3VlVisionLayerFc1,
+        "mlp.fc2.weight" | "mlp.down_proj.weight" => NativeTensorRole::Qwen3VlVisionLayerFc2,
+        _ => return None,
+    };
+    Some((idx, role))
+}
+
 /// Extra global tensors for Gemma4 Unified's encoder-free multimodal path.
 ///
 /// This mirrors vLLM's `Gemma4UnifiedVisionEmbedder` plus

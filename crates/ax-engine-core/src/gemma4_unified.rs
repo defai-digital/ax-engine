@@ -6,6 +6,138 @@ use thiserror::Error;
 /// `audio_seq_length`, matching the reference Gemma4UnifiedProcessor.
 const DEFAULT_AUDIO_SEQ_LENGTH: u32 = 750;
 
+/// Per-request soft-token budget ladder for gemma4_unified (WS-M4 / R-M4).
+/// 1120 is the structural ceiling from the unified 2-D position table.
+pub const SOFT_TOKEN_BUDGET_LADDER: &[u32] = &[70, 140, 280, 560, 1120];
+pub const SOFT_TOKEN_BUDGET_CEILING: u32 = 1120;
+
+/// OpenAI-compatible image detail levels accepted on chat routes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImageDetail {
+    Low,
+    High,
+    Auto,
+}
+
+impl ImageDetail {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "high" => Some(Self::High),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
+
+    /// Map detail to a ladder budget. `Auto` returns `None` (use checkpoint default).
+    pub fn to_budget(self) -> Option<u32> {
+        match self {
+            Self::Low => Some(70),
+            Self::High => Some(560),
+            Self::Auto => None,
+        }
+    }
+}
+
+/// Validate a requested soft-token budget (extension wins over detail when both set).
+///
+/// Unknown / off-ladder values are errors (no silent clamp). Multi-image
+/// callers must ensure all explicit budgets agree before calling this.
+pub fn validate_soft_token_budget(budget: u32) -> Result<u32, Gemma4UnifiedError> {
+    if !SOFT_TOKEN_BUDGET_LADDER.contains(&budget) {
+        return Err(Gemma4UnifiedError::InvalidField {
+            field: "max_soft_tokens",
+            message: format!(
+                "must be one of {SOFT_TOKEN_BUDGET_LADDER:?} (got {budget}); 1120 is the hard ceiling"
+            ),
+        });
+    }
+    Ok(budget)
+}
+
+/// Resolve per-request budget from optional `detail` + optional `max_soft_tokens`.
+/// Extension wins when both present; absent both uses `checkpoint_default`.
+pub fn resolve_soft_token_budget(
+    detail: Option<&str>,
+    max_soft_tokens: Option<u32>,
+    checkpoint_default: u32,
+) -> Result<u32, Gemma4UnifiedError> {
+    if let Some(budget) = max_soft_tokens {
+        return validate_soft_token_budget(budget);
+    }
+    if let Some(raw) = detail {
+        let parsed = ImageDetail::parse(raw).ok_or_else(|| Gemma4UnifiedError::InvalidField {
+            field: "detail",
+            message: format!("unknown image detail {raw:?}; expected low|high|auto"),
+        })?;
+        if let Some(budget) = parsed.to_budget() {
+            return validate_soft_token_budget(budget);
+        }
+    }
+    Ok(checkpoint_default.clamp(1, SOFT_TOKEN_BUDGET_CEILING))
+}
+
+/// Video sizing contract (WS-M1): keep expanded soft tokens within atomic
+/// `--max-batch-tokens` (default 2048). Default frame soft budget is 70.
+///
+/// `max_frames_for_atomic_budget(2048, 70, text_overhead)` leaves room for
+/// timestamps/text specials. Default video_max_frames is 24 (24×70=1680).
+pub const DEFAULT_VIDEO_MAX_FRAMES: u32 = 24;
+pub const DEFAULT_VIDEO_SOFT_TOKENS_PER_FRAME: u32 = 70;
+
+pub fn max_frames_for_atomic_budget(
+    max_batch_tokens: u32,
+    soft_tokens_per_frame: u32,
+    text_and_special_overhead: u32,
+) -> u32 {
+    if soft_tokens_per_frame == 0 {
+        return 0;
+    }
+    let usable = max_batch_tokens.saturating_sub(text_and_special_overhead);
+    usable / soft_tokens_per_frame
+}
+
+/// Audio window plan for clips longer than `max_seconds` (WS-P1 / R-P1).
+///
+/// Returns non-overlapping windows of `window_seconds` covering
+/// `total_seconds`, plus a final partial window. Overlap is reserved for a
+/// future Conformer streaming path; v1 uses adjacent windows (overlap=0).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioWindow {
+    pub start_seconds: u32,
+    pub end_seconds: u32,
+}
+
+pub fn plan_audio_windows(
+    total_seconds: u32,
+    max_seconds: u32,
+    window_seconds: u32,
+) -> Vec<AudioWindow> {
+    if total_seconds == 0 || window_seconds == 0 {
+        return Vec::new();
+    }
+    if total_seconds <= max_seconds {
+        return vec![AudioWindow {
+            start_seconds: 0,
+            end_seconds: total_seconds,
+        }];
+    }
+    let mut windows = Vec::new();
+    let mut start = 0u32;
+    while start < total_seconds {
+        let end = (start.saturating_add(window_seconds)).min(total_seconds);
+        windows.push(AudioWindow {
+            start_seconds: start,
+            end_seconds: end,
+        });
+        if end == total_seconds {
+            break;
+        }
+        start = end;
+    }
+    windows
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Gemma4UnifiedModality {
@@ -106,6 +238,41 @@ pub struct Gemma4UnifiedRuntimeInputs {
 impl Gemma4UnifiedRuntimeInputs {
     pub fn is_empty(&self) -> bool {
         self.images.is_empty() && self.audios.is_empty() && self.videos.is_empty()
+    }
+
+    /// Ordered media digests for prefix-cache identity (WS-M3).
+    ///
+    /// Domain-separated by soft-token budget and `model_fingerprint` so a
+    /// budget change or weight reload cannot hit stale KV.
+    pub fn media_prefix_key(&self, model_fingerprint: &str) -> String {
+        use crate::media_digest::{media_digest_f32, ordered_media_digests_key};
+        let mut digests = Vec::new();
+        for image in &self.images {
+            digests.push(media_digest_f32(
+                &image.pixel_values,
+                image.span.soft_token_count,
+                model_fingerprint,
+            ));
+        }
+        for audio in &self.audios {
+            digests.push(media_digest_f32(
+                &audio.input_features,
+                audio.span.soft_token_count,
+                model_fingerprint,
+            ));
+        }
+        for video in &self.videos {
+            digests.push(media_digest_f32(
+                &video.pixel_values,
+                video.span.soft_token_count,
+                model_fingerprint,
+            ));
+        }
+        if digests.is_empty() {
+            String::new()
+        } else {
+            ordered_media_digests_key(&digests)
+        }
     }
 
     pub fn validate_for_prompt_len(
@@ -1483,5 +1650,75 @@ mod tests {
                     .to_string(),
             }
         );
+    }
+
+    #[test]
+    fn soft_token_budget_ladder_and_detail() {
+        assert_eq!(validate_soft_token_budget(280).unwrap(), 280);
+        assert!(validate_soft_token_budget(1121).is_err());
+        assert!(validate_soft_token_budget(100).is_err());
+        assert_eq!(
+            resolve_soft_token_budget(Some("low"), None, 280).unwrap(),
+            70
+        );
+        assert_eq!(
+            resolve_soft_token_budget(Some("high"), Some(1120), 280).unwrap(),
+            1120
+        );
+        assert_eq!(resolve_soft_token_budget(None, None, 280).unwrap(), 280);
+        assert!(resolve_soft_token_budget(Some("ultra"), None, 280).is_err());
+        assert_eq!(max_frames_for_atomic_budget(2048, 70, 368), 24);
+    }
+
+    #[test]
+    fn media_prefix_key_domain_separates_images() {
+        let a = Gemma4UnifiedRuntimeInputs {
+            images: vec![Gemma4UnifiedImageRuntimeInput {
+                span: Gemma4UnifiedTokenSpan {
+                    modality: Gemma4UnifiedModality::Image,
+                    placeholder_index: 0,
+                    replacement_start: 0,
+                    soft_token_count: 4,
+                    replacement_token_count: 6,
+                },
+                pixel_values: vec![0.1, 0.2, 0.3],
+                pixel_position_ids: vec![[0, 0]; 4],
+            }],
+            audios: Vec::new(),
+            videos: Vec::new(),
+        };
+        let mut b = a.clone();
+        b.images[0].pixel_values = vec![0.9, 0.8, 0.7];
+        let ka = a.media_prefix_key("fp");
+        let kb = b.media_prefix_key("fp");
+        assert_ne!(ka, kb);
+        assert!(!ka.is_empty());
+        // budget change → miss
+        b.images[0].pixel_values = a.images[0].pixel_values.clone();
+        b.images[0].span.soft_token_count = 8;
+        assert_ne!(a.media_prefix_key("fp"), b.media_prefix_key("fp"));
+    }
+
+    #[test]
+    fn audio_windows_beyond_cap() {
+        let w = plan_audio_windows(75, 30, 30);
+        assert_eq!(
+            w,
+            vec![
+                AudioWindow {
+                    start_seconds: 0,
+                    end_seconds: 30
+                },
+                AudioWindow {
+                    start_seconds: 30,
+                    end_seconds: 60
+                },
+                AudioWindow {
+                    start_seconds: 60,
+                    end_seconds: 75
+                },
+            ]
+        );
+        assert_eq!(plan_audio_windows(20, 30, 30).len(), 1);
     }
 }

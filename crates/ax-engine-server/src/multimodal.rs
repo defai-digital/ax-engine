@@ -89,7 +89,9 @@ pub(crate) struct PreprocessedImage {
 
 /// Reference video defaults (`Gemma4UnifiedVideoProcessor`): up to 32 frames at
 /// 70 soft tokens each, with a 2 fps fallback when frame timing is unavailable.
-pub(crate) const DEFAULT_VIDEO_MAX_FRAMES: usize = 32;
+/// Default frame cap for video (WS-M1 budget contract): 24×70 soft tokens =
+/// 1680, leaving headroom under atomic `--max-batch-tokens` default 2048.
+pub(crate) const DEFAULT_VIDEO_MAX_FRAMES: usize = 24;
 pub(crate) const DEFAULT_VIDEO_SOFT_TOKENS: u32 = 70;
 pub(crate) const DEFAULT_VIDEO_FPS: f32 = 2.0;
 

@@ -189,6 +189,8 @@ impl AnthropicMessagesRequest {
             min_p: None,
             repetition_penalty: None,
             repetition_context_size: None,
+            skip_special_tokens: None,
+            vllm_xargs: None,
             stop: self
                 .stop_sequences
                 .filter(|values| !values.is_empty())

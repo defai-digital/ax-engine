@@ -53,6 +53,9 @@ pub enum StopReason {
     MaxOutputTokens,
     Cancelled,
     Error,
+    /// N-gram loop detector ended generation (WS-C2). Maps to OpenAI
+    /// `finish_reason=stop` without fabricating an EOS token id.
+    LoopDetected,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -717,27 +717,22 @@ env_flag!(
     /// `AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL` — enable whole-layer
     /// Metal kernel for linear-attention decode.
     ///
-    /// **Default: OFF** (opt-in). When eligible (seq==1, qwen3_5/qwen3_next
-    /// family), the entire linear-attention decode path (RMSNorm + QKVZ/BA
-    /// projection + conv1d + SiLU + per-head RMSNorm + gated-delta + output
-    /// projection) is fused into a single Metal kernel dispatch. Decode-only.
-    /// Falls back to the multi-dispatch path when ineligible.
-    ///
-    /// Status: scaffold — kernel body requires multi-week Metal engineering.
+    /// **Default: OFF** (opt-in). When eligible (seq==1 decode), runs the
+    /// compositional whole-layer linear-attention Metal path (gated-delta +
+    /// Metal gate helpers + projections). Decode-only. Falls back when
+    /// ineligible. Single-dispatch mega-kernel remains residual.
     linear_attention_whole_layer_metal_enabled,
     "AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL"
 );
 
 env_flag!(
     /// `AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL` — enable deep expert-block
-    /// fusion Metal kernel for MoE decode.
+    /// fusion Metal path for MoE decode.
     ///
-    /// **Default: OFF** (opt-in). Fuses gather_qmm(gate_up) + SwiGLU +
-    /// gather_qmm(down) + weighted-sum into a single Metal kernel dispatch,
-    /// achieving dense-class bandwidth utilization for MoE layers. Decode-only.
-    /// Falls back to the standard multi-dispatch path when ineligible.
-    ///
-    /// Status: scaffold — kernel body requires multi-week Metal engineering.
+    /// **Default: OFF** (opt-in). Compositional path: gather_qmm gate_up →
+    /// Metal fused activation/unsort → gather_qmm down → Metal weighted-sum.
+    /// Decode-only batch=1. Falls back when ineligible. Single-dispatch
+    /// 4-bit mega-kernel remains residual.
     moe_deep_expert_block_metal_enabled,
     "AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL"
 );

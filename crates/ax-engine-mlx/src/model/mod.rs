@@ -1019,6 +1019,63 @@ pub fn forward_all_positions_with_post_norm(
 /// a ~seq× reduction in compute (Qwen3.6 27B 128-token prompt: ~128× fewer
 /// multiply-adds). The all-position post-norm hidden is preserved for MTP
 /// warmup seeding.
+/// Multimodal MTP warmup path: full-seq residual through every layer with
+/// media-aware masks, post-norm on all positions, lm_head on last only (WS-M5).
+pub fn forward_with_initial_hidden_media_post_norm_last_lm_head(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    hidden: MlxArray,
+    media_ranges: &[(usize, usize)],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> (MlxArray, MlxArray) {
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let seq = token_ids.len();
+    let masks = if seq > 1 {
+        build_layer_masks_with_media_ranges(
+            cfg,
+            weights.layers.len(),
+            seq,
+            token_offset + seq,
+            media_ranges,
+        )
+    } else {
+        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache)
+    };
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
+    let mut hidden = hidden;
+    // Full-seq residual through every layer: MTP warmup needs post-norm at
+    // every position. Do not use last-layer last-only / skip-FFN here.
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
+        hidden = layer_forward(
+            cfg,
+            layer_w,
+            &hidden,
+            cache,
+            li,
+            token_offset,
+            pli,
+            Some(&masks[li]),
+        );
+    }
+    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let last = (seq.saturating_sub(1)) as i32;
+    let hs = cfg.hidden_size as i32;
+    let last_normed = slice(&normed, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None);
+    let logits = qw(&last_normed, &weights.lm_head);
+    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+    let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+    let last_logits = reshape(&logits_f32, &[cfg.vocab_size as i32], None);
+    (last_logits, normed)
+}
+
 pub fn forward_all_positions_post_norm_last_lm_head(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -3257,6 +3314,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
             tensors: Vec::new(),
         }
     }
@@ -3318,6 +3376,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
             tensors: Vec::new(),
         }
     }
@@ -3428,6 +3487,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
             tensors: Vec::new(),
         }
     }
@@ -3569,6 +3629,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
 
         let per_layer = compute_per_layer_inputs_arr(&cfg, &weights, &ids_scalar, &hidden)
@@ -4170,6 +4231,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
         let cache = MlxKVCache::new(0);
         let hidden = zeros(&[1, 1, 16], MlxDtype::Bfloat16, None);
@@ -4222,6 +4284,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -4353,6 +4416,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -4432,6 +4496,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -5206,6 +5271,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         };
         let mut cache = MlxKVCache::new(cfg.layer_count);
 

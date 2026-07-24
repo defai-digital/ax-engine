@@ -9,6 +9,8 @@ mod session;
 pub use presets::{ServerPreset, render_presets};
 
 pub const API_KEY_ENV: &str = "AX_ENGINE_API_KEY";
+pub const VLLM_API_KEY_ENV: &str = "AX_VLLM_API_KEY";
+pub const VLLM_API_KEY_FILE_ENV: &str = "AX_VLLM_API_KEY_FILE";
 pub const DEFAULT_INFERENCE_PORT: u16 = 31_418;
 const MODEL_ARTIFACTS_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 const DEFAULT_MODEL_ID: &str = "qwen3";
@@ -28,6 +30,16 @@ pub enum PreviewSupportTier {
     MlxPreview,
     MlxLmDelegated,
     LlamaCpp,
+    TensorRtEdgeLlm,
+    TensorRtLlm,
+    Vllm,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum VllmModelProfileArg {
+    #[default]
+    OpenAiCompatible,
+    UnlimitedOcr,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -113,15 +125,64 @@ pub struct ServerArgs {
     #[arg(long = "mlx-lm-server-url")]
     pub mlx_lm_server_url: Option<String>,
 
-    /// Connect timeout, in seconds, for delegated llama.cpp / mlx_lm HTTP backends.
+    /// Base URL for TensorRT Edge-LLM OpenAI-compatible server (Thor).
+    #[arg(long = "edge-llm-server-url")]
+    pub edge_llm_server_url: Option<String>,
+
+    /// Base URL for TensorRT-LLM OpenAI-compatible server (`trtllm-serve`).
+    #[arg(long = "tensorrt-llm-server-url", alias = "trt-llm-server-url")]
+    pub tensor_rt_llm_server_url: Option<String>,
+
+    /// Base URL for an externally managed vLLM OpenAI-compatible worker.
+    /// Root URLs and URLs ending in /v1 are accepted. Plain HTTP is restricted
+    /// to loopback; remote endpoints require --vllm-allow-remote and HTTPS.
+    #[arg(long = "vllm-server-url")]
+    pub vllm_server_url: Option<String>,
+
+    /// Model id sent to vLLM. Defaults to the AX-facing --model-id.
+    #[arg(long = "vllm-upstream-model-id")]
+    pub vllm_upstream_model_id: Option<String>,
+
+    /// Environment variable containing the vLLM bearer credential. AX never
+    /// accepts a raw credential CLI argument.
+    #[arg(long = "vllm-api-key-env", default_value = VLLM_API_KEY_ENV)]
+    pub vllm_api_key_env: String,
+
+    /// File containing the vLLM bearer credential. Mutually exclusive with a
+    /// populated --vllm-api-key-env source.
+    #[arg(long = "vllm-api-key-file")]
+    pub vllm_api_key_file: Option<PathBuf>,
+
+    /// Allow a non-loopback vLLM endpoint. Verified HTTPS remains mandatory.
+    #[arg(long = "vllm-allow-remote", default_value_t = false)]
+    pub vllm_allow_remote: bool,
+
+    /// Additional PEM CA certificate used to verify a remote vLLM endpoint.
+    #[arg(long = "vllm-ca-cert")]
+    pub vllm_ca_cert: Option<PathBuf>,
+
+    /// Bound concurrent AX requests delegated to vLLM.
+    #[arg(long = "vllm-max-in-flight")]
+    pub vllm_max_in_flight: Option<usize>,
+
+    /// Provider behavior profile. Unlimited OCR enables the certified OCR
+    /// multimodal defaults and requires at least one inline PNG/JPEG image.
+    #[arg(long = "vllm-model-profile", value_enum, default_value_t = VllmModelProfileArg::OpenAiCompatible)]
+    pub vllm_model_profile: VllmModelProfileArg,
+
+    /// Sanitized runtime artifact/profile identity exposed in runtime reports.
+    #[arg(long = "vllm-runtime-profile")]
+    pub vllm_runtime_profile: Option<String>,
+
+    /// Connect timeout, in seconds, for delegated HTTP backends.
     #[arg(long = "delegated-http-connect-timeout-secs", default_value_t = DelegatedHttpTimeouts::default_connect_secs())]
     pub delegated_http_connect_timeout_secs: u64,
 
-    /// Read timeout, in seconds, for delegated llama.cpp / mlx_lm HTTP responses.
+    /// Read timeout, in seconds, for delegated HTTP responses.
     #[arg(long = "delegated-http-read-timeout-secs", default_value_t = DelegatedHttpTimeouts::default_io_secs())]
     pub delegated_http_read_timeout_secs: u64,
 
-    /// Write timeout, in seconds, for delegated llama.cpp / mlx_lm HTTP requests.
+    /// Write timeout, in seconds, for delegated HTTP requests.
     #[arg(long = "delegated-http-write-timeout-secs", default_value_t = DelegatedHttpTimeouts::default_io_secs())]
     pub delegated_http_write_timeout_secs: u64,
 
@@ -361,11 +422,21 @@ impl ServerArgs {
     }
 
     pub(crate) fn resolved_max_concurrent_requests(&self) -> Option<usize> {
-        super::routes::parse_max_concurrent_requests(
+        let global = super::routes::parse_max_concurrent_requests(
             self.max_concurrent_requests
                 .map(|value| value.to_string())
                 .or_else(|| std::env::var(MAX_CONCURRENT_REQUESTS_ENV).ok()),
-        )
+        );
+        let vllm = (self.effective_support_tier() == PreviewSupportTier::Vllm)
+            .then_some(self.vllm_max_in_flight)
+            .flatten()
+            .filter(|value| *value > 0);
+        match (global, vllm) {
+            (Some(global), Some(vllm)) => Some(global.min(vllm)),
+            (Some(global), None) => Some(global),
+            (None, Some(vllm)) => Some(vllm),
+            (None, None) => None,
+        }
     }
 
     pub(crate) fn resolved_max_request_body_bytes(&self) -> usize {

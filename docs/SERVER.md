@@ -430,9 +430,37 @@ cargo run -p ax-engine-server -- \
   --port 31418
 ```
 
-OpenAI-compatible delegated routes such as `vLLM` and `mistral.rs` are not part
-of the shipping inference contract. Use the `llama.cpp` server route for
-GGUF/non-MLX server-backed inference:
+The candidate `vLLM` provider is a first-class delegated backend. The same AX
+wire implementation is used on Linux `x86_64` and `aarch64`; hardware-specific
+behavior belongs to the separately supervised
+`ax-engine-vllm-runtime` profile:
+
+```text
+cargo run -p ax-engine-server \
+  --no-default-features --features delegated-server -- \
+  --model-id ax-ocr \
+  --support-tier vllm \
+  --vllm-server-url http://127.0.0.1:18000 \
+  --vllm-upstream-model-id baidu/Unlimited-OCR \
+  --vllm-model-profile unlimited-ocr \
+  --vllm-runtime-profile cuda-linux-aarch64-thor-sm110 \
+  --vllm-max-in-flight 2 \
+  --port 31418
+```
+
+Use `cuda-linux-x86_64-a6000-sm86` on the certified RTX A6000 target. Startup
+probes `/v1/models` and requires the exact upstream model identity. Readiness
+GETs use bounded retry; generation POSTs are never retried. AX does not start,
+restart, or silently replace the worker, and it never falls back to MLX or a
+TensorRT provider.
+
+Bearer credentials are read from `AX_VLLM_API_KEY` or a regular, non-symlink
+file passed with `--vllm-api-key-file`. Remote non-loopback endpoints require
+`--vllm-allow-remote`; plaintext HTTP remains loopback-only. Use
+`--vllm-ca-cert` for a reviewed private CA.
+
+The `llama.cpp` server route remains available for GGUF/non-MLX server-backed
+inference:
 
 ```text
 cargo run -p ax-engine-server -- \
@@ -515,21 +543,25 @@ Multimodal serving contract limits:
   (default 2048) in one scheduler step. Over-budget requests fail with an
   actionable HTTP 400 instead of being scheduled. Under concurrent load a
   fitting request may wait for a step with enough budget; it is never split.
-- **Token budgets.** Image soft-token budgets come from the model's
-  `preprocessor_config.json` (Gemma 4 12B: up to 280 soft tokens per image);
-  there is no per-request budget or quality override.
+- **Token budgets.** Image soft-token budgets default from the model's
+  `preprocessor_config.json` (Gemma 4 12B: up to 280 soft tokens per image).
+  Chat may override via OpenAI `detail` (`low`/`high`/`auto`) or extension
+  `max_soft_tokens` ∈ {70,140,280,560,1120}; unknown values are HTTP 400.
 - **Audio.** WAV and MP3 input is downmixed to mono and resampled to the
   model rate (16 kHz). The container is sniffed from magic bytes, not the
   declared `format` field. Other formats (AAC/OGG/FLAC) are rejected; send
   pre-computed audio tensors via `/v1/generate` instead. Audio longer than
   the model's `audio_seq_length` cap (750 frames × 40 ms = 30 s by default)
   is silently truncated, and MP3 decoding stops at that cap.
-- **Video.** Public server routes reject video with `unsupported_modality`.
-  Lower-level Gemma4 preprocessing primitives remain internal compatibility
-  code, but video is not advertised by `/v1/models`.
-- **Caching.** Prefix caching is disabled for multimodal requests; every
-  multimodal prefill recomputes the full prompt with that request's own
-  media tensors.
+- **Video.** When the loaded manifest is video-capable (gemma4_unified vision
+  roles present, no convert-time media drops, `AX_MLX_GEMMA4_VIDEO` not off),
+  chat routes accept `video_url` **data URIs only** (no remote `http(s)`, no bare
+  filesystem paths). Default frame cap is 24 (24×70 soft tokens) so expanded
+  prompts fit atomic `--max-batch-tokens` (default 2048). Otherwise video is
+  rejected with `unsupported_modality`.
+- **Caching.** Prefix caching is disabled for multimodal requests unless
+  `AX_MLX_MULTIMODAL_PREFIX_REUSE` is promoted after fixtures; vision-feature
+  cache may skip tower recompute on digest hits (`AX_MLX_VISION_FEATURE_CACHE`).
 - **Chat output.** Gemma 4 thinking-channel framing (`<|channel>thought…`)
   is stripped from chat content; raw `/v1/completions` output stays
   verbatim.

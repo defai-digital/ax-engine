@@ -1,4 +1,7 @@
-use ax_engine_sdk::{EngineSessionError, LlamaCppBackendError, MlxLmBackendError};
+use ax_engine_sdk::{
+    EdgeLlmBackendError, EngineSessionError, LlamaCppBackendError, MlxLmBackendError,
+    VllmBackendError,
+};
 use axum::Json;
 use axum::http::StatusCode;
 use serde::Serialize;
@@ -88,6 +91,9 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::MlxMtpRequiredButUnavailable
         | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportLifecycle { .. }
+        | EngineSessionError::EdgeLlmDoesNotSupportLifecycle { .. }
+        | EngineSessionError::TensorRtLlmDoesNotSupportLifecycle { .. }
+        | EngineSessionError::VllmDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportStreaming
         | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
@@ -104,21 +110,52 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingInputText)
         | EngineSessionError::MlxLm(MlxLmBackendError::UnsupportedTokenPrompt)
-        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. }) => {
-            error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                error.to_string(),
-            )
-        }
+        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingInputText)
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::UnsupportedTokenPrompt)
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::BackendConfigMismatch { .. })
+        | EngineSessionError::Vllm(VllmBackendError::InvalidRequest(_))
+        | EngineSessionError::Vllm(VllmBackendError::MissingInputText)
+        | EngineSessionError::Vllm(VllmBackendError::UnsupportedTokenPrompt) => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            error.to_string(),
+        ),
         EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingCompletionChoice { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. }) => {
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingCompletionChoice { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingStreamChoice { .. })
+        | EngineSessionError::Vllm(VllmBackendError::MissingCompletionChoice { .. })
+        | EngineSessionError::Vllm(VllmBackendError::InvalidAssistantContent { .. })
+        | EngineSessionError::Vllm(VllmBackendError::InvalidResponseJson { .. })
+        | EngineSessionError::Vllm(VllmBackendError::Sse(_)) => {
             error_response(StatusCode::BAD_GATEWAY, "backend_error", error.to_string())
+        }
+        EngineSessionError::Vllm(VllmBackendError::HttpStatus { status, .. }) => {
+            let status = match status {
+                401 | 403 => StatusCode::SERVICE_UNAVAILABLE,
+                429 => StatusCode::TOO_MANY_REQUESTS,
+                400..=499 => StatusCode::BAD_REQUEST,
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            error_response(status, "vllm_upstream_error", error.to_string())
+        }
+        EngineSessionError::Vllm(VllmBackendError::HttpRequest { ref source, .. }) => {
+            let message = source.to_string().to_ascii_lowercase();
+            let status = if message.contains("timed out") || message.contains("timeout") {
+                StatusCode::GATEWAY_TIMEOUT
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            error_response(status, "vllm_transport_error", error.to_string())
         }
         EngineSessionError::BackendContract(_)
         | EngineSessionError::MissingLlamaCppConfig { .. }
         | EngineSessionError::MissingMlxLmConfig
+        | EngineSessionError::MissingEdgeLlmConfig
+        | EngineSessionError::MissingTensorRtLlmConfig
+        | EngineSessionError::MissingVllmConfig
         | EngineSessionError::MissingDelegatedRuntime { .. }
         | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxLmStreamEndedBeforeStop { .. }
@@ -138,6 +175,15 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::MlxLm(MlxLmBackendError::InvalidResponseJson { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::SseRead { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::InvalidStreamChunk { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::SerializeRequestJson { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::HttpRequest { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::HttpStatus { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::InvalidResponseJson { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::SseRead { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::InvalidStreamChunk { .. })
+        | EngineSessionError::Vllm(VllmBackendError::BackendConfigMismatch { .. })
+        | EngineSessionError::Vllm(VllmBackendError::HttpConfig { .. })
+        | EngineSessionError::Vllm(VllmBackendError::ModelNotAdvertised { .. })
         | EngineSessionError::UnsupportedHostHardware { .. } => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "unsupported_host",
@@ -153,11 +199,14 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::EmbeddingFailed { .. }
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_)
-        | EngineSessionError::MlxRuntimeUnavailable => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "engine_error",
-            error.to_string(),
-        ),
+        | EngineSessionError::MlxRuntimeUnavailable
+        | EngineSessionError::Vllm(VllmBackendError::SerializeRequestJson { .. }) => {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "engine_error",
+                error.to_string(),
+            )
+        }
     }
 }
 

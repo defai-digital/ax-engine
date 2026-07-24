@@ -6,7 +6,7 @@ use ax_engine_sdk::{
     Gemma4UnifiedImageInput, Gemma4UnifiedImageRuntimeInput, Gemma4UnifiedModality,
     Gemma4UnifiedProcessorConfig, Gemma4UnifiedRuntimeInputs, Gemma4UnifiedSoftTokenRange,
     Gemma4UnifiedTokenSpan, Gemma4UnifiedVideoInput, Gemma4UnifiedVideoRuntimeInput,
-    LlamaCppChatMessage, MlxLmChatMessage,
+    LlamaCppChatMessage, MlxLmChatMessage, Qwen3VlImageRuntimeInput, Qwen3VlRuntimeInputs,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -32,6 +32,31 @@ pub(crate) struct Gemma4UnifiedChatPrompt {
     pub(crate) input_tokens: Vec<u32>,
     pub(crate) runtime_inputs: Gemma4UnifiedRuntimeInputs,
 }
+
+/// Native-MLX Qwen3-VL chat prompt: placeholder-expanded tokens + patch tensors
+/// for LLaVA-style scatter into the certified qwen3 text graph (WS-V2).
+pub(crate) struct Qwen3VlChatPrompt {
+    pub(crate) input_tokens: Vec<u32>,
+    pub(crate) runtime_inputs: Qwen3VlRuntimeInputs,
+}
+
+/// True when the model id / family label is a Qwen3-VL variant.
+pub(crate) fn is_qwen3_vl_model_id(model_id: &str) -> bool {
+    let lower = model_id.to_ascii_lowercase();
+    lower.contains("qwen3-vl")
+        || lower.contains("qwen3_vl")
+        || lower.contains("qwen3vl")
+        || lower.contains("qwen3-vl-moe")
+        || lower.contains("qwen3_vl_moe")
+}
+
+/// Default Qwen3-VL ViT geometry (common HF defaults; overridable via config later).
+const QWEN3_VL_DEFAULT_PATCH_SIZE: u32 = 14;
+const QWEN3_VL_DEFAULT_SPATIAL_MERGE: u32 = 2;
+const QWEN3_VL_DEFAULT_MAX_SOFT: u32 = 1024;
+/// Placeholder text embedded in the rendered prompt for each image; tokenized
+/// then expanded to soft-token count in the token stream.
+const QWEN3_VL_IMAGE_PLACEHOLDER: &str = "<|image_pad|>";
 
 /// Options for OpenAI chat prompt rendering beyond tools/messages.
 #[derive(Clone, Copy, Debug, Default)]
@@ -925,7 +950,7 @@ fn render_openai_chat_content(
                     OpenAiChatContentPartKind::Media(kind) => {
                         return Err(openai_media_part_error(kind, part));
                     }
-                    OpenAiChatContentPartKind::VideoUnsupported => {
+                    OpenAiChatContentPartKind::Video => {
                         return Err(unsupported_video_error(&part.part_type));
                     }
                     OpenAiChatContentPartKind::Unsupported => {
@@ -1880,7 +1905,8 @@ fn escape_xml_text(value: &str) -> String {
 enum OpenAiChatContentPartKind {
     Text,
     Media(OpenAiChatMediaKind),
-    VideoUnsupported,
+    /// Video content part; accepted only when model capability gate allows.
+    Video,
     Unsupported,
 }
 
@@ -1902,7 +1928,7 @@ fn chat_content_part_kind(part: &OpenAiChatContentPart) -> OpenAiChatContentPart
         // Product serving scope is text + image + audio. Keep lower-level
         // video preprocessing code isolated, but reject video on the public
         // OpenAI surface instead of advertising a partially-supported path.
-        "video_url" | "input_video" | "video" => OpenAiChatContentPartKind::VideoUnsupported,
+        "video_url" | "input_video" | "video" => OpenAiChatContentPartKind::Video,
         _ => OpenAiChatContentPartKind::Unsupported,
     }
 }
@@ -1944,13 +1970,15 @@ fn unsupported_video_error(part_type: &str) -> HttpErrorResponse {
         StatusCode::BAD_REQUEST,
         "unsupported_modality",
         format!(
-            "OpenAI chat content part type {part_type} is not supported; this server accepts text, image, and audio"
+            "OpenAI chat content part type {part_type} is not supported for this model; \
+requires gemma4_unified vision capability (data URI only, no remote URLs)"
         ),
     )
 }
 
 pub(crate) fn reject_video_chat_content(
     messages: &[OpenAiChatMessage],
+    video_supported: bool,
 ) -> Result<(), HttpErrorResponse> {
     for part in messages
         .iter()
@@ -1962,22 +1990,24 @@ pub(crate) fn reject_video_chat_content(
     {
         if matches!(
             chat_content_part_kind(part),
-            OpenAiChatContentPartKind::VideoUnsupported
-        ) {
+            OpenAiChatContentPartKind::Video
+        ) && !video_supported
+        {
             return Err(unsupported_video_error(&part.part_type));
         }
     }
     Ok(())
 }
 
-/// True when any message carries a supported inline media content part (image/audio).
+/// True when any message carries a supported inline media content part
+/// (image/audio/video).
 pub(crate) fn messages_contain_inline_media(messages: &[OpenAiChatMessage]) -> bool {
     messages.iter().any(|message| match &message.content {
         Some(OpenAiChatContent::Text(_)) | None => false,
         Some(OpenAiChatContent::Parts(parts)) => parts.iter().any(|part| {
             matches!(
                 chat_content_part_kind(part),
-                OpenAiChatContentPartKind::Media(_)
+                OpenAiChatContentPartKind::Media(_) | OpenAiChatContentPartKind::Video
             )
         }),
     })
@@ -2121,6 +2151,297 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
     }))
 }
 
+/// Build a native-MLX Qwen3-VL chat prompt from inline `image_url` parts.
+///
+/// Images are decoded (data URI only), patchified for the portable ViT, and
+/// attached as [`Qwen3VlRuntimeInputs`]. Audio/video are rejected (out of
+/// Qwen3-VL product scope for this path). Returns `Ok(None)` with no media.
+pub(crate) fn render_qwen3_vl_chat_with_media(
+    model_id: &str,
+    model_dir: &Path,
+    messages: &[OpenAiChatMessage],
+) -> Result<Option<Qwen3VlChatPrompt>, HttpErrorResponse> {
+    if !messages_contain_inline_media(messages) {
+        return Ok(None);
+    }
+    if messages.is_empty() {
+        return Err(empty_chat_messages_error());
+    }
+
+    // Reject audio/video on the Qwen3-VL chat surface (image-only scope).
+    for part in messages
+        .iter()
+        .filter_map(|m| match &m.content {
+            Some(OpenAiChatContent::Parts(parts)) => Some(parts.as_slice()),
+            _ => None,
+        })
+        .flatten()
+    {
+        match chat_content_part_kind(part) {
+            OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Audio) => {
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_modality",
+                    "qwen3_vl chat accepts image_url media only; audio is not supported"
+                        .to_string(),
+                ));
+            }
+            OpenAiChatContentPartKind::Video => {
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_modality",
+                    "qwen3_vl chat accepts image_url media only; video is not supported"
+                        .to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    let tokenizer = EngineTokenizer::from_model_dir_cached(model_dir).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("failed to load tokenizer for qwen3_vl multimodal chat: {error}"),
+        )
+    })?;
+
+    let mut collected = CollectedMedia::default();
+    let mut pairs: ChatMessagePairs = Vec::with_capacity(messages.len());
+    for message in messages {
+        let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        let content = render_content_collecting_media(
+            message.content.as_ref(),
+            QWEN3_VL_IMAGE_PLACEHOLDER,
+            "", // audio unused (rejected above)
+            &mut collected,
+        )?;
+        pairs.push((role.to_string(), content));
+    }
+    if collected.images.is_empty() {
+        return Ok(None);
+    }
+
+    let prompt = chat::render_prompt(model_id, &pairs).map_err(chat_error_response)?;
+    let base_tokens = tokenizer.encode(&prompt, false).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("failed to tokenize qwen3_vl chat prompt: {error}"),
+        )
+    })?;
+
+    // Encode placeholder alone to locate it in the prompt token stream.
+    let ph_tokens = tokenizer
+        .encode(QWEN3_VL_IMAGE_PLACEHOLDER, false)
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to tokenize image placeholder: {error}"),
+            )
+        })?;
+    if ph_tokens.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "tokenizer produced empty image placeholder tokens".to_string(),
+        ));
+    }
+
+    let mut placeholder_starts = find_subsequence_starts(&base_tokens, &ph_tokens);
+    if placeholder_starts.len() != collected.images.len() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "qwen3_vl image placeholders {} != collected images {}",
+                placeholder_starts.len(),
+                collected.images.len()
+            ),
+        ));
+    }
+
+    // Expand each single placeholder span into soft_token_count tokens (reuse
+    // the first pad token id as filler so the sequence length matches ViT
+    // soft tokens for scatter positions).
+    let pad_id = ph_tokens[0];
+    let mut images_rt = Vec::with_capacity(collected.images.len());
+    let mut expanded = Vec::with_capacity(base_tokens.len().saturating_mul(2));
+    let mut cursor = 0usize;
+    // Process left-to-right; expansion shifts later indices so rebuild by walk.
+    placeholder_starts.sort_unstable();
+    for (image_i, start) in placeholder_starts.iter().copied().enumerate() {
+        if start < cursor {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "overlapping qwen3_vl image placeholders".to_string(),
+            ));
+        }
+        expanded.extend_from_slice(&base_tokens[cursor..start]);
+        let (patches, geom) = patchify_qwen3_vl_image(&collected.images[image_i])?;
+        let soft = geom.soft_token_count;
+        let replacement_start = expanded.len();
+        for _ in 0..soft {
+            expanded.push(pad_id);
+        }
+        // Consume the original placeholder token span.
+        cursor = start + ph_tokens.len();
+        images_rt.push(Qwen3VlImageRuntimeInput {
+            placeholder_index: replacement_start,
+            soft_token_count: soft,
+            patches: patches.patches,
+            num_patches: patches.num_patches,
+            patch_dim: patches.patch_dim,
+            height: geom.height,
+            width: geom.width,
+            patch_size: geom.patch_size,
+            spatial_merge_size: geom.spatial_merge_size,
+        });
+    }
+    expanded.extend_from_slice(&base_tokens[cursor..]);
+
+    let runtime_inputs = Qwen3VlRuntimeInputs { images: images_rt };
+    runtime_inputs
+        .validate_for_prompt_len(expanded.len())
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("qwen3_vl multimodal inputs invalid: {error}"),
+            )
+        })?;
+
+    Ok(Some(Qwen3VlChatPrompt {
+        input_tokens: expanded,
+        runtime_inputs,
+    }))
+}
+
+#[derive(Clone, Copy)]
+struct Qwen3VlGeom {
+    height: u32,
+    width: u32,
+    patch_size: u32,
+    spatial_merge_size: u32,
+    soft_token_count: u32,
+}
+
+struct Qwen3VlPatches {
+    patches: Vec<f32>,
+    num_patches: u32,
+    patch_dim: u32,
+}
+
+/// Decode image bytes → fixed-grid RGB patches for the portable Qwen3-VL ViT.
+fn patchify_qwen3_vl_image(
+    bytes: &[u8],
+) -> Result<(Qwen3VlPatches, Qwen3VlGeom), HttpErrorResponse> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to probe image: {error}"),
+            )
+        })?;
+    reader.limits({
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(8192);
+        limits.max_image_height = Some(8192);
+        limits
+    });
+    let rgb = reader
+        .decode()
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to decode image: {error}"),
+            )
+        })?
+        .to_rgb8();
+
+    let patch = QWEN3_VL_DEFAULT_PATCH_SIZE;
+    let merge = QWEN3_VL_DEFAULT_SPATIAL_MERGE;
+    let unit = patch.saturating_mul(merge).max(1);
+    // Snap to a modest grid (≤ max soft tokens) while keeping aspect.
+    let (ow, oh) = (rgb.width().max(1), rgb.height().max(1));
+    let max_side_units = ((QWEN3_VL_DEFAULT_MAX_SOFT as f32).sqrt().floor() as u32).max(1);
+    let scale = (max_side_units as f32 * unit as f32 / ow.max(oh) as f32).min(1.0);
+    let tw = (((ow as f32 * scale) / unit as f32).ceil() as u32).max(1) * unit;
+    let th = (((oh as f32 * scale) / unit as f32).ceil() as u32).max(1) * unit;
+    let resized = if tw == ow && th == oh {
+        rgb
+    } else {
+        image::imageops::resize(&rgb, tw, th, image::imageops::FilterType::Triangle)
+    };
+
+    let gh = th / unit;
+    let gw = tw / unit;
+    let soft = gh.saturating_mul(gw).min(QWEN3_VL_DEFAULT_MAX_SOFT);
+    if soft == 0 {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "qwen3_vl image collapsed to zero soft tokens".to_string(),
+        ));
+    }
+    // Portable ViT: one patch token per soft token; patch_dim = unit² * 3 RGB.
+    let patch_dim = unit.saturating_mul(unit).saturating_mul(3);
+    let mut patches = Vec::with_capacity((soft as usize).saturating_mul(patch_dim as usize));
+    for gy in 0..gh {
+        for gx in 0..gw {
+            if patches.len() / patch_dim as usize >= soft as usize {
+                break;
+            }
+            let x0 = gx * unit;
+            let y0 = gy * unit;
+            for py in 0..unit {
+                for px in 0..unit {
+                    let p = resized.get_pixel(x0 + px, y0 + py).0;
+                    patches.push(p[0] as f32 / 255.0);
+                    patches.push(p[1] as f32 / 255.0);
+                    patches.push(p[2] as f32 / 255.0);
+                }
+            }
+        }
+    }
+    // Truncate to soft * patch_dim if we overshot.
+    patches.truncate(soft as usize * patch_dim as usize);
+
+    Ok((
+        Qwen3VlPatches {
+            patches,
+            num_patches: soft,
+            patch_dim,
+        },
+        Qwen3VlGeom {
+            height: th,
+            width: tw,
+            patch_size: patch,
+            spatial_merge_size: merge,
+            soft_token_count: soft,
+        },
+    ))
+}
+
+fn find_subsequence_starts(haystack: &[u32], needle: &[u32]) -> Vec<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return Vec::new();
+    }
+    let mut starts = Vec::new();
+    let last = haystack.len() - needle.len();
+    for i in 0..=last {
+        if haystack[i..i + needle.len()] == *needle {
+            starts.push(i);
+        }
+    }
+    starts
+}
+
 /// Raw media bytes collected while rendering, in document order per modality.
 #[derive(Default)]
 struct CollectedMedia {
@@ -2181,8 +2502,11 @@ fn render_content_collecting_media(
                         collected.audios.push(audio_part_bytes(part)?);
                         rendered.push_str(audio_placeholder);
                     }
-                    OpenAiChatContentPartKind::VideoUnsupported => {
-                        return Err(unsupported_video_error(&part.part_type));
+                    OpenAiChatContentPartKind::Video => {
+                        collected.videos.push(video_part_bytes(part)?);
+                        // Video uses the same soft-token placeholder surface as image
+                        // at the chat template layer; expansion happens later.
+                        rendered.push_str(image_placeholder);
                     }
                     OpenAiChatContentPartKind::Unsupported => {
                         return Err(error_response(
@@ -2205,6 +2529,20 @@ fn image_part_bytes(part: &OpenAiChatContentPart) -> Result<Vec<u8>, HttpErrorRe
         .ok_or_else(|| media_payload_missing("image", "image_url"))?;
     let url =
         data_value_url(value).ok_or_else(|| media_payload_missing("image", "image_url.url"))?;
+    let (_mime, bytes) = multimodal::decode_data_uri(url).map_err(media_error_response)?;
+    Ok(bytes)
+}
+
+/// Decode video payload from a chat content part. Data URIs only (no remote
+/// `http(s)` and no bare filesystem paths) — preserves the SSRF-free posture.
+fn video_part_bytes(part: &OpenAiChatContentPart) -> Result<Vec<u8>, HttpErrorResponse> {
+    let value = part
+        .video_url
+        .as_ref()
+        .or(part.image_url.as_ref())
+        .ok_or_else(|| media_payload_missing("video", "video_url"))?;
+    let url =
+        data_value_url(value).ok_or_else(|| media_payload_missing("video", "video_url.url"))?;
     let (_mime, bytes) = multimodal::decode_data_uri(url).map_err(media_error_response)?;
     Ok(bytes)
 }
@@ -2614,5 +2952,58 @@ mod media_tests {
         assert!(!tool_choice_forces_tool_call(&json!(0.0)));
         assert!(openai_value_is_present(&json!(-1)));
         assert!(tool_choice_forces_tool_call(&json!(0.5)));
+    }
+
+    #[test]
+    fn is_qwen3_vl_model_id_detects_vl_families() {
+        assert!(is_qwen3_vl_model_id("Qwen/Qwen3-VL-8B-Instruct"));
+        assert!(is_qwen3_vl_model_id("ax-qwen3_vl-4bit"));
+        assert!(is_qwen3_vl_model_id("qwen3-vl-moe"));
+        assert!(!is_qwen3_vl_model_id("qwen3.6-27b"));
+        assert!(!is_qwen3_vl_model_id("gemma4-unified"));
+    }
+
+    #[test]
+    fn find_subsequence_starts_locates_placeholders() {
+        let hay = [1u32, 2, 9, 9, 3, 9, 9, 4];
+        let needle = [9u32, 9];
+        assert_eq!(find_subsequence_starts(&hay, &needle), vec![2, 5]);
+        assert!(find_subsequence_starts(&hay, &[7]).is_empty());
+    }
+
+    #[test]
+    fn patchify_qwen3_vl_image_produces_valid_runtime_input() {
+        // 1×1 red PNG
+        let png = {
+            use image::{ImageBuffer, ImageEncoder, Rgb};
+            let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+                ImageBuffer::from_pixel(28, 28, Rgb([255, 0, 0]));
+            let mut buf = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut buf)
+                .write_image(img.as_raw(), 28, 28, image::ExtendedColorType::Rgb8)
+                .expect("encode png");
+            buf
+        };
+        let (patches, geom) = patchify_qwen3_vl_image(&png).expect("patchify");
+        assert!(geom.soft_token_count > 0);
+        assert_eq!(patches.num_patches, geom.soft_token_count);
+        assert_eq!(
+            patches.patches.len(),
+            patches.num_patches as usize * patches.patch_dim as usize
+        );
+        let rt = Qwen3VlImageRuntimeInput {
+            placeholder_index: 0,
+            soft_token_count: geom.soft_token_count,
+            patches: patches.patches,
+            num_patches: patches.num_patches,
+            patch_dim: patches.patch_dim,
+            height: geom.height,
+            width: geom.width,
+            patch_size: geom.patch_size,
+            spatial_merge_size: geom.spatial_merge_size,
+        };
+        rt.validate(8).expect("valid against prompt len");
+        let inputs = Qwen3VlRuntimeInputs { images: vec![rt] };
+        assert!(!inputs.media_prefix_key("fp").is_empty());
     }
 }

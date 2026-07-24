@@ -1,4 +1,7 @@
-use ax_engine_sdk::{RuntimeReport, SelectedBackend};
+use ax_engine_sdk::{
+    RuntimeReport, SelectedBackend, UNLIMITED_OCR_DEFAULT_CONTEXT_LENGTH,
+    UNLIMITED_OCR_DEFAULT_MAX_OUTPUT_TOKENS, VllmModelProfile,
+};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -181,12 +184,18 @@ fn model_card(live: &LiveState) -> ModelCard {
     let max_output_tokens = max_output_tokens_live(live, context_length);
     let openai_text = openai_text_supported_live(live);
     let native_multimodal = native_processed_multimodal_support_live(live);
+    let delegated_multimodal = delegated_multimodal_support_live(live);
+    let advertised_multimodal = NativeProcessedMultimodalSupport {
+        image: native_multimodal.image || delegated_multimodal.image,
+        audio: native_multimodal.audio || delegated_multimodal.audio,
+        video: native_multimodal.video || delegated_multimodal.video,
+    };
     let openai_tool_calling = openai_tool_calling_supported_live(live, openai_text);
     ModelCard {
         id: live.model_id.to_string(),
         object: "model",
         owned_by: MODEL_OWNER,
-        capabilities: model_capabilities(openai_text, native_multimodal, openai_tool_calling),
+        capabilities: model_capabilities(openai_text, advertised_multimodal, openai_tool_calling),
         limit: ModelLimit {
             context: context_length,
             output: max_output_tokens,
@@ -280,6 +289,11 @@ fn openai_tool_calling_supported_live(live: &LiveState, openai_text: bool) -> bo
         )
 }
 
+/// Public capability probe used by request rejection paths (WS-M1).
+pub(crate) fn model_supports_video(live: &LiveState) -> bool {
+    native_processed_multimodal_support_live(live).video
+}
+
 fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessedMultimodalSupport {
     if live.runtime_report.selected_backend != SelectedBackend::Mlx {
         return NativeProcessedMultimodalSupport::default();
@@ -299,18 +313,75 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         return NativeProcessedMultimodalSupport::default();
     };
 
-    let image = GEMMA4_UNIFIED_VISION_ROLES
+    let gemma4_image = GEMMA4_UNIFIED_VISION_ROLES
         .iter()
         .all(|role| has_global_tensor_role(tensors, role));
+    let qwen3_vl_image = has_global_tensor_role(tensors, QWEN3_VL_VISION_PATCH_EMBED_ROLE)
+        || has_global_tensor_role(tensors, QWEN3_VL_VISION_MERGER_ROLE)
+        || family_from_manifest(&manifest).is_some_and(|f| f == "qwen3_vl" || f == "qwen3_vl_moe");
+    let image = gemma4_image || qwen3_vl_image;
     let audio = has_global_tensor_role(tensors, GEMMA4_UNIFIED_AUDIO_ROLE);
+    // WS-M1: advertise video only for gemma4_unified manifests that already
+    // have vision roles, have no convert-time media drops, and are not
+    // disabled via AX_MLX_GEMMA4_VIDEO=off. Media is data-URI only (no remote
+    // fetch). Frame caps keep expanded soft tokens under atomic max_batch_tokens.
+    let media_drops = manifest
+        .get("dropped_tensors")
+        .and_then(|d| d.get("media_role_hits"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let family = family_from_manifest(&manifest).unwrap_or_default();
+    let video_env_off = matches!(
+        std::env::var("AX_MLX_GEMMA4_VIDEO")
+            .unwrap_or_else(|_| "on".into())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "off" | "no"
+    );
+    let video = gemma4_image
+        && !video_env_off
+        && media_drops == 0
+        && (family == "gemma4" || family == "gemma4_unified" || family.starts_with("gemma4"));
     NativeProcessedMultimodalSupport {
         image,
         audio,
-        // The public multi-model profile intentionally supports text, image,
-        // and audio only. Keep the lower-level Gemma4 video primitives private
-        // to existing callers, but never advertise video serving capability.
-        video: false,
+        video,
     }
+}
+
+fn delegated_multimodal_support_live(live: &LiveState) -> NativeProcessedMultimodalSupport {
+    if live.runtime_report.selected_backend != SelectedBackend::Vllm {
+        return NativeProcessedMultimodalSupport::default();
+    }
+    let unlimited_ocr = live
+        .session_config
+        .vllm_backend
+        .as_ref()
+        .is_some_and(|config| config.server().model_profile == VllmModelProfile::UnlimitedOcr);
+    NativeProcessedMultimodalSupport {
+        image: unlimited_ocr,
+        ..NativeProcessedMultimodalSupport::default()
+    }
+}
+
+fn family_from_manifest(manifest: &Value) -> Option<String> {
+    manifest
+        .get("model_family")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Read `model_family` from the live session's model-manifest.json when present.
+pub(crate) fn model_family_from_artifacts(live: &LiveState) -> Option<String> {
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx {
+        return None;
+    }
+    let artifacts_dir = live.session_config.mlx_model_artifacts_dir()?;
+    let manifest_path = artifacts_dir.join("model-manifest.json");
+    let bytes = std::fs::read(manifest_path).ok()?;
+    let manifest: Value = serde_json::from_slice(&bytes).ok()?;
+    family_from_manifest(&manifest)
 }
 
 fn has_global_tensor_role(tensors: &[Value], role: &str) -> bool {
@@ -337,12 +408,20 @@ const GEMMA4_UNIFIED_VISION_ROLES: &[&str] = &[
 
 const GEMMA4_UNIFIED_AUDIO_ROLE: &str = "gemma4_unified_audio_projection";
 
+const QWEN3_VL_VISION_PATCH_EMBED_ROLE: &str = "qwen3_vl_vision_patch_embed";
+const QWEN3_VL_VISION_MERGER_ROLE: &str = "qwen3_vl_vision_merger";
+
 fn openai_text_supported_live(live: &LiveState) -> bool {
     // Keep this in sync with `validate_openai_text_backend` in `openai::validation`:
     // every backend that serves the OpenAI text endpoints must advertise them here.
     matches!(
         live.runtime_report.selected_backend,
-        SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated | SelectedBackend::Mlx
+        SelectedBackend::LlamaCpp
+            | SelectedBackend::MlxLmDelegated
+            | SelectedBackend::TensorRtEdgeLlm
+            | SelectedBackend::TensorRtLlm
+            | SelectedBackend::Vllm
+            | SelectedBackend::Mlx
     )
 }
 
@@ -350,6 +429,24 @@ fn openai_text_supported_live(live: &LiveState) -> bool {
 /// must pass the snapshot they are already serving the request from, never a
 /// fresh one, so all fields in a response come from the same model.
 pub(crate) fn context_length(live: &LiveState) -> u32 {
+    if live.runtime_report.selected_backend == SelectedBackend::Vllm {
+        if let Some(max_model_len) = live
+            .session_config
+            .vllm_readiness
+            .as_ref()
+            .and_then(|readiness| readiness.max_model_len)
+        {
+            return max_model_len;
+        }
+        if live
+            .session_config
+            .vllm_backend
+            .as_ref()
+            .is_some_and(|config| config.server().model_profile == VllmModelProfile::UnlimitedOcr)
+        {
+            return UNLIMITED_OCR_DEFAULT_CONTEXT_LENGTH;
+        }
+    }
     live.session_config
         .kv_config
         .block_size_tokens
@@ -357,6 +454,15 @@ pub(crate) fn context_length(live: &LiveState) -> u32 {
 }
 
 fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u32 {
+    if live.runtime_report.selected_backend == SelectedBackend::Vllm
+        && live
+            .session_config
+            .vllm_backend
+            .as_ref()
+            .is_some_and(|config| config.server().model_profile == VllmModelProfile::UnlimitedOcr)
+    {
+        return UNLIMITED_OCR_DEFAULT_MAX_OUTPUT_TOKENS.min(context_length);
+    }
     // Advertise the per-request output budget bounded by the scheduler batch
     // width and the model context window. A previous fixed `512` ceiling
     // under-reported the real capacity (the model can generate up to its full

@@ -607,9 +607,10 @@ pub(crate) fn build_replacement_live_state(
 
 fn build_live_state_inner(
     model_id: String,
-    session_config: EngineSessionConfig,
+    mut session_config: EngineSessionConfig,
     replacement: bool,
 ) -> Result<LiveState, GenerationServiceStartError> {
+    session_config.probe_vllm_readiness()?;
     let stateless_generate_context =
         StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
     let (generation_service, runtime_report) = if replacement {

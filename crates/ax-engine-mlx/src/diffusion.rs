@@ -2125,6 +2125,7 @@ mod tests {
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
             unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
         }
     }
 

@@ -18,7 +18,6 @@ pub(crate) async fn submit_request(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
 ) -> Result<(StatusCode, Json<SessionRequestReport>), (StatusCode, Json<ErrorResponse>)> {
-    request.reject_video_inputs()?;
     // Return the lifecycle-specific conflict before request construction;
     // generation-bound admission below remains the final race guard.
     if state.loading.load(Ordering::Acquire) {
@@ -32,6 +31,7 @@ pub(crate) async fn submit_request(
     }
 
     let live = select_model(&state, request.model.as_deref())?;
+    request.reject_video_inputs(&live)?;
 
     let request_id = state.allocate_request_id();
     let request = build_generate_request(&live, request);

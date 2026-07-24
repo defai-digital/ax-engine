@@ -84,7 +84,6 @@ pub(super) fn effective_rotary_dim(artifacts: &NativeModelArtifacts, head_dim: u
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn native_model_reference_attention_config(
     artifacts: &NativeModelArtifacts,
     head_dim: usize,

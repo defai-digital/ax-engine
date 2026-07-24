@@ -4,9 +4,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::{
-    ConvertError, NativeTensorDataType, NativeTensorRole, compute_attention_value_from_key_layers,
-    config_quantization, convert_hf_model_dir, llama4_no_rope_layer_interval, match_tensor,
-    model_family_for_type, moe_config, parse_layer_types, parse_rope_params,
+    ConvertError, DroppedTensorLedger, NativeTensorDataType, NativeTensorRole,
+    compute_attention_value_from_key_layers, config_quantization, convert_hf_model_dir,
+    llama4_no_rope_layer_interval, match_tensor, model_family_for_type, moe_config,
+    parse_layer_types, parse_rope_params, tensor_name_looks_like_media_role,
     tensor_quantization_override, validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling,
     with_real_model_manifest_lock, write_manifest,
 };
@@ -4391,4 +4392,37 @@ fn converts_unlimited_ocr_language_moe_directory() {
     crate::model::NativeModelArtifacts::from_dir(&dir)
         .expect("unlimited_ocr manifest should validate");
     let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn media_role_matcher_hits_vision_and_audio() {
+    assert!(tensor_name_looks_like_media_role(
+        "model.vision_tower.layers.0.weight"
+    ));
+    assert!(tensor_name_looks_like_media_role(
+        "language_model.multi_modal_projector.bias"
+    ));
+    assert!(tensor_name_looks_like_media_role(
+        "audio_tower.conformer.conv.weight"
+    ));
+    assert!(tensor_name_looks_like_media_role(
+        "model.sam.patch_embed.weight"
+    ));
+    assert!(!tensor_name_looks_like_media_role(
+        "model.layers.0.mlp.gate_proj.weight"
+    ));
+}
+
+#[test]
+fn ledger_records_media_hits_and_samples() {
+    let mut ledger = DroppedTensorLedger::default();
+    ledger.record("model.vision_tower.x", 100);
+    ledger.record("model.layers.0.bias", 8);
+    assert_eq!(ledger.count, 2);
+    assert_eq!(ledger.media_role_hits, 1);
+    assert_eq!(ledger.bytes, 108);
+    let prov = ledger.to_provenance();
+    assert_eq!(prov.count, 2);
+    assert_eq!(prov.media_role_hits, 1);
+    assert!(prov.has_media_role_drops());
 }

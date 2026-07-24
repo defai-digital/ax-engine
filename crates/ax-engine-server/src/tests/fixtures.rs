@@ -7,6 +7,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -288,6 +289,17 @@ pub(super) fn base_server_args() -> ServerArgs {
         llama_model_path: None,
         llama_server_url: None,
         mlx_lm_server_url: None,
+        edge_llm_server_url: None,
+        tensor_rt_llm_server_url: None,
+        vllm_server_url: None,
+        vllm_upstream_model_id: None,
+        vllm_api_key_env: args::VLLM_API_KEY_ENV.to_string(),
+        vllm_api_key_file: None,
+        vllm_allow_remote: false,
+        vllm_ca_cert: None,
+        vllm_max_in_flight: None,
+        vllm_model_profile: args::VllmModelProfileArg::OpenAiCompatible,
+        vllm_runtime_profile: None,
         delegated_http_connect_timeout_secs:
             ax_engine_sdk::DelegatedHttpTimeouts::default_connect_secs(),
         delegated_http_read_timeout_secs: ax_engine_sdk::DelegatedHttpTimeouts::default_io_secs(),
@@ -382,6 +394,34 @@ pub(super) fn mlx_lm_delegated_state(server_url: String) -> AppState {
     test_app_state(|args| {
         args.support_tier = args::PreviewSupportTier::MlxLmDelegated;
         args.mlx_lm_server_url = Some(server_url);
+    })
+}
+
+pub(super) fn tensor_rt_edge_llm_state(server_url: String) -> AppState {
+    test_app_state(|args| {
+        args.support_tier = args::PreviewSupportTier::TensorRtEdgeLlm;
+        args.edge_llm_server_url = Some(server_url);
+    })
+}
+
+pub(super) fn tensor_rt_llm_state(server_url: String) -> AppState {
+    test_app_state(|args| {
+        args.support_tier = args::PreviewSupportTier::TensorRtLlm;
+        args.tensor_rt_llm_server_url = Some(server_url);
+    })
+}
+
+pub(super) fn vllm_delegated_state(
+    server_url: String,
+    upstream_model_id: &str,
+    model_profile: args::VllmModelProfileArg,
+) -> AppState {
+    test_app_state(|args| {
+        args.support_tier = args::PreviewSupportTier::Vllm;
+        args.vllm_server_url = Some(server_url);
+        args.vllm_upstream_model_id = Some(upstream_model_id.to_string());
+        args.vllm_model_profile = model_profile;
+        args.vllm_runtime_profile = Some("test-profile".to_string());
     })
 }
 
@@ -518,6 +558,75 @@ pub(super) fn gemma4_unified_artifact(label: &str) -> PathBuf {
     dir
 }
 
+/// Minimal native-MLX artifact for Qwen3-VL chat image path tests.
+pub(super) fn qwen3_vl_artifact(label: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ax-engine-server-{label}-{unique}"));
+    fs::create_dir_all(&dir).expect("artifact dir should create");
+    fs::write(
+        dir.join("config.json"),
+        r#"{
+  "model_type": "qwen3_vl",
+  "eos_token_id": 2
+}"#,
+    )
+    .expect("config should write");
+    fs::write(
+        dir.join("model-manifest.json"),
+        r#"{
+  "schema_version": "ax.native_model.v1",
+  "model_family": "qwen3_vl",
+  "tensor_format": "safetensors",
+  "layer_count": 1,
+  "hidden_size": 8,
+  "intermediate_size": 16,
+  "attention_head_count": 2,
+  "attention_head_dim": 4,
+  "kv_head_count": 2,
+  "vocab_size": 32,
+  "tie_word_embeddings": false,
+  "tensors": [
+    {"name": "visual.patch_embed.proj.weight", "role": "qwen3_vl_vision_patch_embed", "dtype": "f32", "shape": [8, 6], "file": "w.safetensors", "offset_bytes": 0, "length_bytes": 192},
+    {"name": "visual.merger.weight", "role": "qwen3_vl_vision_merger", "dtype": "f32", "shape": [8, 8], "file": "w.safetensors", "offset_bytes": 192, "length_bytes": 256}
+  ]
+}"#,
+    )
+    .expect("manifest should write");
+    fs::write(
+        dir.join("tokenizer.json"),
+        r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {"id": 10, "content": "<|image_pad|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {"type": "Whitespace"},
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "[UNK]": 0,
+      "describe": 1,
+      "user": 2,
+      "assistant": 3,
+      "<|im_start|>": 4,
+      "<|im_end|>": 5,
+      "<|image_pad|>": 10
+    },
+    "unk_token": "[UNK]"
+  }
+}"#,
+    )
+    .expect("tokenizer should write");
+    dir
+}
+
 pub(super) fn spawn_llama_cpp_completion_server(
     response_body: String,
     assert_request: impl FnMut(Value) + Send + 'static,
@@ -565,6 +674,156 @@ pub(super) fn spawn_llama_cpp_completion_mock_server(
     });
 
     (format!("http://{address}"), handle)
+}
+
+#[derive(Debug)]
+pub(super) struct MockHttpRequest {
+    pub(super) method: String,
+    pub(super) path: String,
+    pub(super) headers: BTreeMap<String, String>,
+    pub(super) payload: Option<Value>,
+}
+
+pub(super) fn spawn_vllm_readiness_server(
+    upstream_model_id: &str,
+    max_model_len: u32,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    let upstream_model_id = upstream_model_id.to_string();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("readiness request should arrive");
+        let request = read_mock_http_request(&mut stream);
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/v1/models");
+        let body = serde_json::json!({
+            "object": "list",
+            "data": [{
+                "id": upstream_model_id,
+                "root": upstream_model_id,
+                "max_model_len": max_model_len
+            }]
+        })
+        .to_string();
+        write_http_response(&mut stream, "application/json", &body, None);
+    });
+    (format!("http://{address}"), handle)
+}
+
+pub(super) fn spawn_vllm_chat_server(
+    upstream_model_id: &str,
+    content_type: &'static str,
+    response_body: String,
+    mut assert_generation: impl FnMut(MockHttpRequest) + Send + 'static,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    let upstream_model_id = upstream_model_id.to_string();
+    let handle = thread::spawn(move || {
+        let (mut readiness_stream, _) = listener.accept().expect("readiness request should arrive");
+        let readiness = read_mock_http_request(&mut readiness_stream);
+        assert_eq!(readiness.method, "GET");
+        assert_eq!(readiness.path, "/v1/models");
+        assert!(readiness.payload.is_none());
+        let readiness_body = serde_json::json!({
+            "object": "list",
+            "data": [{
+                "id": upstream_model_id,
+                "root": upstream_model_id,
+                "max_model_len": 32768
+            }]
+        })
+        .to_string();
+        write_http_response(
+            &mut readiness_stream,
+            "application/json",
+            &readiness_body,
+            None,
+        );
+
+        let (mut generation_stream, _) =
+            listener.accept().expect("generation request should arrive");
+        let generation = read_mock_http_request(&mut generation_stream);
+        assert_eq!(generation.method, "POST");
+        assert_eq!(generation.path, "/v1/chat/completions");
+        assert_generation(generation);
+        write_http_response(
+            &mut generation_stream,
+            content_type,
+            &response_body,
+            Some("Cache-Control: no-cache"),
+        );
+    });
+    (format!("http://{address}"), handle)
+}
+
+pub(super) fn read_mock_http_request(stream: &mut std::net::TcpStream) -> MockHttpRequest {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    let (header_end, content_length) = loop {
+        let bytes_read = stream.read(&mut buffer).expect("request should read");
+        assert!(
+            bytes_read > 0,
+            "client closed connection before request headers completed"
+        );
+        request.extend_from_slice(&buffer[..bytes_read]);
+        let Some(header_end) = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+        else {
+            continue;
+        };
+        let header_text =
+            String::from_utf8(request[..header_end].to_vec()).expect("headers should be utf8");
+        let content_length = header_text
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length").then(|| {
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .expect("content-length should parse")
+                })
+            })
+            .unwrap_or(0);
+        break (header_end, content_length);
+    };
+    while request.len() < header_end + content_length {
+        let bytes_read = stream.read(&mut buffer).expect("request body should read");
+        assert!(
+            bytes_read > 0,
+            "client closed before request body completed"
+        );
+        request.extend_from_slice(&buffer[..bytes_read]);
+    }
+    request.truncate(header_end + content_length);
+    let header_text =
+        String::from_utf8(request[..header_end].to_vec()).expect("headers should be utf8");
+    let mut lines = header_text.lines();
+    let request_line = lines.next().expect("request line should exist");
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts
+        .next()
+        .expect("method should exist")
+        .to_string();
+    let path = request_parts.next().expect("path should exist").to_string();
+    let headers = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect();
+    let payload = (content_length > 0).then(|| {
+        serde_json::from_slice(&request[header_end..]).expect("request payload should be json")
+    });
+    MockHttpRequest {
+        method,
+        path,
+        headers,
+        payload,
+    }
 }
 
 pub(super) fn build_sse_event_stream_body(chunks: &[Value]) -> String {
