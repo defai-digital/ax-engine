@@ -24,7 +24,7 @@
     "--max-batch-tokens",
     "4096",
     "--prefill-chunk",
-    "1536"
+    "2048"
   ],
   "env": {
     "AX_MLX_MEMORY_LIMIT": "103079215104",
@@ -33,6 +33,9 @@
     "AX_NO_SPEC": "1",
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL": "1",
     "AX_MLX_DENSE_FFN_COMPILE": "0",
+    "AX_MLX_DENSE_FFN_COMPILE_PREFILL": "1",
+    "AX_MLX_GEGLU_MUL_METAL": "1",
+    "AX_MLX_DENSE_GEGLU_PACKED_METAL": "1",
     "AX_MLX_BATCHED_DECODE": "1",
     "AX_SERVER_LONG_PREFILL_WARM": "1"
   },

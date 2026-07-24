@@ -1,4 +1,6 @@
-use mlx_sys::{MlxArray, MlxDtype, MlxVectorArray, add, rms_norm, rope, rope_dynamic, slice};
+use mlx_sys::{
+    MlxArray, MlxDtype, MlxVectorArray, add, add_rms_norm_pair, rms_norm, rope, rope_dynamic, slice,
+};
 use std::time::Instant;
 
 /// Env-gated per-stage timing for the batched decode forward
@@ -105,15 +107,14 @@ fn layer_shell_post_attention(
     profile_gemma4_moe_decode: bool,
     post_attn_started: Option<Instant>,
 ) -> MlxArray {
-    // 15. Residual.
+    // 15. Residual (+ optional fused pre-FFN RMSNorm).
     let residual_norm_started = profile_forward_layer.then(Instant::now);
     let last_only_active = last_position_only_after_attention && seq > 1;
-
-    let hidden = add(hidden, attn_proj, None);
 
     // Cache-only terminal layer: attention already wrote full-seq KV; FFN
     // residual is discarded before the completing decode_step. Return here.
     if skip_post_attention_ffn {
+        let hidden = add(hidden, attn_proj, None);
         if let Some(started) = residual_norm_started {
             forward_profile_eval_elapsed(
                 profile_decode_layer,
@@ -135,11 +136,21 @@ fn layer_shell_post_attention(
         return hidden;
     }
 
-    // 15a. Optional last-position-only slice for the terminal prefill layer.
-    let (hidden, per_layer_input_owned) = if last_only_active {
+    // 15a. Optional last-position-only slice for the terminal prefill layer
+    // (slice after residual add, before FFN norm — keeps the FFN single-token).
+    // Common multi-token path fuses residual-add + pre-FFN RMSNorm into one
+    // compiled composite (mlxcel-style; used every Gemma/Qwen dense layer).
+    let (hidden, normed2, per_layer_input_owned) = if last_only_active {
+        let residual = add(hidden, attn_proj, None);
         let last = (seq - 1) as i32;
         let hs = cfg.hidden_size as i32;
-        let sliced_hidden = slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None);
+        let sliced_hidden = slice(
+            &residual,
+            &[0, last, 0],
+            &[1, last + 1, hs],
+            &[1, 1, 1],
+            None,
+        );
         let sliced_pli = per_layer_input.map(|pli| {
             let dims = pli.shape();
             let pli_last_dim = *dims.last().unwrap_or(&hs);
@@ -151,18 +162,19 @@ fn layer_shell_post_attention(
                 None,
             )
         });
-        (sliced_hidden, sliced_pli)
+        let normed2 = rms_norm(&sliced_hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+        (sliced_hidden, normed2, sliced_pli)
     } else {
-        (hidden, None)
+        let (residual, normed2) =
+            add_rms_norm_pair(hidden, attn_proj, &w.ffn_norm, cfg.rms_norm_eps, None);
+        (residual, normed2, None)
     };
     let per_layer_input: Option<&MlxArray> = if last_only_active {
         per_layer_input_owned.as_ref()
     } else {
         per_layer_input
     };
-
-    // 16. Pre-FFN norm.
-    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    // Pre-FFN norm is either fused above or computed on the last-token slice.
     if let Some(started) = residual_norm_started {
         forward_profile_eval_elapsed(
             profile_decode_layer,
