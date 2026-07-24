@@ -273,22 +273,7 @@ pub(crate) async fn load_model(
                     .set_adaptive_prefill_isolation(true);
             }
             if multi_model_after_load {
-                for resident in state_clone.snapshots() {
-                    if resident.model_id.as_ref() == published_model_id.as_ref() {
-                        continue;
-                    }
-                    if resident
-                        .session_config
-                        .resolved_backend
-                        .selected_backend
-                        .is_mlx()
-                    {
-                        run_production_path_warmup(
-                            &resident.generation_service,
-                            resident.model_id.as_ref(),
-                        );
-                    }
-                }
+                rewarm_sibling_residents(&state_clone, published_model_id.as_ref());
             }
             if let Some(previous) = previous {
                 // Replacing a live same-id entry should still retire the
@@ -402,22 +387,7 @@ pub(crate) async fn load_model(
                 // sibling residents after multi-model publish so interactive
                 // TTFT stays on the S0 warm envelope.
                 if multi_model_after_load {
-                    for resident in state_clone.snapshots() {
-                        if resident.model_id.as_ref() == published_model_id.as_ref() {
-                            continue;
-                        }
-                        if resident
-                            .session_config
-                            .resolved_backend
-                            .selected_backend
-                            .is_mlx()
-                        {
-                            run_production_path_warmup(
-                                &resident.generation_service,
-                                resident.model_id.as_ref(),
-                            );
-                        }
-                    }
+                    rewarm_sibling_residents(&state_clone, published_model_id.as_ref());
                 }
                 if let Some(previous) = previous {
                     previous.retire().await.map_err(|error| {
@@ -1070,6 +1040,28 @@ fn validate_unload_preflight(state: &AppState, model_id: &str) -> Result<(), Htt
         ));
     }
     Ok(())
+}
+
+/// Re-run production-path warmup on every resident except `skip_model_id`.
+/// Dual-resident memory pressure can cool interactive first-token latency;
+/// two warm passes stabilize S2 TTFT toward the S0 envelope.
+fn rewarm_sibling_residents(state: &AppState, skip_model_id: &str) {
+    for resident in state.snapshots() {
+        if resident.model_id.as_ref() == skip_model_id {
+            continue;
+        }
+        if !resident
+            .session_config
+            .resolved_backend
+            .selected_backend
+            .is_mlx()
+        {
+            continue;
+        }
+        for _ in 0..2 {
+            run_production_path_warmup(&resident.generation_service, resident.model_id.as_ref());
+        }
+    }
 }
 
 /// Maximum time to wait for one model generation to drain. A timeout fails the
