@@ -9604,7 +9604,7 @@ fn record_ngram_beta_feedback(state: &mut RequestState, draft_len: usize, accept
 }
 
 fn linear_ngram_no_draft_should_disable(streak: u32) -> bool {
-    streak >= LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD
+    streak == LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD
 }
 
 fn linear_ngram_initial_prompt_should_disable_request(
@@ -14017,10 +14017,7 @@ mod tests {
         // Flip S0 / coding streams: permanent disable after a short no-draft
         // streak killed multi-token verify for the rest of the request. Keep
         // the threshold effectively unreachable so cooldowns own recovery.
-        assert!(
-            LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD > 10_000,
-            "permanent no-draft disable must not fire on normal generation lengths"
-        );
+        assert_eq!(LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD, u32::MAX);
         assert!(!linear_ngram_no_draft_should_disable(8));
         assert!(!linear_ngram_no_draft_should_disable(256));
         assert!(linear_ngram_no_draft_should_disable(

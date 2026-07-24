@@ -2032,7 +2032,6 @@ fn ffn_swiglu_with_policy(
         {
             let input_refs: Vec<&MlxArray> = inputs.iter().collect();
             let eps = cfg.rms_norm_eps;
-            let projection_policy = projection_policy;
             let body = move |inputs: &MlxVectorArray| {
                 let x = inputs.get(0);
                 let (gate_qw, up_qw, down_qw, post_norm_w) = schema.rebuild(inputs);
