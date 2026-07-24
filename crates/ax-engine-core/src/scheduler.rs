@@ -352,12 +352,11 @@ const MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP: u32 = 1;
 /// token here made multi-model long-prefill (flip S1 Gemma ~14k tok) take ~35s
 /// vs ~8.6s pure — fair multi-prefill was also disabled under any pressure.
 ///
-/// Use the same 256-token throughput quantum as
-/// `ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP` so soft pressure does not
-/// re-introduce a slower ceiling than the no-pressure path. Stream-gap
-/// isolation still comes from the sibling-active adaptive quantum in the
-/// generation service (≤ ~40–50 ms wall per turn), not from this soft cap.
-const MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP: u32 = 256;
+/// Keep soft pressure productive. Stream-gap isolation still comes from the
+/// sibling-active adaptive quantum in the generation service, not this cap.
+/// 512 matches the idle multi-model throughput quantum so soft pressure does
+/// not re-throttle long prefills after KV free drops below 20%.
+const MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP: u32 = 512;
 const MEMORY_PRESSURE_KV_EXHAUSTED: &str = "kv_exhausted";
 const MEMORY_PRESSURE_KV_EXHAUSTED_RECLAIMABLE_CACHE: &str = "kv_exhausted_reclaimable_cache";
 const MEMORY_PRESSURE_KV_LOW_PREFIX: &str = "kv_low_free_blocks:";
