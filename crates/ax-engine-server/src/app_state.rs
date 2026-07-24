@@ -912,12 +912,12 @@ pub(crate) fn run_production_path_warmup(
 }
 
 pub(crate) fn long_prefill_warmup_enabled() -> bool {
-    // Default ON: one 2048-token warm amortizes fixed-shape dual-path/FFN
-    // compile for flip S1. Set AX_SERVER_LONG_PREFILL_WARM=0 to disable.
-    match std::env::var("AX_SERVER_LONG_PREFILL_WARM").as_deref() {
-        Ok("0") | Ok("false") | Ok("FALSE") | Ok("no") | Ok("NO") => false,
-        _ => true,
-    }
+    // Keep the benchmark-specific long warm opt-in. The flip target enables it
+    // explicitly; ordinary multi-model Gemma loads should not pay this cost.
+    matches!(
+        std::env::var("AX_SERVER_LONG_PREFILL_WARM").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
 }
 
 /// First-load-only long prefill warm (flip S1 cold-first concurrent tax).
