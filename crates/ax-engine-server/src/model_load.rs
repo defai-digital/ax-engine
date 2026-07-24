@@ -797,6 +797,19 @@ fn gib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0 * 1024.0)
 }
 
+#[cfg(feature = "mlx-native-server")]
+fn max_recommended_working_set_size() -> u64 {
+    mlx_sys::max_recommended_working_set_size() as u64
+}
+
+#[cfg(not(feature = "mlx-native-server"))]
+fn max_recommended_working_set_size() -> u64 {
+    // Delegated-only control planes do not own a local MLX allocator. Returning
+    // zero preserves the documented "unknown budget skips admission" behavior
+    // without linking or probing MLX on Linux.
+    0
+}
+
 /// Memory admission for model loads (ADR-040 D4). Runs synchronously before
 /// drain, preserving the no-side-effects-on-reject preflight contract. Skips
 /// (never blocks) when the device budget or the incoming weight layout is
@@ -810,7 +823,7 @@ fn validate_load_memory_preflight(
     if memory_preflight_disabled() {
         return Ok(());
     }
-    let budget = mlx_sys::max_recommended_working_set_size() as u64;
+    let budget = max_recommended_working_set_size();
     if budget == 0 {
         return Ok(());
     }

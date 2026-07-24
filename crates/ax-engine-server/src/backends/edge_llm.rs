@@ -48,5 +48,6 @@ pub(crate) fn start_streaming_chat_generate(
     config: &EdgeLlmConfig,
     request: &EdgeLlmChatGenerateRequest,
 ) -> Result<EdgeLlmStreamHandle, EngineSessionError> {
-    start_streaming_edge_llm_chat_generate(runtime, config, request).map_err(EngineSessionError::from)
+    start_streaming_edge_llm_chat_generate(runtime, config, request)
+        .map_err(EngineSessionError::from)
 }

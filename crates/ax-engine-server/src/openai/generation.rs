@@ -21,14 +21,15 @@ use crate::openai::chunks::{
     chat_delta_chunk, chat_final_chunk, chat_tool_calls_delta_chunk, chat_tool_calls_final_chunk,
 };
 use crate::openai::requests::{
-    OpenAiBuiltEdgeLlmChatRequest, OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
-    OpenAiResponseOptions, build_openai_edge_llm_chat_request, build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
+    OpenAiBuiltEdgeLlmChatRequest, OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest,
+    OpenAiBuiltRequest, OpenAiResponseOptions, build_openai_edge_llm_chat_request,
+    build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
 };
 use crate::openai::responses::openai_chat_completion_response;
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::streaming::{
-    StreamReasoningFamily, stream_openai_edge_llm_chat_request, stream_openai_llama_cpp_chat_request, stream_openai_mlx_lm_chat_request,
-    stream_openai_request,
+    StreamReasoningFamily, stream_openai_edge_llm_chat_request,
+    stream_openai_llama_cpp_chat_request, stream_openai_mlx_lm_chat_request, stream_openai_request,
 };
 use crate::tasks::run_blocking_session_task;
 
@@ -115,7 +116,6 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         None,
     ))
 }
-
 
 pub(crate) async fn run_openai_edge_llm_chat_generation(
     state: AppState,

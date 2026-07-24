@@ -1,4 +1,9 @@
-use std::io::{BufRead, BufReader, Read};
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
@@ -58,9 +63,13 @@ pub enum EdgeLlmBackendError {
         configured_backend: SelectedBackend,
         resolved_backend: SelectedBackend,
     },
-    #[error("tensorrt-edge-llm delegated backend requires input_text; token-array prompts need AX MLX mode")]
+    #[error(
+        "tensorrt-edge-llm delegated backend requires input_text; token-array prompts need AX MLX mode"
+    )]
     MissingInputText,
-    #[error("tensorrt-edge-llm delegated backend does not accept input_tokens in this preview contract")]
+    #[error(
+        "tensorrt-edge-llm delegated backend does not accept input_tokens in this preview contract"
+    )]
     UnsupportedTokenPrompt,
     #[error("failed to serialize tensorrt-edge-llm request JSON for {endpoint}: {source}")]
     SerializeRequestJson {
@@ -74,7 +83,9 @@ pub enum EdgeLlmBackendError {
         #[source]
         source: Box<ureq::Error>,
     },
-    #[error("tensorrt-edge-llm backend HTTP response from {endpoint} returned status {status}: {body}")]
+    #[error(
+        "tensorrt-edge-llm backend HTTP response from {endpoint} returned status {status}: {body}"
+    )]
     HttpStatus {
         endpoint: String,
         status: u16,
@@ -86,7 +97,9 @@ pub enum EdgeLlmBackendError {
         #[source]
         source: serde_json::Error,
     },
-    #[error("tensorrt-edge-llm backend HTTP response from {endpoint} did not include a completion choice")]
+    #[error(
+        "tensorrt-edge-llm backend HTTP response from {endpoint} did not include a completion choice"
+    )]
     MissingCompletionChoice { endpoint: String },
     #[error("tensorrt-edge-llm backend SSE read from {endpoint} failed: {source}")]
     SseRead {
@@ -100,7 +113,9 @@ pub enum EdgeLlmBackendError {
         #[source]
         source: serde_json::Error,
     },
-    #[error("tensorrt-edge-llm backend SSE stream from {endpoint} did not include a choice in chunk")]
+    #[error(
+        "tensorrt-edge-llm backend SSE stream from {endpoint} did not include a choice in chunk"
+    )]
     MissingStreamChoice { endpoint: String },
 }
 
@@ -128,13 +143,12 @@ impl EdgeLlmStreamHandle {
     pub fn next_chunk(&mut self) -> Result<Option<EdgeLlmStreamChunkResult>, EdgeLlmBackendError> {
         loop {
             let mut line = String::new();
-            let bytes_read =
-                self.reader
-                    .read_line(&mut line)
-                    .map_err(|source| EdgeLlmBackendError::SseRead {
-                        endpoint: self.endpoint.clone(),
-                        source,
-                    })?;
+            let bytes_read = self.reader.read_line(&mut line).map_err(|source| {
+                EdgeLlmBackendError::SseRead {
+                    endpoint: self.endpoint.clone(),
+                    source,
+                }
+            })?;
 
             if bytes_read == 0 {
                 return Ok(None);
@@ -185,16 +199,152 @@ impl EdgeLlmStreamHandle {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum EdgeLlmChatContent {
+    Text(String),
+    Parts(Vec<EdgeLlmChatContentPart>),
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EdgeLlmChatContentPart {
+    Text { text: String },
+    ImageUrl { image_url: EdgeLlmImageUrl },
+    Image { image: EdgeLlmStagedImage },
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct EdgeLlmImageUrl {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl EdgeLlmImageUrl {
+    pub fn new(url: impl Into<String>, detail: Option<String>) -> Self {
+        Self {
+            url: url.into(),
+            detail,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct EdgeLlmStagedImageFile {
+    path: PathBuf,
+}
+
+impl Drop for EdgeLlmStagedImageFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// A request-scoped image file for TensorRT Edge-LLM's co-located HTTP server.
+///
+/// The current experimental Edge-LLM server accepts image paths rather than
+/// OpenAI `image_url` payloads. Clones share ownership and the file is removed
+/// when the last request/message owner is dropped.
+#[derive(Clone, Debug)]
+pub struct EdgeLlmStagedImage {
+    file: Arc<EdgeLlmStagedImageFile>,
+}
+
+impl EdgeLlmStagedImage {
+    pub fn stage(bytes: &[u8], extension: &str) -> std::io::Result<Self> {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+        let extension = sanitize_image_extension(extension)?;
+        let temp_dir = std::env::temp_dir();
+        for _ in 0..16 {
+            let unique = format!(
+                "ax-engine-edge-llm-image-{}-{}-{}.{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_nanos())
+                    .unwrap_or(0),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                extension
+            );
+            let path = temp_dir.join(unique);
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
+                Ok(mut file) => {
+                    if let Err(error) = file.write_all(bytes) {
+                        let _ = std::fs::remove_file(&path);
+                        return Err(error);
+                    }
+                    return Ok(Self {
+                        file: Arc::new(EdgeLlmStagedImageFile { path }),
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique TensorRT Edge-LLM staged image path",
+        ))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.file.path
+    }
+}
+
+impl Serialize for EdgeLlmStagedImage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.file.path.to_string_lossy())
+    }
+}
+
+fn sanitize_image_extension(extension: &str) -> std::io::Result<&str> {
+    let extension = extension.trim().trim_start_matches('.');
+    if extension.is_empty()
+        || extension.len() > 8
+        || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "staged image extension must be 1-8 ASCII alphanumeric characters",
+        ));
+    }
+    Ok(extension)
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct EdgeLlmChatMessage {
     pub role: String,
-    pub content: String,
+    pub content: EdgeLlmChatContent,
 }
 
 impl EdgeLlmChatMessage {
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: role.into(),
-            content: content.into(),
+            content: EdgeLlmChatContent::Text(content.into()),
+        }
+    }
+
+    pub fn with_parts(
+        role: impl Into<String>,
+        parts: impl IntoIterator<Item = EdgeLlmChatContentPart>,
+    ) -> Self {
+        Self {
+            role: role.into(),
+            content: EdgeLlmChatContent::Parts(parts.into_iter().collect()),
         }
     }
 }
@@ -335,13 +485,18 @@ fn parse_edge_llm_json_response<T>(
 where
     T: DeserializeOwned,
 {
-    parse_json_response(response, |source| EdgeLlmBackendError::InvalidResponseJson {
-        endpoint: endpoint.to_string(),
-        source,
+    parse_json_response(response, |source| {
+        EdgeLlmBackendError::InvalidResponseJson {
+            endpoint: endpoint.to_string(),
+            source,
+        }
     })
 }
 
-fn first_choice_for_completion<T>(endpoint: &str, choices: Vec<T>) -> Result<T, EdgeLlmBackendError> {
+fn first_choice_for_completion<T>(
+    endpoint: &str,
+    choices: Vec<T>,
+) -> Result<T, EdgeLlmBackendError> {
     choices
         .into_iter()
         .next()
@@ -418,7 +573,8 @@ fn run_edge_llm_server_chat_completion_generate(
     let payload = build_edge_llm_chat_completion_request(request, false, runtime.selected_backend);
 
     let response = send_edge_llm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
-    let response: EdgeLlmChatCompletionResponse = parse_edge_llm_json_response(response, &endpoint)?;
+    let response: EdgeLlmChatCompletionResponse =
+        parse_edge_llm_json_response(response, &endpoint)?;
     let choice = first_choice_for_completion(&endpoint, response.choices)?;
 
     Ok(build_edge_llm_delegated_response(
@@ -471,8 +627,10 @@ fn build_edge_llm_completion_request<'a>(
     stream: bool,
     selected_backend: SelectedBackend,
 ) -> EdgeLlmCompletionRequest<'a> {
-    let (top_k, top_p) =
-        edge_llm_sampling_topk_topp(&request.sampling, should_coerce_edge_sampler(selected_backend));
+    let (top_k, top_p) = edge_llm_sampling_topk_topp(
+        &request.sampling,
+        should_coerce_edge_sampler(selected_backend),
+    );
     EdgeLlmCompletionRequest {
         model: None,
         prompt,
@@ -524,8 +682,10 @@ fn build_edge_llm_chat_completion_request(
     stream: bool,
     selected_backend: SelectedBackend,
 ) -> EdgeLlmChatCompletionRequest<'_> {
-    let (top_k, top_p) =
-        edge_llm_sampling_topk_topp(&request.sampling, should_coerce_edge_sampler(selected_backend));
+    let (top_k, top_p) = edge_llm_sampling_topk_topp(
+        &request.sampling,
+        should_coerce_edge_sampler(selected_backend),
+    );
     EdgeLlmChatCompletionRequest {
         // Edge-LLM servers typically require an explicit model id.
         model: Some(request.model_id.as_str()),
@@ -680,6 +840,7 @@ struct EdgeLlmChatCompletionResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -689,6 +850,50 @@ mod tests {
     use super::*;
     use crate::backend::{BackendPolicy, ResolvedBackend, RuntimeReport};
     use crate::generate::{GenerateRequest, GenerateSampling};
+
+    #[test]
+    fn chat_message_serializes_provider_specific_image_parts() {
+        let tensor_rt_llm = EdgeLlmChatMessage::with_parts(
+            "user",
+            [
+                EdgeLlmChatContentPart::Text {
+                    text: "read this".to_string(),
+                },
+                EdgeLlmChatContentPart::ImageUrl {
+                    image_url: EdgeLlmImageUrl::new(
+                        "data:image/png;base64,AAAA",
+                        Some("high".to_string()),
+                    ),
+                },
+            ],
+        );
+        let payload = serde_json::to_value(tensor_rt_llm).expect("message should serialize");
+
+        assert_eq!(payload["content"][0]["type"], "text");
+        assert_eq!(payload["content"][1]["type"], "image_url");
+        assert_eq!(
+            payload["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
+        assert_eq!(payload["content"][1]["image_url"]["detail"], "high");
+    }
+
+    #[test]
+    fn staged_edge_llm_image_is_removed_after_last_owner_drops() {
+        let image =
+            EdgeLlmStagedImage::stage(b"request-scoped", "png").expect("image should stage");
+        let path = image.path().to_path_buf();
+        let clone = image.clone();
+        assert_eq!(
+            fs::read(&path).expect("staged image should remain readable"),
+            b"request-scoped"
+        );
+
+        drop(image);
+        assert!(path.exists(), "clone should keep staged image alive");
+        drop(clone);
+        assert!(!path.exists(), "last owner should remove staged image");
+    }
 
     #[test]
     fn server_completion_url_normalizes_trailing_slashes() {

@@ -1,7 +1,14 @@
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::fmt;
+use std::io::{Cursor, Read};
+use std::num::NonZeroUsize;
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use sha2::{Digest, Sha256};
+use thiserror::Error;
 
 /// Default connect timeout for delegated local/remote HTTP backends.
 pub const DEFAULT_DELEGATED_HTTP_CONNECT_TIMEOUT_SECS: u64 = 30;
@@ -11,6 +18,251 @@ pub const DEFAULT_DELEGATED_HTTP_CONNECT_TIMEOUT_SECS: u64 = 30;
 pub const DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS: u64 = 300;
 const DELEGATED_HTTP_TRANSPORT_MAX_ATTEMPTS: usize = 2;
 const DELEGATED_HTTP_TRANSPORT_RETRY_BACKOFF: Duration = Duration::from_millis(25);
+pub const DEFAULT_DELEGATED_HTTP_MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DelegatedHttpRetryPolicy {
+    Never,
+    Idempotent {
+        max_attempts: NonZeroUsize,
+        initial_backoff: Duration,
+        max_backoff: Duration,
+    },
+}
+
+impl DelegatedHttpRetryPolicy {
+    pub fn readiness_default() -> Self {
+        Self::Idempotent {
+            max_attempts: NonZeroUsize::new(3).expect("three is non-zero"),
+            initial_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_millis(500),
+        }
+    }
+
+    fn max_attempts(&self) -> usize {
+        match self {
+            Self::Never => 1,
+            Self::Idempotent { max_attempts, .. } => max_attempts.get(),
+        }
+    }
+
+    fn backoff(&self, completed_attempts: usize) -> Duration {
+        let Self::Idempotent {
+            initial_backoff,
+            max_backoff,
+            ..
+        } = self
+        else {
+            return Duration::ZERO;
+        };
+
+        let exponent = completed_attempts.saturating_sub(1).min(16) as u32;
+        let scaled = initial_backoff
+            .checked_mul(2_u32.saturating_pow(exponent))
+            .unwrap_or(*max_backoff)
+            .min(*max_backoff);
+        // A small process-local jitter prevents synchronized readiness probes
+        // without adding a random-number dependency or affecting retry bounds.
+        let jitter_cap_ms = (scaled.as_millis() / 4).min(u128::from(u64::MAX)) as u64;
+        if jitter_cap_ms == 0 {
+            return scaled;
+        }
+        let jitter_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.subsec_nanos() as u64 % (jitter_cap_ms + 1))
+            .unwrap_or(0);
+        scaled.saturating_add(Duration::from_millis(jitter_ms))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DelegatedProxyPolicy {
+    /// Preserve the historical delegated-client behavior.
+    Environment,
+    /// Ignore proxy environment variables for a co-located inference worker.
+    #[default]
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DelegatedRedirectPolicy {
+    /// Preserve the historical ureq redirect limit for existing providers.
+    FollowDefault,
+    /// Do not follow redirects, so credentials cannot cross origins.
+    #[default]
+    Disabled,
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DelegatedTlsPolicy {
+    SystemRoots,
+    SystemRootsWithCustomCa {
+        ca_pem: Vec<u8>,
+        sha256: String,
+    },
+}
+
+impl DelegatedTlsPolicy {
+    pub fn system_roots_with_ca_file(path: impl AsRef<Path>) -> Result<Self, DelegatedHttpConfigError> {
+        let path = path.as_ref();
+        let ca_pem = std::fs::read(path).map_err(|source| DelegatedHttpConfigError::ReadCaFile {
+            path: path.display().to_string(),
+            source,
+        })?;
+        validate_ca_pem(&ca_pem)?;
+        let sha256 = format!("{:x}", Sha256::digest(&ca_pem));
+        Ok(Self::SystemRootsWithCustomCa { ca_pem, sha256 })
+    }
+
+    pub fn trust_fingerprint(&self) -> &str {
+        match self {
+            Self::SystemRoots => "system-roots",
+            Self::SystemRootsWithCustomCa { sha256, .. } => sha256,
+        }
+    }
+}
+
+impl Default for DelegatedTlsPolicy {
+    fn default() -> Self {
+        Self::SystemRoots
+    }
+}
+
+impl fmt::Debug for DelegatedTlsPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SystemRoots => formatter.write_str("SystemRoots"),
+            Self::SystemRootsWithCustomCa { sha256, .. } => formatter
+                .debug_struct("SystemRootsWithCustomCa")
+                .field("sha256", sha256)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct DelegatedBearerCredential(String);
+
+impl DelegatedBearerCredential {
+    pub fn new(value: impl Into<String>) -> Result<Self, DelegatedHttpConfigError> {
+        let value = value.into();
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(DelegatedHttpConfigError::EmptyBearerCredential);
+        }
+        if trimmed.contains(['\r', '\n']) {
+            return Err(DelegatedHttpConfigError::InvalidHeaderValue {
+                header: "authorization",
+            });
+        }
+        Ok(Self(trimmed.to_string()))
+    }
+
+    fn authorization_value(&self) -> String {
+        format!("Bearer {}", self.0)
+    }
+}
+
+impl fmt::Debug for DelegatedBearerCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DelegatedBearerCredential([REDACTED])")
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DelegatedHttpHeaders {
+    pub accept: Option<String>,
+    pub authorization: Option<DelegatedBearerCredential>,
+    pub user_agent: Option<String>,
+    pub request_id: Option<String>,
+}
+
+impl DelegatedHttpHeaders {
+    pub fn with_accept(mut self, value: impl Into<String>) -> Self {
+        self.accept = Some(value.into());
+        self
+    }
+
+    pub fn with_bearer(mut self, credential: Option<DelegatedBearerCredential>) -> Self {
+        self.authorization = credential;
+        self
+    }
+
+    pub fn with_user_agent(mut self, value: impl Into<String>) -> Self {
+        self.user_agent = Some(value.into());
+        self
+    }
+
+    pub fn with_request_id(mut self, value: impl Into<String>) -> Self {
+        self.request_id = Some(value.into());
+        self
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelegatedHttpRequestOptions {
+    pub timeouts: DelegatedHttpTimeouts,
+    pub retry: DelegatedHttpRetryPolicy,
+    pub headers: DelegatedHttpHeaders,
+    pub tls: DelegatedTlsPolicy,
+    pub proxy: DelegatedProxyPolicy,
+    pub redirects: DelegatedRedirectPolicy,
+    pub max_error_body_bytes: usize,
+}
+
+impl Default for DelegatedHttpRequestOptions {
+    fn default() -> Self {
+        Self {
+            timeouts: DelegatedHttpTimeouts::default(),
+            retry: DelegatedHttpRetryPolicy::Never,
+            headers: DelegatedHttpHeaders::default(),
+            tls: DelegatedTlsPolicy::default(),
+            proxy: DelegatedProxyPolicy::Disabled,
+            redirects: DelegatedRedirectPolicy::Disabled,
+            max_error_body_bytes: DEFAULT_DELEGATED_HTTP_MAX_ERROR_BODY_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum DelegatedHttpConfigError {
+    #[error("delegated bearer credential must not be empty")]
+    EmptyBearerCredential,
+    #[error("delegated HTTP header {header} contains an invalid newline")]
+    InvalidHeaderValue { header: &'static str },
+    #[error("failed to read delegated custom CA file {path}: {source}")]
+    ReadCaFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("delegated custom CA PEM did not contain a valid certificate")]
+    EmptyCaFile,
+    #[error("delegated custom CA PEM is invalid: {0}")]
+    InvalidCaFile(String),
+    #[error("delegated max_error_body_bytes must be greater than zero")]
+    InvalidMaxErrorBodyBytes,
+}
+
+#[derive(Debug)]
+pub(crate) enum DelegatedHttpRequestError {
+    Serialize(serde_json::Error),
+    Status {
+        status: u16,
+        body: String,
+        truncated: bool,
+    },
+    Request(Box<ureq::Error>),
+    Config(DelegatedHttpConfigError),
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DelegatedHttpAgentKey {
+    timeouts: DelegatedHttpTimeouts,
+    tls: DelegatedTlsPolicy,
+    proxy: DelegatedProxyPolicy,
+    redirects: DelegatedRedirectPolicy,
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DelegatedHttpTimeouts {

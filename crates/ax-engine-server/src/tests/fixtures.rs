@@ -387,6 +387,20 @@ pub(super) fn mlx_lm_delegated_state(server_url: String) -> AppState {
     })
 }
 
+pub(super) fn tensor_rt_edge_llm_state(server_url: String) -> AppState {
+    test_app_state(|args| {
+        args.support_tier = args::PreviewSupportTier::TensorRtEdgeLlm;
+        args.edge_llm_server_url = Some(server_url);
+    })
+}
+
+pub(super) fn tensor_rt_llm_state(server_url: String) -> AppState {
+    test_app_state(|args| {
+        args.support_tier = args::PreviewSupportTier::TensorRtLlm;
+        args.tensor_rt_llm_server_url = Some(server_url);
+    })
+}
+
 pub(super) fn native_mlx_openai_builder_state(model_id: &str, artifacts_dir: &Path) -> AppState {
     let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
     let mut live: LiveState = state.snapshot();

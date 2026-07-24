@@ -228,6 +228,7 @@ impl MetalBringupSampler {
 impl TokenSampler for MetalBringupSampler {
     fn sample(&self, input: SamplerInput) -> Vec<SampledToken> {
         let requests = input.requests;
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
         let mut sampled_from_logits = vec![None; requests.len()];
 
         #[cfg(target_os = "macos")]

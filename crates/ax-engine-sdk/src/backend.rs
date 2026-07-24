@@ -541,9 +541,11 @@ impl ResolvedBackend {
 
         if self.selected_backend == SelectedBackend::TensorRtLlm {
             if self.support_tier != SupportTier::TensorRtLlm {
-                return Err(BackendContractError::TensorRtLlmBackendRequiresTensorRtLlmTier {
-                    support_tier: self.support_tier,
-                });
+                return Err(
+                    BackendContractError::TensorRtLlmBackendRequiresTensorRtLlmTier {
+                        support_tier: self.support_tier,
+                    },
+                );
             }
             if matches!(backend_policy.resolution_policy, ResolutionPolicy::MlxOnly) {
                 return Err(BackendContractError::MlxOnlyPolicyCannotResolveTensorRtLlm);
@@ -1097,7 +1099,10 @@ mod tests {
         })
         .expect_err("edge-llm must not accept tensor_rt_llm_server_url as a substitute");
 
-        assert_eq!(error, PreviewBackendResolutionError::MissingEdgeLlmServerUrl);
+        assert_eq!(
+            error,
+            PreviewBackendResolutionError::MissingEdgeLlmServerUrl
+        );
     }
 
     #[test]
@@ -1109,7 +1114,10 @@ mod tests {
         })
         .expect("tensorrt-llm resolution should succeed");
 
-        assert_eq!(resolution.backend_policy, BackendPolicy::allow_tensor_rt_llm());
+        assert_eq!(
+            resolution.backend_policy,
+            BackendPolicy::allow_tensor_rt_llm()
+        );
         assert_eq!(
             resolution.resolved_backend,
             ResolvedBackend::tensor_rt_llm(

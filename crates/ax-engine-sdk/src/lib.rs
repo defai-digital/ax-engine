@@ -64,6 +64,15 @@ pub use delegated_http::{
     DEFAULT_DELEGATED_HTTP_CONNECT_TIMEOUT_SECS, DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS,
     DelegatedHttpTimeouts,
 };
+pub use edge_llm::{
+    EdgeLlmBackendError, EdgeLlmChatContent, EdgeLlmChatContentPart, EdgeLlmChatGenerateRequest,
+    EdgeLlmChatMessage, EdgeLlmConfig, EdgeLlmImageUrl, EdgeLlmServerCompletionConfig,
+    EdgeLlmStagedImage, EdgeLlmStreamChunkResult, EdgeLlmStreamHandle, finish_reason_from_edge_llm,
+    run_blocking_chat_generate as run_blocking_edge_llm_chat_generate,
+    run_blocking_generate as run_blocking_edge_llm_generate,
+    start_streaming_chat_generate as start_streaming_edge_llm_chat_generate,
+    start_streaming_generate as start_streaming_edge_llm_generate,
+};
 pub use generate::{
     GenerateFinishReason, GenerateMtpReport, GeneratePerformanceReport, GenerateRequest,
     GenerateResponse, GenerateRouteReport, GenerateSampling, GenerateStatus, GenerateStreamEvent,
@@ -74,15 +83,6 @@ pub use llama_cpp::{
     LlamaCppConfig, LlamaCppServerCompletionConfig, LlamaCppStreamChunk, LlamaCppStreamHandle,
     run_blocking_chat_generate as run_blocking_llama_cpp_chat_generate,
     start_streaming_chat_generate as start_streaming_llama_cpp_chat_generate,
-};
-pub use edge_llm::{
-    EdgeLlmBackendError, EdgeLlmChatGenerateRequest, EdgeLlmChatMessage, EdgeLlmConfig,
-    EdgeLlmServerCompletionConfig, EdgeLlmStreamChunkResult, EdgeLlmStreamHandle,
-    finish_reason_from_edge_llm,
-    run_blocking_chat_generate as run_blocking_edge_llm_chat_generate,
-    run_blocking_generate as run_blocking_edge_llm_generate,
-    start_streaming_chat_generate as start_streaming_edge_llm_chat_generate,
-    start_streaming_generate as start_streaming_edge_llm_generate,
 };
 pub use mlx_lm::{
     MlxLmBackendError, MlxLmChatGenerateRequest, MlxLmChatMessage, MlxLmConfig,
