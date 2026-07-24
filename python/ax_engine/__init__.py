@@ -136,6 +136,9 @@ class CapabilityReport:
     prefix_reuse: bool
     long_context_validation: str
     benchmark_metrics: str
+    image_input: str = "unsupported"
+    delegated_readiness: str = "unsupported"
+    provider_extensions: str = "unsupported"
 
 
 @dataclass(frozen=True)
