@@ -12210,17 +12210,12 @@ mod tests {
 
     #[test]
     fn prefill_rotation_follows_prefill_flag_and_decode_latch() {
-        // Prefill: rotate when session rotating + greedy + prefill flag (default ON).
-        // Slack sized to prefill_chunk (min 64).
+        // Prefill rotation is default-OFF until multi-token ring SDPA is fixed.
+        // With the flag unset, prefill stays ordered regardless of session rotating.
         assert_eq!(
             cache_rotation_for_execution(ExecutionMode::Prefill, None, true, true, 1536),
-            (true, 1536)
+            (false, 0)
         );
-        assert_eq!(
-            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, true, 32),
-            (true, 64)
-        );
-        // Prefill latch ignored: prefill does not inherit decode latch pair.
         assert_eq!(
             cache_rotation_for_execution(
                 ExecutionMode::Prefill,
@@ -12229,11 +12224,6 @@ mod tests {
                 true,
                 1536
             ),
-            (true, 1536)
-        );
-        // Non-greedy prefill stays ordered.
-        assert_eq!(
-            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, false, 1536),
             (false, 0)
         );
         assert_eq!(
