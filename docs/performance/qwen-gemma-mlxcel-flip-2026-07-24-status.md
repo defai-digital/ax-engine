@@ -8,13 +8,13 @@ Locked gates (median, ≥3 fresh-process reps): thr ≥ 1.15×, p95 TTFT ≤ 0.9
 
 | Scenario | thr | TTFT | gap | Status |
 | --- | ---: | ---: | ---: | --- |
-| **S0** | **~1.15–1.16×** | **~0.84–0.90×** (flaky) | **~0.81×** | Often PASS; TTFT flaky under multi-scenario load |
+| **S0** | **1.169×** | **0.755×** | **0.850×** | **PASS** (5-rep, triple warm) |
 | **S1** | **~0.74–0.76×** | **~1.33×** | **~0.80×** | thr+TTFT FAIL; gap can PASS |
-| **S2** | **~1.48×** | **~0.83–1.01×** | **~0.77×** | thr/gap PASS; TTFT sometimes fails in full suite |
+| **S2** | **1.783×** | **0.819×** | **0.774×** | **PASS** (3-rep, soft-park + triple warm) |
 | **S3** | **~0.82×** | **~7.6×** | **~1.83×** | thr/TTFT/gap FAIL |
 
 Evidence dirs (remote `AKMBPM5MAXx` worktree):  
-`benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-24-{s0-ttft-5rep,s0s2-double-warm,full-soft-park-rewarm,s1-restored-idle-uncap,s1-longwarm-chunk1024}/`.
+`benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-24-{s0-triple-warm,s2-triple-warm,full-soft-park-rewarm,s1-restored-idle-uncap,s1-longwarm-chunk1024}/`.
 
 ## What landed (keep)
 
