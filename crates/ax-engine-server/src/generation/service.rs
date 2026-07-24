@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{
@@ -202,17 +202,27 @@ struct ModelExecutionTarget {
 /// Gemma-12B-class 4-bit prefill (~0.66–0.8 ms/tok) that is roughly 64–96
 /// tokens. Prefer 64 as the conservative default; override via
 /// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS` when calibrating.
-/// Sibling-active prefill quantum (tokens per engine turn).
+/// Sibling-active prefill quantum (tokens per engine turn) — starting point.
 ///
 /// M5 dual-model S1 calibration:
 /// - 1 token: historical isolation envelope (gap ~35–150 ms depending on path)
-/// - 16/64 tokens: interactive gap p95 ballooned to 0.6–0.8 s because long
-///   prefill attention cost grows with position, so fixed-token quanta are not
-///   wall-time-safe mid-prompt.
-/// Default **4**: 4× fewer turns than the 1-token pathology with small absolute
-/// chunk cost early in prefill; override via env for wall-time SLO experiments.
+/// - 16/64 fixed tokens: interactive gap p95 ballooned to 0.6–0.8 s because
+///   long prefill attention cost grows with position, so fixed-token quanta
+///   are not wall-time-safe mid-prompt.
+///
+/// Default **4** is only the *initial* quantum. When adaptive isolation is
+/// on, [`advance_shared_engine`] feedback-controls the quantum so one sibling
+/// prefill turn's `runner_time_us` stays under the stream-gap SLO budget
+/// ([`ADAPTIVE_PREFILL_GAP_SLO_US`]). Override the start point via
+/// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS`.
 pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 4;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
+/// Interactive p95 stream-gap SLO used as the wall-time budget for one sibling
+/// prefill turn (flip gate: absolute ≤ 50 ms). Keep a 10 ms safety margin.
+const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 40_000;
+const ADAPTIVE_PREFILL_GROW_BELOW_US: u64 = 18_000;
+const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
+const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
 /// Resolve the sibling-active prefill quantum from an optional env value.
@@ -220,7 +230,7 @@ const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(
 /// Empty / invalid / zero values fall back to
 /// [`ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT`] so operators cannot
 /// accidentally re-enable the historical 1-token pathological endpoint by
-/// setting a garbage env var.
+/// setting a garbage env var. Explicit `1` is allowed for gap-tight A/Bs.
 pub(crate) fn resolve_adaptive_prefill_latency_tokens(raw: Option<&str>) -> u32 {
     raw.and_then(|value| value.trim().parse().ok())
         .filter(|n: &u32| *n > 0)
@@ -236,6 +246,30 @@ fn adaptive_prefill_latency_tokens_per_step() -> u32 {
                 .as_deref(),
         )
     })
+}
+
+/// Feedback-control the sibling prefill quantum from the previous turn's
+/// measured runner wall time so one turn stays under the stream-gap SLO.
+pub(crate) fn adjust_adaptive_prefill_tokens(
+    current_tokens: u32,
+    last_runner_time_us: u64,
+) -> u32 {
+    let current = current_tokens.max(ADAPTIVE_PREFILL_MIN_TOKENS);
+    if last_runner_time_us == 0 {
+        return current.min(ADAPTIVE_PREFILL_MAX_TOKENS);
+    }
+    if last_runner_time_us > ADAPTIVE_PREFILL_GAP_SLO_US {
+        // Over budget: shrink aggressively (halve, floor at min).
+        return (current / 2).max(ADAPTIVE_PREFILL_MIN_TOKENS);
+    }
+    if last_runner_time_us < ADAPTIVE_PREFILL_GROW_BELOW_US
+        && current < ADAPTIVE_PREFILL_MAX_TOKENS
+    {
+        // Under budget with headroom: grow gently (+50%, at least +1).
+        let grown = current.saturating_add((current / 2).max(1));
+        return grown.min(ADAPTIVE_PREFILL_MAX_TOKENS);
+    }
+    current.min(ADAPTIVE_PREFILL_MAX_TOKENS)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -306,6 +340,11 @@ struct ServiceState {
     stepwise_terminal_observer: parking_lot::RwLock<Option<StepwiseTerminalObserver>>,
     execution_target: parking_lot::RwLock<Option<ModelExecutionTarget>>,
     adaptive_prefill_isolation: AtomicBool,
+    /// Last engine-step runner wall time (µs) used to feedback-control the
+    /// sibling prefill quantum under adaptive isolation.
+    last_step_runner_time_us: AtomicU64,
+    /// Current sibling-active prefill quantum (tokens/turn).
+    adaptive_prefill_tokens: AtomicU32,
 }
 
 pub(crate) struct NativeGenerationService {
@@ -370,6 +409,10 @@ impl NativeGenerationService {
             stepwise_terminal_observer: parking_lot::RwLock::new(None),
             execution_target: parking_lot::RwLock::new(None),
             adaptive_prefill_isolation: AtomicBool::new(false),
+            last_step_runner_time_us: AtomicU64::new(0),
+            adaptive_prefill_tokens: AtomicU32::new(
+                ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT,
+            ),
         });
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
@@ -594,6 +637,15 @@ impl NativeGenerationService {
         self.state
             .adaptive_prefill_isolation
             .store(enabled, Ordering::Release);
+        if enabled {
+            let start = adaptive_prefill_latency_tokens_per_step();
+            self.state
+                .adaptive_prefill_tokens
+                .store(start, Ordering::Release);
+            self.state
+                .last_step_runner_time_us
+                .store(0, Ordering::Release);
+        }
     }
 
     pub(crate) async fn shutdown(&self) -> Result<(), GenerationServiceError> {
@@ -1137,8 +1189,28 @@ fn advance_shared_engine(
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
         let desired_tokens = if sibling_active {
-            adaptive_prefill_latency_tokens_per_step()
+            // Feedback-control quantum from last turn's runner wall time so
+            // one prefill chunk stays under the stream-gap SLO mid-prompt
+            // (fixed large quanta blow gap late in long Gemma prefills).
+            let last_us = service_state
+                .last_step_runner_time_us
+                .load(Ordering::Acquire);
+            let current = service_state
+                .adaptive_prefill_tokens
+                .load(Ordering::Acquire)
+                .max(ADAPTIVE_PREFILL_MIN_TOKENS);
+            let adjusted = adjust_adaptive_prefill_tokens(current, last_us);
+            service_state
+                .adaptive_prefill_tokens
+                .store(adjusted, Ordering::Release);
+            adjusted
         } else {
+            // Reset the controller when the sibling is idle so the next
+            // mixed-load burst starts from the env/default start point.
+            let start = adaptive_prefill_latency_tokens_per_step();
+            service_state
+                .adaptive_prefill_tokens
+                .store(start, Ordering::Release);
             ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
         };
         let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
@@ -1552,6 +1624,17 @@ fn rollback_failed_enqueue(state: &ServiceState) {
 }
 
 fn record_step_report(state: &ServiceState, report: &EngineStepReport) {
+    // Prefer runner_time_us (GPU/host model work); fall back to cpu_time_us.
+    let wall_us = if report.runner_time_us > 0 {
+        report.runner_time_us
+    } else {
+        report.cpu_time_us
+    };
+    if wall_us > 0 {
+        state
+            .last_step_runner_time_us
+            .store(wall_us, Ordering::Release);
+    }
     let observer = state.step_observer.read().clone();
     if let Some(observer) = observer {
         observer(report);
@@ -1644,6 +1727,7 @@ mod tests {
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 4);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 4);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("96")), 96);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("1")), 1);
         assert!(
             ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT
                 < ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
@@ -1652,6 +1736,20 @@ mod tests {
             ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT > 1,
             "must not regress to the 1-token pathological sibling quantum"
         );
+    }
+
+    #[test]
+    fn adjust_adaptive_prefill_tokens_respects_gap_slo_budget() {
+        assert_eq!(adjust_adaptive_prefill_tokens(4, 0), 4);
+        // Over 40 ms budget → half.
+        assert_eq!(adjust_adaptive_prefill_tokens(16, 50_000), 8);
+        assert_eq!(adjust_adaptive_prefill_tokens(2, 50_000), 1);
+        assert_eq!(adjust_adaptive_prefill_tokens(1, 50_000), 1);
+        // Under grow threshold → +50%.
+        assert_eq!(adjust_adaptive_prefill_tokens(4, 10_000), 6);
+        assert_eq!(adjust_adaptive_prefill_tokens(64, 5_000), 64);
+        // In band → hold.
+        assert_eq!(adjust_adaptive_prefill_tokens(8, 25_000), 8);
     }
 
     fn delegated_config() -> EngineSessionConfig {
@@ -1960,6 +2058,10 @@ mod tests {
             stepwise_terminal_observer: parking_lot::RwLock::new(None),
             execution_target: parking_lot::RwLock::new(None),
             adaptive_prefill_isolation: AtomicBool::new(false),
+            last_step_runner_time_us: AtomicU64::new(0),
+            adaptive_prefill_tokens: AtomicU32::new(
+                ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT,
+            ),
         };
 
         rollback_failed_enqueue(&state);

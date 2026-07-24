@@ -461,6 +461,7 @@ fn packed_ffn_activation(
 static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN3_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -526,6 +527,11 @@ const PACKED_SWIGLU_KERNEL_SOURCE: &str = r#"
     out[idx] = static_cast<T>(activated * up_v);
 "#;
 
+/// Decode matvec: affine-4bit gate/up + SwiGLU for one token.
+///
+/// One output row per 32-lane simdgroup (proven ~111 pure tok/s on M5 Max
+/// Qwen3.5-9B). Threadgroup x-caching regressed thr to ~41 tok/s on this
+/// Metal/MLX path and is intentionally not used.
 const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
     uint row = thread_position_in_grid.x / 32;
     uint lane = thread_index_in_simdgroup;
@@ -559,6 +565,36 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
     if (lane == 0) {
         float activated = gate_sum / (1.0f + exp(-gate_sum));
         out[row] = static_cast<OutT>(activated * up_sum);
+    }
+"#;
+
+/// Single-matrix affine-4bit decode matvec (FFN down_proj). Same one-row-per-
+/// simdgroup layout as gate/up; intermediate activations are read from device.
+const QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE: &str = r#"
+    uint row = thread_position_in_grid.x / 32;
+    uint lane = thread_index_in_simdgroup;
+    if (row >= OutDim) {
+        return;
+    }
+
+    float acc = 0.0f;
+    for (uint packed_col = lane; packed_col < PackedCols; packed_col += 32) {
+        uint packed = weight[row * PackedCols + packed_col];
+        for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
+            uint input_col = packed_col * PackFactor + packed_lane;
+            uint q = (packed >> (packed_lane * Bits)) & QuantMask;
+            uint group = input_col / GroupSize;
+            uint scale_idx = row * GroupCount + group;
+            float x_v = static_cast<float>(x[input_col]);
+            float scale = static_cast<float>(scales[scale_idx]);
+            float bias = static_cast<float>(biases[scale_idx]);
+            acc = fma(x_v, static_cast<float>(q) * scale + bias, acc);
+        }
+    }
+
+    float sum = simd_sum(acc);
+    if (lane == 0) {
+        out[row] = static_cast<OutT>(sum);
     }
 "#;
 
@@ -1014,7 +1050,6 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
 
     let mut out_shape = x_shape;
     *out_shape.last_mut()? = out_dim;
-    let element_count = out_dim;
     let quant_mask = (1_i32 << gate.bits) - 1;
     let kernel = QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
@@ -1083,7 +1118,120 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
                     value: quant_mask,
                 },
             ],
-            (element_count.saturating_mul(32), 1, 1),
+            // One simdgroup (32 lanes) per output row.
+            (out_dim.saturating_mul(32), 1, 1),
+            (32, 1, 1),
+            None,
+        )
+        .ok()?;
+    outputs.pop()
+}
+
+/// Decode-only affine-4bit matvec for FFN down_proj (intermediate → hidden).
+fn qwen_dense_ffn_down_matvec_metal_impl(
+    x: &MlxArray,
+    down: &QuantizedWeight,
+) -> Option<MlxArray> {
+    if !matches!(
+        x.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let x_shape = x.shape();
+    let input_dim = *x_shape.last()?;
+    if input_dim <= 0 {
+        return None;
+    }
+    let leading_elements = x_shape[..x_shape.len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    if leading_elements != 1 {
+        return None;
+    }
+    let (Some(scales), Some(biases)) = (down.scales.as_ref(), down.biases.as_ref()) else {
+        return None;
+    };
+    if down.bits != 4 || down.group_size <= 0 {
+        return None;
+    }
+    let weight_shape = down.weight.shape();
+    if weight_shape.len() != 2 {
+        return None;
+    }
+    let out_dim = weight_shape[0];
+    let packed_cols = weight_shape[1];
+    if out_dim <= 0 || packed_cols <= 0 {
+        return None;
+    }
+    let pack_factor = 32 / down.bits;
+    if packed_cols.checked_mul(pack_factor)? != input_dim {
+        return None;
+    }
+    if input_dim % down.group_size != 0 {
+        return None;
+    }
+    let group_count = input_dim / down.group_size;
+    let expected_sidecar = vec![out_dim, group_count];
+    if scales.shape() != expected_sidecar || biases.shape() != expected_sidecar {
+        return None;
+    }
+
+    let mut out_shape = x_shape;
+    *out_shape.last_mut()? = out_dim;
+    let quant_mask = (1_i32 << down.bits) - 1;
+    let kernel = QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen_dense_ffn_down_matvec_simd_v1",
+            &["x", "weight", "scales", "biases"],
+            &["out"],
+            QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[x, &down.weight, scales, biases],
+            &[KernelOutputSpec {
+                shape: out_shape,
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "OutDim",
+                    value: out_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackedCols",
+                    value: packed_cols,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupSize",
+                    value: down.group_size,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupCount",
+                    value: group_count,
+                },
+                KernelTemplateArg::Int {
+                    name: "Bits",
+                    value: down.bits,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackFactor",
+                    value: pack_factor,
+                },
+                KernelTemplateArg::Int {
+                    name: "QuantMask",
+                    value: quant_mask,
+                },
+            ],
+            (out_dim.saturating_mul(32), 1, 1),
             (32, 1, 1),
             None,
         )
@@ -1773,6 +1921,23 @@ fn ffn_swiglu_with_policy(
                 .down_proj
                 .as_ref()
                 .expect("dense FFN layer must have down_proj");
+            // Prefer the matching decode matvec Metal path for down_proj so the
+            // full FFN stays on the custom 4-bit matvec kernels (gate/up/down).
+            // Measured ~111.3 pure tok/s on M5 Max Qwen3.5-9B vs ~110.7 when
+            // post-norm fusion shadowed the custom down path.
+            if let Some(down_out) = qwen_dense_ffn_down_matvec_metal_impl(&ffn_hidden, down) {
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnDown,
+                    down_started,
+                    &[&down_out],
+                );
+                return match post_norm {
+                    Some(norm_w) => rms_norm(&down_out, Some(norm_w), cfg.rms_norm_eps, None),
+                    None => down_out,
+                };
+            }
             if let Some(norm_w) = post_norm {
                 if !profile_decode
                     && !profile_prefill
@@ -4308,6 +4473,7 @@ mod tests {
 
         let metal = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up)
             .expect("4-bit affine gate/up SwiGLU matvec should be eligible");
+        assert_eq!(metal.shape(), vec![1, 1, 16]);
         let gate_ref = quantized_matmul(
             &x,
             &gate_q[0],
@@ -4352,6 +4518,52 @@ mod tests {
 
         assert!(qwen_dense_ffn_gate_up_swiglu_metal_impl(&batched, &weight, &weight).is_none());
         assert!(qwen_dense_ffn_gate_up_swiglu_metal_impl(&prefill, &weight, &weight).is_none());
+    }
+
+    #[test]
+    fn qwen_dense_ffn_down_matvec_metal_matches_quantized_matmul() {
+        // Intermediate → hidden decode matvec (tiled TG path for InputDim > 4096).
+        // Use intermediate=64, out=16, group_size=32 to exercise multi-tile packing.
+        let x_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.015625).collect();
+        let weight_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 400.0) * 0.00125).collect();
+        let x = array_f32(&x_data, &[1, 1, 64]);
+        let weight = array_f32(&weight_data, &[16, 64]);
+        let q = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        let down = QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: Some(q[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+        };
+
+        let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down)
+            .expect("4-bit affine down matvec should be eligible");
+        let reference = quantized_matmul(
+            &x,
+            &q[0],
+            &q[1],
+            Some(&q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        mlx_sys::transforms::try_eval(&[&metal, &reference])
+            .expect("Qwen dense FFN down matvec Metal kernel must compile and evaluate");
+
+        assert_eq!(metal.shape(), vec![1, 1, 16]);
+        assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
     }
 
     #[test]

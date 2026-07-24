@@ -43,15 +43,15 @@ Per scenario (median, ≥3 fresh-process reps): thr ≥ 1.15×, p95 TTFT ≤ 0.9
 6. Flip target keeps `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS=0` where packing regressed the certified S0 path.
 7. Linear-attention n-gram no longer permanently disables after short no-draft streaks (cooldowns only).
 
-## Honest residual (2026-07-24 M5 measurements)
+## Honest residual (2026-07-24 M5 measurements, post matvec+adaptive)
 
 | Metric | Value |
 | --- | ---: |
-| Pure decode-trace | ~107.0–107.5 tok/s |
-| AX S0 OpenAI e2e (fresh) | ~104.9–105.7 tok/s |
-| mlxcel S0 e2e (fresh) | ~94.5–94.7 tok/s |
-| Max thr ratio (pure / mlx) | **~1.14× < 1.15 gate** |
-| S0 TTFT ratio | ~0.73× **PASS** |
-| S0 gap ratio | ~0.85× **PASS** (≤50 ms abs) |
+| Pure decode-trace | ~110.7–111.3 tok/s (matvec gate/up+down) |
+| AX S0 OpenAI e2e (fresh) | ~108.1 tok/s |
+| mlxcel S0 e2e (fresh) | ~94.8 tok/s |
+| S0 thr ratio (median) | **~1.141× < 1.15 gate** |
+| S0 TTFT ratio | ~0.75× **PASS** |
+| S0 gap ratio | ~0.87× **PASS** (≤50 ms abs) |
 
-S0 **thr ≥ 1.15× is blocked by the pure GPU/BW ceiling** while mlxcel remains ~94.6 tok/s: even TTFT→0 cannot clear the locked thr bar without ~+2–3% pure decode or multi-token thr that currently hurts hybrid linear-attention Qwen. S1/S3 still need further quantum/arbiter/batch work beyond the 16-token default.
+S0 **thr ≥ 1.15× is still blocked by the pure GPU/BW ceiling** (~111 tok/s pure → ~1.14× e2e). TG-cached multi-row matvec and heavier warmup both regressed and were rejected. S1 gap passes under wall-time adaptive quantum; S1 thr and S2/S3 remain open.
