@@ -929,6 +929,16 @@ fn max_recommended_working_set_size() -> u64 {
     0
 }
 
+#[cfg(feature = "mlx-native-server")]
+fn mlx_device_active_bytes() -> Option<u64> {
+    mlx_sys::device_active_bytes()
+}
+
+#[cfg(not(feature = "mlx-native-server"))]
+fn mlx_device_active_bytes() -> Option<u64> {
+    None
+}
+
 /// Memory admission for model loads (ADR-040 D4). Runs synchronously before
 /// drain, preserving the no-side-effects-on-reject preflight contract. Skips
 /// (never blocks) when the device budget or the incoming weight layout is
@@ -983,7 +993,7 @@ fn validate_load_memory_preflight(
     // manifests. The latter misses compiled graphs and live temporaries and
     // can double-count shared storage; it remains a deterministic fallback
     // when MLX has no device probe (for example a delegated CPU backend).
-    let measured_active = mlx_sys::device_active_bytes();
+    let measured_active = mlx_device_active_bytes();
     let resident_accounted = measured_active.unwrap_or(resident_total);
     let peak = projected_peak_bytes(
         resident_accounted,

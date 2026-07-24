@@ -265,6 +265,32 @@ struct ModelMemorySample {
     runner: Option<crate::app_state::ModelMemoryGauges>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct ProcessMemorySample {
+    mlx_active_bytes: Option<u64>,
+    mlx_cache_bytes: Option<u64>,
+    mlx_peak_bytes: Option<u64>,
+    metal_recommended_working_set_bytes: Option<u64>,
+    host_resident_bytes: Option<u64>,
+}
+
+fn process_memory_sample() -> ProcessMemorySample {
+    #[cfg(feature = "mlx-native-server")]
+    {
+        ProcessMemorySample {
+            mlx_active_bytes: mlx_sys::device_active_bytes(),
+            mlx_cache_bytes: mlx_sys::device_cache_bytes(),
+            mlx_peak_bytes: mlx_sys::device_peak_bytes(),
+            metal_recommended_working_set_bytes: mlx_sys::device_recommended_working_set_bytes(),
+            host_resident_bytes: mlx_sys::host_resident_bytes(),
+        }
+    }
+    #[cfg(not(feature = "mlx-native-server"))]
+    {
+        ProcessMemorySample::default()
+    }
+}
+
 fn append_memory_metrics(
     body: &mut String,
     lives: &[crate::app_state::LiveState],
@@ -289,7 +315,8 @@ fn append_memory_metrics(
             }
         })
         .collect::<Vec<_>>();
-    let active_bytes = mlx_sys::device_active_bytes();
+    let process = process_memory_sample();
+    let active_bytes = process.mlx_active_bytes;
 
     append_optional_gauge(
         body,
@@ -301,25 +328,25 @@ fn append_memory_metrics(
         body,
         "ax_engine_memory_mlx_cache_bytes",
         "Process-wide reusable allocator-cache bytes measured by mlx_get_cache_memory.",
-        mlx_sys::device_cache_bytes(),
+        process.mlx_cache_bytes,
     );
     append_optional_gauge(
         body,
         "ax_engine_memory_mlx_peak_bytes",
         "Process-wide peak active bytes measured by mlx_get_peak_memory.",
-        mlx_sys::device_peak_bytes(),
+        process.mlx_peak_bytes,
     );
     append_optional_gauge(
         body,
         "ax_engine_memory_metal_recommended_working_set_bytes",
         "Metal recommended maximum working-set size used as the server memory budget.",
-        mlx_sys::device_recommended_working_set_bytes(),
+        process.metal_recommended_working_set_bytes,
     );
     append_optional_gauge(
         body,
         "ax_engine_memory_host_resident_bytes",
         "Current process resident bytes from task_info; this is host RSS, not MLX-only memory.",
-        mlx_sys::host_resident_bytes(),
+        process.host_resident_bytes,
     );
 
     append_model_gauge(

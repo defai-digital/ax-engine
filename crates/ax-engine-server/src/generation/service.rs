@@ -267,19 +267,16 @@ pub(crate) fn adjust_adaptive_prefill_tokens_with_work(
     last_runner_time_us: u64,
     last_scheduled_tokens: u32,
 ) -> u32 {
-    let current = current_tokens
-        .max(ADAPTIVE_PREFILL_MIN_TOKENS)
-        .min(ADAPTIVE_PREFILL_MAX_TOKENS);
+    let current = current_tokens.clamp(ADAPTIVE_PREFILL_MIN_TOKENS, ADAPTIVE_PREFILL_MAX_TOKENS);
     let work = last_scheduled_tokens.max(1);
     if last_runner_time_us == 0 {
         return current;
     }
-    let us_per_tok = ((last_runner_time_us + u64::from(work) - 1) / u64::from(work)).max(1);
+    let us_per_tok = last_runner_time_us.div_ceil(u64::from(work)).max(1);
     let target = (ADAPTIVE_PREFILL_GAP_SLO_US / us_per_tok).max(1);
     let target = u32::try_from(target)
         .unwrap_or(ADAPTIVE_PREFILL_MAX_TOKENS)
-        .min(ADAPTIVE_PREFILL_MAX_TOKENS)
-        .max(ADAPTIVE_PREFILL_MIN_TOKENS);
+        .clamp(ADAPTIVE_PREFILL_MIN_TOKENS, ADAPTIVE_PREFILL_MAX_TOKENS);
     // Over budget: snap to target immediately (protect gap SLO).
     if last_runner_time_us > ADAPTIVE_PREFILL_GAP_SLO_US {
         return target;
@@ -292,9 +289,7 @@ pub(crate) fn adjust_adaptive_prefill_tokens_with_work(
     } else {
         current
     };
-    blended
-        .max(ADAPTIVE_PREFILL_MIN_TOKENS)
-        .min(ADAPTIVE_PREFILL_MAX_TOKENS)
+    blended.clamp(ADAPTIVE_PREFILL_MIN_TOKENS, ADAPTIVE_PREFILL_MAX_TOKENS)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1787,14 +1782,16 @@ mod tests {
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 64);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("96")), 96);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("1")), 1);
-        assert!(
-            ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT
-                < ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
-        );
-        assert!(
-            ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT > 1,
-            "must not regress to the 1-token pathological sibling quantum"
-        );
+        const {
+            assert!(
+                ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT
+                    < ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
+            );
+            assert!(
+                ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT > 1,
+                "must not regress to the 1-token pathological sibling quantum"
+            );
+        }
     }
 
     #[test]

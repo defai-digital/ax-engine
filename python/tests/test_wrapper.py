@@ -131,6 +131,9 @@ class FakeNativeSession:
                 "prefix_reuse": True,
                 "long_context_validation": "preview",
                 "benchmark_metrics": "preview",
+                "image_input": "preview",
+                "delegated_readiness": "supported",
+                "provider_extensions": "unsupported",
             },
         }
         if self.support_tier != "llama_cpp":
@@ -829,6 +832,9 @@ class WrapperContractTests(unittest.TestCase):
         native = FakeNativeSession.instances[-1]
         self.assertEqual(native.mlx_model_artifacts_dir, "/tmp/mlx-model")
         self.assertEqual(runtime.selected_backend, "mlx")
+        self.assertEqual(runtime.capabilities.image_input, "preview")
+        self.assertEqual(runtime.capabilities.delegated_readiness, "supported")
+        self.assertEqual(runtime.capabilities.provider_extensions, "unsupported")
 
     def test_mlx_session_requires_model_artifact_dir_or_env(self) -> None:
         with self.assertRaisesRegex(
