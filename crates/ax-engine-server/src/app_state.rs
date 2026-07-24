@@ -832,12 +832,17 @@ fn run_production_path_warmup(generation_service: &NativeGenerationService, mode
     // enough to establish the double-buffer direct pipeline (bootstrap +
     // catch-up + steady). A single 4-token warm left cold first-token
     // variance on fresh-process S0 trials.
-    // Include a medium prefill shape so long multi-model prefill (flip S1
-    // Gemma 8k sibling) is not first-contact for Metal/compile caches.
+    // Include medium + long prefill shapes so multi-model S1 Gemma (~14k tok)
+    // is not first-contact for Metal/attention caches. Measured: short-only
+    // warm left concurrent S1 Gemma at ~12.3s vs ~8.8s after a full long
+    // prefill warm on M5 Max.
     for (offset, prompt_len, max_out) in [
         (0_u64, 34_usize, 8_u32),
         (1, 13, 16),
         (2, 512, 1),
+        // Flip S1 Gemma long-prefill is ~14k tokens; warm near that length so
+        // concurrent multi-model trials are not first-contact at full depth.
+        (3, 8192, 1),
     ] {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let model_id = model_id.to_string();
