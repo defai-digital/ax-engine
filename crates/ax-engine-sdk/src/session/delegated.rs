@@ -5,6 +5,7 @@ use crate::llama_cpp::{
     LlamaCppConfig, LlamaCppStreamHandle, run_blocking_generate, start_streaming_generate,
 };
 use crate::mlx_lm::run_blocking_generate as run_mlx_lm_generate;
+use crate::vllm::run_blocking_generate as run_vllm_generate;
 
 use super::EngineSession;
 use super::config::EngineSessionConfig;
@@ -51,6 +52,14 @@ pub(super) fn run_delegated_generate_prevalidated(
                 .as_ref()
                 .ok_or(EngineSessionError::MissingTensorRtLlmConfig)?;
             run_edge_llm_generate(request_id, runtime, tensor_rt_llm_backend, request)
+                .map_err(EngineSessionError::from)
+        }
+        SelectedBackend::Vllm => {
+            let vllm_backend = config
+                .vllm_backend
+                .as_ref()
+                .ok_or(EngineSessionError::MissingVllmConfig)?;
+            run_vllm_generate(request_id, runtime, vllm_backend, request)
                 .map_err(EngineSessionError::from)
         }
         SelectedBackend::Mlx => {

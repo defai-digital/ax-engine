@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::app_state::{AppState, LiveState};
-use crate::backends::{edge_llm, llama_cpp, mlx_lm};
+use crate::backends::{edge_llm, llama_cpp, mlx_lm, vllm};
 use crate::chat::{
     ChatPromptTemplate, decode_gemma4_chat_output, decode_gemma4_chat_output_with_reasoning,
     decode_glm_chat_output,
@@ -22,14 +22,16 @@ use crate::openai::chunks::{
 };
 use crate::openai::requests::{
     OpenAiBuiltEdgeLlmChatRequest, OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest,
-    OpenAiBuiltRequest, OpenAiResponseOptions, build_openai_edge_llm_chat_request,
-    build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
+    OpenAiBuiltRequest, OpenAiBuiltVllmChatRequest, OpenAiResponseOptions,
+    build_openai_edge_llm_chat_request, build_openai_llama_cpp_chat_request,
+    build_openai_mlx_lm_chat_request, build_openai_vllm_chat_request,
 };
 use crate::openai::responses::openai_chat_completion_response;
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::streaming::{
     StreamReasoningFamily, stream_openai_edge_llm_chat_request,
     stream_openai_llama_cpp_chat_request, stream_openai_mlx_lm_chat_request, stream_openai_request,
+    stream_openai_vllm_chat_request,
 };
 use crate::tasks::run_blocking_session_task;
 
@@ -147,6 +149,48 @@ pub(crate) async fn run_openai_edge_llm_chat_generation(
     let response = run_blocking_session_task(move || {
         let _permit = permit;
         edge_llm::run_chat_generate(request_id, &runtime, &edge_backend, &chat_request)
+    })
+    .await?;
+    validate_openai_response_format(&response, &response_options)?;
+
+    Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(
+        &response,
+        request_id,
+        response_options,
+        None,
+    ))
+}
+
+pub(crate) async fn run_openai_vllm_chat_generation(
+    state: AppState,
+    live: LiveState,
+    request: OpenAiChatCompletionHttpRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let OpenAiBuiltVllmChatRequest {
+        chat_request,
+        stream,
+        response_options,
+    } = build_openai_vllm_chat_request(&live, request)?;
+    if stream {
+        if response_options.parse_tool_calls {
+            return Err(streaming_delegated_tool_calls_error());
+        }
+        return stream_openai_vllm_chat_request(
+            state,
+            live,
+            chat_request,
+            response_options.include_stream_usage,
+        )
+        .await;
+    }
+
+    let request_id = state.allocate_request_id();
+    let runtime = live.runtime_report.clone();
+    let vllm_backend = vllm::config(&live).map_err(map_session_error)?;
+    let permit = state.try_admit(&live).map_err(admission_error_response)?;
+    let response = run_blocking_session_task(move || {
+        let _permit = permit;
+        vllm::run_chat_generate(request_id, &runtime, &vllm_backend, &chat_request)
     })
     .await?;
     validate_openai_response_format(&response, &response_options)?;

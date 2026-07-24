@@ -2311,6 +2311,7 @@ fn serialize_runtime_metadata_prefers_actual_runtime_report_over_config_side_met
             source_q6_k_binding_count: 0,
             source_q8_0_binding_count: 0,
         }),
+        delegated_runtime: None,
     };
 
     let runtime_json = serialize_runtime_metadata(&runtime, Some(&actual_runtime));

@@ -8,7 +8,9 @@ use std::path::Path;
 
 use super::fixtures::{
     json_response, llama_cpp_state, minimal_tokenizer_artifact, native_mlx_openai_builder_state,
+    spawn_vllm_readiness_server, vllm_delegated_state,
 };
+use crate::args::VllmModelProfileArg;
 
 #[tokio::test]
 async fn models_reports_ax_code_safe_capabilities() {
@@ -43,6 +45,44 @@ async fn models_reports_ax_code_safe_capabilities() {
     );
     assert_eq!(model["context_length"], json!(16 * 1024u32));
     assert_eq!(model["limit"]["output"], json!(2048u32));
+}
+
+#[tokio::test]
+async fn models_advertises_vllm_unlimited_ocr_image_and_profile_limits() {
+    let (server_url, server_handle) = spawn_vllm_readiness_server("baidu/Unlimited-OCR", 32_768);
+    let app = build_router(vllm_delegated_state(
+        server_url,
+        "baidu/Unlimited-OCR",
+        VllmModelProfileArg::UnlimitedOcr,
+    ));
+    server_handle
+        .join()
+        .expect("vLLM readiness server should finish");
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .expect("request should build"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let model = &json["data"][0];
+    assert_eq!(model["capabilities"]["input"]["image"], json!(true));
+    assert_eq!(model["capabilities"]["attachment"], json!(true));
+    assert_eq!(model["capabilities"]["interleaved"], json!(true));
+    assert_eq!(model["context_length"], json!(32_768));
+    assert_eq!(model["max_output_tokens"], json!(8_192));
+    assert_eq!(
+        model["ax_engine"]["native_multimodal_input_supported"],
+        json!(false)
+    );
+    assert_eq!(
+        model["ax_engine"]["openai_tokenized_multimodal_input_supported"],
+        json!(false)
+    );
 }
 
 #[tokio::test]

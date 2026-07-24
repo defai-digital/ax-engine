@@ -4,7 +4,8 @@ use ax_engine_sdk::{
     EdgeLlmChatGenerateRequest, EdgeLlmStreamHandle, EngineSessionError, EngineTokenizer,
     EngineTokenizerError, GenerateFinishReason, GenerateRequest, GenerateStreamEvent,
     LlamaCppChatGenerateRequest, LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle,
-    SelectedBackend, finish_reason_from_edge_llm, finish_reason_from_mlx_lm,
+    SelectedBackend, VllmChatGenerateRequest, VllmStreamHandle, finish_reason_from_edge_llm,
+    finish_reason_from_mlx_lm, finish_reason_from_vllm,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -13,7 +14,7 @@ use axum::response::sse::Event;
 use tokio::sync::mpsc;
 
 use crate::app_state::{AppState, LiveState};
-use crate::backends::{edge_llm, llama_cpp, mlx_lm};
+use crate::backends::{edge_llm, llama_cpp, mlx_lm, vllm};
 use crate::chat::{Gemma4ChannelIds, GptOssHarmonyIds, strip_gemma4_channel_name_header};
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::generation::streaming::{
@@ -141,6 +142,31 @@ pub(crate) async fn stream_openai_edge_llm_chat_request(
             );
         },
     );
+
+    Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
+}
+
+pub(crate) async fn stream_openai_vllm_chat_request(
+    state: AppState,
+    live: LiveState,
+    request: VllmChatGenerateRequest,
+    include_usage: bool,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let permit = state.try_admit(&live).map_err(admission_error_response)?;
+    let request_id = state.allocate_request_id();
+    let model_id = request.model_id.clone();
+    let runtime = live.runtime_report.clone();
+    let vllm_backend = vllm::config(&live).map_err(map_session_error)?;
+    let (stream, permit) = run_blocking_session_task(move || {
+        let stream = vllm::start_streaming_chat_generate(&runtime, &vllm_backend, &request)?;
+        Ok((stream, permit))
+    })
+    .await?;
+
+    let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
+    spawn_sse_blocking_stream_task(tx, "openai vllm chat stream", permit, move |tx, cancel| {
+        drive_openai_vllm_chat_stream(tx, &cancel, request_id, model_id, stream, include_usage);
+    });
 
     Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
 }
@@ -1276,6 +1302,92 @@ fn drive_openai_edge_llm_chat_stream(
                         request_id,
                         &model_id,
                         finish_reason_from_edge_llm(Some(finish_reason.as_str())),
+                    ) {
+                        return;
+                    }
+                    final_emitted = true;
+                }
+                if final_emitted
+                    && (!include_usage
+                        || (prompt_token_count.is_some() && output_token_count.is_some()))
+                {
+                    if !send_stream_usage_from_counts(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        OpenAiStreamKind::ChatCompletion,
+                        include_usage,
+                        prompt_token_count,
+                        output_token_count,
+                    ) {
+                        return;
+                    }
+                    let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
+                    return;
+                }
+            }
+            Ok(None) => {
+                if (!final_emitted
+                    && !send_openai_mlx_lm_chat_final_chunk(&tx, request_id, &model_id, None))
+                    || !send_stream_usage_from_counts(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        OpenAiStreamKind::ChatCompletion,
+                        include_usage,
+                        prompt_token_count,
+                        output_token_count,
+                    )
+                {
+                    return;
+                }
+                let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
+                return;
+            }
+            Err(error) => {
+                let (_, Json(error)) = map_session_error(EngineSessionError::from(error));
+                send_stream_error(&tx, error);
+                return;
+            }
+        }
+    }
+}
+
+fn drive_openai_vllm_chat_stream(
+    tx: StreamEventSender,
+    cancel: &AtomicBool,
+    request_id: u64,
+    model_id: String,
+    mut stream: VllmStreamHandle,
+    include_usage: bool,
+) {
+    let mut chat_role_emitted = false;
+    let mut prompt_token_count = None;
+    let mut output_token_count = None;
+    let mut final_emitted = false;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            tracing::debug!("stream cancelled: client disconnected");
+            return;
+        }
+        match stream.next_chunk() {
+            Ok(Some(chunk)) => {
+                prompt_token_count = chunk.prompt_token_count.or(prompt_token_count);
+                output_token_count = chunk.output_token_count.or(output_token_count);
+                if !final_emitted && !chunk.text.is_empty() {
+                    let role = next_chat_delta_role(&mut chat_role_emitted);
+                    let delta = chat_delta_chunk(request_id, model_id.clone(), role, chunk.text);
+                    if !send_openai_stream_chunk(&tx, &delta) {
+                        return;
+                    }
+                }
+
+                if !final_emitted && let Some(finish_reason) = chunk.finish_reason {
+                    if !send_openai_mlx_lm_chat_final_chunk(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        finish_reason_from_vllm(Some(finish_reason.as_str())),
                     ) {
                         return;
                     }

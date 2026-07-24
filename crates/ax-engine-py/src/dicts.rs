@@ -155,6 +155,15 @@ fn capability_dict<'py>(py: Python<'py>, capabilities: &CapabilityReport) -> PyR
         "benchmark_metrics",
         enum_label(py, capabilities.benchmark_metrics),
     )?;
+    dict.set_item("image_input", enum_label(py, capabilities.image_input))?;
+    dict.set_item(
+        "delegated_readiness",
+        enum_label(py, capabilities.delegated_readiness),
+    )?;
+    dict.set_item(
+        "provider_extensions",
+        enum_label(py, capabilities.provider_extensions),
+    )?;
     Ok(dict.unbind())
 }
 

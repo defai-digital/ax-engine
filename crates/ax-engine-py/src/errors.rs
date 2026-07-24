@@ -1,5 +1,6 @@
 use ax_engine_sdk::{
     EdgeLlmBackendError, EngineSessionError, LlamaCppBackendError, MlxLmBackendError,
+    VllmBackendError,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -50,6 +51,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxLmDoesNotSupportLifecycle { .. }
         | EngineSessionError::EdgeLlmDoesNotSupportLifecycle { .. }
         | EngineSessionError::TensorRtLlmDoesNotSupportLifecycle { .. }
+        | EngineSessionError::VllmDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportStreaming
         | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
@@ -67,7 +69,10 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. })
         | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingInputText)
         | EngineSessionError::EdgeLlm(EdgeLlmBackendError::UnsupportedTokenPrompt)
-        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::BackendConfigMismatch { .. }) => {
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::BackendConfigMismatch { .. })
+        | EngineSessionError::Vllm(VllmBackendError::InvalidRequest(_))
+        | EngineSessionError::Vllm(VllmBackendError::MissingInputText)
+        | EngineSessionError::Vllm(VllmBackendError::UnsupportedTokenPrompt) => {
             PyValueError::new_err(error.to_string())
         }
         EngineSessionError::BackendContract(_)
@@ -75,6 +80,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MissingMlxLmConfig
         | EngineSessionError::MissingEdgeLlmConfig
         | EngineSessionError::MissingTensorRtLlmConfig
+        | EngineSessionError::MissingVllmConfig
         | EngineSessionError::MissingDelegatedRuntime { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })
@@ -101,9 +107,8 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingCompletionChoice { .. })
         | EngineSessionError::EdgeLlm(EdgeLlmBackendError::SseRead { .. })
         | EngineSessionError::EdgeLlm(EdgeLlmBackendError::InvalidStreamChunk { .. })
-        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingStreamChoice { .. }) => {
-            EngineBackendError::new_err(error.to_string())
-        }
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingStreamChoice { .. })
+        | EngineSessionError::Vllm(_) => EngineBackendError::new_err(error.to_string()),
         EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxLmStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxRuntimeArtifactsRequired

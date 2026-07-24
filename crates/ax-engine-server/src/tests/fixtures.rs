@@ -7,6 +7,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -290,6 +291,15 @@ pub(super) fn base_server_args() -> ServerArgs {
         mlx_lm_server_url: None,
         edge_llm_server_url: None,
         tensor_rt_llm_server_url: None,
+        vllm_server_url: None,
+        vllm_upstream_model_id: None,
+        vllm_api_key_env: args::VLLM_API_KEY_ENV.to_string(),
+        vllm_api_key_file: None,
+        vllm_allow_remote: false,
+        vllm_ca_cert: None,
+        vllm_max_in_flight: None,
+        vllm_model_profile: args::VllmModelProfileArg::OpenAiCompatible,
+        vllm_runtime_profile: None,
         delegated_http_connect_timeout_secs:
             ax_engine_sdk::DelegatedHttpTimeouts::default_connect_secs(),
         delegated_http_read_timeout_secs: ax_engine_sdk::DelegatedHttpTimeouts::default_io_secs(),
@@ -398,6 +408,20 @@ pub(super) fn tensor_rt_llm_state(server_url: String) -> AppState {
     test_app_state(|args| {
         args.support_tier = args::PreviewSupportTier::TensorRtLlm;
         args.tensor_rt_llm_server_url = Some(server_url);
+    })
+}
+
+pub(super) fn vllm_delegated_state(
+    server_url: String,
+    upstream_model_id: &str,
+    model_profile: args::VllmModelProfileArg,
+) -> AppState {
+    test_app_state(|args| {
+        args.support_tier = args::PreviewSupportTier::Vllm;
+        args.vllm_server_url = Some(server_url);
+        args.vllm_upstream_model_id = Some(upstream_model_id.to_string());
+        args.vllm_model_profile = model_profile;
+        args.vllm_runtime_profile = Some("test-profile".to_string());
     })
 }
 
@@ -650,6 +674,156 @@ pub(super) fn spawn_llama_cpp_completion_mock_server(
     });
 
     (format!("http://{address}"), handle)
+}
+
+#[derive(Debug)]
+pub(super) struct MockHttpRequest {
+    pub(super) method: String,
+    pub(super) path: String,
+    pub(super) headers: BTreeMap<String, String>,
+    pub(super) payload: Option<Value>,
+}
+
+pub(super) fn spawn_vllm_readiness_server(
+    upstream_model_id: &str,
+    max_model_len: u32,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    let upstream_model_id = upstream_model_id.to_string();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("readiness request should arrive");
+        let request = read_mock_http_request(&mut stream);
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/v1/models");
+        let body = serde_json::json!({
+            "object": "list",
+            "data": [{
+                "id": upstream_model_id,
+                "root": upstream_model_id,
+                "max_model_len": max_model_len
+            }]
+        })
+        .to_string();
+        write_http_response(&mut stream, "application/json", &body, None);
+    });
+    (format!("http://{address}"), handle)
+}
+
+pub(super) fn spawn_vllm_chat_server(
+    upstream_model_id: &str,
+    content_type: &'static str,
+    response_body: String,
+    mut assert_generation: impl FnMut(MockHttpRequest) + Send + 'static,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    let upstream_model_id = upstream_model_id.to_string();
+    let handle = thread::spawn(move || {
+        let (mut readiness_stream, _) = listener.accept().expect("readiness request should arrive");
+        let readiness = read_mock_http_request(&mut readiness_stream);
+        assert_eq!(readiness.method, "GET");
+        assert_eq!(readiness.path, "/v1/models");
+        assert!(readiness.payload.is_none());
+        let readiness_body = serde_json::json!({
+            "object": "list",
+            "data": [{
+                "id": upstream_model_id,
+                "root": upstream_model_id,
+                "max_model_len": 32768
+            }]
+        })
+        .to_string();
+        write_http_response(
+            &mut readiness_stream,
+            "application/json",
+            &readiness_body,
+            None,
+        );
+
+        let (mut generation_stream, _) =
+            listener.accept().expect("generation request should arrive");
+        let generation = read_mock_http_request(&mut generation_stream);
+        assert_eq!(generation.method, "POST");
+        assert_eq!(generation.path, "/v1/chat/completions");
+        assert_generation(generation);
+        write_http_response(
+            &mut generation_stream,
+            content_type,
+            &response_body,
+            Some("Cache-Control: no-cache"),
+        );
+    });
+    (format!("http://{address}"), handle)
+}
+
+pub(super) fn read_mock_http_request(stream: &mut std::net::TcpStream) -> MockHttpRequest {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    let (header_end, content_length) = loop {
+        let bytes_read = stream.read(&mut buffer).expect("request should read");
+        assert!(
+            bytes_read > 0,
+            "client closed connection before request headers completed"
+        );
+        request.extend_from_slice(&buffer[..bytes_read]);
+        let Some(header_end) = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+        else {
+            continue;
+        };
+        let header_text =
+            String::from_utf8(request[..header_end].to_vec()).expect("headers should be utf8");
+        let content_length = header_text
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length").then(|| {
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .expect("content-length should parse")
+                })
+            })
+            .unwrap_or(0);
+        break (header_end, content_length);
+    };
+    while request.len() < header_end + content_length {
+        let bytes_read = stream.read(&mut buffer).expect("request body should read");
+        assert!(
+            bytes_read > 0,
+            "client closed before request body completed"
+        );
+        request.extend_from_slice(&buffer[..bytes_read]);
+    }
+    request.truncate(header_end + content_length);
+    let header_text =
+        String::from_utf8(request[..header_end].to_vec()).expect("headers should be utf8");
+    let mut lines = header_text.lines();
+    let request_line = lines.next().expect("request line should exist");
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts
+        .next()
+        .expect("method should exist")
+        .to_string();
+    let path = request_parts.next().expect("path should exist").to_string();
+    let headers = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect();
+    let payload = (content_length > 0).then(|| {
+        serde_json::from_slice(&request[header_end..]).expect("request payload should be json")
+    });
+    MockHttpRequest {
+        method,
+        path,
+        headers,
+        payload,
+    }
 }
 
 pub(super) fn build_sse_event_stream_body(chunks: &[Value]) -> String {

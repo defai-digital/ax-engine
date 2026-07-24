@@ -653,6 +653,7 @@ mod tests {
             SelectedBackend::TensorRtLlm => {
                 (SupportTier::TensorRtLlm, ResolutionPolicy::AllowTensorRtLlm)
             }
+            SelectedBackend::Vllm => (SupportTier::Vllm, ResolutionPolicy::AllowVllm),
         };
 
         RuntimeReport {
@@ -665,6 +666,7 @@ mod tests {
             metal_toolchain: Default::default(),
             mlx_runtime: None,
             mlx_model: None,
+            delegated_runtime: None,
         }
     }
 

@@ -64,6 +64,15 @@ fn base_args() -> ServerArgs {
         mlx_lm_server_url: None,
         edge_llm_server_url: None,
         tensor_rt_llm_server_url: None,
+        vllm_server_url: None,
+        vllm_upstream_model_id: None,
+        vllm_api_key_env: VLLM_API_KEY_ENV.to_string(),
+        vllm_api_key_file: None,
+        vllm_allow_remote: false,
+        vllm_ca_cert: None,
+        vllm_max_in_flight: None,
+        vllm_model_profile: VllmModelProfileArg::OpenAiCompatible,
+        vllm_runtime_profile: None,
         delegated_http_connect_timeout_secs: DelegatedHttpTimeouts::default_connect_secs(),
         delegated_http_read_timeout_secs: DelegatedHttpTimeouts::default_io_secs(),
         delegated_http_write_timeout_secs: DelegatedHttpTimeouts::default_io_secs(),
@@ -153,6 +162,115 @@ fn preview_support_tier_maps_to_sdk_support_tier() {
         PreviewSupportTier::TensorRtLlm.as_sdk_support_tier(),
         SupportTier::TensorRtLlm
     );
+    assert_eq!(
+        PreviewSupportTier::Vllm.as_sdk_support_tier(),
+        SupportTier::Vllm
+    );
+}
+
+#[test]
+fn vllm_session_config_wires_one_provider_for_both_cuda_architectures() {
+    let args = ServerArgs {
+        support_tier: PreviewSupportTier::Vllm,
+        model_id: "public-ocr".to_string(),
+        vllm_server_url: Some("http://127.0.0.1:18000".to_string()),
+        vllm_upstream_model_id: Some("baidu/Unlimited-OCR".to_string()),
+        vllm_api_key_env: "AX_ENGINE_TEST_VLLM_KEY_NOT_SET".to_string(),
+        vllm_max_in_flight: Some(3),
+        vllm_model_profile: VllmModelProfileArg::UnlimitedOcr,
+        vllm_runtime_profile: Some("cuda-linux-aarch64-thor-sm110".to_string()),
+        max_concurrent_requests: Some(5),
+        ..base_args()
+    };
+
+    let config = args
+        .session_config()
+        .expect("vLLM session config should resolve");
+    assert_eq!(
+        config.resolved_backend.selected_backend,
+        SelectedBackend::Vllm
+    );
+    assert_eq!(config.resolved_backend.support_tier, SupportTier::Vllm);
+    let backend = config
+        .vllm_backend
+        .as_ref()
+        .expect("vLLM backend should be configured")
+        .server();
+    assert_eq!(backend.base_url.as_str(), "http://127.0.0.1:18000/v1");
+    assert_eq!(backend.upstream_model_id, "baidu/Unlimited-OCR");
+    assert_eq!(
+        backend.model_profile,
+        ax_engine_sdk::VllmModelProfile::UnlimitedOcr
+    );
+    assert_eq!(
+        backend.runtime_profile.as_deref(),
+        Some("cuda-linux-aarch64-thor-sm110")
+    );
+    assert_eq!(backend.max_in_flight, Some(3));
+    assert_eq!(args.resolved_max_concurrent_requests(), Some(3));
+
+    let runtime = config.runtime_report();
+    let delegated = runtime
+        .delegated_runtime
+        .as_ref()
+        .expect("delegated runtime report should be present");
+    assert_eq!(delegated.provider, "vllm");
+    assert_eq!(delegated.endpoint.authority, "loopback");
+    assert_eq!(
+        delegated.readiness,
+        ax_engine_sdk::DelegatedReadiness::Configured
+    );
+}
+
+#[test]
+fn vllm_options_fail_closed_outside_vllm_and_reject_zero_admission_limit() {
+    let unrelated = ServerArgs {
+        vllm_server_url: Some("http://127.0.0.1:18000".to_string()),
+        ..base_args()
+    };
+    let error = unrelated
+        .session_config()
+        .expect_err("vLLM options must not silently select the provider");
+    assert!(error.contains("--support-tier vllm"));
+
+    let zero_limit = ServerArgs {
+        support_tier: PreviewSupportTier::Vllm,
+        vllm_server_url: Some("http://127.0.0.1:18000".to_string()),
+        vllm_api_key_env: "AX_ENGINE_TEST_VLLM_KEY_NOT_SET".to_string(),
+        vllm_max_in_flight: Some(0),
+        ..base_args()
+    };
+    let error = zero_limit
+        .session_config()
+        .expect_err("zero max-in-flight must fail closed");
+    assert!(error.contains("greater than zero"));
+}
+
+#[cfg(unix)]
+#[test]
+fn vllm_api_key_file_rejects_symbolic_links() {
+    use std::os::unix::fs::symlink;
+
+    let root = unique_test_dir("vllm-api-key-symlink");
+    fs::create_dir_all(&root).expect("test dir should create");
+    let secret = root.join("api-key");
+    let link = root.join("api-key-link");
+    fs::write(&secret, "top-secret\n").expect("secret should write");
+    symlink(&secret, &link).expect("symlink should create");
+
+    let args = ServerArgs {
+        support_tier: PreviewSupportTier::Vllm,
+        vllm_server_url: Some("http://127.0.0.1:18000".to_string()),
+        vllm_api_key_env: "AX_ENGINE_TEST_VLLM_KEY_NOT_SET".to_string(),
+        vllm_api_key_file: Some(link),
+        ..base_args()
+    };
+    let error = args
+        .session_config()
+        .expect_err("symbolic-link credentials must fail closed");
+    assert!(error.contains("must not be a symbolic link"));
+
+    fs::remove_dir_all(root).expect("test dir should remove");
 }
 
 #[test]

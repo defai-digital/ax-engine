@@ -9,6 +9,7 @@ use crate::delegated_http::DelegatedHttpTimeouts;
 use crate::edge_llm::{EdgeLlmConfig, EdgeLlmServerCompletionConfig};
 use crate::llama_cpp::{LlamaCppConfig, LlamaCppServerCompletionConfig};
 use crate::mlx_lm::{MlxLmConfig, MlxLmServerCompletionConfig};
+use crate::vllm::VllmConfig;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -21,6 +22,8 @@ pub enum ResolutionPolicy {
     AllowTensorRtEdgeLlm,
     /// Desktop / datacenter TensorRT-LLM (`trtllm-serve`) L2 path.
     AllowTensorRtLlm,
+    /// Portable OpenAI-compatible vLLM sidecar on certified CUDA hosts.
+    AllowVllm,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -33,6 +36,8 @@ pub enum SelectedBackend {
     TensorRtEdgeLlm,
     /// Delegated TensorRT-LLM OpenAI-compatible server (desktop/datacenter CUDA).
     TensorRtLlm,
+    /// Delegated vLLM OpenAI-compatible sidecar.
+    Vllm,
 }
 
 impl SelectedBackend {
@@ -50,6 +55,7 @@ pub enum SupportTier {
     LlamaCpp,
     TensorRtEdgeLlm,
     TensorRtLlm,
+    Vllm,
     Unsupported,
 }
 
@@ -93,6 +99,10 @@ impl BackendPolicy {
     pub const fn allow_tensor_rt_llm() -> Self {
         Self::new(ResolutionPolicy::AllowTensorRtLlm)
     }
+
+    pub const fn allow_vllm() -> Self {
+        Self::new(ResolutionPolicy::AllowVllm)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -127,6 +137,12 @@ pub struct CapabilityReport {
     pub long_context_validation: CapabilityLevel,
     #[serde(default)]
     pub benchmark_metrics: CapabilityLevel,
+    #[serde(default)]
+    pub image_input: CapabilityLevel,
+    #[serde(default)]
+    pub delegated_readiness: CapabilityLevel,
+    #[serde(default)]
+    pub provider_extensions: CapabilityLevel,
 }
 
 impl CapabilityReport {
@@ -138,6 +154,9 @@ impl CapabilityReport {
             prefix_reuse: true,
             long_context_validation: CapabilityLevel::Supported,
             benchmark_metrics: CapabilityLevel::Supported,
+            image_input: CapabilityLevel::Supported,
+            delegated_readiness: CapabilityLevel::Unsupported,
+            provider_extensions: CapabilityLevel::Unsupported,
         }
     }
 
@@ -149,6 +168,9 @@ impl CapabilityReport {
             prefix_reuse: true,
             long_context_validation: CapabilityLevel::Preview,
             benchmark_metrics: CapabilityLevel::Preview,
+            image_input: CapabilityLevel::Preview,
+            delegated_readiness: CapabilityLevel::Unsupported,
+            provider_extensions: CapabilityLevel::Unsupported,
         }
     }
 
@@ -160,6 +182,9 @@ impl CapabilityReport {
             prefix_reuse: false,
             long_context_validation: CapabilityLevel::Unsupported,
             benchmark_metrics: CapabilityLevel::Unsupported,
+            image_input: CapabilityLevel::Unsupported,
+            delegated_readiness: CapabilityLevel::Unsupported,
+            provider_extensions: CapabilityLevel::Unsupported,
         }
     }
 
@@ -171,6 +196,9 @@ impl CapabilityReport {
             prefix_reuse: false,
             long_context_validation: CapabilityLevel::Unsupported,
             benchmark_metrics: CapabilityLevel::Unsupported,
+            image_input: CapabilityLevel::Unsupported,
+            delegated_readiness: CapabilityLevel::Unsupported,
+            provider_extensions: CapabilityLevel::Unsupported,
         }
     }
 
@@ -182,12 +210,37 @@ impl CapabilityReport {
             prefix_reuse: false,
             long_context_validation: CapabilityLevel::Preview,
             benchmark_metrics: CapabilityLevel::Preview,
+            image_input: CapabilityLevel::Preview,
+            delegated_readiness: CapabilityLevel::Unsupported,
+            provider_extensions: CapabilityLevel::Unsupported,
         }
     }
 
     pub const fn tensor_rt_llm_text() -> Self {
         // Same L2 text surface as Edge-LLM; product path is desktop/datacenter.
         Self::tensor_rt_edge_llm_text()
+    }
+
+    pub const fn vllm_openai_compatible() -> Self {
+        Self {
+            text_generation: true,
+            token_streaming: true,
+            deterministic_mode: false,
+            prefix_reuse: false,
+            long_context_validation: CapabilityLevel::Preview,
+            benchmark_metrics: CapabilityLevel::Preview,
+            image_input: CapabilityLevel::Preview,
+            delegated_readiness: CapabilityLevel::Supported,
+            provider_extensions: CapabilityLevel::Preview,
+        }
+    }
+
+    pub const fn vllm_unlimited_ocr() -> Self {
+        Self {
+            provider_extensions: CapabilityLevel::Supported,
+            image_input: CapabilityLevel::Supported,
+            ..Self::vllm_openai_compatible()
+        }
     }
 
     pub const fn llama_cpp_cli_baseline() -> Self {
@@ -198,6 +251,9 @@ impl CapabilityReport {
             prefix_reuse: false,
             long_context_validation: CapabilityLevel::Unsupported,
             benchmark_metrics: CapabilityLevel::Unsupported,
+            image_input: CapabilityLevel::Unsupported,
+            delegated_readiness: CapabilityLevel::Unsupported,
+            provider_extensions: CapabilityLevel::Unsupported,
         }
     }
 
@@ -209,6 +265,9 @@ impl CapabilityReport {
             prefix_reuse: false,
             long_context_validation: CapabilityLevel::Unsupported,
             benchmark_metrics: CapabilityLevel::Unsupported,
+            image_input: CapabilityLevel::Unsupported,
+            delegated_readiness: CapabilityLevel::Unsupported,
+            provider_extensions: CapabilityLevel::Unsupported,
         }
     }
 
@@ -226,6 +285,7 @@ impl CapabilityReport {
                 Self::tensor_rt_edge_llm_text()
             }
             (SelectedBackend::TensorRtLlm, SupportTier::TensorRtLlm) => Self::tensor_rt_llm_text(),
+            (SelectedBackend::Vllm, SupportTier::Vllm) => Self::vllm_openai_compatible(),
             (_, SupportTier::LlamaCpp) => Self::llama_cpp_baseline(),
             (_, SupportTier::Unsupported) => Self::unsupported(),
             _ => Self::unsupported(),
@@ -250,6 +310,13 @@ impl CapabilityReport {
     pub fn for_tensor_rt_llm_backend(_config: &EdgeLlmConfig) -> Self {
         // Wire shape matches Edge-LLM OpenAI L2 config; capability label is TRT-LLM.
         Self::tensor_rt_llm_text()
+    }
+
+    pub fn for_vllm_backend(config: &VllmConfig) -> Self {
+        match config.server().model_profile {
+            crate::vllm::VllmModelProfile::OpenAiCompatible => Self::vllm_openai_compatible(),
+            crate::vllm::VllmModelProfile::UnlimitedOcr => Self::vllm_unlimited_ocr(),
+        }
     }
 }
 
@@ -414,6 +481,33 @@ impl NativeModelReport {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegatedReadiness {
+    #[default]
+    Configured,
+    Ready,
+    Degraded,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RedactedEndpoint {
+    pub authority: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DelegatedRuntimeReport {
+    pub provider: String,
+    pub upstream_model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_profile: Option<String>,
+    #[serde(default)]
+    pub readiness: DelegatedReadiness,
+    pub endpoint: RedactedEndpoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_version: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResolvedBackend {
     pub selected_backend: SelectedBackend,
@@ -477,6 +571,14 @@ impl ResolvedBackend {
         Self::new(
             SelectedBackend::TensorRtLlm,
             SupportTier::TensorRtLlm,
+            Some(reason.into()),
+        )
+    }
+
+    pub fn vllm(reason: impl Into<String>) -> Self {
+        Self::new(
+            SelectedBackend::Vllm,
+            SupportTier::Vllm,
             Some(reason.into()),
         )
     }
@@ -560,6 +662,27 @@ impl ResolvedBackend {
             return Ok(());
         }
 
+        if self.selected_backend == SelectedBackend::Vllm {
+            if self.support_tier != SupportTier::Vllm {
+                return Err(BackendContractError::VllmBackendRequiresVllmTier {
+                    support_tier: self.support_tier,
+                });
+            }
+            if backend_policy.resolution_policy != ResolutionPolicy::AllowVllm {
+                return Err(BackendContractError::VllmBackendRequiresVllmPolicy {
+                    resolution_policy: backend_policy.resolution_policy,
+                });
+            }
+            let has_reason = self
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| !reason.trim().is_empty());
+            if !has_reason {
+                return Err(BackendContractError::VllmBackendRequiresDelegationReason);
+            }
+            return Ok(());
+        }
+
         if self.support_tier != SupportTier::LlamaCpp {
             return Err(BackendContractError::LlamaCppBackendRequiresLlamaCppTier {
                 selected_backend: self.selected_backend,
@@ -600,6 +723,7 @@ pub struct PreviewBackendRequest {
     pub edge_llm_server_url: Option<String>,
     /// Base URL for TensorRT-LLM OpenAI-compatible server (`trtllm-serve`).
     pub tensor_rt_llm_server_url: Option<String>,
+    pub vllm_backend: Option<VllmConfig>,
     pub delegated_http_timeouts: DelegatedHttpTimeouts,
 }
 
@@ -614,6 +738,7 @@ impl Default for PreviewBackendRequest {
             mlx_lm_server_url: None,
             edge_llm_server_url: None,
             tensor_rt_llm_server_url: None,
+            vllm_backend: None,
             delegated_http_timeouts: DelegatedHttpTimeouts::default(),
         }
     }
@@ -665,12 +790,13 @@ pub struct PreviewBackendResolution {
     pub edge_llm_backend: Option<EdgeLlmConfig>,
     /// OpenAI-compatible TRT-LLM server config (same wire shape as Edge-LLM L2).
     pub tensor_rt_llm_backend: Option<EdgeLlmConfig>,
+    pub vllm_backend: Option<VllmConfig>,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum PreviewBackendResolutionError {
     #[error(
-        "unsupported support_tier {value}; expected mlx_preview, mlx_certified, mlx_lm_delegated, llama_cpp, tensor_rt_edge_llm, or tensor_rt_llm"
+        "unsupported support_tier {value}; expected mlx_preview, mlx_certified, mlx_lm_delegated, llama_cpp, tensor_rt_edge_llm, tensor_rt_llm, or vllm"
     )]
     UnsupportedSupportTierLabel { value: String },
     #[error("support_tier llama_cpp accepts either llama_server_url or llama_model_path, not both")]
@@ -683,6 +809,8 @@ pub enum PreviewBackendResolutionError {
     MissingEdgeLlmServerUrl,
     #[error("support_tier tensor_rt_llm requires tensor_rt_llm_server_url")]
     MissingTensorRtLlmServerUrl,
+    #[error("support_tier vllm requires a validated vllm_backend config")]
+    MissingVllmConfig,
 }
 
 pub fn preview_support_tier_from_label(
@@ -695,6 +823,7 @@ pub fn preview_support_tier_from_label(
         "llama_cpp" => Ok(SupportTier::LlamaCpp),
         "tensor_rt_edge_llm" => Ok(SupportTier::TensorRtEdgeLlm),
         "tensor_rt_llm" => Ok(SupportTier::TensorRtLlm),
+        "vllm" => Ok(SupportTier::Vllm),
         other => Err(PreviewBackendResolutionError::UnsupportedSupportTierLabel {
             value: other.to_string(),
         }),
@@ -724,6 +853,7 @@ pub fn resolve_preview_backend(
                 mlx_lm_backend: None,
                 edge_llm_backend: None,
                 tensor_rt_llm_backend: None,
+                vllm_backend: None,
             })
         }
         PreviewBackendMode::ShippingMlx => Ok(PreviewBackendResolution {
@@ -733,6 +863,7 @@ pub fn resolve_preview_backend(
             mlx_lm_backend: None,
             edge_llm_backend: None,
             tensor_rt_llm_backend: None,
+            vllm_backend: None,
         }),
     }
 }
@@ -748,6 +879,7 @@ fn resolve_explicit_preview_backend(
             mlx_lm_backend: None,
             edge_llm_backend: None,
             tensor_rt_llm_backend: None,
+            vllm_backend: None,
         }),
         SupportTier::MlxCertified => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::mlx_only(),
@@ -760,6 +892,7 @@ fn resolve_explicit_preview_backend(
             mlx_lm_backend: None,
             edge_llm_backend: None,
             tensor_rt_llm_backend: None,
+            vllm_backend: None,
         }),
         SupportTier::MlxLmDelegated => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::allow_mlx_lm_delegated(),
@@ -773,6 +906,7 @@ fn resolve_explicit_preview_backend(
             )?),
             edge_llm_backend: None,
             tensor_rt_llm_backend: None,
+            vllm_backend: None,
         }),
         SupportTier::TensorRtEdgeLlm => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::allow_tensor_rt_edge_llm(),
@@ -786,6 +920,7 @@ fn resolve_explicit_preview_backend(
                 request.delegated_http_timeouts,
             )?),
             tensor_rt_llm_backend: None,
+            vllm_backend: None,
         }),
         SupportTier::TensorRtLlm => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::allow_tensor_rt_llm(),
@@ -799,6 +934,22 @@ fn resolve_explicit_preview_backend(
                 request.tensor_rt_llm_server_url,
                 request.delegated_http_timeouts,
             )?),
+            vllm_backend: None,
+        }),
+        SupportTier::Vllm => Ok(PreviewBackendResolution {
+            backend_policy: BackendPolicy::allow_vllm(),
+            resolved_backend: ResolvedBackend::vllm(
+                "vLLM delegated backend explicitly requested by preview session config",
+            ),
+            llama_backend: None,
+            mlx_lm_backend: None,
+            edge_llm_backend: None,
+            tensor_rt_llm_backend: None,
+            vllm_backend: Some(
+                request
+                    .vllm_backend
+                    .ok_or(PreviewBackendResolutionError::MissingVllmConfig)?,
+            ),
         }),
         SupportTier::LlamaCpp => {
             let llama_backend = resolve_llama_cpp_target(
@@ -818,6 +969,7 @@ fn resolve_explicit_preview_backend(
                 mlx_lm_backend: None,
                 edge_llm_backend: None,
                 tensor_rt_llm_backend: None,
+                vllm_backend: None,
             })
         }
         SupportTier::Unsupported => {
@@ -900,6 +1052,8 @@ pub struct RuntimeReport {
     pub mlx_runtime: Option<NativeRuntimeReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mlx_model: Option<NativeModelReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_runtime: Option<DelegatedRuntimeReport>,
 }
 
 impl RuntimeReport {
@@ -917,6 +1071,7 @@ impl RuntimeReport {
             metal_toolchain: crate::host::runtime_metal_toolchain_report(),
             mlx_runtime: None,
             mlx_model: None,
+            delegated_runtime: None,
         }
     }
 
@@ -927,6 +1082,14 @@ impl RuntimeReport {
 
     pub fn with_mlx_model(mut self, native_model: Option<NativeModelReport>) -> Self {
         self.mlx_model = native_model;
+        self
+    }
+
+    pub fn with_delegated_runtime(
+        mut self,
+        delegated_runtime: Option<DelegatedRuntimeReport>,
+    ) -> Self {
+        self.delegated_runtime = delegated_runtime;
         self
     }
 }
@@ -947,6 +1110,7 @@ fn support_tier_label(support_tier: SupportTier) -> &'static str {
         SupportTier::LlamaCpp => "llama_cpp",
         SupportTier::TensorRtEdgeLlm => "tensor_rt_edge_llm",
         SupportTier::TensorRtLlm => "tensor_rt_llm",
+        SupportTier::Vllm => "vllm",
         SupportTier::Unsupported => "unsupported",
     }
 }
@@ -990,6 +1154,12 @@ pub enum BackendContractError {
     TensorRtLlmBackendRequiresTensorRtLlmTier { support_tier: SupportTier },
     #[error("tensor_rt_llm backend requires fallback_reason/delegation reason")]
     TensorRtLlmBackendRequiresDelegationReason,
+    #[error("vLLM backend requires vllm support tier, got {support_tier:?}")]
+    VllmBackendRequiresVllmTier { support_tier: SupportTier },
+    #[error("vLLM backend requires allow_vllm policy, got {resolution_policy:?}")]
+    VllmBackendRequiresVllmPolicy { resolution_policy: ResolutionPolicy },
+    #[error("vLLM backend requires fallback_reason/delegation reason")]
+    VllmBackendRequiresDelegationReason,
     #[error("llama.cpp backend {selected_backend:?} requires fallback_reason")]
     LlamaCppBackendRequiresFallbackReason { selected_backend: SelectedBackend },
 }

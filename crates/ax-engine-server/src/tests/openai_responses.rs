@@ -1000,6 +1000,7 @@ fn sample_generate_response(
             metal_toolchain: Default::default(),
             mlx_runtime: None,
             mlx_model: None,
+            delegated_runtime: None,
         },
         performance: Default::default(),
     }

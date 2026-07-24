@@ -1,8 +1,10 @@
 use ax_engine_sdk::{
-    EdgeLlmChatContentPart, EdgeLlmChatGenerateRequest, EdgeLlmChatMessage, EdgeLlmConfig,
-    EdgeLlmImageUrl, EdgeLlmStagedImage, EngineTokenizer, GenerateRequest, GenerateSampling,
-    LlamaCppChatGenerateRequest, MlxLmChatGenerateRequest, RequestMultimodalInputs,
-    SelectedBackend,
+    DelegatedChatContent, DelegatedChatContentPart, DelegatedChatMessage, DelegatedChatRole,
+    DelegatedImageUrl, EdgeLlmChatContentPart, EdgeLlmChatGenerateRequest, EdgeLlmChatMessage,
+    EdgeLlmConfig, EdgeLlmImageUrl, EdgeLlmStagedImage, EngineTokenizer, GenerateRequest,
+    GenerateSampling, LlamaCppChatGenerateRequest, MlxLmChatGenerateRequest, OrderedFloat,
+    RequestMultimodalInputs, SelectedBackend, UNLIMITED_OCR_DEFAULT_MAX_OUTPUT_TOKENS,
+    ValidatedDataUri, VllmChatGenerateRequest, VllmModelProfile, VllmRequestExtensions,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -70,6 +72,12 @@ pub(crate) struct OpenAiBuiltMlxLmChatRequest {
 
 pub(crate) struct OpenAiBuiltEdgeLlmChatRequest {
     pub(crate) chat_request: EdgeLlmChatGenerateRequest,
+    pub(crate) stream: bool,
+    pub(crate) response_options: OpenAiResponseOptions,
+}
+
+pub(crate) struct OpenAiBuiltVllmChatRequest {
+    pub(crate) chat_request: VllmChatGenerateRequest,
     pub(crate) stream: bool,
     pub(crate) response_options: OpenAiResponseOptions,
 }
@@ -345,6 +353,14 @@ pub(crate) fn build_openai_completion_request(
     live: &LiveState,
     request: OpenAiCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
+    if request.skip_special_tokens.is_some() || request.vllm_xargs.is_some() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "skip_special_tokens and vllm_xargs are supported only by vLLM chat completions"
+                .to_string(),
+        ));
+    }
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_completion_request(&request);
     let mut response_options = OpenAiResponseOptions::from_completion_request(&request)?;
@@ -666,6 +682,192 @@ pub(crate) fn build_openai_edge_llm_chat_request(
         stream: request.stream,
         response_options,
     })
+}
+
+pub(crate) fn build_openai_vllm_chat_request(
+    live: &LiveState,
+    request: OpenAiChatCompletionHttpRequest,
+) -> Result<OpenAiBuiltVllmChatRequest, (StatusCode, Json<ErrorResponse>)> {
+    reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
+    if request.repetition_context_size.is_some() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "repetition_context_size is not part of the AX vLLM contract".to_string(),
+        ));
+    }
+    if request.logprobs {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "vLLM logprobs are not exposed by the AX vLLM response contract".to_string(),
+        ));
+    }
+    if openai_reasoning_is_enabled(request.reasoning.as_ref()) {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "reasoning output is not exposed by the AX vLLM response contract".to_string(),
+        ));
+    }
+
+    let config = live.session_config.vllm_backend.as_ref().ok_or_else(|| {
+        error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "engine_error",
+            "vLLM backend is selected without a validated vLLM configuration".to_string(),
+        )
+    })?;
+    let server_config = config.server();
+    let use_unlimited_ocr_defaults = server_config.model_profile == VllmModelProfile::UnlimitedOcr;
+    let max_output_tokens = if request.max_completion_tokens.is_none()
+        && request.max_tokens.is_none()
+        && use_unlimited_ocr_defaults
+    {
+        UNLIMITED_OCR_DEFAULT_MAX_OUTPUT_TOKENS
+    } else {
+        openai_max_tokens(request.max_completion_tokens, request.max_tokens)
+    };
+    let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
+    let requested_seed = request.seed;
+    let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    reject_gemma4_tools_when_ax_cannot_render_them(
+        live.model_id.as_ref(),
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+        true,
+    )?;
+    reject_delegated_chat_tools(
+        &request.messages,
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+    )?;
+    response_options.reject_unsupported_streaming_contract(request.stream, false)?;
+    let (messages, image_count) =
+        build_vllm_chat_messages(server_config.image_limits, &request.messages)?;
+    let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
+    let stop_sequences = request
+        .stop
+        .map(OpenAiStopInput::into_vec)
+        .unwrap_or_default();
+    validate_client_stop_sequences(&stop_sequences)?;
+
+    let mut extensions = if use_unlimited_ocr_defaults {
+        VllmRequestExtensions::unlimited_ocr(image_count)
+    } else {
+        VllmRequestExtensions::default()
+    };
+    if let Some(skip_special_tokens) = request.skip_special_tokens {
+        extensions.skip_special_tokens = Some(skip_special_tokens);
+    }
+    if let Some(vllm_xargs) = request.vllm_xargs {
+        extensions.vllm_xargs = Some(vllm_xargs);
+    }
+    if let Some(repetition_penalty) = request.repetition_penalty {
+        extensions.repetition_penalty =
+            Some(OrderedFloat::new(repetition_penalty).map_err(vllm_validation_error_response)?);
+    }
+    extensions
+        .validate()
+        .map_err(vllm_validation_error_response)?;
+
+    Ok(OpenAiBuiltVllmChatRequest {
+        chat_request: VllmChatGenerateRequest {
+            model_id: live.model_id.to_string(),
+            messages,
+            max_output_tokens,
+            sampling,
+            seed: requested_seed,
+            stop_sequences,
+            extensions,
+        },
+        stream: request.stream,
+        response_options,
+    })
+}
+
+fn build_vllm_chat_messages(
+    image_limits: ax_engine_sdk::DelegatedImageLimits,
+    messages: &[OpenAiChatMessage],
+) -> Result<(Vec<DelegatedChatMessage>, usize), (StatusCode, Json<ErrorResponse>)> {
+    if messages.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "messages must not be empty".to_string(),
+        ));
+    }
+    let mut image_count = 0_usize;
+    let messages = messages
+        .iter()
+        .map(|message| {
+            let role = DelegatedChatRole::parse(message.role.trim())
+                .map_err(vllm_validation_error_response)?;
+            let content = match message.content.as_ref() {
+                None => DelegatedChatContent::Text(String::new()),
+                Some(OpenAiChatContent::Text(text)) => DelegatedChatContent::Text(text.clone()),
+                Some(OpenAiChatContent::Parts(parts)) => {
+                    let parts = parts
+                        .iter()
+                        .map(|part| match part.part_type.as_str() {
+                            "text" | "input_text" => {
+                                let text = part.text.clone().ok_or_else(|| {
+                                    error_response(
+                                        StatusCode::BAD_REQUEST,
+                                        "invalid_request",
+                                        format!(
+                                            "{} chat content parts require text",
+                                            part.part_type
+                                        ),
+                                    )
+                                })?;
+                                Ok(DelegatedChatContentPart::Text { text })
+                            }
+                            "image_url" | "input_image" => {
+                                let (url, detail) = delegated_image_url(part)?;
+                                let url = ValidatedDataUri::parse(url, image_limits)
+                                    .map_err(vllm_validation_error_response)?;
+                                image_count = image_count.saturating_add(1);
+                                Ok(DelegatedChatContentPart::ImageUrl {
+                                    image_url: DelegatedImageUrl { url, detail },
+                                })
+                            }
+                            "input_audio" | "audio_url" | "audio" => Err(error_response(
+                                StatusCode::BAD_REQUEST,
+                                "unsupported_modality",
+                                "AX vLLM currently forwards inline PNG/JPEG images only; audio is not enabled"
+                                    .to_string(),
+                            )),
+                            "video_url" | "input_video" | "video" => Err(error_response(
+                                StatusCode::BAD_REQUEST,
+                                "unsupported_modality",
+                                "AX vLLM currently forwards inline PNG/JPEG images only; video is not enabled"
+                                    .to_string(),
+                            )),
+                            other => Err(error_response(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_request",
+                                format!("unsupported vLLM chat content part type {other}"),
+                            )),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    DelegatedChatContent::Parts(parts)
+                }
+            };
+            Ok(DelegatedChatMessage { role, content })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((messages, image_count))
+}
+
+fn vllm_validation_error_response(
+    error: impl std::fmt::Display,
+) -> (StatusCode, Json<ErrorResponse>) {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        error.to_string(),
+    )
 }
 
 const MAX_DELEGATED_INLINE_IMAGE_BYTES: usize = 64 * 1024 * 1024;

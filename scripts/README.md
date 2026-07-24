@@ -448,6 +448,12 @@ throughput baselines.
 - `run_native_generation_fault_soak.py`: fail-closed native MLX fault lane that
   mixes normal, disconnected, and slow consumers while recording request
   outcomes, RSS, queue/backlog counters, and final lifecycle quiescence.
+- `soak_ax_vllm.py`: 24-hour-capable AX Engine → vLLM stream/non-stream runner.
+  It performs exact model readiness once, never retries a generation POST,
+  alternates request modes, records only content hashes plus bounded errors,
+  samples process/GPU memory, and writes `manifest.json`, append-only
+  `samples.jsonl`, and an atomic `summary.json`. API keys are read through
+  `--api-key-env`, never accepted as a raw argument.
 - `check-bench-*.sh`: smoke checks for `ax-engine-bench` workload-contract
   commands. `check-bench-preview.sh` covers the delegated llama.cpp preset and
   artifact contract, including safe preset metadata, processing/deferred

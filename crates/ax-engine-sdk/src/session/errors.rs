@@ -5,6 +5,7 @@ use crate::backend::{BackendContractError, SelectedBackend};
 use crate::edge_llm::EdgeLlmBackendError;
 use crate::llama_cpp::LlamaCppBackendError;
 use crate::mlx_lm::MlxLmBackendError;
+use crate::vllm::VllmBackendError;
 
 #[derive(Debug, Error)]
 pub enum EngineSessionError {
@@ -16,6 +17,8 @@ pub enum EngineSessionError {
     MlxLm(#[from] MlxLmBackendError),
     #[error(transparent)]
     EdgeLlm(#[from] EdgeLlmBackendError),
+    #[error(transparent)]
+    Vllm(#[from] VllmBackendError),
     #[error("max_batch_tokens must be greater than zero")]
     InvalidMaxBatchTokens,
     #[error("generate request requires input_tokens or input_text")]
@@ -74,6 +77,8 @@ pub enum EngineSessionError {
     MissingEdgeLlmConfig,
     #[error("tensor_rt_llm backend requires tensor_rt_llm_backend config")]
     MissingTensorRtLlmConfig,
+    #[error("vLLM backend requires vllm_backend config")]
+    MissingVllmConfig,
     #[error("delegated backend {selected_backend:?} is missing runtime report")]
     MissingDelegatedRuntime { selected_backend: SelectedBackend },
     #[error(
@@ -95,6 +100,10 @@ pub enum EngineSessionError {
         "tensor_rt_llm backend does not support {operation} via EngineSession lifecycle yet; use OpenAI chat routes"
     )]
     TensorRtLlmDoesNotSupportLifecycle { operation: &'static str },
+    #[error(
+        "vLLM backend does not support {operation} via EngineSession lifecycle yet; use stateless or OpenAI routes"
+    )]
+    VllmDoesNotSupportLifecycle { operation: &'static str },
     #[error(
         "stateless streaming is not supported for the native MLX backend ({selected_backend:?}); \
          use EngineSession streaming methods instead"

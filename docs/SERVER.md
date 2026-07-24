@@ -430,9 +430,37 @@ cargo run -p ax-engine-server -- \
   --port 31418
 ```
 
-OpenAI-compatible delegated routes such as `vLLM` and `mistral.rs` are not part
-of the shipping inference contract. Use the `llama.cpp` server route for
-GGUF/non-MLX server-backed inference:
+The candidate `vLLM` provider is a first-class delegated backend. The same AX
+wire implementation is used on Linux `x86_64` and `aarch64`; hardware-specific
+behavior belongs to the separately supervised
+`ax-engine-vllm-runtime` profile:
+
+```text
+cargo run -p ax-engine-server \
+  --no-default-features --features delegated-server -- \
+  --model-id ax-ocr \
+  --support-tier vllm \
+  --vllm-server-url http://127.0.0.1:18000 \
+  --vllm-upstream-model-id baidu/Unlimited-OCR \
+  --vllm-model-profile unlimited-ocr \
+  --vllm-runtime-profile cuda-linux-aarch64-thor-sm110 \
+  --vllm-max-in-flight 2 \
+  --port 31418
+```
+
+Use `cuda-linux-x86_64-a6000-sm86` on the certified RTX A6000 target. Startup
+probes `/v1/models` and requires the exact upstream model identity. Readiness
+GETs use bounded retry; generation POSTs are never retried. AX does not start,
+restart, or silently replace the worker, and it never falls back to MLX or a
+TensorRT provider.
+
+Bearer credentials are read from `AX_VLLM_API_KEY` or a regular, non-symlink
+file passed with `--vllm-api-key-file`. Remote non-loopback endpoints require
+`--vllm-allow-remote`; plaintext HTTP remains loopback-only. Use
+`--vllm-ca-cert` for a reviewed private CA.
+
+The `llama.cpp` server route remains available for GGUF/non-MLX server-backed
+inference:
 
 ```text
 cargo run -p ax-engine-server -- \
