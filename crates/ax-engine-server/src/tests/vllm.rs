@@ -284,3 +284,88 @@ async fn vllm_stream_handles_role_only_usage_only_and_done_frames() {
         Some(&json!(9))
     );
 }
+
+#[tokio::test]
+async fn vllm_stream_maps_malformed_upstream_sse_to_error_event_and_done() {
+    let cases = [
+        ("invalid JSON", "data: {not-json}\n\n", "was not valid JSON"),
+        (
+            "provider error",
+            "data: {\"error\":{\"message\":\"upstream failed\"}}\n\n",
+            "returned an error event",
+        ),
+        (
+            "missing choice",
+            "data: {\"choices\":[]}\n\n",
+            "had neither a choice nor usage",
+        ),
+        (
+            "early EOF",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+            "ended before [DONE]",
+        ),
+    ];
+
+    for (case, upstream_body, expected_message) in cases {
+        let (server_url, server_handle) = spawn_vllm_chat_server(
+            UPSTREAM_MODEL_ID,
+            "text/event-stream",
+            upstream_body.to_string(),
+            |request| {
+                let payload = request.payload.expect("generation payload should exist");
+                assert_eq!(payload.get("model"), Some(&json!(UPSTREAM_MODEL_ID)));
+                assert_eq!(payload.get("stream"), Some(&json!(true)));
+            },
+        );
+        let app = build_router(vllm_delegated_state(
+            server_url,
+            UPSTREAM_MODEL_ID,
+            VllmModelProfileArg::OpenAiCompatible,
+        ));
+        let request = json!({
+            "model": "qwen3",
+            "messages": [{"role": "user", "content": "read this"}],
+            "max_tokens": 8,
+            "stream": true
+        });
+        let (status, content_type, body) = text_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(json_request_body(&request)))
+                .expect("request should build"),
+        )
+        .await;
+        server_handle
+            .join()
+            .expect("vLLM malformed-stream mock server should finish");
+
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{case}: unexpected stream body: {body}"
+        );
+        assert!(
+            content_type.starts_with("text/event-stream"),
+            "{case}: unexpected content type: {content_type}"
+        );
+        assert!(
+            body.contains("event: error"),
+            "{case}: error event missing: {body}"
+        );
+        assert!(
+            body.contains("\"code\":\"backend_error\""),
+            "{case}: typed backend error missing: {body}"
+        );
+        assert!(
+            body.contains(expected_message),
+            "{case}: expected error detail missing: {body}"
+        );
+        assert!(
+            body.contains("data: [DONE]"),
+            "{case}: terminal sentinel missing: {body}"
+        );
+    }
+}

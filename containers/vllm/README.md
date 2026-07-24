@@ -1,9 +1,18 @@
 # vLLM OCI build
 
+See [CUDA Backends](../../docs/CUDA-BACKENDS.md) for the public platform
+strategy, provider boundary, and release gates.
+
 Build with `packages/ax-engine-vllm-runtime` as the context. The Dockerfile uses
 digest-pinned multi-architecture CUDA and uv bases, an immutable Ubuntu
 snapshot, architecture-specific hash locks, a content-addressed runtime wheel,
 and a non-root runtime user.
+
+The build also applies the selected snapshot's security updates, asserts the
+reviewed GnuPG/OpenSSL package versions, and runs a fail-closed dependency
+closure check. Release automation must still generate an SPDX SBOM, scan the
+exact image digest, preserve the raw result, and require human approval for any
+deployment-scoped VEX disposition.
 
 ```bash
 cd packages/ax-engine-vllm-runtime
@@ -12,7 +21,8 @@ python3.12 -m build --wheel
 wheel=dist/ax_engine_vllm_runtime-0.1.0-py3-none-any.whl
 wheel_sha256="$(sha256sum "$wheel" | cut -d ' ' -f 1)"
 source_sha256="$(
-  find README.md pyproject.toml src locks -type f -print0 \
+  find README.md pyproject.toml src locks -type f \
+    ! -path '*/__pycache__/*' ! -name '*.py[co]' -print0 \
     | LC_ALL=C sort -z \
     | xargs -0 sha256sum \
     | sha256sum \

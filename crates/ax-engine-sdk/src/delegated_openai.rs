@@ -580,4 +580,43 @@ mod tests {
             Err(DelegatedOpenAiSseError::EndedBeforeDone { .. })
         ));
     }
+
+    #[test]
+    fn stream_rejects_malformed_provider_and_oversized_frames() {
+        let cases: Vec<(Vec<u8>, usize, fn(&DelegatedOpenAiSseError) -> bool)> = vec![
+            (b"data: {not-json}\n\n".to_vec(), 4096, |error| {
+                matches!(error, DelegatedOpenAiSseError::InvalidJson { .. })
+            }),
+            (
+                b"data: {\"error\":{\"message\":\"upstream failed\"}}\n\n".to_vec(),
+                4096,
+                |error| matches!(error, DelegatedOpenAiSseError::ProviderError { .. }),
+            ),
+            (b"data: {\"choices\":[]}\n\n".to_vec(), 4096, |error| {
+                matches!(error, DelegatedOpenAiSseError::MissingChoice { .. })
+            }),
+            (
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"too large\"}}]}\n\n".to_vec(),
+                16,
+                |error| matches!(error, DelegatedOpenAiSseError::FrameTooLarge { .. }),
+            ),
+            (
+                vec![b'd', b'a', b't', b'a', b':', b' ', 0xff, b'\n'],
+                4096,
+                |error| matches!(error, DelegatedOpenAiSseError::InvalidUtf8 { .. }),
+            ),
+        ];
+
+        for (body, max_frame_bytes, matches_expected) in cases {
+            let mut stream = DelegatedOpenAiStreamHandle::new(
+                "http://127.0.0.1/v1/chat/completions",
+                Box::new(Cursor::new(body)),
+                max_frame_bytes,
+            );
+            let error = stream
+                .next_chunk()
+                .expect_err("malformed provider frame must fail closed");
+            assert!(matches_expected(&error), "unexpected SSE error: {error}");
+        }
+    }
 }

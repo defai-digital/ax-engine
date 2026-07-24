@@ -1,19 +1,24 @@
 # ax-engine-server
 
-`ax-engine-server` is the SDK-backed thin access layer for AX Engine.
+`ax-engine-server` is the SDK-backed thin access layer for AX Engine. See
+[CUDA Backends](../../docs/CUDA-BACKENDS.md) for the Mac/CUDA platform
+boundary, provider ownership, and release gates.
 
 Current scope:
 
 - local single-process preview server
 - built entirely on `ax-engine-sdk`
-- fail-closed host validation (requires M2 Max or newer, macOS 26+, 32 GB RAM)
+- native MLX builds fail closed outside the supported M2 Max-or-newer,
+  macOS 26+, 32 GB contract
+- portable Linux `delegated-server` builds omit MLX linkage and front
+  explicitly selected vLLM or TensorRT workers
 - explicit runtime metadata reporting, including `selected_backend`,
   `support_tier`, and `resolution_policy`
 - preview generation API for bring-up and integration testing
 - stepwise request lifecycle endpoints over a shared preview session for
   repo-owned MLX runtime paths plus server-backed llama.cpp adapters
 - thin OpenAI-compatible `/v1/completions` and `/v1/chat/completions`
-  translation over llama.cpp-backed preview requests
+  translation over the selected delegated provider
 
 Current preview endpoints:
 
@@ -101,6 +106,18 @@ curl http://127.0.0.1:31418/v1/generate \
     "input_text": "Hello from llama.cpp",
     "max_output_tokens": 32
   }'
+
+cargo run -p ax-engine-server \
+  --no-default-features \
+  --features delegated-server \
+  -- \
+  --model-id ax-ocr \
+  --support-tier vllm \
+  --vllm-server-url http://127.0.0.1:8000/v1 \
+  --vllm-upstream-model-id baidu/Unlimited-OCR \
+  --vllm-model-profile unlimited-ocr \
+  --vllm-runtime-profile cuda-linux-aarch64-thor-sm110 \
+  --port 31418
 ```
 
 This server is intentionally narrow.
@@ -119,3 +136,12 @@ Shared compatibility sessions can hold multiple active delegated llama.cpp
 requests while `/v1/step` aggregates one delegated step across them.
 `llama-cli` and direct `mlx-lm` remain blocking text-prompt fallbacks for local
 bring-up.
+
+Linux x86_64 and Thor use the same `Vllm` provider contract; only the
+fail-closed runtime profile changes. The Python/PyTorch worker stays in the
+independent `ax-engine-vllm-runtime` package/OCI process. TensorRT-LLM and
+TensorRT Edge-LLM retain separate backend identities, and AX does not silently
+fall back or retry a generation POST across providers. Delegated JSON and SSE
+traffic use separate keep-alive pools, and the HTTP listener enables
+`TCP_NODELAY` so a first small SSE event is not delayed by Nagle/delayed-ACK
+interaction.

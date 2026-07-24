@@ -196,7 +196,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal());
+    .with_graceful_shutdown(shutdown_signal())
+    // SSE sends headers and the first token as separate small writes. Disable
+    // Nagle on accepted HTTP sockets so the first chunk cannot wait for the
+    // peer's delayed ACK (commonly ~40 ms even on a loopback benchmark).
+    .tcp_nodelay(true);
 
     if let Some(addr) = grpc_bind_address {
         let parsed: std::net::SocketAddr = addr.parse().map_err(|e| {

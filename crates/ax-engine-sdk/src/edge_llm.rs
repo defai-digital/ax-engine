@@ -405,7 +405,12 @@ fn start_edge_llm_server_completion_stream(
     let prompt = completion_prompt_text(request)?;
     let payload = build_edge_llm_completion_request(request, &prompt, true, selected_backend);
 
-    let response = send_edge_llm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
+    let response = send_edge_llm_json_post_request(
+        &endpoint,
+        &payload,
+        Some("text/event-stream"),
+        config.timeouts,
+    )?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(EdgeLlmStreamHandle::new(endpoint, reader))
 }
@@ -447,7 +452,12 @@ fn start_edge_llm_server_chat_completion_stream(
     let endpoint = config.chat_completions_url();
     let payload = build_edge_llm_chat_completion_request(request, true, selected_backend);
 
-    let response = send_edge_llm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
+    let response = send_edge_llm_json_post_request(
+        &endpoint,
+        &payload,
+        Some("text/event-stream"),
+        config.timeouts,
+    )?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(EdgeLlmStreamHandle::new(endpoint, reader))
 }

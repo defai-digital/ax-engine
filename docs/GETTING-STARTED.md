@@ -5,8 +5,13 @@ and benchmark tooling. It is not only an MLX experiment: the repo-owned MLX
 runtime is one path, and delegated compatibility paths let users keep the same
 AX surface for broader model coverage.
 
+For AX OCR, Mac and NVIDIA Thor are co-primary deployment targets; certified
+Linux x86_64 CUDA PCs are secondary support. CUDA routes remain explicit
+release candidates until their platform and model gates pass.
+
 **Related:** [Supported Models](SUPPORTED-MODELS.md) · [CLI](CLI.md) ·
-[Server](SERVER.md) · [FAQ](FAQ.md) · [Docs hub](README.md)
+[Server](SERVER.md) · [CUDA Backends](CUDA-BACKENDS.md) · [FAQ](FAQ.md) ·
+[Docs hub](README.md)
 
 ## What You Get
 
@@ -17,6 +22,9 @@ AX surface for broader model coverage.
 - Python bindings, and JavaScript, Go, Ruby, Swift, and Mojo clients
 - repo-owned MLX inference for supported Qwen, Gemma, GLM, and embedding model artifacts
 - explicit delegated compatibility for `mlx_lm.server` and `llama.cpp`
+- one first-class vLLM provider shared by certified Linux x86_64 and Thor
+  runtime profiles
+- explicit TensorRT-LLM and TensorRT Edge-LLM optimization lanes
 
 ## Choose A Runtime Path
 
@@ -25,10 +33,18 @@ AX surface for broader model coverage.
 | Repo-owned MLX runtime | You have a supported Qwen/Gemma MLX model artifact and want repo-owned runtime behavior or performance evidence | Use `--mlx` plus `--mlx-model-artifacts-dir`; benchmark claims must use the MLX inference-stack harness |
 | `mlx_lm_delegated` | Upstream `mlx-lm` supports the MLX text model but AX does not yet have a repo-owned graph | Requires a running `mlx_lm.server`; supports blocking and SSE text generation plus OpenAI-compatible text completion/chat shapes; route-contract evidence only |
 | `llama_cpp` | You have GGUF/non-MLX local inference needs | Use a llama.cpp server or CLI target; these are delegated route-contract claims |
+| `vllm` | You need broad OCR/VLM coverage on a certified Linux x86_64 CUDA or Thor host | One provider contract; architecture differences are fail-closed `ax-engine-vllm-runtime` profiles |
+| `tensor_rt_llm` | A model has passed x86 CUDA TensorRT quality/performance gates | Explicit optimized lane; never an automatic vLLM fallback |
+| `tensor_rt_edge_llm` | A model has passed Thor Edge-LLM quality/performance gates | Explicit optimized lane; model support and server behavior must be certified |
 
 ```mermaid
 flowchart TD
-    request["User request"] --> explicitMlx{"Explicit repo-owned MLX?\n--mlx or --preset"}
+    request["User request"] --> platform{"Execution platform?"}
+    platform -->|macOS Apple Silicon| explicitMlx{"Explicit repo-owned MLX?\n--mlx or --preset"}
+    platform -->|Linux CUDA| cuda{"Explicit CUDA support tier?"}
+    cuda -->|vllm| vllm["One AX vLLM provider\nx86_64 or Thor runtime profile"]
+    cuda -->|tensor_rt_llm| trt["TensorRT-LLM\nx86 certified model"]
+    cuda -->|tensor_rt_edge_llm| edge["TensorRT Edge-LLM\nThor certified model"]
     explicitMlx -->|yes| supportedMlx{"Supported Qwen/Gemma\nAX-ready MLX artifacts?"}
     supportedMlx -->|yes| mlx["Repo-owned MLX runtime\nselected_backend=mlx\nmodel-inference benchmark claims"]
     supportedMlx -->|no| unsupported["Fail closed or choose\na delegated compatibility path"]
@@ -41,7 +57,9 @@ flowchart TD
 
 The diagram is a routing guide, not a benchmark shortcut. Repo-owned MLX
 performance claims still require the MLX inference-stack harness; delegated
-paths validate compatibility and route behavior.
+paths validate compatibility and route behavior. CUDA paths are always
+explicit and never silently fall back between vLLM and TensorRT providers. See
+[CUDA Backends](CUDA-BACKENDS.md) for build, deployment, and release gates.
 
 ## Installation
 
@@ -51,6 +69,10 @@ These instructions track the latest tagged `6.x` release. **Homebrew is the
 primary deployment path** for the `ax-engine` CLI, server, and bench tools on
 macOS Apple Silicon; the wheel is the supported secondary path for Python
 library use.
+
+Linux CUDA support currently uses source-built delegated-only binaries and the
+separately packaged `ax-engine-vllm-runtime` candidate. It is not installed by
+the normal Mac Homebrew or Python package path.
 
 | Goal | Recommended channel |
 | --- | --- |
@@ -431,6 +453,22 @@ ax-engine-bench generate \
 That route is explicit compatibility only. It is text-only, supports AX
 blocking and SSE text surfaces, and is not a repo-owned MLX performance claim.
 Streamed chunks are delegated text deltas, not AX-owned token/KV evidence.
+
+To front a separately supervised vLLM worker on a certified CUDA host:
+
+```text
+ax-engine-server \
+  --model-id ax-ocr \
+  --support-tier vllm \
+  --vllm-server-url http://127.0.0.1:8000/v1 \
+  --vllm-upstream-model-id baidu/Unlimited-OCR \
+  --vllm-model-profile unlimited-ocr \
+  --vllm-runtime-profile cuda-linux-aarch64-thor-sm110
+```
+
+Use `cuda-linux-x86_64-a6000-sm86` only on its certified x86_64 SKU. Worker
+installation, preflight, security, and OCI commands are in
+[CUDA Backends](CUDA-BACKENDS.md).
 
 To run a checked-in scenario manifest through the current workload-contract
 path:

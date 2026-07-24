@@ -7,6 +7,11 @@ This is a transport feature, not a claim that a model has been ported or that
 OCR quality is production-ready. The configured vendor server must already be
 running a compatible VLM with its visual runtime/engine enabled.
 
+TensorRT-LLM and TensorRT Edge-LLM are explicit optimized providers. They are
+not aliases for the shared vLLM provider and AX never silently falls back
+between them. See [CUDA Backends](CUDA-BACKENDS.md) for the platform strategy
+and release gates.
+
 ## Request contract
 
 Send images as base64 `data:` URIs:

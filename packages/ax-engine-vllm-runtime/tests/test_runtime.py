@@ -8,6 +8,12 @@ from unittest.mock import patch
 import pytest
 
 from ax_engine_vllm_runtime.cli import _read_secret_file
+from ax_engine_vllm_runtime.dependency_check import (
+    _CUSPARSELT_PLATFORM_EXCEPTION,
+    _elf_machine,
+    _requires_verified_cusparselt_exception,
+    _validate_cusparselt_exception,
+)
 from ax_engine_vllm_runtime.launcher import (
     ServeConfig,
     build_vllm_command,
@@ -122,3 +128,45 @@ def test_thor_plugin_is_inert_off_target() -> None:
         register_thor_compat()
     capability.assert_not_called()
     importer.assert_not_called()
+
+
+def test_dependency_check_allows_only_the_verified_sbsa_metadata_exception() -> None:
+    assert not _requires_verified_cusparselt_exception(0, "All checks passed!\n")
+    assert _requires_verified_cusparselt_exception(
+        1,
+        f"Found 1 incompatibility\n{_CUSPARSELT_PLATFORM_EXCEPTION}\n",
+    )
+
+    with pytest.raises(RuntimeError, match="unapproved incompatibility"):
+        _requires_verified_cusparselt_exception(
+            1,
+            (
+                f"{_CUSPARSELT_PLATFORM_EXCEPTION}\n"
+                "The package `unexpected` has an incompatible dependency\n"
+            ),
+        )
+    with pytest.raises(RuntimeError, match="unexpected status"):
+        _requires_verified_cusparselt_exception(2, "transport failure")
+
+
+def test_dependency_check_validates_the_wheel_tag_and_aarch64_elf(tmp_path: Path) -> None:
+    elf = bytearray(20)
+    elf[:6] = b"\x7fELF\x02\x01"
+    elf[18:20] = (183).to_bytes(2, byteorder="little")
+    library = tmp_path / "libcusparseLt.so.0"
+    library.write_bytes(elf)
+
+    assert _elf_machine(library) == 183
+    _validate_cusparselt_exception(
+        architecture="aarch64",
+        version="0.8.0",
+        wheel_metadata="Wheel-Version: 1.0\nTag: py3-none-manylinux2014_sbsa\n",
+        elf_machine=183,
+    )
+    with pytest.raises(RuntimeError, match="only valid on Linux arm64"):
+        _validate_cusparselt_exception(
+            architecture="x86_64",
+            version="0.8.0",
+            wheel_metadata="Tag: py3-none-manylinux2014_sbsa\n",
+            elf_machine=183,
+        )
