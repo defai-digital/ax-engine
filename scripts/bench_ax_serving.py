@@ -288,6 +288,33 @@ def delta_token_count(event_name: str | None, payload: Any) -> int:
     return 0
 
 
+def delta_token_ids(event_name: str | None, payload: Any) -> list[int]:
+    if event_name != "step" or not isinstance(payload, dict):
+        return []
+    delta_tokens = payload.get("delta_tokens")
+    if not isinstance(delta_tokens, list):
+        return []
+    return [token for token in delta_tokens if isinstance(token, int)]
+
+
+def output_identity(token_ids: list[int], text_parts: list[str]) -> dict[str, Any] | None:
+    if token_ids:
+        encoded = json.dumps(token_ids, separators=(",", ":")).encode("utf-8")
+        return {
+            "kind": "token_ids",
+            "count": len(token_ids),
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+        }
+    if text_parts:
+        encoded = "".join(text_parts).encode("utf-8")
+        return {
+            "kind": "text_utf8",
+            "bytes": len(encoded),
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+        }
+    return None
+
+
 def final_output_token_count(payload: Any) -> int | None:
     if not isinstance(payload, dict):
         return None
@@ -339,6 +366,8 @@ def observe_stream(
     first_token_s: float | None = None
     output_chunk_times: list[float] = []
     observed_output_tokens = 0
+    observed_token_ids: list[int] = []
+    observed_text_parts: list[str] = []
     final_output_tokens: int | None = None
     route_decisions: dict[str, int | float | str | bool] = {}
     event_count = 0
@@ -359,6 +388,13 @@ def observe_stream(
             output_chunk_times.append(elapsed_s)
             if first_token_s is None:
                 first_token_s = elapsed_s
+            token_ids = delta_token_ids(event_name, payload)
+            if token_ids:
+                observed_token_ids.extend(token_ids)
+            elif event_name == "step" and isinstance(payload, dict):
+                delta_text = payload.get("delta_text")
+                if isinstance(delta_text, str):
+                    observed_text_parts.append(delta_text)
         if event_name == "response":
             final_output_tokens = final_output_token_count(payload)
             route_decisions = final_route_decisions(payload)
@@ -369,6 +405,8 @@ def observe_stream(
     output_tokens = final_output_tokens
     if output_tokens is None:
         output_tokens = observed_output_tokens if observed_output_tokens > 0 else None
+    if error is None and final_output_tokens is None:
+        error = "stream ended without a terminal response/output_token_count"
 
     e2e_s = max(completed_at_s - started_at_s, 0.0)
     ttft_ms = first_token_s * 1000.0 if first_token_s is not None else None
@@ -399,6 +437,7 @@ def observe_stream(
         "input_tokens": prompt.input_tokens_count,
         "max_output_tokens": prompt.max_output_tokens,
         "output_tokens": output_tokens,
+        "output_identity": output_identity(observed_token_ids, observed_text_parts),
         "output_chunks": len(output_chunk_times),
         "events": event_count,
         "route_decisions": route_decisions,
@@ -468,6 +507,7 @@ def run_one_request(
             "input_tokens": prompt.input_tokens_count,
             "max_output_tokens": prompt.max_output_tokens,
             "output_tokens": None,
+            "output_identity": None,
             "output_chunks": 0,
             "events": 0,
             "route_decisions": {},

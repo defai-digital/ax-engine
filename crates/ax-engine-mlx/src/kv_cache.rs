@@ -1334,6 +1334,20 @@ impl MlxKVCache {
         })
     }
 
+    /// Whether any sliding-attention layer is physically slot-ordered.
+    ///
+    /// A rotated ring is valid for bounded decode appends but is not a
+    /// portable prompt-prefix snapshot: a future request may warm-extend it
+    /// with a multi-token prefill or select a rollback-capable route. Prefix
+    /// stores/restores use this predicate to fail closed and recompute an
+    /// ordered cache instead.
+    pub(crate) fn has_rotated_sliding_layers(&self) -> bool {
+        self.layers
+            .iter()
+            .flatten()
+            .any(|layer| layer.rotating_window().is_some())
+    }
+
     // ── F3 M1: serialization for the disk-prefix-cache disk format ──
     //
     // These two methods are the foundation for the F3 disk-prefix-cache
@@ -3485,6 +3499,7 @@ mod tests {
         let v = tokens_f32(&[5.0, 6.0, 7.0], HD);
         let (ck, _) = cache.append_with_retained_window(0, k, v, Some(4));
         cache.seq_len = 7;
+        assert!(cache.has_rotated_sliding_layers());
 
         let lkv = contiguous_layer(&cache, 0);
         assert_eq!(lkv.rotating_window, Some(4));
@@ -3510,6 +3525,16 @@ mod tests {
             token_row_values(&lkv.k, HD),
             vec![8.0, 9.0, 3.0, 4.0, 5.0, 6.0, 7.0]
         );
+    }
+
+    #[test]
+    fn ordered_cache_reports_no_rotated_sliding_layers() {
+        let mut cache = MlxKVCache::new(1);
+        let k = tokens_f32(&[1.0, 2.0], 4);
+        let v = tokens_f32(&[3.0, 4.0], 4);
+        cache.append(0, k, v);
+        cache.advance(2);
+        assert!(!cache.has_rotated_sliding_layers());
     }
 
     #[test]

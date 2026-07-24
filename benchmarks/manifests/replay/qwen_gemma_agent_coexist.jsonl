@@ -1,6 +1,6 @@
 # S3: concurrent Qwen 3 + Gemma 4 interactive decode (agent-style coexist).
 # Focus families only — embedding and other models are intentionally absent.
-{"id":"qwen-a","kind":"request","at_ms":0,"model":"qwen3.5-9b","category":"interactive_decode","input_token_pattern":[3,10,17,24,31,38,45,52],"input_tokens_count":48,"max_output_tokens":128}
-{"id":"gemma-a","kind":"request","at_ms":50,"model":"gemma-4-12b-it","category":"interactive_decode","input_token_pattern":[5,12,19,26,33,40,47,54],"input_tokens_count":48,"max_output_tokens":128}
-{"id":"qwen-b","kind":"request","at_ms":100,"model":"qwen3.5-9b","category":"interactive_decode","input_token_pattern":[7,14,21,28,35,42,49,56],"input_tokens_count":32,"max_output_tokens":96}
-{"id":"gemma-b","kind":"request","at_ms":150,"model":"gemma-4-12b-it","category":"interactive_decode","input_token_pattern":[9,16,23,30,37,44,51,58],"input_tokens_count":32,"max_output_tokens":96}
+{"id":"qwen-a","kind":"request","at_ms":0,"model":"qwen3.5-9b","category":"interactive_decode","input_text":"Design a Rust async task scheduler with cancellation safety, include tests, and continue for at least 180 tokens.","input_tokens_count":24,"max_output_tokens":128}
+{"id":"gemma-a","kind":"request","at_ms":50,"model":"gemma-4-12b-it","category":"interactive_decode","input_text_prefix":"<bos>","input_text":"Explain a production model routing policy with failure isolation, examples, and at least 180 tokens of detail.","input_tokens_count":24,"max_output_tokens":128}
+{"id":"qwen-b","kind":"request","at_ms":100,"model":"qwen3.5-9b","category":"interactive_decode","input_text":"Implement a bounded Rust LRU cache with deterministic tests and provide at least 140 tokens.","input_tokens_count":20,"max_output_tokens":96}
+{"id":"gemma-b","kind":"request","at_ms":150,"model":"gemma-4-12b-it","category":"interactive_decode","input_text_prefix":"<bos>","input_text":"Describe a safe rolling deployment for two inference models with at least 140 tokens.","input_tokens_count":20,"max_output_tokens":96}

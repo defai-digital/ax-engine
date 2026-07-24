@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 pub const BATCHED_DECODE_CERTIFICATION_FILE: &str = "batched-decode-certification.json";
 pub const BATCHED_DECODE_CERTIFICATION_SCHEMA: &str = "ax.mlx.batched_decode_certification.v1";
-pub const BATCHED_DECODE_RUNTIME_CONTRACT: &str = "ax.mlx.batched_decode.runtime.v2";
+pub const BATCHED_DECODE_RUNTIME_CONTRACT: &str = "ax.mlx.batched_decode.runtime.v3";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BatchedDecodeCertificationScenario {
@@ -99,6 +99,10 @@ pub fn required_batched_decode_certification_scenarios() -> Vec<BatchedDecodeCer
         (4, 128, 64, 1, false),
         (4, 512, 64, 0, false),
         (4, 128, 64, 0, true),
+        // Join before a 1,024-token Gemma SWA cache compacts, then cross the
+        // boundary while resident. This exercises the per-layer window mask
+        // instead of certifying only the full-attention-equivalent prefix.
+        (2, 992, 64, 0, false),
     ]
     .into_iter()
     .map(

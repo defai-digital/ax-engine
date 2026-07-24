@@ -31,6 +31,29 @@ streaming step intervals, E2E latency, request throughput, output-token
 throughput, queue delay, and SLO goodput over a JSONL prompt corpus. It is
 serving evidence, not a raw model-runtime throughput baseline.
 
+Use `bench_ax_multimodel_serving.py` for timed request/load/unload replay
+against one multi-model AX process. It adds per-model output identities,
+lifecycle latency, final route-counter contracts, and model-switch evidence.
+Use `bench_qwen_gemma_flip_target.py` when the same Qwen 3 + Gemma 4 replay
+must run through the raw OpenAI completions streaming API on either AX or
+mlxcel. Its target file locks the host, model packages, sampling parameters,
+memory budget, protocol, and runtime revision. For mlxcel it also supervises
+one process per model so load/unload events retain their lifecycle meaning;
+the AX target supervises one fresh multi-model process per artifact so repeated
+runs cannot inherit prompt-cache state.
+The checked-in mlxcel target pins the official v0.4.2 source revision.
+Use `run_qwen_gemma_flip_campaign.py` to alternate both targets across three or
+more S0-S3 repetitions with a cooldown, validate every artifact, and prove the
+prompt-token and package contract for each paired trial.
+Use `summarize_qwen_gemma_flip_campaign.py` to compute the per-scenario medians,
+apply the locked gates, and write the explicit `flip` or `not_yet` JSON and
+Markdown decision. Pass
+`--gates benchmarks/manifests/qwen_gemma_flip_gates.v1.json` so the decision
+records the checked-in threshold-manifest hash.
+Use `certify_row_exact_coalesced_decode.py` to compare the production
+Qwen/Gemma row-exact decode route with its independent sequential oracle and,
+optionally, the non-coalesced serving baseline.
+
 Use `bench_embedding_fair.py` for published embedding comparisons between
 `mlx-lm` and ax-engine, or pass `--ax-only` for README-style AX-only refreshes.
 That harness excludes HTTP/cold-start paths and forces the measured engine(s) to
@@ -250,6 +273,14 @@ throughput baselines.
   concurrency or open-loop request-rate sweeps, and writes
   `ax.serving_benchmark.v1` artifacts with TTFT, TPOT, E2E, queue-delay,
   throughput, category, route-decision counters, and goodput summaries.
+- `bench_ax_multimodel_serving.py`: timed JSONL replay for request, model-load,
+  and model-unload events against one AX process. It records per-model
+  throughput and output hashes, lifecycle latency, stream gaps, and required
+  final route counters.
+- `certify_row_exact_coalesced_decode.py`: fail-closed Qwen/Gemma decode
+  coalescing matrix. It requires the independent forward oracle and row-exact
+  route, rejects diagnostic tensor batching, and can report speedup over the
+  non-coalesced baseline.
 - `build_serving_shared_prefix_corpus.py`: deterministic token-corpus builder
   for serving soaks that must exercise shared long prefixes, especially
   disk-durable prefix-cache promotion evidence.
@@ -266,13 +297,29 @@ throughput baselines.
   against a running AX server (`ax.multimodel_serving_benchmark.v1`). Emits
   focus-family tags for the Qwen 3 + Gemma 4 flip schedule, interactive
   stream-gap summaries, and request availability counters.
+- `bench_qwen_gemma_flip_target.py`: shared OpenAI SSE runner for AX and the
+  pinned official mlxcel peer. Target JSON controls process supervision,
+  exact model artifacts, host identity, sampling, and a common aggregate
+  memory cap; authoritative streamed usage is required for token accounting.
+- `run_qwen_gemma_flip_campaign.py`: repeated S0-S3 campaign runner. It starts
+  a fresh process topology for every trial, alternates target order, enforces
+  the cooldown and minimum repetition count, validates each artifact, and
+  records per-pair comparison-contract verdicts.
+- `summarize_qwen_gemma_flip_campaign.py`: fail-closed median aggregator and
+  flip-decision renderer for a completed campaign. It requires at least three
+  trials per target/scenario and reports every failed gate.
 - `check_ax_multimodel_serving_artifact.py`: fail-closed validator for
   multi-model artifacts. Supports `--require-focus-family`, interactive
   stream-gap caps, and HTTP 503 budgets used by the mlxcel flip plan.
 - `compare_qwen_gemma_flip.py`: compares candidate vs baseline multi-model
   artifacts with provisional throughput / TTFT / stream-gap / availability
-  gates. Use `--report-only` during Week-1 calibration.
+  gates. It fails closed unless scenario hashes, sampling, protocol, host,
+  comparison contract, and model-package signatures match. Use
+  `--report-only` during Week-1 calibration.
 - `test_bench_ax_multimodel_serving.py`,
+  `test_bench_qwen_gemma_flip_target.py`,
+  `test_run_qwen_gemma_flip_campaign.py`,
+  `test_summarize_qwen_gemma_flip_campaign.py`,
   `test_check_ax_multimodel_serving_artifact.py`,
   `test_compare_qwen_gemma_flip.py`: unit tests for the multi-model flip
   harness.
@@ -283,6 +330,11 @@ throughput baselines.
   runtime-path-specific promotion claim.
 - `test_bench_ax_serving.py`: unit tests for the serving benchmark SSE parser,
   latency accounting, percentile/goodput summary, and artifact writer.
+- `test_bench_ax_multimodel_serving.py`: unit tests for timed multi-model
+  replay, output identities, lifecycle results, and route-counter gates.
+- `test_certify_row_exact_coalesced_decode.py`: unit tests for row-exact
+  certification environment, route verdicts, timing parsing, and artifact
+  writing.
 - `test_build_serving_shared_prefix_corpus.py`: unit tests for the deterministic
   shared-prefix serving corpus builder.
 - `test_run_disk_prefix_serving_soak.py`: unit tests for the disk-prefix

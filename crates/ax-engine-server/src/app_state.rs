@@ -11,8 +11,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::admission::{AdmissionController, AdmissionPermit};
 use crate::generation::service::{
-    GenerationPressureEvent, GenerationServiceStartError, ModelExecutionArbiter,
-    NativeGenerationService,
+    ExecutionWorkClass, GenerationPressureEvent, GenerationServiceStartError,
+    ModelExecutionArbiter, ModelExecutionStats, NativeGenerationService,
 };
 use crate::generation::streaming::StreamDeadlines;
 use crate::lan_advertise::ModelAdvertisement;
@@ -23,6 +23,12 @@ use crate::rate_limit::RateLimitConfig;
 pub(crate) struct LiveState {
     pub(crate) generation: u64,
     pub(crate) model_id: Arc<String>,
+    /// Admission and drain scope owned by this model generation.
+    ///
+    /// The process-wide controller remains the hard capacity bound. This
+    /// model-local controller lets lifecycle operations stop and drain only
+    /// the generation they retire while sibling models continue serving.
+    pub(crate) admission: Arc<AdmissionController>,
     pub(crate) session_config: Arc<EngineSessionConfig>,
     pub(crate) stateless_generate_context: Arc<StatelessGenerateContext>,
     pub(crate) runtime_report: RuntimeReport,
@@ -135,6 +141,35 @@ impl AppState {
         self.live.read().models.keys().cloned().collect()
     }
 
+    /// Mirror a runtime fair-prefill policy change into the published
+    /// generation metadata. The generation check prevents a delayed control
+    /// command from rewriting a replacement model's configuration.
+    pub(crate) fn record_multi_prefill_policy(
+        &self,
+        model_id: &str,
+        generation: u64,
+        max_tokens_per_request_per_step: u32,
+        max_inflight_prefill_requests: u32,
+    ) -> bool {
+        let mut registry = self.live.write();
+        let Some(live) = registry.models.get_mut(model_id) else {
+            return false;
+        };
+        if live.generation != generation {
+            return false;
+        }
+        let config = live
+            .session_config
+            .as_ref()
+            .clone()
+            .with_multi_prefill_fair(
+                max_tokens_per_request_per_step,
+                max_inflight_prefill_requests,
+            );
+        live.session_config = Arc::new(config);
+        true
+    }
+
     pub(crate) fn unavailable_model_ids(&self) -> Vec<String> {
         self.live
             .read()
@@ -143,6 +178,12 @@ impl AppState {
             .filter(|(_, live)| !live.generation_service.is_ready())
             .map(|(model_id, _)| model_id.clone())
             .collect()
+    }
+
+    pub(crate) fn execution_arbiter_stats(
+        &self,
+    ) -> Vec<(String, ExecutionWorkClass, ModelExecutionStats)> {
+        self.execution_arbiter.stats()
     }
 
     /// Remove a loaded model. The last model cannot be removed because every
@@ -179,6 +220,9 @@ impl AppState {
     /// The published model becomes the default when `make_default` is true.
     pub(crate) fn publish_live(&self, mut new: LiveState, make_default: bool) -> Option<LiveState> {
         new.generation = self.next_live_generation.fetch_add(1, Ordering::AcqRel);
+        new.admission = Arc::new(AdmissionController::new(
+            self.limits.max_concurrent_requests_per_model,
+        ));
         attach_live_state(
             &new,
             &self.metrics,
@@ -205,6 +249,9 @@ impl AppState {
     /// successfully building a new session outside the lock.
     pub(crate) fn swap_live(&self, mut new: LiveState) -> LiveState {
         new.generation = self.next_live_generation.fetch_add(1, Ordering::AcqRel);
+        new.admission = Arc::new(AdmissionController::new(
+            self.limits.max_concurrent_requests_per_model,
+        ));
         attach_live_state(
             &new,
             &self.metrics,
@@ -228,7 +275,11 @@ impl AppState {
         &self,
         live: &LiveState,
     ) -> Result<AdmissionPermit, crate::admission::AdmissionError> {
-        let permit = self.admission.try_admit()?;
+        // Acquire the narrow scope first so a draining/saturated model does
+        // not transiently consume process capacity. Both leases are merged
+        // into one permit and therefore follow the actual engine-job lifetime.
+        let model_permit = live.admission.try_admit()?;
+        let global_permit = self.admission.try_admit()?;
         let current_generation = self
             .live
             .read()
@@ -236,11 +287,11 @@ impl AppState {
             .get(live.model_id.as_ref())
             .map(|current| current.generation);
         if current_generation != Some(live.generation) {
-            drop(permit);
+            drop((model_permit, global_permit));
             return Err(crate::admission::AdmissionError::StaleGeneration);
         }
         live.last_used.store(unix_now_secs(), Ordering::Relaxed);
-        Ok(permit)
+        Ok(model_permit.merge(global_permit))
     }
 
     pub(crate) fn allocate_request_id(&self) -> u64 {
@@ -299,6 +350,11 @@ impl AppState {
 
     pub(crate) fn with_limits(mut self, limits: ServerLimits) -> Self {
         self.admission = Arc::new(AdmissionController::new(limits.max_concurrent_requests));
+        for live in self.live.write().models.values_mut() {
+            live.admission = Arc::new(AdmissionController::new(
+                limits.max_concurrent_requests_per_model,
+            ));
+        }
         self.limits = Arc::new(limits);
         self
     }
@@ -313,6 +369,7 @@ impl AppState {
             .remove(&(live.model_id.as_ref().clone(), live.generation));
         drop(request_owners);
         self.metrics.remove_model_step_stats(live.model_id.as_ref());
+        self.execution_arbiter.remove_model(live.model_id.as_ref());
     }
 
     fn update_advertised_model(&self, model_id: &str) {
@@ -410,6 +467,7 @@ fn record_terminal_request_owner(
 /// configuration is supplied.
 pub(crate) struct ServerLimits {
     pub(crate) max_concurrent_requests: Option<usize>,
+    pub(crate) max_concurrent_requests_per_model: Option<usize>,
     pub(crate) max_request_body_bytes: usize,
     pub(crate) request_timeout: Option<Duration>,
     pub(crate) grpc_request_timeout: Option<Duration>,
@@ -421,6 +479,7 @@ impl Default for ServerLimits {
     fn default() -> Self {
         Self {
             max_concurrent_requests: None,
+            max_concurrent_requests_per_model: None,
             max_request_body_bytes: crate::DEFAULT_MAX_REQUEST_BODY_BYTES,
             request_timeout: None,
             grpc_request_timeout: None,
@@ -456,6 +515,7 @@ struct EngineStepStats {
     scheduled_tokens: u64,
     kv_usage_blocks: u64,
     prefix_hits_total: u64,
+    memory: Option<ModelMemoryGauges>,
 }
 
 /// Point-in-time copy of the engine-step gauges cached by
@@ -469,6 +529,67 @@ pub(crate) struct EngineStepGauges {
     pub(crate) scheduled_tokens: u64,
     pub(crate) kv_usage_blocks: u64,
     pub(crate) prefix_hits_total: u64,
+}
+
+/// Latest model-attributed memory geometry reported by the native runner.
+///
+/// These values describe owned tensor storage, not process RSS. The metrics
+/// endpoint keeps that distinction explicit by publishing MLX allocator and
+/// host probes separately.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ModelMemoryGauges {
+    pub(crate) kv_logical_bytes: u64,
+    pub(crate) kv_capacity_bytes: u64,
+    pub(crate) kv_linear_state_bytes: u64,
+    pub(crate) kv_paged_pool_slab_bytes: u64,
+    pub(crate) prefix_cache_payload_bytes: u64,
+    pub(crate) full_attention_layers: u64,
+    pub(crate) sliding_window_layers: u64,
+    pub(crate) rotated_ring_layers: u64,
+    pub(crate) linear_state_layers: u64,
+    pub(crate) paged_pool_slabs: u64,
+}
+
+impl ModelMemoryGauges {
+    /// Physical KV bytes attributed to this model without double-counting
+    /// logical paged views. A paged pool reports real slab reservations; the
+    /// contiguous path reports per-request capacity arrays.
+    pub(crate) fn physical_kv_bytes(self) -> u64 {
+        let attention_bytes = if self.kv_paged_pool_slab_bytes > 0 {
+            self.kv_paged_pool_slab_bytes
+        } else {
+            self.kv_capacity_bytes
+        };
+        attention_bytes.saturating_add(self.kv_linear_state_bytes)
+    }
+
+    pub(crate) const fn rollback_strategy(self) -> &'static str {
+        if self.linear_state_layers > 0 {
+            "restore_replay"
+        } else if self.rotated_ring_layers > 0 {
+            "bounded_cursor_restore"
+        } else {
+            "o1_trim"
+        }
+    }
+
+    pub(crate) const fn attention_storage(self) -> &'static str {
+        if self.paged_pool_slabs > 0 {
+            "paged_pool"
+        } else {
+            "contiguous"
+        }
+    }
+
+    pub(crate) const fn sliding_storage(self) -> &'static str {
+        if self.rotated_ring_layers > 0 {
+            "rotating_ring"
+        } else if self.sliding_window_layers > 0 {
+            "ordered"
+        } else {
+            "none"
+        }
+    }
 }
 
 impl ServerMetrics {
@@ -552,6 +673,44 @@ impl ServerMetrics {
         entry.prefix_hits_total = entry
             .prefix_hits_total
             .saturating_add(report.prefix_hits as u64);
+        if let Some(route) = report.route.as_ref()
+            && route
+                .decision("ax_mlx_kv_request_snapshots")
+                .is_some_and(|snapshots| snapshots > 0)
+        {
+            entry.memory = Some(ModelMemoryGauges {
+                kv_logical_bytes: route_kib_as_bytes(route, "ax_mlx_kv_logical_kib"),
+                kv_capacity_bytes: route_kib_as_bytes(route, "ax_mlx_kv_capacity_kib"),
+                kv_linear_state_bytes: route_kib_as_bytes(route, "ax_mlx_kv_linear_state_kib"),
+                kv_paged_pool_slab_bytes: route_kib_as_bytes(
+                    route,
+                    "ax_mlx_kv_paged_pool_slab_kib",
+                ),
+                prefix_cache_payload_bytes: route_kib_as_bytes(
+                    route,
+                    "ax_mlx_prefix_cache_bytes_kib",
+                ),
+                full_attention_layers: u64::from(
+                    route
+                        .decision("ax_mlx_kv_full_attention_layers")
+                        .unwrap_or(0),
+                ),
+                sliding_window_layers: u64::from(
+                    route
+                        .decision("ax_mlx_kv_sliding_window_layers")
+                        .unwrap_or(0),
+                ),
+                rotated_ring_layers: u64::from(
+                    route.decision("ax_mlx_kv_rotated_ring_layers").unwrap_or(0),
+                ),
+                linear_state_layers: u64::from(
+                    route.decision("ax_mlx_kv_linear_state_layers").unwrap_or(0),
+                ),
+                paged_pool_slabs: u64::from(
+                    route.decision("ax_mlx_kv_paged_pool_slabs").unwrap_or(0),
+                ),
+            });
+        }
     }
 
     pub(crate) fn remove_model_step_stats(&self, model_id: &str) {
@@ -584,6 +743,19 @@ impl ServerMetrics {
             })
             .collect()
     }
+
+    pub(crate) fn model_memory_gauges_per_model(&self) -> Vec<(String, ModelMemoryGauges)> {
+        self.engine_step_stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(|(model_id, entry)| entry.memory.map(|memory| (model_id.clone(), memory)))
+            .collect()
+    }
+}
+
+fn route_kib_as_bytes(route: &ax_engine_sdk::GenerateRouteReport, key: &str) -> u64 {
+    u64::from(route.decision(key).unwrap_or(0)).saturating_mul(1024)
 }
 
 /// Build an initial `LiveState`. The generation service constructs the session
@@ -622,6 +794,7 @@ fn build_live_state_inner(
     Ok(LiveState {
         generation: 0,
         model_id: Arc::new(model_id),
+        admission: Arc::new(AdmissionController::new(None)),
         session_config: Arc::new(session_config),
         stateless_generate_context,
         runtime_report,
@@ -700,6 +873,42 @@ mod step_metrics_tests {
     fn step_metrics_are_empty_before_first_step() {
         let metrics = ServerMetrics::default();
         assert!(metrics.engine_step_gauges_per_model().is_empty());
+    }
+
+    #[test]
+    fn native_memory_report_separates_paged_pool_from_logical_views() {
+        let metrics = ServerMetrics::default();
+        let mut report = step_report(2, 0);
+        report.route = Some(ax_engine_sdk::GenerateRouteReport {
+            crossover_decisions: BTreeMap::from([
+                ("ax_mlx_kv_request_snapshots".to_string(), 2),
+                ("ax_mlx_kv_logical_kib".to_string(), 600),
+                ("ax_mlx_kv_capacity_kib".to_string(), 800),
+                ("ax_mlx_kv_linear_state_kib".to_string(), 25),
+                ("ax_mlx_kv_paged_pool_slab_kib".to_string(), 500),
+                ("ax_mlx_prefix_cache_bytes_kib".to_string(), 40),
+                ("ax_mlx_kv_full_attention_layers".to_string(), 48),
+                ("ax_mlx_kv_sliding_window_layers".to_string(), 40),
+                ("ax_mlx_kv_rotated_ring_layers".to_string(), 40),
+                ("ax_mlx_kv_linear_state_layers".to_string(), 24),
+                ("ax_mlx_kv_paged_pool_slabs".to_string(), 4),
+            ]),
+            ..Default::default()
+        });
+
+        metrics.record_step_report("hybrid", &report);
+        let memory = metrics.model_memory_gauges_per_model()[0].1;
+
+        assert_eq!(memory.kv_logical_bytes, 600 * 1024);
+        assert_eq!(memory.kv_capacity_bytes, 800 * 1024);
+        assert_eq!(
+            memory.physical_kv_bytes(),
+            (500 + 25) * 1024,
+            "paged slab bytes replace overlapping per-view capacity",
+        );
+        assert_eq!(memory.rollback_strategy(), "restore_replay");
+        assert_eq!(memory.attention_storage(), "paged_pool");
+        assert_eq!(memory.sliding_storage(), "rotating_ring");
     }
 }
 

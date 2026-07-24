@@ -1,0 +1,167 @@
+{
+  "artifact_fingerprint_sha256": "1dd461312a12126079c0970c3c169f01241e8c9803ea045c4a922a345484d7d6",
+  "device_architecture": "applegpu_g17s",
+  "engine_version": "6.11.1",
+  "mlx_version": "0.32.0",
+  "model_family": "gemma4",
+  "numerics_env_sha256": "828360d3b614be397384456f7d3aa685351b54cccf8b71e349b4e7f567ddc79b",
+  "runtime_contract": "ax.mlx.row_exact_coalesced_decode.runtime.v1",
+  "scenarios": [
+    {
+      "baseline": {
+        "seconds": 2.692,
+        "tokens": 128,
+        "tokens_per_second": 47.6
+      },
+      "baseline_passed": true,
+      "batch": 2,
+      "coalesced": {
+        "seconds": 2.541,
+        "tokens": 128,
+        "tokens_per_second": 50.4
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.0588235294117647
+    },
+    {
+      "baseline": {
+        "seconds": 5.397,
+        "tokens": 256,
+        "tokens_per_second": 47.4
+      },
+      "baseline_passed": true,
+      "batch": 4,
+      "coalesced": {
+        "seconds": 4.597,
+        "tokens": 256,
+        "tokens_per_second": 55.7
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.1751054852320677
+    },
+    {
+      "baseline": {
+        "seconds": 5.415,
+        "tokens": 256,
+        "tokens_per_second": 47.3
+      },
+      "baseline_passed": true,
+      "batch": 4,
+      "coalesced": {
+        "seconds": 4.648,
+        "tokens": 256,
+        "tokens_per_second": 55.1
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.1649048625792813
+    },
+    {
+      "baseline": {
+        "seconds": 5.402,
+        "tokens": 256,
+        "tokens_per_second": 47.4
+      },
+      "baseline_passed": true,
+      "batch": 4,
+      "coalesced": {
+        "seconds": 4.601,
+        "tokens": 256,
+        "tokens_per_second": 55.6
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 1,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.1729957805907174
+    },
+    {
+      "baseline": {
+        "seconds": 5.49,
+        "tokens": 256,
+        "tokens_per_second": 46.6
+      },
+      "baseline_passed": true,
+      "batch": 4,
+      "coalesced": {
+        "seconds": 4.652,
+        "tokens": 256,
+        "tokens_per_second": 55.0
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 512,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.1802575107296136
+    },
+    {
+      "baseline": {
+        "seconds": 5.388,
+        "tokens": 256,
+        "tokens_per_second": 47.5
+      },
+      "baseline_passed": true,
+      "batch": 4,
+      "coalesced": {
+        "seconds": 4.592,
+        "tokens": 256,
+        "tokens_per_second": 55.7
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": true,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.1726315789473685
+    },
+    {
+      "baseline": {
+        "seconds": 2.8,
+        "tokens": 128,
+        "tokens_per_second": 45.7
+      },
+      "baseline_passed": true,
+      "batch": 2,
+      "coalesced": {
+        "seconds": 2.637,
+        "tokens": 128,
+        "tokens_per_second": 48.5
+      },
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 992,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy",
+      "speedup": 1.061269146608315
+    }
+  ],
+  "schema_version": "ax.mlx.row_exact_coalesced_decode_certification.v1",
+  "verdict": "pass"
+}

@@ -49,19 +49,53 @@ def _artifact() -> dict[str, object]:
         "schema_version": checker.SCHEMA_VERSION,
         "methodology": {
             "scope": "timed_multi_model_serving_and_lifecycle",
-            "request_endpoint": "/v1/generate/stream",
+            "request_endpoint": "/v1/completions",
+            "protocol": "openai_completions_sse",
             "timing_scope": "client_observed",
         },
         "target": {
             "base_url": "http://127.0.0.1:31418",
             "models": ["qwen3.5-9b", "gemma-4-12b-it"],
+            "runtime": "ax-engine",
+            "process_count": 1,
+            "comparison_contract": {
+                "id": "test-qwen-gemma-contract",
+                "total_memory_cap_bytes": 1024,
+            },
+            "host": {
+                "node": "test-m5",
+                "machine": "arm64",
+                "platform": "macOS-test",
+            },
+            "model_packages": {
+                "qwen3.5-9b": {
+                    "path": "/models/qwen",
+                    "identity_file_sha256": {"config.json": "qwen"},
+                    "safetensors_files": 1,
+                    "safetensors_bytes": 100,
+                    "safetensors_layout_sha256": "qwen-layout",
+                },
+                "gemma-4-12b-it": {
+                    "path": "/models/gemma",
+                    "identity_file_sha256": {"config.json": "gemma"},
+                    "safetensors_files": 1,
+                    "safetensors_bytes": 200,
+                    "safetensors_layout_sha256": "gemma-layout",
+                },
+            },
         },
         "scenario": {
             "path": "scenario.jsonl",
             "sha256": "a" * 64,
             "events": 2,
         },
-        "sampling": {"temperature": 0.0, "top_p": 1.0, "top_k": 0, "seed": 0},
+        "sampling": {
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "top_k": 0,
+            "seed": 0,
+            "input_kind": "text",
+        },
         "summary": summary,
         "by_model": {
             "qwen3.5-9b": _summary(requests=1),
@@ -87,6 +121,7 @@ def _artifact() -> dict[str, object]:
                 "scheduled_at_s": 0.0,
                 "started_at_s": 0.0,
                 "e2e_latency_ms": 200.0,
+                "input_tokens": 32,
                 "stream_step_interval_ms": [18.0, 18.0],
             },
             {
@@ -99,6 +134,7 @@ def _artifact() -> dict[str, object]:
                 "scheduled_at_s": 0.05,
                 "started_at_s": 0.05,
                 "e2e_latency_ms": 220.0,
+                "input_tokens": 32,
                 "stream_step_interval_ms": [19.0, 19.0],
             },
         ],

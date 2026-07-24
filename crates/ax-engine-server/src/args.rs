@@ -16,6 +16,7 @@ const MODEL_ARTIFACTS_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 const DEFAULT_MODEL_ID: &str = "qwen3";
 
 const MAX_CONCURRENT_REQUESTS_ENV: &str = "AX_ENGINE_MAX_CONCURRENT_REQUESTS";
+const MAX_CONCURRENT_REQUESTS_PER_MODEL_ENV: &str = "AX_ENGINE_MAX_CONCURRENT_REQUESTS_PER_MODEL";
 const MAX_REQUEST_BODY_BYTES_ENV: &str = "AX_ENGINE_MAX_REQUEST_BODY_BYTES";
 const REQUEST_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_REQUEST_TIMEOUT_SECS";
 const GRPC_REQUEST_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_GRPC_REQUEST_TIMEOUT_SECS";
@@ -262,6 +263,14 @@ pub struct ServerArgs {
     #[arg(long = "max-concurrent-requests")]
     pub max_concurrent_requests: Option<usize>,
 
+    /// Opt-in cap on concurrent engine jobs for each loaded model. This is
+    /// enforced in addition to the process-wide cap, so one hot model cannot
+    /// consume every configured slot. Unset (or non-positive) means no
+    /// per-model cap. Falls back to
+    /// AX_ENGINE_MAX_CONCURRENT_REQUESTS_PER_MODEL.
+    #[arg(long = "max-concurrent-requests-per-model")]
+    pub max_concurrent_requests_per_model: Option<usize>,
+
     /// Cap on request body size, in bytes. Falls back to
     /// AX_ENGINE_MAX_REQUEST_BODY_BYTES; unset (or non-positive) keeps the
     /// built-in 256 MiB default (processed multimodal payloads can be
@@ -437,6 +446,14 @@ impl ServerArgs {
             (None, Some(vllm)) => Some(vllm),
             (None, None) => None,
         }
+    }
+
+    pub(crate) fn resolved_max_concurrent_requests_per_model(&self) -> Option<usize> {
+        super::routes::parse_max_concurrent_requests(
+            self.max_concurrent_requests_per_model
+                .map(|value| value.to_string())
+                .or_else(|| std::env::var(MAX_CONCURRENT_REQUESTS_PER_MODEL_ENV).ok()),
+        )
     }
 
     pub(crate) fn resolved_max_request_body_bytes(&self) -> usize {

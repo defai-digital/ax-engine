@@ -317,6 +317,7 @@ pub(super) fn base_server_args() -> ServerArgs {
         max_inflight_prefill_requests: 0,
         grpc_bind_address: None,
         max_concurrent_requests: None,
+        max_concurrent_requests_per_model: None,
         max_request_body_bytes: None,
         request_timeout_secs: None,
         grpc_request_timeout_secs: None,

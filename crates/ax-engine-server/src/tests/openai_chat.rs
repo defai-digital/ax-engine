@@ -1963,7 +1963,7 @@ async fn openai_chat_request_decodes_inline_image_into_qwen3_vl_inputs() {
         "tokenized prompt must be non-empty"
     );
     assert!(
-        built.generate_request.input_tokens.iter().any(|&t| t == 10),
+        built.generate_request.input_tokens.contains(&10),
         "expanded prompt should contain image pad token id 10"
     );
     assert_eq!(built.generate_request.input_text, None);

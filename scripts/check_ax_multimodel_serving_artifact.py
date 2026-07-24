@@ -16,12 +16,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 SCHEMA_VERSION = "ax.multimodel_serving_benchmark.v1"
 REQUIRED_METHODOLOGY = {
     "scope": "timed_multi_model_serving_and_lifecycle",
-    "request_endpoint": "/v1/generate/stream",
     "timing_scope": "client_observed",
+}
+ALLOWED_REQUEST_ENDPOINTS = {
+    "/v1/generate/stream",
+    "/v1/chat/completions",
+    "/v1/completions",
 }
 PERCENTILE_KEYS = ["count", "min", "mean", "p50", "p75", "p90", "p95", "p99", "max"]
 SUMMARY_DISTRIBUTIONS = [
@@ -156,9 +159,7 @@ def interactive_stream_gap_p95(
 
     dist = summary.get("stream_step_interval_ms")
     if not isinstance(dist, dict) or dist.get("p95") is None:
-        raise ArtifactCheckError(
-            "cannot enforce stream-gap cap without interactive intervals"
-        )
+        raise ArtifactCheckError("cannot enforce stream-gap cap without interactive intervals")
     return require_number(dist.get("p95"), "summary.stream_step_interval_ms.p95")
 
 
@@ -167,9 +168,7 @@ def validate_observation(row: Any, index: int) -> dict[str, Any]:
     require_string(obs.get("event_id"), f"observations[{index}].event_id")
     kind = obs.get("kind")
     if kind not in {"request", "load", "unload"}:
-        raise ArtifactCheckError(
-            f"observations[{index}].kind must be request, load, or unload"
-        )
+        raise ArtifactCheckError(f"observations[{index}].kind must be request, load, or unload")
     require_string(obs.get("model_id"), f"observations[{index}].model_id")
     if not isinstance(obs.get("ok"), bool):
         raise ArtifactCheckError(f"observations[{index}].ok must be a boolean")
@@ -230,6 +229,11 @@ def validate_multimodel_serving_artifact(
     for key, expected in REQUIRED_METHODOLOGY.items():
         if methodology.get(key) != expected:
             raise ArtifactCheckError(f"methodology.{key} must be {expected!r}")
+    request_endpoint = methodology.get("request_endpoint")
+    if request_endpoint not in ALLOWED_REQUEST_ENDPOINTS:
+        raise ArtifactCheckError(
+            f"methodology.request_endpoint must be one of {sorted(ALLOWED_REQUEST_ENDPOINTS)}"
+        )
 
     target = require_object(artifact.get("target"), "target")
     require_string(target.get("base_url"), "target.base_url")
@@ -267,11 +271,7 @@ def validate_multimodel_serving_artifact(
 
     by_model = require_object(artifact.get("by_model"), "by_model")
     request_models = sorted(
-        {
-            str(item["model_id"])
-            for item in observations
-            if item.get("kind") == "request"
-        }
+        {str(item["model_id"]) for item in observations if item.get("kind") == "request"}
     )
     for model_id in request_models:
         if model_id not in by_model:
@@ -287,9 +287,7 @@ def validate_multimodel_serving_artifact(
     require_int(lifecycle.get("ok_events"), "lifecycle.ok_events")
     require_int(lifecycle.get("error_events"), "lifecycle.error_events")
     if lifecycle["events"] > 0:
-        validate_distribution(
-            lifecycle.get("latency_ms"), "lifecycle.latency_ms", allow_null=False
-        )
+        validate_distribution(lifecycle.get("latency_ms"), "lifecycle.latency_ms", allow_null=False)
 
     present_families = {
         family
@@ -299,8 +297,7 @@ def validate_multimodel_serving_artifact(
     for family in require_focus_families:
         if family not in FOCUS_FAMILY_PATTERNS:
             raise ArtifactCheckError(
-                f"unknown focus family {family!r}; expected one of "
-                f"{sorted(FOCUS_FAMILY_PATTERNS)}"
+                f"unknown focus family {family!r}; expected one of {sorted(FOCUS_FAMILY_PATTERNS)}"
             )
         if family not in present_families:
             raise ArtifactCheckError(

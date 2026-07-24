@@ -1,3 +1,3 @@
-{"id":"qwen-stream","kind":"request","at_ms":0,"model":"qwen3.5-9b","category":"interactive_decode","input_token_pattern":[3,10,17,24,31,38,45,52],"input_tokens_count":32,"max_output_tokens":192}
+{"id":"qwen-stream","kind":"request","at_ms":0,"model":"qwen3.5-9b","category":"interactive_decode","input_text":"Act as a coding assistant. Implement a deterministic Rust ring buffer with tests, explain its invariants, and continue for at least 256 tokens without concluding early.","input_tokens_count":32,"max_output_tokens":192}
 {"id":"unload-gemma","kind":"unload","at_ms":250,"model":"gemma-4-12b-it","category":"sibling_unload"}
 {"id":"reload-gemma","kind":"load","at_ms":500,"model":"gemma-4-12b-it","category":"sibling_load","model_path_env":"AX_BENCH_GEMMA_MODEL_DIR","load_mode":"add","load_policy":"availability_first","make_default":false}

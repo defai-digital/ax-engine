@@ -1,0 +1,89 @@
+{
+  "artifact_fingerprint_sha256": "1dd461312a12126079c0970c3c169f01241e8c9803ea045c4a922a345484d7d6",
+  "device_architecture": "applegpu_g17s",
+  "engine_version": "6.11.1",
+  "mlx_version": "0.32.0",
+  "model_family": "gemma4",
+  "numerics_env_sha256": "828360d3b614be397384456f7d3aa685351b54cccf8b71e349b4e7f567ddc79b",
+  "runtime_contract": "ax.mlx.batched_decode.runtime.v3",
+  "scenarios": [
+    {
+      "batch": 2,
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 2 MISMATCH at Some(11): | req 2 MISMATCH at Some(11):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 0 MISMATCH at Some(31): | req 1 MISMATCH at Some(60):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 0 MISMATCH at Some(30): | req 2 MISMATCH at Some(13):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 128,
+      "prompt_seed": 1,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 0 MISMATCH at Some(41): | req 2 MISMATCH at Some(8):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 512,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 0 MISMATCH at Some(31): | req 3 MISMATCH at Some(43):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": true,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 2,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 0 MISMATCH at Some(2): | req 1 MISMATCH at Some(15):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 992,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    }
+  ],
+  "schema_version": "ax.mlx.batched_decode_certification.v1",
+  "verdict": "fail"
+}

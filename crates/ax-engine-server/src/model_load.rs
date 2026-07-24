@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_state::{AppState, build_live_state, build_replacement_live_state};
 use crate::errors::{ErrorResponse, error_response, map_generation_service_error};
-use crate::generation::service::{GenerationServiceError, NativeGenerationService};
+use crate::generation::service::{
+    ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP, GenerationServiceError, NativeGenerationService,
+};
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
 
@@ -73,6 +75,12 @@ enum MultiModelTarget {
 /// One-line product scope used by every multi-model rejection message.
 const MULTI_MODEL_SCOPE: &str = "Qwen 3.5 9B, Qwen 3.6 35B/27B, Qwen3-Coder-Next, \
      Gemma 4 12B/26B/31B, EmbeddingGemma 300M, and Qwen3-Embedding 0.6B/4B/8B";
+const MULTI_MODEL_PREFILL_ISOLATION_ENV: &str = "AX_SERVER_MULTI_MODEL_PREFILL_ISOLATION";
+// Keep the no-contention prefill geometry large enough for throughput. The
+// generation service dynamically contracts this to a single token while a
+// sibling model is active or waiting, then restores this value after a short
+// inactivity grace. Operators can opt out through the environment switch.
+const MULTI_MODEL_PREFILL_TOKENS_PER_STEP: u32 = ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP;
 
 impl MultiModelTarget {
     const fn as_str(self) -> &'static str {
@@ -215,19 +223,29 @@ pub(crate) async fn load_model(
     // into the detached task only after every request error has been ruled out.
     // Invalid loads must not close admission or wait for unrelated traffic.
     let loading_guard = LoadingFlagGuard(state.clone());
-    // Preserve the lifecycle contract: live stepwise work takes precedence
-    // over backend/artifact validation because replacing its owner would
-    // orphan request IDs. The loading flag already blocks new submissions.
-    ensure_no_active_stepwise_for_all(&state).await?;
+    // Preserve the historical fail-closed ordering for replacement: live
+    // stepwise ownership takes precedence over artifact/backend validation,
+    // because replacing that generation would orphan its request IDs. Add
+    // retains every existing generation and therefore skips this check.
+    if load_mode == LoadModelMode::Replace {
+        let outgoing = state.snapshot();
+        ensure_no_active_stepwise(&outgoing.generation_service).await?;
+    }
     let live = validate_load_preflight(&state, &model_id, &model_path, load_mode, load_policy)?;
-    // Replace swaps live state and MemoryConstrained shuts the previous
-    // service down first — both must drain existing traffic. A plain
-    // availability-first Add builds the new model on the blocking pool and
-    // publishes it atomically, so admission stays open and resident models
-    // keep serving instead of returning 503 for the whole weight load.
-    let disruptive =
-        load_mode == LoadModelMode::Replace || load_policy == LoadModelPolicy::MemoryConstrained;
-    let drain_guard = disruptive.then(|| state.admission.begin_drain());
+    let resident_count = state.model_ids().len();
+    let multi_model_after_load = match load_mode {
+        LoadModelMode::Add => resident_count.saturating_add(1) > 1,
+        LoadModelMode::Replace => resident_count > 1,
+    };
+    let enforce_prefill_isolation =
+        multi_model_after_load && multi_model_prefill_isolation_enabled();
+    // Add never retires an existing generation, so unrelated stepwise work is
+    // safe. Replace still fails fast before an expensive build when its
+    // outgoing generation owns non-terminal stepwise requests. A second check
+    // immediately before publication closes the build-time race.
+    if load_mode == LoadModelMode::Replace {
+        ensure_no_active_stepwise(&live.generation_service).await?;
+    }
     let response_model_id = model_id.clone();
 
     // Run load + swap in a detached task: axum drops handler futures when the
@@ -235,11 +253,7 @@ pub(crate) async fn load_model(
     // the loading flag either way.
     let state_clone = state.clone();
     let load_task = tokio::spawn(async move {
-        let _drain_guard = drain_guard;
         let _loading_guard = loading_guard;
-        if disruptive {
-            ensure_no_active_stepwise_for_all(&state_clone).await?;
-        }
         // MemoryConstrained retires the previous service before the build; a
         // failed build would otherwise leave the registry pointing at a dead
         // LiveState, so keep what a rollback respawn needs.
@@ -252,12 +266,19 @@ pub(crate) async fn load_model(
         // Clone the current config and swap in the new model artifacts dir.
         // Only MLX-native consumes this field; delegated backends would keep
         // serving the old model under a new identifier.
-        let new_config =
-            Arc::unwrap_or_clone(live.session_config).with_mlx_model_artifacts_dir(model_path);
-        if disruptive {
-            wait_for_idle_without_stepwise(&state_clone).await?;
+        let mut new_config = Arc::unwrap_or_clone(Arc::clone(&live.session_config))
+            .with_mlx_model_artifacts_dir(model_path);
+        if enforce_prefill_isolation && !new_config.multi_prefill_fair {
+            new_config = new_config.with_multi_prefill_fair(MULTI_MODEL_PREFILL_TOKENS_PER_STEP, 0);
         }
+        // A memory-constrained replacement must free the outgoing weights
+        // before the incoming build. Drain only that model generation; sibling
+        // models retain their independent admission scopes and keep serving.
+        let outgoing_drain = (load_policy == LoadModelPolicy::MemoryConstrained)
+            .then(|| live.admission.begin_drain());
         if load_policy == LoadModelPolicy::MemoryConstrained {
+            ensure_no_active_stepwise(&live.generation_service).await?;
+            wait_for_model_idle(&live).await?;
             live.generation_service
                 .shutdown()
                 .await
@@ -267,18 +288,64 @@ pub(crate) async fn load_model(
         // Start the replacement from the blocking pool and wait for readiness there.
         // The service constructs the session on its dedicated owner worker; weight
         // loading can take tens of seconds and must not stall the async runtime.
-        let result = tokio::task::spawn_blocking(move || match load_mode {
-            LoadModelMode::Replace => build_replacement_live_state(model_id, new_config),
-            LoadModelMode::Add => build_live_state(model_id, new_config),
+        let result = tokio::task::spawn_blocking(move || {
+            if load_mode == LoadModelMode::Replace
+                && load_policy == LoadModelPolicy::MemoryConstrained
+            {
+                build_replacement_live_state(model_id, new_config)
+            } else {
+                // Availability-first replace builds beside the live generation;
+                // clearing process-global compile caches here would disturb the
+                // very traffic this policy promises to preserve.
+                build_live_state(model_id, new_config)
+            }
         })
         .await;
         match result {
-            Ok(Ok(live)) => {
-                let ctx_len = crate::metadata::context_length(&live);
+            Ok(Ok(new_live)) => {
+                let ctx_len = crate::metadata::context_length(&new_live);
+                if enforce_prefill_isolation
+                    && let Err(error) = enable_resident_prefill_isolation(&state_clone).await
+                {
+                    retire_unpublished(new_live).await;
+                    return Err(error);
+                }
+                let published_model_id = Arc::clone(&new_live.model_id);
+                let _availability_drain;
+                if load_mode == LoadModelMode::Replace {
+                    // Availability-first keeps the outgoing generation live
+                    // throughout weight loading, then closes only its admission
+                    // for a bounded drain immediately before the atomic swap.
+                    _availability_drain = outgoing_drain
+                        .is_none()
+                        .then(|| live.admission.begin_drain());
+                    if let Err(error) = ensure_no_active_stepwise(&live.generation_service).await {
+                        retire_unpublished(new_live).await;
+                        return Err(error);
+                    }
+                    if let Err(error) = wait_for_model_idle(&live).await {
+                        retire_unpublished(new_live).await;
+                        return Err(error);
+                    }
+                } else {
+                    _availability_drain = None;
+                }
                 let previous = match load_mode {
-                    LoadModelMode::Replace => Some(state_clone.swap_live(live)),
-                    LoadModelMode::Add => state_clone.publish_live(live, make_default),
+                    LoadModelMode::Replace => Some(state_clone.swap_live(new_live)),
+                    LoadModelMode::Add => state_clone.publish_live(new_live, make_default),
                 };
+                // Publication attaches the process-wide execution arbiter, so
+                // enable the adaptive policy on the now-published generation
+                // rather than on the detached build (whose attachment would
+                // otherwise replace the execution target and clear the flag).
+                if enforce_prefill_isolation
+                    && let Some(published) =
+                        state_clone.snapshot_for_model(Some(published_model_id.as_ref()))
+                {
+                    published
+                        .generation_service
+                        .set_adaptive_prefill_isolation(true);
+                }
                 if let Some(previous) = previous {
                     previous.retire().await.map_err(|error| {
                         error_response(
@@ -423,8 +490,8 @@ enum UnloadWaitPolicy {
 }
 
 /// Shared unload flow used by the HTTP handler and the idle evictor: takes
-/// the loading flag, validates, drains admission, and retires the model on a
-/// detached task so a caller disconnect cannot abort cleanup.
+/// the lifecycle-mutation flag, validates, drains only the target model, and
+/// retires it on a detached task so a caller disconnect cannot abort cleanup.
 async fn perform_unload(
     state: &AppState,
     model_id: String,
@@ -445,12 +512,19 @@ async fn perform_unload(
     // remain true until remove_live runs. Reject without draining active work.
     let loading_guard = LoadingFlagGuard(state.clone());
     validate_unload_preflight(state, &model_id)?;
-    let drain_guard = state.admission.begin_drain();
-    if wait_policy == UnloadWaitPolicy::AbortIfBusy && state.admission.active_jobs() != 0 {
+    let live = state.snapshot_for_model(Some(&model_id)).ok_or_else(|| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "model_not_found",
+            format!("model {model_id} is not loaded"),
+        )
+    })?;
+    let drain_guard = live.admission.begin_drain();
+    if wait_policy == UnloadWaitPolicy::AbortIfBusy && live.admission.active_jobs() != 0 {
         // Admission is closed above, so the count can only fall — but a
         // request that slipped in before the drain flag must not wait behind
-        // background housekeeping. Reopen admission immediately (guards drop
-        // on return) and retry on a later sweep.
+        // background eviction. Reopen this model immediately (guards drop on
+        // return) and retry on a later sweep. Sibling admission is untouched.
         return Err(error_response(
             StatusCode::CONFLICT,
             "model_busy",
@@ -462,8 +536,8 @@ async fn perform_unload(
     let task = tokio::spawn(async move {
         let _drain_guard = drain_guard;
         let _loading_guard = loading_guard;
-        ensure_no_active_stepwise_for_all(&state_clone).await?;
-        wait_for_idle_without_stepwise(&state_clone).await?;
+        ensure_no_active_stepwise(&live.generation_service).await?;
+        wait_for_model_idle(&live).await?;
         let live = state_clone
             .remove_live(&unload_model_id)
             .map_err(|reason| match reason {
@@ -502,9 +576,6 @@ pub(crate) fn spawn_model_idle_evictor(state: AppState, idle_timeout: Duration) 
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tick).await;
-            if state.admission.active_jobs() != 0 {
-                continue;
-            }
             let default_model_id = state.snapshot().model_id;
             let now = crate::app_state::unix_now_secs();
             let idle_candidates = state
@@ -749,7 +820,7 @@ fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) -> O
 /// Sum of `*.safetensors` file sizes directly in the artifacts dir; `None`
 /// when there are none (unknown layout — the preflight then skips rather
 /// than guessing).
-fn model_weight_bytes(dir: &std::path::Path) -> Option<u64> {
+pub(crate) fn model_weight_bytes(dir: &std::path::Path) -> Option<u64> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut total = 0u64;
     for entry in entries.flatten() {
@@ -860,7 +931,19 @@ fn validate_load_memory_preflight(
         }
     }
 
-    let peak = projected_peak_bytes(resident_total, outgoing, incoming, load_mode, load_policy);
+    // Prefer the process-wide MLX allocator measurement over summing model
+    // manifests. The latter misses compiled graphs and live temporaries and
+    // can double-count shared storage; it remains a deterministic fallback
+    // when MLX has no device probe (for example a delegated CPU backend).
+    let measured_active = mlx_sys::device_active_bytes();
+    let resident_accounted = measured_active.unwrap_or(resident_total);
+    let peak = projected_peak_bytes(
+        resident_accounted,
+        outgoing,
+        incoming,
+        load_mode,
+        load_policy,
+    );
     if peak <= budget {
         return Ok(());
     }
@@ -872,16 +955,21 @@ fn validate_load_memory_preflight(
         ),
         None => format!("{:.1} GiB estimated", gib(incoming)),
     };
+    let resident_source = if measured_active.is_some() {
+        "measured MLX active"
+    } else {
+        "manifest-estimated"
+    };
     Err(error_response(
         StatusCode::UNPROCESSABLE_ENTITY,
         "insufficient_memory",
         format!(
-            "projected peak resident set {:.1} GiB (resident models {:.1} GiB + incoming model \
-             {incoming_detail}) exceeds the Metal working-set budget {:.1} GiB; unload a model \
-             first, use load_policy=memory_constrained for replace, or set \
+            "projected peak device allocation {:.1} GiB ({resident_source} resident baseline \
+             {:.1} GiB + incoming model {incoming_detail}) exceeds the Metal working-set budget \
+             {:.1} GiB; unload a model first, use load_policy=memory_constrained for replace, or set \
              AX_SERVER_LOAD_MEMORY_PREFLIGHT=off to override",
             gib(peak),
-            gib(resident_total),
+            gib(resident_accounted),
             gib(budget)
         ),
     ))
@@ -906,26 +994,30 @@ fn validate_unload_preflight(state: &AppState, model_id: &str) -> Result<(), Htt
     Ok(())
 }
 
-/// Maximum time to wait for in-flight requests to drain before model load
-/// proceeds with a warning. Prevents indefinite blocking if a job is stuck.
+/// Maximum time to wait for one model generation to drain. A timeout fails the
+/// lifecycle operation rather than retiring a worker that still owns jobs.
 const DRAIN_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
-async fn wait_for_idle_without_stepwise(state: &AppState) -> Result<(), HttpErrorResponse> {
+async fn wait_for_model_idle(live: &crate::app_state::LiveState) -> Result<(), HttpErrorResponse> {
     let deadline = tokio::time::Instant::now() + DRAIN_IDLE_TIMEOUT;
     loop {
-        ensure_no_active_stepwise_for_all(state).await?;
-        if state.admission.active_jobs() == 0 {
+        ensure_no_active_stepwise(&live.generation_service).await?;
+        if live.admission.active_jobs() == 0 {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            tracing::warn!(
-                active_jobs = state.admission.active_jobs(),
-                timeout_secs = DRAIN_IDLE_TIMEOUT.as_secs(),
-                "drain idle timeout reached; proceeding with model load while jobs may still be active"
-            );
-            return Ok(());
+            return Err(error_response(
+                StatusCode::CONFLICT,
+                "model_busy",
+                format!(
+                    "model {} still has {} active job(s) after the {}s drain timeout",
+                    live.model_id,
+                    live.admission.active_jobs(),
+                    DRAIN_IDLE_TIMEOUT.as_secs()
+                ),
+            ));
         }
-        if tokio::time::timeout(Duration::from_millis(10), state.admission.wait_for_idle())
+        if tokio::time::timeout(Duration::from_millis(10), live.admission.wait_for_idle())
             .await
             .is_ok()
         {
@@ -934,9 +1026,56 @@ async fn wait_for_idle_without_stepwise(state: &AppState) -> Result<(), HttpErro
     }
 }
 
-async fn ensure_no_active_stepwise_for_all(state: &AppState) -> Result<(), HttpErrorResponse> {
+async fn retire_unpublished(live: crate::app_state::LiveState) {
+    let model_id = Arc::clone(&live.model_id);
+    if let Err(error) = live.retire().await {
+        tracing::warn!(
+            model_id = model_id.as_ref(),
+            error = ?error,
+            "failed to retire an unpublished model generation after lifecycle abort"
+        );
+    }
+}
+
+fn multi_model_prefill_isolation_enabled() -> bool {
+    std::env::var(MULTI_MODEL_PREFILL_ISOLATION_ENV)
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "off" | "0" | "false")
+        })
+        .unwrap_or(true)
+}
+
+async fn enable_resident_prefill_isolation(state: &AppState) -> Result<(), HttpErrorResponse> {
     for live in state.snapshots() {
-        ensure_no_active_stepwise(&live.generation_service).await?;
+        if !live.generation_service.is_ready() {
+            continue;
+        }
+        if !live.session_config.multi_prefill_fair {
+            live.generation_service
+                .execute(|session| {
+                    session.set_multi_prefill_fair(true, MULTI_MODEL_PREFILL_TOKENS_PER_STEP, 0);
+                    Ok(())
+                })
+                .await
+                .map_err(map_generation_service_error)?;
+            if !state.record_multi_prefill_policy(
+                live.model_id.as_ref(),
+                live.generation,
+                MULTI_MODEL_PREFILL_TOKENS_PER_STEP,
+                0,
+            ) {
+                return Err(error_response(
+                    StatusCode::CONFLICT,
+                    "stale_model_generation",
+                    format!(
+                        "model {} changed generation while enabling multi-model prefill isolation",
+                        live.model_id
+                    ),
+                ));
+            }
+        }
+        live.generation_service.set_adaptive_prefill_isolation(true);
     }
     Ok(())
 }
@@ -1259,9 +1398,66 @@ mod tests {
         ensure_no_active_stepwise(&generation_service)
             .await
             .expect("a stopped worker has no live stepwise state");
-        wait_for_idle_without_stepwise(&state)
+        wait_for_model_idle(&state.snapshot())
             .await
             .expect("recovery load should proceed after the worker stopped");
+    }
+
+    #[tokio::test]
+    async fn unloading_one_model_does_not_wait_for_a_busy_sibling() {
+        let state = build_app_state("first".to_string(), delegated_config())
+            .expect("test app state should build");
+        let first = state.snapshot();
+        let second = crate::app_state::build_live_state(
+            "second".to_string(),
+            first.session_config.as_ref().clone(),
+        )
+        .expect("second model should build");
+        state.publish_live(second, false);
+        let sibling_permit = state
+            .try_admit(&first)
+            .expect("first model should hold an active job");
+
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            perform_unload(&state, "second".to_string(), UnloadWaitPolicy::WaitForIdle),
+        )
+        .await
+        .expect("target-scoped unload must not wait for sibling jobs")
+        .expect("idle target should unload");
+
+        assert_eq!(state.model_ids(), vec!["first".to_string()]);
+        assert_eq!(state.admission.active_jobs(), 1);
+        drop(sibling_permit);
+    }
+
+    #[tokio::test]
+    async fn multi_model_prefill_isolation_updates_every_resident_generation() {
+        let state = build_app_state("first".to_string(), delegated_config())
+            .expect("test app state should build");
+        let second = crate::app_state::build_live_state(
+            "second".to_string(),
+            state.snapshot().session_config.as_ref().clone(),
+        )
+        .expect("second model should build");
+        state.publish_live(second, false);
+
+        enable_resident_prefill_isolation(&state)
+            .await
+            .expect("live sessions should accept the isolation policy");
+
+        for live in state.snapshots() {
+            assert!(live.session_config.multi_prefill_fair);
+            assert_eq!(
+                live.session_config.max_prefill_tokens_per_request_per_step,
+                MULTI_MODEL_PREFILL_TOKENS_PER_STEP
+            );
+        }
+
+        let removed = state
+            .remove_live("second")
+            .expect("second model should remove");
+        removed.retire().await.expect("second worker should retire");
     }
 
     #[test]

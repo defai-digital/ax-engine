@@ -107,6 +107,9 @@ def load_scenario(path: Path) -> list[ScenarioEvent]:
 
 def _validate_request_row(path: Path, line_no: int, raw: dict[str, Any]) -> None:
     input_text = raw.get("input_text")
+    input_text_prefix = raw.get("input_text_prefix")
+    input_text_pattern = raw.get("input_text_pattern")
+    input_text_repeats = raw.get("input_text_repeats")
     input_tokens = raw.get("input_tokens")
     input_token_pattern = raw.get("input_token_pattern")
     input_tokens_path = raw.get("input_tokens_path")
@@ -124,10 +127,20 @@ def _validate_request_row(path: Path, line_no: int, raw: dict[str, Any]) -> None
         and input_tokens_count > 0
     )
     has_token_file = isinstance(input_tokens_path, str) and bool(input_tokens_path)
-    if not isinstance(input_text, str) and not has_tokens and not has_pattern and not has_token_file:
+    has_text = isinstance(input_text, str) and bool(input_text)
+    has_text_pattern = (
+        isinstance(input_text_pattern, str)
+        and bool(input_text_pattern)
+        and isinstance(input_text_repeats, int)
+        and input_text_repeats > 0
+    )
+    if input_text_prefix is not None and not isinstance(input_text_prefix, str):
+        raise SystemExit(f"{path}:{line_no}: input_text_prefix must be a string")
+    if not any((has_text, has_text_pattern, has_tokens, has_pattern, has_token_file)):
         raise SystemExit(
-            f"{path}:{line_no}: request needs input_text, non-empty input_tokens, "
-            "input_tokens_path, or input_token_pattern with positive input_tokens_count"
+            f"{path}:{line_no}: request needs non-empty input_text, input_text_pattern "
+            "with positive input_text_repeats, non-empty input_tokens, input_tokens_path, "
+            "or input_token_pattern with positive input_tokens_count"
         )
     max_output_tokens = raw.get("max_output_tokens", 128)
     if not isinstance(max_output_tokens, int) or max_output_tokens <= 0:
@@ -139,6 +152,20 @@ def prompt_for_event(
     *,
     scenario_dir: Path | None = None,
 ) -> serving.PromptItem:
+    input_text = event.raw.get("input_text")
+    input_text_prefix = event.raw.get("input_text_prefix", "")
+    input_text_pattern = event.raw.get("input_text_pattern")
+    input_text_repeats = event.raw.get("input_text_repeats")
+    if (
+        input_text is None
+        and isinstance(input_text_pattern, str)
+        and input_text_pattern
+        and isinstance(input_text_repeats, int)
+        and input_text_repeats > 0
+    ):
+        input_text = input_text_pattern * input_text_repeats
+    if isinstance(input_text, str) and isinstance(input_text_prefix, str):
+        input_text = input_text_prefix + input_text
     input_tokens = event.raw.get("input_tokens")
     input_token_pattern = event.raw.get("input_token_pattern")
     input_tokens_path = event.raw.get("input_tokens_path")
@@ -177,7 +204,7 @@ def prompt_for_event(
     return serving.PromptItem(
         id=event.id,
         category=event.category,
-        input_text=event.raw.get("input_text"),
+        input_text=input_text,
         input_tokens=input_tokens,
         input_tokens_count=requested_count if requested_count is not None else input_count,
         max_output_tokens=event.raw.get("max_output_tokens", 128),
@@ -267,6 +294,46 @@ def run_control_event(
     }
 
 
+def parse_route_requirement(value: str) -> tuple[str, int]:
+    name, separator, minimum_text = value.partition("=")
+    if not name:
+        raise argparse.ArgumentTypeError("route counter name must not be empty")
+    if not separator:
+        return name, 1
+    try:
+        minimum = int(minimum_text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("route counter minimum must be an integer") from error
+    if minimum < 0:
+        raise argparse.ArgumentTypeError("route counter minimum must be non-negative")
+    return name, minimum
+
+
+def route_contract(
+    summary: dict[str, Any],
+    requirements: list[tuple[str, int]],
+) -> dict[str, Any]:
+    observed = summary.get("route_decisions", {})
+    if not isinstance(observed, dict):
+        observed = {}
+    failures: list[str] = []
+    required: dict[str, int] = {}
+    selected_observed: dict[str, int | float | None] = {}
+    for name, minimum in requirements:
+        required[name] = max(required.get(name, 0), minimum)
+    for name, minimum in sorted(required.items()):
+        value = observed.get(name)
+        selected_observed[name] = value if isinstance(value, (int, float)) else None
+        if not isinstance(value, (int, float)) or value < minimum:
+            failures.append(f"{name}: observed {value!r}, required >= {minimum}")
+    return {
+        "passed": not failures,
+        "required": required,
+        "observed": selected_observed,
+        "failures": failures,
+    }
+
+
 def run_benchmark(
     args: argparse.Namespace,
     *,
@@ -340,9 +407,7 @@ def run_benchmark(
         }
     )
     interactive_requests = [
-        item
-        for item in request_observations
-        if item.get("category") == "interactive_decode"
+        item for item in request_observations if item.get("category") == "interactive_decode"
     ]
     interactive_intervals = [
         float(value)
@@ -350,16 +415,15 @@ def run_benchmark(
         for value in (item.get("stream_step_interval_ms") or [])
         if value is not None
     ]
-    request_http_503 = sum(
-        1 for item in request_observations if item.get("status") == 503
-    )
+    request_http_503 = sum(1 for item in request_observations if item.get("status") == 503)
     request_http_5xx = sum(
         1
         for item in request_observations
         if isinstance(item.get("status"), int) and 500 <= int(item["status"]) < 600
     )
 
-    return {
+    summary = summarize(request_observations)
+    artifact = {
         "schema_version": SCHEMA_VERSION,
         "created_at": serving.utc_now(),
         "methodology": {
@@ -387,7 +451,7 @@ def run_benchmark(
             "top_k": args.top_k,
             "seed": args.seed,
         },
-        "summary": summarize(request_observations),
+        "summary": summary,
         "by_model": {
             model_id: summarize(
                 [item for item in request_observations if item.get("model_id") == model_id]
@@ -417,6 +481,11 @@ def run_benchmark(
         },
         "observations": observations,
     }
+    artifact["route_contract"] = route_contract(
+        summary,
+        list(getattr(args, "require_route_counter", [])),
+    )
+    return artifact
 
 
 def classify_focus_family(model_id: str) -> str | None:
@@ -455,6 +524,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--slo-ttft-ms", type=optional_positive_float)
     parser.add_argument("--slo-tpot-ms", type=optional_positive_float)
     parser.add_argument("--slo-e2e-ms", type=optional_positive_float)
+    parser.add_argument(
+        "--require-route-counter",
+        action="append",
+        default=[],
+        type=parse_route_requirement,
+        metavar="NAME[=MIN]",
+        help="fail after writing the artifact unless an aggregate route counter reaches MIN",
+    )
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -468,7 +545,7 @@ def main() -> int:
         args.output.write_text(text + "\n")
     else:
         print(text)
-    return 0
+    return 0 if result["route_contract"]["passed"] else 2
 
 
 if __name__ == "__main__":

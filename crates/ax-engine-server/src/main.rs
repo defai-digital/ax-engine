@@ -79,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log_host_detection_warnings(&session_config);
     let limits = ServerLimits {
         max_concurrent_requests: args.resolved_max_concurrent_requests(),
+        max_concurrent_requests_per_model: args.resolved_max_concurrent_requests_per_model(),
         max_request_body_bytes: args.resolved_max_request_body_bytes(),
         request_timeout: args.resolved_request_timeout(),
         grpc_request_timeout: args.resolved_grpc_request_timeout(),

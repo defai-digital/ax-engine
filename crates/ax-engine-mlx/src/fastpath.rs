@@ -110,6 +110,19 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_COALESCED_VERIFY` — coalesce independent
+    /// greedy Gemma 4 assistant-MTP verify graphs into one MLX completion
+    /// barrier. The route stays row-exact: every request retains its own
+    /// batch=1 graph, KV cache, acceptance decision, and assistant draft.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_COALESCED_VERIFY=0`). The production route
+    /// is fail-closed and only admits exact-greedy assistant-only drafts.
+    gemma4_assistant_mtp_coalesced_verify_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_COALESCED_VERIFY"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DECODE_MTP_TARGET_PROB_WORKSPACE` — reuse request-local CPU
     /// buffers while building/extracting MTP target probabilities.
     ///

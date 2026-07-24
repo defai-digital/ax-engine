@@ -95,6 +95,7 @@ artifact.
 | [batched-decode-ceiling.md](batched-decode-ceiling.md) | Batched-decode amortization ceiling + the Shared projection default-flip |
 | [batched-hybrid-moe-linear-decode.md](batched-hybrid-moe-linear-decode.md) | Phase 3.7 hybrid (MoE + linear) batched decode: capability, amortization, drift |
 | [fair-prefill-serving-ab.md](fair-prefill-serving-ab.md) | Fair chunked-prefill interleave serving A/B (decode-step tail vs TTFT trade) |
+| [qwen-gemma-mlxcel-flip-2026-07-23.md](qwen-gemma-mlxcel-flip-2026-07-23.md) | Completed Qwen/Gemma multi-model implementation and the locked `not_yet` decision against mlxcel v0.4.2 |
 | [moe-bandwidth-gap.md](moe-bandwidth-gap.md) | Qwen3-Coder-Next MoE bandwidth diagnosis |
 | [moe-fused-downproj.md](moe-fused-downproj.md) | Failed fused-downprojection report and lessons |
 | [mlx-upstream-issue-gather-qmm-buffer-accounting.md](mlx-upstream-issue-gather-qmm-buffer-accounting.md) | Upstream MLX report draft (GatherQMM buffer accounting) |

@@ -22,7 +22,6 @@ from typing import Any
 
 import check_ax_multimodel_serving_artifact as multimodel
 
-
 SCHEMA_VERSION = "ax.qwen_gemma_flip_compare.v1"
 
 
@@ -108,6 +107,140 @@ def focus_families_present(artifact: dict[str, Any]) -> list[str]:
     return sorted(found)
 
 
+def _package_signature(identity: Any) -> dict[str, Any] | None:
+    if not isinstance(identity, dict):
+        return None
+    keys = (
+        "path",
+        "identity_file_sha256",
+        "safetensors_files",
+        "safetensors_bytes",
+        "safetensors_layout_sha256",
+    )
+    return {key: identity.get(key) for key in keys}
+
+
+def evaluate_comparison_contract(
+    candidate: dict[str, Any], baseline: dict[str, Any]
+) -> dict[str, Any]:
+    mismatches: list[str] = []
+
+    cand_scenario = candidate.get("scenario")
+    base_scenario = baseline.get("scenario")
+    if not isinstance(cand_scenario, dict) or not isinstance(base_scenario, dict):
+        mismatches.append("scenario metadata is missing")
+    else:
+        for key in ("sha256", "events"):
+            if cand_scenario.get(key) != base_scenario.get(key):
+                mismatches.append(
+                    f"scenario.{key}: candidate={cand_scenario.get(key)!r} "
+                    f"baseline={base_scenario.get(key)!r}"
+                )
+
+    cand_sampling = candidate.get("sampling")
+    base_sampling = baseline.get("sampling")
+    if not isinstance(cand_sampling, dict) or not isinstance(base_sampling, dict):
+        mismatches.append("sampling metadata is missing")
+    else:
+        for key in ("temperature", "top_p", "top_k", "seed", "input_kind"):
+            if cand_sampling.get(key) != base_sampling.get(key):
+                mismatches.append(
+                    f"sampling.{key}: candidate={cand_sampling.get(key)!r} "
+                    f"baseline={base_sampling.get(key)!r}"
+                )
+
+    cand_method = candidate.get("methodology")
+    base_method = baseline.get("methodology")
+    if not isinstance(cand_method, dict) or not isinstance(base_method, dict):
+        mismatches.append("methodology metadata is missing")
+    else:
+        for key in ("request_endpoint", "protocol"):
+            if cand_method.get(key) != base_method.get(key):
+                mismatches.append(
+                    f"methodology.{key}: candidate={cand_method.get(key)!r} "
+                    f"baseline={base_method.get(key)!r}"
+                )
+
+    cand_target = candidate.get("target")
+    base_target = baseline.get("target")
+    if not isinstance(cand_target, dict) or not isinstance(base_target, dict):
+        mismatches.append("target metadata is missing")
+        cand_target = {}
+        base_target = {}
+
+    cand_contract = cand_target.get("comparison_contract")
+    base_contract = base_target.get("comparison_contract")
+    if not isinstance(cand_contract, dict) or not cand_contract:
+        mismatches.append("candidate target comparison_contract is missing")
+    if not isinstance(base_contract, dict) or not base_contract:
+        mismatches.append("baseline target comparison_contract is missing")
+    if (
+        isinstance(cand_contract, dict)
+        and isinstance(base_contract, dict)
+        and cand_contract != base_contract
+    ):
+        mismatches.append("target comparison_contract objects differ")
+
+    cand_host = cand_target.get("host")
+    base_host = base_target.get("host")
+    if not isinstance(cand_host, dict) or not isinstance(base_host, dict):
+        mismatches.append("target host identity is missing")
+    else:
+        for key in ("node", "machine", "platform"):
+            if cand_host.get(key) != base_host.get(key):
+                mismatches.append(
+                    f"target.host.{key}: candidate={cand_host.get(key)!r} "
+                    f"baseline={base_host.get(key)!r}"
+                )
+
+    cand_packages = cand_target.get("model_packages")
+    base_packages = base_target.get("model_packages")
+    if not isinstance(cand_packages, dict) or not isinstance(base_packages, dict):
+        mismatches.append("target model_packages identity is missing")
+    else:
+        model_ids = sorted(set(cand_packages) | set(base_packages))
+        for model_id in model_ids:
+            cand_signature = _package_signature(cand_packages.get(model_id))
+            base_signature = _package_signature(base_packages.get(model_id))
+            if cand_signature is None or base_signature is None:
+                mismatches.append(f"model package identity missing for {model_id}")
+            elif cand_signature != base_signature:
+                mismatches.append(f"model package identity differs for {model_id}")
+
+    cand_input_tokens = {
+        str(item.get("event_id")): item.get("input_tokens")
+        for item in candidate.get("observations") or []
+        if item.get("kind") == "request"
+    }
+    base_input_tokens = {
+        str(item.get("event_id")): item.get("input_tokens")
+        for item in baseline.get("observations") or []
+        if item.get("kind") == "request"
+    }
+    if not cand_input_tokens or any(
+        not isinstance(value, int) for value in cand_input_tokens.values()
+    ):
+        mismatches.append("candidate authoritative per-event input token counts are missing")
+    if not base_input_tokens or any(
+        not isinstance(value, int) for value in base_input_tokens.values()
+    ):
+        mismatches.append("baseline authoritative per-event input token counts are missing")
+    if cand_input_tokens != base_input_tokens:
+        mismatches.append(
+            f"per-event input token counts differ: candidate={cand_input_tokens!r} "
+            f"baseline={base_input_tokens!r}"
+        )
+
+    return {
+        "passed": not mismatches,
+        "mismatches": mismatches,
+        "candidate_runtime": cand_target.get("runtime"),
+        "candidate_process_count": cand_target.get("process_count"),
+        "baseline_runtime": base_target.get("runtime"),
+        "baseline_process_count": base_target.get("process_count"),
+    }
+
+
 def evaluate_gates(
     *,
     candidate: dict[str, Any],
@@ -118,6 +251,7 @@ def evaluate_gates(
     max_candidate_error_rate: float,
     max_candidate_http_503: int | None,
     require_focus_families: list[str],
+    require_contract_match: bool,
 ) -> dict[str, Any]:
     cand_summary = candidate["summary"]
     base_summary = baseline["summary"]
@@ -135,6 +269,7 @@ def evaluate_gates(
     cand_error_rate = request_error_rate(cand_summary)
     cand_503 = http_503_count(candidate)
     families = focus_families_present(candidate)
+    contract = evaluate_comparison_contract(candidate, baseline)
 
     gates: list[dict[str, Any]] = []
 
@@ -153,6 +288,13 @@ def evaluate_gates(
                 "detail": detail,
             }
         )
+
+    add_gate(
+        "comparison_contract",
+        contract["passed"],
+        detail=("matched" if contract["passed"] else "; ".join(contract["mismatches"])),
+        required=require_contract_match,
+    )
 
     for family in require_focus_families:
         add_gate(
@@ -218,13 +360,10 @@ def evaluate_gates(
             detail=f"http_503={cand_503} (need <= {max_candidate_http_503})",
         )
 
-    required_failed = [
-        gate
-        for gate in gates
-        if gate["required"] and gate["passed"] is not True
-    ]
+    required_failed = [gate for gate in gates if gate["required"] and gate["passed"] is not True]
     return {
         "schema_version": SCHEMA_VERSION,
+        "comparison_contract": contract,
         "focus_families_present": families,
         "metrics": {
             "candidate_output_token_throughput_tok_s": cand_tok,
@@ -304,6 +443,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Always exit 0 after writing the comparison (calibration mode).",
     )
+    parser.add_argument(
+        "--allow-contract-mismatch",
+        action="store_true",
+        help=(
+            "Do not make scenario/sampling/host/package/memory contract mismatches "
+            "a required failure. Intended only for exploratory legacy artifacts."
+        ),
+    )
     parser.add_argument("--output", type=Path, help="Optional JSON report path")
     return parser
 
@@ -322,10 +469,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"invalid {name}: {value!r}", file=sys.stderr)
             return 2
 
-    raw_families = args.require_focus_family if args.require_focus_family is not None else [
-        "qwen3",
-        "gemma4",
-    ]
+    raw_families = (
+        args.require_focus_family
+        if args.require_focus_family is not None
+        else [
+            "qwen3",
+            "gemma4",
+        ]
+    )
     require_families: list[str] = []
     for family in raw_families:
         if family not in require_families:
@@ -343,6 +494,7 @@ def main(argv: list[str] | None = None) -> int:
             max_candidate_error_rate=float(args.max_candidate_error_rate),
             max_candidate_http_503=args.max_candidate_http_503,
             require_focus_families=require_families,
+            require_contract_match=not args.allow_contract_mismatch,
         )
     except (FlipCompareError, multimodel.ArtifactCheckError) as error:
         print(f"Qwen/Gemma flip compare failed: {error}", file=sys.stderr)
@@ -359,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
         "max_candidate_error_rate": args.max_candidate_error_rate,
         "max_candidate_http_503": args.max_candidate_http_503,
         "require_focus_families": require_families,
+        "require_contract_match": not args.allow_contract_mismatch,
     }
 
     text = json.dumps(report, indent=2, sort_keys=True) + "\n"
@@ -371,15 +524,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.report_only or report["passed"]:
         status = "PASS" if report["passed"] else "REPORT_ONLY_FAIL"
         print(
-            f"Qwen/Gemma flip compare {status}: "
-            f"failed_required={report['failed_required_gates']}",
+            f"Qwen/Gemma flip compare {status}: failed_required={report['failed_required_gates']}",
             file=sys.stderr,
         )
         return 0
 
     print(
-        "Qwen/Gemma flip compare FAIL: "
-        f"failed_required={report['failed_required_gates']}",
+        f"Qwen/Gemma flip compare FAIL: failed_required={report['failed_required_gates']}",
         file=sys.stderr,
     )
     return 1

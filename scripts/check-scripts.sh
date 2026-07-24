@@ -42,6 +42,14 @@ bash scripts/check-qa.sh
 "$PYTHON_BIN" -m py_compile \
   scripts/bench_ax_serving.py \
   scripts/test_bench_ax_serving.py \
+  scripts/bench_ax_multimodel_serving.py \
+  scripts/test_bench_ax_multimodel_serving.py \
+  scripts/bench_qwen_gemma_flip_target.py \
+  scripts/test_bench_qwen_gemma_flip_target.py \
+  scripts/run_qwen_gemma_flip_campaign.py \
+  scripts/test_run_qwen_gemma_flip_campaign.py \
+  scripts/summarize_qwen_gemma_flip_campaign.py \
+  scripts/test_summarize_qwen_gemma_flip_campaign.py \
   scripts/bench_embedding_models.py \
   scripts/bench_embedding_fair.py \
   scripts/bench_embedding_ingest_scale.py \
@@ -76,6 +84,8 @@ bash scripts/check-qa.sh
   scripts/test_bench_mlx_inference_stack.py \
   scripts/certify_batched_decode.py \
   scripts/test_certify_batched_decode.py \
+  scripts/certify_row_exact_coalesced_decode.py \
+  scripts/test_certify_row_exact_coalesced_decode.py \
   scripts/bench_mtp_differential.py \
   scripts/check_mtp_sidecar_provenance.py \
   scripts/prepare_qwen36_mtp_sidecar.py \
@@ -215,6 +225,10 @@ bash scripts/check-qa.sh
   scripts/test_minisign_artifact.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
+  scripts/test_bench_ax_multimodel_serving.py \
+  scripts/test_bench_qwen_gemma_flip_target.py \
+  scripts/test_run_qwen_gemma_flip_campaign.py \
+  scripts/test_summarize_qwen_gemma_flip_campaign.py \
   scripts/test_embedding_server_ports.py \
   scripts/test_bench_embedding_ingest_scale.py \
   scripts/test_ax_serving_benchmark_artifact.py \
@@ -233,6 +247,7 @@ bash scripts/check-qa.sh
   scripts/test_bench_llama_cpp_metal_sweep.py \
   scripts/test_bench_mtp_differential.py \
   scripts/test_certify_batched_decode.py \
+  scripts/test_certify_row_exact_coalesced_decode.py \
   scripts/test_check_mtp_sidecar_provenance.py \
   scripts/test_prepare_qwen36_mtp_sidecar.py \
   scripts/test_prepare_mtp_sidecar.py \

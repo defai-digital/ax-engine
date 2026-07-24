@@ -393,8 +393,11 @@ Two store-side constraints apply to all non-FA architectures:
 
 - **Full prefix only.** Intermediate-block snapshots are unsound because
   `MlxKVCache::trim_to` cannot roll back per-layer recurrent state
-  (linear), nor a rotated sliding window (sliding-window). Stores fall
-  back to `record_blocked_trim_failure` when these are attempted.
+  (linear), nor a rotated sliding window (sliding-window). A physically
+  rotated cache is never a portable L1/L2 snapshot, even at the full logical
+  length: a later warm extension may enter an ordered multi-token prefill
+  route. Stores fall back to `record_blocked_trim_failure` when these are
+  attempted.
 - **Block-aligned prompts only.** When `available_tokens %
   block_size_tokens != 0`, the store is skipped (also as
   `blocked_trim_failure`) because `trim_to(full_block_tokens)` would
@@ -523,7 +526,9 @@ This path is enabled by default for rollback-free direct greedy decode and can
 be disabled with `AX_MLX_ROTATING_SLIDING_DECODE=0`.
 
 `trim_to` refuses rollback when `rotating_window` is active — circular state
-cannot be trivially restored to an earlier position.
+cannot be trivially restored to an earlier position. Prefix store/restore also
+checks `has_rotated_sliding_layers()` and recomputes rather than serializing a
+slot-ordered cache.
 
 Gemma4 also has KV-shared layers (layers 24–41) that reuse the previous
 layer's K and V. `peek_source_kv()` returns `last_k_view` / `last_v_view`
@@ -547,6 +552,26 @@ roughly 14× compression in KV memory.
 
 `LinearLayerState` holds `conv_state` and `recurrent_state` for each linear
 layer. These are sequential: each token's output feeds the next step's input.
+
+KV seeding therefore requires both an exact attention-cache physical length and
+an exact linear-state snapshot. A logical token count alone cannot certify a
+Qwen recurrent boundary.
+
+## Runtime memory reporting
+
+Native route telemetry reports logical bytes and physical storage separately:
+
+- `ax_mlx_kv_logical_kib` is the represented logical KV;
+- `ax_mlx_kv_capacity_kib` is contiguous attention capacity;
+- `ax_mlx_kv_linear_state_kib` is recurrent/convolution state;
+- `ax_mlx_kv_paged_pool_slab_kib` is real fixed-slab reservation;
+- `ax_mlx_prefix_cache_bytes_kib` is portable in-memory prefix payload.
+
+The server derives physical KV as paged slabs (when present) or contiguous
+capacity, plus linear state. It never adds paged logical views to the slab
+reservation. `/metrics` exposes this attribution alongside process-wide MLX
+active/cache/peak bytes and current host RSS; see
+[Server — Idle eviction and metrics](SERVER.md#idle-eviction-and-metrics).
 
 `collect_eval_refs` includes these arrays so they are materialized every step.
 `trim_to` deliberately does not reset them — there is no correct way to restore
@@ -693,6 +718,9 @@ clone-then-diverge behavior.
   the block table entry. Reversing this order breaks prefix lookup.
 - `MlxKVCache.trim_to()` does not reset `linear_layers`. Callers must not
   expect recurrent state to match any earlier checkpoint.
+- Never seed attention KV from a logical prefix unless the physical cache
+  length is exact; never seed a linear family without exact recurrent state.
+- Never persist or warm-extend a physically rotated sliding-ring snapshot.
 - `collect_eval_refs()` + `eval()` must run after every decode step.
   Skipping this allows the MLX lazy graph to grow unboundedly.
 - Evicting a cached block in `KvManager` cascade-evicts all descendants.

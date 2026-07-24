@@ -4,12 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-import bench_ax_multimodel_serving as benchmark
+SCRIPT_PATH = Path(__file__).with_name("bench_ax_multimodel_serving.py")
+sys.path.insert(0, str(SCRIPT_PATH.parent))
+MODULE_SPEC = importlib.util.spec_from_file_location("bench_ax_multimodel_serving", SCRIPT_PATH)
+assert MODULE_SPEC and MODULE_SPEC.loader
+benchmark = importlib.util.module_from_spec(MODULE_SPEC)
+sys.modules["bench_ax_multimodel_serving"] = benchmark
+MODULE_SPEC.loader.exec_module(benchmark)
 
 
 class MultiModelServingBenchmarkTests(unittest.TestCase):
@@ -112,6 +120,23 @@ class MultiModelServingBenchmarkTests(unittest.TestCase):
         self.assertEqual(artifact["focus"]["policy"], "qwen3_gemma4_primary")
         self.assertEqual(artifact["availability"]["request_http_503"], 0)
         self.assertIn("request_error_rate", artifact["availability"])
+        self.assertTrue(artifact["route_contract"]["passed"])
+
+    def test_route_contract_fails_closed(self) -> None:
+        contract = benchmark.route_contract(
+            {"route_decisions": {"used": 2}},
+            [("used", 2), ("missing", 1)],
+        )
+        self.assertFalse(contract["passed"])
+        self.assertEqual(contract["observed"]["used"], 2)
+        self.assertIsNone(contract["observed"]["missing"])
+        self.assertIn("missing", contract["failures"][0])
+
+    def test_route_requirement_parser(self) -> None:
+        self.assertEqual(benchmark.parse_route_requirement("route"), ("route", 1))
+        self.assertEqual(benchmark.parse_route_requirement("route=3"), ("route", 3))
+        with self.assertRaises(argparse.ArgumentTypeError):
+            benchmark.parse_route_requirement("route=-1")
 
     def test_load_requires_model_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -159,6 +184,45 @@ class MultiModelServingBenchmarkTests(unittest.TestCase):
         prompt = benchmark.prompt_for_event(event)
         self.assertEqual(prompt.input_tokens, [3, 7, 11, 3, 7, 11, 3, 7])
         self.assertEqual(prompt.input_tokens_count, 8)
+
+    def test_compact_text_pattern_expands_deterministically(self) -> None:
+        event = benchmark.ScenarioEvent(
+            id="long-text",
+            kind="request",
+            at_s=0.0,
+            model_id="gemma",
+            category="long_prefill",
+            raw={
+                "input_text_pattern": "alpha beta ",
+                "input_text_repeats": 3,
+                "input_tokens_count": 6,
+                "max_output_tokens": 1,
+            },
+        )
+
+        prompt = benchmark.prompt_for_event(event)
+
+        self.assertEqual(prompt.input_text, "alpha beta alpha beta alpha beta ")
+        self.assertEqual(prompt.input_tokens_count, 6)
+
+    def test_text_prefix_precedes_expanded_pattern(self) -> None:
+        event = benchmark.ScenarioEvent(
+            id="gemma",
+            kind="request",
+            at_s=0.0,
+            model_id="gemma-4-12b-it",
+            category="long_prefill",
+            raw={
+                "input_text_prefix": "<bos>",
+                "input_text_pattern": "alpha ",
+                "input_text_repeats": 2,
+                "max_output_tokens": 1,
+            },
+        )
+
+        prompt = benchmark.prompt_for_event(event)
+
+        self.assertEqual(prompt.input_text, "<bos>alpha alpha ")
 
     def test_token_file_loads_relative_to_scenario(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

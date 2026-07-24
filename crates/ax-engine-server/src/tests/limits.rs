@@ -1,4 +1,5 @@
-use crate::app_state::ServerLimits;
+use crate::admission::AdmissionError;
+use crate::app_state::{ServerLimits, build_live_state};
 use crate::grpc::AxEngineGrpcService;
 use crate::grpc::proto;
 use crate::grpc::proto::ax_engine_server::AxEngine;
@@ -75,9 +76,56 @@ async fn concurrency_limit_is_shared_by_http_and_grpc_engine_jobs() {
 }
 
 #[tokio::test]
+async fn per_model_limit_and_drain_do_not_block_a_sibling_model() {
+    let state = llama_cpp_state().with_limits(ServerLimits {
+        max_concurrent_requests: Some(2),
+        max_concurrent_requests_per_model: Some(1),
+        ..Default::default()
+    });
+    let first = state.snapshot();
+    let second = build_live_state(
+        "gemma-4-12b-it".to_string(),
+        first.session_config.as_ref().clone(),
+    )
+    .expect("second model should build");
+    state.publish_live(second, false);
+    let second = state
+        .snapshot_for_model(Some("gemma-4-12b-it"))
+        .expect("second model should be published");
+
+    let first_permit = state
+        .try_admit(&first)
+        .expect("first model should consume its local slot");
+    assert_eq!(
+        state.try_admit(&first).err(),
+        Some(AdmissionError::Saturated),
+        "the per-model cap must stop one model before it consumes sibling capacity"
+    );
+    let sibling_permit = state
+        .try_admit(&second)
+        .expect("the sibling keeps its independent local slot");
+    drop((first_permit, sibling_permit));
+
+    let drain = first.admission.begin_drain();
+    assert_eq!(
+        state.try_admit(&first).err(),
+        Some(AdmissionError::Draining)
+    );
+    let sibling_permit = state
+        .try_admit(&second)
+        .expect("draining one model must not close sibling admission");
+    drop((sibling_permit, drain));
+
+    let removed = state
+        .remove_live("gemma-4-12b-it")
+        .expect("second model should remove");
+    removed.retire().await.expect("second worker should retire");
+}
+
+#[tokio::test]
 async fn model_drain_rejects_new_http_and_grpc_engine_jobs() {
     let state = llama_cpp_state();
-    let drain = state.admission.begin_drain();
+    let drain = state.snapshot().admission.begin_drain();
     let app = build_router(state.clone());
 
     let (http_status, http_body) = json_response(
