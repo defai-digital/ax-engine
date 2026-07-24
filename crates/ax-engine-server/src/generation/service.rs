@@ -219,13 +219,13 @@ struct ModelExecutionTarget {
 pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
 /// Interactive p95 stream-gap SLO used as the wall-time budget for one sibling
-/// prefill turn (flip gate: absolute ≤ 50 ms). 45 ms leaves a small safety
-/// margin without capping early-prompt quanta as hard as 40 ms did.
-const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 45_000;
-/// Allow up to 128 tokens/turn while adaptive feedback still shrinks mid-prompt
-/// as attention cost grows. Hard-capping at 64 left early prefill under-fed
-/// even when measured µs/tok would fit more work under the gap SLO.
-const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 128;
+/// prefill turn. Target ~32 ms so Qwen's 192-token decode under interleave
+/// can finish near Gemma's pure prefill wall (flip thr needs scenario wall
+/// ≤ ~8.7 s; absolute gap gate is 50 ms).
+const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 32_000;
+/// Cap sibling-active quanta; adaptive feedback still shrinks mid-prompt as
+/// attention cost grows. 96 ≈ 32 ms at ~0.33 ms/tok early / ~0.66 ms/tok mid.
+const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 96;
 const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
@@ -1228,7 +1228,8 @@ fn advance_shared_engine(
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
         sibling_active_for_burst = sibling_active;
-        let desired_tokens = if sibling_active {
+        let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
+        if sibling_active {
             // Feedback-control quantum from last turn's runner wall time so
             // one prefill chunk stays under the stream-gap SLO mid-prompt
             // (fixed large quanta blow gap late in long Gemma prefills).
@@ -1253,19 +1254,22 @@ fn advance_shared_engine(
             service_state
                 .adaptive_prefill_tokens
                 .store(adjusted, Ordering::Release);
-            adjusted
+            if !enabled || current_tokens != adjusted {
+                session.set_multi_prefill_fair(true, adjusted, inflight);
+            }
         } else {
-            // Reset the controller when the sibling is idle so the next
-            // mixed-load burst starts from the env/default start point.
+            // Sibling idle: restore single-model prefill throughput. Keeping
+            // fair-mode capped at THROUGHPUT (256) after multi-model load made
+            // dual-resident solo Gemma ~14k-tok prefill ~11.5s vs ~8.1s with
+            // fair off (full max_batch_tokens/step) — that alone makes the S1
+            // TTFT ≤0.9× mlxcel bar unreachable even without concurrency.
             let start = adaptive_prefill_latency_tokens_per_step();
             service_state
                 .adaptive_prefill_tokens
                 .store(start, Ordering::Release);
-            ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP
-        };
-        let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
-        if !enabled || current_tokens != desired_tokens {
-            session.set_multi_prefill_fair(true, desired_tokens, inflight);
+            if enabled {
+                session.set_multi_prefill_fair(false, 0, inflight);
+            }
         }
     }
     let _turn = execution_target.as_ref().map(|target| {
@@ -1802,11 +1806,11 @@ mod tests {
     fn adjust_adaptive_prefill_tokens_targets_gap_slo_from_us_per_tok() {
         // No measurement yet → hold.
         assert_eq!(adjust_adaptive_prefill_tokens(16, 0), 16);
-        // 16 tokens took 16 ms → 1 ms/tok → target ≈ 45; blend up from 16.
+        // 16 tokens took 16 ms → 1 ms/tok → target ≈ 32; blend up from 16.
         let up = adjust_adaptive_prefill_tokens_with_work(16, 16_000, 16);
-        assert!(up > 16 && up <= 45, "up={up}");
-        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 9).
-        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 9);
+        assert!(up > 16 && up <= 32, "up={up}");
+        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 6).
+        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 6);
         // Very expensive → snap to 1.
         assert_eq!(adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4), 1);
         // Cap at max.
