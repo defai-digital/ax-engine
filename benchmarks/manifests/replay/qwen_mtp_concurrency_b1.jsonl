@@ -1,0 +1,1 @@
+{"id":"qwen-mtp-1","kind":"request","at_ms":0,"model":"qwen3.5-9b","category":"mtp_decode_b1","input_tokens_path":"../../results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/27b-4bit/flappy/ax_engine-prompts/real-flappy-flappy_pipes-gen-1000-fc913ab80026.json","max_output_tokens":256}

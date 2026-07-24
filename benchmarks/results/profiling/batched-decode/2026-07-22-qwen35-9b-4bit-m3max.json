@@ -1,0 +1,86 @@
+{
+  "artifact_fingerprint_sha256": "77472a18eeb00fb4acc294377bef73e0b991fc96ed88be9f9bb49ab740bf8271",
+  "device_architecture": "applegpu_g15s",
+  "engine_version": "6.11.1",
+  "mlx_version": "0.32.0",
+  "model_family": "qwen3_5",
+  "numerics_env_sha256": "189b241fa2360e3a8771c5be40e7bd024f5c33a0b698968b0d91f3fe0d66ab59",
+  "runtime_contract": "ax.mlx.batched_decode.runtime.v3",
+  "scenarios": [
+    {
+      "batch": 2,
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 32,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 3 MISMATCH at Some(21): | req 3 MISMATCH at Some(21):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 128,
+      "prompt_seed": 1,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 0 MISMATCH at Some(52): | req 1 MISMATCH at Some(19):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 512,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 4,
+      "gen_len": 64,
+      "passed": true,
+      "prompt_len": 128,
+      "prompt_seed": 0,
+      "ragged": true,
+      "returncode": 0,
+      "sampling": "greedy"
+    },
+    {
+      "batch": 2,
+      "failure_summary": "HARNESS-FIDELITY: FAIL | BATCHED==SEQUENTIAL: FAIL | req 1 MISMATCH at Some(26): | req 1 MISMATCH at Some(26):",
+      "gen_len": 64,
+      "passed": false,
+      "prompt_len": 992,
+      "prompt_seed": 0,
+      "ragged": false,
+      "returncode": 1,
+      "sampling": "greedy"
+    }
+  ],
+  "schema_version": "ax.mlx.batched_decode_certification.v1",
+  "verdict": "fail"
+}
