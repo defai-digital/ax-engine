@@ -158,7 +158,16 @@ const LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL: u32 = 4;
 /// first few generated tokens, so keep the post-start threshold conservative.
 /// The initial non-repeating prompt/no-draft case is handled separately before
 /// decode starts because it has no prompt-side evidence to justify slow probes.
-const LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD: u32 = 8;
+/// Historical permanent-disable threshold for linear-attention models after
+/// repeated no-draft steps. Permanently killing n-gram on Qwen3.5 hybrid
+/// models left S0 coding streams on pure AR for the whole request after the
+/// first ~8 cold tokens — right when ring-buffer/code patterns would start
+/// paying off multi-token verify thr.
+///
+/// Use a high threshold so the path stays on short cooldowns
+/// (`LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL`) instead of request-long disable.
+/// Reenable probing still works if a future path sets permanent disable.
+const LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD: u32 = u32::MAX;
 // When a linear-attention request has fallen back to the direct pipeline, do
 // not rescan the n-gram table every token looking for a re-enable point. Sparse
 // random prompts can spend the full request in fallback, and the direct path
@@ -14001,14 +14010,16 @@ mod tests {
     }
 
     #[test]
-    fn linear_attention_no_draft_threshold_disables_request_acceleration() {
-        assert_eq!(
-            LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD, 8,
-            "empty linear-attention drafts should allow several generated-output probe windows"
+    fn linear_attention_no_draft_threshold_avoids_request_long_disable() {
+        // Flip S0 / coding streams: permanent disable after a short no-draft
+        // streak killed multi-token verify for the rest of the request. Keep
+        // the threshold effectively unreachable so cooldowns own recovery.
+        assert!(
+            LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD > 10_000,
+            "permanent no-draft disable must not fire on normal generation lengths"
         );
-        assert!(!linear_ngram_no_draft_should_disable(
-            LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD - 1
-        ));
+        assert!(!linear_ngram_no_draft_should_disable(8));
+        assert!(!linear_ngram_no_draft_should_disable(256));
         assert!(linear_ngram_no_draft_should_disable(
             LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD
         ));
