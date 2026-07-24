@@ -130,9 +130,53 @@ pub struct ServerArgs {
     #[arg(long = "edge-llm-server-url")]
     pub edge_llm_server_url: Option<String>,
 
+    /// Model id loaded by TensorRT Edge-LLM. Defaults to the AX-facing model id.
+    #[arg(long = "edge-llm-upstream-model-id")]
+    pub edge_llm_upstream_model_id: Option<String>,
+
+    /// Sanitized Edge-LLM artifact/profile identity exposed in runtime reports.
+    #[arg(long = "edge-llm-runtime-profile")]
+    pub edge_llm_runtime_profile: Option<String>,
+
+    /// Exact TensorRT Edge-LLM release/version identity.
+    #[arg(long = "edge-llm-upstream-version")]
+    pub edge_llm_upstream_version: Option<String>,
+
+    /// Concrete Edge-LLM execution path, for example `cpp`.
+    #[arg(long = "edge-llm-execution-backend")]
+    pub edge_llm_execution_backend: Option<String>,
+
     /// Base URL for TensorRT-LLM OpenAI-compatible server (`trtllm-serve`).
     #[arg(long = "tensorrt-llm-server-url", alias = "trt-llm-server-url")]
     pub tensor_rt_llm_server_url: Option<String>,
+
+    /// Model id loaded by TensorRT-LLM. Defaults to the AX-facing model id.
+    #[arg(
+        long = "tensorrt-llm-upstream-model-id",
+        alias = "trt-llm-upstream-model-id"
+    )]
+    pub tensor_rt_llm_upstream_model_id: Option<String>,
+
+    /// Sanitized TensorRT-LLM artifact/profile identity exposed in runtime reports.
+    #[arg(
+        long = "tensorrt-llm-runtime-profile",
+        alias = "trt-llm-runtime-profile"
+    )]
+    pub tensor_rt_llm_runtime_profile: Option<String>,
+
+    /// Exact TensorRT-LLM release/version identity.
+    #[arg(
+        long = "tensorrt-llm-upstream-version",
+        alias = "trt-llm-upstream-version"
+    )]
+    pub tensor_rt_llm_upstream_version: Option<String>,
+
+    /// Concrete TensorRT-LLM execution path, for example `pytorch`.
+    #[arg(
+        long = "tensorrt-llm-execution-backend",
+        alias = "trt-llm-execution-backend"
+    )]
+    pub tensor_rt_llm_execution_backend: Option<String>,
 
     /// Base URL for an externally managed vLLM OpenAI-compatible worker.
     /// Root URLs and URLs ending in /v1 are accepted. Plain HTTP is restricted

@@ -13,7 +13,8 @@ Current scope:
 - portable Linux `delegated-server` builds omit MLX linkage and front
   explicitly selected vLLM or TensorRT workers
 - explicit runtime metadata reporting, including `selected_backend`,
-  `support_tier`, and `resolution_policy`
+  `support_tier`, `resolution_policy`, and fail-closed TensorRT upstream
+  version/execution-path identity
 - preview generation API for bring-up and integration testing
 - stepwise request lifecycle endpoints over a shared preview session for
   repo-owned MLX runtime paths plus server-backed llama.cpp adapters
@@ -145,3 +146,10 @@ fall back or retry a generation POST across providers. Delegated JSON and SSE
 traffic use separate keep-alive pools, and the HTTP listener enables
 `TCP_NODELAY` so a first small SSE event is not delayed by Nagle/delayed-ACK
 interaction.
+
+Both TensorRT providers require their matching `--*-upstream-version` and
+`--*-execution-backend` flags. Optional `--*-upstream-model-id` and
+`--*-runtime-profile` values complete the machine-readable
+`delegated_runtime` report. The report is an operator-supplied configured
+identity; release automation must compare it with the exact worker
+package/image manifest.

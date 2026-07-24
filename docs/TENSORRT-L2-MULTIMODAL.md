@@ -73,6 +73,14 @@ payload. Production OCR validation must separately cover:
 - streaming and multi-image requests;
 - pinned NVIDIA runtime versions and compatibility probes.
 
+AX requires the configured TensorRT provider's exact upstream version and
+execution backend before it will construct the session. The optional
+provider-specific upstream model id is the id sent on chat requests, while the
+AX-facing request model remains the public response identity. `/v1/runtime`
+reports both route and configured worker identity, but promotion still
+cross-checks those fields against an independently captured package/image
+manifest.
+
 Provider references:
 
 - [TensorRT-LLM multimodal serving](https://nvidia.github.io/TensorRT-LLM/commands/trtllm-serve/trtllm-serve.html#multimodal-serving)

@@ -1,7 +1,7 @@
 use ax_engine_sdk::{
-    DelegatedBearerCredential, DelegatedHttpTimeouts, DelegatedTlsPolicy, EngineSessionConfig,
-    MlxMtpPolicy, PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier, VllmConfig,
-    VllmModelProfile, VllmServerCompletionConfig,
+    DelegatedBearerCredential, DelegatedHttpTimeouts, DelegatedRuntimeIdentity, DelegatedTlsPolicy,
+    EngineSessionConfig, MlxMtpPolicy, PreviewBackendRequest, PreviewSessionConfigRequest,
+    SupportTier, VllmConfig, VllmModelProfile, VllmServerCompletionConfig,
 };
 use std::env;
 use std::fs;
@@ -93,6 +93,8 @@ impl ServerArgs {
             .map(|definition| definition.max_batch_tokens)
             .unwrap_or(self.max_batch_tokens);
         let delegated_http_timeouts = self.delegated_http_timeouts()?;
+        let (edge_llm_runtime_identity, tensor_rt_llm_runtime_identity) =
+            self.tensor_rt_runtime_identities(effective_support_tier)?;
         let vllm_backend =
             self.vllm_backend_config(effective_support_tier, delegated_http_timeouts)?;
         let mlx_model_artifacts_dir =
@@ -115,7 +117,9 @@ impl ServerArgs {
                 llama_server_url: self.llama_server_url.clone(),
                 mlx_lm_server_url: self.mlx_lm_server_url.clone(),
                 edge_llm_server_url: self.edge_llm_server_url.clone(),
+                edge_llm_runtime_identity,
                 tensor_rt_llm_server_url: self.tensor_rt_llm_server_url.clone(),
+                tensor_rt_llm_runtime_identity,
                 vllm_backend,
                 delegated_http_timeouts,
                 ..PreviewBackendRequest::default()
@@ -160,6 +164,103 @@ impl ServerArgs {
             self.delegated_http_read_timeout_secs,
             self.delegated_http_write_timeout_secs,
         ))
+    }
+
+    fn tensor_rt_runtime_identities(
+        &self,
+        effective_support_tier: PreviewSupportTier,
+    ) -> Result<
+        (
+            Option<DelegatedRuntimeIdentity>,
+            Option<DelegatedRuntimeIdentity>,
+        ),
+        String,
+    > {
+        let has_edge_identity_option = self.edge_llm_upstream_model_id.is_some()
+            || self.edge_llm_runtime_profile.is_some()
+            || self.edge_llm_upstream_version.is_some()
+            || self.edge_llm_execution_backend.is_some();
+        if effective_support_tier != PreviewSupportTier::TensorRtEdgeLlm && has_edge_identity_option
+        {
+            return Err(
+                "Edge-LLM identity options require --support-tier tensor-rt-edge-llm; AX does not silently switch providers"
+                    .to_string(),
+            );
+        }
+
+        let has_tensor_rt_llm_identity_option = self.tensor_rt_llm_upstream_model_id.is_some()
+            || self.tensor_rt_llm_runtime_profile.is_some()
+            || self.tensor_rt_llm_upstream_version.is_some()
+            || self.tensor_rt_llm_execution_backend.is_some();
+        if effective_support_tier != PreviewSupportTier::TensorRtLlm
+            && has_tensor_rt_llm_identity_option
+        {
+            return Err(
+                "TensorRT-LLM identity options require --support-tier tensor-rt-llm; AX does not silently switch providers"
+                    .to_string(),
+            );
+        }
+
+        let edge_llm_runtime_identity =
+            if effective_support_tier == PreviewSupportTier::TensorRtEdgeLlm {
+                Some(self.edge_llm_runtime_identity()?)
+            } else {
+                None
+            };
+        let tensor_rt_llm_runtime_identity =
+            if effective_support_tier == PreviewSupportTier::TensorRtLlm {
+                Some(self.tensor_rt_llm_runtime_identity()?)
+            } else {
+                None
+            };
+        Ok((edge_llm_runtime_identity, tensor_rt_llm_runtime_identity))
+    }
+
+    fn edge_llm_runtime_identity(&self) -> Result<DelegatedRuntimeIdentity, String> {
+        let upstream_version = self.edge_llm_upstream_version.as_deref().ok_or_else(|| {
+            "--support-tier tensor-rt-edge-llm requires machine-readable runtime identity: pass --edge-llm-upstream-version"
+                .to_string()
+        })?;
+        let execution_backend =
+            self.edge_llm_execution_backend.as_deref().ok_or_else(|| {
+                "--support-tier tensor-rt-edge-llm requires machine-readable runtime identity: pass --edge-llm-execution-backend"
+                    .to_string()
+            })?;
+        let upstream_model_id = match self.edge_llm_upstream_model_id.as_ref() {
+            Some(model_id) => model_id.clone(),
+            None => self.effective_model_id()?,
+        };
+        DelegatedRuntimeIdentity::new(upstream_model_id, upstream_version, execution_backend)
+            .and_then(|identity| {
+                identity.with_runtime_profile(self.edge_llm_runtime_profile.clone())
+            })
+            .map_err(|error| format!("invalid Edge-LLM runtime identity: {error}"))
+    }
+
+    fn tensor_rt_llm_runtime_identity(&self) -> Result<DelegatedRuntimeIdentity, String> {
+        let upstream_version = self
+            .tensor_rt_llm_upstream_version
+            .as_deref()
+            .ok_or_else(|| {
+                "--support-tier tensor-rt-llm requires machine-readable runtime identity: pass --tensorrt-llm-upstream-version"
+                    .to_string()
+            })?;
+        let execution_backend = self
+            .tensor_rt_llm_execution_backend
+            .as_deref()
+            .ok_or_else(|| {
+                "--support-tier tensor-rt-llm requires machine-readable runtime identity: pass --tensorrt-llm-execution-backend"
+                    .to_string()
+            })?;
+        let upstream_model_id = match self.tensor_rt_llm_upstream_model_id.as_ref() {
+            Some(model_id) => model_id.clone(),
+            None => self.effective_model_id()?,
+        };
+        DelegatedRuntimeIdentity::new(upstream_model_id, upstream_version, execution_backend)
+            .and_then(|identity| {
+                identity.with_runtime_profile(self.tensor_rt_llm_runtime_profile.clone())
+            })
+            .map_err(|error| format!("invalid TensorRT-LLM runtime identity: {error}"))
     }
 
     fn vllm_backend_config(

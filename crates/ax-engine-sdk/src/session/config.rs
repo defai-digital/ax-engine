@@ -513,10 +513,36 @@ impl EngineSessionConfig {
         }
         if let Some(edge_llm_backend) = self.edge_llm_backend.as_ref() {
             runtime.capabilities = CapabilityReport::for_edge_llm_backend(edge_llm_backend);
+            let config = edge_llm_backend.server();
+            let identity = &config.runtime_identity;
+            runtime = runtime.with_delegated_runtime(Some(DelegatedRuntimeReport {
+                provider: "tensor_rt_edge_llm".to_string(),
+                upstream_model_id: identity.upstream_model_id.clone(),
+                runtime_profile: identity.runtime_profile.clone(),
+                readiness: DelegatedReadiness::Configured,
+                endpoint: RedactedEndpoint {
+                    authority: config.redacted_authority(),
+                },
+                upstream_version: Some(identity.upstream_version.clone()),
+                execution_backend: Some(identity.execution_backend.clone()),
+            }));
         }
         if let Some(tensor_rt_llm_backend) = self.tensor_rt_llm_backend.as_ref() {
             runtime.capabilities =
                 CapabilityReport::for_tensor_rt_llm_backend(tensor_rt_llm_backend);
+            let config = tensor_rt_llm_backend.server();
+            let identity = &config.runtime_identity;
+            runtime = runtime.with_delegated_runtime(Some(DelegatedRuntimeReport {
+                provider: "tensor_rt_llm".to_string(),
+                upstream_model_id: identity.upstream_model_id.clone(),
+                runtime_profile: identity.runtime_profile.clone(),
+                readiness: DelegatedReadiness::Configured,
+                endpoint: RedactedEndpoint {
+                    authority: config.redacted_authority(),
+                },
+                upstream_version: Some(identity.upstream_version.clone()),
+                execution_backend: Some(identity.execution_backend.clone()),
+            }));
         }
         if let Some(vllm_backend) = self.vllm_backend.as_ref() {
             runtime.capabilities = CapabilityReport::for_vllm_backend(vllm_backend);
@@ -534,6 +560,7 @@ impl EngineSessionConfig {
                     authority: config.base_url.redacted_authority(),
                 },
                 upstream_version: None,
+                execution_backend: None,
             }));
         }
         runtime

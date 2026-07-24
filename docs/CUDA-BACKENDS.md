@@ -22,8 +22,8 @@ below passes.
 | Product priority | Platform and workload | Default path | Optional optimized path |
 | --- | --- | --- | --- |
 | Primary | macOS 26+ on Apple Silicon | Repo-owned AX MLX/Metal runtime | None; `mlx_lm.server` remains an explicit compatibility adapter |
-| Secondary | Linux x86_64 CUDA, broad OCR/VLM coverage | AX Engine → vLLM | AX Engine → TensorRT-LLM after per-model certification |
 | Primary | Linux aarch64 NVIDIA Thor, broad OCR/VLM coverage | AX Engine → vLLM | AX Engine → TensorRT Edge-LLM after per-model certification |
+| Secondary | Linux x86_64 CUDA, broad OCR/VLM coverage | AX Engine → vLLM | AX Engine → TensorRT-LLM after per-model certification |
 
 This is not a universal speed ranking. vLLM is the compatibility and model
 coverage path. TensorRT-LLM and TensorRT Edge-LLM are separate optimization
@@ -174,14 +174,66 @@ expose both identities so clients can pin the route they evaluated.
 TensorRT routes stay first-class and explicit:
 
 - x86 CUDA: `--support-tier tensor-rt-llm` with
-  `--tensorrt-llm-server-url`;
+  `--tensorrt-llm-server-url`, `--tensorrt-llm-upstream-version`, and
+  `--tensorrt-llm-execution-backend`;
 - Thor: `--support-tier tensor-rt-edge-llm` with
-  `--edge-llm-server-url`.
+  `--edge-llm-server-url`, `--edge-llm-upstream-version`, and
+  `--edge-llm-execution-backend`.
+
+AX fails session construction when either TensorRT route lacks its exact
+upstream version or execution-path identity. The optional provider-specific
+`--*-upstream-model-id` defaults to the AX-facing model id; a certified
+deployment should also set `--*-runtime-profile` to its hardware/artifact
+profile. Identity flags are valid only with their matching support tier and
+never select or switch a provider implicitly.
+
+For example, an x86 route backed by `trtllm-serve` can be configured as:
+
+```text
+ax-engine-server \
+  --model-id ax-ocr \
+  --support-tier tensor-rt-llm \
+  --tensorrt-llm-server-url http://127.0.0.1:8000 \
+  --tensorrt-llm-upstream-model-id <loaded-model-id> \
+  --tensorrt-llm-upstream-version <exact-tensorrt-llm-version> \
+  --tensorrt-llm-execution-backend pytorch \
+  --tensorrt-llm-runtime-profile cuda-linux-x86_64-a6000-sm86
+```
+
+A Thor Edge-LLM route uses the corresponding contract:
+
+```text
+ax-engine-server \
+  --model-id ax-ocr \
+  --support-tier tensor-rt-edge-llm \
+  --edge-llm-server-url http://127.0.0.1:8090 \
+  --edge-llm-upstream-model-id <loaded-model-id> \
+  --edge-llm-upstream-version <exact-edge-llm-version> \
+  --edge-llm-execution-backend cpp \
+  --edge-llm-runtime-profile cuda-linux-aarch64-thor-sm110
+```
+
+`GET /v1/runtime` exposes the selected provider, upstream model id, runtime
+profile, upstream version, execution backend, readiness, and a redacted
+endpoint authority. These values are the configured control-plane assertion;
+release automation must compare them with the independently captured worker
+package/image manifest. AX does not infer a worker version from a URL, and
+`readiness=configured` is not proof that the declared binary is running.
 
 They are not implementations of the vLLM provider and must retain distinct
 backend identities, model matrices, tuning, error metadata, and release
 evidence. Multimodal transport details are documented in
 [TensorRT L2 Image Forwarding](TENSORRT-L2-MULTIMODAL.md).
+
+The TensorRT adapters reuse AX's provider-neutral delegated HTTP policy and the
+same strict OpenAI SSE framing reader as vLLM. The shared reader bounds each
+frame to 1 MiB while reading, so an unterminated upstream line cannot first
+grow memory without bound. It also validates UTF-8/JSON and provider error
+events, and rejects EOF before `[DONE]`. Request content DTOs remain
+provider-specific: Edge-LLM's experimental staged-image contract is
+intentionally not treated as equivalent to vLLM's validated ordered data-URI
+contract. Sampler behavior, capabilities, runtime identity, and release
+evidence likewise remain separate.
 
 For Thor, use NVIDIA's
 [TensorRT Edge-LLM](https://github.com/NVIDIA/TensorRT-Edge-LLM), not the
@@ -193,14 +245,23 @@ exact server contract while this lane is a candidate; a GA deployment should
 prefer an AX-owned, versioned sidecar over the stable C++ runtime if the
 upstream server remains experimental.
 
-The current Edge-LLM model matrix includes Qwen 3/3.5 and Gemma 4 families but
-does not list `baidu/Unlimited-OCR`. Edge-LLM is consequently an optimization
-lane for models it explicitly supports, not a drop-in replacement for AX OCR's
-vLLM compatibility route.
+The current Edge-LLM model matrix includes Qwen 3/3.5/3.6 and the full Gemma 4
+family, but does not list `baidu/Unlimited-OCR`. Edge-LLM is consequently an
+optimization lane for models it explicitly supports, not a drop-in replacement
+for AX OCR's vLLM compatibility route.
 
 For x86 CUDA, TensorRT-LLM's documented
 [`trtllm-serve`](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/quick-start-guide.md)
 provides the OpenAI-compatible process boundary consumed by AX.
+Do not infer its execution backend from the project name: TensorRT-LLM 1.2
+[removed the legacy TensorRT engine backend](https://nvidia.github.io/TensorRT-LLM/latest/legacy/tensorrt-backend-removal.html)
+and made PyTorch the sole execution backend. AX profiles must therefore pin and
+report both the TensorRT-LLM release and its execution path, and every major
+upgrade must repeat quality, latency, throughput, memory, and rollback gates.
+Existing engine-build recipes or performance evidence cannot be carried across
+that breaking change. Until those identities are machine-readable in
+`/v1/runtime`, the TensorRT-LLM lane remains non-GA even when route-level
+compatibility tests pass.
 
 Do not switch a model from vLLM to a TensorRT lane merely because the engine
 starts. Promotion requires the same model/checkpoint semantics, product
@@ -228,6 +289,10 @@ quality, streaming behavior, concurrency policy, and rollback contract.
   backend.
 - Backend failure returns an error with the selected provider identity. There
   is no silent cross-provider fallback.
+- TensorRT routes fail closed without machine-readable upstream-version and
+  execution-backend identity. Promotion evidence cross-checks that configured
+  identity against the worker package/image rather than trusting it as a
+  runtime probe.
 - Run worker containers as non-root with a read-only root filesystem and
   explicit writable cache/tmpfs mounts.
 - Generate an SPDX SBOM and scan the exact image digest, not only a detached

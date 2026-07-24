@@ -63,7 +63,15 @@ fn base_args() -> ServerArgs {
         llama_server_url: None,
         mlx_lm_server_url: None,
         edge_llm_server_url: None,
+        edge_llm_upstream_model_id: None,
+        edge_llm_runtime_profile: None,
+        edge_llm_upstream_version: None,
+        edge_llm_execution_backend: None,
         tensor_rt_llm_server_url: None,
+        tensor_rt_llm_upstream_model_id: None,
+        tensor_rt_llm_runtime_profile: None,
+        tensor_rt_llm_upstream_version: None,
+        tensor_rt_llm_execution_backend: None,
         vllm_server_url: None,
         vllm_upstream_model_id: None,
         vllm_api_key_env: VLLM_API_KEY_ENV.to_string(),
@@ -282,6 +290,9 @@ fn tensor_rt_llm_session_config_wires_server_url() {
         // Sibling Edge URL must not be selected for TensorRT-LLM.
         edge_llm_server_url: Some("http://127.0.0.1:8090".to_string()),
         model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0".to_string(),
+        tensor_rt_llm_runtime_profile: Some("cuda-linux-x86_64-a6000-sm86".to_string()),
+        tensor_rt_llm_upstream_version: Some("1.2.1".to_string()),
+        tensor_rt_llm_execution_backend: Some("pytorch".to_string()),
         ..base_args()
     };
     let config = args
@@ -302,6 +313,35 @@ fn tensor_rt_llm_session_config_wires_server_url() {
         runtime.selected_backend,
         ax_engine_sdk::SelectedBackend::TensorRtLlm
     );
+    let delegated = runtime
+        .delegated_runtime
+        .expect("TensorRT-LLM runtime identity should be reported");
+    assert_eq!(delegated.provider, "tensor_rt_llm");
+    assert_eq!(
+        delegated.upstream_model_id,
+        "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    );
+    assert_eq!(
+        delegated.runtime_profile.as_deref(),
+        Some("cuda-linux-x86_64-a6000-sm86")
+    );
+    assert_eq!(delegated.upstream_version.as_deref(), Some("1.2.1"));
+    assert_eq!(delegated.execution_backend.as_deref(), Some("pytorch"));
+    assert_eq!(delegated.endpoint.authority, "loopback");
+}
+
+#[test]
+fn tensor_rt_llm_requires_machine_readable_runtime_identity() {
+    let args = ServerArgs {
+        support_tier: PreviewSupportTier::TensorRtLlm,
+        tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
+        ..base_args()
+    };
+
+    let error = args
+        .session_config()
+        .expect_err("TensorRT-LLM must require exact version and execution identity");
+    assert!(error.contains("runtime identity"));
 }
 
 #[test]
@@ -312,6 +352,9 @@ fn tensor_rt_edge_llm_session_config_wires_server_url() {
         // Sibling TRT-LLM URL must not be selected for Edge-LLM.
         tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
         model_id: "qwen3".to_string(),
+        edge_llm_runtime_profile: Some("cuda-linux-aarch64-thor-sm110".to_string()),
+        edge_llm_upstream_version: Some("0.18.0".to_string()),
+        edge_llm_execution_backend: Some("cpp".to_string()),
         ..base_args()
     };
     let config = args
@@ -332,6 +375,124 @@ fn tensor_rt_edge_llm_session_config_wires_server_url() {
         runtime.selected_backend,
         ax_engine_sdk::SelectedBackend::TensorRtEdgeLlm
     );
+    let delegated = runtime
+        .delegated_runtime
+        .expect("Edge-LLM runtime identity should be reported");
+    assert_eq!(delegated.provider, "tensor_rt_edge_llm");
+    assert_eq!(delegated.upstream_model_id, "qwen3");
+    assert_eq!(
+        delegated.runtime_profile.as_deref(),
+        Some("cuda-linux-aarch64-thor-sm110")
+    );
+    assert_eq!(delegated.upstream_version.as_deref(), Some("0.18.0"));
+    assert_eq!(delegated.execution_backend.as_deref(), Some("cpp"));
+    assert_eq!(delegated.endpoint.authority, "loopback");
+}
+
+#[test]
+fn tensor_rt_edge_llm_requires_machine_readable_runtime_identity() {
+    let args = ServerArgs {
+        support_tier: PreviewSupportTier::TensorRtEdgeLlm,
+        edge_llm_server_url: Some("http://127.0.0.1:8090".to_string()),
+        ..base_args()
+    };
+
+    let error = args
+        .session_config()
+        .expect_err("Edge-LLM must require exact version and execution identity");
+    assert!(error.contains("runtime identity"));
+}
+
+#[test]
+fn tensor_rt_identity_options_fail_closed_outside_their_provider_tier() {
+    let edge = ServerArgs {
+        edge_llm_upstream_version: Some("0.18.0".to_string()),
+        ..base_args()
+    };
+    let error = edge
+        .session_config()
+        .expect_err("Edge identity flags must not switch the provider");
+    assert!(error.contains("Edge-LLM identity options require"));
+
+    let tensor_rt_llm = ServerArgs {
+        tensor_rt_llm_execution_backend: Some("pytorch".to_string()),
+        ..base_args()
+    };
+    let error = tensor_rt_llm
+        .session_config()
+        .expect_err("TensorRT-LLM identity flags must not switch the provider");
+    assert!(error.contains("TensorRT-LLM identity options require"));
+}
+
+#[test]
+fn tensor_rt_runtime_identity_rejects_empty_and_control_character_fields() {
+    let empty_version = ServerArgs {
+        support_tier: PreviewSupportTier::TensorRtLlm,
+        tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
+        tensor_rt_llm_upstream_version: Some("   ".to_string()),
+        tensor_rt_llm_execution_backend: Some("pytorch".to_string()),
+        ..base_args()
+    };
+    let error = empty_version
+        .session_config()
+        .expect_err("empty runtime version must fail closed");
+    assert!(error.contains("upstream_version must not be empty"));
+
+    let unsafe_backend = ServerArgs {
+        support_tier: PreviewSupportTier::TensorRtEdgeLlm,
+        edge_llm_server_url: Some("http://127.0.0.1:8090".to_string()),
+        edge_llm_upstream_version: Some("0.18.0".to_string()),
+        edge_llm_execution_backend: Some("c\npp".to_string()),
+        ..base_args()
+    };
+    let error = unsafe_backend
+        .session_config()
+        .expect_err("control characters must fail closed");
+    assert!(error.contains("must not contain control characters"));
+}
+
+#[test]
+fn tensor_rt_runtime_identity_flags_parse_for_both_provider_paths() {
+    use clap::Parser;
+
+    let tensor_rt_llm = ServerArgs::try_parse_from([
+        "ax-engine-server",
+        "--support-tier",
+        "tensor-rt-llm",
+        "--tensorrt-llm-server-url",
+        "http://127.0.0.1:8000",
+        "--trt-llm-upstream-model-id",
+        "upstream/model",
+        "--trt-llm-upstream-version",
+        "1.2.1",
+        "--trt-llm-execution-backend",
+        "pytorch",
+        "--trt-llm-runtime-profile",
+        "cuda-linux-x86_64-a6000-sm86",
+    ])
+    .expect("TensorRT-LLM identity flags and aliases should parse");
+    assert_eq!(
+        tensor_rt_llm.tensor_rt_llm_upstream_version.as_deref(),
+        Some("1.2.1")
+    );
+
+    let edge_llm = ServerArgs::try_parse_from([
+        "ax-engine-server",
+        "--support-tier",
+        "tensor-rt-edge-llm",
+        "--edge-llm-server-url",
+        "http://127.0.0.1:8090",
+        "--edge-llm-upstream-model-id",
+        "upstream/model",
+        "--edge-llm-upstream-version",
+        "0.18.0",
+        "--edge-llm-execution-backend",
+        "cpp",
+        "--edge-llm-runtime-profile",
+        "cuda-linux-aarch64-thor-sm110",
+    ])
+    .expect("Edge-LLM identity flags should parse");
+    assert_eq!(edge_llm.edge_llm_execution_backend.as_deref(), Some("cpp"));
 }
 
 #[test]

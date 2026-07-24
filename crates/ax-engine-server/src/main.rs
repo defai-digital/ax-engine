@@ -261,6 +261,9 @@ fn new_instance_id() -> String {
 const HTTP_WARMUP_PROMPT: &str = "Act as a coding assistant. Implement a deterministic Rust ring buffer with tests, explain its invariants, and continue for at least 256 tokens without concluding early.";
 
 async fn warm_http_completions_path(app: &axum::Router, state: &AppState, model_id: &str) {
+    if !state.snapshot().runtime_report.selected_backend.is_mlx() {
+        return;
+    }
     // Three short streams: first warms tokenize+SSE; later passes exercise the
     // warmed direct-decode path so fresh-process flip S0 TTFT is stable.
     // A third pass reduced residual first-client spikes after dual warm

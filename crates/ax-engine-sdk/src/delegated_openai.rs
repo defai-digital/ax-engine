@@ -12,6 +12,7 @@ pub const DEFAULT_MAX_DELEGATED_IMAGES: usize = 40;
 pub const DEFAULT_MAX_DELEGATED_IMAGE_PIXELS: u64 = 100_000_000;
 pub const DEFAULT_MAX_DELEGATED_TOTAL_PIXELS: u64 = 1_000_000_000;
 pub const DEFAULT_MAX_DELEGATED_SSE_FRAME_BYTES: usize = 1024 * 1024;
+const DELEGATED_SSE_READ_BUFFER_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DelegatedImageLimits {
@@ -323,7 +324,7 @@ impl DelegatedOpenAiStreamHandle {
     ) -> Self {
         Self {
             endpoint: endpoint.into(),
-            reader: BufReader::new(reader),
+            reader: BufReader::with_capacity(DELEGATED_SSE_READ_BUFFER_BYTES, reader),
             max_frame_bytes,
             done: false,
         }
@@ -337,12 +338,21 @@ impl DelegatedOpenAiStreamHandle {
         }
         loop {
             let mut line = Vec::new();
-            let bytes_read = self.reader.read_until(b'\n', &mut line).map_err(|source| {
-                DelegatedOpenAiSseError::Read {
+            // `BufRead::read_until` is otherwise allowed to allocate until it
+            // encounters a delimiter. Limit the reader itself to one byte over
+            // the configured frame cap so an unterminated upstream line cannot
+            // grow memory without bound before the size check runs.
+            let read_limit =
+                u64::try_from(self.max_frame_bytes.saturating_add(1)).unwrap_or(u64::MAX);
+            let bytes_read = self
+                .reader
+                .by_ref()
+                .take(read_limit)
+                .read_until(b'\n', &mut line)
+                .map_err(|source| DelegatedOpenAiSseError::Read {
                     endpoint: self.endpoint.clone(),
                     source,
-                }
-            })?;
+                })?;
             if bytes_read == 0 {
                 return Err(DelegatedOpenAiSseError::EndedBeforeDone {
                     endpoint: self.endpoint.clone(),
@@ -483,11 +493,28 @@ struct DelegatedOpenAiUsage {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use base64::Engine as _;
     use image::{DynamicImage, ImageFormat, RgbImage};
 
     use super::*;
+
+    struct CountingNoNewlineReader {
+        remaining: usize,
+        bytes_read: Arc<AtomicUsize>,
+    }
+
+    impl Read for CountingNoNewlineReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let count = self.remaining.min(buffer.len());
+            buffer[..count].fill(b'x');
+            self.remaining -= count;
+            self.bytes_read.fetch_add(count, Ordering::SeqCst);
+            Ok(count)
+        }
+    }
 
     fn png_data_uri() -> String {
         let mut bytes = Cursor::new(Vec::new());
@@ -583,7 +610,10 @@ mod tests {
 
     #[test]
     fn stream_rejects_malformed_provider_and_oversized_frames() {
-        let cases: Vec<(Vec<u8>, usize, fn(&DelegatedOpenAiSseError) -> bool)> = vec![
+        type SseErrorMatcher = fn(&DelegatedOpenAiSseError) -> bool;
+        type MalformedFrameCase = (Vec<u8>, usize, SseErrorMatcher);
+
+        let cases: Vec<MalformedFrameCase> = vec![
             (b"data: {not-json}\n\n".to_vec(), 4096, |error| {
                 matches!(error, DelegatedOpenAiSseError::InvalidJson { .. })
             }),
@@ -618,5 +648,30 @@ mod tests {
                 .expect_err("malformed provider frame must fail closed");
             assert!(matches_expected(&error), "unexpected SSE error: {error}");
         }
+    }
+
+    #[test]
+    fn oversized_frame_is_rejected_without_reading_the_unbounded_line() {
+        let max_frame_bytes = 64 * 1024;
+        let total_bytes = max_frame_bytes * 4;
+        let bytes_read = Arc::new(AtomicUsize::new(0));
+        let reader = CountingNoNewlineReader {
+            remaining: total_bytes,
+            bytes_read: bytes_read.clone(),
+        };
+        let mut stream = DelegatedOpenAiStreamHandle::new(
+            "http://127.0.0.1/v1/chat/completions",
+            Box::new(reader),
+            max_frame_bytes,
+        );
+
+        assert!(matches!(
+            stream.next_chunk(),
+            Err(DelegatedOpenAiSseError::FrameTooLarge { .. })
+        ));
+        assert!(
+            bytes_read.load(Ordering::SeqCst) <= max_frame_bytes * 2,
+            "the parser must stop reading near its configured frame limit"
+        );
     }
 }

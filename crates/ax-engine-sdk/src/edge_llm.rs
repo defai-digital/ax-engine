@@ -1,5 +1,6 @@
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -7,11 +8,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
+use url::Url;
 
-use crate::backend::{RuntimeReport, SelectedBackend};
+use crate::backend::{DelegatedRuntimeIdentity, RuntimeReport, SelectedBackend};
 use crate::delegated_http::{
     DelegatedHttpPostError, DelegatedHttpTimeouts, normalize_base_url, parse_json_response,
     send_json_post_request,
+};
+use crate::delegated_openai::{
+    DEFAULT_MAX_DELEGATED_SSE_FRAME_BYTES, DelegatedOpenAiSseError, DelegatedOpenAiStreamHandle,
 };
 use crate::generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateStatus,
@@ -23,21 +28,46 @@ pub enum EdgeLlmConfig {
 }
 
 impl EdgeLlmConfig {
-    pub fn server_completion(base_url: impl Into<String>) -> Self {
-        Self::ServerCompletion(EdgeLlmServerCompletionConfig::new(base_url))
+    pub fn server_completion(
+        base_url: impl Into<String>,
+        runtime_identity: DelegatedRuntimeIdentity,
+    ) -> Self {
+        Self::ServerCompletion(EdgeLlmServerCompletionConfig::new(
+            base_url,
+            runtime_identity,
+        ))
+    }
+
+    pub fn server(&self) -> &EdgeLlmServerCompletionConfig {
+        match self {
+            Self::ServerCompletion(config) => config,
+        }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct EdgeLlmServerCompletionConfig {
     pub base_url: String,
+    pub runtime_identity: DelegatedRuntimeIdentity,
     pub timeouts: DelegatedHttpTimeouts,
 }
 
+impl std::fmt::Debug for EdgeLlmServerCompletionConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EdgeLlmServerCompletionConfig")
+            .field("endpoint", &self.redacted_authority())
+            .field("runtime_identity", &self.runtime_identity)
+            .field("timeouts", &self.timeouts)
+            .finish()
+    }
+}
+
 impl EdgeLlmServerCompletionConfig {
-    pub fn new(base_url: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, runtime_identity: DelegatedRuntimeIdentity) -> Self {
         Self {
             base_url: normalize_base_url(base_url.into()),
+            runtime_identity,
             timeouts: DelegatedHttpTimeouts::default(),
         }
     }
@@ -53,6 +83,24 @@ impl EdgeLlmServerCompletionConfig {
 
     pub fn chat_completions_url(&self) -> String {
         format!("{}/v1/chat/completions", self.base_url)
+    }
+
+    pub fn redacted_authority(&self) -> String {
+        Url::parse(&self.base_url)
+            .ok()
+            .and_then(|url| url.host_str().map(ToOwned::to_owned))
+            .map(|host| {
+                if host.eq_ignore_ascii_case("localhost")
+                    || host
+                        .parse::<IpAddr>()
+                        .is_ok_and(|address| address.is_loopback())
+                {
+                    "loopback".to_string()
+                } else {
+                    host
+                }
+            })
+            .unwrap_or_else(|| "remote".to_string())
     }
 }
 
@@ -117,6 +165,8 @@ pub enum EdgeLlmBackendError {
         "tensorrt-edge-llm backend SSE stream from {endpoint} did not include a choice in chunk"
     )]
     MissingStreamChoice { endpoint: String },
+    #[error(transparent)]
+    Sse(#[from] DelegatedOpenAiSseError),
 }
 
 #[derive(Debug)]
@@ -128,73 +178,32 @@ pub struct EdgeLlmStreamChunkResult {
 }
 
 pub struct EdgeLlmStreamHandle {
-    endpoint: String,
-    reader: BufReader<Box<dyn Read + Send>>,
+    inner: DelegatedOpenAiStreamHandle,
 }
 
 impl EdgeLlmStreamHandle {
     pub(crate) fn new(endpoint: String, reader: Box<dyn Read + Send>) -> Self {
         Self {
-            endpoint,
-            reader: BufReader::new(reader),
+            inner: DelegatedOpenAiStreamHandle::new(
+                endpoint,
+                reader,
+                DEFAULT_MAX_DELEGATED_SSE_FRAME_BYTES,
+            ),
         }
     }
 
     pub fn next_chunk(&mut self) -> Result<Option<EdgeLlmStreamChunkResult>, EdgeLlmBackendError> {
-        loop {
-            let mut line = String::new();
-            let bytes_read = self.reader.read_line(&mut line).map_err(|source| {
-                EdgeLlmBackendError::SseRead {
-                    endpoint: self.endpoint.clone(),
-                    source,
-                }
-            })?;
-
-            if bytes_read == 0 {
-                return Ok(None);
-            }
-
-            let line = line.trim_end_matches(['\r', '\n']);
-            if line.is_empty() {
-                continue;
-            }
-
-            // SSE allows optional whitespace after the colon (`data:` or `data: `).
-            let data = match line.strip_prefix("data:") {
-                Some(rest) => rest.strip_prefix(' ').unwrap_or(rest),
-                None => continue,
-            };
-
-            if data == "[DONE]" {
-                return Ok(None);
-            }
-
-            let chunk: EdgeLlmStreamChunk = serde_json::from_str(data).map_err(|source| {
-                EdgeLlmBackendError::InvalidStreamChunk {
-                    endpoint: self.endpoint.clone(),
-                    source,
-                }
-            })?;
-
-            let has_usage = chunk.usage.is_some();
-            let choice = chunk.choices.into_iter().next();
-            if choice.is_none() && !has_usage {
-                return Err(EdgeLlmBackendError::MissingStreamChoice {
-                    endpoint: self.endpoint.clone(),
-                });
-            }
-            let choice = choice.unwrap_or_default();
-
-            return Ok(Some(EdgeLlmStreamChunkResult {
-                text: choice
-                    .delta
-                    .and_then(|delta| delta.content)
-                    .unwrap_or(choice.text),
-                finish_reason: choice.finish_reason,
-                prompt_token_count: chunk.usage.as_ref().map(|u| u.prompt_tokens),
-                output_token_count: chunk.usage.as_ref().map(|u| u.completion_tokens),
-            }));
-        }
+        self.inner
+            .next_chunk()
+            .map(|chunk| {
+                chunk.map(|chunk| EdgeLlmStreamChunkResult {
+                    text: chunk.text,
+                    finish_reason: chunk.finish_reason,
+                    prompt_token_count: chunk.prompt_token_count,
+                    output_token_count: chunk.output_token_count,
+                })
+            })
+            .map_err(EdgeLlmBackendError::from)
     }
 }
 
@@ -363,7 +372,6 @@ pub struct EdgeLlmChatGenerateRequest {
 impl std::fmt::Debug for EdgeLlmStreamHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EdgeLlmStreamHandle")
-            .field("endpoint", &self.endpoint)
             .finish_non_exhaustive()
     }
 }
@@ -403,7 +411,13 @@ fn start_edge_llm_server_completion_stream(
 ) -> Result<EdgeLlmStreamHandle, EdgeLlmBackendError> {
     let endpoint = config.completions_url();
     let prompt = completion_prompt_text(request)?;
-    let payload = build_edge_llm_completion_request(request, &prompt, true, selected_backend);
+    let payload = build_edge_llm_completion_request(
+        request,
+        &prompt,
+        true,
+        selected_backend,
+        &config.runtime_identity.upstream_model_id,
+    );
 
     let response = send_edge_llm_json_post_request(
         &endpoint,
@@ -450,7 +464,12 @@ fn start_edge_llm_server_chat_completion_stream(
     selected_backend: SelectedBackend,
 ) -> Result<EdgeLlmStreamHandle, EdgeLlmBackendError> {
     let endpoint = config.chat_completions_url();
-    let payload = build_edge_llm_chat_completion_request(request, true, selected_backend);
+    let payload = build_edge_llm_chat_completion_request(
+        request,
+        true,
+        selected_backend,
+        &config.runtime_identity.upstream_model_id,
+    );
 
     let response = send_edge_llm_json_post_request(
         &endpoint,
@@ -553,8 +572,13 @@ fn run_edge_llm_server_completion_generate(
 ) -> Result<GenerateResponse, EdgeLlmBackendError> {
     let endpoint = config.completions_url();
     let prompt = completion_prompt_text(request)?;
-    let payload =
-        build_edge_llm_completion_request(request, &prompt, false, runtime.selected_backend);
+    let payload = build_edge_llm_completion_request(
+        request,
+        &prompt,
+        false,
+        runtime.selected_backend,
+        &config.runtime_identity.upstream_model_id,
+    );
 
     let response = send_edge_llm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let response: EdgeLlmCompletionResponse = parse_edge_llm_json_response(response, &endpoint)?;
@@ -580,7 +604,12 @@ fn run_edge_llm_server_chat_completion_generate(
     request: &EdgeLlmChatGenerateRequest,
 ) -> Result<GenerateResponse, EdgeLlmBackendError> {
     let endpoint = config.chat_completions_url();
-    let payload = build_edge_llm_chat_completion_request(request, false, runtime.selected_backend);
+    let payload = build_edge_llm_chat_completion_request(
+        request,
+        false,
+        runtime.selected_backend,
+        &config.runtime_identity.upstream_model_id,
+    );
 
     let response = send_edge_llm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let response: EdgeLlmChatCompletionResponse =
@@ -636,13 +665,15 @@ fn build_edge_llm_completion_request<'a>(
     prompt: &'a str,
     stream: bool,
     selected_backend: SelectedBackend,
+    upstream_model_id: &'a str,
 ) -> EdgeLlmCompletionRequest<'a> {
     let (top_k, top_p) = edge_llm_sampling_topk_topp(
         &request.sampling,
         should_coerce_edge_sampler(selected_backend),
     );
     EdgeLlmCompletionRequest {
-        model: None,
+        model: matches!(selected_backend, SelectedBackend::TensorRtLlm)
+            .then_some(upstream_model_id),
         prompt,
         max_tokens: request.max_output_tokens,
         temperature: request.sampling.temperature,
@@ -687,18 +718,19 @@ fn edge_llm_sampling_topk_topp(
     (top_k, top_p)
 }
 
-fn build_edge_llm_chat_completion_request(
-    request: &EdgeLlmChatGenerateRequest,
+fn build_edge_llm_chat_completion_request<'a>(
+    request: &'a EdgeLlmChatGenerateRequest,
     stream: bool,
     selected_backend: SelectedBackend,
-) -> EdgeLlmChatCompletionRequest<'_> {
+    upstream_model_id: &'a str,
+) -> EdgeLlmChatCompletionRequest<'a> {
     let (top_k, top_p) = edge_llm_sampling_topk_topp(
         &request.sampling,
         should_coerce_edge_sampler(selected_backend),
     );
     EdgeLlmChatCompletionRequest {
-        // Edge-LLM servers typically require an explicit model id.
-        model: Some(request.model_id.as_str()),
+        // Send the configured upstream id, not AX's public-facing alias.
+        model: Some(upstream_model_id),
         messages: &request.messages,
         max_tokens: request.max_output_tokens,
         temperature: request.sampling.temperature,
@@ -725,30 +757,6 @@ pub fn finish_reason_from_edge_llm(value: Option<&str>) -> Option<GenerateFinish
         Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
         Some(_) | None => None,
     }
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct EdgeLlmStreamChoice {
-    #[serde(default)]
-    text: String,
-    #[serde(default)]
-    delta: Option<EdgeLlmStreamDelta>,
-    #[serde(default)]
-    finish_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct EdgeLlmStreamDelta {
-    #[serde(default)]
-    content: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct EdgeLlmStreamChunk {
-    #[serde(default)]
-    choices: Vec<EdgeLlmStreamChoice>,
-    #[serde(default)]
-    usage: Option<EdgeLlmCompletionUsage>,
 }
 
 #[derive(Debug, Serialize)]
@@ -861,6 +869,11 @@ mod tests {
     use crate::backend::{BackendPolicy, ResolvedBackend, RuntimeReport};
     use crate::generate::{GenerateRequest, GenerateSampling};
 
+    fn test_runtime_identity() -> DelegatedRuntimeIdentity {
+        DelegatedRuntimeIdentity::new("upstream-qwen3", "test-version", "test-backend")
+            .expect("test runtime identity should be valid")
+    }
+
     #[test]
     fn chat_message_serializes_provider_specific_image_parts() {
         let tensor_rt_llm = EdgeLlmChatMessage::with_parts(
@@ -907,7 +920,8 @@ mod tests {
 
     #[test]
     fn server_completion_url_normalizes_trailing_slashes() {
-        let config = EdgeLlmConfig::server_completion("http://127.0.0.1:8090///");
+        let config =
+            EdgeLlmConfig::server_completion("http://127.0.0.1:8090///", test_runtime_identity());
         let EdgeLlmConfig::ServerCompletion(config) = config;
 
         assert_eq!(
@@ -918,6 +932,23 @@ mod tests {
             config.chat_completions_url(),
             "http://127.0.0.1:8090/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn server_completion_redacts_loopback_and_remote_endpoint_secrets() {
+        let loopback =
+            EdgeLlmServerCompletionConfig::new("http://127.0.0.1:8090", test_runtime_identity());
+        assert_eq!(loopback.redacted_authority(), "loopback");
+
+        let remote = EdgeLlmServerCompletionConfig::new(
+            "https://user:secret@edge.example.test:8443/base",
+            test_runtime_identity(),
+        );
+        assert_eq!(remote.redacted_authority(), "edge.example.test");
+        let debug = format!("{remote:?}");
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("user"));
+        assert!(!debug.contains(":8443"));
     }
 
     #[test]
@@ -944,7 +975,7 @@ mod tests {
         let response = run_blocking_generate(
             7,
             &runtime_report(),
-            &EdgeLlmConfig::server_completion(server_url),
+            &EdgeLlmConfig::server_completion(server_url, test_runtime_identity()),
             &request,
         )
         .expect("tensorrt-edge-llm delegated completion should succeed");
@@ -966,8 +997,8 @@ mod tests {
         let response_body = r#"{"choices":[{"message":{"content":"bonjour"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":1}}"#.to_string();
         let (server_url, handle) = spawn_completion_server(response_body, |payload| {
             assert_eq!(
-                payload["model"], "qwen3",
-                "edge-llm chat requests must forward the AX model id"
+                payload["model"], "upstream-qwen3",
+                "edge-llm chat requests must forward the configured upstream model id"
             );
             assert_eq!(payload["messages"][0]["role"], "system");
             assert_eq!(payload["messages"][0]["content"], "Be concise.");
@@ -988,7 +1019,7 @@ mod tests {
         let response = run_blocking_chat_generate(
             9,
             &runtime_report(),
-            &EdgeLlmConfig::server_completion(server_url),
+            &EdgeLlmConfig::server_completion(server_url, test_runtime_identity()),
             &chat_request(),
         )
         .expect("tensorrt-edge-llm delegated chat completion should succeed");
@@ -1013,7 +1044,7 @@ mod tests {
         let error = run_blocking_generate(
             7,
             &runtime_report(),
-            &EdgeLlmConfig::server_completion("http://127.0.0.1:8090"),
+            &EdgeLlmConfig::server_completion("http://127.0.0.1:8090", test_runtime_identity()),
             &request,
         )
         .expect_err("token prompts should fail closed");
@@ -1037,7 +1068,7 @@ mod tests {
         run_blocking_chat_generate(
             11,
             &runtime_report(),
-            &EdgeLlmConfig::server_completion(server_url),
+            &EdgeLlmConfig::server_completion(server_url, test_runtime_identity()),
             &request,
         )
         .expect("coerced sampling must be accepted by Edge-LLM contract");
@@ -1054,7 +1085,7 @@ mod tests {
         let error = run_blocking_generate(
             7,
             &runtime_report(),
-            &EdgeLlmConfig::server_completion(server_url),
+            &EdgeLlmConfig::server_completion(server_url, test_runtime_identity()),
             &text_request("hello"),
         )
         .expect_err("missing choices should fail closed");
@@ -1164,7 +1195,7 @@ mod tests {
             .expect_err("missing stream choices should fail closed");
         assert!(matches!(
             error,
-            EdgeLlmBackendError::MissingStreamChoice { .. }
+            EdgeLlmBackendError::Sse(DelegatedOpenAiSseError::MissingChoice { .. })
         ));
     }
 
@@ -1177,8 +1208,41 @@ mod tests {
             .expect_err("invalid stream JSON should fail closed");
         assert!(matches!(
             error,
-            EdgeLlmBackendError::InvalidStreamChunk { .. }
+            EdgeLlmBackendError::Sse(DelegatedOpenAiSseError::InvalidJson { .. })
         ));
+    }
+
+    #[test]
+    fn stream_handle_rejects_eof_before_done() {
+        let mut stream = edge_llm_stream(
+            "data: {\"choices\":[{\"text\":\"partial\",\"finish_reason\":null}]}\n\n",
+        );
+        assert!(
+            stream
+                .next_chunk()
+                .expect("first chunk should parse")
+                .is_some()
+        );
+        assert!(
+            stream.next_chunk().is_err(),
+            "an upstream EOF before [DONE] must fail closed"
+        );
+    }
+
+    #[test]
+    fn stream_handle_rejects_oversized_frames() {
+        let oversized =
+            "x".repeat(crate::delegated_openai::DEFAULT_MAX_DELEGATED_SSE_FRAME_BYTES + 1);
+        let body = format!(
+            "data: {{\"choices\":[{{\"text\":\"{oversized}\",\"finish_reason\":null}}]}}\n\n\
+             data: [DONE]\n\n"
+        );
+        let mut stream = edge_llm_stream(&body);
+
+        assert!(
+            stream.next_chunk().is_err(),
+            "an oversized upstream frame must fail closed"
+        );
     }
 
     fn runtime_report() -> RuntimeReport {
@@ -1199,14 +1263,14 @@ mod tests {
     fn blocking_chat_generate_labels_tensor_rt_llm_execution_plan() {
         let response_body = r#"{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}"#.to_string();
         let (server_url, handle) = spawn_completion_server(response_body, |payload| {
-            assert_eq!(payload["model"], "qwen3");
+            assert_eq!(payload["model"], "upstream-qwen3");
             assert_eq!(payload["stream"], false);
         });
 
         let response = run_blocking_chat_generate(
             21,
             &tensor_rt_llm_runtime_report(),
-            &EdgeLlmConfig::server_completion(server_url),
+            &EdgeLlmConfig::server_completion(server_url, test_runtime_identity()),
             &chat_request(),
         )
         .expect("tensorrt-llm delegated chat completion should succeed");
@@ -1239,7 +1303,7 @@ mod tests {
         run_blocking_chat_generate(
             22,
             &tensor_rt_llm_runtime_report(),
-            &EdgeLlmConfig::server_completion(server_url),
+            &EdgeLlmConfig::server_completion(server_url, test_runtime_identity()),
             &request,
         )
         .expect("tensorrt-llm must accept OpenAI-style disabled sampling");

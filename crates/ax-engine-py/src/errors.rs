@@ -110,6 +110,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::EdgeLlm(EdgeLlmBackendError::SseRead { .. })
         | EngineSessionError::EdgeLlm(EdgeLlmBackendError::InvalidStreamChunk { .. })
         | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingStreamChoice { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::Sse(_))
         | EngineSessionError::Vllm(_) => EngineBackendError::new_err(error.to_string()),
         EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxLmStreamEndedBeforeStop { .. }
@@ -130,6 +131,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_engine_sdk::DelegatedOpenAiSseError;
     use pyo3::exceptions::{PyRuntimeError, PyValueError};
     use std::sync::Once;
 
@@ -182,6 +184,12 @@ mod tests {
                 },
             ));
             assert!(edge_http.is_instance_of::<EngineBackendError>(py));
+            let edge_sse = to_py_runtime_error(EngineSessionError::EdgeLlm(
+                EdgeLlmBackendError::Sse(DelegatedOpenAiSseError::EndedBeforeDone {
+                    endpoint: "loopback".to_string(),
+                }),
+            ));
+            assert!(edge_sse.is_instance_of::<EngineBackendError>(py));
             let edge_lifecycle =
                 to_py_runtime_error(EngineSessionError::EdgeLlmDoesNotSupportLifecycle {
                     operation: "submit_generate",

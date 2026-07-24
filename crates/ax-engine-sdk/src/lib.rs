@@ -62,13 +62,13 @@ pub use tokenizer::{EngineTokenizer, EngineTokenizerError};
 
 pub use backend::{
     BackendContractError, BackendPolicy, CapabilityLevel, CapabilityReport, DelegatedReadiness,
-    DelegatedRuntimeReport, HostReport, MetalToolchainReport, NativeModelArtifactsSource,
-    NativeModelReport, NativeRunnerKind, NativeRuntimeArtifactsSource, NativeRuntimeReport,
-    NativeRuntimeStatus, NativeSourceQuantization, PreviewBackendMode, PreviewBackendRequest,
-    PreviewBackendResolution, PreviewBackendResolutionError, RedactedEndpoint, ResolutionPolicy,
-    ResolvedBackend, RuntimeReport, SelectedBackend, SupportTier, ToolStatusReport,
-    current_host_report, current_metal_toolchain_report, preview_support_tier_from_label,
-    resolve_preview_backend,
+    DelegatedRuntimeIdentity, DelegatedRuntimeIdentityError, DelegatedRuntimeReport, HostReport,
+    MetalToolchainReport, NativeModelArtifactsSource, NativeModelReport, NativeRunnerKind,
+    NativeRuntimeArtifactsSource, NativeRuntimeReport, NativeRuntimeStatus,
+    NativeSourceQuantization, PreviewBackendMode, PreviewBackendRequest, PreviewBackendResolution,
+    PreviewBackendResolutionError, RedactedEndpoint, ResolutionPolicy, ResolvedBackend,
+    RuntimeReport, SelectedBackend, SupportTier, ToolStatusReport, current_host_report,
+    current_metal_toolchain_report, preview_support_tier_from_label, resolve_preview_backend,
 };
 pub use delegated_http::{
     DEFAULT_DELEGATED_HTTP_CONNECT_TIMEOUT_SECS, DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS,

@@ -35,7 +35,8 @@ memory).**
   with capability-gated OpenAI endpoints
 - **One CUDA control plane** — one AX-owned vLLM provider serves Linux x86_64
   and Thor through separately certified runtime profiles; TensorRT-LLM and
-  TensorRT Edge-LLM remain explicit per-model optimization lanes
+  TensorRT Edge-LLM remain explicit per-model optimization lanes and fail
+  closed without machine-readable upstream-version/execution-path identity
 - **Multi-model serving** — keep a scoped set of Qwen 3.5/3.6, Qwen3-Coder-Next,
   Gemma 4, and embedding models resident (`load_mode=add`), route with request
   `model` — including chat + embeddings from one process — with optional idle
@@ -390,6 +391,8 @@ Crate layout and conventions: [AGENTS.md](AGENTS.md) ·
 - N-gram acceleration is workload-dependent, not a raw kernel speedup
 - CUDA runtime profiles remain candidate-only until their documented native
   OCI, quality, performance, soak, and rollback gates pass
+- TensorRT runtime identity in `/v1/runtime` is configured metadata, not binary
+  attestation; release evidence must cross-check the exact worker package/image
 
 Details: [FAQ limitations](docs/FAQ.md#what-are-the-current-limitations).
 

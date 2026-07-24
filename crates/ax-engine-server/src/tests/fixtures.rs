@@ -290,7 +290,15 @@ pub(super) fn base_server_args() -> ServerArgs {
         llama_server_url: None,
         mlx_lm_server_url: None,
         edge_llm_server_url: None,
+        edge_llm_upstream_model_id: None,
+        edge_llm_runtime_profile: None,
+        edge_llm_upstream_version: None,
+        edge_llm_execution_backend: None,
         tensor_rt_llm_server_url: None,
+        tensor_rt_llm_upstream_model_id: None,
+        tensor_rt_llm_runtime_profile: None,
+        tensor_rt_llm_upstream_version: None,
+        tensor_rt_llm_execution_backend: None,
         vllm_server_url: None,
         vllm_upstream_model_id: None,
         vllm_api_key_env: args::VLLM_API_KEY_ENV.to_string(),
@@ -402,6 +410,8 @@ pub(super) fn tensor_rt_edge_llm_state(server_url: String) -> AppState {
     test_app_state(|args| {
         args.support_tier = args::PreviewSupportTier::TensorRtEdgeLlm;
         args.edge_llm_server_url = Some(server_url);
+        args.edge_llm_upstream_version = Some("test-edge-version".to_string());
+        args.edge_llm_execution_backend = Some("cpp".to_string());
     })
 }
 
@@ -409,6 +419,8 @@ pub(super) fn tensor_rt_llm_state(server_url: String) -> AppState {
     test_app_state(|args| {
         args.support_tier = args::PreviewSupportTier::TensorRtLlm;
         args.tensor_rt_llm_server_url = Some(server_url);
+        args.tensor_rt_llm_upstream_version = Some("test-trtllm-version".to_string());
+        args.tensor_rt_llm_execution_backend = Some("pytorch".to_string());
     })
 }
 

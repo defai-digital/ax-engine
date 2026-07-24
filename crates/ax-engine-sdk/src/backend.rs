@@ -495,6 +495,70 @@ pub struct RedactedEndpoint {
     pub authority: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelegatedRuntimeIdentity {
+    pub upstream_model_id: String,
+    pub runtime_profile: Option<String>,
+    pub upstream_version: String,
+    pub execution_backend: String,
+}
+
+impl DelegatedRuntimeIdentity {
+    pub fn new(
+        upstream_model_id: impl Into<String>,
+        upstream_version: impl Into<String>,
+        execution_backend: impl Into<String>,
+    ) -> Result<Self, DelegatedRuntimeIdentityError> {
+        Ok(Self {
+            upstream_model_id: normalize_runtime_identity_field(
+                "upstream_model_id",
+                upstream_model_id.into(),
+            )?,
+            runtime_profile: None,
+            upstream_version: normalize_runtime_identity_field(
+                "upstream_version",
+                upstream_version.into(),
+            )?,
+            execution_backend: normalize_runtime_identity_field(
+                "execution_backend",
+                execution_backend.into(),
+            )?,
+        })
+    }
+
+    pub fn with_runtime_profile(
+        mut self,
+        runtime_profile: Option<String>,
+    ) -> Result<Self, DelegatedRuntimeIdentityError> {
+        self.runtime_profile = runtime_profile
+            .map(|profile| normalize_runtime_identity_field("runtime_profile", profile))
+            .transpose()?;
+        Ok(self)
+    }
+}
+
+fn normalize_runtime_identity_field(
+    field: &'static str,
+    value: String,
+) -> Result<String, DelegatedRuntimeIdentityError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(DelegatedRuntimeIdentityError::EmptyField { field });
+    }
+    if value.chars().any(char::is_control) {
+        return Err(DelegatedRuntimeIdentityError::InvalidControlCharacter { field });
+    }
+    Ok(value.to_string())
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum DelegatedRuntimeIdentityError {
+    #[error("delegated runtime identity field {field} must not be empty")]
+    EmptyField { field: &'static str },
+    #[error("delegated runtime identity field {field} must not contain control characters")]
+    InvalidControlCharacter { field: &'static str },
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DelegatedRuntimeReport {
     pub provider: String,
@@ -506,6 +570,8 @@ pub struct DelegatedRuntimeReport {
     pub endpoint: RedactedEndpoint,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_backend: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -721,8 +787,10 @@ pub struct PreviewBackendRequest {
     pub llama_server_url: Option<String>,
     pub mlx_lm_server_url: Option<String>,
     pub edge_llm_server_url: Option<String>,
+    pub edge_llm_runtime_identity: Option<DelegatedRuntimeIdentity>,
     /// Base URL for TensorRT-LLM OpenAI-compatible server (`trtllm-serve`).
     pub tensor_rt_llm_server_url: Option<String>,
+    pub tensor_rt_llm_runtime_identity: Option<DelegatedRuntimeIdentity>,
     pub vllm_backend: Option<VllmConfig>,
     pub delegated_http_timeouts: DelegatedHttpTimeouts,
 }
@@ -737,7 +805,9 @@ impl Default for PreviewBackendRequest {
             llama_server_url: None,
             mlx_lm_server_url: None,
             edge_llm_server_url: None,
+            edge_llm_runtime_identity: None,
             tensor_rt_llm_server_url: None,
+            tensor_rt_llm_runtime_identity: None,
             vllm_backend: None,
             delegated_http_timeouts: DelegatedHttpTimeouts::default(),
         }
@@ -807,8 +877,12 @@ pub enum PreviewBackendResolutionError {
     MissingMlxLmServerUrl,
     #[error("support_tier tensor_rt_edge_llm requires edge_llm_server_url")]
     MissingEdgeLlmServerUrl,
+    #[error("support_tier tensor_rt_edge_llm requires a validated runtime identity")]
+    MissingEdgeLlmRuntimeIdentity,
     #[error("support_tier tensor_rt_llm requires tensor_rt_llm_server_url")]
     MissingTensorRtLlmServerUrl,
+    #[error("support_tier tensor_rt_llm requires a validated runtime identity")]
+    MissingTensorRtLlmRuntimeIdentity,
     #[error("support_tier vllm requires a validated vllm_backend config")]
     MissingVllmConfig,
 }
@@ -917,6 +991,7 @@ fn resolve_explicit_preview_backend(
             mlx_lm_backend: None,
             edge_llm_backend: Some(resolve_edge_llm_target(
                 request.edge_llm_server_url,
+                request.edge_llm_runtime_identity,
                 request.delegated_http_timeouts,
             )?),
             tensor_rt_llm_backend: None,
@@ -932,6 +1007,7 @@ fn resolve_explicit_preview_backend(
             edge_llm_backend: None,
             tensor_rt_llm_backend: Some(resolve_tensor_rt_llm_target(
                 request.tensor_rt_llm_server_url,
+                request.tensor_rt_llm_runtime_identity,
                 request.delegated_http_timeouts,
             )?),
             vllm_backend: None,
@@ -993,24 +1069,30 @@ fn resolve_mlx_lm_target(
 
 fn resolve_edge_llm_target(
     edge_llm_server_url: Option<String>,
+    runtime_identity: Option<DelegatedRuntimeIdentity>,
     timeouts: DelegatedHttpTimeouts,
 ) -> Result<EdgeLlmConfig, PreviewBackendResolutionError> {
     let server_url =
         edge_llm_server_url.ok_or(PreviewBackendResolutionError::MissingEdgeLlmServerUrl)?;
+    let runtime_identity =
+        runtime_identity.ok_or(PreviewBackendResolutionError::MissingEdgeLlmRuntimeIdentity)?;
     Ok(EdgeLlmConfig::ServerCompletion(
-        EdgeLlmServerCompletionConfig::new(server_url).with_timeouts(timeouts),
+        EdgeLlmServerCompletionConfig::new(server_url, runtime_identity).with_timeouts(timeouts),
     ))
 }
 
 fn resolve_tensor_rt_llm_target(
     tensor_rt_llm_server_url: Option<String>,
+    runtime_identity: Option<DelegatedRuntimeIdentity>,
     timeouts: DelegatedHttpTimeouts,
 ) -> Result<EdgeLlmConfig, PreviewBackendResolutionError> {
     let server_url = tensor_rt_llm_server_url
         .ok_or(PreviewBackendResolutionError::MissingTensorRtLlmServerUrl)?;
+    let runtime_identity =
+        runtime_identity.ok_or(PreviewBackendResolutionError::MissingTensorRtLlmRuntimeIdentity)?;
     // Same OpenAI chat/completions wire shape as Edge-LLM L2.
     Ok(EdgeLlmConfig::ServerCompletion(
-        EdgeLlmServerCompletionConfig::new(server_url).with_timeouts(timeouts),
+        EdgeLlmServerCompletionConfig::new(server_url, runtime_identity).with_timeouts(timeouts),
     ))
 }
 
@@ -1169,6 +1251,20 @@ pub enum BackendContractError {
 mod tests {
     use super::*;
 
+    fn edge_runtime_identity() -> DelegatedRuntimeIdentity {
+        DelegatedRuntimeIdentity::new("qwen3", "0.18.0", "cpp")
+            .expect("Edge-LLM test identity should be valid")
+            .with_runtime_profile(Some("cuda-linux-aarch64-thor-sm110".to_string()))
+            .expect("Edge-LLM test profile should be valid")
+    }
+
+    fn tensor_rt_llm_runtime_identity() -> DelegatedRuntimeIdentity {
+        DelegatedRuntimeIdentity::new("TinyLlama/TinyLlama-1.1B-Chat-v1.0", "1.2.1", "pytorch")
+            .expect("TensorRT-LLM test identity should be valid")
+            .with_runtime_profile(Some("cuda-linux-x86_64-a6000-sm86".to_string()))
+            .expect("TensorRT-LLM test profile should be valid")
+    }
+
     #[test]
     fn rejects_llama_backend_under_mlx_only_policy() {
         let resolved = ResolvedBackend::llama_cpp(
@@ -1239,6 +1335,7 @@ mod tests {
         let resolution = resolve_preview_backend(PreviewBackendRequest {
             support_tier: SupportTier::TensorRtEdgeLlm,
             edge_llm_server_url: Some("http://127.0.0.1:8090".to_string()),
+            edge_llm_runtime_identity: Some(edge_runtime_identity()),
             // Wrong-product URL must not be consumed for Edge-LLM resolution.
             tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
             ..PreviewBackendRequest::default()
@@ -1255,7 +1352,10 @@ mod tests {
         );
         assert_eq!(
             resolution.edge_llm_backend,
-            Some(EdgeLlmConfig::server_completion("http://127.0.0.1:8090"))
+            Some(EdgeLlmConfig::server_completion(
+                "http://127.0.0.1:8090",
+                edge_runtime_identity()
+            ))
         );
         assert!(resolution.tensor_rt_llm_backend.is_none());
     }
@@ -1276,10 +1376,26 @@ mod tests {
     }
 
     #[test]
+    fn preview_resolution_tensor_rt_edge_llm_requires_runtime_identity() {
+        let error = resolve_preview_backend(PreviewBackendRequest {
+            support_tier: SupportTier::TensorRtEdgeLlm,
+            edge_llm_server_url: Some("http://127.0.0.1:8090".to_string()),
+            ..PreviewBackendRequest::default()
+        })
+        .expect_err("edge-llm resolution must fail closed without runtime identity");
+
+        assert_eq!(
+            error,
+            PreviewBackendResolutionError::MissingEdgeLlmRuntimeIdentity
+        );
+    }
+
+    #[test]
     fn preview_resolution_tensor_rt_llm_server_url_uses_sdk_contract() {
         let resolution = resolve_preview_backend(PreviewBackendRequest {
             support_tier: SupportTier::TensorRtLlm,
             tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
+            tensor_rt_llm_runtime_identity: Some(tensor_rt_llm_runtime_identity()),
             ..PreviewBackendRequest::default()
         })
         .expect("tensorrt-llm resolution should succeed");
@@ -1296,7 +1412,10 @@ mod tests {
         );
         assert_eq!(
             resolution.tensor_rt_llm_backend,
-            Some(EdgeLlmConfig::server_completion("http://127.0.0.1:8000"))
+            Some(EdgeLlmConfig::server_completion(
+                "http://127.0.0.1:8000",
+                tensor_rt_llm_runtime_identity()
+            ))
         );
         assert!(resolution.edge_llm_backend.is_none());
         assert!(resolution.llama_backend.is_none());
@@ -1308,6 +1427,67 @@ mod tests {
         assert_eq!(
             resolution.resolved_backend.support_tier,
             SupportTier::TensorRtLlm
+        );
+    }
+
+    #[test]
+    fn preview_resolution_tensor_rt_llm_requires_runtime_identity() {
+        let error = resolve_preview_backend(PreviewBackendRequest {
+            support_tier: SupportTier::TensorRtLlm,
+            tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
+            ..PreviewBackendRequest::default()
+        })
+        .expect_err("tensorrt-llm resolution must fail closed without runtime identity");
+
+        assert_eq!(
+            error,
+            PreviewBackendResolutionError::MissingTensorRtLlmRuntimeIdentity
+        );
+    }
+
+    #[test]
+    fn delegated_runtime_identity_trims_fields_and_rejects_unsafe_values() {
+        let identity = DelegatedRuntimeIdentity::new(" qwen3 ", " 1.2.1 ", " pytorch ")
+            .expect("trimmed identity should be valid")
+            .with_runtime_profile(Some(" cuda-linux-x86_64 ".to_string()))
+            .expect("trimmed profile should be valid");
+        assert_eq!(identity.upstream_model_id, "qwen3");
+        assert_eq!(identity.upstream_version, "1.2.1");
+        assert_eq!(identity.execution_backend, "pytorch");
+        assert_eq!(
+            identity.runtime_profile.as_deref(),
+            Some("cuda-linux-x86_64")
+        );
+
+        assert_eq!(
+            DelegatedRuntimeIdentity::new("qwen3", "", "pytorch"),
+            Err(DelegatedRuntimeIdentityError::EmptyField {
+                field: "upstream_version"
+            })
+        );
+        assert_eq!(
+            DelegatedRuntimeIdentity::new("qwen3", "1.2.1", "py\nTorch"),
+            Err(DelegatedRuntimeIdentityError::InvalidControlCharacter {
+                field: "execution_backend"
+            })
+        );
+    }
+
+    #[test]
+    fn delegated_runtime_report_accepts_legacy_payload_without_execution_backend() {
+        let report: DelegatedRuntimeReport = serde_json::from_value(serde_json::json!({
+            "provider": "vllm",
+            "upstream_model_id": "candidate",
+            "readiness": "configured",
+            "endpoint": {"authority": "loopback"}
+        }))
+        .expect("legacy runtime report should remain readable");
+
+        assert_eq!(report.execution_backend, None);
+        let payload = serde_json::to_value(report).expect("runtime report should serialize");
+        assert!(
+            payload.get("execution_backend").is_none(),
+            "absent execution identity must remain omitted"
         );
     }
 

@@ -485,6 +485,41 @@ file passed with `--vllm-api-key-file`. Remote non-loopback endpoints require
 `--vllm-allow-remote`; plaintext HTTP remains loopback-only. Use
 `--vllm-ca-cert` for a reviewed private CA.
 
+TensorRT-LLM and TensorRT Edge-LLM remain separate explicit optimization
+providers. Both require a machine-readable upstream version and execution
+backend in addition to their server URL:
+
+```text
+# x86_64 CUDA
+ax-engine-server \
+  --model-id public-model \
+  --support-tier tensor-rt-llm \
+  --tensorrt-llm-server-url http://127.0.0.1:8000 \
+  --tensorrt-llm-upstream-model-id upstream/model \
+  --tensorrt-llm-upstream-version <exact-version> \
+  --tensorrt-llm-execution-backend pytorch \
+  --tensorrt-llm-runtime-profile cuda-linux-x86_64-a6000-sm86
+
+# NVIDIA Thor
+ax-engine-server \
+  --model-id public-model \
+  --support-tier tensor-rt-edge-llm \
+  --edge-llm-server-url http://127.0.0.1:8090 \
+  --edge-llm-upstream-model-id upstream/model \
+  --edge-llm-upstream-version <exact-version> \
+  --edge-llm-execution-backend cpp \
+  --edge-llm-runtime-profile cuda-linux-aarch64-thor-sm110
+```
+
+The upstream model id defaults to `--model-id`; the runtime profile remains
+optional at construction time but is required by the CUDA release process.
+`GET /v1/runtime` reports these configured values as
+`delegated_runtime.upstream_model_id`, `runtime_profile`, `upstream_version`,
+and `execution_backend`, with only a redacted endpoint authority. Provider
+identity flags used with any other support tier fail closed. Release evidence
+must independently verify the worker package/image because this report is not
+a binary-attestation probe.
+
 The `llama.cpp` server route remains available for GGUF/non-MLX server-backed
 inference:
 

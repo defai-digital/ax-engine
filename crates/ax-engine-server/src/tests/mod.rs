@@ -18,4 +18,5 @@ mod openai_responses;
 mod openai_responses_api;
 mod openai_streaming;
 mod openai_tool_names;
+mod startup;
 mod vllm;

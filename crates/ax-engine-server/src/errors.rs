@@ -128,6 +128,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. })
         | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingCompletionChoice { .. })
         | EngineSessionError::EdgeLlm(EdgeLlmBackendError::MissingStreamChoice { .. })
+        | EngineSessionError::EdgeLlm(EdgeLlmBackendError::Sse(_))
         | EngineSessionError::Vllm(VllmBackendError::MissingCompletionChoice { .. })
         | EngineSessionError::Vllm(VllmBackendError::InvalidAssistantContent { .. })
         | EngineSessionError::Vllm(VllmBackendError::InvalidResponseJson { .. })
@@ -261,7 +262,9 @@ fn openai_error_type(status: StatusCode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ax_engine_sdk::{Gemma4UnifiedRuntimeInputError, RequestMultimodalInputError};
+    use ax_engine_sdk::{
+        DelegatedOpenAiSseError, Gemma4UnifiedRuntimeInputError, RequestMultimodalInputError,
+    };
 
     #[test]
     fn invalid_multimodal_inputs_map_to_invalid_request() {
@@ -297,5 +300,20 @@ mod tests {
         assert_eq!(body.error.code.as_deref(), Some("invalid_request"));
         assert_eq!(body.error.error_type, "invalid_request_error");
         assert!(body.error.message.contains("no_repeat_ngram_size=4"));
+    }
+
+    #[test]
+    fn edge_llm_sse_contract_errors_map_to_bad_gateway() {
+        let (status, body) = map_session_error(EngineSessionError::EdgeLlm(
+            EdgeLlmBackendError::Sse(DelegatedOpenAiSseError::EndedBeforeDone {
+                endpoint: "loopback".to_string(),
+            }),
+        ));
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        let body = body.0;
+        assert_eq!(body.error.code.as_deref(), Some("backend_error"));
+        assert_eq!(body.error.error_type, "server_error");
+        assert!(body.error.message.contains("ended before [DONE]"));
     }
 }
