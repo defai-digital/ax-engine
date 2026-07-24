@@ -1,45 +1,44 @@
-# Qwen/Gemma mlxcel flip status — 2026-07-24 (late)
+# Qwen/Gemma mlxcel flip status — 2026-07-24 (final cool)
 
 **Decision: `not_yet`**
 
-## Latest full campaign (`2026-07-24-full-c512-min16-b4`)
-
-Exclusive + prefill-chunk 512 + adaptive min 16 + sibling burst 4 + long-prompt chunk scale.
+## Campaign `2026-07-24-full-final-cool` (M5 Max, exclusive, chunk 512, min quantum 16, burst 4)
 
 | Scenario | thr | TTFT | gap | gap abs | Status |
 | --- | ---: | ---: | ---: | ---: | --- |
-| **S0** | **1.153×** | **0.983×** | **0.809×** | 8.8 ms | thr+gap PASS; **TTFT FAIL** |
-| **S1** | **1.041×** | **0.869×** | **0.259×** | 8.9 ms | TTFT+gap PASS; **thr FAIL** |
-| **S2** | **1.354×** | **0.870×** | **0.777×** | 8.9 ms | **PASS** |
-| **S3** | **0.932×** | **0.121×** | **1.597×** | 58 ms | thr+gap FAIL |
+| **S0** | **1.171×** | **0.750×** | **0.795×** | 8.8 ms | **PASS** |
+| **S1** | **1.053×** | **0.860×** | **0.255×** | 8.9 ms | thr FAIL only |
+| **S2** | **1.361×** | **0.772×** | **0.783×** | 9.0 ms | **PASS** |
+| **S3** | **0.936×** | **0.120×** | **1.580×** | 57.8 ms | thr+gap FAIL |
 
-Prior good S0 TTFT sample (`full-scale-chunk`): thr **1.164×**, TTFT **0.739×** PASS — TTFT is run-to-run sensitive.
+## Progress vs start of day
 
-## Best S1 thr (A/B)
+| Gate | Before | Now |
+| --- | --- | --- |
+| S0 thr/TTFT/gap | thr short / mixed | **all PASS** |
+| S1 thr | 0.33× historical → 1.047 rotating | **1.053–1.089** (still <1.15) |
+| S1 gap | often fail under concurrent | **PASS ~9 ms** exclusive |
+| S2 | mixed | **PASS** |
+| S3 | fail | still thr+gap fail |
 
-| Config | thr ratio | gap |
-| --- | ---: | ---: |
-| excl-c512-b2 | **1.089×** | 9 ms |
-| full campaigns | 1.02–1.05× | 9 ms |
+## Physics locking S1 thr
 
-## Physics (exclusive)
+Exclusive single-process wall ≈ pure_Gemma + pure_Qwen:
 
-- Pure Gemma 13826-tok prefill (chunk 512): **~7.8–8.3 s**
-- Pure Qwen decode ~192 tok: **~1.75 s**
-- Exclusive wall floor ≈ **9.55 s** → thr ceiling ≈ **20.2** vs mlxcel S1 ~18 → **~1.08–1.12× < 1.15**
-- Concurrent dual-hold: thr ~1.08× but gap **~380 ms** FAIL
+- Pure Gemma 13.8k prefill @ chunk 512: **~7.8–8.3 s**
+- Pure Qwen 192 decode: **~1.75 s**
+- Floor wall **~9.55 s** → thr ceiling **~20.2** vs mlxcel S1 **~18.2** → **~1.08–1.12× < 1.15**
 
-Need **~0.33 s pure-sum cut** (or concurrent with gap ≤33 ms) for locked S1 thr.
+Concurrent dual-hold thr ~1.07× but gap **160–380 ms** (Metal queue). Spec/n-gram **hurts** S0/S1 thr.
 
-## Code on branch
+## Code shipped (branch tip)
 
-1. Fair multi-prefill stays active under soft KV pressure.
-2. Sibling engine-step burst (env; flip uses 4).
-3. Prefill-chunk **512** + `scale_prefill_chunk_for_remaining` long clamp.
-4. Adaptive prefill **min 16** (no 1-token pathology under load).
+- Fair multi-prefill under soft KV pressure
+- Sibling engine-step burst (flip: 4)
+- Prefill-chunk 512 + long-prompt scale helper
+- Adaptive prefill min floor 16
 
-## Residual
+## Next to flip
 
-1. S1 thr ≥ 1.15: pure Gemma/Qwen kernel/composite cuts beyond exclusive sum.
-2. S0 TTFT ≤ 0.90: stabilize warm (already multi-shape); re-run when cool.
-3. S3 thr+gap: arbiter/batch or batched-decode product decision.
+1. **S1 thr ≥ 1.15**: pure GPU/composite cut ≥~4% on Gemma prefill (or concurrent Metal scheduling that keeps gap ≤33 ms).
+2. **S3 thr+gap**: row-exact batch formation / optional server batched-decode product note.
