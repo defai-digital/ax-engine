@@ -124,6 +124,12 @@ scheduling, KV/cache implementation, kernels, and engine-specific tuning.
 Python/PyTorch/vLLM are packaged independently and never become transitive Mac
 dependencies or in-process server imports.
 
+Delegated transport also stays provider-neutral. HTTP agents are cached by
+policy and `Accept` contract so JSON responses and SSE streams cannot evict
+each other's keep-alive connection. Accepted AX HTTP sockets use
+`TCP_NODELAY`; this avoids delayed delivery of small first-stream events while
+leaving scheduling and model execution entirely with the selected worker.
+
 See [CUDA Backends](CUDA-BACKENDS.md) for the deployment topology, runtime
 profiles, product ownership boundary, and hardware release gates.
 

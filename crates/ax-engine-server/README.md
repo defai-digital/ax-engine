@@ -141,4 +141,7 @@ Linux x86_64 and Thor use the same `Vllm` provider contract; only the
 fail-closed runtime profile changes. The Python/PyTorch worker stays in the
 independent `ax-engine-vllm-runtime` package/OCI process. TensorRT-LLM and
 TensorRT Edge-LLM retain separate backend identities, and AX does not silently
-fall back or retry a generation POST across providers.
+fall back or retry a generation POST across providers. Delegated JSON and SSE
+traffic use separate keep-alive pools, and the HTTP listener enables
+`TCP_NODELAY` so a first small SSE event is not delayed by Nagle/delayed-ACK
+interaction.

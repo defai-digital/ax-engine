@@ -217,6 +217,12 @@ quality, streaming behavior, concurrency policy, and rollback contract.
   OCR profile accepts bounded inline PNG/JPEG data URIs.
 - Readiness GET requests may use bounded retries. Generation POST requests are
   never retried automatically because replay is not safely idempotent.
+- Delegated JSON and SSE requests use separate keep-alive pools keyed by their
+  `Accept` contract. A stream that ends at the OpenAI `[DONE]` sentinel cannot
+  evict the reusable JSON connection for the next non-stream request.
+- AX Engine enables `TCP_NODELAY` on accepted HTTP sockets. This keeps the SSE
+  response headers and first small event from waiting on Nagle/delayed-ACK
+  interaction; it does not change worker scheduling or model latency.
 - Delegated control-plane startup performs readiness only. Native MLX warm-up
   generation is explicitly gated off for vLLM and every other delegated
   backend.
@@ -278,6 +284,13 @@ As of 2026-07-24:
   their durations are never combined;
 - the x86_64 image and runtime closure exist, but native OCI execution and
   A6000 Unlimited-OCR/soak evidence remain release gates.
+- same-worker TensorRT-LLM checks on `tnr-0` validate the portable control
+  plane without restarting the preserved worker. Three 30-pair runs and one
+  100-pair diagnostic meet the non-stream p50/p95 proxy-overhead gate after
+  separating JSON/SSE pools and enabling `TCP_NODELAY`; deterministic
+  loopback tests isolate sub-millisecond proxy overhead. These results are
+  control-plane evidence only, not an engine speed ranking or an
+  Unlimited-OCR/OCI release pass.
 
 These statements describe candidate evidence, not a GA promise. Keep
 production defaults and public support claims unchanged until every applicable

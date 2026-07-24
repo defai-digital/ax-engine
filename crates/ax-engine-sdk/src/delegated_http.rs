@@ -261,7 +261,11 @@ struct DelegatedHttpAgentKey {
     tls: DelegatedTlsPolicy,
     proxy: DelegatedProxyPolicy,
     redirects: DelegatedRedirectPolicy,
+    accept: Option<String>,
 }
+
+type DelegatedHttpAgentCache =
+    Mutex<BTreeMap<(DelegatedHttpTimeouts, Option<String>), ureq::Agent>>;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DelegatedHttpTimeouts {
@@ -287,15 +291,16 @@ impl DelegatedHttpTimeouts {
         DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS
     }
 
-    pub(crate) fn agent(self) -> ureq::Agent {
+    pub(crate) fn agent(self, accept: Option<&str>) -> ureq::Agent {
         // A panic elsewhere while holding this lock must not permanently
         // poison the shared agent cache for every later request; recover the
         // last-known-good map instead of propagating the poison.
+        let key = (self, accept.map(str::to_string));
         let mut agents = delegated_http_agents()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         agents
-            .entry(self)
+            .entry(key)
             .or_insert_with(|| self.build_agent())
             .clone()
     }
@@ -309,8 +314,8 @@ impl DelegatedHttpTimeouts {
     }
 }
 
-fn delegated_http_agents() -> &'static Mutex<BTreeMap<DelegatedHttpTimeouts, ureq::Agent>> {
-    static AGENTS: OnceLock<Mutex<BTreeMap<DelegatedHttpTimeouts, ureq::Agent>>> = OnceLock::new();
+fn delegated_http_agents() -> &'static DelegatedHttpAgentCache {
+    static AGENTS: OnceLock<DelegatedHttpAgentCache> = OnceLock::new();
     AGENTS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -348,6 +353,7 @@ fn policy_agent(
         tls: options.tls.clone(),
         proxy: options.proxy,
         redirects: options.redirects,
+        accept: options.headers.accept.clone(),
     };
     let mut agents = delegated_http_policy_agents()
         .lock()
@@ -553,7 +559,12 @@ where
     T: Serialize + ?Sized,
 {
     let body = serde_json::to_vec(payload).map_err(DelegatedHttpPostError::Serialize)?;
-    let agent = timeouts.agent();
+    // Streaming readers intentionally stop at the OpenAI [DONE] sentinel.
+    // Some upstreams leave an SSE separator buffered after that sentinel, so
+    // ureq may close rather than recycle that connection. Keep streaming and
+    // non-streaming pools separate so a completed stream cannot evict the
+    // low-latency JSON connection used by the next request.
+    let agent = timeouts.agent(accept);
 
     for attempt in 1..=DELEGATED_HTTP_TRANSPORT_MAX_ATTEMPTS {
         let mut request = agent.post(endpoint).set("Content-Type", "application/json");
@@ -655,24 +666,70 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn delegated_http_timeouts_reuses_cached_agent_for_same_timeouts() {
+    fn delegated_http_timeouts_reuses_cached_agent_for_same_timeouts_and_accept() {
         let timeouts = DelegatedHttpTimeouts::from_secs(97, 98, 99);
+        let key = (timeouts, Some("application/json".to_string()));
 
-        let _ = timeouts.agent();
+        let _ = timeouts.agent(Some("application/json"));
         assert!(
             delegated_http_agents()
                 .lock()
                 .expect("agent cache should lock")
-                .contains_key(&timeouts)
+                .contains_key(&key)
         );
 
-        let _ = timeouts.agent();
+        let _ = timeouts.agent(Some("application/json"));
         assert!(
             delegated_http_agents()
                 .lock()
                 .expect("agent cache should lock")
-                .contains_key(&timeouts)
+                .contains_key(&key)
         );
+    }
+
+    #[test]
+    fn delegated_http_agents_partition_json_and_streaming_connections() {
+        let timeouts = DelegatedHttpTimeouts::from_secs(94, 95, 96);
+        let json_key = (timeouts, Some("application/json".to_string()));
+        let stream_key = (timeouts, Some("text/event-stream".to_string()));
+
+        let _ = timeouts.agent(Some("application/json"));
+        let _ = timeouts.agent(Some("text/event-stream"));
+
+        let agents = delegated_http_agents()
+            .lock()
+            .expect("agent cache should lock");
+        assert!(agents.contains_key(&json_key));
+        assert!(agents.contains_key(&stream_key));
+    }
+
+    #[test]
+    fn policy_agents_partition_json_and_streaming_connections() {
+        let timeouts = DelegatedHttpTimeouts::from_secs(91, 92, 93);
+        let json = DelegatedHttpRequestOptions {
+            timeouts,
+            headers: DelegatedHttpHeaders::default().with_accept("application/json"),
+            ..DelegatedHttpRequestOptions::default()
+        };
+        let stream = DelegatedHttpRequestOptions {
+            timeouts,
+            headers: DelegatedHttpHeaders::default().with_accept("text/event-stream"),
+            ..DelegatedHttpRequestOptions::default()
+        };
+
+        let _ = policy_agent(&json).expect("JSON agent should build");
+        let _ = policy_agent(&stream).expect("streaming agent should build");
+
+        let agents = delegated_http_policy_agents()
+            .lock()
+            .expect("agent cache should lock");
+        let accepts = agents
+            .keys()
+            .filter(|key| key.timeouts == timeouts)
+            .map(|key| key.accept.as_deref())
+            .collect::<Vec<_>>();
+        assert!(accepts.contains(&Some("application/json")));
+        assert!(accepts.contains(&Some("text/event-stream")));
     }
 
     #[test]

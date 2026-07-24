@@ -254,7 +254,12 @@ fn start_mlx_lm_server_completion_stream(
     let prompt = completion_prompt_text(request)?;
     let payload = build_mlx_lm_completion_request(request, &prompt, true);
 
-    let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
+    let response = send_mlx_lm_json_post_request(
+        &endpoint,
+        &payload,
+        Some("text/event-stream"),
+        config.timeouts,
+    )?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(MlxLmStreamHandle::new(endpoint, reader))
 }
@@ -277,7 +282,12 @@ fn start_mlx_lm_server_chat_completion_stream(
     let endpoint = config.chat_completions_url();
     let payload = build_mlx_lm_chat_completion_request(request, true);
 
-    let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
+    let response = send_mlx_lm_json_post_request(
+        &endpoint,
+        &payload,
+        Some("text/event-stream"),
+        config.timeouts,
+    )?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(MlxLmStreamHandle::new(endpoint, reader))
 }
