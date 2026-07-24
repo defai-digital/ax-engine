@@ -256,10 +256,7 @@ fn adaptive_prefill_latency_tokens_per_step() -> u32 {
 /// large enough for S1 thr while still respecting the 50 ms gap SLO as
 /// attention cost grows with position.
 #[allow(dead_code)]
-pub(crate) fn adjust_adaptive_prefill_tokens(
-    current_tokens: u32,
-    last_runner_time_us: u64,
-) -> u32 {
+pub(crate) fn adjust_adaptive_prefill_tokens(current_tokens: u32, last_runner_time_us: u64) -> u32 {
     adjust_adaptive_prefill_tokens_with_work(current_tokens, last_runner_time_us, current_tokens)
 }
 

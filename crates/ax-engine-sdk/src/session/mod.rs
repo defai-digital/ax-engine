@@ -1274,8 +1274,7 @@ impl EngineSession {
         state.emitted_output_len = progress.output_len as usize;
 
         // Update the in-place progress report with scalars only. Skip route /
-        // string field churn on intermediate steps; the terminal Response
-        // event reloads a full `request_report()` for the final payload.
+        // string field churn on intermediate steps.
         state.current_report.state = progress.state;
         state.current_report.processed_prompt_tokens = progress.processed_prompt_tokens;
         state.current_report.prompt_len = progress.prompt_len;
@@ -1285,15 +1284,21 @@ impl EngineSession {
         state.current_report.finish_reason = progress.finish_reason;
         state.current_report.terminal_stop_reason = progress.terminal_stop_reason;
         if progress.terminal {
-            // One route merge on the terminal step so Response sees accumulated
-            // route metadata without paying for it every decode token.
-            apply_native_step_route_to_report(&mut state.current_report, &step);
+            // Restore full token histories once for the terminal Step contract;
+            // the following Response event also reloads this final snapshot.
+            let mut final_report = self.request_report(state.request_id).ok_or(
+                EngineSessionError::MissingRequestSnapshot {
+                    request_id: state.request_id,
+                },
+            )?;
+            apply_native_step_route_to_report(&mut final_report, &step);
             if let Some(route) = self.native_request_routes.get(&state.request_id) {
-                merge_native_route_into(&mut state.current_report.route, route.clone());
+                merge_native_route_into(&mut final_report.route, route.clone());
             }
             if let Some(err) = progress.last_error {
-                state.current_report.last_error = Some(err);
+                final_report.last_error = Some(err);
             }
+            state.current_report = final_report;
         }
 
         // Intermediate step events do not need the heavy EngineStepReport
@@ -1341,12 +1346,9 @@ impl EngineSession {
                 return None;
             }
             let delta_tokens = report.output_tokens[emitted_output_len..].to_vec();
-            let delta_token_logprobs = slice_output_token_logprobs(
-                &report,
-                emitted_output_len,
-                delta_tokens.len(),
-            )
-            .ok()?;
+            let delta_token_logprobs =
+                slice_output_token_logprobs(&report, emitted_output_len, delta_tokens.len())
+                    .ok()?;
             let terminal = is_terminal_request_state(report.state);
             return Some(StreamStepProgress {
                 delta_tokens,
@@ -1367,11 +1369,7 @@ impl EngineSession {
         // Prefer the live record (no full-history clone). After the finishing
         // step the core may already have moved the request into
         // `terminal_snapshots`, so fall back to `request_report()` there.
-        if let Some(record) = self
-            .core
-            .request_manager()
-            .record(RequestId(request_id))
-        {
+        if let Some(record) = self.core.request_manager().record(RequestId(request_id)) {
             let generated = &record.generated_tokens;
             if emitted_output_len > generated.len() {
                 return None;
@@ -1383,25 +1381,29 @@ impl EngineSession {
                 record.generated_token_logprobs[emitted_output_len..].to_vec()
             } else {
                 let report = self.request_report(request_id)?;
-                return slice_output_token_logprobs(&report, emitted_output_len, delta_tokens.len())
-                    .ok()
-                    .map(|delta_token_logprobs| {
-                        let terminal = is_terminal_request_state(report.state);
-                        StreamStepProgress {
-                            delta_tokens,
-                            delta_token_logprobs,
-                            state: report.state,
-                            processed_prompt_tokens: report.processed_prompt_tokens,
-                            prompt_len: report.prompt_len,
-                            output_len: report.output_len,
-                            max_output_tokens: report.max_output_tokens,
-                            cancel_requested: report.cancel_requested,
-                            finish_reason: report.finish_reason,
-                            terminal_stop_reason: report.terminal_stop_reason,
-                            last_error: report.last_error,
-                            terminal,
-                        }
-                    });
+                return slice_output_token_logprobs(
+                    &report,
+                    emitted_output_len,
+                    delta_tokens.len(),
+                )
+                .ok()
+                .map(|delta_token_logprobs| {
+                    let terminal = is_terminal_request_state(report.state);
+                    StreamStepProgress {
+                        delta_tokens,
+                        delta_token_logprobs,
+                        state: report.state,
+                        processed_prompt_tokens: report.processed_prompt_tokens,
+                        prompt_len: report.prompt_len,
+                        output_len: report.output_len,
+                        max_output_tokens: report.max_output_tokens,
+                        cancel_requested: report.cancel_requested,
+                        finish_reason: report.finish_reason,
+                        terminal_stop_reason: report.terminal_stop_reason,
+                        last_error: report.last_error,
+                        terminal,
+                    }
+                });
             };
             let state = SessionRequestState::from(record.state);
             let terminal = is_terminal_request_state(state);
@@ -1463,8 +1465,6 @@ struct StreamStepProgress {
     last_error: Option<String>,
     terminal: bool,
 }
-
-
 
 fn build_llama_cpp_stream_state(
     request_id: u64,

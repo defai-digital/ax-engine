@@ -1166,10 +1166,7 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
 }
 
 /// Decode-only affine-4bit matvec for FFN down_proj (intermediate → hidden).
-fn qwen_dense_ffn_down_matvec_metal_impl(
-    x: &MlxArray,
-    down: &QuantizedWeight,
-) -> Option<MlxArray> {
+fn qwen_dense_ffn_down_matvec_metal_impl(x: &MlxArray, down: &QuantizedWeight) -> Option<MlxArray> {
     if !matches!(
         x.dtype(),
         MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
@@ -2049,9 +2046,13 @@ fn ffn_swiglu_with_policy(
                     vec![out]
                 }
             };
-            if let Some(result) =
-                apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
-                    .and_then(|r| r.into_iter().next())
+            if let Some(result) = apply_layer_dense_ffn_decode(
+                cfg.compile_cache_identity,
+                layer_idx,
+                &input_refs,
+                body,
+            )
+            .and_then(|r| r.into_iter().next())
             {
                 return result;
             }
@@ -3339,7 +3340,12 @@ impl CompiledSplitDenseFfnSchema {
     pub(crate) fn rebuild(
         &self,
         inputs: &MlxVectorArray,
-    ) -> (QuantizedWeight, QuantizedWeight, QuantizedWeight, Option<MlxArray>) {
+    ) -> (
+        QuantizedWeight,
+        QuantizedWeight,
+        QuantizedWeight,
+        Option<MlxArray>,
+    ) {
         (
             self.gate.rebuild(inputs),
             self.up.rebuild(inputs),
@@ -4587,16 +4593,8 @@ mod tests {
 
         let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down)
             .expect("4-bit affine down matvec should be eligible");
-        let reference = quantized_matmul(
-            &x,
-            &q[0],
-            &q[1],
-            Some(&q[2]),
-            true,
-            Some(32),
-            Some(4),
-            None,
-        );
+        let reference =
+            quantized_matmul(&x, &q[0], &q[1], Some(&q[2]), true, Some(32), Some(4), None);
         mlx_sys::transforms::try_eval(&[&metal, &reference])
             .expect("Qwen dense FFN down matvec Metal kernel must compile and evaluate");
 

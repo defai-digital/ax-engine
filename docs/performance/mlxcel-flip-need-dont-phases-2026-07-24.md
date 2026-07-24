@@ -1,7 +1,7 @@
 # mlxcel deep-review → need / don't-need phases (2026-07-24)
 
-Source: [`.internal/reports/mlxcel-deep-review-2026-07-24.zh-TW.md`](../../.internal/reports/mlxcel-deep-review-2026-07-24.zh-TW.md).  
-Locked gates: [`benchmarks/manifests/qwen_gemma_flip_gates.v1.json`](../../benchmarks/manifests/qwen_gemma_flip_gates.v1.json) (thresholds **not** relaxed).  
+Source: [`.internal/reports/mlxcel-deep-review-2026-07-24.zh-TW.md`](../../.internal/reports/mlxcel-deep-review-2026-07-24.zh-TW.md).
+Locked gates: [`benchmarks/manifests/qwen_gemma_flip_gates.v1.json`](../../benchmarks/manifests/qwen_gemma_flip_gates.v1.json) (thresholds **not** relaxed).
 Primary host: `AKMBPM5MAXx` / Apple M5 Max (`applegpu_g17s`).
 
 ## Verdict

@@ -1480,7 +1480,8 @@ impl MlxRunner {
                 // boundary for short-prompt and largest warm-up lengths so the
                 // Qwen gate/up SwiGLU matvec Metal kernel is JIT-hot before the
                 // first client request under the fresh-process flip contract.
-                if token_count == 34 || token_count == *warmup_lengths.last().unwrap_or(&token_count)
+                if token_count == 34
+                    || token_count == *warmup_lengths.last().unwrap_or(&token_count)
                 {
                     let pending =
                         start_direct_pipeline(&cfg, &weights, prefill_tok, &mut dummy_cache);
