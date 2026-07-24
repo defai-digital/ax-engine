@@ -832,7 +832,13 @@ fn run_production_path_warmup(generation_service: &NativeGenerationService, mode
     // enough to establish the double-buffer direct pipeline (bootstrap +
     // catch-up + steady). A single 4-token warm left cold first-token
     // variance on fresh-process S0 trials.
-    for (offset, prompt_len, max_out) in [(0_u64, 34_usize, 8_u32), (1, 13, 16)] {
+    // Include a medium prefill shape so long multi-model prefill (flip S1
+    // Gemma 8k sibling) is not first-contact for Metal/compile caches.
+    for (offset, prompt_len, max_out) in [
+        (0_u64, 34_usize, 8_u32),
+        (1, 13, 16),
+        (2, 512, 1),
+    ] {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let model_id = model_id.to_string();
         let request_id = PRODUCTION_PATH_WARMUP_REQUEST_ID.saturating_add(offset);

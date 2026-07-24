@@ -253,6 +253,7 @@ fn adaptive_prefill_latency_tokens_per_step() -> u32 {
 /// Using rate (us/tok) instead of binary grow/shrink keeps mid-prefill quanta
 /// large enough for S1 thr while still respecting the 50 ms gap SLO as
 /// attention cost grows with position.
+#[allow(dead_code)]
 pub(crate) fn adjust_adaptive_prefill_tokens(
     current_tokens: u32,
     last_runner_time_us: u64,
@@ -1207,6 +1208,11 @@ fn advance_shared_engine(
 ) -> SessionResult<EngineStepReport> {
     maintain_streams(session, active_streams, service_state);
     let execution_target = service_state.execution_target.read().clone();
+    // When a sibling model is active, cap engine step burst so one model cannot
+    // hold the shared execution arbiter for a full STREAM_ENGINE_STEP_BURST
+    // (64) decode steps — that HOL-starved sibling prefill (flip S1 Gemma
+    // e2e ~28s vs ~10s) while keeping single-stream S0 thr.
+    let mut sibling_active_for_burst = false;
     if let Some(target) = execution_target.as_ref().filter(|_| {
         service_state
             .adaptive_prefill_isolation
@@ -1216,6 +1222,7 @@ fn advance_shared_engine(
             target.model_id.as_ref(),
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
+        sibling_active_for_burst = sibling_active;
         let desired_tokens = if sibling_active {
             // Feedback-control quantum from last turn's runner wall time so
             // one prefill chunk stays under the stream-gap SLO mid-prompt
@@ -1230,8 +1237,14 @@ fn advance_shared_engine(
                 .adaptive_prefill_tokens
                 .load(Ordering::Acquire)
                 .max(ADAPTIVE_PREFILL_MIN_TOKENS);
-            let adjusted =
-                adjust_adaptive_prefill_tokens_with_work(current, last_us, last_toks);
+            // Only re-size from multi-token steps (prefill quanta). Single-token
+            // decode steps have a different cost model and would otherwise push
+            // the quantum to MAX after a cheap 1-token decode.
+            let adjusted = if last_toks >= 2 {
+                adjust_adaptive_prefill_tokens_with_work(current, last_us, last_toks)
+            } else {
+                current
+            };
             service_state
                 .adaptive_prefill_tokens
                 .store(adjusted, Ordering::Release);
@@ -1269,9 +1282,16 @@ fn advance_shared_engine(
             // worker tick so the direct pipeline is not paced by the SSE
             // consumer. Emit batching remains STREAM_TOKEN_EMIT_BATCH for the
             // 50 ms gap cap; engine burst is larger to keep GPU fed.
-            if active_streams.len() == 1 && request_ids.len() == 1 {
+            // Under multi-model load, burst=1 so the arbiter can re-schedule
+            // the sibling after every step (see sibling_active_for_burst).
+            let engine_burst = if sibling_active_for_burst {
+                1
+            } else {
+                STREAM_ENGINE_STEP_BURST
+            };
+            if active_streams.len() == 1 && request_ids.len() == 1 && engine_burst > 1 {
                 let request_id = request_ids[0];
-                for _ in 1..STREAM_ENGINE_STEP_BURST {
+                for _ in 1..engine_burst {
                     if !active_streams.contains_key(&request_id) {
                         break;
                     }
