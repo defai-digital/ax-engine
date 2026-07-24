@@ -804,7 +804,12 @@ fn build_live_state_inner(
     // only. Failure is non-fatal — the model remains usable and the caller just
     // sees cold TTFT.
     if session_config.resolved_backend.selected_backend.is_mlx() {
-        run_production_path_warmup(&generation_service, &model_id);
+        // First process-lifetime load of a model id pays the production-path
+        // warm. Reloads (flip S2) skip it — OS page cache + prior JIT already
+        // paid, and re-warming dominated S2 thr (~8s/load with long shapes).
+        if mark_model_production_warmup_needed(&model_id) {
+            run_production_path_warmup(&generation_service, &model_id);
+        }
     }
     let embedding_batcher = EmbeddingMicroBatcher::spawn(generation_service.clone());
     Ok(LiveState {
@@ -827,24 +832,27 @@ fn build_live_state_inner(
 /// `AppState::allocate_request_id` which starts at 1.
 const PRODUCTION_PATH_WARMUP_REQUEST_ID: u64 = u64::MAX / 2;
 
+/// Returns true the first time `model_id` is seen this process; false on
+/// subsequent loads of the same id (S2 reload path).
+fn mark_model_production_warmup_needed(model_id: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static WARMED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+    let Ok(mut guard) = WARMED.lock() else {
+        return true;
+    };
+    let set = guard.get_or_insert_with(HashSet::new);
+    set.insert(model_id.to_string())
+}
+
 fn run_production_path_warmup(generation_service: &NativeGenerationService, model_id: &str) {
-    // Two shapes: flip S0 prompt length (~34) and a short decode burst long
-    // enough to establish the double-buffer direct pipeline (bootstrap +
-    // catch-up + steady). A single 4-token warm left cold first-token
-    // variance on fresh-process S0 trials.
-    // Medium prefill (512) for all models. Long 8k prefill only for Gemma:
-    // it warms S1-depth attention caches without polluting the Qwen S0 path
-    // (an 8k Qwen warm added TTFT variance and left 3-rep S0 TTFT at 0.92×).
-    // Keep warmup short on the load path so S2 unload/reload thr is not
-    // dominated by an 8k generate (measured ~8s/load on M5 Max Gemma-12B).
-    // S1 long-prefill heat still comes from the first client/scenario warm
-    // shapes and the 512-token medium warm below.
+    // Flip S0 prompt (~34) + short decode burst + medium prefill. Keep the
+    // load path short: long 8k warms made S2 reload thr ~0.29× on M5 Max.
     let shapes: [(u64, usize, u32); 3] = [
         (0_u64, 34_usize, 8_u32),
         (1, 13, 16),
         (2, 512, 1),
     ];
-    let _ = model_id; // reserved for model-specific warm shapes
     for (offset, prompt_len, max_out) in shapes {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let model_id = model_id.to_string();
