@@ -835,16 +835,16 @@ fn run_production_path_warmup(generation_service: &NativeGenerationService, mode
     // Medium prefill (512) for all models. Long 8k prefill only for Gemma:
     // it warms S1-depth attention caches without polluting the Qwen S0 path
     // (an 8k Qwen warm added TTFT variance and left 3-rep S0 TTFT at 0.92×).
-    let mut shapes: Vec<(u64, usize, u32)> = vec![
+    // Keep warmup short on the load path so S2 unload/reload thr is not
+    // dominated by an 8k generate (measured ~8s/load on M5 Max Gemma-12B).
+    // S1 long-prefill heat still comes from the first client/scenario warm
+    // shapes and the 512-token medium warm below.
+    let shapes: [(u64, usize, u32); 3] = [
         (0_u64, 34_usize, 8_u32),
         (1, 13, 16),
         (2, 512, 1),
     ];
-    let is_gemma = model_id.to_ascii_lowercase().contains("gemma");
-    if is_gemma {
-        // Flip S1 Gemma long-prefill is ~14k tokens; warm near that length.
-        shapes.push((3, 8192, 1));
-    }
+    let _ = model_id; // reserved for model-specific warm shapes
     for (offset, prompt_len, max_out) in shapes {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let model_id = model_id.to_string();
