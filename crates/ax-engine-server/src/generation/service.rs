@@ -891,7 +891,7 @@ const STREAM_TOKEN_EMIT_BATCH: usize = 1;
 /// Single-stream engine steps per worker tick after the first token.
 /// Larger than the SSE emit batch so the Metal double-buffer stays fed even
 /// when the async SSE consumer is slightly behind.
-const STREAM_ENGINE_STEP_BURST: usize = 16;
+const STREAM_ENGINE_STEP_BURST: usize = 64;
 
 fn handle_command(
     command: ServiceCommand,
