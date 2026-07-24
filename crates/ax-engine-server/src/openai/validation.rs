@@ -41,6 +41,14 @@ pub(crate) fn select_openai_model(
 pub(crate) fn validate_openai_text_backend(
     live: &LiveState,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if crate::metadata::model_family_from_artifacts(live).as_deref() == Some("whisper") {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Whisper is a speech-to-text model; use /v1/audio/transcriptions or /v1/audio/translations"
+                .to_string(),
+        ));
+    }
     if !matches!(
         live.runtime_report.selected_backend,
         SelectedBackend::LlamaCpp

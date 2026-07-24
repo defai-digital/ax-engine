@@ -16,9 +16,15 @@ pub mod gemma4_vl;
 pub mod generate;
 pub mod kv_block_pool;
 pub mod kv_cache;
+pub mod minicpm_v;
+pub mod nemotron_omni;
+mod nemotron_omni_audio;
 pub mod qwen3_vl;
 pub mod unlimited_ocr;
 pub mod vision_feature_cache;
+pub mod whisper;
+mod whisper_mel;
+mod whisper_tokenizer;
 
 #[cfg(test)]
 mod vl_fixture_tests;
@@ -47,6 +53,7 @@ pub mod diagnostics {
 }
 
 pub use runner::{EmbedCompileCacheStats, MlxPrefixCacheStore, MlxRunner, MlxSharedWeightsCell};
+pub use whisper::{WhisperError, WhisperModel, WhisperTranscription};
 
 /// Clear process-global compiled graphs and MLX allocator caches.
 pub fn clear_process_caches() {

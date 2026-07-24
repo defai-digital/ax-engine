@@ -24,6 +24,8 @@ The current preview server is intentionally narrow:
 - preview OpenAI-compatible `/v1/completions`, `/v1/chat/completions`, and
   stateless `/v1/responses` endpoints for native MLX sessions with tokenizer
   artifacts and delegated text integration
+- OpenAI-compatible `/v1/audio/transcriptions` and `/v1/audio/translations`
+  for native Whisper sessions
 - OpenAI-shaped `/v1/embeddings` response envelopes for embedding-capable
   repo-owned MLX sessions
 - Ollama-shaped `/api/tags`, `/api/show`, `/api/ps`, `/api/version`,
@@ -65,6 +67,8 @@ Current preview endpoints:
 - `POST /v1/embeddings`
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
+- `POST /v1/audio/transcriptions`
+- `POST /v1/audio/translations`
 - `POST /chat/completions` (`mlx_lm.server` alias)
 - `POST /v1/responses` (stateless, non-streaming subset)
 - `POST /v1/requests`
@@ -522,17 +526,40 @@ guessing tokenizer or template behavior. Delegated `llama_cpp` and
 `mlx_lm_delegated` routes keep forwarding rendered text to their configured
 upstream backend.
 
-`GET /v1/models` advertises image and audio input only for repo-owned
-native MLX sessions whose `model-manifest.json` contains the converted Gemma4
-unified media tensor roles. Two input shapes are accepted on those sessions:
+Native Whisper sessions expose the multipart OpenAI audio endpoints instead of
+text generation:
+
+```text
+curl http://127.0.0.1:31418/v1/audio/transcriptions \
+  -F file=@speech.wav \
+  -F model=whisper-large-v3-turbo \
+  -F response_format=verbose_json
+```
+
+`/v1/audio/translations` uses the same fields and translates speech to English.
+WAV and MP3 are downmixed/resampled to 16 kHz. `json`, `text`, and
+`verbose_json` are supported; the current decoder is temperature-0 greedy and
+rejects prompts and timestamp granularities. `/v1/models` and `/v1/discovery`
+advertise only the two audio operations for a Whisper-only server.
+
+`GET /v1/models` advertises image, audio, and video only when the loaded
+repo-owned manifest contains the corresponding tower tensors. Inline chat media
+is available for:
+
+- Gemma 4 unified: image, audio, and bounded sampled video
+- Qwen3-VL and visual Qwen3.5: image and bounded sampled video
+- MiniCPM-V 4.6: image and multi-image
+- Nemotron 3 Nano Omni: image, audio, and ordered image+audio
+
+Two input shapes are accepted on capable native sessions:
 
 - **Inline media on chat.** `POST /v1/chat/completions` accepts OpenAI-style
-  content parts with base64 `data:` URIs: `image_url` (PNG/JPEG) and
-  `input_audio` / `audio_url` (WAV or MP3). The server decodes
-  and preprocesses media into Gemma4 unified soft-token spans and tensors.
+  content parts with base64 `data:` URIs: `image_url` (PNG/JPEG),
+  `input_audio` / `audio_url` (WAV or MP3), and `video_url` for video-capable
+  families. The server selects the manifest-backed family preprocessor.
   Remote `http(s)` media URLs are rejected; callers must inline base64 data.
 - **Processed tensors.** OpenAI completions and chat also accept
-  `multimodal_inputs.gemma4_unified` tensors directly, but only when the
+  the family-specific `multimodal_inputs` tensor schema directly, but only when the
   caller supplies AX tokenized prompt IDs (`prompt` token arrays or
   `input_tokens`) so media placeholder tokens and tensors stay aligned.
 
@@ -556,12 +583,11 @@ Multimodal serving contract limits:
   pre-computed audio tensors via `/v1/generate` instead. Audio longer than
   the model's `audio_seq_length` cap (750 frames × 40 ms = 30 s by default)
   is silently truncated, and MP3 decoding stops at that cap.
-- **Video.** When the loaded manifest is video-capable (gemma4_unified vision
-  roles present, no convert-time media drops, `AX_MLX_GEMMA4_VIDEO` not off),
-  chat routes accept `video_url` **data URIs only** (no remote `http(s)`, no bare
-  filesystem paths). Default frame cap is 24 (24×70 soft tokens) so expanded
-  prompts fit atomic `--max-batch-tokens` (default 2048). Otherwise video is
-  rejected with `unsupported_modality`.
+- **Video.** When the loaded manifest is Gemma4 unified or Qwen3-VL/Qwen3.5
+  with an intact vision tower, chat routes accept `video_url` **data URIs
+  only** (no remote `http(s)`, no bare filesystem paths). The frame cap is 24;
+  Gemma video can also be disabled with `AX_MLX_GEMMA4_VIDEO=off`. Otherwise
+  video is rejected with `unsupported_modality`.
 - **Caching.** Prefix caching is disabled for multimodal requests unless
   `AX_MLX_MULTIMODAL_PREFIX_REUSE` is promoted after fixtures; vision-feature
   cache may skip tower recompute on digest hits (`AX_MLX_VISION_FEATURE_CACHE`).

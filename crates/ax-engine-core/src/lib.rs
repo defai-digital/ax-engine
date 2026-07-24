@@ -14,8 +14,10 @@ pub mod loop_detection;
 pub mod media_digest;
 pub mod mempressure;
 pub mod metal;
+pub mod minicpm_v;
 pub mod model;
 pub mod multimodal_adapter;
+pub mod nemotron_omni;
 pub mod qwen3_vl;
 pub mod request;
 pub mod request_manager;
@@ -69,6 +71,9 @@ pub use metal::{
     PHASE1_METAL_LANGUAGE_STANDARD, PHASE1_METAL_LIBRARY_NAME, PHASE1_MLX_METAL_TARGET,
     PHASE1_OPTIONAL_METAL_KERNELS, PHASE1_REQUIRED_METAL_KERNELS, build_phase1_kernel_artifacts,
 };
+pub use minicpm_v::{
+    MiniCpmV46ImageRuntimeInput, MiniCpmV46RuntimeInputError, MiniCpmV46RuntimeInputs,
+};
 pub use model::{
     AX_ENGINE_3BIT_EXPERIMENTAL_ENV, AX_NATIVE_MODEL_MANIFEST_FILE,
     AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, DroppedTensorsProvenance, NativeDiffusionConfig,
@@ -78,6 +83,10 @@ pub use model::{
     NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 pub use multimodal_adapter::{MultimodalPrefillAdapter, PrefillModality};
+pub use nemotron_omni::{
+    NemotronOmniAudioRuntimeInput, NemotronOmniImageRuntimeInput, NemotronOmniRuntimeInputError,
+    NemotronOmniRuntimeInputs,
+};
 pub use qwen3_vl::{Qwen3VlImageRuntimeInput, Qwen3VlRuntimeInputError, Qwen3VlRuntimeInputs};
 pub use request::{
     RequestMultimodalInputError, RequestMultimodalInputs, RequestRecord, RequestSnapshot,

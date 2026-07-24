@@ -136,7 +136,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, llama4, gpt_oss, nemotron_h, unlimited_ocr"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, unlimited_ocr, whisper"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -253,15 +253,11 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
 
     let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
-    // Unlimited-OCR uses ring-SWA (R-SWA): full attention during prefill, then a
-    // decode-only ring of `sliding_window` slots. AX's standard SWA applies the
-    // window during prefill as well and destroys OCR quality on ~273 soft tokens.
-    // Keep full attention for this family until a dedicated R-SWA cache lands.
-    let sliding_window_size = if is_unlimited_ocr(&model_type) {
-        None
-    } else {
-        arch_u64(&config, &model_type, "sliding_window").and_then(u64_to_u32)
-    };
+    // Unlimited-OCR's value is interpreted by the MLX runtime as protected-prefix
+    // R-SWA: the complete image/text prefill remains resident and only generated
+    // tokens rotate through this many decode slots. Other uniform-SWA families
+    // apply the same manifest field to both prefill and decode.
+    let sliding_window_size = arch_u64(&config, &model_type, "sliding_window").and_then(u64_to_u32);
     let final_logit_softcapping =
         arch_f64(&config, &model_type, "final_logit_softcapping").map(|v| v as f32);
     let hidden_size_per_layer_input = arch_u64(&config, &model_type, "hidden_size_per_layer_input")
@@ -713,10 +709,25 @@ fn parse_quantization_value(
 
 /// Try to match a tensor name against the family's mapping table.
 fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, Option<u32>)> {
+    // Whisper is an encoder-decoder model with a dedicated runtime rather than
+    // the decoder-only role schema used by `ModelWeights`. Preserve every
+    // inference tensor by its exact checkpoint name and let that runtime
+    // validate/load the native Whisper layout.
+    if family.family_name == "whisper" {
+        return (name != "alignment_heads").then_some((NativeTensorRole::Other, None));
+    }
+
     // Nemotron-H: backbone.embeddings / backbone.norm_f / backbone.layers.N.* / lm_head.
     if family.family_name == "nemotron_h" {
         if let Some(result) = match_nemotron_h_tensor(name, family.tensor_map) {
             return Some(result);
+        }
+        if name.starts_with("vision_model.")
+            || name.starts_with("mlp1.")
+            || name.starts_with("sound_encoder.")
+            || name.starts_with("sound_projection.")
+        {
+            return Some((NativeTensorRole::Other, None));
         }
     }
 
@@ -735,7 +746,34 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         }
     }
 
-    // Qwen3-VL vision tower: visual.blocks.{i}.* layer roles + visual.* globals.
+    // Unified Qwen checkpoints keep the full vision tower under
+    // `vision_tower.*` / `visual.*` (sanitized MLX variants) or
+    // `model.visual.*` (raw HF). Preserve every tower tensor by name. The
+    // runtime loader is config-driven and consumes exact names, while the
+    // generic `Other` role keeps converter validation from pretending these
+    // tensors are language layers.
+    if matches!(family.family_name, "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5")
+        && (name.starts_with("vision_tower.")
+            || name.starts_with("visual.")
+            || name.starts_with("model.visual."))
+    {
+        return Some((NativeTensorRole::Other, None));
+    }
+
+    if family.family_name == "minicpmv4_6"
+        && (name.starts_with("vision_tower.")
+            || name.starts_with("model.vision_tower.")
+            || name.starts_with("model.vpm.")
+            || name.starts_with("vit_merger.")
+            || name.starts_with("model.vit_merger.")
+            || name.starts_with("merger.")
+            || name.starts_with("model.merger."))
+    {
+        return Some((NativeTensorRole::Other, None));
+    }
+
+    // Legacy Qwen3-VL manifests used dedicated roles for a subset of the
+    // tower. Continue accepting those sanitized names.
     if matches!(family.family_name, "qwen3_vl" | "qwen3_vl_moe") {
         if let Some((idx, role)) = match_qwen3_vl_vision_layer(name) {
             return Some((role, Some(idx)));
@@ -771,6 +809,15 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
                 return Some(result);
             }
         }
+        // Current unified Qwen3-VL and Qwen3.5 Hugging Face checkpoints use
+        // `model.language_model.*` (without the older intermediate `.model`).
+        if let Some(result) = match_unified_qwen_language_model_tensor(
+            name,
+            family.tensor_map,
+            family.extra_tensor_map,
+        ) {
+            return Some(result);
+        }
         if is_qwen_gated_delta_family(family.family_name) {
             if let Some(result) =
                 match_prefixed_per_layer(name, "model.layers.", QWEN35_LINEAR_TENSOR_MAP)
@@ -780,6 +827,13 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
             if let Some(result) = match_prefixed_per_layer(
                 name,
                 "language_model.model.layers.",
+                QWEN35_LINEAR_TENSOR_MAP,
+            ) {
+                return Some(result);
+            }
+            if let Some(result) = match_prefixed_per_layer(
+                name,
+                "model.language_model.layers.",
                 QWEN35_LINEAR_TENSOR_MAP,
             ) {
                 return Some(result);
@@ -813,11 +867,39 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
     None
 }
 
+/// Match the unified Qwen layout emitted by current Transformers checkpoints:
+/// `model.language_model.{embed_tokens,norm,layers.*}`.
+fn match_unified_qwen_language_model_tensor(
+    name: &str,
+    tensor_map: &[(&str, TensorMapping)],
+    extra_tensor_map: Option<&[(&str, TensorMapping)]>,
+) -> Option<(NativeTensorRole, Option<u32>)> {
+    match name {
+        "model.language_model.embed_tokens.weight" => {
+            return Some((NativeTensorRole::TokenEmbedding, None));
+        }
+        "model.language_model.norm.weight" => {
+            return Some((NativeTensorRole::FinalNorm, None));
+        }
+        "model.lm_head.weight" => {
+            return Some((NativeTensorRole::LmHead, None));
+        }
+        _ => {}
+    }
+    if let Some(result) = match_prefixed_per_layer(name, "model.language_model.layers.", tensor_map)
+    {
+        return Some(result);
+    }
+    extra_tensor_map
+        .and_then(|extra| match_prefixed_per_layer(name, "model.language_model.layers.", extra))
+}
+
 /// Match Nemotron-H backbone-prefixed tensors.
 fn match_nemotron_h_tensor(
     name: &str,
     tensor_map: &[(&str, TensorMapping)],
 ) -> Option<(NativeTensorRole, Option<u32>)> {
+    let name = name.strip_prefix("language_model.").unwrap_or(name);
     match name {
         "backbone.embeddings.weight" | "backbone.embed_tokens.weight" => {
             return Some((NativeTensorRole::TokenEmbedding, None));
@@ -894,6 +976,13 @@ fn map_tensors(
     let mut dropped = DroppedTensorLedger::default();
 
     for entry in all_tensors {
+        // PyTorch BatchNorm persists this integer training counter beside the
+        // inference parameters. It has no role in eval and MLX does not load
+        // it; skip it before dtype conversion because safetensors stores it as
+        // I64, which is intentionally not a native runtime tensor dtype.
+        if is_training_only_tensor(&entry.name) {
+            continue;
+        }
         let Some((role, layer_index)) = match_tensor(&entry.name, family) else {
             // Fail-loud: count every unrecognised tensor (WS-C1).
             dropped.record(&entry.name, entry.length_bytes);
@@ -925,6 +1014,10 @@ fn map_tensors(
     // Sort by (layer_index, role ordinal) for deterministic output.
     mapped.sort_by_key(|spec| (spec.layer_index, format!("{:?}", spec.role)));
     Ok((mapped, dropped))
+}
+
+fn is_training_only_tensor(name: &str) -> bool {
+    name.ends_with(".num_batches_tracked") || name == "alignment_heads"
 }
 
 // ---------------------------------------------------------------------------
@@ -1424,14 +1517,32 @@ fn validate_qwen_rope_scaling(
     config: &serde_json::Value,
     model_type: &str,
 ) -> Result<(), ConvertError> {
-    let has_unsupported_rope_scaling = config
-        .get("rope_scaling")
-        .is_some_and(|value| !value.is_null())
-        || (uses_text_config(model_type)
-            && config
-                .get("text_config")
-                .and_then(|tc| tc.get("rope_scaling"))
-                .is_some_and(|value| !value.is_null()));
+    let rope_scaling = if uses_text_config(model_type) {
+        config
+            .get("text_config")
+            .and_then(|text_config| text_config.get("rope_scaling"))
+            .or_else(|| config.get("rope_scaling"))
+    } else {
+        config.get("rope_scaling")
+    };
+    // Unified Qwen VL checkpoints describe their ordinary, unscaled RoPE plus
+    // multimodal axis split in this object. `rope_type=default` does not scale
+    // frequencies; the MRoPE fields are consumed by the native VL prefill path.
+    let is_default_mrope = matches!(model_type, "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5")
+        && rope_scaling.is_some_and(|value| {
+            value
+                .get("rope_type")
+                .or_else(|| value.get("type"))
+                .and_then(serde_json::Value::as_str)
+                == Some("default")
+                && value
+                    .get("mrope_section")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|sections| sections.len() == 3)
+                && value.get("factor").is_none_or(serde_json::Value::is_null)
+        });
+    let has_unsupported_rope_scaling =
+        rope_scaling.is_some_and(|value| !value.is_null()) && !is_default_mrope;
     if has_unsupported_rope_scaling {
         return invalid_model_contract(
             model_type,

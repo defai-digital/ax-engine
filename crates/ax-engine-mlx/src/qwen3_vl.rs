@@ -1,31 +1,37 @@
-//! Qwen3-VL / Qwen3-VL-MoE path (WS-V2 / R-V2).
+//! Native Qwen3-VL and Qwen3.5 visual path.
 //!
-//! ViT encoder with 2-D RoPE, DeepStack injection, MRoPE text positions, and
-//! LLaVA-style scatter merge into certified qwen3 / qwen3-MoE graphs.
-//! Text-only prompts on a VL checkpoint must route identically to qwen3.
+//! The vision tower follows the unified Qwen implementation used by current
+//! Transformers and mlx-vlm checkpoints: merge-grouped Conv3D patches,
+//! interpolated learned positions, 2-D rotary attention, the two-layer patch
+//! merger, optional DeepStack branches, and interleaved multimodal RoPE in the
+//! language model. Text-only requests continue through AX's normal language
+//! graph.
+
+use std::collections::HashMap;
 
 use ax_engine_core::qwen3_vl::Qwen3VlRuntimeInputs;
 use ax_engine_core::vl_geometry::{
     MropeSections, deepstack_injection_layers, mrope_position_ids, scatter_merge_indices,
     vit_soft_token_count,
 };
-use mlx_sys::ops::cached_scalar;
+use ax_engine_core::{NativeTensorRole, NativeTensorSpec};
 use mlx_sys::{
-    MlxArray, MlxDtype, add, concatenate, gelu, layer_norm, matmul, multiply, reshape, slice,
-    softmax, transpose,
+    MlxArray, MlxDtype, add, astype, concatenate, gelu, gelu_approx, layer_norm, matmul, multiply,
+    negative, reshape, scaled_dot_product_attention, slice, take, transpose, zeros,
 };
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::model::{ModelConfig, embed_tokens};
-use crate::weights::ModelWeights;
+use crate::weights::{ModelWeights, WeightLoadError};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Qwen3VlError {
-    #[error("qwen3_vl requires vision tower weights for image input")]
+    #[error("qwen visual input requires a loaded vision tower")]
     MissingVisionWeights,
-    #[error("qwen3_vl image geometry invalid: {0}")]
+    #[error("qwen visual geometry invalid: {0}")]
     InvalidGeometry(String),
-    #[error("qwen3_vl scatter merge failed: {0}")]
+    #[error("qwen visual scatter merge failed: {0}")]
     Scatter(String),
 }
 
@@ -77,8 +83,8 @@ impl Qwen3VlImageGeometry {
     }
 
     pub fn mrope_sections(self) -> Result<MropeSections, Qwen3VlError> {
-        let (h, w) = self.grid_hw()?;
-        Ok(MropeSections::for_image(h, w))
+        let (height, width) = self.grid_hw()?;
+        Ok(MropeSections::for_image(height, width))
     }
 }
 
@@ -93,21 +99,21 @@ pub fn plan_image_scatter(
             geometries.len()
         )));
     }
-    let mut counts = Vec::with_capacity(geometries.len());
-    for g in geometries {
-        counts.push(g.soft_token_count()?);
-    }
+    let counts = geometries
+        .iter()
+        .map(|geometry| geometry.soft_token_count())
+        .collect::<Result<Vec<_>, _>>()?;
     scatter_merge_indices(placeholder_positions, &counts).map_err(Qwen3VlError::Scatter)
 }
 
 pub fn plan_mrope_for_images(
     geometries: &[Qwen3VlImageGeometry],
 ) -> Result<Vec<u32>, Qwen3VlError> {
-    let mut all = Vec::new();
-    for g in geometries {
-        all.extend(mrope_position_ids(g.mrope_sections()?));
+    let mut result = Vec::new();
+    for geometry in geometries {
+        result.extend(mrope_position_ids(geometry.mrope_sections()?));
     }
-    Ok(all)
+    Ok(result)
 }
 
 pub fn deepstack_layers(num_feature_maps: usize, language_layers: u32) -> Vec<u32> {
@@ -118,17 +124,13 @@ pub fn is_qwen3_vl_family(model_family: &str) -> bool {
     matches!(model_family, "qwen3_vl" | "qwen3_vl_moe")
 }
 
-/// Text-only prompts on VL checkpoints must use the certified qwen3 decode path.
 pub fn text_only_decode_family(model_family: &str) -> Option<&'static str> {
     match model_family {
-        "qwen3_vl" => Some("qwen3"),
-        "qwen3_vl_moe" => Some("qwen3"), // MoE graph shared with qwen3_moe maps
+        "qwen3_vl" | "qwen3_vl_moe" => Some("qwen3"),
         _ => None,
     }
 }
 
-/// Prefill gate: image inputs require a vision tower. Until ViT weights are
-/// mapped for this family, fail closed (never silent text-only degrade).
 pub fn require_vision_for_images(
     has_image_inputs: bool,
     has_vision_weights: bool,
@@ -139,453 +141,338 @@ pub fn require_vision_for_images(
     Ok(())
 }
 
-/// True when the loaded checkpoint carries a Qwen3-VL vision tower.
 pub fn has_vision_tower(weights: &ModelWeights) -> bool {
     weights.qwen3_vl_vision.is_some()
 }
 
-/// Prefill-side soft-token injection for qwen3_vl (ADR-038 adapter).
-///
-/// Fails closed if the request carries images but vision tower weights are
-/// absent. When weights are present, runs the portable ViT and scatters soft
-/// tokens into the text residual stream.
-pub(crate) fn build_vl_prefill_embeddings(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    token_ids: &[u32],
-    inputs: &Qwen3VlRuntimeInputs,
-) -> Result<MlxArray, Qwen3VlError> {
-    if !inputs.images.is_empty() && !has_vision_tower(weights) {
-        return Err(Qwen3VlError::MissingVisionWeights);
-    }
-    let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
-    if inputs.images.is_empty() {
-        return Ok(hidden);
-    }
-    let vision_w = weights
-        .qwen3_vl_vision
-        .as_ref()
-        .ok_or(Qwen3VlError::MissingVisionWeights)?;
-    for image in &inputs.images {
-        let patches = MlxArray::from_raw_data(
-            image.patches.as_ptr().cast(),
-            std::mem::size_of_val(image.patches.as_slice()),
-            &[1, image.num_patches as i32, image.patch_dim as i32],
-            MlxDtype::Float32,
-        );
-        let (soft, _deep) = vision_encoder_forward(vision_w, &patches)?;
-        let geometry = Qwen3VlImageGeometry {
-            height: image.height,
-            width: image.width,
-            patch_size: image.patch_size,
-            spatial_merge_size: image.spatial_merge_size,
-            max_soft_tokens: image.soft_token_count.max(1),
-        };
-        let positions = plan_image_scatter(&[image.placeholder_index], &[geometry])?;
-        // Expand text length when soft tokens exceed a single placeholder slot.
-        // For the portable path, scatter only into existing prompt indices that
-        // match the planned positions (caller must expand tokens accordingly).
-        hidden = scatter_vision_into_text(&hidden, &soft, &positions)?;
-    }
-    Ok(hidden)
-}
-
-/// Decode-route selection for a loaded VL checkpoint.
 pub fn select_decode_route(
     model_family: &str,
     has_media: bool,
 ) -> Result<&'static str, Qwen3VlError> {
     if !is_qwen3_vl_family(model_family) {
-        // Non-VL families: caller keeps its own label (not static).
-        return Ok(if model_family.is_empty() {
-            "unknown"
-        } else {
-            // Map known families to static labels when possible.
-            match model_family {
-                "qwen3" => "qwen3",
-                "qwen3_5" | "qwen3.5" => "qwen3_5",
-                "qwen3_next" | "qwen3.6" | "qwen3_6" => "qwen3_next",
-                "gemma4" => "gemma4",
-                "gemma4_vl" => "gemma4_vl",
-                _ => "other",
-            }
+        return Ok(match model_family {
+            "" => "unknown",
+            "qwen3" => "qwen3",
+            "qwen3_5" | "qwen3.5" => "qwen3_5",
+            "qwen3_next" | "qwen3.6" | "qwen3_6" => "qwen3_next",
+            "gemma4" => "gemma4",
+            "gemma4_vl" => "gemma4_vl",
+            _ => "other",
         });
     }
     if has_media {
-        // Multimodal path: still text-graph after scatter; vision tower required.
-        return Ok(if model_family == "qwen3_vl_moe" {
+        Ok(if model_family == "qwen3_vl_moe" {
             "qwen3_vl_moe"
         } else {
             "qwen3_vl"
+        })
+    } else {
+        Ok(text_only_decode_family(model_family).unwrap_or("qwen3"))
+    }
+}
+
+/// Prepared language-side state for one visual prefill.
+pub(crate) struct Qwen3VlPrefillEmbeddings {
+    pub hidden: MlxArray,
+    pub mrope: Option<QwenMropeCosSin>,
+    pub rope_delta: i32,
+    pub deepstack: Option<Qwen3VlDeepstackPrefill>,
+}
+
+/// Interleaved multimodal RoPE factors shared by full-attention layers.
+pub(crate) struct QwenMropeCosSin {
+    pub cos: MlxArray,
+    pub sin: MlxArray,
+}
+
+/// Vision side branches injected after language layers 0, 1, ... .
+pub(crate) struct Qwen3VlDeepstackPrefill {
+    pub positions: Vec<usize>,
+    pub features: Vec<MlxArray>,
+}
+
+pub(crate) fn build_vl_prefill_embeddings(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    inputs: &Qwen3VlRuntimeInputs,
+) -> Result<Qwen3VlPrefillEmbeddings, Qwen3VlError> {
+    if !inputs.images.is_empty() && !has_vision_tower(weights) {
+        return Err(Qwen3VlError::MissingVisionWeights);
+    }
+    let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
+    if inputs.images.is_empty() {
+        return Ok(Qwen3VlPrefillEmbeddings {
+            hidden,
+            mrope: None,
+            rope_delta: 0,
+            deepstack: None,
         });
     }
-    Ok(text_only_decode_family(model_family).unwrap_or("qwen3"))
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    let vision = weights
+        .qwen3_vl_vision
+        .as_ref()
+        .ok_or(Qwen3VlError::MissingVisionWeights)?;
+    let mut deepstack_parts: Vec<Vec<MlxArray>> =
+        vec![Vec::new(); vision.config.deepstack_visual_indexes.len()];
+    let mut visual_positions = Vec::new();
 
-    #[test]
-    fn geometry_and_mrope() {
-        let g = Qwen3VlImageGeometry {
-            height: 448,
-            width: 448,
-            patch_size: 14,
-            spatial_merge_size: 2,
-            max_soft_tokens: 1024,
-        };
-        // 448/14=32, /2=16 → 16×16=256 soft tokens
-        assert_eq!(g.soft_token_count().unwrap(), 256);
-        let sections = g.mrope_sections().unwrap();
-        assert_eq!(sections.height, 16);
-        assert_eq!(sections.width, 16);
-        let ids = plan_mrope_for_images(&[g]).unwrap();
-        assert_eq!(ids.len(), 256 * 3);
-    }
-
-    #[test]
-    fn deepstack_and_text_route() {
-        assert_eq!(deepstack_layers(3, 36), vec![0, 1, 2]);
-        assert_eq!(text_only_decode_family("qwen3_vl"), Some("qwen3"));
-        assert!(is_qwen3_vl_family("qwen3_vl_moe"));
-    }
-
-    #[test]
-    fn scatter_plan() {
-        let g = Qwen3VlImageGeometry {
-            height: 28,
-            width: 28,
-            patch_size: 14,
-            spatial_merge_size: 1,
-            max_soft_tokens: 16,
-        };
-        // 2×2 patches, merge 1 → 4 soft tokens
-        assert_eq!(g.soft_token_count().unwrap(), 4);
-        let idx = plan_image_scatter(&[1], &[g]).unwrap();
-        assert_eq!(idx, vec![1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn vision_required_and_text_route() {
-        assert!(require_vision_for_images(true, false).is_err());
-        assert!(require_vision_for_images(true, true).is_ok());
-        assert!(require_vision_for_images(false, false).is_ok());
-        assert_eq!(select_decode_route("qwen3_vl", false).unwrap(), "qwen3");
-        assert_eq!(select_decode_route("qwen3_vl", true).unwrap(), "qwen3_vl");
-    }
-
-    #[test]
-    fn build_vl_rejects_images_without_vision_weights() {
-        use crate::gemma4_assistant_mtp::Gemma4AssistantMtpStatus;
-        use crate::weights::QuantizedWeight;
-        use mlx_sys::zeros;
-        let dummy = || QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None);
-        let weights = ModelWeights {
-            token_embedding: dummy(),
-            final_norm: zeros(&[1], MlxDtype::Float32, None),
-            lm_head: dummy(),
-            layers: Vec::new(),
-            per_layer_embed: None,
-            per_layer_model_proj: None,
-            per_layer_proj_norm: None,
-            mtp: None,
-            glm_mtp: None,
-            gemma4_assistant_mtp: Gemma4AssistantMtpStatus::default(),
-            assistant_pre_projection: None,
-            assistant_post_projection: None,
-            embedding_dense_0: None,
-            embedding_dense_1: None,
-            gemma4_unified_vision: None,
-            gemma4_unified_audio: None,
-            diffusion_self_conditioning: None,
-            unlimited_ocr_vision: None,
-            qwen3_vl_vision: None,
-        };
-        let cfg = ModelConfig {
-            compile_cache_identity: 0,
-            model_family: "qwen3_vl".into(),
-            layer_count: 0,
-            hidden_size: 1,
-            intermediate_size: 0,
-            n_heads: 1,
-            n_kv_heads: 1,
-            head_dim: 1,
-            vocab_size: 1,
-            rope_theta: 10000.0,
-            rope_dims: 0,
-            attn_output_gate: false,
-            query_scale: 1.0,
-            final_logit_softcapping: None,
-            moe_expert_count: 0,
-            moe_experts_per_token: 0,
-            moe_expert_intermediate_size: 0,
-            layer_configs: Vec::new(),
-            global_sliding_window: None,
-            gemma4_moe_router: false,
-            uses_geglu: false,
-            hidden_states_scale: None,
-            moe_norm_topk_prob: false,
-            hidden_size_per_layer_input: 0,
-            linear_attention: None,
-            mla_attention: None,
-            glm_router: None,
-            rms_norm_eps: 1e-6,
-            rope_freqs: None,
-            rope_mscale: 1.0,
-            no_rope_layer_interval: 0,
-            attn_temperature_floor: 0.0,
-            attn_temperature_scale: 0.0,
-            intermediate_size_mlp: 0,
-            moe_layer_freq: 0,
-            moe_first_dense_layers: 0,
-            moe_shared_expert_count: 0,
-            moe_sigmoid_routing: false,
-            moe_routed_scaling_factor: 1.0,
-            moe_n_group: 1,
-            moe_topk_group: 1,
-            think_start_token_id: None,
-            think_end_token_id: None,
-            diffusion: None,
-            gpt_oss_uses_mxfp4_experts: false,
-            generation_kind: ax_engine_core::GenerationKind::Autoregressive,
-        };
-        let inputs = Qwen3VlRuntimeInputs {
-            images: vec![ax_engine_core::qwen3_vl::Qwen3VlImageRuntimeInput {
-                placeholder_index: 0,
-                soft_token_count: 4,
-                patches: vec![0.1; 24],
-                num_patches: 4,
-                patch_dim: 6,
-                height: 28,
-                width: 28,
-                patch_size: 14,
-                spatial_merge_size: 1,
-            }],
-        };
-        let err = build_vl_prefill_embeddings(&cfg, &weights, &[1, 2, 3], &inputs).unwrap_err();
-        assert!(matches!(err, Qwen3VlError::MissingVisionWeights));
-    }
-
-    fn f32_array(vals: &[f32], shape: &[i32]) -> MlxArray {
-        use mlx_sys::MlxDtype;
-        MlxArray::from_raw_data(
-            vals.as_ptr().cast(),
-            std::mem::size_of_val(vals),
-            shape,
+    for media in &inputs.images {
+        let patches = MlxArray::from_raw_data(
+            media.patches.as_ptr().cast(),
+            std::mem::size_of_val(media.patches.as_slice()),
+            &[media.num_patches as i32, media.patch_dim as i32],
             MlxDtype::Float32,
-        )
+        );
+        let grid_h = media.height / media.patch_size;
+        let grid_w = media.width / media.patch_size;
+        let (soft, deepstack) =
+            vision_encoder_forward(vision, &patches, (media.grid_t, grid_h, grid_w))?;
+        let produced = soft.shape().get(1).copied().unwrap_or(0);
+        if produced != media.soft_token_count as i32 {
+            return Err(Qwen3VlError::InvalidGeometry(format!(
+                "vision tower produced {produced} soft tokens, request declared {}",
+                media.soft_token_count
+            )));
+        }
+        let end = media
+            .placeholder_index
+            .checked_add(media.soft_token_count as usize)
+            .ok_or_else(|| Qwen3VlError::Scatter("visual token range overflow".into()))?;
+        if end > token_ids.len() {
+            return Err(Qwen3VlError::Scatter(format!(
+                "visual token range {}..{end} exceeds prompt length {}",
+                media.placeholder_index,
+                token_ids.len()
+            )));
+        }
+        let positions: Vec<usize> = (media.placeholder_index..end).collect();
+        hidden = scatter_vision_into_text(&hidden, &soft, &positions)?;
+        visual_positions.extend_from_slice(&positions);
+
+        if deepstack.len() != deepstack_parts.len() {
+            return Err(Qwen3VlError::InvalidGeometry(format!(
+                "vision tower produced {} DeepStack maps, expected {}",
+                deepstack.len(),
+                deepstack_parts.len()
+            )));
+        }
+        for (layer, feature) in deepstack.into_iter().enumerate() {
+            deepstack_parts[layer].push(feature);
+        }
     }
 
-    #[test]
-    fn load_qwen3_vl_vision_from_name_map_returns_some() {
-        use std::collections::HashMap;
-        let h = 8usize;
-        let patch_dim = 6i32;
-        let mut name_map = HashMap::new();
-        name_map.insert(
-            "visual.patch_embed.proj.weight".into(),
-            f32_array(&vec![0.01; h * patch_dim as usize], &[h as i32, patch_dim]),
-        );
-        name_map.insert(
-            "visual.merger.weight".into(),
-            f32_array(&vec![0.01; h * h], &[h as i32, h as i32]),
-        );
-        name_map.insert(
-            "visual.blocks.0.attn.qkv.weight".into(),
-            f32_array(&vec![0.01; h * 3 * h], &[(3 * h) as i32, h as i32]),
-        );
-        name_map.insert(
-            "visual.blocks.0.attn.proj.weight".into(),
-            f32_array(&vec![0.01; h * h], &[h as i32, h as i32]),
-        );
-        name_map.insert(
-            "visual.blocks.0.norm1.weight".into(),
-            f32_array(&vec![1.0; h], &[h as i32]),
-        );
-        name_map.insert(
-            "visual.blocks.0.norm2.weight".into(),
-            f32_array(&vec![1.0; h], &[h as i32]),
-        );
-        name_map.insert(
-            "visual.blocks.0.mlp.fc1.weight".into(),
-            f32_array(&vec![0.01; h * 16], &[16, h as i32]),
-        );
-        name_map.insert(
-            "visual.blocks.0.mlp.fc2.weight".into(),
-            f32_array(&vec![0.01; 16 * h], &[h as i32, 16]),
-        );
-        let loaded = load_qwen3_vl_vision_weights(&[], &mut name_map)
-            .expect("load")
-            .expect("Some vision weights");
-        assert_eq!(loaded.hidden_size, h);
-        assert_eq!(loaded.layers.len(), 1);
-        assert!(name_map.keys().all(|k| !k.starts_with("visual.")));
+    let axes = qwen_mrope_position_axes(token_ids.len(), inputs)?;
+    let max_position = axes
+        .iter()
+        .flat_map(|position| position.iter())
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let prompt_len = i32::try_from(token_ids.len()).unwrap_or(i32::MAX);
+    let rope_delta = max_position.saturating_add(1).saturating_sub(prompt_len);
+    let mrope = Some(build_interleaved_mrope(
+        &axes,
+        cfg.rope_dims,
+        cfg.rope_theta,
+        &vision.mrope_section,
+    )?);
 
-        // Prefill path succeeds when ModelWeights carries the tower.
-        use crate::gemma4_assistant_mtp::Gemma4AssistantMtpStatus;
-        use crate::weights::QuantizedWeight;
-        use mlx_sys::zeros;
-        let dummy = || QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None);
-        // Token embed needs vocab rows × hidden for embed_tokens.
-        let te = QuantizedWeight::new(f32_array(&vec![0.01; 8 * h], &[8, h as i32]), None, None);
-        let weights = ModelWeights {
-            token_embedding: te,
-            final_norm: zeros(&[h as i32], MlxDtype::Float32, None),
-            lm_head: dummy(),
-            layers: Vec::new(),
-            per_layer_embed: None,
-            per_layer_model_proj: None,
-            per_layer_proj_norm: None,
-            mtp: None,
-            glm_mtp: None,
-            gemma4_assistant_mtp: Gemma4AssistantMtpStatus::default(),
-            assistant_pre_projection: None,
-            assistant_post_projection: None,
-            embedding_dense_0: None,
-            embedding_dense_1: None,
-            gemma4_unified_vision: None,
-            gemma4_unified_audio: None,
-            diffusion_self_conditioning: None,
-            unlimited_ocr_vision: None,
-            qwen3_vl_vision: Some(loaded),
-        };
-        let cfg = ModelConfig {
-            compile_cache_identity: 0,
-            model_family: "qwen3_vl".into(),
-            layer_count: 0,
-            hidden_size: h,
-            intermediate_size: 0,
-            n_heads: 1,
-            n_kv_heads: 1,
-            head_dim: h,
-            vocab_size: 8,
-            rope_theta: 10000.0,
-            rope_dims: 0,
-            attn_output_gate: false,
-            query_scale: 1.0,
-            final_logit_softcapping: None,
-            moe_expert_count: 0,
-            moe_experts_per_token: 0,
-            moe_expert_intermediate_size: 0,
-            layer_configs: Vec::new(),
-            global_sliding_window: None,
-            gemma4_moe_router: false,
-            uses_geglu: false,
-            hidden_states_scale: None,
-            moe_norm_topk_prob: false,
-            hidden_size_per_layer_input: 0,
-            linear_attention: None,
-            mla_attention: None,
-            glm_router: None,
-            rms_norm_eps: 1e-6,
-            rope_freqs: None,
-            rope_mscale: 1.0,
-            no_rope_layer_interval: 0,
-            attn_temperature_floor: 0.0,
-            attn_temperature_scale: 0.0,
-            intermediate_size_mlp: 0,
-            moe_layer_freq: 0,
-            moe_first_dense_layers: 0,
-            moe_shared_expert_count: 0,
-            moe_sigmoid_routing: false,
-            moe_routed_scaling_factor: 1.0,
-            moe_n_group: 1,
-            moe_topk_group: 1,
-            think_start_token_id: None,
-            think_end_token_id: None,
-            diffusion: None,
-            gpt_oss_uses_mxfp4_experts: false,
-            generation_kind: ax_engine_core::GenerationKind::Autoregressive,
-        };
-        let inputs = Qwen3VlRuntimeInputs {
-            images: vec![ax_engine_core::qwen3_vl::Qwen3VlImageRuntimeInput {
-                placeholder_index: 1,
-                soft_token_count: 4,
-                patches: vec![0.1; 4 * patch_dim as usize],
-                num_patches: 4,
-                patch_dim: patch_dim as u32,
-                height: 28,
-                width: 28,
-                patch_size: 14,
-                spatial_merge_size: 1,
-            }],
-        };
-        let hidden =
-            build_vl_prefill_embeddings(&cfg, &weights, &[1, 2, 3, 4, 5, 6], &inputs).expect("ok");
-        assert_eq!(hidden.shape()[2], h as i32);
-    }
+    let deepstack = if deepstack_parts.is_empty() {
+        None
+    } else {
+        let mut features = Vec::with_capacity(deepstack_parts.len());
+        for parts in deepstack_parts {
+            let refs: Vec<&MlxArray> = parts.iter().collect();
+            features.push(match refs.as_slice() {
+                [] => {
+                    return Err(Qwen3VlError::InvalidGeometry(
+                        "DeepStack feature list is empty".into(),
+                    ));
+                }
+                [single] => (*single).clone(),
+                _ => concatenate(&refs, 1, None),
+            });
+        }
+        Some(Qwen3VlDeepstackPrefill {
+            positions: visual_positions,
+            features,
+        })
+    };
 
-    #[test]
-    fn vision_encoder_forward_and_scatter_real_path() {
-        use mlx_sys::{MlxDtype, eval, zeros};
-        // Tiny ViT: H=8, heads=2, seq=4 patches, 1 layer
-        let h = 8usize;
-        let heads = 2usize;
-        let seq = 4i32;
-        let patch_dim = 6i32;
-        let layer = Qwen3VlVisionLayerWeights {
-            qkv: f32_array(&vec![0.01; h * 3 * h], &[(3 * h) as i32, h as i32]),
-            qkv_bias: Some(zeros(&[1, 1, (3 * h) as i32], MlxDtype::Float32, None)),
-            proj: f32_array(&vec![0.01; h * h], &[h as i32, h as i32]),
-            proj_bias: None,
-            norm1_weight: f32_array(&vec![1.0; h], &[h as i32]),
-            norm1_bias: Some(zeros(&[h as i32], MlxDtype::Float32, None)),
-            fc1: f32_array(&vec![0.01; h * 16], &[16, h as i32]),
-            fc1_bias: None,
-            fc2: f32_array(&vec![0.01; 16 * h], &[h as i32, 16]),
-            fc2_bias: None,
-            norm2_weight: f32_array(&vec![1.0; h], &[h as i32]),
-            norm2_bias: Some(zeros(&[h as i32], MlxDtype::Float32, None)),
-        };
-        let weights = Qwen3VlVisionWeights {
-            patch_embed: f32_array(&vec![0.01; h * patch_dim as usize], &[h as i32, patch_dim]),
-            patch_embed_bias: None,
-            layers: vec![layer],
-            merger: f32_array(&vec![0.01; h * h], &[h as i32, h as i32]),
-            merger_bias: None,
-            num_heads: heads,
-            hidden_size: h,
-            deepstack_indexes: vec![0],
-        };
-        let patches = f32_array(&vec![0.1; (seq * patch_dim) as usize], &[1, seq, patch_dim]);
-        let (soft, deep) = vision_encoder_forward(&weights, &patches).expect("vit forward");
-        eval(&[&soft]);
-        assert_eq!(soft.shape()[0], 1);
-        assert_eq!(soft.shape()[1], seq);
-        assert_eq!(soft.shape()[2], h as i32);
-        assert_eq!(deep.len(), 1);
-
-        let text = zeros(&[1, 6, h as i32], MlxDtype::Float32, None);
-        let positions = plan_image_scatter(
-            &[1],
-            &[Qwen3VlImageGeometry {
-                height: 28,
-                width: 28,
-                patch_size: 14,
-                spatial_merge_size: 1,
-                max_soft_tokens: 16,
-            }],
-        )
-        .unwrap();
-        // 4 soft tokens at placeholder 1 → positions 1..4
-        assert_eq!(positions, vec![1, 2, 3, 4]);
-        let merged = scatter_vision_into_text(&text, &soft, &positions).expect("scatter");
-        eval(&[&merged]);
-        assert_eq!(merged.shape()[1], 6);
-    }
+    Ok(Qwen3VlPrefillEmbeddings {
+        hidden,
+        mrope,
+        rope_delta,
+        deepstack,
+    })
 }
 
-// ---------------------------------------------------------------------------
-// Minimal portable Qwen3-VL ViT forward (WS-V2)
-//
-// Implements patch-linear + stacked attention/MLP + spatial-merge projector
-// using MLX ops. Weights are explicit tensors so unit tests can drive the
-// real path without a full checkpoint. Production load maps HF `visual.*`
-// roles into [`Qwen3VlVisionWeights`] via [`load_qwen3_vl_vision_weights`].
-// ---------------------------------------------------------------------------
+fn qwen_mrope_position_axes(
+    prompt_len: usize,
+    inputs: &Qwen3VlRuntimeInputs,
+) -> Result<Vec<[i32; 3]>, Qwen3VlError> {
+    let mut media: Vec<_> = inputs.images.iter().collect();
+    media.sort_by_key(|item| item.placeholder_index);
+    let mut result = Vec::with_capacity(prompt_len);
+    let mut cursor = 0usize;
+    let mut current_position = 0i32;
 
-/// One vision transformer layer weights.
+    for item in media {
+        if item.placeholder_index < cursor {
+            return Err(Qwen3VlError::Scatter(
+                "visual token ranges overlap or are out of order".into(),
+            ));
+        }
+        for _ in cursor..item.placeholder_index {
+            result.push([current_position; 3]);
+            current_position = current_position.saturating_add(1);
+        }
+
+        let merge = item.spatial_merge_size;
+        let llm_t = item.grid_t;
+        let llm_h = item.height / item.patch_size / merge;
+        let llm_w = item.width / item.patch_size / merge;
+        let expected = llm_t.saturating_mul(llm_h).saturating_mul(llm_w);
+        if expected != item.soft_token_count {
+            return Err(Qwen3VlError::InvalidGeometry(format!(
+                "soft_token_count {} != merged grid {}x{}x{} ({expected})",
+                item.soft_token_count, llm_t, llm_h, llm_w
+            )));
+        }
+        for t in 0..llm_t {
+            for h in 0..llm_h {
+                for w in 0..llm_w {
+                    result.push([
+                        current_position.saturating_add(t as i32),
+                        current_position.saturating_add(h as i32),
+                        current_position.saturating_add(w as i32),
+                    ]);
+                }
+            }
+        }
+        current_position = current_position
+            .saturating_add(i32::try_from(llm_t.max(llm_h).max(llm_w)).unwrap_or(i32::MAX));
+        cursor = item
+            .placeholder_index
+            .saturating_add(item.soft_token_count as usize);
+    }
+
+    for _ in cursor..prompt_len {
+        result.push([current_position; 3]);
+        current_position = current_position.saturating_add(1);
+    }
+    if result.len() != prompt_len {
+        return Err(Qwen3VlError::Scatter(format!(
+            "MRoPE positions {} != prompt length {prompt_len}",
+            result.len()
+        )));
+    }
+    Ok(result)
+}
+
+fn build_interleaved_mrope(
+    positions: &[[i32; 3]],
+    rotary_dim: usize,
+    theta: f32,
+    sections: &[usize],
+) -> Result<QwenMropeCosSin, Qwen3VlError> {
+    if rotary_dim == 0 || !rotary_dim.is_multiple_of(2) {
+        return Err(Qwen3VlError::InvalidGeometry(format!(
+            "rotary_dim {rotary_dim} must be a positive even number"
+        )));
+    }
+    if sections.len() != 3 || sections.iter().sum::<usize>() * 2 != rotary_dim {
+        return Err(Qwen3VlError::InvalidGeometry(format!(
+            "MRoPE sections {sections:?} do not cover rotary_dim {rotary_dim}"
+        )));
+    }
+    let half = rotary_dim / 2;
+    let mut source_axis = vec![0usize; half];
+    for (axis, section) in sections.iter().copied().enumerate().skip(1) {
+        let mut index = axis;
+        while index < section.saturating_mul(3) && index < half {
+            source_axis[index] = axis;
+            index += 3;
+        }
+    }
+    let inv_freq: Vec<f32> = (0..half)
+        .map(|index| 1.0 / theta.powf((2 * index) as f32 / rotary_dim as f32))
+        .collect();
+    let mut cos_values = Vec::with_capacity(positions.len() * rotary_dim);
+    let mut sin_values = Vec::with_capacity(positions.len() * rotary_dim);
+    for position in positions {
+        let frequencies: Vec<f32> = (0..half)
+            .map(|index| position[source_axis[index]] as f32 * inv_freq[index])
+            .collect();
+        for _ in 0..2 {
+            cos_values.extend(frequencies.iter().map(|frequency| frequency.cos()));
+            sin_values.extend(frequencies.iter().map(|frequency| frequency.sin()));
+        }
+    }
+    let shape = [1, positions.len() as i32, rotary_dim as i32];
+    Ok(QwenMropeCosSin {
+        cos: f32_array(&cos_values, &shape),
+        sin: f32_array(&sin_values, &shape),
+    })
+}
+
+/// Apply precomputed multimodal rotary factors to `[B, H, S, D]` Q/K.
+pub(crate) fn apply_interleaved_mrope(
+    tensor: &MlxArray,
+    factors: &QwenMropeCosSin,
+    rotary_dim: usize,
+) -> MlxArray {
+    let shape = tensor.shape();
+    let batch = shape[0];
+    let heads = shape[1];
+    let seq = shape[2];
+    let head_dim = shape[3];
+    let rotary_dim = rotary_dim as i32;
+    let rotated_input = slice(
+        tensor,
+        &[0, 0, 0, 0],
+        &[batch, heads, seq, rotary_dim],
+        &[1, 1, 1, 1],
+        None,
+    );
+    let pass = (rotary_dim < head_dim).then(|| {
+        slice(
+            tensor,
+            &[0, 0, 0, rotary_dim],
+            &[batch, heads, seq, head_dim],
+            &[1, 1, 1, 1],
+            None,
+        )
+    });
+    let cos = astype(&factors.cos, tensor.dtype(), None);
+    let sin = astype(&factors.sin, tensor.dtype(), None);
+    let cos = reshape(&cos, &[batch, 1, seq, rotary_dim], None);
+    let sin = reshape(&sin, &[batch, 1, seq, rotary_dim], None);
+    let first = multiply(&rotated_input, &cos, None);
+    let second = multiply(&rotate_half(&rotated_input), &sin, None);
+    let embedded = add(&first, &second, None);
+    pass.map_or(embedded.clone(), |pass| {
+        concatenate(&[&embedded, &pass], -1, None)
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct Qwen3VlVisionConfig {
+    pub depth: usize,
+    pub hidden_size: usize,
+    pub intermediate_size: usize,
+    pub out_hidden_size: usize,
+    pub num_heads: usize,
+    pub in_channels: usize,
+    pub patch_size: usize,
+    pub temporal_patch_size: usize,
+    pub spatial_merge_size: usize,
+    pub num_position_embeddings: usize,
+    pub deepstack_visual_indexes: Vec<usize>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Qwen3VlVisionLayerWeights {
     pub qkv: MlxArray,
@@ -602,429 +489,871 @@ pub struct Qwen3VlVisionLayerWeights {
     pub norm2_bias: Option<MlxArray>,
 }
 
-/// Full vision tower weights for the portable encoder.
 #[derive(Clone, Debug)]
-pub struct Qwen3VlVisionWeights {
-    pub patch_embed: MlxArray,
-    pub patch_embed_bias: Option<MlxArray>,
-    pub layers: Vec<Qwen3VlVisionLayerWeights>,
-    pub merger: MlxArray,
-    pub merger_bias: Option<MlxArray>,
-    pub num_heads: usize,
-    pub hidden_size: usize,
-    pub deepstack_indexes: Vec<usize>,
+pub struct Qwen3VlMergerWeights {
+    pub norm_weight: MlxArray,
+    pub norm_bias: Option<MlxArray>,
+    pub linear_fc1: MlxArray,
+    pub linear_fc1_bias: Option<MlxArray>,
+    pub linear_fc2: MlxArray,
+    pub linear_fc2_bias: Option<MlxArray>,
+    pub postshuffle_norm: bool,
 }
 
-/// Load Qwen3-VL vision tower from native tensor roles + leftover name_map
-/// keys. Returns `Ok(None)` when no vision tensors are present; `Ok(Some)`
-/// when a complete tower can be assembled; errors if roles are partially
-/// present (fail closed — never silent text-only).
-pub fn load_qwen3_vl_vision_weights(
-    specs: &[ax_engine_core::NativeTensorSpec],
-    name_map: &mut std::collections::HashMap<String, MlxArray>,
-) -> Result<Option<Qwen3VlVisionWeights>, crate::weights::WeightLoadError> {
-    use crate::weights::WeightLoadError;
-    use ax_engine_core::NativeTensorRole;
+#[derive(Clone, Debug)]
+pub struct Qwen3VlVisionWeights {
+    pub config: Qwen3VlVisionConfig,
+    pub patch_embed: MlxArray,
+    pub patch_embed_bias: Option<MlxArray>,
+    pub pos_embed: MlxArray,
+    pub layers: Vec<Qwen3VlVisionLayerWeights>,
+    pub merger: Qwen3VlMergerWeights,
+    pub deepstack_mergers: Vec<Qwen3VlMergerWeights>,
+    pub mrope_section: Vec<usize>,
+}
 
-    let has_patch = specs
-        .iter()
-        .any(|s| s.role == NativeTensorRole::Qwen3VlVisionPatchEmbed && s.layer_index.is_none())
-        || name_map.contains_key("visual.patch_embed.proj.weight");
-    let has_merger = specs
-        .iter()
-        .any(|s| s.role == NativeTensorRole::Qwen3VlVisionMerger && s.layer_index.is_none())
-        || name_map.keys().any(|k| k.starts_with("visual.merger"));
-    let has_layers = specs
-        .iter()
-        .any(|s| s.role == NativeTensorRole::Qwen3VlVisionLayerQkv)
-        || name_map.keys().any(|k| k.starts_with("visual.blocks."));
-    if !has_patch && !has_merger && !has_layers {
+pub fn load_qwen3_vl_vision_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    config_json: Option<&Value>,
+) -> Result<Option<Qwen3VlVisionWeights>, WeightLoadError> {
+    let is_qwen_visual_config = config_json
+        .and_then(|config| config.get("model_type"))
+        .and_then(Value::as_str)
+        .is_some_and(|model_type| {
+            matches!(
+                model_type,
+                "qwen3_vl" | "qwen3-vl" | "qwen3_vl_moe" | "qwen3-vl-moe" | "qwen3_5"
+            )
+        });
+    if !is_qwen_visual_config {
         return Ok(None);
     }
-    if !has_patch || !has_merger || !has_layers {
-        return Err(WeightLoadError::RoleMissing(
-            "qwen3_vl vision tower incomplete (need patch_embed + merger + blocks)".into(),
-        ));
+    let has_tower = name_map.keys().any(|name| {
+        name.starts_with("vision_tower.")
+            || name.starts_with("visual.")
+            || name.starts_with("model.visual.")
+    }) || specs.iter().any(|spec| {
+        matches!(
+            spec.role,
+            NativeTensorRole::Qwen3VlVisionPatchEmbed
+                | NativeTensorRole::Qwen3VlVisionMerger
+                | NativeTensorRole::Qwen3VlVisionLayerQkv
+        )
+    });
+    if !has_tower {
+        return Ok(None);
     }
+    let config_json = config_json.ok_or_else(|| {
+        WeightLoadError::InvalidLayer(
+            "Qwen visual checkpoint is missing a readable config.json".into(),
+        )
+    })?;
+    let (config, mrope_section) = parse_qwen_vision_config(config_json)?;
 
-    fn take_named(
-        name_map: &mut std::collections::HashMap<String, MlxArray>,
-        names: &[String],
-    ) -> Result<MlxArray, WeightLoadError> {
-        for n in names {
-            if let Some(arr) = name_map.remove(n) {
-                return Ok(arr);
-            }
-        }
-        Err(WeightLoadError::TensorMissing(
-            names
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "qwen3_vl vision tensor".into()),
-        ))
-    }
-    fn take_role(
-        specs: &[ax_engine_core::NativeTensorSpec],
-        name_map: &mut std::collections::HashMap<String, MlxArray>,
-        role: NativeTensorRole,
-        layer: Option<u32>,
-    ) -> Option<MlxArray> {
-        let spec = specs
-            .iter()
-            .find(|s| s.role == role && s.layer_index == layer)?;
-        name_map.remove(&spec.name)
-    }
-    fn take_role_or_names(
-        specs: &[ax_engine_core::NativeTensorSpec],
-        name_map: &mut std::collections::HashMap<String, MlxArray>,
-        role: NativeTensorRole,
-        layer: Option<u32>,
-        names: &[String],
-    ) -> Result<MlxArray, WeightLoadError> {
-        if let Some(arr) = take_role(specs, name_map, role, layer) {
-            return Ok(arr);
-        }
-        take_named(name_map, names)
-    }
+    let patch_embed_raw = take_visual(name_map, "patch_embed.proj.weight")?;
+    let patch_embed = normalize_patch_embed_weight(&patch_embed_raw, &config)?;
+    let patch_embed_bias = take_visual_optional(name_map, "patch_embed.proj.bias");
+    let pos_embed = take_visual(name_map, "pos_embed.weight")?;
 
-    let patch_embed = take_role_or_names(
-        specs,
-        name_map,
-        NativeTensorRole::Qwen3VlVisionPatchEmbed,
-        None,
-        &[String::from("visual.patch_embed.proj.weight")],
-    )?;
-    let patch_embed_bias = name_map.remove("visual.patch_embed.proj.bias");
-
-    let merger = take_role_or_names(
-        specs,
-        name_map,
-        NativeTensorRole::Qwen3VlVisionMerger,
-        None,
-        &[
-            String::from("visual.merger.mlp.2.weight"),
-            String::from("visual.merger.mlp.0.weight"),
-            String::from("visual.merger.weight"),
-        ],
-    )?;
-    let merger_bias = name_map
-        .remove("visual.merger.mlp.2.bias")
-        .or_else(|| name_map.remove("visual.merger.bias"));
-
-    let hidden_size = patch_embed.shape().first().copied().unwrap_or(0) as usize;
-    if hidden_size == 0 {
-        return Err(WeightLoadError::InvalidLayer(
-            "qwen3_vl patch_embed hidden_size is 0".into(),
-        ));
-    }
-
-    let mut layer_idxs: Vec<u32> = specs
-        .iter()
-        .filter_map(|s| {
-            if s.role == NativeTensorRole::Qwen3VlVisionLayerQkv {
-                s.layer_index
-            } else {
-                None
-            }
-        })
-        .collect();
-    if layer_idxs.is_empty() {
-        for k in name_map.keys() {
-            if let Some(rest) = k.strip_prefix("visual.blocks.")
-                && let Some(idx_s) = rest.split('.').next()
-                && let Ok(i) = idx_s.parse::<u32>()
-            {
-                layer_idxs.push(i);
-            }
-        }
-    }
-    layer_idxs.sort_unstable();
-    layer_idxs.dedup();
-    if layer_idxs.is_empty() {
-        return Err(WeightLoadError::RoleMissing(
-            "qwen3_vl vision blocks missing".into(),
-        ));
-    }
-
-    let mut layers = Vec::with_capacity(layer_idxs.len());
-    for li in layer_idxs {
-        let qkv = take_role_or_names(
-            specs,
-            name_map,
-            NativeTensorRole::Qwen3VlVisionLayerQkv,
-            Some(li),
-            &[format!("visual.blocks.{li}.attn.qkv.weight")],
-        )?;
-        let proj = take_role_or_names(
-            specs,
-            name_map,
-            NativeTensorRole::Qwen3VlVisionLayerProj,
-            Some(li),
-            &[format!("visual.blocks.{li}.attn.proj.weight")],
-        )?;
-        let norm1 = take_role_or_names(
-            specs,
-            name_map,
-            NativeTensorRole::Qwen3VlVisionLayerNorm1,
-            Some(li),
-            &[format!("visual.blocks.{li}.norm1.weight")],
-        )?;
-        let norm2 = take_role_or_names(
-            specs,
-            name_map,
-            NativeTensorRole::Qwen3VlVisionLayerNorm2,
-            Some(li),
-            &[format!("visual.blocks.{li}.norm2.weight")],
-        )?;
-        let fc1 = take_role_or_names(
-            specs,
-            name_map,
-            NativeTensorRole::Qwen3VlVisionLayerFc1,
-            Some(li),
-            &[
-                format!("visual.blocks.{li}.mlp.fc1.weight"),
-                format!("visual.blocks.{li}.mlp.up_proj.weight"),
-            ],
-        )?;
-        let fc2 = take_role_or_names(
-            specs,
-            name_map,
-            NativeTensorRole::Qwen3VlVisionLayerFc2,
-            Some(li),
-            &[
-                format!("visual.blocks.{li}.mlp.fc2.weight"),
-                format!("visual.blocks.{li}.mlp.down_proj.weight"),
-            ],
-        )?;
+    let mut layers = Vec::with_capacity(config.depth);
+    for layer in 0..config.depth {
+        let prefix = format!("blocks.{layer}");
         layers.push(Qwen3VlVisionLayerWeights {
-            qkv,
-            qkv_bias: name_map.remove(&format!("visual.blocks.{li}.attn.qkv.bias")),
-            proj,
-            proj_bias: name_map.remove(&format!("visual.blocks.{li}.attn.proj.bias")),
-            norm1_weight: norm1,
-            norm1_bias: name_map.remove(&format!("visual.blocks.{li}.norm1.bias")),
-            fc1,
-            fc1_bias: name_map
-                .remove(&format!("visual.blocks.{li}.mlp.fc1.bias"))
-                .or_else(|| name_map.remove(&format!("visual.blocks.{li}.mlp.up_proj.bias"))),
-            fc2,
-            fc2_bias: name_map
-                .remove(&format!("visual.blocks.{li}.mlp.fc2.bias"))
-                .or_else(|| name_map.remove(&format!("visual.blocks.{li}.mlp.down_proj.bias"))),
-            norm2_weight: norm2,
-            norm2_bias: name_map.remove(&format!("visual.blocks.{li}.norm2.bias")),
+            qkv: take_visual(name_map, &format!("{prefix}.attn.qkv.weight"))?,
+            qkv_bias: take_visual_optional(name_map, &format!("{prefix}.attn.qkv.bias")),
+            proj: take_visual(name_map, &format!("{prefix}.attn.proj.weight"))?,
+            proj_bias: take_visual_optional(name_map, &format!("{prefix}.attn.proj.bias")),
+            norm1_weight: take_visual(name_map, &format!("{prefix}.norm1.weight"))?,
+            norm1_bias: take_visual_optional(name_map, &format!("{prefix}.norm1.bias")),
+            fc1: take_visual(name_map, &format!("{prefix}.mlp.linear_fc1.weight"))?,
+            fc1_bias: take_visual_optional(name_map, &format!("{prefix}.mlp.linear_fc1.bias")),
+            fc2: take_visual(name_map, &format!("{prefix}.mlp.linear_fc2.weight"))?,
+            fc2_bias: take_visual_optional(name_map, &format!("{prefix}.mlp.linear_fc2.bias")),
+            norm2_weight: take_visual(name_map, &format!("{prefix}.norm2.weight"))?,
+            norm2_bias: take_visual_optional(name_map, &format!("{prefix}.norm2.bias")),
         });
     }
 
-    // Prefer power-of-two head counts that divide hidden_size.
-    let num_heads = [16, 12, 8, 4, 2, 1]
-        .into_iter()
-        .find(|h| *h > 0 && hidden_size.is_multiple_of(*h))
-        .unwrap_or(1);
-
-    // Drop residual visual keys so they are not mistaken for language leftovers.
-    name_map.retain(|k, _| !k.starts_with("visual."));
+    let merger = load_merger(name_map, "merger", false)?;
+    let mut deepstack_mergers = Vec::with_capacity(config.deepstack_visual_indexes.len());
+    for index in 0..config.deepstack_visual_indexes.len() {
+        deepstack_mergers.push(load_merger(
+            name_map,
+            &format!("deepstack_merger_list.{index}"),
+            true,
+        )?);
+    }
+    name_map.retain(|name, _| {
+        !name.starts_with("vision_tower.")
+            && !name.starts_with("visual.")
+            && !name.starts_with("model.visual.")
+    });
 
     Ok(Some(Qwen3VlVisionWeights {
+        config,
         patch_embed,
         patch_embed_bias,
+        pos_embed,
         layers,
         merger,
-        merger_bias,
-        num_heads,
-        hidden_size,
-        deepstack_indexes: vec![0],
+        deepstack_mergers,
+        mrope_section,
     }))
 }
 
-fn ln(x: &MlxArray, weight: &MlxArray, bias: Option<&MlxArray>, eps: f32) -> MlxArray {
-    match bias {
-        Some(b) => layer_norm(x, weight, b, eps, None),
-        None => {
-            // layer_norm requires a bias tensor matching the last dim of `x`.
-            use mlx_sys::zeros;
-            let zero = zeros(&weight.shape(), weight.dtype(), None);
-            layer_norm(x, weight, &zero, eps, None)
+fn parse_qwen_vision_config(
+    config: &Value,
+) -> Result<(Qwen3VlVisionConfig, Vec<usize>), WeightLoadError> {
+    let vision = config.get("vision_config").ok_or_else(|| {
+        WeightLoadError::InvalidLayer("Qwen checkpoint has no vision_config".into())
+    })?;
+    let required = |key: &str| -> Result<usize, WeightLoadError> {
+        vision
+            .get(key)
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| {
+                WeightLoadError::InvalidLayer(format!(
+                    "Qwen vision_config.{key} is missing or invalid"
+                ))
+            })
+    };
+    let deepstack_visual_indexes = vision
+        .get("deepstack_visual_indexes")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    item.as_u64()
+                        .and_then(|value| usize::try_from(value).ok())
+                        .ok_or_else(|| {
+                            WeightLoadError::InvalidLayer(
+                                "invalid deepstack_visual_indexes entry".into(),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let text = config.get("text_config").unwrap_or(config);
+    let rope = text
+        .get("rope_scaling")
+        .or_else(|| text.get("rope_parameters"));
+    let mrope_section = rope
+        .and_then(|value| value.get("mrope_section"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_u64)
+                .filter_map(|value| usize::try_from(value).ok())
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| items.len() == 3)
+        .unwrap_or_else(|| {
+            if config.get("model_type").and_then(Value::as_str) == Some("qwen3_5") {
+                vec![11, 11, 10]
+            } else {
+                vec![24, 20, 20]
+            }
+        });
+    Ok((
+        Qwen3VlVisionConfig {
+            depth: required("depth")?,
+            hidden_size: required("hidden_size")?,
+            intermediate_size: required("intermediate_size")?,
+            out_hidden_size: required("out_hidden_size")?,
+            num_heads: required("num_heads")?,
+            in_channels: required("in_channels")?,
+            patch_size: required("patch_size")?,
+            temporal_patch_size: required("temporal_patch_size")?,
+            spatial_merge_size: required("spatial_merge_size")?,
+            num_position_embeddings: required("num_position_embeddings")?,
+            deepstack_visual_indexes,
+        },
+        mrope_section,
+    ))
+}
+
+fn visual_names(suffix: &str) -> [String; 3] {
+    [
+        format!("vision_tower.{suffix}"),
+        format!("visual.{suffix}"),
+        format!("model.visual.{suffix}"),
+    ]
+}
+
+fn take_visual(
+    name_map: &mut HashMap<String, MlxArray>,
+    suffix: &str,
+) -> Result<MlxArray, WeightLoadError> {
+    for name in visual_names(suffix) {
+        if let Some(value) = name_map.remove(&name) {
+            return Ok(value);
         }
     }
+    Err(WeightLoadError::TensorMissing(format!(
+        "vision_tower.{suffix}, visual.{suffix}, or model.visual.{suffix}"
+    )))
 }
 
-fn linear(x: &MlxArray, w: &MlxArray, bias: Option<&MlxArray>) -> MlxArray {
-    // w is [out, in]; matmul x @ w^T
-    let mut y = matmul(x, &transpose(w, &[1, 0], None), None);
-    if let Some(b) = bias {
-        y = add(&y, b, None);
+fn take_visual_optional(
+    name_map: &mut HashMap<String, MlxArray>,
+    suffix: &str,
+) -> Option<MlxArray> {
+    visual_names(suffix)
+        .into_iter()
+        .find_map(|name| name_map.remove(&name))
+}
+
+fn load_merger(
+    name_map: &mut HashMap<String, MlxArray>,
+    prefix: &str,
+    postshuffle_norm: bool,
+) -> Result<Qwen3VlMergerWeights, WeightLoadError> {
+    Ok(Qwen3VlMergerWeights {
+        norm_weight: take_visual(name_map, &format!("{prefix}.norm.weight"))?,
+        norm_bias: take_visual_optional(name_map, &format!("{prefix}.norm.bias")),
+        linear_fc1: take_visual(name_map, &format!("{prefix}.linear_fc1.weight"))?,
+        linear_fc1_bias: take_visual_optional(name_map, &format!("{prefix}.linear_fc1.bias")),
+        linear_fc2: take_visual(name_map, &format!("{prefix}.linear_fc2.weight"))?,
+        linear_fc2_bias: take_visual_optional(name_map, &format!("{prefix}.linear_fc2.bias")),
+        postshuffle_norm,
+    })
+}
+
+fn normalize_patch_embed_weight(
+    weight: &MlxArray,
+    config: &Qwen3VlVisionConfig,
+) -> Result<MlxArray, WeightLoadError> {
+    let shape = weight.shape();
+    let out = config.hidden_size as i32;
+    let input =
+        (config.in_channels * config.temporal_patch_size * config.patch_size * config.patch_size)
+            as i32;
+    if shape.len() == 2 {
+        if shape != [out, input] {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "Qwen patch_embed 2-D shape {shape:?}, expected [{out}, {input}]"
+            )));
+        }
+        return Ok(weight.clone());
     }
-    y
+    if shape.len() != 5 || shape[0] != out {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "Qwen patch_embed shape {shape:?} is not a supported Conv3D layout"
+        )));
+    }
+    let channels = config.in_channels as i32;
+    let temporal = config.temporal_patch_size as i32;
+    let reordered = if shape[1] == temporal && shape[4] == channels {
+        // Sanitized MLX Conv3D: [out, T, H, W, C] -> [out, C, T, H, W].
+        transpose(weight, &[0, 4, 1, 2, 3], None)
+    } else if shape[1] == channels && shape[2] == temporal {
+        // Raw PyTorch Conv3D already matches request rows [C, T, H, W].
+        weight.clone()
+    } else {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "cannot identify Qwen patch_embed Conv3D layout {shape:?}"
+        )));
+    };
+    Ok(reshape(&reordered, &[out, input], None))
 }
 
-fn attention(
-    x: &MlxArray,
-    layer: &Qwen3VlVisionLayerWeights,
-    num_heads: usize,
-    hidden_size: usize,
-) -> MlxArray {
-    let seq = x.shape()[1] as usize;
-    let head_dim = hidden_size / num_heads;
-    let qkv = linear(x, &layer.qkv, layer.qkv_bias.as_ref());
-    // qkv: [1, S, 3*H] -> [1, S, 3, heads, head_dim]
-    let qkv = reshape(
-        &qkv,
-        &[1, seq as i32, 3, num_heads as i32, head_dim as i32],
-        None,
-    );
-    let q = slice(
-        &qkv,
-        &[0, 0, 0, 0, 0],
-        &[1, seq as i32, 1, num_heads as i32, head_dim as i32],
-        &[1, 1, 1, 1, 1],
-        None,
-    );
-    let k = slice(
-        &qkv,
-        &[0, 0, 1, 0, 0],
-        &[1, seq as i32, 2, num_heads as i32, head_dim as i32],
-        &[1, 1, 1, 1, 1],
-        None,
-    );
-    let v = slice(
-        &qkv,
-        &[0, 0, 2, 0, 0],
-        &[1, seq as i32, 3, num_heads as i32, head_dim as i32],
-        &[1, 1, 1, 1, 1],
-        None,
-    );
-    // [1, S, heads, dim] -> [1, heads, S, dim]
-    let q = transpose(
-        &reshape(
-            &q,
-            &[1, seq as i32, num_heads as i32, head_dim as i32],
-            None,
-        ),
-        &[0, 2, 1, 3],
-        None,
-    );
-    let k = transpose(
-        &reshape(
-            &k,
-            &[1, seq as i32, num_heads as i32, head_dim as i32],
-            None,
-        ),
-        &[0, 2, 1, 3],
-        None,
-    );
-    let v = transpose(
-        &reshape(
-            &v,
-            &[1, seq as i32, num_heads as i32, head_dim as i32],
-            None,
-        ),
-        &[0, 2, 1, 3],
-        None,
-    );
-    let scale = (head_dim as f32).sqrt().recip();
-    let scores = matmul(&q, &transpose(&k, &[0, 1, 3, 2], None), None);
-    let scores = multiply(&scores, &cached_scalar(scale, scores.dtype()), None);
-    let probs = softmax(&scores, -1, None);
-    let ctx = matmul(&probs, &v, None);
-    // [1, heads, S, dim] -> [1, S, H]
-    let ctx = transpose(&ctx, &[0, 2, 1, 3], None);
-    let ctx = reshape(&ctx, &[1, seq as i32, hidden_size as i32], None);
-    linear(&ctx, &layer.proj, layer.proj_bias.as_ref())
-}
-
-fn mlp(x: &MlxArray, layer: &Qwen3VlVisionLayerWeights) -> MlxArray {
-    let h = linear(x, &layer.fc1, layer.fc1_bias.as_ref());
-    let h = gelu(&h, None);
-    linear(&h, &layer.fc2, layer.fc2_bias.as_ref())
-}
-
-/// Run the portable ViT encoder.
-///
-/// `patches`: `[1, num_patches, patch_dim]` float32/bf16.
-/// Returns soft tokens `[1, soft_tokens, out_dim]` after spatial merge projector.
 pub fn vision_encoder_forward(
     weights: &Qwen3VlVisionWeights,
     patches: &MlxArray,
+    grid_thw: (u32, u32, u32),
 ) -> Result<(MlxArray, Vec<MlxArray>), Qwen3VlError> {
-    if weights.layers.is_empty() || weights.num_heads == 0 || weights.hidden_size == 0 {
-        return Err(Qwen3VlError::InvalidGeometry(
-            "vision weights incomplete".into(),
-        ));
-    }
-    if !weights.hidden_size.is_multiple_of(weights.num_heads) {
-        return Err(Qwen3VlError::InvalidGeometry(
-            "hidden_size must divide num_heads".into(),
-        ));
-    }
-    let mut x = linear(
-        patches,
+    let (grid_t, grid_h, grid_w) = grid_thw;
+    validate_vision_geometry(weights, patches, grid_t, grid_h, grid_w)?;
+    let patch_input = astype(patches, weights.patch_embed.dtype(), None);
+    let mut hidden = linear(
+        &patch_input,
         &weights.patch_embed,
         weights.patch_embed_bias.as_ref(),
     );
-    let mut deepstack_feats = Vec::new();
-    for (li, layer) in weights.layers.iter().enumerate() {
-        let n1 = ln(&x, &layer.norm1_weight, layer.norm1_bias.as_ref(), 1e-6);
-        let attn = attention(&n1, layer, weights.num_heads, weights.hidden_size);
-        x = add(&x, &attn, None);
-        let n2 = ln(&x, &layer.norm2_weight, layer.norm2_bias.as_ref(), 1e-6);
-        let ff = mlp(&n2, layer);
-        x = add(&x, &ff, None);
-        if weights.deepstack_indexes.contains(&li) {
-            deepstack_feats.push(x.clone());
+    let positions = interpolated_position_embeddings(
+        &weights.pos_embed,
+        weights.config.num_position_embeddings,
+        grid_t,
+        grid_h,
+        grid_w,
+        weights.config.spatial_merge_size as u32,
+    )?;
+    hidden = add(&hidden, &astype(&positions, hidden.dtype(), None), None);
+    let rotary = vision_rotary_factors(
+        grid_t,
+        grid_h,
+        grid_w,
+        weights.config.spatial_merge_size as u32,
+        weights.config.hidden_size / weights.config.num_heads,
+    );
+
+    let frame_tokens = (grid_h * grid_w) as usize;
+    let mut deepstack = Vec::with_capacity(weights.deepstack_mergers.len());
+    for (layer_index, layer) in weights.layers.iter().enumerate() {
+        let normed = layer_norm_optional(
+            &hidden,
+            &layer.norm1_weight,
+            layer.norm1_bias.as_ref(),
+            1e-6,
+        );
+        let attention = vision_attention(
+            &normed,
+            layer,
+            weights.config.num_heads,
+            &rotary,
+            grid_t as usize,
+            frame_tokens,
+        );
+        hidden = add(&hidden, &attention, None);
+        let normed = layer_norm_optional(
+            &hidden,
+            &layer.norm2_weight,
+            layer.norm2_bias.as_ref(),
+            1e-6,
+        );
+        let mlp = linear(
+            &gelu_approx(&linear(&normed, &layer.fc1, layer.fc1_bias.as_ref()), None),
+            &layer.fc2,
+            layer.fc2_bias.as_ref(),
+        );
+        hidden = add(&hidden, &mlp, None);
+        if let Some(index) = weights
+            .config
+            .deepstack_visual_indexes
+            .iter()
+            .position(|candidate| *candidate == layer_index)
+        {
+            let feature = merger_forward(
+                &hidden,
+                &weights.deepstack_mergers[index],
+                weights.config.hidden_size,
+                weights.config.spatial_merge_size,
+            );
+            deepstack.push(reshape(
+                &feature,
+                &[1, feature.shape()[0], feature.shape()[1]],
+                None,
+            ));
         }
     }
-    // Spatial-merge style projector: flatten last dim via linear merger.
-    let soft = linear(&x, &weights.merger, weights.merger_bias.as_ref());
-    Ok((soft, deepstack_feats))
+    let merged = merger_forward(
+        &hidden,
+        &weights.merger,
+        weights.config.hidden_size,
+        weights.config.spatial_merge_size,
+    );
+    let merged = reshape(&merged, &[1, merged.shape()[0], merged.shape()[1]], None);
+    Ok((merged, deepstack))
 }
 
-/// Scatter soft-token embeddings into a text residual stream (LLaVA-style).
-///
-/// `text_hidden`: `[1, T, H]`, `vision`: `[1, S, H]`, `positions`: length S absolute
-/// indices into the text sequence.
+fn validate_vision_geometry(
+    weights: &Qwen3VlVisionWeights,
+    patches: &MlxArray,
+    grid_t: u32,
+    grid_h: u32,
+    grid_w: u32,
+) -> Result<(), Qwen3VlError> {
+    let config = &weights.config;
+    if grid_t == 0 || grid_h == 0 || grid_w == 0 {
+        return Err(Qwen3VlError::InvalidGeometry(
+            "grid_t, grid_h, and grid_w must be > 0".into(),
+        ));
+    }
+    let merge = config.spatial_merge_size as u32;
+    if !grid_h.is_multiple_of(merge) || !grid_w.is_multiple_of(merge) {
+        return Err(Qwen3VlError::InvalidGeometry(format!(
+            "grid {grid_h}x{grid_w} is not divisible by merge {merge}"
+        )));
+    }
+    let shape = patches.shape();
+    let expected_rows = grid_t.saturating_mul(grid_h).saturating_mul(grid_w) as i32;
+    let expected_dim =
+        (config.in_channels * config.temporal_patch_size * config.patch_size * config.patch_size)
+            as i32;
+    if shape != [expected_rows, expected_dim] {
+        return Err(Qwen3VlError::InvalidGeometry(format!(
+            "patch tensor {shape:?}, expected [{expected_rows}, {expected_dim}]"
+        )));
+    }
+    if config.hidden_size == 0
+        || config.num_heads == 0
+        || !config.hidden_size.is_multiple_of(config.num_heads)
+    {
+        return Err(Qwen3VlError::InvalidGeometry(
+            "vision hidden_size must divide num_heads".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn interpolated_position_embeddings(
+    table: &MlxArray,
+    num_positions: usize,
+    grid_t: u32,
+    grid_h: u32,
+    grid_w: u32,
+    merge: u32,
+) -> Result<MlxArray, Qwen3VlError> {
+    let base = (num_positions as f64).sqrt() as u32;
+    if base == 0 || (base as usize).saturating_mul(base as usize) != num_positions {
+        return Err(Qwen3VlError::InvalidGeometry(format!(
+            "num_position_embeddings {num_positions} is not a square"
+        )));
+    }
+    let mut indices = [Vec::<u32>::new(), Vec::new(), Vec::new(), Vec::new()];
+    let mut weights = [Vec::<f32>::new(), Vec::new(), Vec::new(), Vec::new()];
+    for _ in 0..grid_t {
+        for block_h in 0..grid_h / merge {
+            for block_w in 0..grid_w / merge {
+                for inner_h in 0..merge {
+                    for inner_w in 0..merge {
+                        let h = block_h * merge + inner_h;
+                        let w = block_w * merge + inner_w;
+                        let h_pos = if grid_h > 1 {
+                            h as f32 * (base - 1) as f32 / (grid_h - 1) as f32
+                        } else {
+                            0.0
+                        };
+                        let w_pos = if grid_w > 1 {
+                            w as f32 * (base - 1) as f32 / (grid_w - 1) as f32
+                        } else {
+                            0.0
+                        };
+                        let h0 = h_pos.floor() as u32;
+                        let w0 = w_pos.floor() as u32;
+                        let h1 = (h0 + 1).min(base - 1);
+                        let w1 = (w0 + 1).min(base - 1);
+                        let dh = h_pos - h0 as f32;
+                        let dw = w_pos - w0 as f32;
+                        indices[0].push(h0 * base + w0);
+                        indices[1].push(h0 * base + w1);
+                        indices[2].push(h1 * base + w0);
+                        indices[3].push(h1 * base + w1);
+                        weights[0].push((1.0 - dh) * (1.0 - dw));
+                        weights[1].push((1.0 - dh) * dw);
+                        weights[2].push(dh * (1.0 - dw));
+                        weights[3].push(dh * dw);
+                    }
+                }
+            }
+        }
+    }
+    let count = indices[0].len() as i32;
+    let mut result: Option<MlxArray> = None;
+    for corner in 0..4 {
+        let index = u32_array(&indices[corner], &[count]);
+        let selected = take(table, &index, 0, None);
+        let coefficient = astype(
+            &f32_array(&weights[corner], &[count, 1]),
+            selected.dtype(),
+            None,
+        );
+        let weighted = multiply(&selected, &coefficient, None);
+        result = Some(match result {
+            Some(accumulator) => add(&accumulator, &weighted, None),
+            None => weighted,
+        });
+    }
+    result.ok_or_else(|| {
+        Qwen3VlError::InvalidGeometry("position interpolation produced no values".into())
+    })
+}
+
+struct VisionRotaryFactors {
+    cos: MlxArray,
+    sin: MlxArray,
+}
+
+fn vision_rotary_factors(
+    grid_t: u32,
+    grid_h: u32,
+    grid_w: u32,
+    merge: u32,
+    head_dim: usize,
+) -> VisionRotaryFactors {
+    let quarter = head_dim / 4;
+    let inv_freq: Vec<f32> = (0..quarter)
+        .map(|index| 1.0 / 10_000f32.powf((2 * index) as f32 / (head_dim / 2) as f32))
+        .collect();
+    let count = grid_t.saturating_mul(grid_h).saturating_mul(grid_w) as usize;
+    let mut cos_values = Vec::with_capacity(count * head_dim);
+    let mut sin_values = Vec::with_capacity(count * head_dim);
+    for _ in 0..grid_t {
+        for block_h in 0..grid_h / merge {
+            for block_w in 0..grid_w / merge {
+                for inner_h in 0..merge {
+                    for inner_w in 0..merge {
+                        let h = (block_h * merge + inner_h) as f32;
+                        let w = (block_w * merge + inner_w) as f32;
+                        let mut half = Vec::with_capacity(head_dim / 2);
+                        half.extend(inv_freq.iter().map(|frequency| h * frequency));
+                        half.extend(inv_freq.iter().map(|frequency| w * frequency));
+                        for _ in 0..2 {
+                            cos_values.extend(half.iter().map(|frequency| frequency.cos()));
+                            sin_values.extend(half.iter().map(|frequency| frequency.sin()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    VisionRotaryFactors {
+        cos: f32_array(&cos_values, &[count as i32, 1, head_dim as i32]),
+        sin: f32_array(&sin_values, &[count as i32, 1, head_dim as i32]),
+    }
+}
+
+fn vision_attention(
+    hidden: &MlxArray,
+    layer: &Qwen3VlVisionLayerWeights,
+    num_heads: usize,
+    rotary: &VisionRotaryFactors,
+    frames: usize,
+    frame_tokens: usize,
+) -> MlxArray {
+    let seq = hidden.shape()[0];
+    let hidden_size = hidden.shape()[1];
+    let head_dim = hidden_size / num_heads as i32;
+    let qkv = linear(hidden, &layer.qkv, layer.qkv_bias.as_ref());
+    let qkv = reshape(&qkv, &[seq, 3, num_heads as i32, head_dim], None);
+    let qkv = transpose(&qkv, &[1, 0, 2, 3], None);
+    let extract = |index: i32| {
+        let value = slice(
+            &qkv,
+            &[index, 0, 0, 0],
+            &[index + 1, seq, num_heads as i32, head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        reshape(&value, &[seq, num_heads as i32, head_dim], None)
+    };
+    let q = apply_vision_rope(&extract(0), rotary);
+    let k = apply_vision_rope(&extract(1), rotary);
+    let v = extract(2);
+    let q = reshape(
+        &transpose(&q, &[1, 0, 2], None),
+        &[1, num_heads as i32, seq, head_dim],
+        None,
+    );
+    let k = reshape(
+        &transpose(&k, &[1, 0, 2], None),
+        &[1, num_heads as i32, seq, head_dim],
+        None,
+    );
+    let v = reshape(
+        &transpose(&v, &[1, 0, 2], None),
+        &[1, num_heads as i32, seq, head_dim],
+        None,
+    );
+    let mut parts = Vec::with_capacity(frames);
+    for frame in 0..frames {
+        let start = (frame * frame_tokens) as i32;
+        let end = start + frame_tokens as i32;
+        let segment = |value: &MlxArray| {
+            slice(
+                value,
+                &[0, 0, start, 0],
+                &[1, num_heads as i32, end, head_dim],
+                &[1, 1, 1, 1],
+                None,
+            )
+        };
+        parts.push(scaled_dot_product_attention(
+            &segment(&q),
+            &segment(&k),
+            &segment(&v),
+            (head_dim as f32).powf(-0.5),
+            false,
+            None,
+        ));
+    }
+    let refs: Vec<&MlxArray> = parts.iter().collect();
+    let context = if refs.len() == 1 {
+        refs[0].clone()
+    } else {
+        concatenate(&refs, 2, None)
+    };
+    let context = transpose(&context, &[0, 2, 1, 3], None);
+    let context = reshape(&context, &[seq, hidden_size], None);
+    linear(&context, &layer.proj, layer.proj_bias.as_ref())
+}
+
+fn apply_vision_rope(tensor: &MlxArray, factors: &VisionRotaryFactors) -> MlxArray {
+    let cos = astype(&factors.cos, tensor.dtype(), None);
+    let sin = astype(&factors.sin, tensor.dtype(), None);
+    add(
+        &multiply(tensor, &cos, None),
+        &multiply(&rotate_half(tensor), &sin, None),
+        None,
+    )
+}
+
+fn merger_forward(
+    hidden: &MlxArray,
+    merger: &Qwen3VlMergerWeights,
+    hidden_size: usize,
+    spatial_merge_size: usize,
+) -> MlxArray {
+    let merged_hidden = (hidden_size * spatial_merge_size * spatial_merge_size) as i32;
+    let normalized = if merger.postshuffle_norm {
+        let reshaped = reshape(hidden, &[-1, merged_hidden], None);
+        layer_norm_optional(
+            &reshaped,
+            &merger.norm_weight,
+            merger.norm_bias.as_ref(),
+            1e-6,
+        )
+    } else {
+        let normalized =
+            layer_norm_optional(hidden, &merger.norm_weight, merger.norm_bias.as_ref(), 1e-6);
+        reshape(&normalized, &[-1, merged_hidden], None)
+    };
+    let first = linear(
+        &normalized,
+        &merger.linear_fc1,
+        merger.linear_fc1_bias.as_ref(),
+    );
+    linear(
+        &gelu(&first, None),
+        &merger.linear_fc2,
+        merger.linear_fc2_bias.as_ref(),
+    )
+}
+
+fn linear(input: &MlxArray, weight: &MlxArray, bias: Option<&MlxArray>) -> MlxArray {
+    let input = if input.dtype() == weight.dtype() {
+        input.clone()
+    } else {
+        astype(input, weight.dtype(), None)
+    };
+    let output = matmul(&input, &transpose(weight, &[1, 0], None), None);
+    bias.map_or(output.clone(), |bias| add(&output, bias, None))
+}
+
+fn layer_norm_optional(
+    input: &MlxArray,
+    weight: &MlxArray,
+    bias: Option<&MlxArray>,
+    eps: f32,
+) -> MlxArray {
+    let zero;
+    let bias = match bias {
+        Some(bias) => bias,
+        None => {
+            zero = zeros(&weight.shape(), weight.dtype(), None);
+            &zero
+        }
+    };
+    layer_norm(input, weight, bias, eps, None)
+}
+
+fn rotate_half(input: &MlxArray) -> MlxArray {
+    let shape = input.shape();
+    let ndim = shape.len();
+    let half = shape[ndim - 1] / 2;
+    let mut first_start = vec![0; ndim];
+    let mut first_stop = shape.clone();
+    first_stop[ndim - 1] = half;
+    let first = slice(input, &first_start, &first_stop, &vec![1; ndim], None);
+    first_start[ndim - 1] = half;
+    first_stop[ndim - 1] = shape[ndim - 1];
+    let second = slice(input, &first_start, &first_stop, &vec![1; ndim], None);
+    concatenate(&[&negative(&second, None), &first], -1, None)
+}
+
 pub fn scatter_vision_into_text(
     text_hidden: &MlxArray,
     vision: &MlxArray,
     positions: &[usize],
 ) -> Result<MlxArray, Qwen3VlError> {
+    scatter_or_add_visual(text_hidden, vision, positions, false)
+}
+
+pub(crate) fn add_deepstack_into_text(
+    text_hidden: &MlxArray,
+    vision: &MlxArray,
+    positions: &[usize],
+) -> Result<MlxArray, Qwen3VlError> {
+    scatter_or_add_visual(text_hidden, vision, positions, true)
+}
+
+fn scatter_or_add_visual(
+    text_hidden: &MlxArray,
+    vision: &MlxArray,
+    positions: &[usize],
+    add_to_existing: bool,
+) -> Result<MlxArray, Qwen3VlError> {
     if positions.is_empty() {
         return Ok(text_hidden.clone());
     }
-    let t = text_hidden.shape()[1] as usize;
-    let h = text_hidden.shape()[2] as usize;
-    let s = vision.shape()[1] as usize;
-    if positions.len() != s {
+    let shape = text_hidden.shape();
+    if shape.len() != 3 || vision.shape().len() != 3 {
+        return Err(Qwen3VlError::Scatter(
+            "text and vision tensors must both be rank 3".into(),
+        ));
+    }
+    let tokens = shape[1] as usize;
+    let hidden = shape[2];
+    if positions.len() != vision.shape()[1] as usize {
         return Err(Qwen3VlError::Scatter(format!(
             "positions {} != vision tokens {}",
             positions.len(),
-            s
+            vision.shape()[1]
         )));
     }
-    // Portable scatter: rebuild sequence row-by-row (test-scale; production
-    // uses slice_update on the full tensor when available).
-    let mut rows: Vec<MlxArray> = Vec::with_capacity(t);
-    for i in 0..t {
-        if let Some(vi) = positions.iter().position(|&p| p == i) {
-            let v = slice(
+    if positions.iter().any(|position| *position >= tokens) {
+        return Err(Qwen3VlError::Scatter(
+            "visual position exceeds text sequence".into(),
+        ));
+    }
+    let mut visual_by_position = HashMap::with_capacity(positions.len());
+    for (index, position) in positions.iter().copied().enumerate() {
+        visual_by_position.insert(position, index);
+    }
+    let mut rows = Vec::with_capacity(tokens);
+    for token in 0..tokens {
+        let text_row = slice(
+            text_hidden,
+            &[0, token as i32, 0],
+            &[1, token as i32 + 1, hidden],
+            &[1, 1, 1],
+            None,
+        );
+        if let Some(index) = visual_by_position.get(&token).copied() {
+            let visual_row = slice(
                 vision,
-                &[0, vi as i32, 0],
-                &[1, (vi + 1) as i32, h as i32],
+                &[0, index as i32, 0],
+                &[1, index as i32 + 1, hidden],
                 &[1, 1, 1],
                 None,
             );
-            rows.push(v);
+            rows.push(if add_to_existing {
+                add(&text_row, &visual_row, None)
+            } else {
+                visual_row
+            });
         } else {
-            let row = slice(
-                text_hidden,
-                &[0, i as i32, 0],
-                &[1, (i + 1) as i32, h as i32],
-                &[1, 1, 1],
-                None,
-            );
-            rows.push(row);
+            rows.push(text_row);
         }
     }
     let refs: Vec<&MlxArray> = rows.iter().collect();
     Ok(concatenate(&refs, 1, None))
+}
+
+fn f32_array(values: &[f32], shape: &[i32]) -> MlxArray {
+    MlxArray::from_raw_data(
+        values.as_ptr().cast(),
+        std::mem::size_of_val(values),
+        shape,
+        MlxDtype::Float32,
+    )
+}
+
+fn u32_array(values: &[u32], shape: &[i32]) -> MlxArray {
+    MlxArray::from_raw_data(
+        values.as_ptr().cast(),
+        std::mem::size_of_val(values),
+        shape,
+        MlxDtype::Uint32,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ax_engine_core::qwen3_vl::Qwen3VlImageRuntimeInput;
+    use mlx_sys::{eval, zeros};
+
+    #[test]
+    fn geometry_and_mrope() {
+        let geometry = Qwen3VlImageGeometry {
+            height: 448,
+            width: 448,
+            patch_size: 16,
+            spatial_merge_size: 2,
+            max_soft_tokens: 1024,
+        };
+        assert_eq!(geometry.soft_token_count().unwrap(), 196);
+        assert_eq!(plan_mrope_for_images(&[geometry]).unwrap().len(), 196 * 3);
+        assert_eq!(deepstack_layers(3, 36), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn mrope_compresses_visual_run_and_preserves_three_axes() {
+        let inputs = Qwen3VlRuntimeInputs {
+            images: vec![Qwen3VlImageRuntimeInput {
+                placeholder_index: 2,
+                soft_token_count: 4,
+                patches: vec![0.0; 16],
+                num_patches: 16,
+                patch_dim: 1,
+                grid_t: 1,
+                height: 4,
+                width: 4,
+                patch_size: 1,
+                temporal_patch_size: 2,
+                spatial_merge_size: 2,
+                is_video: false,
+            }],
+        };
+        let axes = qwen_mrope_position_axes(8, &inputs).unwrap();
+        assert_eq!(axes[0], [0, 0, 0]);
+        assert_eq!(axes[1], [1, 1, 1]);
+        assert_eq!(axes[2], [2, 2, 2]);
+        assert_eq!(axes[3], [2, 2, 3]);
+        assert_eq!(axes[4], [2, 3, 2]);
+        assert_eq!(axes[5], [2, 3, 3]);
+        assert_eq!(axes[6], [4, 4, 4]);
+    }
+
+    #[test]
+    fn interleaved_mrope_has_expected_shape() {
+        let positions = vec![[0, 0, 0], [1, 2, 3]];
+        let factors = build_interleaved_mrope(&positions, 8, 10_000.0, &[2, 1, 1]).unwrap();
+        assert_eq!(factors.cos.shape(), vec![1, 2, 8]);
+        assert_eq!(factors.sin.shape(), vec![1, 2, 8]);
+    }
+
+    #[test]
+    fn scatter_and_deepstack_add_use_visual_positions() {
+        let text = zeros(&[1, 4, 2], MlxDtype::Float32, None);
+        let vision = f32_array(&[1.0, 2.0, 3.0, 4.0], &[1, 2, 2]);
+        let scattered = scatter_vision_into_text(&text, &vision, &[1, 2]).unwrap();
+        let added = add_deepstack_into_text(&scattered, &vision, &[1, 2]).unwrap();
+        eval(&[&added]);
+        assert_eq!(added.shape(), vec![1, 4, 2]);
+    }
+
+    #[test]
+    fn patch_embed_layouts_normalize_to_tchw() {
+        let config = Qwen3VlVisionConfig {
+            depth: 1,
+            hidden_size: 2,
+            intermediate_size: 4,
+            out_hidden_size: 2,
+            num_heads: 1,
+            in_channels: 3,
+            patch_size: 2,
+            temporal_patch_size: 2,
+            spatial_merge_size: 1,
+            num_position_embeddings: 4,
+            deepstack_visual_indexes: Vec::new(),
+        };
+        let raw = zeros(&[2, 3, 2, 2, 2], MlxDtype::Float32, None);
+        let mlx = zeros(&[2, 2, 2, 2, 3], MlxDtype::Float32, None);
+        assert_eq!(
+            normalize_patch_embed_weight(&raw, &config).unwrap().shape(),
+            vec![2, 24]
+        );
+        assert_eq!(
+            normalize_patch_embed_weight(&mlx, &config).unwrap().shape(),
+            vec![2, 24]
+        );
+    }
 }

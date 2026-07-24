@@ -3,6 +3,8 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use ax_engine_core::gemma4_unified::Gemma4UnifiedRuntimeInputs;
+use ax_engine_core::minicpm_v::MiniCpmV46RuntimeInputs;
+use ax_engine_core::nemotron_omni::NemotronOmniRuntimeInputs;
 use ax_engine_core::qwen3_vl::Qwen3VlRuntimeInputs;
 use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
 
@@ -12,7 +14,8 @@ use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
     FinalLogitsMode, ModelConfig, forward, forward_all_positions_post_norm_last_lm_head,
     forward_all_positions_with_final_hidden, forward_argmax, forward_cache_only,
-    forward_lazy_single_argmax, forward_with_initial_hidden_and_media_ranges,
+    forward_lazy_single_argmax, forward_qwen_visual_prefill,
+    forward_with_initial_hidden_and_media_ranges,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
@@ -491,17 +494,107 @@ pub fn chunked_prefill_qwen3_vl_with_sampling_buffers(
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
     let sampling = sampling_request.params;
-    let hidden = crate::qwen3_vl::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
-        .map_err(|e| e.to_string())?;
-    // After scatter, soft tokens sit in the text sequence; ordinary causal
-    // attention applies (same pattern as Unlimited-OCR / LLaVA).
-    let media_ranges = [];
+    let prepared =
+        crate::qwen3_vl::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
+            .map_err(|error| error.to_string())?;
+    let logits = forward_qwen_visual_prefill(cfg, weights, prompt_tokens, prepared, cache)?;
+    cache.advance(prompt_tokens.len());
+
+    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
+        sample_prefill_token_gpu_first(
+            &logits,
+            sampling,
+            sampling_request.repetition_tokens,
+            rng,
+            || eval_with_kv_refs(&logits, cache),
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
+        )
+    } else {
+        let token_arr = argmax(&logits, None);
+        eval_with_kv_refs(&token_arr, cache);
+        token_arr.first_u32_unchecked()
+    };
+    clear_cache();
+    Ok(tok)
+}
+
+/// Prefill MiniCPM-V 4.6 with SigLIP/VitMerger features replacing the
+/// `<image><unk>…</image>` placeholder spans.
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_minicpm_v46_with_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    inputs: &MiniCpmV46RuntimeInputs,
+    cache: &mut MlxKVCache,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> Result<u32, String> {
+    let sampling = sampling_request.params;
+    let hidden = crate::minicpm_v::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
+        .map_err(|error| error.to_string())?;
     let logits = forward_with_initial_hidden_and_media_ranges(
         cfg,
         weights,
         prompt_tokens,
         hidden,
-        &media_ranges,
+        &[],
+        cache,
+        0,
+        FinalLogitsMode::Full,
+    );
+    cache.advance(prompt_tokens.len());
+
+    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
+        sample_prefill_token_gpu_first(
+            &logits,
+            sampling,
+            sampling_request.repetition_tokens,
+            rng,
+            || eval_with_kv_refs(&logits, cache),
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
+        )
+    } else {
+        let token_arr = argmax(&logits, None);
+        eval_with_kv_refs(&token_arr, cache);
+        token_arr.first_u32_unchecked()
+    };
+    clear_cache();
+    Ok(tok)
+}
+
+/// Prefill Nemotron H Nano Omni with RADIO/Parakeet features replacing the
+/// checkpoint's repeated media-context token spans.
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_nemotron_omni_with_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    inputs: &NemotronOmniRuntimeInputs,
+    cache: &mut MlxKVCache,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> Result<u32, String> {
+    let sampling = sampling_request.params;
+    let hidden =
+        crate::nemotron_omni::build_omni_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
+            .map_err(|error| error.to_string())?;
+    let logits = forward_with_initial_hidden_and_media_ranges(
+        cfg,
+        weights,
+        prompt_tokens,
+        hidden,
+        &[],
         cache,
         0,
         FinalLogitsMode::Full,

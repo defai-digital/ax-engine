@@ -160,6 +160,8 @@ fn unlimited_ocr_inputs_from_py(
             images,
         }),
         qwen3_vl: None,
+        minicpm_v46: None,
+        nemotron_omni: None,
     }))
 }
 

@@ -29,8 +29,10 @@ pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 use crate::openai::chat_requests::{
-    ChatPromptRenderOptions, is_qwen3_vl_model_id, messages_contain_inline_media,
+    ChatPromptRenderOptions, is_minicpm_v46_model_id, is_nemotron_omni_model_dir,
+    is_nemotron_omni_model_id, is_qwen3_vl_model_id, messages_contain_inline_media,
     reject_video_chat_content, render_gemma4_unified_chat_with_media,
+    render_minicpm_v46_chat_with_media, render_nemotron_omni_chat_with_media,
     render_openai_chat_prompt_with_options, render_qwen3_vl_chat_with_media,
 };
 pub(crate) use crate::openai::chat_requests::{
@@ -512,10 +514,33 @@ pub(crate) fn build_openai_chat_request(
                 )
             })?;
             let model_id = live.model_id.as_ref();
-            if is_qwen3_vl_model_id(model_id)
-                || crate::metadata::model_family_from_artifacts(live)
+            let artifact_family = crate::metadata::model_family_from_artifacts(live);
+            if is_minicpm_v46_model_id(model_id)
+                || artifact_family.as_deref() == Some("minicpmv4_6")
+            {
+                if let Some(prompt) =
+                    render_minicpm_v46_chat_with_media(model_id, model_dir, &request.messages)?
+                {
+                    input_tokens = prompt.input_tokens;
+                    multimodal_inputs.minicpm_v46 = Some(prompt.runtime_inputs);
+                    true
+                } else {
+                    false
+                }
+            } else if is_nemotron_omni_model_id(model_id) || is_nemotron_omni_model_dir(model_dir) {
+                if let Some(prompt) =
+                    render_nemotron_omni_chat_with_media(model_id, model_dir, &request.messages)?
+                {
+                    input_tokens = prompt.input_tokens;
+                    multimodal_inputs.nemotron_omni = Some(prompt.runtime_inputs);
+                    true
+                } else {
+                    false
+                }
+            } else if is_qwen3_vl_model_id(model_id)
+                || artifact_family
                     .as_deref()
-                    .is_some_and(|f| f == "qwen3_vl" || f == "qwen3_vl_moe")
+                    .is_some_and(|f| f == "qwen3_vl" || f == "qwen3_vl_moe" || f == "qwen3_5")
             {
                 if let Some(prompt) =
                     render_qwen3_vl_chat_with_media(model_id, model_dir, &request.messages)?

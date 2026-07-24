@@ -100,6 +100,15 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: true,
             uses_decoder_prefix: false,
         }),
+        // MiniCPM-V 4.6: Qwen3.5 hybrid text backbone plus a SigLIP tower,
+        // mid-tower VitMerger, and final pixel-shuffle merger.
+        "minicpmv4_6" => Ok(ModelFamily {
+            family_name: "minicpmv4_6",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: None,
+            uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
+        }),
         // EmbeddingGemma-300m: Gemma3 text backbone (model.layers.* standard map)
         // with a sentence-transformers Dense head (dense.0/dense.1). Served as a
         // bidirectional encoder + mean pooling embedding model.
@@ -171,7 +180,7 @@ pub(crate) fn model_family_for_type(
         }),
         // Nemotron-H hybrid Mamba-2 + GQA + ReLU² MoE (Nemotron 3 Nano, …).
         // Weights live under `backbone.layers.*.mixer.*` (see NEMOTRON_H_TENSOR_MAP).
-        "nemotron_h" => Ok(ModelFamily {
+        "nemotron_h" | "nemotron_h_nano_omni" => Ok(ModelFamily {
             family_name: "nemotron_h",
             tensor_map: NEMOTRON_H_TENSOR_MAP,
             extra_tensor_map: None,
@@ -184,6 +193,16 @@ pub(crate) fn model_family_for_type(
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(UNLIMITED_OCR_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
+        }),
+        // OpenAI/MLX Whisper uses a dedicated encoder-decoder runtime. Tensor
+        // names are preserved as `Other` by `match_tensor` instead of being
+        // forced through the decoder-only language-model role schema.
+        "whisper" => Ok(ModelFamily {
+            family_name: "whisper",
+            tensor_map: &[],
+            extra_tensor_map: None,
+            uses_language_model_prefix: false,
             uses_decoder_prefix: false,
         }),
         other => Err(ConvertError::UnsupportedModelType {

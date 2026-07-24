@@ -18,7 +18,7 @@ ax-engine-sdk = { path = "../ax-engine-sdk", features = ["tokenizer"] }
 # Direct dependency (already in the graph via sdk) so build.rs receives
 # DEP_MLX_LIB_DIR and can embed the libmlx rpath in the server binary.
 mlx-sys = { path = "../mlx-sys", optional = true }
-axum = "0.7"
+axum = { version = "0.7", features = ["multipart"] }
 base64.workspace = true
 clap = { version = "4", features = ["derive"] }
 hound.workspace = true

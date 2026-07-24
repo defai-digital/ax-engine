@@ -63,6 +63,8 @@ fn sample_gemma4_multimodal_inputs() -> RequestMultimodalInputs {
         }),
         unlimited_ocr: None,
         qwen3_vl: None,
+        minicpm_v46: None,
+        nemotron_omni: None,
     }
 }
 
@@ -1602,6 +1604,8 @@ fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
         core,
         runtime: config.runtime_report(),
         config,
+        #[cfg(feature = "mlx-native")]
+        whisper: None,
         next_request_id: 2,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
@@ -1777,6 +1781,8 @@ fn shared_native_step_advances_multiple_stream_states_once() {
         core,
         runtime: config.runtime_report(),
         config,
+        #[cfg(feature = "mlx-native")]
+        whisper: None,
         next_request_id: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
@@ -1890,6 +1896,8 @@ fn dropping_native_generate_stream_cancels_in_flight_request() {
         core,
         runtime: config.runtime_report(),
         config,
+        #[cfg(feature = "mlx-native")]
+        whisper: None,
         next_request_id: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
@@ -1955,6 +1963,8 @@ fn has_active_stepwise_requests_reflects_native_terminal_state() {
         core,
         runtime: config.runtime_report(),
         config,
+        #[cfg(feature = "mlx-native")]
+        whisper: None,
         next_request_id: 2,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
@@ -2051,6 +2061,8 @@ fn native_generate_response_surfaces_runner_route_metadata() {
         core,
         runtime: config.runtime_report(),
         config,
+        #[cfg(feature = "mlx-native")]
+        whisper: None,
         next_request_id: 2,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),

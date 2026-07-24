@@ -97,6 +97,13 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         cert_gate_note: "hybrid gated-delta / MoE; capability-gated, not name-allowlisted",
     },
     ArchitectureRegistration {
+        family_label: "minicpmv4_6",
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "Qwen3.5 hybrid text backbone with MiniCPM-V vision prefill",
+    },
+    ArchitectureRegistration {
         family_label: "llama3",
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,

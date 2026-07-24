@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use super::anthropic::anthropic_messages;
 use super::app_state::{AppState, ServerMetrics};
+use super::audio::{audio_transcriptions, audio_translations};
 use super::embeddings::records::embedding_records;
 use super::generation::lifecycle::{
     cancel_request, request_snapshot, step_request, submit_request,
@@ -52,6 +53,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/v1/model/load", post(load_model))
         .route("/v1/model/unload", post(unload_model))
         .route("/v1/embeddings", post(openai_embeddings))
+        .route("/v1/audio/transcriptions", post(audio_transcriptions))
+        .route("/v1/audio/translations", post(audio_translations))
         .route("/v1/embedding_records", post(embedding_records))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/completions", post(openai_completions))

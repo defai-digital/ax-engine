@@ -62,6 +62,56 @@ fn unique_test_dir(label: &str) -> PathBuf {
 }
 
 #[test]
+fn converts_native_whisper_checkpoint_without_tokenizer_json() {
+    let dir = unique_test_dir("whisper");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "whisper",
+            "n_mels": 128,
+            "n_audio_ctx": 1500,
+            "n_audio_state": 1280,
+            "n_audio_head": 20,
+            "n_audio_layer": 32,
+            "n_vocab": 51866,
+            "n_text_ctx": 448,
+            "n_text_state": 1280,
+            "n_text_head": 20,
+            "n_text_layer": 4
+        }),
+    );
+    write_fake_safetensors(
+        &dir,
+        "weights.safetensors",
+        &[
+            ("alignment_heads", "I64", &[6, 2]),
+            ("encoder.conv1.weight", "F16", &[1]),
+            ("decoder.token_embedding.weight", "F16", &[1]),
+        ],
+    );
+
+    let manifest = convert_hf_model_dir(&dir).expect("native Whisper conversion should succeed");
+    assert_eq!(manifest.model_family, "whisper");
+    assert_eq!(manifest.layer_count, 32);
+    assert_eq!(manifest.hidden_size, 1280);
+    assert_eq!(manifest.vocab_size, 51866);
+    assert_eq!(manifest.tensors.len(), 2);
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .all(|tensor| tensor.role == NativeTensorRole::Other)
+    );
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .all(|tensor| tensor.name != "alignment_heads")
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn converts_gemma4_assistant_q_only_external_kv_contract() {
     let dir = unique_test_dir("gemma4_assistant");
     write_config(
@@ -1845,6 +1895,44 @@ fn qwen3_5_model_type_without_moe_config_has_no_moe_tensors() {
 }
 
 #[test]
+fn unified_qwen_language_and_vision_names_are_preserved() {
+    let qwen35 = model_family_for_type("qwen3_5", &serde_json::json!({"model_type": "qwen3_5"}))
+        .expect("qwen3.5 family");
+    assert_eq!(
+        match_tensor(
+            "model.language_model.layers.3.self_attn.q_proj.weight",
+            &qwen35,
+        ),
+        Some((crate::model::NativeTensorRole::AttentionQ, Some(3)))
+    );
+    assert_eq!(
+        match_tensor(
+            "model.language_model.layers.2.linear_attn.in_proj_qkv.weight",
+            &qwen35,
+        ),
+        Some((
+            crate::model::NativeTensorRole::LinearAttentionInProjQkv,
+            Some(2),
+        ))
+    );
+    assert_eq!(
+        match_tensor("model.visual.blocks.0.attn.qkv.weight", &qwen35),
+        Some((crate::model::NativeTensorRole::Other, None))
+    );
+
+    let qwen_vl = model_family_for_type("qwen3_vl", &serde_json::json!({"model_type": "qwen3_vl"}))
+        .expect("qwen3-vl family");
+    assert_eq!(
+        match_tensor("model.language_model.embed_tokens.weight", &qwen_vl),
+        Some((crate::model::NativeTensorRole::TokenEmbedding, None))
+    );
+    assert_eq!(
+        match_tensor("model.visual.deepstack_merger_list.0.norm.weight", &qwen_vl),
+        Some((crate::model::NativeTensorRole::Other, None))
+    );
+}
+
+#[test]
 fn qwen3_5_moe_config_detected_from_num_experts_in_text_config() {
     let config = serde_json::json!({
         "model_type": "qwen3_5",
@@ -2999,6 +3087,19 @@ fn rejects_qwen_rope_scaling_until_runtime_contract_is_manifested() {
         "qwen3_next",
     )
     .expect("null rope_scaling should use current Qwen RoPE contract");
+    validate_qwen_rope_scaling(
+        &serde_json::json!({
+            "text_config": {
+                "rope_scaling": {
+                    "mrope_interleaved": true,
+                    "mrope_section": [24, 20, 20],
+                    "rope_type": "default"
+                }
+            }
+        }),
+        "qwen3_vl",
+    )
+    .expect("default Qwen3-VL MRoPE describes axis assignment, not frequency scaling");
 
     let error = validate_qwen_rope_scaling(
         &serde_json::json!({
@@ -3273,6 +3374,16 @@ fn rejects_quantized_dtypes() {
     assert!(matches!(error, ConvertError::UnsupportedDtype { .. }));
 
     let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn skips_batch_norm_training_counters_before_dtype_conversion() {
+    assert!(super::is_training_only_tensor(
+        "sound_encoder.encoder.layers.0.conv.norm.num_batches_tracked"
+    ));
+    assert!(!super::is_training_only_tensor(
+        "sound_encoder.encoder.layers.0.conv.norm.running_mean"
+    ));
 }
 
 #[test]
@@ -4374,8 +4485,9 @@ fn converts_unlimited_ocr_language_moe_directory() {
     assert_eq!(manifest.moe.shared_expert_count, Some(2));
     // DeepSeek-V2 language default; HF configs often omit the field.
     assert_eq!(manifest.rms_norm_eps, Some(1e-6));
-    // R-SWA: do not encode standard prefill SWA for unlimited_ocr.
-    assert_eq!(manifest.sliding_window_size, None);
+    // The MLX runtime interprets Unlimited-OCR's window as protected-prefix
+    // R-SWA rather than standard prefill SWA.
+    assert_eq!(manifest.sliding_window_size, Some(128));
     assert!(
         manifest
             .tensors

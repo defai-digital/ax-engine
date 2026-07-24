@@ -11,9 +11,11 @@ unsafe_code = "allow"
 [dependencies]
 mlx-sys = { path = "../mlx-sys" }
 ax-engine-core = { path = "../ax-engine-core" }
+base64.workspace = true
 fs2.workspace = true
 image.workspace = true
 parking_lot = "0.12"
+rustfft.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

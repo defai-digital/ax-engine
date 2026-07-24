@@ -60,7 +60,15 @@ pub(super) fn resolve_native_model_report(
     core: &EngineCore,
 ) -> Option<NativeModelReport> {
     let source = config.mlx_model_artifacts_source?;
-    let summary = core.native_model_artifacts_summary()?;
+    let summary = core.native_model_artifacts_summary().or_else(|| {
+        // Dedicated native runtimes such as Whisper do not implement the
+        // autoregressive ExecutionRunner contract, but still carry the same
+        // validated manifest and should appear in runtime metadata.
+        let model_dir = config.mlx_model_artifacts_dir()?;
+        ax_engine_core::NativeModelArtifacts::from_dir(model_dir)
+            .ok()
+            .map(|artifacts| artifacts.summary())
+    })?;
     let binding = core.native_model_binding_summary();
     Some(NativeModelReport::from_summary(source, summary, binding))
 }

@@ -216,6 +216,14 @@ pub struct MlxKVCacheUsage {
 }
 
 #[derive(Clone)]
+struct ProtectedPrefixRing {
+    /// Number of prompt/image tokens retained permanently.
+    prefix_len: usize,
+    /// Number of generated-token slots rotated after the prefix.
+    window: usize,
+}
+
+#[derive(Clone)]
 struct LayerKV {
     /// Full backing buffer: `[1, n_kv_heads, capacity, head_dim]`.
     k: MlxArray,
@@ -232,6 +240,7 @@ struct LayerKV {
     head_dim: i32,
     capacity: usize,
     rotating_window: Option<usize>,
+    protected_prefix_ring: Option<ProtectedPrefixRing>,
     dtype: MlxDtype,
 }
 
@@ -784,6 +793,13 @@ pub struct MlxKVCache {
     /// position (e.g. after capped MTP warmup where only the last N tokens
     /// are warmed up but RoPE needs the full prompt offset).
     pub rope_offset: usize,
+    /// Signed multimodal position compression used by unified Qwen models.
+    ///
+    /// A visual run may occupy hundreds of KV slots while advancing MRoPE by
+    /// only the largest temporal/spatial axis, so this is commonly negative.
+    /// It is kept separate from `rope_offset`, whose existing callers require
+    /// an unsigned physical-vs-logical cache offset.
+    mrope_position_delta: i32,
     growth_count: u64,
     use_rotating_sliding_decode: bool,
     /// Extra ring slots beyond the sliding window that keep speculative
@@ -864,6 +880,7 @@ impl Clone for MlxKVCache {
             linear_layers: self.linear_layers.clone(),
             seq_len: self.seq_len,
             rope_offset: self.rope_offset,
+            mrope_position_delta: self.mrope_position_delta,
             growth_count: self.growth_count,
             use_rotating_sliding_decode: self.use_rotating_sliding_decode,
             rotating_slack: self.rotating_slack,
@@ -943,6 +960,7 @@ impl MlxKVCache {
                 .collect(),
             seq_len: 0,
             rope_offset: 0,
+            mrope_position_delta: 0,
             growth_count: 0,
             use_rotating_sliding_decode: false,
             rotating_slack: 0,
@@ -974,6 +992,7 @@ impl MlxKVCache {
                 .collect(),
             seq_len: 0,
             rope_offset: 0,
+            mrope_position_delta: 0,
             growth_count: 0,
             use_rotating_sliding_decode: false,
             rotating_slack: 0,
@@ -1286,6 +1305,22 @@ impl MlxKVCache {
         self.seq_len = n;
     }
 
+    /// Install the signed position compression computed by a visual prefill.
+    pub fn set_mrope_position_delta(&mut self, delta: i32) {
+        self.mrope_position_delta = delta;
+    }
+
+    pub fn mrope_position_delta(&self) -> i32 {
+        self.mrope_position_delta
+    }
+
+    /// Convert a physical token offset to the shared T/H/W position used for
+    /// post-prefill decode, clamping only malformed negative positions.
+    pub fn mrope_decode_position(&self, token_offset: usize) -> usize {
+        let position = (token_offset as i128) + i128::from(self.mrope_position_delta);
+        usize::try_from(position.max(0)).unwrap_or(usize::MAX)
+    }
+
     pub fn set_rotating_sliding_decode(&mut self, enabled: bool) {
         self.use_rotating_sliding_decode = enabled;
     }
@@ -1342,10 +1377,12 @@ impl MlxKVCache {
     /// stores/restores use this predicate to fail closed and recompute an
     /// ordered cache instead.
     pub(crate) fn has_rotated_sliding_layers(&self) -> bool {
-        self.layers
-            .iter()
-            .flatten()
-            .any(|layer| layer.rotating_window().is_some())
+        self.layers.iter().flatten().any(|layer| {
+            layer.rotating_window().is_some()
+                || layer
+                    .as_contiguous()
+                    .is_some_and(|lkv| lkv.protected_prefix_ring.is_some())
+        })
     }
 
     // ── F3 M1: serialization for the disk-prefix-cache disk format ──
@@ -1589,13 +1626,20 @@ impl MlxKVCache {
         out.extend_from_slice(&(self.rope_offset as u64).to_le_bytes());
         let layer_count = self.layers.len() as u32;
         out.extend_from_slice(&layer_count.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        // Version 4 originally reserved this word as zero. Reusing it keeps
+        // old payloads readable (zero delta) without a format bump.
+        out.extend_from_slice(&self.mrope_position_delta.to_le_bytes());
 
         for idx in 0..self.layers.len() {
             // Per-index disambiguation: at most one of the three layer
             // vectors is populated. The encoded `kind` byte tells the
             // reader which payload to expect.
             if let Some(fa) = &self.layers[idx] {
+                assert!(
+                    fa.as_contiguous()
+                        .is_none_or(|lkv| lkv.protected_prefix_ring.is_none()),
+                    "protected-prefix decode caches are not portable prefix snapshots"
+                );
                 out.push(Self::LAYER_KIND_FA);
                 out.extend_from_slice(&[0u8; 7]);
                 // Ring geometry must survive the round trip: a rotated
@@ -1690,7 +1734,7 @@ impl MlxKVCache {
         let rope_offset = usize::try_from(read_u64_from(reader)?)
             .map_err(|_| MlxKVCacheSerializeError::BadShape(8))?;
         let layer_count = read_u32_from(reader)? as usize;
-        let _reserved = read_u32_from(reader)?;
+        let mrope_position_delta = read_u32_from(reader)? as i32;
 
         // Wire format is always dense contiguous; do not inherit env-flag
         // paged mode into restored snapshots (I-2 payload is contiguous).
@@ -1698,6 +1742,7 @@ impl MlxKVCache {
         cache.seq_len = seq_len;
         cache.growth_count = growth_count;
         cache.rope_offset = rope_offset;
+        cache.mrope_position_delta = mrope_position_delta;
 
         for idx in 0..layer_count {
             let kind = read_u8_from(reader)?;
@@ -1739,6 +1784,7 @@ impl MlxKVCache {
                         head_dim: shape[3],
                         capacity,
                         rotating_window,
+                        protected_prefix_ring: None,
                         dtype: k_arr.dtype(),
                         k: k_arr,
                         v: v_arr,
@@ -1888,6 +1934,7 @@ impl MlxKVCache {
                         head_dim,
                         capacity,
                         rotating_window: None,
+                        protected_prefix_ring: None,
                         dtype,
                     }));
                     return (k_view, v_view);
@@ -1910,6 +1957,7 @@ impl MlxKVCache {
                     head_dim,
                     capacity,
                     rotating_window: None,
+                    protected_prefix_ring: None,
                     dtype,
                 }));
             }
@@ -1930,6 +1978,10 @@ impl MlxKVCache {
                     lkv.rotating_window,
                     lkv.capacity,
                     self.rotating_slack,
+                );
+                assert!(
+                    lkv.protected_prefix_ring.is_none(),
+                    "ordered KV append on protected-prefix ring layer {layer}"
                 );
                 assert_eq!(
                     lkv.n_kv_heads, n_kv_heads,
@@ -2022,6 +2074,129 @@ impl MlxKVCache {
             return self.append_paged_fa(layer, new_k, new_v, write_start..write_end, append, true);
         }
         let (k, v) = self.append_with_retained_window(layer, new_k, new_v, window);
+        MlxAttentionKv::Dense { k, v }
+    }
+
+    /// Append one decode token while retaining the complete existing prefill
+    /// plus a bounded ring of generated tokens.
+    ///
+    /// Unlimited-OCR's R-SWA is not ordinary sliding attention: image and text
+    /// prompt K/V remain attendable forever, while only post-prefill decode K/V
+    /// rotate through `window` physical slots. RoPE is applied by the caller at
+    /// the monotonically increasing logical position, so the circular ordering
+    /// of the decode suffix does not affect single-token attention.
+    pub(crate) fn append_with_protected_prefix_window_for_attention(
+        &mut self,
+        layer: usize,
+        new_k: MlxArray,
+        new_v: MlxArray,
+        window: usize,
+    ) -> MlxAttentionKv {
+        let append = validate_append_inputs(layer, self.layers.len(), &new_k, &new_v);
+        assert_eq!(
+            append.new_tokens, 1,
+            "protected-prefix R-SWA only supports single-token decode"
+        );
+        assert!(window > 0, "protected-prefix R-SWA window must be positive");
+        assert!(
+            self.seq_len > 0,
+            "protected-prefix R-SWA requires a completed prefill"
+        );
+
+        if matches!(self.layers[layer], Some(FaLayerStorage::Paged(_))) {
+            self.demote_paged_layer_to_contiguous(layer, self.seq_len);
+        }
+
+        let lkv = self.layers[layer]
+            .as_mut()
+            .and_then(FaLayerStorage::as_contiguous_mut)
+            .expect("protected-prefix R-SWA requires an existing contiguous prefill cache");
+        assert!(
+            lkv.rotating_window.is_none(),
+            "protected-prefix and ordinary rotating rings cannot share a layer"
+        );
+        assert_eq!(
+            lkv.n_kv_heads, append.n_kv_heads,
+            "KV cache append cannot change n_kv_heads for an existing layer"
+        );
+        assert_eq!(
+            lkv.head_dim, append.head_dim,
+            "KV cache append cannot change head_dim for an existing layer"
+        );
+        assert_eq!(
+            lkv.dtype, append.dtype,
+            "KV cache append cannot change dtype for an existing layer"
+        );
+
+        let ring = lkv
+            .protected_prefix_ring
+            .get_or_insert(ProtectedPrefixRing {
+                prefix_len: self.seq_len,
+                window,
+            })
+            .clone();
+        assert_eq!(
+            ring.window, window,
+            "protected-prefix R-SWA window changed mid-request"
+        );
+        assert!(
+            self.seq_len >= ring.prefix_len,
+            "protected-prefix R-SWA logical position moved before its prefill"
+        );
+
+        let required_capacity = ring.prefix_len.saturating_add(ring.window);
+        if lkv.capacity < required_capacity {
+            let new_capacity = chunk_ceiling(required_capacity);
+            let shape = [1i32, lkv.n_kv_heads, new_capacity as i32, lkv.head_dim];
+            let start = [0i32, 0, 0, 0];
+            let old_stop = [1i32, lkv.n_kv_heads, lkv.capacity as i32, lkv.head_dim];
+            let strides = [1i32, 1, 1, 1];
+            lkv.k = slice_update(
+                &zeros(&shape, lkv.dtype, None),
+                &lkv.k,
+                &start,
+                &old_stop,
+                &strides,
+                None,
+            );
+            lkv.v = slice_update(
+                &zeros(&shape, lkv.dtype, None),
+                &lkv.v,
+                &start,
+                &old_stop,
+                &strides,
+                None,
+            );
+            lkv.capacity = new_capacity;
+            self.growth_count = self.growth_count.saturating_add(1);
+        }
+
+        let decoded_before = self.seq_len - ring.prefix_len;
+        let slot = ring.prefix_len + decoded_before % ring.window;
+        let start = [0i32, 0, slot as i32, 0];
+        let stop = [1i32, lkv.n_kv_heads, slot as i32 + 1, lkv.head_dim];
+        let strides = [1i32, 1, 1, 1];
+        lkv.k = slice_update(&lkv.k, &new_k, &start, &stop, &strides, None);
+        lkv.v = slice_update(&lkv.v, &new_v, &start, &stop, &strides, None);
+
+        let physical_len = ring.prefix_len + (decoded_before + 1).min(ring.window);
+        let end = physical_len as i32;
+        let k = slice(
+            &lkv.k,
+            &[0, 0, 0, 0],
+            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let v = slice(
+            &lkv.v,
+            &[0, 0, 0, 0],
+            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        lkv.last_k_view = Some(k.clone());
+        lkv.last_v_view = Some(v.clone());
         MlxAttentionKv::Dense { k, v }
     }
 
@@ -2212,6 +2387,7 @@ impl MlxKVCache {
                 head_dim: paged.head_dim,
                 capacity,
                 rotating_window: None,
+                protected_prefix_ring: None,
                 dtype: paged.dtype,
             }));
         }
@@ -2249,6 +2425,10 @@ impl MlxKVCache {
                  existing window {:?} capacity {}, requested window {window} capacity {capacity}",
                 lkv.rotating_window,
                 lkv.capacity,
+            );
+            assert!(
+                lkv.protected_prefix_ring.is_none(),
+                "ordinary sliding ring cannot replace a protected-prefix ring"
             );
             let k_old = lkv.k.clone();
             let v_old = lkv.v.clone();
@@ -2482,8 +2662,10 @@ impl MlxKVCache {
             let rollback = self.seq_len - prefix_len;
             if self.layers.iter().flatten().any(|fa| {
                 fa.as_contiguous().is_some_and(|lkv| {
-                    lkv.rotating_window
-                        .is_some_and(|window| rollback > lkv.capacity.saturating_sub(window))
+                    lkv.protected_prefix_ring.is_some()
+                        || lkv
+                            .rotating_window
+                            .is_some_and(|window| rollback > lkv.capacity.saturating_sub(window))
                 })
             }) {
                 return false;
@@ -2526,7 +2708,7 @@ impl MlxKVCache {
         match fa {
             FaLayerStorage::Contiguous(lkv) => {
                 debug_assert!(
-                    lkv.rotating_window.is_none(),
+                    lkv.rotating_window.is_none() && lkv.protected_prefix_ring.is_none(),
                     "logical_layer_kv reads a [0, seq_len) prefix slice, which is meaningless \
                      on a rotated ring (MTP draft seeding never coexists with rotation)"
                 );
@@ -2586,6 +2768,7 @@ impl MlxKVCache {
             head_dim,
             capacity: length,
             rotating_window: None,
+            protected_prefix_ring: None,
             dtype,
         }));
         self.seq_len = seq_len;
@@ -2795,6 +2978,18 @@ impl MlxKVCache {
             .expect("KV-shared source layer has no cached KV — source layer must appear earlier");
         match fa {
             FaLayerStorage::Contiguous(lkv) => {
+                if let Some(ring) = &lkv.protected_prefix_ring {
+                    if let (Some(k), Some(v)) = (&lkv.last_k_view, &lkv.last_v_view) {
+                        return (k.clone(), v.clone());
+                    }
+                    let decoded = self.seq_len.saturating_sub(ring.prefix_len);
+                    let end = (ring.prefix_len + decoded.min(ring.window)) as i32;
+                    let stop = [1, lkv.n_kv_heads, end, lkv.head_dim];
+                    return (
+                        slice(&lkv.k, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None),
+                        slice(&lkv.v, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None),
+                    );
+                }
                 if lkv.rotating_window.is_some() {
                     // Rotated ring: the backing store IS the full ring view (the
                     // storing layer's append returned exactly this), and the ordered
@@ -2847,6 +3042,18 @@ impl MlxKVCache {
         let fa = self.layers.get(layer)?.as_ref()?;
         match fa {
             FaLayerStorage::Contiguous(lkv) => {
+                if let Some(ring) = &lkv.protected_prefix_ring {
+                    if let (Some(k), Some(v)) = (&lkv.last_k_view, &lkv.last_v_view) {
+                        return Some((k.clone(), v.clone()));
+                    }
+                    let decoded = self.seq_len.saturating_sub(ring.prefix_len);
+                    let end = (ring.prefix_len + decoded.min(ring.window)) as i32;
+                    let stop = [1, lkv.n_kv_heads, end, lkv.head_dim];
+                    return Some((
+                        slice(&lkv.k, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None),
+                        slice(&lkv.v, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None),
+                    ));
+                }
                 if lkv.rotating_window.is_some() {
                     // Rotated ring: return the full ring — valid at any time,
                     // including right after a `trim_to` rollback cleared the cached
@@ -2923,6 +3130,10 @@ impl MlxKVCache {
         let fa = self.layers.get(layer)?.as_ref()?;
         match fa {
             FaLayerStorage::Contiguous(lkv) => {
+                assert!(
+                    lkv.protected_prefix_ring.is_none(),
+                    "a protected-prefix ring has no contiguous full logical KV view"
+                );
                 let end = self.seq_len as i32;
                 let k = slice(
                     &lkv.k,
@@ -2988,6 +3199,7 @@ impl MlxKVCache {
                 head_dim,
                 capacity,
                 rotating_window: None,
+                protected_prefix_ring: None,
                 dtype,
             }));
         }
@@ -3016,6 +3228,7 @@ impl MlxKVCache {
         }
         self.seq_len = 0;
         self.rope_offset = 0;
+        self.mrope_position_delta = 0;
         self.growth_count = 0;
     }
 }
@@ -3246,6 +3459,53 @@ mod tests {
             (16..24).map(|i| i as f32).collect::<Vec<_>>()
         );
         assert_eq!(read_f32(&full_v).len(), 24);
+    }
+
+    #[test]
+    fn protected_prefix_ring_retains_prefill_and_rotates_only_decode_tokens() {
+        let token =
+            |value: f32| mlx_sys::reshape(&MlxArray::from_f32_slice(&[value]), &[1, 1, 1, 1], None);
+        let read = |arr: &MlxArray| {
+            let arr = astype(arr, MlxDtype::Float32, None);
+            eval(&[&arr]);
+            let len = arr.nbytes() / std::mem::size_of::<f32>();
+            let ptr = arr.data_raw() as *const f32;
+            unsafe { std::slice::from_raw_parts(ptr, len).to_vec() }
+        };
+
+        let mut cache = MlxKVCache::new_contiguous(1);
+        let prefill = mlx_sys::reshape(
+            &MlxArray::from_f32_slice(&[0.0, 1.0, 2.0]),
+            &[1, 1, 3, 1],
+            None,
+        );
+        cache.append(0, prefill.clone(), prefill);
+        cache.advance(3);
+
+        let mut last_k = None;
+        for value in [3.0, 4.0, 5.0, 6.0] {
+            let kv = cache.append_with_protected_prefix_window_for_attention(
+                0,
+                token(value),
+                token(value + 100.0),
+                2,
+            );
+            let (k, _) = kv.into_dense();
+            last_k = Some(k);
+            cache.advance(1);
+        }
+
+        let last_k = last_k.expect("decode produced a KV view");
+        assert_eq!(last_k.shape(), vec![1, 1, 5, 1]);
+        assert_eq!(read(&last_k), vec![0.0, 1.0, 2.0, 5.0, 6.0]);
+        let ring = contiguous_layer(&cache, 0)
+            .protected_prefix_ring
+            .as_ref()
+            .expect("protected-prefix ring initialized");
+        assert_eq!((ring.prefix_len, ring.window), (3, 2));
+        assert!(!cache.trim_to(6), "ring decode must decline rollback");
+        assert_eq!(cache.seq_len(), 7);
+        assert!(cache.has_rotated_sliding_layers());
     }
 
     #[test]
@@ -3822,6 +4082,7 @@ mod tests {
             head_dim: 8,
             capacity: seq_len,
             rotating_window: None,
+            protected_prefix_ring: None,
             dtype: MlxDtype::Float32,
             k: k0,
             v: v0,
@@ -3833,6 +4094,7 @@ mod tests {
             head_dim: 16,
             capacity: seq_len,
             rotating_window: None,
+            protected_prefix_ring: None,
             dtype: MlxDtype::Float32,
             k: k1,
             v: v1,
@@ -4133,6 +4395,7 @@ mod tests {
             head_dim,
             capacity,
             rotating_window: None,
+            protected_prefix_ring: None,
             dtype: MlxDtype::Float32,
             k,
             v,
@@ -4186,6 +4449,7 @@ mod tests {
             head_dim,
             capacity: seq_len,
             rotating_window: None,
+            protected_prefix_ring: None,
             dtype: MlxDtype::Float32,
             k,
             v,
@@ -4315,6 +4579,7 @@ mod tests {
                 head_dim,
                 capacity: seq_len,
                 rotating_window: None,
+                protected_prefix_ring: None,
                 dtype: MlxDtype::Float32,
                 k,
                 v,

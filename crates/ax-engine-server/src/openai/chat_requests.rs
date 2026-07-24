@@ -6,7 +6,9 @@ use ax_engine_sdk::{
     Gemma4UnifiedImageInput, Gemma4UnifiedImageRuntimeInput, Gemma4UnifiedModality,
     Gemma4UnifiedProcessorConfig, Gemma4UnifiedRuntimeInputs, Gemma4UnifiedSoftTokenRange,
     Gemma4UnifiedTokenSpan, Gemma4UnifiedVideoInput, Gemma4UnifiedVideoRuntimeInput,
-    LlamaCppChatMessage, MlxLmChatMessage, Qwen3VlImageRuntimeInput, Qwen3VlRuntimeInputs,
+    LlamaCppChatMessage, MiniCpmV46ImageRuntimeInput, MiniCpmV46RuntimeInputs, MlxLmChatMessage,
+    NemotronOmniAudioRuntimeInput, NemotronOmniImageRuntimeInput, NemotronOmniRuntimeInputs,
+    Qwen3VlImageRuntimeInput, Qwen3VlRuntimeInputs,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -40,6 +42,20 @@ pub(crate) struct Qwen3VlChatPrompt {
     pub(crate) runtime_inputs: Qwen3VlRuntimeInputs,
 }
 
+/// Native-MLX MiniCPM-V 4.6 chat prompt with dynamically sized image
+/// placeholders and normalized NHWC pixels.
+pub(crate) struct MiniCpmV46ChatPrompt {
+    pub(crate) input_tokens: Vec<u32>,
+    pub(crate) runtime_inputs: MiniCpmV46RuntimeInputs,
+}
+
+/// Native-MLX Nemotron H Nano Omni prompt with dynamically sized RADIO image
+/// placeholders and normalized channel-first pixels.
+pub(crate) struct NemotronOmniChatPrompt {
+    pub(crate) input_tokens: Vec<u32>,
+    pub(crate) runtime_inputs: NemotronOmniRuntimeInputs,
+}
+
 /// True when the model id / family label is a Qwen3-VL variant.
 pub(crate) fn is_qwen3_vl_model_id(model_id: &str) -> bool {
     let lower = model_id.to_ascii_lowercase();
@@ -48,15 +64,73 @@ pub(crate) fn is_qwen3_vl_model_id(model_id: &str) -> bool {
         || lower.contains("qwen3vl")
         || lower.contains("qwen3-vl-moe")
         || lower.contains("qwen3_vl_moe")
+        || lower.contains("qwen3.5")
+        || lower.contains("qwen3_5")
 }
 
-/// Default Qwen3-VL ViT geometry (common HF defaults; overridable via config later).
-const QWEN3_VL_DEFAULT_PATCH_SIZE: u32 = 14;
+/// True when the model id / family label is MiniCPM-V 4.6.
+pub(crate) fn is_minicpm_v46_model_id(model_id: &str) -> bool {
+    let lower = model_id.to_ascii_lowercase();
+    (lower.contains("minicpm-v") || lower.contains("minicpm_v") || lower.contains("minicpmv"))
+        && (lower.contains("4.6") || lower.contains("4_6") || lower.contains("v4-6"))
+}
+
+/// True when the model id / family label is Nemotron H Nano Omni.
+pub(crate) fn is_nemotron_omni_model_id(model_id: &str) -> bool {
+    let lower = model_id.to_ascii_lowercase();
+    lower.contains("nemotron") && lower.contains("omni")
+}
+
+pub(crate) fn is_nemotron_omni_model_dir(model_dir: &Path) -> bool {
+    std::fs::read(model_dir.join("config.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|config| {
+            config
+                .get("model_type")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|model_type| {
+            model_type == "NemotronH_Nano_Omni_Reasoning_V3"
+                || model_type.eq_ignore_ascii_case("nemotron_h_nano_omni")
+        })
+}
+
+/// Fail-safe defaults for unified Qwen vision checkpoints. The renderer reads
+/// the actual processor/config files before preprocessing.
+const QWEN3_VL_DEFAULT_PATCH_SIZE: u32 = 16;
+const QWEN3_VL_DEFAULT_TEMPORAL_PATCH_SIZE: u32 = 2;
 const QWEN3_VL_DEFAULT_SPATIAL_MERGE: u32 = 2;
 const QWEN3_VL_DEFAULT_MAX_SOFT: u32 = 1024;
-/// Placeholder text embedded in the rendered prompt for each image; tokenized
-/// then expanded to soft-token count in the token stream.
+/// Full chat-template markup and the individual token expanded into soft
+/// tokens. Keeping vision_start/end is required by both Qwen3-VL and Qwen3.5.
+const QWEN3_VL_IMAGE_MARKUP: &str = "<|vision_start|><|image_pad|><|vision_end|>";
 const QWEN3_VL_IMAGE_PLACEHOLDER: &str = "<|image_pad|>";
+const QWEN3_VL_VIDEO_MARKUP: &str = "<|vision_start|><|video_pad|><|vision_end|>";
+const QWEN3_VL_VIDEO_PLACEHOLDER: &str = "<|video_pad|>";
+const QWEN3_VL_MAX_VIDEO_FRAMES: usize = 24;
+const MINICPM_V46_IMAGE_PAD: &str = "<|image_pad|>";
+const MINICPM_V46_IMAGE_START: &str = "<image>";
+const MINICPM_V46_IMAGE_END: &str = "</image>";
+const MINICPM_V46_UNK: &str = "<unk>";
+const MINICPM_V46_DEFAULT_PATCH_SIZE: u32 = 14;
+const MINICPM_V46_DEFAULT_SCALE_RESOLUTION: u32 = 448;
+const NEMOTRON_OMNI_IMAGE_PLACEHOLDER: &str = "<image>";
+const NEMOTRON_OMNI_IMAGE_START: &str = "<img>";
+const NEMOTRON_OMNI_IMAGE_END: &str = "</img>";
+const NEMOTRON_OMNI_AUDIO_PLACEHOLDER: &str = "<so_embedding>";
+const NEMOTRON_OMNI_AUDIO_START: &str = "<so_start>";
+const NEMOTRON_OMNI_AUDIO_END: &str = "<so_end>";
+const NEMOTRON_OMNI_DEFAULT_PATCH_SIZE: u32 = 16;
+const NEMOTRON_OMNI_DEFAULT_DOWNSAMPLE_RATIO: f32 = 0.5;
+const NEMOTRON_OMNI_DEFAULT_MIN_PATCHES: u32 = 1024;
+const NEMOTRON_OMNI_DEFAULT_MAX_PATCHES: u32 = 13_312;
+const NEMOTRON_OMNI_DEFAULT_MAX_MODEL_LEN: u32 = 16_384;
+const NEMOTRON_OMNI_DEFAULT_AUDIO_RATE: u32 = 16_000;
+const NEMOTRON_OMNI_DEFAULT_AUDIO_HOP: u32 = 160;
+const NEMOTRON_OMNI_DEFAULT_AUDIO_SUBSAMPLING: u32 = 8;
+const NEMOTRON_OMNI_MAX_AUDIO_SECONDS: u32 = 300;
 
 /// Options for OpenAI chat prompt rendering beyond tools/messages.
 #[derive(Clone, Copy, Debug, Default)]
@@ -2055,6 +2129,7 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
             message.content.as_ref(),
             &image_placeholder,
             &audio_placeholder,
+            &image_placeholder,
             &mut collected,
         )?;
         pairs.push((role.to_string(), content));
@@ -2151,11 +2226,11 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
     }))
 }
 
-/// Build a native-MLX Qwen3-VL chat prompt from inline `image_url` parts.
+/// Build a native-MLX Qwen3-VL chat prompt from inline image/video parts.
 ///
-/// Images are decoded (data URI only), patchified for the portable ViT, and
-/// attached as [`Qwen3VlRuntimeInputs`]. Audio/video are rejected (out of
-/// Qwen3-VL product scope for this path). Returns `Ok(None)` with no media.
+/// Media is decoded (data URI only), patchified for the portable ViT, and
+/// attached as [`Qwen3VlRuntimeInputs`]. Audio is not part of Qwen3-VL.
+/// Returns `Ok(None)` with no media.
 pub(crate) fn render_qwen3_vl_chat_with_media(
     model_id: &str,
     model_dir: &Path,
@@ -2168,7 +2243,7 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
         return Err(empty_chat_messages_error());
     }
 
-    // Reject audio/video on the Qwen3-VL chat surface (image-only scope).
+    // Qwen3-VL and unified Qwen3.5 accept vision media but not audio.
     for part in messages
         .iter()
         .filter_map(|m| match &m.content {
@@ -2177,24 +2252,14 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
         })
         .flatten()
     {
-        match chat_content_part_kind(part) {
-            OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Audio) => {
-                return Err(error_response(
-                    StatusCode::BAD_REQUEST,
-                    "unsupported_modality",
-                    "qwen3_vl chat accepts image_url media only; audio is not supported"
-                        .to_string(),
-                ));
-            }
-            OpenAiChatContentPartKind::Video => {
-                return Err(error_response(
-                    StatusCode::BAD_REQUEST,
-                    "unsupported_modality",
-                    "qwen3_vl chat accepts image_url media only; video is not supported"
-                        .to_string(),
-                ));
-            }
-            _ => {}
+        if let OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Audio) =
+            chat_content_part_kind(part)
+        {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "unsupported_modality",
+                "qwen3_vl chat accepts image_url media only; audio is not supported".to_string(),
+            ));
         }
     }
 
@@ -2205,6 +2270,7 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
             format!("failed to load tokenizer for qwen3_vl multimodal chat: {error}"),
         )
     })?;
+    let processor = load_qwen3_vl_processor_config(model_dir)?;
 
     let mut collected = CollectedMedia::default();
     let mut pairs: ChatMessagePairs = Vec::with_capacity(messages.len());
@@ -2212,13 +2278,14 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
         let content = render_content_collecting_media(
             message.content.as_ref(),
-            QWEN3_VL_IMAGE_PLACEHOLDER,
+            QWEN3_VL_IMAGE_MARKUP,
             "", // audio unused (rejected above)
+            QWEN3_VL_VIDEO_MARKUP,
             &mut collected,
         )?;
         pairs.push((role.to_string(), content));
     }
-    if collected.images.is_empty() {
+    if collected.images.is_empty() && collected.videos.is_empty() {
         return Ok(None);
     }
 
@@ -2231,8 +2298,10 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
         )
     })?;
 
-    // Encode placeholder alone to locate it in the prompt token stream.
-    let ph_tokens = tokenizer
+    // Encode placeholders alone to locate their spans in the prompt token
+    // stream. Images and videos use distinct pad tokens but share one vision
+    // tower and one ordered runtime media list.
+    let image_ph_tokens = tokenizer
         .encode(QWEN3_VL_IMAGE_PLACEHOLDER, false)
         .map_err(|error| {
             error_response(
@@ -2241,68 +2310,142 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
                 format!("failed to tokenize image placeholder: {error}"),
             )
         })?;
-    if ph_tokens.is_empty() {
+    if image_ph_tokens.is_empty() {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "tokenizer produced empty image placeholder tokens".to_string(),
         ));
     }
+    let video_ph_tokens = tokenizer
+        .encode(QWEN3_VL_VIDEO_PLACEHOLDER, false)
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to tokenize video placeholder: {error}"),
+            )
+        })?;
+    if !collected.videos.is_empty() && video_ph_tokens.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "tokenizer produced empty video placeholder tokens".to_string(),
+        ));
+    }
 
-    let mut placeholder_starts = find_subsequence_starts(&base_tokens, &ph_tokens);
-    if placeholder_starts.len() != collected.images.len() {
+    let image_starts = if collected.images.is_empty() {
+        Vec::new()
+    } else {
+        find_subsequence_starts(&base_tokens, &image_ph_tokens)
+    };
+    if image_starts.len() != collected.images.len() {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             format!(
                 "qwen3_vl image placeholders {} != collected images {}",
-                placeholder_starts.len(),
+                image_starts.len(),
                 collected.images.len()
             ),
         ));
     }
+    let video_starts = if collected.videos.is_empty() {
+        Vec::new()
+    } else {
+        find_subsequence_starts(&base_tokens, &video_ph_tokens)
+    };
+    if video_starts.len() != collected.videos.len() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "qwen3_vl video placeholders {} != collected videos {}",
+                video_starts.len(),
+                collected.videos.len()
+            ),
+        ));
+    }
 
-    // Expand each single placeholder span into soft_token_count tokens (reuse
-    // the first pad token id as filler so the sequence length matches ViT
-    // soft tokens for scatter positions).
-    let pad_id = ph_tokens[0];
-    let mut images_rt = Vec::with_capacity(collected.images.len());
+    #[derive(Clone, Copy)]
+    enum QwenMediaKind {
+        Image(usize),
+        Video(usize),
+    }
+    let mut placeholder_spans = Vec::with_capacity(image_starts.len() + video_starts.len());
+    placeholder_spans.extend(image_starts.into_iter().enumerate().map(|(index, start)| {
+        (
+            start,
+            image_ph_tokens.len(),
+            image_ph_tokens[0],
+            QwenMediaKind::Image(index),
+        )
+    }));
+    placeholder_spans.extend(video_starts.into_iter().enumerate().map(|(index, start)| {
+        (
+            start,
+            video_ph_tokens.len(),
+            video_ph_tokens[0],
+            QwenMediaKind::Video(index),
+        )
+    }));
+    placeholder_spans.sort_unstable_by_key(|span| span.0);
+
+    // Expand every placeholder span into the number of merged ViT tokens,
+    // preserving the original mixed-media document order.
+    let mut media_rt = Vec::with_capacity(placeholder_spans.len());
     let mut expanded = Vec::with_capacity(base_tokens.len().saturating_mul(2));
     let mut cursor = 0usize;
-    // Process left-to-right; expansion shifts later indices so rebuild by walk.
-    placeholder_starts.sort_unstable();
-    for (image_i, start) in placeholder_starts.iter().copied().enumerate() {
+    for (start, placeholder_len, pad_id, kind) in placeholder_spans {
         if start < cursor {
             return Err(error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
-                "overlapping qwen3_vl image placeholders".to_string(),
+                "overlapping qwen3_vl media placeholders".to_string(),
             ));
         }
         expanded.extend_from_slice(&base_tokens[cursor..start]);
-        let (patches, geom) = patchify_qwen3_vl_image(&collected.images[image_i])?;
+        let (patches, geom, grid_t, is_video) = match kind {
+            QwenMediaKind::Image(index) => {
+                let (patches, geom) =
+                    patchify_qwen3_vl_image(&collected.images[index], &processor)?;
+                (patches, geom, 1, false)
+            }
+            QwenMediaKind::Video(index) => {
+                let frames = multimodal::decode_video_frames(
+                    &collected.videos[index],
+                    QWEN3_VL_MAX_VIDEO_FRAMES,
+                )
+                .map_err(media_error_response)?;
+                let (patches, geom, grid_t) = patchify_qwen3_vl_video(&frames, &processor)?;
+                (patches, geom, grid_t, true)
+            }
+        };
         let soft = geom.soft_token_count;
         let replacement_start = expanded.len();
         for _ in 0..soft {
             expanded.push(pad_id);
         }
         // Consume the original placeholder token span.
-        cursor = start + ph_tokens.len();
-        images_rt.push(Qwen3VlImageRuntimeInput {
+        cursor = start + placeholder_len;
+        media_rt.push(Qwen3VlImageRuntimeInput {
             placeholder_index: replacement_start,
             soft_token_count: soft,
             patches: patches.patches,
             num_patches: patches.num_patches,
             patch_dim: patches.patch_dim,
+            grid_t,
             height: geom.height,
             width: geom.width,
             patch_size: geom.patch_size,
+            temporal_patch_size: geom.temporal_patch_size,
             spatial_merge_size: geom.spatial_merge_size,
+            is_video,
         });
     }
     expanded.extend_from_slice(&base_tokens[cursor..]);
 
-    let runtime_inputs = Qwen3VlRuntimeInputs { images: images_rt };
+    let runtime_inputs = Qwen3VlRuntimeInputs { images: media_rt };
     runtime_inputs
         .validate_for_prompt_len(expanded.len())
         .map_err(|error| {
@@ -2319,13 +2462,1037 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
     }))
 }
 
+/// Build a native-MLX MiniCPM-V 4.6 prompt from inline images.
+///
+/// MiniCPM's chat template emits `<|image_pad|>` per image. The upstream
+/// processor expands each marker to `<image><unk>…</image>`, with one `<unk>`
+/// per output token from the dynamic SigLIP/VitMerger grid.
+pub(crate) fn render_minicpm_v46_chat_with_media(
+    model_id: &str,
+    model_dir: &Path,
+    messages: &[OpenAiChatMessage],
+) -> Result<Option<MiniCpmV46ChatPrompt>, HttpErrorResponse> {
+    if messages.is_empty() {
+        return Err(empty_chat_messages_error());
+    }
+    for part in messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            Some(OpenAiChatContent::Parts(parts)) => Some(parts.as_slice()),
+            _ => None,
+        })
+        .flatten()
+    {
+        match chat_content_part_kind(part) {
+            OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Audio) => {
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_modality",
+                    "MiniCPM-V 4.6 accepts image_url media only; audio is not supported"
+                        .to_string(),
+                ));
+            }
+            OpenAiChatContentPartKind::Video => {
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_modality",
+                    "MiniCPM-V 4.6 video input is not implemented; use image_url media".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    let tokenizer = EngineTokenizer::from_model_dir_cached(model_dir).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("failed to load tokenizer for MiniCPM-V 4.6 chat: {error}"),
+        )
+    })?;
+    let processor = load_minicpm_v46_processor_config(model_dir)?;
+
+    let mut collected = CollectedMedia::default();
+    let mut pairs: ChatMessagePairs = Vec::with_capacity(messages.len());
+    for message in messages {
+        let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        let content = render_content_collecting_media(
+            message.content.as_ref(),
+            MINICPM_V46_IMAGE_PAD,
+            "",
+            "",
+            &mut collected,
+        )?;
+        pairs.push((role.to_string(), content));
+    }
+    if collected.images.is_empty() {
+        return Ok(None);
+    }
+
+    let rendered = chat::render_prompt(model_id, &pairs).map_err(chat_error_response)?;
+    let marker_count = rendered.matches(MINICPM_V46_IMAGE_PAD).count();
+    if marker_count != collected.images.len() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "MiniCPM-V 4.6 prompt contains {marker_count} image markers but {} images were provided",
+                collected.images.len()
+            ),
+        ));
+    }
+
+    let mut processed = Vec::with_capacity(collected.images.len());
+    for image in &collected.images {
+        processed.push(preprocess_minicpm_v46_image(image, &processor)?);
+    }
+    let mut image_iter = processed.iter();
+    let mut expanded_text = String::with_capacity(
+        rendered.len()
+            + processed
+                .iter()
+                .map(|image| image.soft_token_count as usize * MINICPM_V46_UNK.len())
+                .sum::<usize>(),
+    );
+    let mut parts = rendered.split(MINICPM_V46_IMAGE_PAD);
+    if let Some(first) = parts.next() {
+        expanded_text.push_str(first);
+    }
+    for part in parts {
+        let image = image_iter.next().ok_or_else(|| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "MiniCPM-V 4.6 image marker expansion underflow".to_string(),
+            )
+        })?;
+        expanded_text.push_str(MINICPM_V46_IMAGE_START);
+        for _ in 0..image.soft_token_count {
+            expanded_text.push_str(MINICPM_V46_UNK);
+        }
+        expanded_text.push_str(MINICPM_V46_IMAGE_END);
+        expanded_text.push_str(part);
+    }
+
+    let input_tokens = tokenizer.encode(&expanded_text, false).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("failed to tokenize MiniCPM-V 4.6 prompt: {error}"),
+        )
+    })?;
+    let image_start_id =
+        minicpm_single_token_id(&tokenizer, MINICPM_V46_IMAGE_START, "image start")?;
+    let image_end_id = minicpm_single_token_id(&tokenizer, MINICPM_V46_IMAGE_END, "image end")?;
+    let unk_id = minicpm_single_token_id(&tokenizer, MINICPM_V46_UNK, "image placeholder")?;
+    let bounds = minicpm_image_bounds(&input_tokens, image_start_id, image_end_id)?;
+    if bounds.len() != processed.len() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "MiniCPM-V 4.6 encoded prompt contains {} image spans but {} images were provided",
+                bounds.len(),
+                processed.len()
+            ),
+        ));
+    }
+
+    let mut images = Vec::with_capacity(processed.len());
+    for (processed, (start, end)) in processed.into_iter().zip(bounds) {
+        let span = &input_tokens[start..end];
+        if span.len() != processed.soft_token_count as usize
+            || span.iter().any(|token| *token != unk_id)
+        {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!(
+                    "MiniCPM-V 4.6 image placeholder span has {} tokens; expected {} `<unk>` tokens",
+                    span.len(),
+                    processed.soft_token_count
+                ),
+            ));
+        }
+        images.push(MiniCpmV46ImageRuntimeInput {
+            placeholder_index: start,
+            soft_token_count: processed.soft_token_count,
+            pixel_values: processed.pixel_values,
+            height: processed.height,
+            width: processed.width,
+            patch_size: processor.patch_size,
+            spatial_downsample_factor: processor.spatial_downsample_factor,
+        });
+    }
+    let runtime_inputs = MiniCpmV46RuntimeInputs { images };
+    runtime_inputs
+        .validate_for_prompt_len(input_tokens.len())
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("MiniCPM-V 4.6 multimodal inputs invalid: {error}"),
+            )
+        })?;
+
+    Ok(Some(MiniCpmV46ChatPrompt {
+        input_tokens,
+        runtime_inputs,
+    }))
+}
+
+/// Build a native-MLX Nemotron H Nano Omni prompt from inline images/audio.
+///
+/// The checkpoint chat template emits one `<image>` context marker per image.
+/// Each marker is expanded to `<img><image>…</img>`, where the context-token
+/// count is the RADIO patch grid after the checkpoint's pixel-shuffle ratio.
+pub(crate) fn render_nemotron_omni_chat_with_media(
+    model_id: &str,
+    model_dir: &Path,
+    messages: &[OpenAiChatMessage],
+) -> Result<Option<NemotronOmniChatPrompt>, HttpErrorResponse> {
+    if messages.is_empty() {
+        return Err(empty_chat_messages_error());
+    }
+    for part in messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            Some(OpenAiChatContent::Parts(parts)) => Some(parts.as_slice()),
+            _ => None,
+        })
+        .flatten()
+    {
+        if matches!(
+            chat_content_part_kind(part),
+            OpenAiChatContentPartKind::Video
+        ) {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "unsupported_modality",
+                "Nemotron H Nano Omni video input is not implemented; use image_url media"
+                    .to_string(),
+            ));
+        }
+    }
+
+    let tokenizer = EngineTokenizer::from_model_dir_cached(model_dir).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("failed to load tokenizer for Nemotron H Nano Omni chat: {error}"),
+        )
+    })?;
+    let processor = load_nemotron_omni_processor_config(model_dir)?;
+
+    let mut collected = CollectedMedia::default();
+    let mut pairs: ChatMessagePairs = Vec::with_capacity(messages.len());
+    for message in messages {
+        let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        let content = render_content_collecting_media(
+            message.content.as_ref(),
+            NEMOTRON_OMNI_IMAGE_PLACEHOLDER,
+            NEMOTRON_OMNI_AUDIO_PLACEHOLDER,
+            "",
+            &mut collected,
+        )?;
+        pairs.push((role.to_string(), content));
+    }
+    if collected.images.is_empty() && collected.audios.is_empty() {
+        return Ok(None);
+    }
+
+    let rendered = chat::render_prompt(model_id, &pairs).map_err(chat_error_response)?;
+    let base_tokens = tokenizer.encode(&rendered, false).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("failed to tokenize Nemotron H Nano Omni prompt: {error}"),
+        )
+    })?;
+    let image_id =
+        nemotron_single_token_id(&tokenizer, NEMOTRON_OMNI_IMAGE_PLACEHOLDER, "image context")?;
+    let image_start_id =
+        nemotron_single_token_id(&tokenizer, NEMOTRON_OMNI_IMAGE_START, "image start")?;
+    let image_end_id = nemotron_single_token_id(&tokenizer, NEMOTRON_OMNI_IMAGE_END, "image end")?;
+    let audio_id =
+        nemotron_single_token_id(&tokenizer, NEMOTRON_OMNI_AUDIO_PLACEHOLDER, "sound context")?;
+    let audio_start_id =
+        nemotron_single_token_id(&tokenizer, NEMOTRON_OMNI_AUDIO_START, "sound start")?;
+    let audio_end_id = nemotron_single_token_id(&tokenizer, NEMOTRON_OMNI_AUDIO_END, "sound end")?;
+    let placeholder_count = base_tokens
+        .iter()
+        .filter(|token| **token == image_id)
+        .count();
+    if placeholder_count != collected.images.len() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "Nemotron H Nano Omni prompt contains {placeholder_count} image markers but {} images were provided",
+                collected.images.len()
+            ),
+        ));
+    }
+    let audio_placeholder_count = base_tokens
+        .iter()
+        .filter(|token| **token == audio_id)
+        .count();
+    if audio_placeholder_count != collected.audios.len() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "Nemotron H Nano Omni prompt contains {audio_placeholder_count} audio markers but {} clips were provided",
+                collected.audios.len()
+            ),
+        ));
+    }
+
+    let per_image_budget =
+        nemotron_omni_per_image_patch_budget(&processor, collected.images.len())?;
+    let mut processed = Vec::with_capacity(collected.images.len());
+    for image in &collected.images {
+        processed.push(preprocess_nemotron_omni_image(
+            image,
+            &processor,
+            per_image_budget,
+        )?);
+    }
+    let max_audio_samples = processor
+        .audio_sampling_rate
+        .saturating_mul(NEMOTRON_OMNI_MAX_AUDIO_SECONDS) as usize;
+    let mut processed_audio = Vec::with_capacity(collected.audios.len());
+    for audio in &collected.audios {
+        let samples = multimodal::decode_audio_waveform(
+            audio,
+            processor.audio_sampling_rate,
+            max_audio_samples,
+        )
+        .map_err(media_error_response)?;
+        let soft_token_count = nemotron_omni_audio_soft_tokens(samples.len(), &processor)?;
+        processed_audio.push((samples, soft_token_count));
+    }
+
+    let extra_tokens = processed
+        .iter()
+        .map(|image| image.soft_token_count as usize + 1)
+        .sum::<usize>()
+        .saturating_add(
+            processed_audio
+                .iter()
+                .map(|(_, count)| count.saturating_add(1) as usize)
+                .sum::<usize>(),
+        );
+    let mut input_tokens = Vec::with_capacity(base_tokens.len().saturating_add(extra_tokens));
+    let mut runtime_images = Vec::with_capacity(processed.len());
+    let mut runtime_audios = Vec::with_capacity(processed_audio.len());
+    let mut processed_iter = processed.into_iter();
+    let mut audio_iter = processed_audio.into_iter();
+    for token in base_tokens {
+        if token == audio_id {
+            let (samples, soft_token_count) = audio_iter.next().ok_or_else(|| {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "Nemotron H Nano Omni audio expansion underflow".to_string(),
+                )
+            })?;
+            input_tokens.push(audio_start_id);
+            let placeholder_index = input_tokens.len();
+            input_tokens.extend(std::iter::repeat_n(audio_id, soft_token_count as usize));
+            input_tokens.push(audio_end_id);
+            runtime_audios.push(NemotronOmniAudioRuntimeInput {
+                placeholder_index,
+                soft_token_count,
+                samples,
+                sample_rate: processor.audio_sampling_rate,
+            });
+        } else if token != image_id {
+            input_tokens.push(token);
+        } else {
+            let image = processed_iter.next().ok_or_else(|| {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "Nemotron H Nano Omni image expansion underflow".to_string(),
+                )
+            })?;
+            input_tokens.push(image_start_id);
+            let placeholder_index = input_tokens.len();
+            input_tokens.extend(std::iter::repeat_n(
+                image_id,
+                image.soft_token_count as usize,
+            ));
+            input_tokens.push(image_end_id);
+            runtime_images.push(NemotronOmniImageRuntimeInput {
+                placeholder_index,
+                soft_token_count: image.soft_token_count,
+                pixel_values: image.pixel_values,
+                height: image.height,
+                width: image.width,
+                patch_size: processor.patch_size,
+                spatial_downsample_factor: processor.downsample_factor,
+            });
+        }
+    }
+    if processed_iter.next().is_some() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Nemotron H Nano Omni image expansion overflow".to_string(),
+        ));
+    }
+    if audio_iter.next().is_some() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Nemotron H Nano Omni audio expansion overflow".to_string(),
+        ));
+    }
+
+    let runtime_inputs = NemotronOmniRuntimeInputs {
+        images: runtime_images,
+        audios: runtime_audios,
+    };
+    runtime_inputs
+        .validate_for_prompt_len(input_tokens.len())
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("Nemotron H Nano Omni multimodal inputs invalid: {error}"),
+            )
+        })?;
+    Ok(Some(NemotronOmniChatPrompt {
+        input_tokens,
+        runtime_inputs,
+    }))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NemotronOmniProcessorConfig {
+    patch_size: u32,
+    downsample_factor: u32,
+    min_num_patches: u32,
+    max_num_patches: u32,
+    max_model_len: u32,
+    audio_sampling_rate: u32,
+    audio_hop_length: u32,
+    audio_subsampling_factor: u32,
+    audio_subsampling_kernel: u32,
+    audio_subsampling_stride: u32,
+    mean: [f32; 3],
+    std: [f32; 3],
+}
+
+struct NemotronOmniProcessedImage {
+    pixel_values: Vec<f32>,
+    height: u32,
+    width: u32,
+    soft_token_count: u32,
+}
+
+fn load_nemotron_omni_processor_config(
+    model_dir: &Path,
+) -> Result<NemotronOmniProcessorConfig, HttpErrorResponse> {
+    let read_json = |name: &str| -> Option<Value> {
+        std::fs::read(model_dir.join(name))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    };
+    let model = read_json("config.json").ok_or_else(|| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Nemotron H Nano Omni preprocessing requires a readable config.json".to_string(),
+        )
+    })?;
+    let processor = read_json("preprocessor_config.json").unwrap_or(Value::Null);
+    let u32_value = |key: &str, fallback: u32| {
+        processor
+            .get(key)
+            .or_else(|| model.get(key))
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(fallback)
+    };
+    let f32_value = |key: &str, fallback: f32| {
+        processor
+            .get(key)
+            .or_else(|| model.get(key))
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+            .unwrap_or(fallback)
+    };
+    let patch_size = u32_value("patch_size", NEMOTRON_OMNI_DEFAULT_PATCH_SIZE);
+    let downsample_ratio = f32_value("downsample_ratio", NEMOTRON_OMNI_DEFAULT_DOWNSAMPLE_RATIO);
+    let downsample_factor = (1.0 / downsample_ratio.max(f32::EPSILON)).round() as u32;
+    let min_num_patches = u32_value("min_num_patches", NEMOTRON_OMNI_DEFAULT_MIN_PATCHES);
+    let max_num_patches = u32_value("max_num_patches", NEMOTRON_OMNI_DEFAULT_MAX_PATCHES);
+    let max_model_len = u32_value("max_model_len", NEMOTRON_OMNI_DEFAULT_MAX_MODEL_LEN);
+    let sound = model.get("sound_config").unwrap_or(&Value::Null);
+    let sound_u32 = |key: &str, fallback: u32| {
+        sound
+            .get(key)
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(fallback)
+    };
+    let audio_sampling_rate = sound_u32("sampling_rate", NEMOTRON_OMNI_DEFAULT_AUDIO_RATE);
+    let audio_hop_length = sound_u32("hop_length", NEMOTRON_OMNI_DEFAULT_AUDIO_HOP);
+    let audio_subsampling_factor = sound_u32(
+        "subsampling_factor",
+        NEMOTRON_OMNI_DEFAULT_AUDIO_SUBSAMPLING,
+    );
+    let audio_subsampling_kernel = sound_u32("subsampling_conv_kernel_size", 3);
+    let audio_subsampling_stride = sound_u32("subsampling_conv_stride", 2);
+    let triplet = |key: &str, fallback: [f32; 3]| {
+        processor
+            .get(key)
+            .and_then(Value::as_array)
+            .filter(|items| items.len() == 3)
+            .and_then(|items| {
+                Some([
+                    items[0].as_f64()? as f32,
+                    items[1].as_f64()? as f32,
+                    items[2].as_f64()? as f32,
+                ])
+            })
+            .unwrap_or(fallback)
+    };
+    let mean = triplet("norm_mean", [0.481_454_66, 0.457_827_5, 0.408_210_73]);
+    let std = triplet("norm_std", [0.268_629_55, 0.261_302_6, 0.275_777_1]);
+    if patch_size == 0
+        || downsample_factor == 0
+        || min_num_patches == 0
+        || max_num_patches < min_num_patches
+        || max_model_len <= 4
+        || audio_sampling_rate == 0
+        || audio_hop_length == 0
+        || !audio_subsampling_factor.is_power_of_two()
+        || audio_subsampling_kernel == 0
+        || audio_subsampling_stride == 0
+        || !downsample_ratio.is_finite()
+        || downsample_ratio <= 0.0
+        || std
+            .iter()
+            .any(|channel| !channel.is_normal() || *channel <= 0.0)
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Nemotron H Nano Omni processor geometry or normalization is invalid".to_string(),
+        ));
+    }
+    Ok(NemotronOmniProcessorConfig {
+        patch_size,
+        downsample_factor,
+        min_num_patches,
+        max_num_patches,
+        max_model_len,
+        audio_sampling_rate,
+        audio_hop_length,
+        audio_subsampling_factor,
+        audio_subsampling_kernel,
+        audio_subsampling_stride,
+        mean,
+        std,
+    })
+}
+
+fn nemotron_omni_per_image_patch_budget(
+    config: &NemotronOmniProcessorConfig,
+    image_count: usize,
+) -> Result<u32, HttpErrorResponse> {
+    let image_count = u32::try_from(image_count).map_err(|_| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "too many Nemotron H Nano Omni images".to_string(),
+        )
+    })?;
+    let tokens_available = config.max_model_len.saturating_sub(4);
+    let factor_sq = config
+        .downsample_factor
+        .checked_mul(config.downsample_factor)
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "Nemotron H Nano Omni downsample factor overflowed".to_string(),
+            )
+        })?;
+    let budget = tokens_available
+        .saturating_mul(factor_sq)
+        .max(config.min_num_patches.saturating_mul(image_count));
+    Ok(budget
+        .min(config.max_num_patches)
+        .max(config.min_num_patches))
+}
+
+fn preprocess_nemotron_omni_image(
+    bytes: &[u8],
+    config: &NemotronOmniProcessorConfig,
+    patch_budget: u32,
+) -> Result<NemotronOmniProcessedImage, HttpErrorResponse> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to probe Nemotron H Nano Omni image: {error}"),
+            )
+        })?;
+    reader.limits({
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(8192);
+        limits.max_image_height = Some(8192);
+        limits
+    });
+    let rgb = reader
+        .decode()
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to decode Nemotron H Nano Omni image: {error}"),
+            )
+        })?
+        .to_rgb8();
+    let (patch_w, patch_h) = nemotron_omni_target_patches(
+        rgb.width(),
+        rgb.height(),
+        patch_budget,
+        config.patch_size,
+        config.min_num_patches,
+        config.downsample_factor,
+    )?;
+    let width = patch_w.saturating_mul(config.patch_size);
+    let height = patch_h.saturating_mul(config.patch_size);
+    let resized = if width == rgb.width() && height == rgb.height() {
+        rgb
+    } else {
+        image::imageops::resize(&rgb, width, height, image::imageops::FilterType::CatmullRom)
+    };
+    let plane = width as usize * height as usize;
+    let mut pixel_values = vec![0.0f32; plane * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = resized.get_pixel(x, y).0;
+            let offset = y as usize * width as usize + x as usize;
+            for channel in 0..3 {
+                let value = f32::from(pixel[channel]) / 255.0;
+                pixel_values[channel * plane + offset] =
+                    (value - config.mean[channel]) / config.std[channel];
+            }
+        }
+    }
+    let factor_sq = config
+        .downsample_factor
+        .saturating_mul(config.downsample_factor);
+    let soft_token_count = patch_w.saturating_mul(patch_h) / factor_sq;
+    Ok(NemotronOmniProcessedImage {
+        pixel_values,
+        height,
+        width,
+        soft_token_count,
+    })
+}
+
+fn nemotron_omni_target_patches(
+    width: u32,
+    height: u32,
+    patch_budget: u32,
+    patch_size: u32,
+    min_num_patches: u32,
+    divisor: u32,
+) -> Result<(u32, u32), HttpErrorResponse> {
+    if width == 0 || height == 0 || patch_budget == 0 || patch_size == 0 || divisor == 0 {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Nemotron H Nano Omni image geometry must be positive".to_string(),
+        ));
+    }
+    let closest_h = (height as f64 / patch_size as f64 + 0.5).round() as u32;
+    let closest_w = (width as f64 / patch_size as f64 + 0.5).round() as u32;
+    let patches = closest_h.saturating_mul(closest_w).max(1);
+    let factor = (patch_budget as f64 / patches as f64).sqrt().min(1.0);
+    let mut target_h = (factor * closest_h as f64).floor().max(1.0) as u32;
+    let mut target_w = (factor * closest_w as f64).floor().max(1.0) as u32;
+    if patch_budget > min_num_patches && target_h.saturating_mul(target_w) < min_num_patches {
+        let current = target_h.saturating_mul(target_w).max(1);
+        let upscale = (min_num_patches as f64 / current as f64).sqrt();
+        target_h = (upscale * target_h as f64).ceil() as u32;
+        target_w = (upscale * target_w as f64).ceil() as u32;
+    }
+    let align = |value: u32, other: u32| {
+        let remainder = value % divisor;
+        if remainder == 0 {
+            value
+        } else {
+            let increment = divisor - remainder;
+            if value.saturating_add(increment).saturating_mul(other) <= patch_budget {
+                value + increment
+            } else {
+                value.saturating_sub(remainder).max(divisor)
+            }
+        }
+    };
+    target_h = align(target_h, target_w);
+    target_w = align(target_w, target_h);
+    Ok((target_w.max(1), target_h.max(1)))
+}
+
+fn nemotron_omni_audio_soft_tokens(
+    sample_count: usize,
+    config: &NemotronOmniProcessorConfig,
+) -> Result<u32, HttpErrorResponse> {
+    // Match ParakeetFeatureExtractor's center-padded torch.stft output.
+    let mut frames = sample_count / config.audio_hop_length as usize + 1;
+    let padding = (config.audio_subsampling_kernel - 1) / 2;
+    for _ in 0..config.audio_subsampling_factor.ilog2() {
+        let numerator =
+            frames as i64 + i64::from(2 * padding) - i64::from(config.audio_subsampling_kernel);
+        frames = if numerator < 0 {
+            0
+        } else {
+            numerator as usize / config.audio_subsampling_stride as usize + 1
+        };
+    }
+    u32::try_from(frames)
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "Nemotron H Nano Omni audio resolves to an invalid soft-token count".to_string(),
+            )
+        })
+}
+
+fn nemotron_single_token_id(
+    tokenizer: &EngineTokenizer,
+    text: &str,
+    label: &str,
+) -> Result<u32, HttpErrorResponse> {
+    let tokens = tokenizer.encode(text, false).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("failed to tokenize Nemotron H Nano Omni {label}: {error}"),
+        )
+    })?;
+    match tokens.as_slice() {
+        [token] => Ok(*token),
+        _ => Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "Nemotron H Nano Omni {label} `{text}` must encode to one token, got {}",
+                tokens.len()
+            ),
+        )),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MiniCpmV46ProcessorConfig {
+    patch_size: u32,
+    scale_resolution: u32,
+    spatial_downsample_factor: u32,
+    mean: [f32; 3],
+    std: [f32; 3],
+}
+
+struct MiniCpmV46ProcessedImage {
+    pixel_values: Vec<f32>,
+    height: u32,
+    width: u32,
+    soft_token_count: u32,
+}
+
+fn load_minicpm_v46_processor_config(
+    model_dir: &Path,
+) -> Result<MiniCpmV46ProcessorConfig, HttpErrorResponse> {
+    let read_json = |name: &str| -> Option<Value> {
+        std::fs::read(model_dir.join(name))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    };
+    let model = read_json("config.json").ok_or_else(|| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "MiniCPM-V 4.6 preprocessing requires a readable config.json".to_string(),
+        )
+    })?;
+    let processor = read_json("preprocessor_config.json").unwrap_or(Value::Null);
+    let vision = model.get("vision_config").unwrap_or(&Value::Null);
+    let u32_value = |value: Option<&Value>, fallback: u32| {
+        value
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(fallback)
+    };
+    let patch_size = u32_value(
+        processor
+            .get("patch_size")
+            .or_else(|| vision.get("patch_size")),
+        MINICPM_V46_DEFAULT_PATCH_SIZE,
+    );
+    let scale_resolution = u32_value(
+        processor.get("scale_resolution"),
+        MINICPM_V46_DEFAULT_SCALE_RESOLUTION,
+    );
+    // Current MiniCPM-V 4.6 checkpoints omit these defaults from config:
+    // a 2×2 VitMerger followed by one 2×2 final merger.
+    let pair_product = |value: Option<&Value>, fallback: u32| {
+        value
+            .and_then(Value::as_array)
+            .filter(|pair| pair.len() == 2)
+            .and_then(|pair| {
+                let h = u32::try_from(pair[0].as_u64()?).ok()?;
+                let w = u32::try_from(pair[1].as_u64()?).ok()?;
+                (h == w && h > 0).then_some(h)
+            })
+            .unwrap_or(fallback)
+    };
+    let vit_factor = pair_product(vision.get("window_kernel_size"), 2);
+    let merge_factor = pair_product(model.get("merge_kernel_size"), 2);
+    let merger_times = u32_value(model.get("merger_times"), 1);
+    let spatial_downsample_factor = (0..merger_times)
+        .try_fold(vit_factor, |factor, _| factor.checked_mul(merge_factor))
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "MiniCPM-V 4.6 spatial downsample factor overflowed".to_string(),
+            )
+        })?;
+    let triplet = |key: &str, fallback: [f32; 3]| {
+        processor
+            .get(key)
+            .and_then(Value::as_array)
+            .filter(|items| items.len() == 3)
+            .and_then(|items| {
+                Some([
+                    items[0].as_f64()? as f32,
+                    items[1].as_f64()? as f32,
+                    items[2].as_f64()? as f32,
+                ])
+            })
+            .unwrap_or(fallback)
+    };
+    let mean = triplet("image_mean", [0.5; 3]);
+    let std = triplet("image_std", [0.5; 3]);
+    if patch_size == 0
+        || scale_resolution == 0
+        || spatial_downsample_factor == 0
+        || std
+            .iter()
+            .any(|channel| !channel.is_normal() || *channel <= 0.0)
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "MiniCPM-V 4.6 processor geometry or normalization is invalid".to_string(),
+        ));
+    }
+    Ok(MiniCpmV46ProcessorConfig {
+        patch_size,
+        scale_resolution,
+        spatial_downsample_factor,
+        mean,
+        std,
+    })
+}
+
+fn preprocess_minicpm_v46_image(
+    bytes: &[u8],
+    config: &MiniCpmV46ProcessorConfig,
+) -> Result<MiniCpmV46ProcessedImage, HttpErrorResponse> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to probe MiniCPM-V 4.6 image: {error}"),
+            )
+        })?;
+    reader.limits({
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(8192);
+        limits.max_image_height = Some(8192);
+        limits
+    });
+    let rgb = reader
+        .decode()
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to decode MiniCPM-V 4.6 image: {error}"),
+            )
+        })?
+        .to_rgb8();
+    let (width, height) = minicpm_v46_best_resize(rgb.width(), rgb.height(), config)?;
+    let resized = if width == rgb.width() && height == rgb.height() {
+        rgb
+    } else {
+        image::imageops::resize(&rgb, width, height, image::imageops::FilterType::CatmullRom)
+    };
+    let mut pixel_values = Vec::with_capacity(width as usize * height as usize * 3);
+    for pixel in resized.pixels() {
+        for channel in 0..3 {
+            let value = f32::from(pixel.0[channel]) / 255.0;
+            pixel_values.push((value - config.mean[channel]) / config.std[channel]);
+        }
+    }
+    let unit = config
+        .patch_size
+        .checked_mul(config.spatial_downsample_factor)
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "MiniCPM-V 4.6 resize unit overflowed".to_string(),
+            )
+        })?;
+    let soft_token_count = (height / unit).saturating_mul(width / unit);
+    Ok(MiniCpmV46ProcessedImage {
+        pixel_values,
+        height,
+        width,
+        soft_token_count,
+    })
+}
+
+fn minicpm_v46_best_resize(
+    width: u32,
+    height: u32,
+    config: &MiniCpmV46ProcessorConfig,
+) -> Result<(u32, u32), HttpErrorResponse> {
+    if width == 0 || height == 0 {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "MiniCPM-V 4.6 image dimensions must be positive".to_string(),
+        ));
+    }
+    let max_area = u64::from(config.scale_resolution).pow(2);
+    let mut resized_w = width;
+    let mut resized_h = height;
+    if u64::from(width).saturating_mul(u64::from(height)) > max_area {
+        let ratio = width as f64 / height as f64;
+        resized_h = (config.scale_resolution as f64 / ratio.sqrt()).round() as u32;
+        resized_w = (resized_h as f64 * ratio).round() as u32;
+    }
+    let unit = config
+        .patch_size
+        .checked_mul(config.spatial_downsample_factor)
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "MiniCPM-V 4.6 resize unit overflowed".to_string(),
+            )
+        })?;
+    let ensure_divide =
+        |length: u32| ((length.max(config.patch_size) + unit / 2) / unit).max(1) * unit;
+    Ok((ensure_divide(resized_w), ensure_divide(resized_h)))
+}
+
+fn minicpm_single_token_id(
+    tokenizer: &EngineTokenizer,
+    text: &str,
+    label: &str,
+) -> Result<u32, HttpErrorResponse> {
+    let tokens = tokenizer.encode(text, false).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("failed to tokenize MiniCPM-V 4.6 {label}: {error}"),
+        )
+    })?;
+    if tokens.len() != 1 {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "MiniCPM-V 4.6 expected {label} `{text}` to encode to one token, got {}",
+                tokens.len()
+            ),
+        ));
+    }
+    Ok(tokens[0])
+}
+
+fn minicpm_image_bounds(
+    tokens: &[u32],
+    image_start_id: u32,
+    image_end_id: u32,
+) -> Result<Vec<(usize, usize)>, HttpErrorResponse> {
+    let starts: Vec<usize> = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| (*token == image_start_id).then_some(index + 1))
+        .collect();
+    let ends: Vec<usize> = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| (*token == image_end_id).then_some(index))
+        .collect();
+    if starts.len() != ends.len() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "MiniCPM-V 4.6 encoded prompt contains {} image starts and {} image ends",
+                starts.len(),
+                ends.len()
+            ),
+        ));
+    }
+    starts
+        .into_iter()
+        .zip(ends)
+        .map(|(start, end)| {
+            if end < start {
+                Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "MiniCPM-V 4.6 image end appeared before image start".to_string(),
+                ))
+            } else {
+                Ok((start, end))
+            }
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 struct Qwen3VlGeom {
     height: u32,
     width: u32,
     patch_size: u32,
+    temporal_patch_size: u32,
     spatial_merge_size: u32,
     soft_token_count: u32,
+}
+
+#[derive(Clone, Debug)]
+struct Qwen3VlProcessorConfig {
+    patch_size: u32,
+    temporal_patch_size: u32,
+    spatial_merge_size: u32,
+    min_pixels: u64,
+    max_pixels: u64,
+    mean: [f32; 3],
+    std: [f32; 3],
 }
 
 struct Qwen3VlPatches {
@@ -2334,9 +3501,108 @@ struct Qwen3VlPatches {
     patch_dim: u32,
 }
 
-/// Decode image bytes → fixed-grid RGB patches for the portable Qwen3-VL ViT.
+fn load_qwen3_vl_processor_config(
+    model_dir: &Path,
+) -> Result<Qwen3VlProcessorConfig, HttpErrorResponse> {
+    let read_json = |name: &str| -> Option<Value> {
+        std::fs::read(model_dir.join(name))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    };
+    let config = read_json("config.json").ok_or_else(|| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Qwen visual preprocessing requires a readable config.json".to_string(),
+        )
+    })?;
+    let processor = read_json("preprocessor_config.json").unwrap_or(Value::Null);
+    let vision = config.get("vision_config").unwrap_or(&Value::Null);
+    let u32_field = |key: &str, fallback: u32| {
+        processor
+            .get(key)
+            .or_else(|| vision.get(key))
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(fallback)
+    };
+    let patch_size = u32_field("patch_size", QWEN3_VL_DEFAULT_PATCH_SIZE);
+    let temporal_patch_size =
+        u32_field("temporal_patch_size", QWEN3_VL_DEFAULT_TEMPORAL_PATCH_SIZE);
+    let spatial_merge_size = processor
+        .get("merge_size")
+        .or_else(|| vision.get("spatial_merge_size"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(QWEN3_VL_DEFAULT_SPATIAL_MERGE);
+    if patch_size == 0 || temporal_patch_size == 0 || spatial_merge_size == 0 {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Qwen visual patch, temporal patch, and merge sizes must be positive".to_string(),
+        ));
+    }
+    let size = processor.get("size").unwrap_or(&Value::Null);
+    let configured_min = processor
+        .get("min_pixels")
+        .and_then(Value::as_u64)
+        .or_else(|| size.get("shortest_edge").and_then(Value::as_u64))
+        .unwrap_or(4 * 32 * 32);
+    let configured_max = processor
+        .get("max_pixels")
+        .and_then(Value::as_u64)
+        .or_else(|| size.get("longest_edge").and_then(Value::as_u64))
+        .unwrap_or(16_384 * 32 * 32);
+    let factor = u64::from(patch_size) * u64::from(spatial_merge_size);
+    let serving_cap = u64::from(QWEN3_VL_DEFAULT_MAX_SOFT)
+        .saturating_mul(factor)
+        .saturating_mul(factor);
+    let max_pixels = configured_max.min(serving_cap).max(factor * factor);
+    let min_pixels = configured_min.min(max_pixels).max(factor * factor);
+    let triplet = |key: &str, fallback: [f32; 3]| {
+        processor
+            .get(key)
+            .and_then(Value::as_array)
+            .filter(|items| items.len() == 3)
+            .and_then(|items| {
+                Some([
+                    items[0].as_f64()? as f32,
+                    items[1].as_f64()? as f32,
+                    items[2].as_f64()? as f32,
+                ])
+            })
+            .unwrap_or(fallback)
+    };
+    let mean = triplet("image_mean", [0.5; 3]);
+    let std = triplet("image_std", [0.5; 3]);
+    if let Some(channel) = std
+        .iter()
+        .find(|value| !value.is_normal() || **value <= 0.0)
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "Qwen visual image_std contains a non-positive or non-normal channel ({channel})"
+            ),
+        ));
+    }
+    Ok(Qwen3VlProcessorConfig {
+        patch_size,
+        temporal_patch_size,
+        spatial_merge_size,
+        min_pixels,
+        max_pixels,
+        mean,
+        std,
+    })
+}
+
+/// Decode image bytes into the merge-grouped `C×T×P×P` rows emitted by the
+/// official Qwen processor.
 fn patchify_qwen3_vl_image(
     bytes: &[u8],
+    config: &Qwen3VlProcessorConfig,
 ) -> Result<(Qwen3VlPatches, Qwen3VlGeom), HttpErrorResponse> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -2364,24 +3630,41 @@ fn patchify_qwen3_vl_image(
         })?
         .to_rgb8();
 
-    let patch = QWEN3_VL_DEFAULT_PATCH_SIZE;
-    let merge = QWEN3_VL_DEFAULT_SPATIAL_MERGE;
-    let unit = patch.saturating_mul(merge).max(1);
-    // Snap to a modest grid (≤ max soft tokens) while keeping aspect.
+    let patch = config.patch_size;
+    let temporal = config.temporal_patch_size;
+    let merge = config.spatial_merge_size;
+    let unit = patch.saturating_mul(merge);
     let (ow, oh) = (rgb.width().max(1), rgb.height().max(1));
-    let max_side_units = ((QWEN3_VL_DEFAULT_MAX_SOFT as f32).sqrt().floor() as u32).max(1);
-    let scale = (max_side_units as f32 * unit as f32 / ow.max(oh) as f32).min(1.0);
-    let tw = (((ow as f32 * scale) / unit as f32).ceil() as u32).max(1) * unit;
-    let th = (((oh as f32 * scale) / unit as f32).ceil() as u32).max(1) * unit;
+    let aspect = ow.max(oh) as f64 / ow.min(oh) as f64;
+    if aspect > 200.0 {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("Qwen visual input aspect ratio {aspect:.1} exceeds 200"),
+        ));
+    }
+    let round_to_factor = |value: u32| ((value as f64 / unit as f64).round() as u32).max(1) * unit;
+    let mut th = round_to_factor(oh);
+    let mut tw = round_to_factor(ow);
+    let pixels = u64::from(th).saturating_mul(u64::from(tw));
+    if pixels > config.max_pixels {
+        let beta = ((u64::from(oh) * u64::from(ow)) as f64 / config.max_pixels as f64).sqrt();
+        th = ((oh as f64 / beta / unit as f64).floor() as u32).max(1) * unit;
+        tw = ((ow as f64 / beta / unit as f64).floor() as u32).max(1) * unit;
+    } else if pixels < config.min_pixels {
+        let beta = (config.min_pixels as f64 / (u64::from(oh) * u64::from(ow)) as f64).sqrt();
+        th = ((oh as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
+        tw = ((ow as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
+    }
     let resized = if tw == ow && th == oh {
         rgb
     } else {
-        image::imageops::resize(&rgb, tw, th, image::imageops::FilterType::Triangle)
+        image::imageops::resize(&rgb, tw, th, image::imageops::FilterType::CatmullRom)
     };
 
-    let gh = th / unit;
-    let gw = tw / unit;
-    let soft = gh.saturating_mul(gw).min(QWEN3_VL_DEFAULT_MAX_SOFT);
+    let grid_h = th / patch;
+    let grid_w = tw / patch;
+    let soft = (grid_h / merge).saturating_mul(grid_w / merge);
     if soft == 0 {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
@@ -2389,42 +3672,194 @@ fn patchify_qwen3_vl_image(
             "qwen3_vl image collapsed to zero soft tokens".to_string(),
         ));
     }
-    // Portable ViT: one patch token per soft token; patch_dim = unit² * 3 RGB.
-    let patch_dim = unit.saturating_mul(unit).saturating_mul(3);
-    let mut patches = Vec::with_capacity((soft as usize).saturating_mul(patch_dim as usize));
-    for gy in 0..gh {
-        for gx in 0..gw {
-            if patches.len() / patch_dim as usize >= soft as usize {
-                break;
-            }
-            let x0 = gx * unit;
-            let y0 = gy * unit;
-            for py in 0..unit {
-                for px in 0..unit {
-                    let p = resized.get_pixel(x0 + px, y0 + py).0;
-                    patches.push(p[0] as f32 / 255.0);
-                    patches.push(p[1] as f32 / 255.0);
-                    patches.push(p[2] as f32 / 255.0);
+    let patch_dim = 3u32
+        .saturating_mul(temporal)
+        .saturating_mul(patch)
+        .saturating_mul(patch);
+    let num_patches = grid_h.saturating_mul(grid_w);
+    let mut patches = Vec::with_capacity((num_patches as usize).saturating_mul(patch_dim as usize));
+    // Sequence order groups each merge×merge block contiguously. Within a
+    // patch, features are C,T,H,W, matching Conv3D's PyTorch layout.
+    for block_h in 0..grid_h / merge {
+        for block_w in 0..grid_w / merge {
+            for inner_h in 0..merge {
+                for inner_w in 0..merge {
+                    let patch_y = (block_h * merge + inner_h) * patch;
+                    let patch_x = (block_w * merge + inner_w) * patch;
+                    for channel in 0..3usize {
+                        for _ in 0..temporal {
+                            for y in 0..patch {
+                                for x in 0..patch {
+                                    let pixel = resized.get_pixel(patch_x + x, patch_y + y).0;
+                                    let value = pixel[channel] as f32 / 255.0;
+                                    patches
+                                        .push((value - config.mean[channel]) / config.std[channel]);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
-    // Truncate to soft * patch_dim if we overshot.
-    patches.truncate(soft as usize * patch_dim as usize);
 
     Ok((
         Qwen3VlPatches {
             patches,
-            num_patches: soft,
+            num_patches,
             patch_dim,
         },
         Qwen3VlGeom {
             height: th,
             width: tw,
             patch_size: patch,
+            temporal_patch_size: temporal,
             spatial_merge_size: merge,
             soft_token_count: soft,
         },
+    ))
+}
+
+/// Patchify sampled video frames into Qwen's Conv3D `C,T,H,W` rows. Frames
+/// are paired along the temporal patch axis and the final frame is repeated
+/// when the sample count is odd, matching the still-image duplication rule.
+fn patchify_qwen3_vl_video(
+    frames: &[VideoFrame],
+    config: &Qwen3VlProcessorConfig,
+) -> Result<(Qwen3VlPatches, Qwen3VlGeom, u32), HttpErrorResponse> {
+    let first = frames.first().ok_or_else(|| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Qwen visual video decoded to zero frames".to_string(),
+        )
+    })?;
+    let patch = config.patch_size;
+    let temporal = config.temporal_patch_size;
+    let merge = config.spatial_merge_size;
+    let unit = patch.saturating_mul(merge);
+    let temporal_usize = temporal as usize;
+    let grid_t_usize = frames.len().div_ceil(temporal_usize);
+    let grid_t = u32::try_from(grid_t_usize).map_err(|_| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Qwen visual video has too many temporal patch groups".to_string(),
+        )
+    })?;
+
+    // Keep an entire clip within the same serving-side 1024 visual-token
+    // budget used for still images. The reference processor budgets pixels
+    // across frames; this is the equivalent merged-token calculation.
+    let max_spatial_soft = (QWEN3_VL_DEFAULT_MAX_SOFT / grid_t).max(1);
+    let video_max_pixels = u64::from(max_spatial_soft)
+        .saturating_mul(u64::from(unit))
+        .saturating_mul(u64::from(unit))
+        .min(config.max_pixels)
+        .max(u64::from(unit) * u64::from(unit));
+    let video_min_pixels = config.min_pixels.min(video_max_pixels);
+    let (ow, oh) = (first.image.width().max(1), first.image.height().max(1));
+    let aspect = ow.max(oh) as f64 / ow.min(oh) as f64;
+    if aspect > 200.0 {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("Qwen visual video aspect ratio {aspect:.1} exceeds 200"),
+        ));
+    }
+    let round_to_factor = |value: u32| ((value as f64 / unit as f64).round() as u32).max(1) * unit;
+    let mut th = round_to_factor(oh);
+    let mut tw = round_to_factor(ow);
+    let pixels = u64::from(th).saturating_mul(u64::from(tw));
+    if pixels > video_max_pixels {
+        let beta = ((u64::from(oh) * u64::from(ow)) as f64 / video_max_pixels as f64).sqrt();
+        th = ((oh as f64 / beta / unit as f64).floor() as u32).max(1) * unit;
+        tw = ((ow as f64 / beta / unit as f64).floor() as u32).max(1) * unit;
+    } else if pixels < video_min_pixels {
+        let beta = (video_min_pixels as f64 / (u64::from(oh) * u64::from(ow)) as f64).sqrt();
+        th = ((oh as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
+        tw = ((ow as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
+    }
+
+    let resized: Vec<image::RgbImage> = frames
+        .iter()
+        .map(|frame| {
+            if frame.image.width() == tw && frame.image.height() == th {
+                frame.image.clone()
+            } else {
+                image::imageops::resize(
+                    &frame.image,
+                    tw,
+                    th,
+                    image::imageops::FilterType::CatmullRom,
+                )
+            }
+        })
+        .collect();
+    let grid_h = th / patch;
+    let grid_w = tw / patch;
+    let soft = grid_t
+        .saturating_mul(grid_h / merge)
+        .saturating_mul(grid_w / merge);
+    if soft == 0 || soft > QWEN3_VL_DEFAULT_MAX_SOFT {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("Qwen visual video produced invalid soft-token count {soft}"),
+        ));
+    }
+    let patch_dim = 3u32
+        .saturating_mul(temporal)
+        .saturating_mul(patch)
+        .saturating_mul(patch);
+    let num_patches = grid_t.saturating_mul(grid_h).saturating_mul(grid_w);
+    let mut patches = Vec::with_capacity((num_patches as usize).saturating_mul(patch_dim as usize));
+
+    for temporal_group in 0..grid_t_usize {
+        for block_h in 0..grid_h / merge {
+            for block_w in 0..grid_w / merge {
+                for inner_h in 0..merge {
+                    for inner_w in 0..merge {
+                        let patch_y = (block_h * merge + inner_h) * patch;
+                        let patch_x = (block_w * merge + inner_w) * patch;
+                        for channel in 0..3usize {
+                            for temporal_offset in 0..temporal_usize {
+                                let frame_index = (temporal_group * temporal_usize
+                                    + temporal_offset)
+                                    .min(resized.len() - 1);
+                                let frame = &resized[frame_index];
+                                for y in 0..patch {
+                                    for x in 0..patch {
+                                        let pixel = frame.get_pixel(patch_x + x, patch_y + y).0;
+                                        let value = pixel[channel] as f32 / 255.0;
+                                        patches.push(
+                                            (value - config.mean[channel]) / config.std[channel],
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((
+        Qwen3VlPatches {
+            patches,
+            num_patches,
+            patch_dim,
+        },
+        Qwen3VlGeom {
+            height: th,
+            width: tw,
+            patch_size: patch,
+            temporal_patch_size: temporal,
+            spatial_merge_size: merge,
+            soft_token_count: soft,
+        },
+        grid_t,
     ))
 }
 
@@ -2470,6 +3905,7 @@ fn render_content_collecting_media(
     content: Option<&OpenAiChatContent>,
     image_placeholder: &str,
     audio_placeholder: &str,
+    video_placeholder: &str,
     collected: &mut CollectedMedia,
 ) -> Result<String, HttpErrorResponse> {
     let Some(content) = content else {
@@ -2504,9 +3940,7 @@ fn render_content_collecting_media(
                     }
                     OpenAiChatContentPartKind::Video => {
                         collected.videos.push(video_part_bytes(part)?);
-                        // Video uses the same soft-token placeholder surface as image
-                        // at the chat template layer; expansion happens later.
-                        rendered.push_str(image_placeholder);
+                        rendered.push_str(video_placeholder);
                     }
                     OpenAiChatContentPartKind::Unsupported => {
                         return Err(error_response(
@@ -2957,10 +4391,55 @@ mod media_tests {
     #[test]
     fn is_qwen3_vl_model_id_detects_vl_families() {
         assert!(is_qwen3_vl_model_id("Qwen/Qwen3-VL-8B-Instruct"));
+        assert!(is_qwen3_vl_model_id("Qwen/Qwen3.5-4B"));
         assert!(is_qwen3_vl_model_id("ax-qwen3_vl-4bit"));
         assert!(is_qwen3_vl_model_id("qwen3-vl-moe"));
         assert!(!is_qwen3_vl_model_id("qwen3.6-27b"));
         assert!(!is_qwen3_vl_model_id("gemma4-unified"));
+    }
+
+    #[test]
+    fn is_minicpm_v46_model_id_is_version_specific() {
+        assert!(is_minicpm_v46_model_id("openbmb/MiniCPM-V-4_6-mlx-bf16"));
+        assert!(is_minicpm_v46_model_id("minicpmv4.6"));
+        assert!(!is_minicpm_v46_model_id("openbmb/MiniCPM-o-2_6"));
+        assert!(!is_minicpm_v46_model_id("qwen3.5-4b"));
+    }
+
+    #[test]
+    fn minicpm_v46_resize_matches_reference_alignment() {
+        let config = MiniCpmV46ProcessorConfig {
+            patch_size: 14,
+            scale_resolution: 448,
+            spatial_downsample_factor: 4,
+            mean: [0.5; 3],
+            std: [0.5; 3],
+        };
+        assert_eq!(
+            minicpm_v46_best_resize(448, 448, &config).expect("square"),
+            (448, 448)
+        );
+        assert_eq!(
+            minicpm_v46_best_resize(1000, 500, &config).expect("landscape"),
+            (616, 336)
+        );
+        assert_eq!(
+            minicpm_v46_best_resize(500, 1000, &config).expect("portrait"),
+            (336, 616)
+        );
+        assert_eq!(
+            minicpm_v46_best_resize(1, 1, &config).expect("minimum"),
+            (56, 56)
+        );
+    }
+
+    #[test]
+    fn minicpm_image_bounds_excludes_delimiters() {
+        let tokens = [1, 10, 12, 12, 11, 20, 10, 12, 11, 2];
+        assert_eq!(
+            minicpm_image_bounds(&tokens, 10, 11).expect("bounds"),
+            vec![(2, 4), (7, 8)]
+        );
     }
 
     #[test]
@@ -2984,9 +4463,21 @@ mod media_tests {
                 .expect("encode png");
             buf
         };
-        let (patches, geom) = patchify_qwen3_vl_image(&png).expect("patchify");
+        let processor = Qwen3VlProcessorConfig {
+            patch_size: 16,
+            temporal_patch_size: 2,
+            spatial_merge_size: 2,
+            min_pixels: 32 * 32,
+            max_pixels: 32 * 32,
+            mean: [0.5; 3],
+            std: [0.5; 3],
+        };
+        let (patches, geom) = patchify_qwen3_vl_image(&png, &processor).expect("patchify");
         assert!(geom.soft_token_count > 0);
-        assert_eq!(patches.num_patches, geom.soft_token_count);
+        assert_eq!(
+            patches.num_patches,
+            geom.soft_token_count * geom.spatial_merge_size.pow(2)
+        );
         assert_eq!(
             patches.patches.len(),
             patches.num_patches as usize * patches.patch_dim as usize
@@ -2997,10 +4488,13 @@ mod media_tests {
             patches: patches.patches,
             num_patches: patches.num_patches,
             patch_dim: patches.patch_dim,
+            grid_t: 1,
             height: geom.height,
             width: geom.width,
             patch_size: geom.patch_size,
+            temporal_patch_size: geom.temporal_patch_size,
             spatial_merge_size: geom.spatial_merge_size,
+            is_video: false,
         };
         rt.validate(8).expect("valid against prompt len");
         let inputs = Qwen3VlRuntimeInputs { images: vec![rt] };

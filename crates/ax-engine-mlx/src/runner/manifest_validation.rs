@@ -70,11 +70,14 @@ pub(super) fn is_mlx_supported_model_family(model_family: &str) -> bool {
             | "gemma3"
             | "embeddinggemma"
             | "qwen3"
+            | "qwen3_vl"
+            | "qwen3_vl_moe"
             | "llama3"
             | "diffusion_gemma"
             | "llama4"
             | "qwen3_5"
             | "qwen3_next"
+            | "minicpmv4_6"
             | "glm4_moe_lite"
             | "deepseek_v3"
             | "deepseek_v32"
@@ -464,7 +467,6 @@ pub(super) fn has_glm_mla_tensors(artifacts: &NativeModelArtifacts) -> bool {
                 | NativeTensorRole::AttentionKvANorm
                 | NativeTensorRole::AttentionEmbedQ
                 | NativeTensorRole::AttentionUnembedOut
-                | NativeTensorRole::FfnGateInpCorrectionBias
         )
     })
 }
@@ -637,10 +639,12 @@ pub(super) fn collect_added_token_ids_for_strings(
 pub(super) fn validate_qwen_gated_delta_linear_attention(
     manifest: &NativeModelManifest,
 ) -> Result<(), MlxRunnerError> {
-    if !matches!(manifest.model_family.as_str(), "qwen3_5" | "qwen3_next") {
+    if !matches!(
+        manifest.model_family.as_str(),
+        "qwen3_5" | "qwen3_next" | "minicpmv4_6"
+    ) {
         return Err(MlxRunnerError::UnsupportedFeature(
-            "linear_attention is currently supported only for qwen3_5/qwen3_next MLX manifests"
-                .to_string(),
+            "linear_attention is currently supported only for qwen3_5/qwen3_next/MiniCPM-V 4.6 MLX manifests".to_string(),
         ));
     }
     let cfg = &manifest.linear_attention;

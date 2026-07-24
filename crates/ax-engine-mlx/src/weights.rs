@@ -62,6 +62,10 @@ pub struct ModelWeights {
     /// Qwen3-VL portable ViT tower (WS-V2). `None` until HF vision weights are
     /// mapped for the checkpoint; image prefill fail-closes when media is present.
     pub qwen3_vl_vision: Option<crate::qwen3_vl::Qwen3VlVisionWeights>,
+    /// MiniCPM-V 4.6 SigLIP + VitMerger + pixel-shuffle merger.
+    pub minicpm_v46_vision: Option<crate::minicpm_v::MiniCpmV46VisionWeights>,
+    /// Nemotron H Nano Omni RADIO vision and Parakeet media towers.
+    pub nemotron_omni: Option<crate::nemotron_omni::NemotronOmniWeights>,
 }
 
 /// Gemma4 Unified vision path, matching vLLM's
@@ -516,6 +520,11 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
 
     let specs = artifacts.tensor_specs();
     let layer_count = artifacts.manifest().layer_count as usize;
+    // Family-specific towers need geometry that is intentionally kept in the
+    // source config rather than duplicated into the language manifest.
+    let source_config = std::fs::read(artifacts.root_dir().join("config.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
 
     // Raw HuggingFace checkpoints store RMSNorm weights as zero-centered deltas
     // and conv1d weights in a different axis order than MLX expects. The MLX
@@ -670,7 +679,15 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let unlimited_ocr_vision =
         crate::unlimited_ocr::load_unlimited_ocr_vision_weights(specs, &mut name_map)?;
     // Qwen3-VL vision tower (WS-V2): roles + visual.* leftovers → Some when present.
-    let qwen3_vl_vision = crate::qwen3_vl::load_qwen3_vl_vision_weights(specs, &mut name_map)?;
+    let qwen3_vl_vision = crate::qwen3_vl::load_qwen3_vl_vision_weights(
+        specs,
+        &mut name_map,
+        source_config.as_ref(),
+    )?;
+    let minicpm_v46_vision =
+        crate::minicpm_v::load_minicpm_v46_vision_weights(&mut name_map, source_config.as_ref())?;
+    let nemotron_omni =
+        crate::nemotron_omni::load_nemotron_omni_weights(&mut name_map, source_config.as_ref())?;
 
     let mut layers = Vec::with_capacity(layer_count);
     for li in 0..layer_count {
@@ -1161,6 +1178,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         glm_mtp,
         unlimited_ocr_vision,
         qwen3_vl_vision,
+        minicpm_v46_vision,
+        nemotron_omni,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;

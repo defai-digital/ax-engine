@@ -34,6 +34,13 @@ pub use ax_engine_core::{
     RequestMultimodalInputs, RequestWorkloadHints, UNLIMITED_OCR_BASE_SOFT_TOKEN_COUNT,
     UnlimitedOcrImageRuntimeInput, UnlimitedOcrRuntimeInputError, UnlimitedOcrRuntimeInputs,
 };
+pub use ax_engine_core::{
+    MiniCpmV46ImageRuntimeInput, MiniCpmV46RuntimeInputError, MiniCpmV46RuntimeInputs,
+};
+pub use ax_engine_core::{
+    NemotronOmniAudioRuntimeInput, NemotronOmniImageRuntimeInput, NemotronOmniRuntimeInputError,
+    NemotronOmniRuntimeInputs,
+};
 #[cfg(feature = "mlx-native")]
 pub use ax_engine_mlx::MlxPrefixCacheStore;
 
@@ -112,7 +119,7 @@ pub use request::{
 pub use session::{
     EngineSession, EngineSessionConfig, EngineSessionError, GenerateStream, GenerateStreamState,
     MlxMtpPolicy, PreviewSessionConfigError, PreviewSessionConfigRequest,
-    ResolvedSessionConfigRequest, StatelessGenerateContext,
+    ResolvedSessionConfigRequest, SpeechTranscription, StatelessGenerateContext,
 };
 pub use vllm::{
     NormalizedDelegatedBaseUrl, OrderedFloat, UNLIMITED_OCR_DEFAULT_CONTEXT_LENGTH,

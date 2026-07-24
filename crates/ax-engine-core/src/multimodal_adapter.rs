@@ -72,6 +72,22 @@ impl MultimodalPrefillAdapter {
         {
             modalities.push(PrefillModality::Vision);
         }
+        if inputs
+            .minicpm_v46
+            .as_ref()
+            .is_some_and(|vl| !vl.images.is_empty())
+            && !modalities.contains(&PrefillModality::Vision)
+        {
+            modalities.push(PrefillModality::Vision);
+        }
+        if let Some(omni) = inputs.nemotron_omni.as_ref() {
+            if !omni.images.is_empty() && !modalities.contains(&PrefillModality::Vision) {
+                modalities.push(PrefillModality::Vision);
+            }
+            if !omni.audios.is_empty() && !modalities.contains(&PrefillModality::Audio) {
+                modalities.push(PrefillModality::Audio);
+            }
+        }
 
         Self {
             modalities,
@@ -198,6 +214,8 @@ mod tests {
             }),
             unlimited_ocr: None,
             qwen3_vl: None,
+            minicpm_v46: None,
+            nemotron_omni: None,
         };
 
         let backbone = GenerationKind::Autoregressive;
