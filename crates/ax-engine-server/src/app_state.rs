@@ -853,10 +853,17 @@ fn build_live_state_inner(
         // warm. Reloads (flip S2) skip it — OS page cache + prior JIT already
         // paid, and re-warming dominated S2 thr (~8s/load with long shapes).
         if mark_model_production_warmup_needed(&model_id) {
-            // Two passes stabilize first-token TTFT under process cold-start
+            // Two short passes stabilize first-token TTFT under process cold-start
             // variance (flip S0 sometimes 0.84× pass, sometimes 0.94× fail).
             run_production_path_warmup(&generation_service, &model_id);
             run_production_path_warmup(&generation_service, &model_id);
+            // Opt-in long prefill warm (flip S1 shape JIT). Default off: measured
+            // 2k/4k first-load warm regressed formal S1 thr/gap on M5 Max
+            // (2026-07-24 longwarm-chunk1024). Enable via
+            // AX_SERVER_LONG_PREFILL_WARM=1 for A/Bs only.
+            if long_prefill_warmup_enabled() {
+                run_long_prefill_production_warmup(&generation_service, &model_id);
+            }
         }
     }
     let embedding_batcher = EmbeddingMicroBatcher::spawn(generation_service.clone());
@@ -897,10 +904,46 @@ pub(crate) fn run_production_path_warmup(
     generation_service: &NativeGenerationService,
     model_id: &str,
 ) {
-    // Flip S0 prompt (~34) + short decode burst + medium prefill. Keep the
-    // load path short: long 8k warms made S2 reload thr ~0.29× on M5 Max.
-    let shapes: [(u64, usize, u32); 3] = [(0_u64, 34_usize, 8_u32), (1, 13, 16), (2, 512, 1)];
-    for (offset, prompt_len, max_out) in shapes {
+    // Short shapes: Flip S0 prompt (~34) + short decode burst + medium prefill.
+    // These stay on every first-load warm (and sibling rewarm) path.
+    run_production_path_warmup_shapes(
+        generation_service,
+        model_id,
+        &[(0_u64, 34_usize, 8_u32), (1, 13, 16), (2, 512, 1)],
+    );
+}
+
+fn long_prefill_warmup_enabled() -> bool {
+    matches!(
+        std::env::var("AX_SERVER_LONG_PREFILL_WARM").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
+
+/// First-load-only long prefill warm for multi-model flip S1 A/Bs.
+///
+/// Warm process microbenches settle near ~9s pure Gemma 13.8k TTFT; formal
+/// fresh-process S1 often lands ~12–13s. 2k/4k first-load shapes are available
+/// behind `AX_SERVER_LONG_PREFILL_WARM=1`, but default stays off after a
+/// measured formal S1 regression (thr/gap) on M5 Max. Never run on S2 reload
+/// (gated by [`mark_model_production_warmup_needed`]).
+pub(crate) fn run_long_prefill_production_warmup(
+    generation_service: &NativeGenerationService,
+    model_id: &str,
+) {
+    run_production_path_warmup_shapes(
+        generation_service,
+        model_id,
+        &[(10_u64, 2048_usize, 1_u32), (11, 4096, 1)],
+    );
+}
+
+fn run_production_path_warmup_shapes(
+    generation_service: &NativeGenerationService,
+    model_id: &str,
+    shapes: &[(u64, usize, u32)],
+) {
+    for &(offset, prompt_len, max_out) in shapes {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let model_id = model_id.to_string();
         let request_id = PRODUCTION_PATH_WARMUP_REQUEST_ID.saturating_add(offset);
