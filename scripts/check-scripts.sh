@@ -181,6 +181,8 @@ bash scripts/check-qa.sh
   scripts/test_check_direct_mlx_no_production_route.py \
   scripts/test_check_mlx_fastpath_env_controls.py \
   scripts/test_check_mlx_version.py \
+  scripts/repair_mlx_metallib_wheel.py \
+  scripts/test_repair_mlx_metallib_wheel.py \
   scripts/test_build_pypi_wheel_minos.py \
   scripts/test_check_qwen_post_input_route_promotion.py \
   scripts/test_check_linear_attention_pack_promotion.py \
@@ -265,6 +267,7 @@ bash scripts/check-qa.sh
   scripts/test_check_direct_mlx_no_production_route.py \
   scripts/test_check_mlx_fastpath_env_controls.py \
   scripts/test_check_mlx_version.py \
+  scripts/test_repair_mlx_metallib_wheel.py \
   scripts/test_build_pypi_wheel_minos.py \
   scripts/test_check_mla_prefix_restore_evidence.py \
   scripts/test_long_context_comparison_artifact.py \
