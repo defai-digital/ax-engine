@@ -11,13 +11,19 @@ observability, while a separately supervised GPU worker owns model execution.
 > performance, security, soak, and rollback gates pass. CUDA support does not
 > change the default Mac installation or imply GA support for every NVIDIA GPU.
 
+AX OCR's product deployment priority is explicit: Apple Silicon Mac and NVIDIA
+Thor are co-primary targets, while certified Linux x86_64 CUDA PCs are the
+secondary support platform. That roadmap priority is separate from release
+maturity: a candidate profile remains a candidate until every applicable gate
+below passes.
+
 ## Platform Strategy
 
-| Platform and workload | Default path | Optional optimized path |
-| --- | --- | --- |
-| macOS 26+ on Apple Silicon | Repo-owned AX MLX/Metal runtime | None; `mlx_lm.server` remains an explicit compatibility adapter |
-| Linux x86_64 CUDA, broad OCR/VLM coverage | AX Engine → vLLM | AX Engine → TensorRT-LLM after per-model certification |
-| Linux aarch64 NVIDIA Thor, broad OCR/VLM coverage | AX Engine → vLLM | AX Engine → TensorRT Edge-LLM after per-model certification |
+| Product priority | Platform and workload | Default path | Optional optimized path |
+| --- | --- | --- | --- |
+| Primary | macOS 26+ on Apple Silicon | Repo-owned AX MLX/Metal runtime | None; `mlx_lm.server` remains an explicit compatibility adapter |
+| Secondary | Linux x86_64 CUDA, broad OCR/VLM coverage | AX Engine → vLLM | AX Engine → TensorRT-LLM after per-model certification |
+| Primary | Linux aarch64 NVIDIA Thor, broad OCR/VLM coverage | AX Engine → vLLM | AX Engine → TensorRT Edge-LLM after per-model certification |
 
 This is not a universal speed ranking. vLLM is the compatibility and model
 coverage path. TensorRT-LLM and TensorRT Edge-LLM are separate optimization

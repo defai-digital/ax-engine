@@ -108,6 +108,9 @@ into the execution core.
 AX Engine is Mac-first, not Mac-only. Platform support is split by ownership:
 
 - macOS 26+ Apple Silicon uses the repo-owned MLX/Metal execution path;
+- AX OCR treats Mac and NVIDIA Thor as co-primary deployment targets, with
+  certified Linux x86_64 CUDA PCs as the secondary support platform; target
+  priority does not bypass profile-specific release gates;
 - Linux CUDA uses a portable AX Engine control plane and an external GPU
   worker;
 - vLLM is one logical provider shared by x86_64 and Thor through distinct,

@@ -8,6 +8,11 @@ Its portable Linux control plane can also front explicitly selected vLLM,
 TensorRT-LLM, or TensorRT Edge-LLM workers without adding CUDA dependencies to
 the Mac installation.
 
+For AX OCR deployments, Apple Silicon Mac and NVIDIA Thor are the co-primary
+target platforms; certified Linux x86_64 CUDA PCs are the secondary support
+platform. This product priority does not promote a CUDA candidate to GA before
+its hardware-specific release gates pass.
+
 Browse all serve-ready snapshots in the
 [AutomatosX model collection on Hugging Face](https://huggingface.co/AutomatosX/models).
 

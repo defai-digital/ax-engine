@@ -5,6 +5,10 @@ and benchmark tooling. It is not only an MLX experiment: the repo-owned MLX
 runtime is one path, and delegated compatibility paths let users keep the same
 AX surface for broader model coverage.
 
+For AX OCR, Mac and NVIDIA Thor are co-primary deployment targets; certified
+Linux x86_64 CUDA PCs are secondary support. CUDA routes remain explicit
+release candidates until their platform and model gates pass.
+
 **Related:** [Supported Models](SUPPORTED-MODELS.md) · [CLI](CLI.md) ·
 [Server](SERVER.md) · [CUDA Backends](CUDA-BACKENDS.md) · [FAQ](FAQ.md) ·
 [Docs hub](README.md)
