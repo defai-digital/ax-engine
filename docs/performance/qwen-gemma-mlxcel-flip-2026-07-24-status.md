@@ -63,6 +63,6 @@ Four-stream thr ~0.82×, TTFT ~7.6×, gap ~1.83×. Need arbiter/batch formation 
 ## Do not
 
 - Relax locked gates.
-- Enable TurboQuant / paged-pool default-on without new M5 evidence.
+- Enable the retired KV-compression path or paged-pool default-on without new M5 evidence.
 - Reintroduce multi-row TG matvec without a new positive A/B.
 - Default-on long first-load warm or fixed huge sibling quanta without formal S1 gap A/B.
