@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -22,19 +22,64 @@ type StepObserver = Arc<dyn Fn(&EngineStepReport) + Send + Sync + 'static>;
 type PressureObserver = Arc<dyn Fn(GenerationPressureEvent) + Send + Sync + 'static>;
 type StepwiseTerminalObserver = Arc<dyn Fn(u64) + Send + Sync + 'static>;
 
-#[derive(Default)]
+/// Process-wide Metal/MLX turn arbiter.
+///
+/// Default is exclusive (max concurrent = 1): one model holds the device turn
+/// at a time. That protects stream-gap under multi-model load but serializes
+/// GPU work and caps S1 thr near pure-sum (≈0.99× mlxcel multi-process).
+///
+/// Set `AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT=2` to let distinct model workers
+/// hold turns together. Each worker already owns a dedicated GPU stream created
+/// on its thread (`MlxStream::new_gpu`), so concurrent holds map to concurrent
+/// Metal submissions — the same device-layer overlap mlxcel gets from one
+/// process per model. Same-model re-entry stays exclusive.
 pub(crate) struct ModelExecutionArbiter {
     state: parking_lot::Mutex<ModelExecutionState>,
     ready: parking_lot::Condvar,
+    max_concurrent: usize,
+}
+
+impl Default for ModelExecutionArbiter {
+    fn default() -> Self {
+        Self::with_max_concurrent(exec_arbiter_max_concurrent_from_env())
+    }
+}
+
+impl ModelExecutionArbiter {
+    pub(crate) fn with_max_concurrent(max_concurrent: usize) -> Self {
+        Self {
+            state: parking_lot::Mutex::new(ModelExecutionState::default()),
+            ready: parking_lot::Condvar::new(),
+            max_concurrent: max_concurrent.max(1),
+        }
+    }
+
+    pub(crate) fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+    }
 }
 
 #[derive(Default)]
 struct ModelExecutionState {
-    held_model: Option<String>,
+    /// Models currently holding an execution turn. Size ≤ max_concurrent.
+    held_models: BTreeSet<String>,
     last_served: Option<String>,
     last_activity: BTreeMap<String, Instant>,
     waiters: BTreeMap<String, usize>,
     stats: BTreeMap<(String, ExecutionWorkClass), ModelExecutionStats>,
+}
+
+/// Resolve `AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT` (default 1 = exclusive).
+///
+/// Values < 1 fall back to 1. Cap at 8 so a mis-set env cannot unbounded-open
+/// device contention on large multi-model hosts.
+pub(crate) fn exec_arbiter_max_concurrent_from_env() -> usize {
+    std::env::var("AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .map(|n| n.min(8))
+        .unwrap_or(1)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -73,8 +118,10 @@ impl ModelExecutionArbiter {
         let wait_started_at = Instant::now();
         let mut state = self.state.lock();
         *state.waiters.entry(model_id.to_string()).or_default() += 1;
-        while state.held_model.is_some() || next_waiting_model(&state).as_deref() != Some(model_id)
-        {
+        // Exclusive (max=1): classic round-robin on the single slot.
+        // Concurrent (max>1): distinct models may hold together; same model
+        // never re-enters while already held.
+        while !can_acquire_turn(&state, model_id, self.max_concurrent) {
             self.ready.wait(&mut state);
         }
         let remove_waiter = if let Some(waiters) = state.waiters.get_mut(model_id) {
@@ -86,7 +133,7 @@ impl ModelExecutionArbiter {
         if remove_waiter {
             state.waiters.remove(model_id);
         }
-        state.held_model = Some(model_id.to_string());
+        state.held_models.insert(model_id.to_string());
         state.last_served = Some(model_id.to_string());
         state
             .last_activity
@@ -123,6 +170,7 @@ impl ModelExecutionArbiter {
             .retain(|(stats_model_id, _), _| stats_model_id != model_id);
         state.last_activity.remove(model_id);
         state.waiters.remove(model_id);
+        state.held_models.remove(model_id);
         if state.last_served.as_deref() == Some(model_id) {
             state.last_served = None;
         }
@@ -132,9 +180,9 @@ impl ModelExecutionArbiter {
         let now = Instant::now();
         let state = self.state.lock();
         state
-            .held_model
-            .as_deref()
-            .is_some_and(|held_model| held_model != model_id)
+            .held_models
+            .iter()
+            .any(|held_model| held_model.as_str() != model_id)
             || state
                 .waiters
                 .iter()
@@ -155,17 +203,42 @@ impl Drop for ModelExecutionTurn<'_> {
             .or_default();
         stats.hold_us_total = stats.hold_us_total.saturating_add(hold_us);
         stats.hold_us_max = stats.hold_us_max.max(hold_us);
-        state.held_model = None;
+        state.held_models.remove(&self.model_id);
         state
             .last_activity
             .insert(self.model_id.clone(), Instant::now());
         drop(state);
-        // Wake all waiters: fairness is enforced by next_waiting_model(), but
-        // notify_one could wake the wrong model which would re-wait without
-        // waking the correct one. Model count is typically small (1-3), so the
-        // thundering herd cost is negligible.
+        // Wake all waiters: exclusive mode relies on next_waiting_model();
+        // concurrent mode needs broadcast so every eligible waiter re-checks
+        // free capacity. Model count is typically small (1-3).
         self.arbiter.ready.notify_all();
     }
+}
+
+/// Whether `model_id` may enter a turn under the current hold set.
+fn can_acquire_turn(state: &ModelExecutionState, model_id: &str, max_concurrent: usize) -> bool {
+    if state.held_models.contains(model_id) {
+        return false;
+    }
+    if state.held_models.len() >= max_concurrent {
+        return false;
+    }
+    if max_concurrent <= 1 {
+        // Strict exclusive fairness: only the round-robin head may enter.
+        return next_waiting_model(state).as_deref() == Some(model_id);
+    }
+    // Concurrent: any non-held model may fill a free slot. When more distinct
+    // waiters exist than free slots, prefer the round-robin head so one model
+    // cannot monopolize re-entry after a release.
+    let free_slots = max_concurrent.saturating_sub(state.held_models.len());
+    if free_slots == 0 {
+        return false;
+    }
+    let distinct_waiters = state.waiters.len();
+    if distinct_waiters <= free_slots {
+        return true;
+    }
+    next_waiting_model(state).as_deref() == Some(model_id)
 }
 
 fn duration_us(duration: Duration) -> u64 {
@@ -1202,10 +1275,17 @@ fn advance_shared_engine(
 ) -> SessionResult<EngineStepReport> {
     maintain_streams(session, active_streams, service_state);
     let execution_target = service_state.execution_target.read().clone();
-    // When a sibling model is active, cap engine step burst so one model cannot
-    // hold the shared execution arbiter for a full STREAM_ENGINE_STEP_BURST
-    // (64) decode steps — that HOL-starved sibling prefill (flip S1 Gemma
-    // e2e ~28s vs ~10s) while keeping single-stream S0 thr.
+    // Exclusive arbiter (max_concurrent=1): when a sibling is active, cap
+    // engine-step burst so one model cannot HOL the single device turn for a
+    // full STREAM_ENGINE_STEP_BURST (64) decode steps — that starved sibling
+    // prefill (flip S1 Gemma e2e ~28s vs ~10s). Concurrent arbiter (max>1)
+    // lets each model hold its own GPU stream turn, so burst and fair-prefill
+    // quanta no longer mediate cross-model Metal time — restore full decode
+    // burst and non-fair prefill (device-layer overlap, mlxcel multi-process
+    // equivalent).
+    let concurrent_device = execution_target
+        .as_ref()
+        .is_some_and(|target| target.arbiter.max_concurrent() > 1);
     let mut sibling_active_for_burst = false;
     if let Some(target) = execution_target.as_ref().filter(|_| {
         service_state
@@ -1216,9 +1296,10 @@ fn advance_shared_engine(
             target.model_id.as_ref(),
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
-        sibling_active_for_burst = sibling_active;
+        // Only force burst=1 under exclusive arbitration.
+        sibling_active_for_burst = sibling_active && !concurrent_device;
         let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
-        if sibling_active {
+        if sibling_active && !concurrent_device {
             // Feedback-control quantum from last turn's runner wall time so
             // one prefill chunk stays under the stream-gap SLO mid-prompt
             // (fixed large quanta blow gap late in long Gemma prefills).
@@ -1247,11 +1328,10 @@ fn advance_shared_engine(
                 session.set_multi_prefill_fair(true, adjusted, inflight);
             }
         } else {
-            // Sibling idle: restore single-model prefill throughput. Keeping
-            // fair-mode capped at THROUGHPUT (256) after multi-model load made
-            // dual-resident solo Gemma ~14k-tok prefill ~11.5s vs ~8.1s with
-            // fair off (full max_batch_tokens/step) — that alone makes the S1
-            // TTFT ≤0.9× mlxcel bar unreachable even without concurrency.
+            // Sibling idle, or concurrent multi-model device: restore
+            // single-model prefill throughput (fair off / full chunk). Concurrent
+            // mode relies on Metal time-slicing across dedicated streams rather
+            // than fair-token quanta for stream-gap isolation.
             let start = adaptive_prefill_latency_tokens_per_step();
             service_state
                 .adaptive_prefill_tokens
@@ -2037,8 +2117,22 @@ mod tests {
     }
 
     #[test]
+    fn execution_arbiter_concurrent_allows_distinct_models() {
+        let arbiter = Arc::new(ModelExecutionArbiter::with_max_concurrent(2));
+        let alpha = arbiter.acquire("alpha", ExecutionWorkClass::EngineStep);
+        // Distinct model must enter without waiting for alpha to drop.
+        let beta = arbiter.acquire("beta", ExecutionWorkClass::EngineStep);
+        assert_eq!(arbiter.max_concurrent(), 2);
+        assert!(arbiter.has_recent_sibling_activity("alpha", Duration::from_secs(1)));
+        assert!(arbiter.has_recent_sibling_activity("beta", Duration::from_secs(1)));
+        drop(alpha);
+        drop(beta);
+    }
+
+    #[test]
     fn execution_arbiter_rotates_between_waiting_models() {
-        let arbiter = Arc::new(ModelExecutionArbiter::default());
+        // Exclusive default: round-robin fairness on a single device slot.
+        let arbiter = Arc::new(ModelExecutionArbiter::with_max_concurrent(1));
         let first_turn = arbiter.acquire("alpha", ExecutionWorkClass::EngineStep);
         let (acquired_tx, acquired_rx) = std_mpsc::channel();
         let mut workers = Vec::new();
