@@ -14,7 +14,8 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::{
-    AppState, build_live_state, build_replacement_live_state, run_production_path_warmup,
+    AppState, build_live_state, build_replacement_live_state, run_long_prefill_production_warmup,
+    run_production_path_warmup,
 };
 use crate::errors::{ErrorResponse, error_response, map_generation_service_error};
 use crate::generation::service::{
@@ -388,6 +389,11 @@ pub(crate) async fn load_model(
                 // TTFT stays on the S0 warm envelope.
                 if multi_model_after_load {
                     rewarm_sibling_residents(&state_clone, published_model_id.as_ref());
+                    // Flip S1: formal concurrent as first long work pays a large
+                    // cold tax (~15s Gemma TTFT thr ~0.74×). A full long prefill
+                    // under adaptive isolation after multi-model publish matches
+                    // the warm-process microbench envelope (~9.4s / thr ~18).
+                    rewarm_published_long_prefill(&state_clone, published_model_id.as_ref());
                 }
                 if let Some(previous) = previous {
                     previous.retire().await.map_err(|error| {
@@ -1072,6 +1078,30 @@ fn rewarm_sibling_residents(state: &AppState, skip_model_id: &str) {
             run_production_path_warmup(&resident.generation_service, resident.model_id.as_ref());
         }
     }
+}
+
+/// After multi-model publish + adaptive isolation is on, run the long S1
+/// prefill geometry on the newly published model (Gemma) so formal concurrent
+/// is not the first long work. No-op when long warm is disabled.
+fn rewarm_published_long_prefill(state: &AppState, model_id: &str) {
+    if !crate::app_state::long_prefill_warmup_enabled() {
+        return;
+    }
+    if !model_id.to_ascii_lowercase().contains("gemma") {
+        return;
+    }
+    let Some(resident) = state.snapshot_for_model(Some(model_id)) else {
+        return;
+    };
+    if !resident
+        .session_config
+        .resolved_backend
+        .selected_backend
+        .is_mlx()
+    {
+        return;
+    }
+    run_long_prefill_production_warmup(&resident.generation_service, model_id);
 }
 
 /// Maximum time to wait for one model generation to drain. A timeout fails the

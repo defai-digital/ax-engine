@@ -129,6 +129,13 @@ static LAYER_GEMMA4_DUAL_PATH_CACHE: OnceLock<
     Mutex<HashMap<(u64, usize, ThreadId), Option<MlxClosure>>>,
 > = OnceLock::new();
 
+/// Fixed-shape Gemma4 dual-path **prefill** cache keyed by
+/// `(model, layer, thread, leading_elements)`. Prefill uses `shapeless=false`
+/// (same contract as dense FFN prefill) so each chunk geometry owns its graph.
+type Gemma4DualPathPrefillCache =
+    Mutex<HashMap<(u64, usize, ThreadId, i64), (Option<MlxClosure>, u64)>>;
+static LAYER_GEMMA4_DUAL_PATH_PREFILL_CACHE: OnceLock<Gemma4DualPathPrefillCache> = OnceLock::new();
+
 /// Apply a compiled MoE decode closure for a single layer.
 ///
 /// `inputs` is the full positional input vector the compiled function depends
@@ -646,12 +653,124 @@ pub fn clear_layer_gemma4_dual_path_cache() {
     }
 }
 
+/// Fixed-shape Gemma4 dual-path prefill compile (chunked long prompts).
+///
+/// Decode already has a shapeless dual-path cache; long prefill builds a much
+/// larger host graph per layer (dense + expert + combine). Compiling that
+/// graph once per `(layer, leading_elements)` cuts async_eval encoding cost on
+/// flip S1 13.8k Gemma shapes. Gated by `AX_MLX_MOE_LAYER_COMPILE` (same opt-in
+/// as decode dual-path). Falls closed to `None` on compile/apply failure.
+pub fn apply_layer_gemma4_dual_path_prefill(
+    model_identity: u64,
+    layer_index: usize,
+    leading_elements: i64,
+    inputs: &[&MlxArray],
+    dual_path_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
+) -> Option<Vec<MlxArray>> {
+    if !crate::fastpath::moe_layer_compile_enabled() {
+        return None;
+    }
+    if leading_elements < crate::fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING {
+        return None;
+    }
+    let cache = LAYER_GEMMA4_DUAL_PATH_PREFILL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let tid = std::thread::current().id();
+    let key = (model_identity, layer_index, tid, leading_elements);
+    let threshold = *COMPILE_CACHE_REFRESH_THRESHOLD;
+
+    let mut guard = cache.lock().ok()?;
+    let apply_result: Option<(Option<Vec<MlxArray>>, bool)> =
+        if let Some((entry, generation)) = guard.get_mut(&key) {
+            let closure_ref: Option<&MlxClosure> = match &*entry {
+                Some(c) => Some(c),
+                None => None,
+            };
+            let c = closure_ref?;
+            let result = try_apply_with_abort_safety(c, inputs);
+            let evict = if result.is_some() {
+                let new_generation = generation.wrapping_add(1);
+                *generation = new_generation;
+                new_generation.is_multiple_of(threshold)
+            } else {
+                true
+            };
+            Some((result, evict))
+        } else {
+            None
+        };
+    if let Some((result, evict)) = apply_result {
+        if result.is_none() {
+            tracing::warn!(
+                target = "ax_engine_mlx",
+                path = "gemma4_dual_path_prefill",
+                layer = layer_index,
+                leading_elements,
+                "compiled_closure_apply_failed; removing entry for recompilation"
+            );
+        }
+        if evict {
+            guard.remove(&key);
+        }
+        return result;
+    }
+    drop(guard);
+
+    let mut guard = cache.lock().ok()?;
+    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry(key) {
+        let closure = MlxClosure::new_dyn(dual_path_fn);
+        let compiled = {
+            let _quiet = mlx_sys::QuietErrorCapture::new();
+            closure.compile(false)
+        };
+        if let Ok(compiled) = compiled {
+            let result = try_apply_with_abort_safety(&compiled, inputs);
+            if result.is_none() {
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "gemma4_dual_path_prefill",
+                    layer = layer_index,
+                    leading_elements,
+                    "compiled_closure_fallback"
+                );
+            }
+            if result.is_some() {
+                let generation: u64 = 1;
+                if !generation.is_multiple_of(threshold) {
+                    slot.insert((Some(compiled), generation));
+                }
+            } else {
+                slot.insert((None, 0));
+            }
+            return result;
+        }
+        tracing::warn!(
+            target = "ax_engine_mlx",
+            path = "gemma4_dual_path_prefill",
+            layer = layer_index,
+            leading_elements,
+            "compiled_closure_compile_failed"
+        );
+        slot.insert((None, 0));
+    }
+    None
+}
+
+/// Clear fixed-shape Gemma4 dual-path prefill caches (model unload / swap).
+pub fn clear_layer_gemma4_dual_path_prefill_cache() {
+    if let Some(cache) = LAYER_GEMMA4_DUAL_PATH_PREFILL_CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+}
+
 /// Clear every compiled per-layer decode closure before a drained model swap.
 pub fn clear_all_layer_decode_caches() {
     clear_layer_moe_decode_cache();
     clear_layer_dense_ffn_decode_cache();
     clear_per_layer_input_gate_decode_cache();
     clear_layer_gemma4_dual_path_cache();
+    clear_layer_gemma4_dual_path_prefill_cache();
 }
 
 #[cfg(test)]

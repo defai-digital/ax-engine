@@ -68,7 +68,10 @@ use crate::batched_linear_state::BatchedLinearState;
 use crate::fastpath;
 use crate::kv_cache::{MlxAttentionKv, MlxKVCache};
 use crate::paged_attention::paged_decode_attention;
-use crate::per_layer_compile::{apply_layer_gemma4_dual_path_decode, apply_layer_moe_decode};
+use crate::per_layer_compile::{
+    apply_layer_gemma4_dual_path_decode, apply_layer_gemma4_dual_path_prefill,
+    apply_layer_moe_decode,
+};
 use crate::weights::LayerWeights;
 
 /// Minimum top-k selection count above which the sort path is taken in Gemma4 MoE.
@@ -174,20 +177,40 @@ fn layer_shell_post_attention(
     let ffn_started = profile_forward_layer.then(Instant::now);
     let ffn_out = if w.router_proj.is_some() {
         if cfg.gemma4_moe_router {
-            // Try compiled dual-path decode closure.
-            let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
+            // Try compiled dual-path: shapeless decode, fixed-shape prefill.
+            let compiled_result = if fastpath::moe_layer_compile_enabled() {
                 flatten_gemma4_dual_path_inputs(&normed2, &hidden, w).and_then(
                     |(inputs, mut schema)| {
                         let cfg_clone = cfg.clone();
                         schema.moe_expert_count = cfg.moe_expert_count;
                         schema.moe_experts_per_token = cfg.moe_experts_per_token;
                         let input_refs: Vec<&MlxArray> = inputs.iter().collect();
-                        apply_layer_gemma4_dual_path_decode(
-                            cfg.compile_cache_identity,
-                            layer_idx,
-                            &input_refs,
-                            move |inputs: &MlxVectorArray| vec![schema.forward(inputs, &cfg_clone)],
-                        )
+                        if seq == 1 {
+                            apply_layer_gemma4_dual_path_decode(
+                                cfg.compile_cache_identity,
+                                layer_idx,
+                                &input_refs,
+                                move |inputs: &MlxVectorArray| {
+                                    vec![schema.forward(inputs, &cfg_clone)]
+                                },
+                            )
+                        } else {
+                            // Prefill: fixed-shape graph per leading element count
+                            // (chunk size). Host-encoding bound on long S1 shapes.
+                            let shape = normed2.shape();
+                            let leading = shape[..shape.len().saturating_sub(1)]
+                                .iter()
+                                .fold(1_i64, |acc, &d| acc.saturating_mul(i64::from(d)));
+                            apply_layer_gemma4_dual_path_prefill(
+                                cfg.compile_cache_identity,
+                                layer_idx,
+                                leading,
+                                &input_refs,
+                                move |inputs: &MlxVectorArray| {
+                                    vec![schema.forward(inputs, &cfg_clone)]
+                                },
+                            )
+                        }
                     },
                 )
             } else {
