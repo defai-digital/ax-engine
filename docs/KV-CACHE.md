@@ -680,11 +680,12 @@ Private mode materializes its block arrays. Two-flag sharing maps IDs to slab
 rows, groups the logical row list into maximal same-slab runs, applies one
 `take(axis=0)` per run, and reshapes/transposes the lazy result to
 `[1, n_kv_heads, T, head_dim]` for MLX SDPA. This is the preferred experimental
-route: mlxcel's Apple measurements and AX's own probe do not justify assuming a
-custom page-reading kernel is faster. With the third flag, structurally eligible
-single-token decode may attempt the diagnostic Metal kernel only if all rows are
-in one slab; multi-slab and failed geometry use gather + SDPA. Disk serialization emits portable
-contiguous tensor payloads (optionally split into immutable L2 payload pages).
+route: available Apple measurements and AX's own probe do not justify assuming
+a custom page-reading kernel is faster. With the third flag, structurally
+eligible single-token decode may attempt the diagnostic Metal kernel only if
+all rows are in one slab; multi-slab and failed geometry use gather + SDPA. Disk
+serialization emits portable contiguous tensor payloads (optionally split into
+immutable L2 payload pages).
 Native MLX handles never enter the cross-runner `MlxPrefixCacheStore` or the
 disk writer.
 

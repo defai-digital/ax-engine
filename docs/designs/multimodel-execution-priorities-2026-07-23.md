@@ -242,9 +242,9 @@ request/load/unload events and records:
   artifact.
 
 The manifests under `benchmarks/manifests/replay/` are the fixed regression
-workloads. mlxcel multi-process comparison remains a separate competitive
-benchmark: these artifacts establish AX internal correctness and performance,
-not a cross-project leaderboard claim.
+workloads. External multi-process comparisons remain separate competitive
+benchmarks: these artifacts establish AX internal correctness and performance,
+not cross-project leaderboard claims.
 
 ## Next phases
 
