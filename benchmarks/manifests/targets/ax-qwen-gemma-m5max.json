@@ -26,7 +26,8 @@
     "AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY": "1",
     "AX_NO_SPEC": "1",
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL": "1",
-    "AX_MLX_DENSE_FFN_COMPILE": "0"
+    "AX_MLX_DENSE_FFN_COMPILE": "0",
+    "AX_MLX_BATCHED_DECODE": "1"
   },
   "models": {
     "qwen3.5-9b": {

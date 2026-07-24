@@ -1,9 +1,14 @@
 #include "ax_shim_internal.h"
 
+#include <functional>
+#include <optional>
 #include <tuple>
+#include <vector>
 
+#include "mlx/compile.h"
 #include "mlx/fast.h"
 #include "mlx/ops.h"
+#include "mlx/transforms.h"
 
 namespace {
 
@@ -431,12 +436,46 @@ mx::array gemma4_post_attn_ffn_block_impl(
   return out;
 }
 
+// mlxcel-style shapeless compile for residual-add + pre-norm RMSNorm.
+// One static compiled closure per eps value (models share 1e-5 / 1e-6);
+// matmul stays outside the compile boundary (mlxcel correctness rule).
+// Fall back to uncompiled ops if compile/apply fails.
 std::pair<mx::array, mx::array> add_rms_norm_pair_impl(
     const mx::array& x,
     const mx::array& y,
     const mx::array& norm_weight,
     float eps,
     mx::StreamOrDevice stream) {
+  using CompiledFn =
+      std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+  struct CompiledAddRms {
+    float eps = 0.0f;
+    CompiledFn fn;
+  };
+  static thread_local std::optional<CompiledAddRms> compiled;
+  try {
+    if (!compiled || compiled->eps != eps) {
+      mx::enable_compile();
+      const float e = eps;
+      auto body = [e](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
+        // inputs: [x, y, norm_weight]
+        auto residual = mx::add(inputs[0], inputs[1]);
+        auto normed = mx::fast::rms_norm(residual, inputs[2], e);
+        return {std::move(residual), std::move(normed)};
+      };
+      compiled = CompiledAddRms{
+          eps,
+          mx::compile(body, /*shapeless=*/true),
+      };
+    }
+    auto out = compiled->fn({x, y, norm_weight});
+    if (out.size() == 2) {
+      return {std::move(out[0]), std::move(out[1])};
+    }
+  } catch (...) {
+    // Fall through to uncompiled path.
+    compiled.reset();
+  }
   auto residual = mx::add(x, y, stream);
   auto normed = mx::fast::rms_norm(residual, norm_weight, eps, stream);
   return {residual, normed};

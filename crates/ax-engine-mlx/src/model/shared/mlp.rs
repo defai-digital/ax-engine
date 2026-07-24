@@ -529,27 +529,35 @@ const PACKED_SWIGLU_KERNEL_SOURCE: &str = r#"
 
 /// Decode matvec: affine-4bit gate/up + SwiGLU for one token.
 ///
-/// One output row per 32-lane simdgroup (proven ~111 pure tok/s on M5 Max
-/// Qwen3.5-9B). Threadgroup x-caching regressed thr to ~41 tok/s on this
-/// Metal/MLX path and is intentionally not used.
+/// v1d: 256 threads per output row (8 simdgroups). Cross-simdgroup reduction
+/// uses only 8 floats of TG memory (not a full x cache — full x TG caching
+/// regressed thr to ~41 tok/s). More K-parallelism for PackedCols=512/1536.
 const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
-    uint row = thread_position_in_grid.x / 32;
-    uint lane = thread_index_in_simdgroup;
+    // grid.x = OutDim * 256, threadgroup = 256
+    uint flat = thread_position_in_grid.x;
+    uint row = flat / 256;
+    uint tid = flat % 256; // 0..255 within the row's threadgroup
+    uint lane = tid % 32;
+    uint sg = tid / 32; // 0..7
     if (row >= OutDim) {
         return;
     }
 
     float gate_acc = 0.0f;
     float up_acc = 0.0f;
-    for (uint packed_col = lane; packed_col < PackedCols; packed_col += 32) {
-        uint gate_packed = gate_weight[row * PackedCols + packed_col];
-        uint up_packed = up_weight[row * PackedCols + packed_col];
+    const uint row_base = row * PackedCols;
+    const uint scale_row = row * GroupCount;
+
+    // 256-wide stride over packed columns.
+    for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
+        uint gate_packed = gate_weight[row_base + packed_col];
+        uint up_packed = up_weight[row_base + packed_col];
         for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
             uint input_col = packed_col * PackFactor + packed_lane;
             uint gate_q = (gate_packed >> (packed_lane * Bits)) & QuantMask;
             uint up_q = (up_packed >> (packed_lane * Bits)) & QuantMask;
             uint group = input_col / GroupSize;
-            uint scale_idx = row * GroupCount + group;
+            uint scale_idx = scale_row + group;
             float x_v = static_cast<float>(x[input_col]);
             float gate_scale = static_cast<float>(gate_scales[scale_idx]);
             float gate_bias = static_cast<float>(gate_biases[scale_idx]);
@@ -562,29 +570,50 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
 
     float gate_sum = simd_sum(gate_acc);
     float up_sum = simd_sum(up_acc);
+
+    // Cross-simdgroup reduce via tiny TG buffers (8 floats each).
+    threadgroup float gate_partials[8];
+    threadgroup float up_partials[8];
     if (lane == 0) {
-        float activated = gate_sum / (1.0f + exp(-gate_sum));
-        out[row] = static_cast<OutT>(activated * up_sum);
+        gate_partials[sg] = gate_sum;
+        up_partials[sg] = up_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float g = 0.0f;
+        float u = 0.0f;
+        for (uint i = 0; i < 8; ++i) {
+            g += gate_partials[i];
+            u += up_partials[i];
+        }
+        float activated = g / (1.0f + exp(-g));
+        out[row] = static_cast<OutT>(activated * u);
     }
 "#;
 
-/// Single-matrix affine-4bit decode matvec (FFN down_proj). Same one-row-per-
-/// simdgroup layout as gate/up; intermediate activations are read from device.
+/// Single-matrix affine-4bit decode matvec (FFN down_proj).
+/// v1d: 256 threads per output row (same layout as gate/up).
 const QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE: &str = r#"
-    uint row = thread_position_in_grid.x / 32;
-    uint lane = thread_index_in_simdgroup;
+    uint flat = thread_position_in_grid.x;
+    uint row = flat / 256;
+    uint tid = flat % 256;
+    uint lane = tid % 32;
+    uint sg = tid / 32;
     if (row >= OutDim) {
         return;
     }
 
     float acc = 0.0f;
-    for (uint packed_col = lane; packed_col < PackedCols; packed_col += 32) {
-        uint packed = weight[row * PackedCols + packed_col];
+    const uint row_base = row * PackedCols;
+    const uint scale_row = row * GroupCount;
+
+    for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
+        uint packed = weight[row_base + packed_col];
         for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
             uint input_col = packed_col * PackFactor + packed_lane;
             uint q = (packed >> (packed_lane * Bits)) & QuantMask;
             uint group = input_col / GroupSize;
-            uint scale_idx = row * GroupCount + group;
+            uint scale_idx = scale_row + group;
             float x_v = static_cast<float>(x[input_col]);
             float scale = static_cast<float>(scales[scale_idx]);
             float bias = static_cast<float>(biases[scale_idx]);
@@ -593,8 +622,17 @@ const QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE: &str = r#"
     }
 
     float sum = simd_sum(acc);
+    threadgroup float partials[8];
     if (lane == 0) {
-        out[row] = static_cast<OutT>(sum);
+        partials[sg] = sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float total = 0.0f;
+        for (uint i = 0; i < 8; ++i) {
+            total += partials[i];
+        }
+        out[row] = static_cast<OutT>(total);
     }
 "#;
 
@@ -1053,7 +1091,7 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
     let quant_mask = (1_i32 << gate.bits) - 1;
     let kernel = QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_qwen_dense_ffn_gate_up_swiglu_simd_v1",
+            "ax_qwen_dense_ffn_gate_up_swiglu_simd_v1d",
             &[
                 "x",
                 "gate_weight",
@@ -1118,9 +1156,9 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
                     value: quant_mask,
                 },
             ],
-            // One simdgroup (32 lanes) per output row.
-            (out_dim.saturating_mul(32), 1, 1),
-            (32, 1, 1),
+            // 256 threads (8 simdgroups) per output row.
+            (out_dim.saturating_mul(256), 1, 1),
+            (256, 1, 1),
             None,
         )
         .ok()?;
@@ -1182,7 +1220,7 @@ fn qwen_dense_ffn_down_matvec_metal_impl(
     let quant_mask = (1_i32 << down.bits) - 1;
     let kernel = QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_qwen_dense_ffn_down_matvec_simd_v1",
+            "ax_qwen_dense_ffn_down_matvec_simd_v1d",
             &["x", "weight", "scales", "biases"],
             &["out"],
             QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE,
@@ -1231,8 +1269,8 @@ fn qwen_dense_ffn_down_matvec_metal_impl(
                     value: quant_mask,
                 },
             ],
-            (out_dim.saturating_mul(32), 1, 1),
-            (32, 1, 1),
+            (out_dim.saturating_mul(256), 1, 1),
+            (256, 1, 1),
             None,
         )
         .ok()?;

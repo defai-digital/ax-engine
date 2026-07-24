@@ -210,17 +210,16 @@ struct ModelExecutionTarget {
 ///   long prefill attention cost grows with position, so fixed-token quanta
 ///   are not wall-time-safe mid-prompt.
 ///
-/// Default **4** is only the *initial* quantum. When adaptive isolation is
-/// on, [`advance_shared_engine`] feedback-controls the quantum so one sibling
-/// prefill turn's `runner_time_us` stays under the stream-gap SLO budget
+/// Default **8** is only the *initial* quantum. When adaptive isolation is
+/// on, [`advance_shared_engine`] sizes the next quantum from measured
+/// µs/token so one sibling prefill turn stays under the stream-gap SLO budget
 /// ([`ADAPTIVE_PREFILL_GAP_SLO_US`]). Override the start point via
 /// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS`.
-pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 4;
+pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 8;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
 /// Interactive p95 stream-gap SLO used as the wall-time budget for one sibling
-/// prefill turn (flip gate: absolute ≤ 50 ms). Keep a 10 ms safety margin.
+/// prefill turn (flip gate: absolute ≤ 50 ms). Keep a safety margin.
 const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 40_000;
-const ADAPTIVE_PREFILL_GROW_BELOW_US: u64 = 18_000;
 const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
 const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
@@ -248,28 +247,54 @@ fn adaptive_prefill_latency_tokens_per_step() -> u32 {
     })
 }
 
-/// Feedback-control the sibling prefill quantum from the previous turn's
-/// measured runner wall time so one turn stays under the stream-gap SLO.
+/// Size the next sibling prefill quantum from measured µs/token so one turn's
+/// wall time targets [`ADAPTIVE_PREFILL_GAP_SLO_US`].
+///
+/// Using rate (us/tok) instead of binary grow/shrink keeps mid-prefill quanta
+/// large enough for S1 thr while still respecting the 50 ms gap SLO as
+/// attention cost grows with position.
 pub(crate) fn adjust_adaptive_prefill_tokens(
     current_tokens: u32,
     last_runner_time_us: u64,
 ) -> u32 {
-    let current = current_tokens.max(ADAPTIVE_PREFILL_MIN_TOKENS);
+    adjust_adaptive_prefill_tokens_with_work(current_tokens, last_runner_time_us, current_tokens)
+}
+
+/// Like [`adjust_adaptive_prefill_tokens`] but uses the actual tokens scheduled
+/// on the previous turn when available (more accurate µs/tok).
+pub(crate) fn adjust_adaptive_prefill_tokens_with_work(
+    current_tokens: u32,
+    last_runner_time_us: u64,
+    last_scheduled_tokens: u32,
+) -> u32 {
+    let current = current_tokens
+        .max(ADAPTIVE_PREFILL_MIN_TOKENS)
+        .min(ADAPTIVE_PREFILL_MAX_TOKENS);
+    let work = last_scheduled_tokens.max(1);
     if last_runner_time_us == 0 {
-        return current.min(ADAPTIVE_PREFILL_MAX_TOKENS);
+        return current;
     }
+    let us_per_tok = ((last_runner_time_us + u64::from(work) - 1) / u64::from(work)).max(1);
+    let target = (ADAPTIVE_PREFILL_GAP_SLO_US / us_per_tok).max(1);
+    let target = u32::try_from(target)
+        .unwrap_or(ADAPTIVE_PREFILL_MAX_TOKENS)
+        .min(ADAPTIVE_PREFILL_MAX_TOKENS)
+        .max(ADAPTIVE_PREFILL_MIN_TOKENS);
+    // Over budget: snap to target immediately (protect gap SLO).
     if last_runner_time_us > ADAPTIVE_PREFILL_GAP_SLO_US {
-        // Over budget: shrink aggressively (halve, floor at min).
-        return (current / 2).max(ADAPTIVE_PREFILL_MIN_TOKENS);
+        return target;
     }
-    if last_runner_time_us < ADAPTIVE_PREFILL_GROW_BELOW_US
-        && current < ADAPTIVE_PREFILL_MAX_TOKENS
-    {
-        // Under budget with headroom: grow gently (+50%, at least +1).
-        let grown = current.saturating_add((current / 2).max(1));
-        return grown.min(ADAPTIVE_PREFILL_MAX_TOKENS);
-    }
-    current.min(ADAPTIVE_PREFILL_MAX_TOKENS)
+    // Under budget: blend toward target to avoid oscillation.
+    let blended = if target > current {
+        current.saturating_add(((target - current) / 2).max(1))
+    } else if target < current {
+        current.saturating_sub(((current - target) / 2).max(1))
+    } else {
+        current
+    };
+    blended
+        .max(ADAPTIVE_PREFILL_MIN_TOKENS)
+        .min(ADAPTIVE_PREFILL_MAX_TOKENS)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -343,6 +368,8 @@ struct ServiceState {
     /// Last engine-step runner wall time (µs) used to feedback-control the
     /// sibling prefill quantum under adaptive isolation.
     last_step_runner_time_us: AtomicU64,
+    /// Tokens scheduled on the last engine step (for µs/tok estimation).
+    last_step_scheduled_tokens: AtomicU32,
     /// Current sibling-active prefill quantum (tokens/turn).
     adaptive_prefill_tokens: AtomicU32,
 }
@@ -410,6 +437,7 @@ impl NativeGenerationService {
             execution_target: parking_lot::RwLock::new(None),
             adaptive_prefill_isolation: AtomicBool::new(false),
             last_step_runner_time_us: AtomicU64::new(0),
+            last_step_scheduled_tokens: AtomicU32::new(0),
             adaptive_prefill_tokens: AtomicU32::new(
                 ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT,
             ),
@@ -1195,11 +1223,15 @@ fn advance_shared_engine(
             let last_us = service_state
                 .last_step_runner_time_us
                 .load(Ordering::Acquire);
+            let last_toks = service_state
+                .last_step_scheduled_tokens
+                .load(Ordering::Acquire);
             let current = service_state
                 .adaptive_prefill_tokens
                 .load(Ordering::Acquire)
                 .max(ADAPTIVE_PREFILL_MIN_TOKENS);
-            let adjusted = adjust_adaptive_prefill_tokens(current, last_us);
+            let adjusted =
+                adjust_adaptive_prefill_tokens_with_work(current, last_us, last_toks);
             service_state
                 .adaptive_prefill_tokens
                 .store(adjusted, Ordering::Release);
@@ -1634,6 +1666,9 @@ fn record_step_report(state: &ServiceState, report: &EngineStepReport) {
         state
             .last_step_runner_time_us
             .store(wall_us, Ordering::Release);
+        state
+            .last_step_scheduled_tokens
+            .store(report.scheduled_tokens.max(1), Ordering::Release);
     }
     let observer = state.step_observer.read().clone();
     if let Some(observer) = observer {
@@ -1721,11 +1756,11 @@ mod tests {
     fn adaptive_prefill_latency_quantum_defaults_to_wall_time_slo_proxy() {
         // Must not regress to the historical 1-token sibling quantum that
         // serialized long prefills into thousands of arbiter turns (flip S1).
-        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 4);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 4);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 4);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 4);
-        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 4);
+        assert_eq!(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT, 8);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(None), 8);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("")), 8);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("0")), 8);
+        assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("nope")), 8);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("96")), 96);
         assert_eq!(resolve_adaptive_prefill_latency_tokens(Some("1")), 1);
         assert!(
@@ -1739,17 +1774,19 @@ mod tests {
     }
 
     #[test]
-    fn adjust_adaptive_prefill_tokens_respects_gap_slo_budget() {
-        assert_eq!(adjust_adaptive_prefill_tokens(4, 0), 4);
-        // Over 40 ms budget → half.
-        assert_eq!(adjust_adaptive_prefill_tokens(16, 50_000), 8);
-        assert_eq!(adjust_adaptive_prefill_tokens(2, 50_000), 1);
-        assert_eq!(adjust_adaptive_prefill_tokens(1, 50_000), 1);
-        // Under grow threshold → +50%.
-        assert_eq!(adjust_adaptive_prefill_tokens(4, 10_000), 6);
-        assert_eq!(adjust_adaptive_prefill_tokens(64, 5_000), 64);
-        // In band → hold.
-        assert_eq!(adjust_adaptive_prefill_tokens(8, 25_000), 8);
+    fn adjust_adaptive_prefill_tokens_targets_gap_slo_from_us_per_tok() {
+        // No measurement yet → hold.
+        assert_eq!(adjust_adaptive_prefill_tokens(16, 0), 16);
+        // 16 tokens took 16 ms → 1 ms/tok → target ≈ 40; blend up from 16.
+        let up = adjust_adaptive_prefill_tokens_with_work(16, 16_000, 16);
+        assert!(up > 16 && up <= 40, "up={up}");
+        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 8).
+        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 8);
+        // Very expensive → snap to 1.
+        assert_eq!(adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4), 1);
+        // Cap at max.
+        let capped = adjust_adaptive_prefill_tokens_with_work(100, 1_000, 100);
+        assert!(capped <= ADAPTIVE_PREFILL_MAX_TOKENS);
     }
 
     fn delegated_config() -> EngineSessionConfig {
@@ -2059,6 +2096,7 @@ mod tests {
             execution_target: parking_lot::RwLock::new(None),
             adaptive_prefill_isolation: AtomicBool::new(false),
             last_step_runner_time_us: AtomicU64::new(0),
+            last_step_scheduled_tokens: AtomicU32::new(0),
             adaptive_prefill_tokens: AtomicU32::new(
                 ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT,
             ),

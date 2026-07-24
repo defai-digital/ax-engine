@@ -1,36 +1,41 @@
-# Qwen/Gemma mlxcel flip status — 2026-07-24 (matvec + adaptive quantum)
+# Qwen/Gemma mlxcel flip status — 2026-07-24 (matvec v1d)
 
-**Decision: `not_yet`**
+**Decision: `not_yet`** (S0 **PASS**; S1–S3 still short)
 
-Campaign: `benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-24-full-matvec-adaptive/`
+Campaign: `benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-24-full-v1d/`
 
-## Locked-gate medians (3 reps)
+## Locked-gate medians (3 reps, matvec v1d 256-wide + compiled add_rms)
 
-| Scenario | thr | TTFT | gap | Notes |
+| Scenario | thr | TTFT | gap | Result |
 | --- | ---: | ---: | ---: | --- |
-| S0 | **1.141×** | **0.754× PASS** | **0.866× PASS** | thr short by ~0.8% |
-| S1 | 0.323× | 3.15× | **0.265× PASS** | gap OK; thr multi-process isolation |
-| S2 | 1.080× | **0.772× PASS** | 2.01× | thr+gap |
-| S3 | 0.732× | 15.1× | 1.87× | batch/TTFT/gap |
+| **S0** | **1.166× PASS** | **0.748× PASS** | **0.827× PASS** | **ALL GATES** |
+| S1 | 0.329× | 3.09× | **0.259× PASS** | thr/TTFT (multi-process isolation) |
+| S2 | 1.093× | 0.901× | 2.26× | thr+gap (lifecycle) |
+| S3 | 0.752× | 14.8× | 1.84× | thr/TTFT/gap (batch) |
 
-## S0 thr path
+## S0 thr breakthrough
 
-- Pure decode **~111.3 tok/s** with gate/up + down affine-4bit matvec Metal (vs ~107.4 OFF).
-- Fresh e2e **~108.1 tok/s** vs mlxcel **~94.8** → thr **1.141 < 1.15**.
-- Need pure ~112.2+ or TTFT ~35 ms for locked thr bar with current e2e overhead.
-- **Rejected**: multi-row TG + threadgroup `x` cache (~39–42 tok/s regression).
-- **Rejected**: heavier production warmup shapes (TTFT/thr regression).
+- Pure decode **~113.4–113.8 tok/s** with **256-thread** gate/up+down matvec (was ~111 with 32-lane).
+- E2e **~110.5 tok/s** vs mlxcel **~94.8** → thr **1.166 ≥ 1.15**.
+- Tiny TG partials (8 floats) for cross-simdgroup reduce; full x-cache still rejected.
 
-## Code landed
+## Also landed
 
-1. Qwen dense FFN gate/up SwiGLU Metal matvec (default-on, preferred over split-FFN compile).
-2. Matching down_proj matvec Metal on the same decode path.
-3. Wall-time adaptive sibling prefill quantum (feedback from `runner_time_us`, 40 ms budget, start=4).
-4. Retained: greedy OpenAI `repetition_penalty=1.0`, stream burst 64, emit batch 1, PACK_LINEAR=0.
+1. `mx::compile` shapeless residual `add + rms_norm` in `activation.cpp` (P0 composite).
+2. Wall-time adaptive sibling prefill quantum (µs/tok → tokens for 40 ms SLO).
+3. Optional `AX_MLX_BATCHED_DECODE=1` on flip target (S3 thr/TTFT improved modestly: thr 0.75→0.79).
+
+## Residual
+
+| Lever | Status |
+| --- | --- |
+| S0 thr ≥ 1.15 | **DONE** |
+| S1 thr (single-process vs multi-process) | Still ~0.25–0.33×; gap OK |
+| S2 thr 1.09→1.15 + gap | Lifecycle HOL / stream stalls |
+| S3 thr/TTFT/gap | Need stronger batch + arbiter |
 
 ## Next
 
-1. Deep-review P0: C++ `mx::compile` elementwise composites (host graph shrink).
-2. Deep-review R2: MLX pin/patch audit vs mlxcel.
-3. S1 thr under single-process isolation (adaptive quantum keeps gap; thr still multi-process-class).
-4. S3 arbiter/batch formation (+ optional tensor-batch drift product decision).
+1. S1: larger effective prefill under gap SLO without HOL-starving interactive TTFT (tick-strict decode/prefill alternate).
+2. S2: shrink unload/reload interference on interactive gap.
+3. S3: certified row-exact cohort engagement + optional tensor-batch product decision.
