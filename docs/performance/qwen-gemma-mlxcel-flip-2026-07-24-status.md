@@ -42,11 +42,20 @@ Gate 1.15× needs AX wall ≤ ~9.3 s (thr ≥ ~20.4). Exclusive wall ≈ pure Ge
 4. Concurrent arbiter opt-in (`AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT`); fair prefill retained when sibling active.
 5. Adaptive sibling prefill quantum default 64 / gap SLO 32 ms (exclusive flip baseline).
 
+## Pure-path experiments (evening)
+
+| Attempt | Result |
+| --- | --- |
+| Rotating SWA KV during multi-token prefill | **Panic** SDPA mask/KV shape mismatch (capacity ring vs ordered windowed view / hoisted masks). Wiring kept, **default OFF**. Defensive `key_len == capacity` guards landed. |
+| Concurrent dual-hold + exact warm | thr ~1.03, gap ~10× FAIL |
+| Exclusive exact-warm tip recheck | thr **1.001**, TTFT 0.908, gap 0.26 |
+
 ## Next for S1 thr ≥1.15×
 
-1. Pure Gemma (+Qwen) prefill/decode host+Metal path −14–15% so exclusive wall ≤9.3 s.
-2. Or a true multi-stream overlap that cuts Qwen concurrent e2e → ~5–6 s **without** gap p95 spikes (deeper than dual arbiter holds).
-3. Then full ≥3-rep S0–S3 campaign.
+1. Finish rotating-prefill correctly: mask hoist must use **per-layer post-append key_len**, cold layers must enter ring on first write past window, then re-A/B pure Gemma and formal S1.
+2. Or other pure-sum cuts (Metal SDPA/FFN, more elementwise composites, host-graph) totaling **~14–15%** exclusive wall.
+3. True multi-stream overlap remains secondary (concurrent dual-hold does not cut Qwen e2e to ~5.6 s).
+4. Then full ≥3-rep S0–S3 campaign.
 
 ## Physics note
 
