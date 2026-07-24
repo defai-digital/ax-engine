@@ -1,0 +1,271 @@
+{
+  "baseline_label": "mlxcel",
+  "campaign": "/Users/akiralam/code/ax-engine-mlxcel-flip-work/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-24-full-s0s3/campaign.json",
+  "candidate_label": "ax-engine",
+  "decision": "not_yet",
+  "gates": {
+    "path": "/Users/akiralam/code/ax-engine-mlxcel-flip-work/benchmarks/manifests/qwen_gemma_flip_gates.v1.json",
+    "sha256": "9a6be4274c7ebf152e5d757aa2f765f63b8c42aa6aa84ad55e2c4b722c76b192"
+  },
+  "passed": false,
+  "repetitions": 3,
+  "scenarios": [
+    {
+      "baseline": {
+        "stream_gap_p95_median_ms": 11.016584001481533,
+        "throughput_median_tok_s": 94.58383953633299,
+        "ttft_p95_median_ms": 67.24929198389873
+      },
+      "candidate": {
+        "stream_gap_p95_median_ms": 9.383270458783954,
+        "throughput_median_tok_s": 104.93644448683948,
+        "ttft_p95_median_ms": 49.1482499637641
+      },
+      "failed_required_gates": [
+        "median_throughput_ratio"
+      ],
+      "gates": [
+        {
+          "detail": "all paired trials matched",
+          "name": "comparison_contract",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "1.1095 >= 1.1500",
+          "name": "median_throughput_ratio",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "0.7308 <= 0.9000",
+          "name": "median_ttft_p95_ratio",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "0.8517 <= 0.9000",
+          "name": "median_stream_gap_p95_ratio",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "9.383ms <= 50.000ms",
+          "name": "absolute_stream_gap_p95",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "max_error_rate=0.0000, max_http_503=0, max_lifecycle_errors=0",
+          "name": "candidate_availability",
+          "passed": true,
+          "required": true
+        }
+      ],
+      "passed": false,
+      "ratios": {
+        "stream_gap_p95": 0.8517404721392832,
+        "throughput": 1.1094542683111281,
+        "ttft_p95": 0.7308366900804175
+      },
+      "repetitions": 3,
+      "scenario": "s0"
+    },
+    {
+      "baseline": {
+        "stream_gap_p95_median_ms": 34.18537450488657,
+        "throughput_median_tok_s": 19.695803921182154,
+        "ttft_p95_median_ms": 9073.373797314707
+      },
+      "candidate": {
+        "stream_gap_p95_median_ms": 810.8232289960142,
+        "throughput_median_tok_s": 5.663230233452731,
+        "ttft_p95_median_ms": 32125.75832081784
+      },
+      "failed_required_gates": [
+        "median_throughput_ratio",
+        "median_ttft_p95_ratio",
+        "median_stream_gap_p95_ratio",
+        "absolute_stream_gap_p95"
+      ],
+      "gates": [
+        {
+          "detail": "all paired trials matched",
+          "name": "comparison_contract",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "0.2875 >= 1.1500",
+          "name": "median_throughput_ratio",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "3.5407 <= 0.9000",
+          "name": "median_ttft_p95_ratio",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "23.7184 <= 0.9000",
+          "name": "median_stream_gap_p95_ratio",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "810.823ms <= 50.000ms",
+          "name": "absolute_stream_gap_p95",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "max_error_rate=0.0000, max_http_503=0, max_lifecycle_errors=0",
+          "name": "candidate_availability",
+          "passed": true,
+          "required": true
+        }
+      ],
+      "passed": false,
+      "ratios": {
+        "stream_gap_p95": 23.71842464034181,
+        "throughput": 0.2875348605274306,
+        "ttft_p95": 3.5406629373437206
+      },
+      "repetitions": 3,
+      "scenario": "s1"
+    },
+    {
+      "baseline": {
+        "stream_gap_p95_median_ms": 11.397208494599909,
+        "throughput_median_tok_s": 73.97179682117311,
+        "ttft_p95_median_ms": 66.8732090271078
+      },
+      "candidate": {
+        "stream_gap_p95_median_ms": 21.451583510497585,
+        "throughput_median_tok_s": 79.25590949401551,
+        "ttft_p95_median_ms": 51.447250007186085
+      },
+      "failed_required_gates": [
+        "median_throughput_ratio",
+        "median_stream_gap_p95_ratio"
+      ],
+      "gates": [
+        {
+          "detail": "all paired trials matched",
+          "name": "comparison_contract",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "1.0714 >= 1.1500",
+          "name": "median_throughput_ratio",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "0.7693 <= 0.9000",
+          "name": "median_ttft_p95_ratio",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "1.8822 <= 0.9000",
+          "name": "median_stream_gap_p95_ratio",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "21.452ms <= 50.000ms",
+          "name": "absolute_stream_gap_p95",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "max_error_rate=0.0000, max_http_503=0, max_lifecycle_errors=0",
+          "name": "candidate_availability",
+          "passed": true,
+          "required": true
+        }
+      ],
+      "passed": false,
+      "ratios": {
+        "stream_gap_p95": 1.8821787388255222,
+        "throughput": 1.071434153284349,
+        "ttft_p95": 0.7693252762302968
+      },
+      "repetitions": 3,
+      "scenario": "s2"
+    },
+    {
+      "baseline": {
+        "stream_gap_p95_median_ms": 27.635947757516988,
+        "throughput_median_tok_s": 109.9774327320962,
+        "ttft_p95_median_ms": 162.56067953654562
+      },
+      "candidate": {
+        "stream_gap_p95_median_ms": 38.92244400049094,
+        "throughput_median_tok_s": 91.86060608878554,
+        "ttft_p95_median_ms": 656.5592088911217
+      },
+      "failed_required_gates": [
+        "median_throughput_ratio",
+        "median_ttft_p95_ratio",
+        "median_stream_gap_p95_ratio"
+      ],
+      "gates": [
+        {
+          "detail": "all paired trials matched",
+          "name": "comparison_contract",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "0.8353 >= 1.1500",
+          "name": "median_throughput_ratio",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "4.0389 <= 0.9000",
+          "name": "median_ttft_p95_ratio",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "1.4084 <= 0.9000",
+          "name": "median_stream_gap_p95_ratio",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "38.922ms <= 50.000ms",
+          "name": "absolute_stream_gap_p95",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "max_error_rate=0.0000, max_http_503=0, max_lifecycle_errors=0",
+          "name": "candidate_availability",
+          "passed": true,
+          "required": true
+        }
+      ],
+      "passed": false,
+      "ratios": {
+        "stream_gap_p95": 1.4083991018511035,
+        "throughput": 0.8352677800049848,
+        "ttft_p95": 4.038856202883423
+      },
+      "repetitions": 3,
+      "scenario": "s3"
+    }
+  ],
+  "schema_version": "ax.qwen_gemma_flip_campaign_summary.v1",
+  "thresholds": {
+    "max_stream_gap_p95_ms": 50.0,
+    "max_stream_gap_p95_ratio": 0.9,
+    "max_ttft_p95_ratio": 0.9,
+    "min_throughput_ratio": 1.15
+  }
+}
