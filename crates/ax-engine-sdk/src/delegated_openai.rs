@@ -583,7 +583,10 @@ mod tests {
 
     #[test]
     fn stream_rejects_malformed_provider_and_oversized_frames() {
-        let cases: Vec<(Vec<u8>, usize, fn(&DelegatedOpenAiSseError) -> bool)> = vec![
+        type SseErrorMatcher = fn(&DelegatedOpenAiSseError) -> bool;
+        type MalformedFrameCase = (Vec<u8>, usize, SseErrorMatcher);
+
+        let cases: Vec<MalformedFrameCase> = vec![
             (b"data: {not-json}\n\n".to_vec(), 4096, |error| {
                 matches!(error, DelegatedOpenAiSseError::InvalidJson { .. })
             }),
