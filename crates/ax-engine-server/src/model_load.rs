@@ -881,6 +881,19 @@ fn max_recommended_working_set_size() -> u64 {
     0
 }
 
+#[cfg(feature = "mlx-native-server")]
+fn measured_device_active_bytes() -> Option<u64> {
+    mlx_sys::device_active_bytes()
+}
+
+#[cfg(not(feature = "mlx-native-server"))]
+fn measured_device_active_bytes() -> Option<u64> {
+    // The delegated-only server does not link MLX. Its zero working-set
+    // budget already skips local model-load admission; preserve the same
+    // fail-safe fallback if this helper is reached by future refactoring.
+    None
+}
+
 /// Memory admission for model loads (ADR-040 D4). Runs synchronously before
 /// drain, preserving the no-side-effects-on-reject preflight contract. Skips
 /// (never blocks) when the device budget or the incoming weight layout is
@@ -935,7 +948,7 @@ fn validate_load_memory_preflight(
     // manifests. The latter misses compiled graphs and live temporaries and
     // can double-count shared storage; it remains a deterministic fallback
     // when MLX has no device probe (for example a delegated CPU backend).
-    let measured_active = mlx_sys::device_active_bytes();
+    let measured_active = measured_device_active_bytes();
     let resident_accounted = measured_active.unwrap_or(resident_total);
     let peak = projected_peak_bytes(
         resident_accounted,
@@ -1896,6 +1909,13 @@ mod tests {
             ),
             35
         );
+    }
+
+    #[cfg(not(feature = "mlx-native-server"))]
+    #[test]
+    fn delegated_server_skips_local_mlx_memory_probes() {
+        assert_eq!(max_recommended_working_set_size(), 0);
+        assert_eq!(measured_device_active_bytes(), None);
     }
 
     #[test]

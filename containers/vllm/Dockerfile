@@ -14,6 +14,8 @@ ARG CUDA_IMAGE
 ARG UBUNTU_SNAPSHOT=20260722T000000Z
 ARG UBUNTU_BUILD_ESSENTIAL_VERSION=12.10ubuntu1
 ARG UBUNTU_CA_CERTIFICATES_VERSION=20260601~24.04.1
+ARG UBUNTU_GNUPG_VERSION=2.4.4-2ubuntu17.4
+ARG UBUNTU_OPENSSL_VERSION=3.0.13-0ubuntu3.11
 ARG UBUNTU_PYTHON3_VERSION=3.12.3-0ubuntu2.1
 ARG UBUNTU_PYTHON3_DEV_VERSION=3.12.3-0ubuntu2.1
 ARG RUNTIME_WHEEL=dist/ax_engine_vllm_runtime-0.1.0-py3-none-any.whl
@@ -33,7 +35,8 @@ LABEL org.opencontainers.image.title="AX Engine vLLM runtime" \
 
 # Triton compiles runtime helpers on first use, so the native runtime retains a
 # compiler and Python headers. Apt is constrained to one immutable Ubuntu
-# snapshot and every explicitly installed package is version-checked.
+# snapshot and every explicitly installed package is version-checked. Bounded
+# retries tolerate transient snapshot service failures without changing inputs.
 RUN printf '%s\n' \
         'Types: deb' \
         "URIs: https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}" \
@@ -42,10 +45,20 @@ RUN printf '%s\n' \
         'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
         > /tmp/ubuntu-snapshot.sources \
     && DEBIAN_FRONTEND=noninteractive apt-get \
+        -o Acquire::Retries=10 \
+        -o Acquire::https::Timeout=60 \
         -o Dir::Etc::sourcelist=/tmp/ubuntu-snapshot.sources \
         -o Dir::Etc::sourceparts=- \
         update \
     && DEBIAN_FRONTEND=noninteractive apt-get \
+        -o Acquire::Retries=10 \
+        -o Acquire::https::Timeout=60 \
+        -o Dir::Etc::sourcelist=/tmp/ubuntu-snapshot.sources \
+        -o Dir::Etc::sourceparts=- \
+        dist-upgrade --yes --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get \
+        -o Acquire::Retries=10 \
+        -o Acquire::https::Timeout=60 \
         -o Dir::Etc::sourcelist=/tmp/ubuntu-snapshot.sources \
         -o Dir::Etc::sourceparts=- \
         install --yes --no-install-recommends \
@@ -55,6 +68,9 @@ RUN printf '%s\n' \
         python3-dev="${UBUNTU_PYTHON3_DEV_VERSION}" \
     && test "$(dpkg-query --show --showformat='${Version}' build-essential)" = "${UBUNTU_BUILD_ESSENTIAL_VERSION}" \
     && test "$(dpkg-query --show --showformat='${Version}' ca-certificates)" = "${UBUNTU_CA_CERTIFICATES_VERSION}" \
+    && test "$(dpkg-query --show --showformat='${Version}' gnupg)" = "${UBUNTU_GNUPG_VERSION}" \
+    && test "$(dpkg-query --show --showformat='${Version}' libssl3t64)" = "${UBUNTU_OPENSSL_VERSION}" \
+    && test "$(dpkg-query --show --showformat='${Version}' openssl)" = "${UBUNTU_OPENSSL_VERSION}" \
     && test "$(dpkg-query --show --showformat='${Version}' python3)" = "${UBUNTU_PYTHON3_VERSION}" \
     && test "$(dpkg-query --show --showformat='${Version}' python3-dev)" = "${UBUNTU_PYTHON3_DEV_VERSION}" \
     && rm -f /tmp/ubuntu-snapshot.sources \
@@ -85,6 +101,7 @@ RUN (test "${TARGETARCH}" = "amd64" && test "$(uname -m)" = "x86_64") \
     && UV_LINK_MODE=copy UV_NO_CACHE=1 uv pip install \
         --python "${VIRTUAL_ENV}/bin/python" --no-deps \
         /tmp/ax_engine_vllm_runtime-0.1.0-py3-none-any.whl \
+    && python -m ax_engine_vllm_runtime.dependency_check --uv /usr/local/bin/uv \
     && python -c "import importlib.metadata, platform, torch, vllm; assert platform.machine() in {'x86_64', 'aarch64'}; assert torch.__version__.split('+', 1)[0] == '2.11.0'; assert torch.version.cuda == '13.0'; assert vllm.__version__.split('+', 1)[0] == '0.25.1'; assert importlib.metadata.version('ax-engine-vllm-runtime') == '0.1.0'" \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin axvllm \
     && mkdir -p /home/axvllm/.cache \

@@ -4,6 +4,9 @@ This distribution owns the Python/OCI side of AX Engine's delegated vLLM
 backend. It is intentionally independent from the `ax-engine` Python wheel and
 from AX OCR.
 
+Architecture, provider ownership, deployment topology, and release gates are
+documented in [CUDA Backends](../../docs/CUDA-BACKENDS.md).
+
 The runtime is selected explicitly by profile. A profile validates OS,
 architecture, GPU identity/compute capability, CPython, PyTorch, PyTorch CUDA,
 the exact vLLM release, and the packaged dependency-lock digest before it
@@ -35,6 +38,10 @@ Use `requirements-runtime-arm64.lock` on Thor. Both locks are also embedded in
 the wheel so preflight can attest the exact release closure after installation.
 The profile status remains `candidate` until its native correctness,
 performance, security, and soak gates have passed.
+
+Thor release evidence must reproduce the exact OCI candidate on two independent
+Thor/SM110 hosts; one successful host or a native virtual environment is not a
+substitute for that matrix.
 
 The two BF16 Unlimited-OCR profiles pin source revision
 `ee63731b6461c8afcdcc7b15352e7d2ffecc2ead`. This prevents Hugging Face offline

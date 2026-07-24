@@ -13,11 +13,16 @@ extend the Mac-first Apple Silicon inference runtime.
 | [Performance](PERFORMANCE.md) | Interpretation and claim context | What a row does *and does not* prove |
 | [Benchmarks](BENCHMARKS.md) | How to run and classify evidence | Reproduction commands and artifact contracts |
 
-AX Engine is **direct-first**. Keep the path explicit when reading or claiming:
+AX Engine is **Mac direct-first** and **CUDA explicit-delegation only**. Keep
+the path explicit when reading or claiming:
 
 - **Repo-owned MLX runtime** — supported Apple Silicon model families AX owns
 - **Delegated `mlx_lm.server`** — explicit migration / validation only
 - **Delegated `llama.cpp`** — GGUF / non-MLX checks and external reference rows
+- **Delegated vLLM** — one AX-owned provider contract with separately certified
+  Linux x86_64 and Thor runtime profiles
+- **Delegated TensorRT** — explicit TensorRT-LLM (x86) and TensorRT Edge-LLM
+  (Thor) optimization lanes; never silent vLLM fallbacks
 
 ## Start By Task
 
@@ -30,6 +35,7 @@ AX Engine is **direct-first**. Keep the path explicit when reading or claiming:
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md) |
 | Reproduce or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
 | Serve OpenAI / Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md), [Multi-model](SERVER.md#multi-model-serving) |
+| Deploy on Linux CUDA or Thor | [CUDA Backends](CUDA-BACKENDS.md) | [Server](SERVER.md), [TensorRT L2 Image Forwarding](TENSORRT-L2-MULTIMODAL.md) |
 | Integrate from an app or agent | [SDK Docs](sdk/README.md) | [Server](SERVER.md), [Local Engine Clients](LOCAL-ENGINE-CLIENTS.md) |
 | Debug long context, prefix reuse, or KV | [Long Context](LONG-CONTEXT.md) | [KV Cache](KV-CACHE.md), [Scheduler](SCHEDULER.md) |
 | Change code safely | [Architecture](ARCHITECTURE.md) | [Scheduler](SCHEDULER.md), [KV Cache](KV-CACHE.md) |
@@ -84,6 +90,7 @@ history, or out of scope for a claim.
 ### Serving and SDKs
 
 - [Server](SERVER.md) — HTTP routes, multi-model load/unload, streaming, auth, embeddings, backends
+- [CUDA Backends](CUDA-BACKENDS.md) — Mac/CUDA boundary, shared vLLM provider, runtime profiles, TensorRT lanes, release gates
 - [API Compatibility](API-COMPATIBILITY.md) — OpenAI-compatible contract and boundaries
 - [SDK Docs](sdk/README.md) — Rust, Python, JS/TS, Go, Ruby, Swift, Mojo
 - [Local Engine Clients](LOCAL-ENGINE-CLIENTS.md) — in-process vs sidecar HTTP for first-party apps
@@ -110,6 +117,7 @@ history, or out of scope for a claim.
 ### Runtime architecture
 
 - [Architecture](ARCHITECTURE.md) — crate boundaries and dependency rules
+- [CUDA Backends](CUDA-BACKENDS.md) — portable control plane and NVIDIA worker ownership
 - [Scheduler](SCHEDULER.md) — batching, routing, execution planning
 - [KV Cache](KV-CACHE.md) — logical ledger, MLX snapshots, disk prefix cache
 - [MLX Backend](MLX-BACKEND.md) — MLX runner and acceleration notes

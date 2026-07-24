@@ -4,6 +4,9 @@ AX Engine is a Mac-first LLM inference runtime for Apple Silicon. Install with
 Homebrew, download a model, and serve OpenAI-compatible endpoints locally —
 with a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP, and
 peer-backed benchmarks against `mlx-lm`, llama.cpp, MTPLX, and lightning-mlx.
+Its portable Linux control plane can also front explicitly selected vLLM,
+TensorRT-LLM, or TensorRT Edge-LLM workers without adding CUDA dependencies to
+the Mac installation.
 
 Browse all serve-ready snapshots in the
 [AutomatosX model collection on Hugging Face](https://huggingface.co/AutomatosX/models).
@@ -22,6 +25,9 @@ memory).**
 - **You own the stack you serve** — AX runs the MLX graph, KV/runtime, and
   OpenAI-compatible server for Gemma / Qwen / GLM; `mlx-lm` and `llama.cpp` stay
   optional compatibility adapters
+- **One CUDA control plane** — one AX-owned vLLM provider serves Linux x86_64
+  and Thor through separately certified runtime profiles; TensorRT-LLM and
+  TensorRT Edge-LLM remain explicit per-model optimization lanes
 - **Multi-model serving** — keep a scoped set of Qwen 3.5/3.6, Qwen3-Coder-Next,
   Gemma 4, and embedding models resident (`load_mode=add`), route with request
   `model` — including chat + embeddings from one process — with optional idle
@@ -317,7 +323,8 @@ curl http://127.0.0.1:31418/v1/runtime
 ```
 
 Auth, streaming, embeddings, Ollama-shaped routes, and delegated backends:
-[Server](docs/SERVER.md) · [API Compatibility](docs/API-COMPATIBILITY.md).
+[Server](docs/SERVER.md) · [CUDA Backends](docs/CUDA-BACKENDS.md) ·
+[API Compatibility](docs/API-COMPATIBILITY.md).
 
 ## Documentation
 
@@ -330,6 +337,7 @@ Auth, streaming, embeddings, Ollama-shaped routes, and delegated backends:
 | Full performance tables | [Performance Results](docs/PERFORMANCE-RESULTS.md) |
 | Reproduce benchmarks | [Benchmarks](docs/BENCHMARKS.md) |
 | Server / API / SDKs | [Server](docs/SERVER.md) · [API](docs/API-COMPATIBILITY.md) · [SDKs](docs/sdk/README.md) |
+| Linux CUDA / Thor routing | [CUDA Backends](docs/CUDA-BACKENDS.md) · [TensorRT multimodal](docs/TENSORRT-L2-MULTIMODAL.md) |
 | Architecture | [Architecture](docs/ARCHITECTURE.md) |
 
 ## Development
@@ -351,6 +359,8 @@ Crate layout and conventions: [AGENTS.md](AGENTS.md) ·
 - Qwen3.5 long-prompt prefill can trail upstream MLX references on longer prompts
 - Use pre-sanitized MLX community weights (or convert with `mlx_lm.convert` first)
 - N-gram acceleration is workload-dependent, not a raw kernel speedup
+- CUDA runtime profiles remain candidate-only until their documented native
+  OCI, quality, performance, soak, and rollback gates pass
 
 Details: [FAQ limitations](docs/FAQ.md#what-are-the-current-limitations).
 

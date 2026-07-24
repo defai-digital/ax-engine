@@ -6,7 +6,7 @@ For normal end-user serving, prefer `ax-engine serve …`; use
 
 **Related:** [Getting Started](GETTING-STARTED.md) · [CLI](CLI.md) ·
 [API Compatibility](API-COMPATIBILITY.md) · [SDK Docs](sdk/README.md) ·
-[LAN Discovery](LAN-DISCOVERY.md)
+[CUDA Backends](CUDA-BACKENDS.md) · [LAN Discovery](LAN-DISCOVERY.md)
 
 ## Current Scope
 
@@ -14,7 +14,8 @@ The current preview server is intentionally narrow:
 
 - single-process local server
 - built entirely on the Rust SDK contract
-- fails closed on unsupported hosts (requires M2 Max or newer, macOS 26+, 32 GB RAM)
+- native MLX builds fail closed outside the supported M2 Max-or-newer,
+  macOS 26+, 32 GB contract; Linux uses the explicit delegated-only build
 - explicit backend and support-tier reporting
 - multi-model registry: optional concurrent loaded models with per-request
   `model` routing (`POST /v1/model/load` `load_mode=add` / unload) — scoped
@@ -91,6 +92,24 @@ the model as unavailable, sibling models keep serving, and
 `release` profile keeps `panic = "abort"` (fail-fast, smallest binaries)
 and remains right for `ax-engine-bench` and other CLI tools — but under it
 a single MLX eval failure aborts the whole server process.
+
+### Portable delegated-only build
+
+Linux CUDA control planes exclude MLX linkage:
+
+```text
+cargo build -p ax-engine-server \
+  --profile release-server \
+  --no-default-features \
+  --features delegated-server
+```
+
+This is the same HTTP/SSE control plane, compiled with only delegated backend
+capabilities. It supports the explicit vLLM, TensorRT-LLM, and TensorRT
+Edge-LLM routes; it must reject native MLX selection and omit unavailable
+MLX-only process metrics. The vLLM worker remains an independently supervised
+Python/OCI process. Full topology, flags, runtime profiles, and release gates:
+[CUDA Backends](CUDA-BACKENDS.md).
 
 ## Authentication
 
@@ -1136,3 +1155,8 @@ inventing zero-valued token accounting.
 This server should remain a thin transport adapter.
 It must not become the place where backend resolution, scheduler behavior, KV
 ownership, or runtime semantics are redefined.
+
+That rule also applies to CUDA: the server owns the public AX contract and
+provider identity, but vLLM/TensorRT workers own GPU execution. CPU
+architecture differences belong in runtime profiles, not duplicated server
+providers.

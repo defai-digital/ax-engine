@@ -265,6 +265,33 @@ struct ModelMemorySample {
     runner: Option<crate::app_state::ModelMemoryGauges>,
 }
 
+#[derive(Default)]
+struct MlxProcessMemorySample {
+    active_bytes: Option<u64>,
+    cache_bytes: Option<u64>,
+    peak_bytes: Option<u64>,
+    recommended_working_set_bytes: Option<u64>,
+    host_resident_bytes: Option<u64>,
+}
+
+#[cfg(feature = "mlx-native-server")]
+fn mlx_process_memory_sample() -> MlxProcessMemorySample {
+    MlxProcessMemorySample {
+        active_bytes: mlx_sys::device_active_bytes(),
+        cache_bytes: mlx_sys::device_cache_bytes(),
+        peak_bytes: mlx_sys::device_peak_bytes(),
+        recommended_working_set_bytes: mlx_sys::device_recommended_working_set_bytes(),
+        host_resident_bytes: mlx_sys::host_resident_bytes(),
+    }
+}
+
+#[cfg(not(feature = "mlx-native-server"))]
+fn mlx_process_memory_sample() -> MlxProcessMemorySample {
+    // Delegated-only control planes neither link nor own an MLX allocator.
+    // Keep MLX-specific series absent instead of reporting misleading zeroes.
+    MlxProcessMemorySample::default()
+}
+
 fn append_memory_metrics(
     body: &mut String,
     lives: &[crate::app_state::LiveState],
@@ -289,37 +316,37 @@ fn append_memory_metrics(
             }
         })
         .collect::<Vec<_>>();
-    let active_bytes = mlx_sys::device_active_bytes();
+    let process_memory = mlx_process_memory_sample();
 
     append_optional_gauge(
         body,
         "ax_engine_memory_mlx_active_bytes",
         "Process-wide active bytes measured by mlx_get_active_memory; not attributable to one model by MLX.",
-        active_bytes,
+        process_memory.active_bytes,
     );
     append_optional_gauge(
         body,
         "ax_engine_memory_mlx_cache_bytes",
         "Process-wide reusable allocator-cache bytes measured by mlx_get_cache_memory.",
-        mlx_sys::device_cache_bytes(),
+        process_memory.cache_bytes,
     );
     append_optional_gauge(
         body,
         "ax_engine_memory_mlx_peak_bytes",
         "Process-wide peak active bytes measured by mlx_get_peak_memory.",
-        mlx_sys::device_peak_bytes(),
+        process_memory.peak_bytes,
     );
     append_optional_gauge(
         body,
         "ax_engine_memory_metal_recommended_working_set_bytes",
         "Metal recommended maximum working-set size used as the server memory budget.",
-        mlx_sys::device_recommended_working_set_bytes(),
+        process_memory.recommended_working_set_bytes,
     );
     append_optional_gauge(
         body,
         "ax_engine_memory_host_resident_bytes",
         "Current process resident bytes from task_info; this is host RSS, not MLX-only memory.",
-        mlx_sys::host_resident_bytes(),
+        process_memory.host_resident_bytes,
     );
 
     append_model_gauge(
@@ -439,7 +466,7 @@ fn append_memory_metrics(
         "Sum of per-model weight-artifact plus physical-KV lower-bound attribution.",
         attributed_total,
     );
-    if let Some(active_bytes) = active_bytes {
+    if let Some(active_bytes) = process_memory.active_bytes {
         append_gauge(
             body,
             "ax_engine_memory_unattributed_active_bytes",

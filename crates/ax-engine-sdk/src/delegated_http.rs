@@ -1,12 +1,13 @@
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::{Cursor, Read};
+use std::io::Read;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -319,16 +320,19 @@ fn delegated_http_policy_agents() -> &'static Mutex<BTreeMap<DelegatedHttpAgentK
 }
 
 fn validate_ca_pem(ca_pem: &[u8]) -> Result<(), DelegatedHttpConfigError> {
-    let mut reader = Cursor::new(ca_pem);
-    let mut count = 0_usize;
-    for certificate in rustls_pemfile::certs(&mut reader) {
-        certificate.map_err(|error| DelegatedHttpConfigError::InvalidCaFile(error.to_string()))?;
-        count = count.saturating_add(1);
-    }
-    if count == 0 {
+    parse_ca_certificates(ca_pem).map(|_| ())
+}
+
+fn parse_ca_certificates(
+    ca_pem: &[u8],
+) -> Result<Vec<CertificateDer<'static>>, DelegatedHttpConfigError> {
+    let certificates = CertificateDer::pem_slice_iter(ca_pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| DelegatedHttpConfigError::InvalidCaFile(error.to_string()))?;
+    if certificates.is_empty() {
         return Err(DelegatedHttpConfigError::EmptyCaFile);
     }
-    Ok(())
+    Ok(certificates)
 }
 
 fn policy_agent(
@@ -372,10 +376,7 @@ fn build_policy_agent(
     if let DelegatedTlsPolicy::SystemRootsWithCustomCa { ca_pem, .. } = &key.tls {
         let mut roots =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let mut reader = Cursor::new(ca_pem);
-        for certificate in rustls_pemfile::certs(&mut reader) {
-            let certificate = certificate
-                .map_err(|error| DelegatedHttpConfigError::InvalidCaFile(error.to_string()))?;
+        for certificate in parse_ca_certificates(ca_pem)? {
             roots
                 .add(certificate)
                 .map_err(|error| DelegatedHttpConfigError::InvalidCaFile(error.to_string()))?;
@@ -672,6 +673,24 @@ mod tests {
                 .expect("agent cache should lock")
                 .contains_key(&timeouts)
         );
+    }
+
+    #[test]
+    fn custom_ca_parser_accepts_certificate_sections_and_fails_closed() {
+        let certificate_pem = b"-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n";
+        let certificates =
+            parse_ca_certificates(certificate_pem).expect("certificate PEM should parse");
+        assert_eq!(certificates.len(), 1);
+        assert_eq!(certificates[0].as_ref(), &[1, 2, 3]);
+
+        assert!(matches!(
+            parse_ca_certificates(b""),
+            Err(DelegatedHttpConfigError::EmptyCaFile)
+        ));
+        assert!(matches!(
+            parse_ca_certificates(b"-----BEGIN CERTIFICATE-----\nAQID\n"),
+            Err(DelegatedHttpConfigError::InvalidCaFile(_))
+        ));
     }
 
     #[test]
