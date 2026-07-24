@@ -983,21 +983,21 @@ fn layer_forward_internal(
         }
         // 8. SDPA.
         let key_len = attention_kv.key_len();
-        let local_mask: Option<MlxArray>;
-        let mask_opt: &Option<MlxArray> = if let Some(m) = shared_mask {
-            m
+        // Prefer a hoisted/shared mask only when its last dim matches the
+        // post-append key length (ring capacity when rotating). Rebuild
+        // locally on mismatch so mask and K cannot disagree.
+        let shared_usable = shared_mask.is_some_and(|m| match m.as_ref() {
+            Some(mask) => mask
+                .shape()
+                .last()
+                .is_some_and(|&k| k as usize == key_len),
+            None => true,
+        });
+        let local_mask: Option<MlxArray> = if shared_usable {
+            None
         } else {
-            // Ring mask is only valid when the KV view is the full ring buffer
-            // (key_len == capacity). Multi-token prefill can still take the
-            // ordered retained-window path for a cold layer (ring requires an
-            // existing contiguous entry), which returns key_len ≈ window while
-            // `ring_layout` is Some — pairing that with a capacity-wide ring
-            // mask panics MLX SDPA (`broadcast_shapes`). Fall back to the
-            // ordered causal/window mask whenever key length disagrees.
-            local_mask = match ring_layout {
-                Some(ring)
-                    if ring.needs_mask(seq) && key_len == ring.capacity =>
-                {
+            match ring_layout {
+                Some(ring) if ring.needs_mask(seq) && key_len == ring.capacity => {
                     Some(create_ring_sliding_mask(
                         seq,
                         ring.window,
@@ -1005,8 +1005,13 @@ fn layer_forward_internal(
                         ring.write_start,
                     ))
                 }
-                Some(_) | None => attention_mask_array(seq, key_len, sliding_window),
-            };
+                _ => attention_mask_array(seq, key_len, sliding_window),
+            }
+        };
+        let none_mask: Option<MlxArray> = None;
+        let mask_opt: &Option<MlxArray> = if shared_usable {
+            shared_mask.unwrap_or(&none_mask)
+        } else {
             &local_mask
         };
         let sdpa_started = profile_forward_layer.then(Instant::now);

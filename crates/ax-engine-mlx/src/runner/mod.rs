@@ -12210,9 +12210,17 @@ mod tests {
 
     #[test]
     fn prefill_rotation_follows_prefill_flag_and_decode_latch() {
-        // Prefill rotation default-OFF: prefill stays ordered without the flag.
+        // Prefill rotates when session rotating + greedy + prefill flag (default ON).
         assert_eq!(
             cache_rotation_for_execution(ExecutionMode::Prefill, None, true, true, 1536),
+            (true, 1536)
+        );
+        assert_eq!(
+            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, true, 32),
+            (true, 64)
+        );
+        assert_eq!(
+            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, false, 1536),
             (false, 0)
         );
         assert_eq!(

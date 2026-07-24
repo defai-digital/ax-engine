@@ -1871,9 +1871,15 @@ impl MlxKVCache {
         let head_dim = append.head_dim;
         let dtype = append.dtype;
 
-        if let Some(ring) = self.sliding_ring_layout(window, new_tokens)
-            && self.layers[layer].is_some()
-        {
+        // When ring layout engages, always use the rotating path so KV shape
+        // matches capacity-wide ring masks hoisted before the layer loop.
+        // Cold layers (None) initialize a zeroed ring and write new tokens at
+        // t % capacity — previously they took the ordered path and returned a
+        // windowed view while mask builders already emitted capacity masks.
+        if let Some(ring) = self.sliding_ring_layout(window, new_tokens) {
+            if self.layers[layer].is_none() {
+                return self.append_rotating_cold(layer, new_k, new_v, ring, append);
+            }
             return self.append_rotating_retained_window(layer, new_k, new_v, ring);
         }
 
@@ -2391,6 +2397,80 @@ impl MlxKVCache {
                 dtype: paged.dtype,
             }));
         }
+    }
+
+    /// Cold start a sliding ring: allocate `capacity` slots and write the first
+    /// multi-token (or single-token) append at `t % capacity`. Returns the full
+    /// capacity K/V so SDPA can pair with a capacity-wide ring mask.
+    fn append_rotating_cold(
+        &mut self,
+        layer: usize,
+        new_k: MlxArray,
+        new_v: MlxArray,
+        ring: SlidingRingLayout,
+        append: AppendShape,
+    ) -> (MlxArray, MlxArray) {
+        let SlidingRingLayout {
+            window,
+            capacity,
+            write_start,
+        } = ring;
+        let new_tokens = append.new_tokens;
+        assert!(
+            new_tokens <= capacity,
+            "rotating cold append cannot exceed ring capacity ({new_tokens} > {capacity})"
+        );
+        let buf_shape = [
+            1i32,
+            append.n_kv_heads,
+            capacity as i32,
+            append.head_dim,
+        ];
+        let mut k_buf = zeros(&buf_shape, append.dtype, None);
+        let mut v_buf = zeros(&buf_shape, append.dtype, None);
+        // Scatter new tokens into ring slots (wraps at most once).
+        let mut src_start = 0usize;
+        while src_start < new_tokens {
+            let dst_start = (write_start + src_start) % capacity;
+            let len = (new_tokens - src_start).min(capacity - dst_start);
+            let (seg_k, seg_v) = if src_start == 0 && len == new_tokens {
+                (new_k.clone(), new_v.clone())
+            } else {
+                let src_stop = (src_start + len) as i32;
+                let seg_start = [0i32, 0, src_start as i32, 0];
+                let seg_stop = [1i32, append.n_kv_heads, src_stop, append.head_dim];
+                let ones = [1i32, 1, 1, 1];
+                (
+                    slice(&new_k, &seg_start, &seg_stop, &ones, None),
+                    slice(&new_v, &seg_start, &seg_stop, &ones, None),
+                )
+            };
+            let start = [0i32, 0, dst_start as i32, 0];
+            let stop = [
+                1i32,
+                append.n_kv_heads,
+                (dst_start + len) as i32,
+                append.head_dim,
+            ];
+            let strides = [1i32, 1, 1, 1];
+            k_buf = slice_update(&k_buf, &seg_k, &start, &stop, &strides, None);
+            v_buf = slice_update(&v_buf, &seg_v, &start, &stop, &strides, None);
+            src_start += len;
+        }
+        self.growth_count = self.growth_count.saturating_add(1);
+        self.layers[layer] = Some(FaLayerStorage::Contiguous(LayerKV {
+            k: k_buf.clone(),
+            v: v_buf.clone(),
+            n_kv_heads: append.n_kv_heads,
+            head_dim: append.head_dim,
+            capacity,
+            rotating_window: Some(window),
+            protected_prefix_ring: None,
+            dtype: append.dtype,
+            last_k_view: Some(k_buf.clone()),
+            last_v_view: Some(v_buf.clone()),
+        }));
+        (k_buf, v_buf)
     }
 
     fn append_rotating_retained_window(
@@ -3740,6 +3820,33 @@ mod tests {
         assert_eq!(cache.sliding_ring_layout(Some(4), 2), None);
         cache.seq_len = 10;
         assert_eq!(cache.sliding_ring_layout(None, 1), None);
+    }
+
+    #[test]
+    fn cold_ring_multi_token_append_returns_capacity_shaped_kv() {
+        // First append past the window on an empty layer must cold-init a
+        // capacity ring (not ordered windowed view) so SDPA masks sized to
+        // capacity broadcast against the returned K/V.
+        const HD: usize = 4;
+        let mut cache = MlxKVCache::new(1);
+        cache.set_rotating_sliding_decode(true);
+        // Multi-token ring eligibility requires seq <= slack.
+        cache.set_rotating_sliding_slack(7); // window 4 → capacity 11
+        cache.seq_len = 0;
+        let values: Vec<f32> = (1..=7).map(|v| v as f32).collect();
+        let k = tokens_f32(&values, HD);
+        let v = tokens_f32(&values, HD);
+        let (ck, cv) = cache.append_with_retained_window(0, k, v, Some(4));
+        cache.seq_len = 7;
+        assert_eq!(ck.shape(), vec![1, 1, 11, HD as i32]);
+        assert_eq!(cv.shape(), vec![1, 1, 11, HD as i32]);
+        let lkv = contiguous_layer(&cache, 0);
+        assert_eq!(lkv.rotating_window, Some(4));
+        assert_eq!(lkv.capacity, 11);
+        assert_eq!(
+            token_row_values(&lkv.k, HD),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 0.0, 0.0, 0.0, 0.0]
+        );
     }
 
     #[test]

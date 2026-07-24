@@ -842,10 +842,12 @@ pub(crate) fn build_layer_masks_for_forward(
         return build_layer_masks(cfg, n_layers, seq, key_len);
     }
 
+    // When ring layout engages, append returns capacity-wide K/V (including
+    // cold ring init). Hoist capacity masks here — do not use logical
+    // `token_offset + seq` as key_len for ring layers.
     if cfg.layer_configs.is_empty() {
         return match cache.sliding_ring_layout(cfg.global_sliding_window, seq) {
-            // Ring mask only when the KV view is the full capacity buffer.
-            Some(ring) if ring.needs_mask(seq) && key_len == ring.capacity => {
+            Some(ring) if ring.needs_mask(seq) => {
                 let m = Some(create_ring_sliding_mask(
                     seq,
                     ring.window,
@@ -854,7 +856,8 @@ pub(crate) fn build_layer_masks_for_forward(
                 ));
                 (0..n_layers).map(|_| m.clone()).collect()
             }
-            Some(_) | None => build_layer_masks(cfg, n_layers, seq, key_len),
+            Some(_) => vec![None; n_layers],
+            None => build_layer_masks(cfg, n_layers, seq, key_len),
         };
     }
 
@@ -874,19 +877,14 @@ pub(crate) fn build_layer_masks_for_forward(
             memo.entry(lc.sliding_window)
                 .or_insert_with(|| {
                     match cache.sliding_ring_layout(lc.sliding_window, seq) {
-                        Some(ring)
-                            if ring.needs_mask(seq) && key_len == ring.capacity =>
-                        {
-                            Some(create_ring_sliding_mask(
-                                seq,
-                                ring.window,
-                                ring.capacity,
-                                ring.write_start,
-                            ))
-                        }
-                        Some(_) | None => {
-                            // Ordered / windowed view: causal-window mask sized
-                            // to the actual key length (never capacity).
+                        Some(ring) if ring.needs_mask(seq) => Some(create_ring_sliding_mask(
+                            seq,
+                            ring.window,
+                            ring.capacity,
+                            ring.write_start,
+                        )),
+                        Some(_) => None,
+                        None => {
                             if seq == 1 {
                                 return None;
                             }
