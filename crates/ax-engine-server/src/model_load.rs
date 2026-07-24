@@ -14,8 +14,8 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::{
-    AppState, build_live_state, build_replacement_live_state,
-    run_exact_s1_gemma_long_prefill_warmup, run_production_path_warmup,
+    AppState, build_live_state, build_replacement_live_state, run_long_prefill_production_warmup,
+    run_production_path_warmup,
 };
 use crate::errors::{ErrorResponse, error_response, map_generation_service_error};
 use crate::generation::service::{
@@ -1080,10 +1080,9 @@ fn rewarm_sibling_residents(state: &AppState, skip_model_id: &str) {
     }
 }
 
-/// After multi-model publish + adaptive isolation is on, run the **exact**
-/// flip S1 Gemma long prefill (real text → tokenize → generate max_tokens=1)
-/// so formal concurrent is not the first long work. Dummy-token warm alone
-/// left formal thr ~0.74×; real pure text then concurrent reached thr ~18.
+/// After multi-model publish + adaptive isolation is on, run the long S1
+/// prefill geometry on the newly published model (Gemma) so formal concurrent
+/// is not the first long work. No-op when long warm is disabled.
 fn rewarm_published_long_prefill(state: &AppState, model_id: &str) {
     if !crate::app_state::long_prefill_warmup_enabled() {
         return;
@@ -1102,11 +1101,7 @@ fn rewarm_published_long_prefill(state: &AppState, model_id: &str) {
     {
         return;
     }
-    run_exact_s1_gemma_long_prefill_warmup(
-        &resident.generation_service,
-        resident.session_config.as_ref(),
-        model_id,
-    );
+    run_long_prefill_production_warmup(&resident.generation_service, model_id);
 }
 
 /// Maximum time to wait for one model generation to drain. A timeout fails the
