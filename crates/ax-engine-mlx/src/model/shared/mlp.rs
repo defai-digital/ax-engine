@@ -2556,6 +2556,53 @@ fn ffn_swiglu_with_policy(
         );
     }
 
+    // Multi-token split GEGLU→down fuse (C++ gelu_approx_mul + down qmm).
+    // Profile residual after dual gate_up qmm: activation + down (~2.5s force-eval).
+    // Opt-in: AX_MLX_DENSE_GEGLU_DOWN_FUSE=1.
+    let down = w
+        .down_proj
+        .as_ref()
+        .expect("dense FFN layer must have down_proj");
+    if cfg.uses_geglu
+        && seq > 1
+        && !profile_decode
+        && !profile_prefill
+        && projection_policy == ProjectionBatchPolicy::Shared
+        && fastpath::dense_geglu_down_fuse_enabled()
+        && let Some(scales) = down.scales.as_ref()
+    {
+        let activation_started = Instant::now();
+        let fused = gelu_approx_mul_quantized_matmul(
+            &gate_out,
+            &up_out,
+            &down.weight,
+            scales,
+            down.biases.as_ref(),
+            down.group_size,
+            down.bits,
+            None,
+        );
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::PostAttnFfnActivation,
+            activation_started,
+            &[&fused],
+        );
+        let down_started = Instant::now();
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::PostAttnFfnDown,
+            down_started,
+            &[&fused],
+        );
+        return match post_norm {
+            Some(norm_w) => rms_norm(&fused, Some(norm_w), cfg.rms_norm_eps, None),
+            None => fused,
+        };
+    }
+
     // Gemma4 uses GEGLU with fast-approx GELU gate (matches mlx_lm's `nn.gelu_approx`).
     // Qwen3 uses SwiGLU (SiLU gate).
     //
@@ -2572,10 +2619,6 @@ fn ffn_swiglu_with_policy(
         &[&ffn_hidden],
     );
     let down_started = Instant::now();
-    let down = w
-        .down_proj
-        .as_ref()
-        .expect("dense FFN layer must have down_proj");
     if let Some(norm_w) = post_norm {
         if !profile_decode
             && !profile_prefill

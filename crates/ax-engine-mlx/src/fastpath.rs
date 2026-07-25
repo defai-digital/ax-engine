@@ -443,6 +443,18 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_DENSE_GEGLU_DOWN_FUSE` — multi-token split GEGLU product fused
+    /// into the dense FFN down_proj quantized matmul (one C++ graph-build for
+    /// gelu_approx(gate)*up → down qmm). Targets pure prefill residual after
+    /// dual gate_up qmm (activation + down ~2.5s profiled).
+    ///
+    /// **Default: OFF** (opt-in A/B). mlxcel keeps activation then down separate
+    /// for bits=8 multi-token (compiled_geglu then down_proj.forward).
+    dense_geglu_down_fuse_enabled,
+    "AX_MLX_DENSE_GEGLU_DOWN_FUSE"
+);
+
+env_flag!(
     /// `AX_MLX_DIRECT_CPP_QK_NORM_ROPE` — opt-in direct C++ probe route for
     /// standard attention Q/K `as_strided -> rms_norm -> rope`.
     ///
