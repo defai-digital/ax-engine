@@ -192,3 +192,8 @@ Path B probe: multi-process + cache_eval + asymmetric wired
 | e2e max med | ~9460 ms | still ~9.46s (need ≲9.08) |
 
 **Decision `reject`.** Concurrent resource asymmetry does not cut multi-process tax enough for thr 1.15 or gap 0.90. Best stack remains multi-process + Gemma cache_eval thr **1.109**. Artifact: `2026-07-25-s1-mp-cache-eval-concurrent-tax/`.
+
+## Best-practices close-out (2026-07-25)
+See `2026-07-25-best-practices-path.md`. Recommended: accept **`not_yet`**, keep
+locked gates, stop residual thrash until product supplies A/B/C with a real
+design or explicit gate policy.

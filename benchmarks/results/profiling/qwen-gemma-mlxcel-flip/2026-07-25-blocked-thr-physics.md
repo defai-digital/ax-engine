@@ -160,3 +160,8 @@ ladders, **flip remains `not_yet`**. Best thr **1.109×** (multi-process +
 Gemma cache-only chunk eval). Pure residual for the remaining thr gap is
 **blocked** by gate_up physics without a proven GEMM-class dual-qmm. Do not
 claim flip; do not relax gates.
+
+**Best-practices path (2026-07-25):** accept `not_yet`, stop thrash, keep locked
+gates and exclusive product default. Resume only with (A) real GEMM dual-gate
+design, (B) real concurrent-tax design, or (C) explicit gates policy change.
+See `2026-07-25-best-practices-path.md`.
