@@ -134,3 +134,13 @@ Reject default OFF. Gate_up thr residual still needs GEMM-class win, not host-FF
 ## Dual-stream gate/up qmm (2026-07-25)
 `AX_MLX_DUAL_STREAM_GATE_UP=1` under cache_eval pure: median **1.147×** (worse).
 Same-stream dual_qmm **1.003×**. Reject both; defaults OFF. Gate_up still needs GEMM-class win.
+
+## Blocked thr physics close-out (2026-07-25 tip `ed1b485d`+)
+See `2026-07-25-blocked-thr-physics.md`.
+
+- Best formal S1: multi-process + cache_eval thr **1.109×**, gap ratio **1.113**, TTFT **0.899**.
+- Need thr ≥1.15 and gap ≤0.90; pure ≤0.96 under keep_base not achieved (best pure ~0.993).
+- Gate_up dual-qmm residual (~3.26s / ~40% pure): Metal dual, compile, FFI, async, dual-stream all reject or noise.
+- Exclusive thr ceiling ~1.03–1.05×; dual-hold gap 160–220 ms.
+- **Decision `not_yet`.** Gates not relaxed. Full S0–S3 flip not claimed without thr headroom.
+- Open path only: true GEMM-class dual-gate that beats MLX steel qmm (not yet achieved).
