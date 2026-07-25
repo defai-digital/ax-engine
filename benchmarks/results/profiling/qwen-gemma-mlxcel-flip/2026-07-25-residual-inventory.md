@@ -123,3 +123,6 @@ Imperative nometal **1.060×**. Keep Metal; compiled default OFF. Flip still not
 Hypothesis: fixed chunk-512 shapes improve shape-specific compile reuse.
 Results: dual_gate **1.003×**, shaped **0.996×**, both **0.993×** vs base.
 Best ~0.7% pure — need ≤0.96. Keep both OFF. Flip still not_yet.
+
+## Async dual gate/up submit (2026-07-25)
+`AX_MLX_ASYNC_DUAL_GATE_UP=1` under cache_eval pure: median **1.007×**. Reject default OFF.

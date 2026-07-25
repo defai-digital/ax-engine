@@ -499,6 +499,22 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_ASYNC_DUAL_GATE_UP` — after multi-token dual gate/up qmm graphs
+    /// are built (portable or shape-compiled), `async_eval([gate, up])` before
+    /// GEGLU so both matmuls submit as one Metal command group.
+    ///
+    /// Profile residual: pure Gemma `post_attn_ffn_gate_up` ~3.26s. mlxcel
+    /// multi-token bits=8 builds both `UnifiedLinear::forward` qmm then
+    /// `compiled_geglu` (gemma4.rs ~917–920); MLX can schedule the pair when
+    /// they share one eval frontier. AX otherwise may materialize gate then up
+    /// serially through Metal GEGLU deps.
+    ///
+    /// **Default: OFF** (opt-in pure A/B under cache_eval).
+    async_dual_gate_up_enabled,
+    "AX_MLX_ASYNC_DUAL_GATE_UP"
+);
+
+env_flag!(
     /// `AX_MLX_CACHE_ONLY_CHUNK_EVAL` — materialise KV after **every** cache-only
     /// prefill chunk (not only the last). Pure greedy long prompts use the
     /// mlx-lm-style cache-only prefix (n−1 tokens) with deferred eval; for

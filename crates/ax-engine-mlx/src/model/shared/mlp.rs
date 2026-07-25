@@ -1,8 +1,8 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
-    MlxVectorArray, add, argpartition_axis, argsort_axis, astype, compiled_dual_gate_up_qmm,
-    compiled_gelu_approx_split_mlp, divide, dual_qmm_geglu, expand_dims, expand_dims_axes,
-    gelu_approx_mul, gelu_approx_mul_quantized_matmul, maximum, multiply,
+    MlxVectorArray, add, argpartition_axis, argsort_axis, async_eval, astype,
+    compiled_dual_gate_up_qmm, compiled_gelu_approx_split_mlp, divide, dual_qmm_geglu, expand_dims,
+    expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, maximum, multiply,
     quantized_matmul_rms_norm, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul,
     slice_last_dim, softmax, softmax_precise, sum_axis, take, take_along_axis, topk_axis,
     zeros,
@@ -2718,6 +2718,11 @@ fn ffn_swiglu_with_policy(
             (gate, up)
         }
     };
+    // Opt-in: co-submit dual gate/up before GEGLU (AX_MLX_ASYNC_DUAL_GATE_UP).
+    // Profile residual gate_up ~3.26s; mlxcel builds both qmm then activation.
+    if seq > 1 && fastpath::async_dual_gate_up_enabled() {
+        async_eval(&[&gate_out, &up_out]);
+    }
     if (profile_decode || profile_prefill) && !gate_up_profile_recorded {
         let gate_up_profile_storage;
         let gate_up_profile_refs = if let Some(packed) = packed_gate_up.as_ref() {
