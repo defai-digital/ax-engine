@@ -43,44 +43,11 @@ mx::array gelu_approx_mul_impl(
     const mx::array& gate,
     const mx::array& x,
     mx::StreamOrDevice stream) {
-  // mlxcel-style shapeless compile for gelu_approx(gate)*x. Matmul stays
-  // outside the compile boundary. Fail-closed to the imperative chain.
-  using CompiledFn =
-      std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
-  struct CompiledGelu {
-    mx::Dtype dtype;
-    CompiledFn fn;
-  };
-  static thread_local std::optional<CompiledGelu> compiled;
+  // Keep the imperative gelu_approx(gate)*x chain. A prior thread_local
+  // mx::compile cache crashed at pthread TLS teardown (CompilerCache erase
+  // on null/hash during CompiledGelu destructor) under cargo test / llvm-cov.
+  // Process-static compile remains available for the larger qGELU MLP path.
   auto dtype = gate.dtype();
-  try {
-    if (!compiled || compiled->dtype != dtype) {
-      mx::enable_compile();
-      auto half = mx::array(0.5f, dtype);
-      auto one = mx::array(1.0f, dtype);
-      auto sqrt_2_over_pi = mx::array(0.7978846f, dtype);
-      auto coeff = mx::array(0.044715f, dtype);
-      auto body =
-          [half, one, sqrt_2_over_pi, coeff](
-              const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
-            auto gate2 = mx::multiply(inputs[0], inputs[0]);
-            auto gate3 = mx::multiply(gate2, inputs[0]);
-            auto cubic = mx::multiply(coeff, gate3);
-            auto inner = mx::add(inputs[0], cubic);
-            auto t = mx::tanh(mx::multiply(sqrt_2_over_pi, inner));
-            auto activated =
-                mx::multiply(mx::multiply(half, inputs[0]), mx::add(one, t));
-            return {mx::multiply(activated, inputs[1])};
-          };
-      compiled = CompiledGelu{dtype, mx::compile(body, /*shapeless=*/true)};
-    }
-    auto out = compiled->fn({gate, x});
-    if (out.size() == 1) {
-      return std::move(out[0]);
-    }
-  } catch (...) {
-    compiled.reset();
-  }
   if (!gelu_cache || gelu_cache->dtype != dtype) {
     gelu_cache = gelu_constants{
         mx::array(0.5f, dtype),
@@ -105,27 +72,8 @@ mx::array silu_mul_impl(
     const mx::array& gate,
     const mx::array& x,
     mx::StreamOrDevice stream) {
-  // mlxcel-style shapeless compile: silu(gate)*x as one fused elementwise
-  // composite. Fail-closed to the uncompiled op chain.
-  using CompiledFn =
-      std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
-  static thread_local std::optional<CompiledFn> compiled;
-  try {
-    if (!compiled) {
-      mx::enable_compile();
-      auto body = [](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
-        auto activated = mx::multiply(inputs[0], mx::sigmoid(inputs[0]));
-        return {mx::multiply(activated, inputs[1])};
-      };
-      compiled = mx::compile(body, /*shapeless=*/true);
-    }
-    auto out = (*compiled)({gate, x});
-    if (out.size() == 1) {
-      return std::move(out[0]);
-    }
-  } catch (...) {
-    compiled.reset();
-  }
+  // Imperative silu(gate)*x only. Same thread_local mx::compile TLS destructor
+  // hazard as gelu_approx_mul_impl (CompilerCache erase on test-thread exit).
   auto activated = mx::multiply(gate, mx::sigmoid(gate, stream), stream);
   return mx::multiply(activated, x, stream);
 }
