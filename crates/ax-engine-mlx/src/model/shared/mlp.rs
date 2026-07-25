@@ -222,6 +222,9 @@ fn qkv_project_inner(
 
 // Greedy cold prefill keeps the final prompt token for the first-token graph,
 // so README prompt buckets 128 and 512 enter the backbone as 127 and 511.
+// Long pure uses `--prefill-chunk 512` (seq=512 → packed). mbp-m5 pure A/B
+// extending the cap so chunk-512 took split was ~3% slower than packed
+// (2026-07-25 pure-split-qkv-chunk512-ab); keep max=511.
 const GEMMA4_SPLIT_PREFILL_MIN_SEQ: i32 = 127;
 const GEMMA4_SPLIT_QKV_PREFILL_MAX_SEQ: i32 = 511;
 
@@ -4782,6 +4785,7 @@ mod tests {
             4,
             true,
         ));
+        // Chunk-512 pure: packed is faster than split (mbp-m5 A/B ~1.03×).
         assert!(!prefer_split_qkv_projection(
             "gemma4",
             false,
