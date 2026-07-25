@@ -30,7 +30,7 @@ exception.
 ## Native multimodal and speech support
 
 This table describes the repo-owned MLX implementations, not every architecture
-mlxcel can load. AX selects high-use models whose text backbone, media tower,
+that a generic checkpoint loader can load. AX selects high-use models whose text backbone, media tower,
 preprocessor, token expansion, cache behavior, and server contract can all be
 validated locally. A family name alone is not enough: `/v1/models` derives its
 media capabilities from the loaded manifest and fails closed when required
