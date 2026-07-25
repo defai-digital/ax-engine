@@ -79,3 +79,12 @@ Reject. Host-side + naive custom GEMM still cannot beat MLX qmm for gate_up.
 ## Formal multi-process AX S1 (2026-07-25)
 Harness AX multi-process target vs mlxcel: thr **1.062×**, gap ratio **1.32×** (46ms abs), TTFT **0.940×**.
 not_yet. Topology residual insufficient for locked thr≥1.15.
+
+## Multi-process AX S1 ladder (formal cool 3-rep)
+| config | thr ratio | gap ratio | TTFT ratio | notes |
+|--------|----------:|----------:|-----------:|-------|
+| multi-process baseline | 1.062 | 1.32 | 0.940 | thr lift vs exclusive |
+| + Gemma #672 cache-eval | **1.109** | 1.113 | **0.899 PASS** | best thr so far |
+| + chunk 1024 | 1.077 | 1.369 | 0.925 | worse than 512 |
+
+Still short of thr≥1.15 and gap ratio ≤0.90. Absolute gap under multi-process+cache-eval is ~39 ms (≤50 abs ok).
