@@ -1,4 +1,6 @@
-use mlx_sys::{MlxArray, MlxDtype, MlxVectorArray, add, rms_norm, rope, rope_dynamic, slice};
+use mlx_sys::{
+    MlxArray, MlxDtype, MlxVectorArray, add, add_rms_norm_pair, rms_norm, rope, rope_dynamic, slice,
+};
 use std::time::Instant;
 
 /// Env-gated per-stage timing for the batched decode forward
@@ -105,15 +107,13 @@ fn layer_shell_post_attention(
     profile_gemma4_moe_decode: bool,
     post_attn_started: Option<Instant>,
 ) -> MlxArray {
-    // 15. Residual.
+    // 15. Residual (+ optional fused pre-FFN RMSNorm).
     let residual_norm_started = profile_forward_layer.then(Instant::now);
-    let last_only_active = last_position_only_after_attention && seq > 1;
-
-    let hidden = add(hidden, attn_proj, None);
 
     // Cache-only terminal layer: attention already wrote full-seq KV; FFN
     // residual is discarded before the completing decode_step. Return here.
     if skip_post_attention_ffn {
+        let hidden = add(hidden, attn_proj, None);
         if let Some(started) = residual_norm_started {
             forward_profile_eval_elapsed(
                 profile_decode_layer,
@@ -135,11 +135,80 @@ fn layer_shell_post_attention(
         return hidden;
     }
 
-    // 15a. Optional last-position-only slice for the terminal prefill layer.
-    let (hidden, per_layer_input_owned) = if last_only_active {
+    // Direct C++ post-attn FFN composite (Gemma dense packed GEGLU): residual +
+    // pre-FFN RMSNorm + gate_up qmatmul + gelu_approx_mul + down qmatmul +
+    // residual. One FFI boundary for the whole post-attention dense block.
+    // Opt-in via `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` (prior decode A/B was
+    // neutral-to-negative; re-enabled for pure long-prefill thr A/B on M5).
+    let last_only_active = last_position_only_after_attention && seq > 1;
+    if !last_only_active
+        && !profile_forward_layer
+        && !profile_decode_layer
+        && !profile_prefill_layer
+        && !profile_gemma4_moe_decode
+        && w.router_proj.is_none()
+        && per_layer_input.is_none()
+        && w.per_layer_gate.is_none()
+        && cfg.uses_geglu
+        && fastpath::direct_cpp_gemma4_post_attn_ffn_enabled()
+        && let Some(gate_up) = w.gate_up_packed.as_ref()
+        && let Some(gu_scales) = gate_up.scales.as_ref()
+        && let Some(down) = w.down_proj.as_ref()
+        && let Some(down_scales) = down.scales.as_ref()
+    {
+        let out = mlx_sys::gemma4_post_attn_ffn_block(
+            hidden,
+            attn_proj,
+            &w.ffn_norm,
+            w.ffn_post_norm.as_ref(),
+            w.layer_scalar.as_ref(),
+            &gate_up.weight,
+            gu_scales,
+            gate_up.biases.as_ref(),
+            &down.weight,
+            down_scales,
+            down.biases.as_ref(),
+            gate_up.group_size,
+            gate_up.bits,
+            cfg.rms_norm_eps,
+            None,
+        );
+        if let Some(started) = residual_norm_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::PostAttnResidualNorm,
+                started,
+                &[&out],
+            );
+        }
+        if let Some(started) = post_attn_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::PostAttn,
+                started,
+                &[&out],
+            );
+        }
+        return out;
+    }
+
+    // 15a. Optional last-position-only slice for the terminal prefill layer
+    // (slice after residual add, before FFN norm — keeps the FFN single-token).
+    // Common multi-token path fuses residual-add + pre-FFN RMSNorm into one
+    // compiled composite (mlxcel-style; used every Gemma/Qwen dense layer).
+    let (hidden, normed2, per_layer_input_owned) = if last_only_active {
+        let residual = add(hidden, attn_proj, None);
         let last = (seq - 1) as i32;
         let hs = cfg.hidden_size as i32;
-        let sliced_hidden = slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None);
+        let sliced_hidden = slice(
+            &residual,
+            &[0, last, 0],
+            &[1, last + 1, hs],
+            &[1, 1, 1],
+            None,
+        );
         let sliced_pli = per_layer_input.map(|pli| {
             let dims = pli.shape();
             let pli_last_dim = *dims.last().unwrap_or(&hs);
@@ -151,18 +220,19 @@ fn layer_shell_post_attention(
                 None,
             )
         });
-        (sliced_hidden, sliced_pli)
+        let normed2 = rms_norm(&sliced_hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+        (sliced_hidden, normed2, sliced_pli)
     } else {
-        (hidden, None)
+        let (residual, normed2) =
+            add_rms_norm_pair(hidden, attn_proj, &w.ffn_norm, cfg.rms_norm_eps, None);
+        (residual, normed2, None)
     };
     let per_layer_input: Option<&MlxArray> = if last_only_active {
         per_layer_input_owned.as_ref()
     } else {
         per_layer_input
     };
-
-    // 16. Pre-FFN norm.
-    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    // Pre-FFN norm is either fused above or computed on the last-token slice.
     if let Some(started) = residual_norm_started {
         forward_profile_eval_elapsed(
             profile_decode_layer,
@@ -971,20 +1041,35 @@ fn layer_forward_internal(
         }
         // 8. SDPA.
         let key_len = attention_kv.key_len();
-        let local_mask: Option<MlxArray>;
-        let mask_opt: &Option<MlxArray> = if let Some(m) = shared_mask {
-            m
+        // Prefer a hoisted/shared mask only when its last dim matches the
+        // post-append key length (ring capacity when rotating). Rebuild
+        // locally on mismatch so mask and K cannot disagree.
+        let shared_usable = shared_mask.is_some_and(|m| match m.as_ref() {
+            Some(mask) => mask
+                .shape()
+                .last()
+                .is_some_and(|&k| k as usize == key_len),
+            None => true,
+        });
+        let local_mask: Option<MlxArray> = if shared_usable {
+            None
         } else {
-            local_mask = match ring_layout {
-                Some(ring) if ring.needs_mask(seq) => Some(create_ring_sliding_mask(
-                    seq,
-                    ring.window,
-                    ring.capacity,
-                    ring.write_start,
-                )),
-                Some(_) => None,
-                None => attention_mask_array(seq, key_len, sliding_window),
-            };
+            match ring_layout {
+                Some(ring) if ring.needs_mask(seq) && key_len == ring.capacity => {
+                    Some(create_ring_sliding_mask(
+                        seq,
+                        ring.window,
+                        ring.capacity,
+                        ring.write_start,
+                    ))
+                }
+                _ => attention_mask_array(seq, key_len, sliding_window),
+            }
+        };
+        let none_mask: Option<MlxArray> = None;
+        let mask_opt: &Option<MlxArray> = if shared_usable {
+            shared_mask.unwrap_or(&none_mask)
+        } else {
             &local_mask
         };
         let sdpa_started = profile_forward_layer.then(Instant::now);

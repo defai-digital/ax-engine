@@ -1,8 +1,14 @@
 #include "ax_shim_internal.h"
 
+#include <functional>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <tuple>
+#include <unordered_map>
+#include <vector>
 
+#include "mlx/compile.h"
 #include "mlx/fast.h"
 #include "mlx/ops.h"
 
@@ -37,7 +43,44 @@ mx::array gelu_approx_mul_impl(
     const mx::array& gate,
     const mx::array& x,
     mx::StreamOrDevice stream) {
+  // mlxcel-style shapeless compile for gelu_approx(gate)*x. Matmul stays
+  // outside the compile boundary. Fail-closed to the imperative chain.
+  using CompiledFn =
+      std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+  struct CompiledGelu {
+    mx::Dtype dtype;
+    CompiledFn fn;
+  };
+  static thread_local std::optional<CompiledGelu> compiled;
   auto dtype = gate.dtype();
+  try {
+    if (!compiled || compiled->dtype != dtype) {
+      mx::enable_compile();
+      auto half = mx::array(0.5f, dtype);
+      auto one = mx::array(1.0f, dtype);
+      auto sqrt_2_over_pi = mx::array(0.7978846f, dtype);
+      auto coeff = mx::array(0.044715f, dtype);
+      auto body =
+          [half, one, sqrt_2_over_pi, coeff](
+              const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
+            auto gate2 = mx::multiply(inputs[0], inputs[0]);
+            auto gate3 = mx::multiply(gate2, inputs[0]);
+            auto cubic = mx::multiply(coeff, gate3);
+            auto inner = mx::add(inputs[0], cubic);
+            auto t = mx::tanh(mx::multiply(sqrt_2_over_pi, inner));
+            auto activated =
+                mx::multiply(mx::multiply(half, inputs[0]), mx::add(one, t));
+            return {mx::multiply(activated, inputs[1])};
+          };
+      compiled = CompiledGelu{dtype, mx::compile(body, /*shapeless=*/true)};
+    }
+    auto out = compiled->fn({gate, x});
+    if (out.size() == 1) {
+      return std::move(out[0]);
+    }
+  } catch (...) {
+    compiled.reset();
+  }
   if (!gelu_cache || gelu_cache->dtype != dtype) {
     gelu_cache = gelu_constants{
         mx::array(0.5f, dtype),
@@ -62,6 +105,27 @@ mx::array silu_mul_impl(
     const mx::array& gate,
     const mx::array& x,
     mx::StreamOrDevice stream) {
+  // mlxcel-style shapeless compile: silu(gate)*x as one fused elementwise
+  // composite. Fail-closed to the uncompiled op chain.
+  using CompiledFn =
+      std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+  static thread_local std::optional<CompiledFn> compiled;
+  try {
+    if (!compiled) {
+      mx::enable_compile();
+      auto body = [](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
+        auto activated = mx::multiply(inputs[0], mx::sigmoid(inputs[0]));
+        return {mx::multiply(activated, inputs[1])};
+      };
+      compiled = mx::compile(body, /*shapeless=*/true);
+    }
+    auto out = (*compiled)({gate, x});
+    if (out.size() == 1) {
+      return std::move(out[0]);
+    }
+  } catch (...) {
+    compiled.reset();
+  }
   auto activated = mx::multiply(gate, mx::sigmoid(gate, stream), stream);
   return mx::multiply(activated, x, stream);
 }
@@ -438,6 +502,36 @@ std::pair<mx::array, mx::array> add_rms_norm_pair_impl(
     const mx::array& norm_weight,
     float eps,
     mx::StreamOrDevice stream) {
+  // mlxcel-style shapeless compile: residual-add + pre-norm RMSNorm.
+  // Matmul stays outside the compile boundary. Fail-closed to uncompiled ops.
+  using CompiledFn =
+      std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+  struct CompiledAddRms {
+    float eps = 0.0f;
+    CompiledFn fn;
+  };
+  static thread_local std::optional<CompiledAddRms> compiled;
+  try {
+    if (!compiled || compiled->eps != eps) {
+      mx::enable_compile();
+      const float e = eps;
+      auto body = [e](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
+        auto residual = mx::add(inputs[0], inputs[1]);
+        auto normed = mx::fast::rms_norm(residual, inputs[2], e);
+        return {std::move(residual), std::move(normed)};
+      };
+      compiled = CompiledAddRms{
+          eps,
+          mx::compile(body, /*shapeless=*/true),
+      };
+    }
+    auto out = compiled->fn({x, y, norm_weight});
+    if (out.size() == 2) {
+      return {std::move(out[0]), std::move(out[1])};
+    }
+  } catch (...) {
+    compiled.reset();
+  }
   auto residual = mx::add(x, y, stream);
   auto normed = mx::fast::rms_norm(residual, norm_weight, eps, stream);
   return {residual, normed};
@@ -619,6 +713,374 @@ extern "C" int ax_mlx_gelu_approx_quantized_ffn(
             group_size,
             bits,
             s));
+    return 0;
+  } AX_CATCH
+}
+
+// mlxcel `compiled_gelu_approx_mlp_forward` residual (gemma4.rs dense MLP):
+// compile the full split gate/up/gelu_approx*up/down affine qmm chain.
+// Collapses ~14 elementwise ops plus three qmm nodes into one fused Compiled
+// primitive per layer.
+//
+// Shape policy (mlxcel #680 + #705):
+//   * gs64/bits=4 and single-token decode: shapeless=true (validated).
+//   * multi-token non-4bit (flip Gemma mixed packages with MLP bits=8):
+//     shape-specific compile (shapeless=false). mlxcel #680 disabled
+//     *shapeless* multi-token 8-bit because it forced a decode-oriented qmm
+//     kernel onto large prefill matmuls (~8-9% slower on GB10). Issue #705
+//     recovers prefill fusion for the same root cause via shape-specific
+//     graphs (NVFP4 path); we apply that recovery to affine 8-bit prefill so
+//     the flip package can fuse gelu without the shapeless qmm regression.
+namespace {
+
+using CompiledQgeluMlpFn =
+    std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+
+// shape_sig: 0 for shapeless graphs; for shape-specific graphs packs the
+// trailing activation dims that differ across prefill chunks (seq, and batch
+// if present). Weight shapes are fixed per (group_size, bits) quant layout.
+CompiledQgeluMlpFn& get_compiled_qgelu_approx_split_mlp(
+    int group_size,
+    int bits,
+    bool shapeless,
+    uint64_t shape_sig) {
+  struct Key {
+    int group_size;
+    int bits;
+    bool shapeless;
+    uint64_t shape_sig;
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const noexcept {
+      size_t h = std::hash<int>{}(k.group_size);
+      h ^= std::hash<int>{}(k.bits) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<bool>{}(k.shapeless) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<uint64_t>{}(k.shape_sig) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  struct KeyEq {
+    bool operator()(const Key& a, const Key& b) const noexcept {
+      return a.group_size == b.group_size && a.bits == b.bits &&
+             a.shapeless == b.shapeless && a.shape_sig == b.shape_sig;
+    }
+  };
+  static std::mutex mu;
+  static std::unordered_map<Key, CompiledQgeluMlpFn, KeyHash, KeyEq> cache;
+  std::lock_guard<std::mutex> lock(mu);
+  Key key{group_size, bits, shapeless, shape_sig};
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  auto fn = [group_size, bits](const std::vector<mx::array>& inputs)
+      -> std::vector<mx::array> {
+    // inputs: x, gate_w, gate_s, gate_b, up_w, up_s, up_b, down_w, down_s, down_b
+    const auto& x = inputs[0];
+    auto gate = mx::quantized_matmul(
+        x,
+        inputs[1],
+        inputs[2],
+        std::optional<mx::array>(inputs[3]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kAffineMode);
+    auto up = mx::quantized_matmul(
+        x,
+        inputs[4],
+        inputs[5],
+        std::optional<mx::array>(inputs[6]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kAffineMode);
+    // gelu_tanh_approx(gate) * up — same math as gelu_approx_mul_impl.
+    auto dtype = gate.dtype();
+    auto half = mx::array(0.5f, dtype);
+    auto one = mx::array(1.0f, dtype);
+    auto sqrt_2_over_pi = mx::array(0.7978846f, dtype);
+    auto coeff = mx::array(0.044715f, dtype);
+    auto gate2 = mx::multiply(gate, gate);
+    auto gate3 = mx::multiply(gate2, gate);
+    auto cubic = mx::multiply(coeff, gate3);
+    auto inner = mx::add(gate, cubic);
+    auto t = mx::tanh(mx::multiply(sqrt_2_over_pi, inner));
+    auto activated =
+        mx::multiply(mx::multiply(half, gate), mx::add(one, t));
+    activated = mx::multiply(activated, up);
+    auto down = mx::quantized_matmul(
+        activated,
+        inputs[7],
+        inputs[8],
+        std::optional<mx::array>(inputs[9]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kAffineMode);
+    return {std::move(down)};
+  };
+  mx::enable_compile();
+  auto [iter, _] = cache.emplace(key, mx::compile(fn, /*shapeless=*/shapeless));
+  return iter->second;
+}
+
+bool compiled_qgelu_mlp_env_enabled() {
+  static const bool enabled = []() {
+    const char* v = std::getenv("AX_MLX_COMPILED_QGELU_MLP");
+    if (!v) {
+      return true;
+    }
+    std::string s(v);
+    return !(s == "0" || s == "false" || s == "off" || s == "no" || s == "FALSE" ||
+             s == "OFF" || s == "NO");
+  }();
+  return enabled;
+}
+
+// Opt-in for the #705 multi-token non-4bit shape-specific prefill recovery.
+// Default OFF: on mbp-m5 (flip Gemma MLP bits=8) pure 13.8k wall measured
+// ~+2% slower vs portable (2026-07-24 pure-shaped-ab). Set
+// AX_MLX_COMPILED_QGELU_PREFILL_SHAPED=1 to force the experimental path.
+// Read each call (not process-static) so unit tests and A/B can toggle.
+bool compiled_qgelu_prefill_shaped_enabled() {
+  const char* v = std::getenv("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+
+// MLX `array::shape()` is a SmallVector-like Shape, not std::vector.
+template <typename ShapeLike>
+uint64_t qgelu_activation_shape_sig(const ShapeLike& shape) {
+  // Pack rank + trailing dims (batch?, seq, hidden) into a stable signature.
+  uint64_t h = static_cast<uint64_t>(shape.size());
+  for (auto d : shape) {
+    h = h * 1315423911u + static_cast<uint64_t>(static_cast<uint32_t>(d));
+  }
+  return h;
+}
+
+} // namespace
+
+extern "C" int ax_mlx_compiled_gelu_approx_split_mlp(
+    mlx_array* res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    const mlx_array down_weight,
+    const mlx_array down_scales,
+    const mlx_array down_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    // Compile gate (mlxcel #680 + #705 residual):
+    //   * gs64/bits=4: shapeless compile on every shape (prefill+decode).
+    //   * single-token decode (any affine bits): shapeless compile.
+    //   * multi-token non-4bit (notably gs64/bits=8 flip Gemma MLP):
+    //     shape-specific compile so prefill qmm stays on the large-matmul
+    //     kernel while still fusing gelu elementwise ops (#705 recovery).
+    // Kill-switches:
+    //   AX_MLX_COMPILED_QGELU_MLP=0 — disable all compiled qGELU.
+    //   AX_MLX_COMPILED_QGELU_PREFILL_SHAPED=0 — disable only multi-token
+    //   non-4bit shape-specific path (falls back to portable).
+    if (!compiled_qgelu_mlp_env_enabled()) {
+      return 1;
+    }
+    if (group_size <= 0 || bits <= 0) {
+      return 1;
+    }
+    // Biases required (quant group biases); null handle → fail-closed.
+    if (!gate_biases.ctx || !up_biases.ctx || !down_biases.ctx) {
+      return 1;
+    }
+    const auto& x_shape = aref(x).shape();
+    const bool is_single_token =
+        x_shape.size() >= 2 && x_shape[x_shape.size() - 2] == 1;
+    const bool legacy_4bit = (group_size == 64 && bits == 4);
+    bool shapeless = true;
+    uint64_t shape_sig = 0;
+    if (legacy_4bit || is_single_token) {
+      shapeless = true;
+      shape_sig = 0;
+    } else if (compiled_qgelu_prefill_shaped_enabled()) {
+      // Multi-token non-4bit prefill recovery (#705 pattern).
+      shapeless = false;
+      shape_sig = qgelu_activation_shape_sig(x_shape);
+    } else {
+      return 1;
+    }
+    auto& compiled_fn =
+        get_compiled_qgelu_approx_split_mlp(group_size, bits, shapeless, shape_sig);
+    auto result = compiled_fn({
+        aref(x),
+        aref(gate_weight),
+        aref(gate_scales),
+        aref(gate_biases),
+        aref(up_weight),
+        aref(up_scales),
+        aref(up_biases),
+        aref(down_weight),
+        aref(down_scales),
+        aref(down_biases),
+    });
+    if (result.size() != 1) {
+      return 1;
+    }
+    aset(res, std::move(result[0]));
+    return 0;
+  } AX_CATCH
+}
+
+// Profile-backed residual (mbp-m5 pure Gemma prefill): gate_up qmm dominates
+// wall. Compile the *two* multi-token affine qmm (gate + up) only — leave gelu
+// and down outside the compile window so #680's "decode qmm on prefill" trap
+// is less likely than full-MLP compile. Shape-specific (#705 lesson).
+namespace {
+
+using CompiledDualGateUpFn =
+    std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+
+CompiledDualGateUpFn& get_compiled_dual_gate_up_qmm(
+    int group_size,
+    int bits,
+    uint64_t shape_sig) {
+  struct Key {
+    int group_size;
+    int bits;
+    uint64_t shape_sig;
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const noexcept {
+      size_t h = std::hash<int>{}(k.group_size);
+      h ^= std::hash<int>{}(k.bits) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<uint64_t>{}(k.shape_sig) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  struct KeyEq {
+    bool operator()(const Key& a, const Key& b) const noexcept {
+      return a.group_size == b.group_size && a.bits == b.bits &&
+             a.shape_sig == b.shape_sig;
+    }
+  };
+  static std::mutex mu;
+  static std::unordered_map<Key, CompiledDualGateUpFn, KeyHash, KeyEq> cache;
+  std::lock_guard<std::mutex> lock(mu);
+  Key key{group_size, bits, shape_sig};
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  auto fn = [group_size, bits](const std::vector<mx::array>& inputs)
+      -> std::vector<mx::array> {
+    // inputs: x, gate_w, gate_s, gate_b, up_w, up_s, up_b
+    const auto& x = inputs[0];
+    auto gate = mx::quantized_matmul(
+        x,
+        inputs[1],
+        inputs[2],
+        std::optional<mx::array>(inputs[3]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kAffineMode);
+    auto up = mx::quantized_matmul(
+        x,
+        inputs[4],
+        inputs[5],
+        std::optional<mx::array>(inputs[6]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kAffineMode);
+    return {std::move(gate), std::move(up)};
+  };
+  mx::enable_compile();
+  // shape-specific: multi-token prefill must not force decode qmm kernels.
+  auto [iter, _] = cache.emplace(key, mx::compile(fn, /*shapeless=*/false));
+  return iter->second;
+}
+
+// Default OFF after mbp-m5 pure 13.8k A/B measured ~+2.1% cold wall
+// (2026-07-24 pure-dual-gate-up-ab). Opt-in for further kernel A/B.
+bool compiled_dual_gate_up_env_enabled() {
+  const char* v = std::getenv("AX_MLX_COMPILED_DUAL_GATE_UP");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+
+template <typename ShapeLike>
+uint64_t dual_gate_up_shape_sig(const ShapeLike& shape) {
+  uint64_t h = static_cast<uint64_t>(shape.size());
+  for (auto d : shape) {
+    h = h * 1315423911u + static_cast<uint64_t>(static_cast<uint32_t>(d));
+  }
+  return h;
+}
+
+} // namespace
+
+extern "C" int ax_mlx_compiled_dual_gate_up_qmm(
+    mlx_array* gate_res,
+    mlx_array* up_res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    (void)stream;
+    if (!compiled_dual_gate_up_env_enabled()) {
+      return 1;
+    }
+    if (group_size <= 0 || bits <= 0) {
+      return 1;
+    }
+    if (!gate_biases.ctx || !up_biases.ctx) {
+      return 1;
+    }
+    const auto& x_shape = aref(x).shape();
+    // Multi-token prefill only (decode already has cheap seq==1 path).
+    const bool multi_token =
+        x_shape.size() >= 2 && x_shape[x_shape.size() - 2] > 1;
+    if (!multi_token) {
+      return 1;
+    }
+    const uint64_t shape_sig = dual_gate_up_shape_sig(x_shape);
+    auto& compiled_fn =
+        get_compiled_dual_gate_up_qmm(group_size, bits, shape_sig);
+    auto result = compiled_fn({
+        aref(x),
+        aref(gate_weight),
+        aref(gate_scales),
+        aref(gate_biases),
+        aref(up_weight),
+        aref(up_scales),
+        aref(up_biases),
+    });
+    if (result.size() != 2) {
+      return 1;
+    }
+    aset(gate_res, std::move(result[0]));
+    aset(up_res, std::move(result[1]));
     return 0;
   } AX_CATCH
 }

@@ -1,0 +1,21 @@
+{
+"enabled": 1,
+"prefill_steps": 27,
+"layers": 1296,
+"tokens": 13824,
+"per_layer_input_wall_us": 0,
+"pre_sdpa_wall_us": 1905517,
+"pre_sdpa_qkv_proj_wall_us": 1089808,
+"pre_sdpa_qk_norm_wall_us": 275109,
+"pre_sdpa_rope_kv_wall_us": 536487,
+"sdpa_wall_us": 1244358,
+"post_attn_wall_us": 7295499,
+"post_attn_ffn_wall_us": 6037986,
+"post_attn_ffn_gate_up_wall_us": 3345837,
+"post_attn_ffn_activation_wall_us": 319659,
+"post_attn_ffn_down_wall_us": 2141679,
+"post_attn_output_proj_wall_us": 782857,
+"post_attn_residual_norm_wall_us": 239430,
+"post_attn_residual_gate_wall_us": 232545,
+"lm_head_wall_us": 0
+}

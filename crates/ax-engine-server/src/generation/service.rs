@@ -54,12 +54,44 @@ impl ModelExecutionArbiter {
         }
     }
 
+    #[allow(dead_code)] // retained for concurrent-mode diagnostics / future policy
     pub(crate) fn max_concurrent(&self) -> usize {
         self.max_concurrent
     }
+
+    /// Optionally force exclusive dual-hold after a multi-token prefill quantum.
+    ///
+    /// Default **on** when `max_concurrent > 1`: M5 dual-hold A/B without this
+    /// window measured S1 gap p95 160–220 ms and thr regression under Metal
+    /// contention. Adaptive quantum alone does not keep absolute gap ≤50 ms
+    /// while both models submit. Set `AX_SERVER_LONG_PREFILL_EXCLUSIVE=0` to
+    /// re-open dual-hold for experimental thr A/Bs.
+    pub(crate) fn mark_long_prefill_quantum(&self) {
+        if !long_prefill_exclusive_enabled() {
+            return;
+        }
+        // Cover late S1 quanta + grace so interactive decode re-enters exclusive
+        // mode before the next prefill chunk is submitted under dual-hold.
+        const LONG_PREFILL_EXCLUSIVE_GRACE: Duration = Duration::from_millis(80);
+        let mut state = self.state.lock();
+        state.long_prefill_exclusive_until = Some(Instant::now() + LONG_PREFILL_EXCLUSIVE_GRACE);
+    }
+
+    fn effective_max_concurrent(&self, state: &ModelExecutionState) -> usize {
+        if self.max_concurrent <= 1 {
+            return 1;
+        }
+        let long_prefill_active = state
+            .long_prefill_exclusive_until
+            .is_some_and(|until| Instant::now() < until);
+        if long_prefill_active {
+            1
+        } else {
+            self.max_concurrent
+        }
+    }
 }
 
-#[derive(Default)]
 struct ModelExecutionState {
     /// Models currently holding an execution turn. Size ≤ max_concurrent.
     held_models: BTreeSet<String>,
@@ -67,6 +99,23 @@ struct ModelExecutionState {
     last_activity: BTreeMap<String, Instant>,
     waiters: BTreeMap<String, usize>,
     stats: BTreeMap<(String, ExecutionWorkClass), ModelExecutionStats>,
+    /// When set, force exclusive (max=1) until this instant so long sibling
+    /// prefill cannot dual-hold with interactive decode (S1 gap). Short
+    /// multi-stream decode (S3) keeps concurrent slots after this expires.
+    long_prefill_exclusive_until: Option<Instant>,
+}
+
+impl Default for ModelExecutionState {
+    fn default() -> Self {
+        Self {
+            held_models: BTreeSet::new(),
+            last_served: None,
+            last_activity: BTreeMap::new(),
+            waiters: BTreeMap::new(),
+            stats: BTreeMap::new(),
+            long_prefill_exclusive_until: None,
+        }
+    }
 }
 
 /// Resolve `AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT` (default 1 = exclusive).
@@ -80,6 +129,27 @@ pub(crate) fn exec_arbiter_max_concurrent_from_env() -> usize {
         .filter(|n| *n >= 1)
         .map(|n| n.min(8))
         .unwrap_or(1)
+}
+
+/// When true, multi-token prefill quanta force exclusive arbiter turns for a
+/// short grace window (see [`ModelExecutionArbiter::mark_long_prefill_quantum`]).
+///
+/// Default **true** (kill-switch `AX_SERVER_LONG_PREFILL_EXCLUSIVE=0`). Dual-hold
+/// without this window failed S1 gap (160–220 ms p95) and thr on M5; keep
+/// exclusive isolation for long sibling prefills and rely on pure GPU cuts
+/// for thr ≥1.15×.
+fn long_prefill_exclusive_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_SERVER_LONG_PREFILL_EXCLUSIVE") {
+            Ok(raw) => {
+                let v = raw.trim();
+                // Explicit off only.
+                !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
+            }
+            Err(_) => true,
+        }
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -120,8 +190,9 @@ impl ModelExecutionArbiter {
         *state.waiters.entry(model_id.to_string()).or_default() += 1;
         // Exclusive (max=1): classic round-robin on the single slot.
         // Concurrent (max>1): distinct models may hold together; same model
-        // never re-enters while already held.
-        while !can_acquire_turn(&state, model_id, self.max_concurrent) {
+        // never re-enters while already held. Long multi-token prefill forces
+        // exclusive until the isolation window expires (S1 gap vs S3 thr).
+        while !can_acquire_turn(&state, model_id, self.effective_max_concurrent(&state)) {
             self.ready.wait(&mut state);
         }
         let remove_waiter = if let Some(waiters) = state.waiters.get_mut(model_id) {
@@ -291,11 +362,18 @@ struct ModelExecutionTarget {
 /// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS`.
 pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
-/// Interactive p95 stream-gap SLO for one sibling prefill turn. Calibrated so
-/// formal S1 keeps gap ratio ≤0.90× mlxcel (~34 ms) and absolute ≤50 ms while
-/// still admitting a productive multi-token quantum (not 1-token pathology).
-const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 32_000;
-const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 64;
+/// Interactive p95 stream-gap SLO for one sibling prefill turn.
+/// Exclusive S1 gap p95 is ~9 ms vs ~37 ms mlxcel (ratio budget ~33 ms).
+/// Use 40 ms / max 256 so early cheap positions take large quanta (fewer
+/// arbiter turns → S1 thr). Adaptive shrinks from measured µs/tok as
+/// attention cost grows. Cool exclusive S1 gap p95 ~9 ms leaves headroom
+/// under the ~31 ms ratio budget (0.9× mlxcel ~35 ms) and 50 ms absolute.
+const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 40_000;
+const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 256;
+/// Floor under sibling-active adaptive quanta. Concurrent dual-hold needs the
+/// floor at 1 so late long-context quanta can shrink under the 50 ms gap SLO
+/// (8-token floor still measured ~160 ms p95 on M5). Exclusive thr is pure-sum
+/// limited; tiny late quanta cost thr less than a failed gap gate.
 const ADAPTIVE_PREFILL_MIN_TOKENS: u32 = 1;
 const ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
@@ -1041,6 +1119,33 @@ const STREAM_TOKEN_EMIT_BATCH: usize = 1;
 /// when the async SSE consumer is slightly behind.
 const STREAM_ENGINE_STEP_BURST: usize = 64;
 
+/// Sibling-active exclusive-arbiter engine step burst.
+///
+/// Under exclusive multi-model load, a full [`STREAM_ENGINE_STEP_BURST`] HOL
+/// blows interactive gap. Burst=1 was the historical safe default, but cool
+/// exclusive S1 on M5 Max measures gap p95 ~9 ms vs mlxcel ~35 ms (ratio
+/// budget ~31 ms, absolute 50 ms). Raising the sibling burst amortizes
+/// arbiter reacquire and increases interactive decode duty cycle during
+/// long sibling prefill (S1 thr residual). Override via
+/// `AX_SERVER_SIBLING_ENGINE_STEP_BURST`. Default **16**: exclusive thr
+/// envelope with measured gap headroom (not 1 = thr tax, not full HOL 64).
+/// Concurrent dual-hold A/Bs may set 1 via env. Only engages when a model
+/// worker has a single active stream (S3 multi-stream on one model is
+/// unaffected — see `active_streams.len() == 1` guard).
+const SIBLING_ENGINE_STEP_BURST_DEFAULT: usize = 16;
+
+fn sibling_engine_step_burst() -> usize {
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_SERVER_SIBLING_ENGINE_STEP_BURST")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .filter(|n: &usize| *n > 0)
+            .unwrap_or(SIBLING_ENGINE_STEP_BURST_DEFAULT)
+            .min(STREAM_ENGINE_STEP_BURST)
+    })
+}
+
 fn handle_command(
     command: ServiceCommand,
     session: &mut EngineSession,
@@ -1275,17 +1380,16 @@ fn advance_shared_engine(
 ) -> SessionResult<EngineStepReport> {
     maintain_streams(session, active_streams, service_state);
     let execution_target = service_state.execution_target.read().clone();
-    // Exclusive arbiter (max_concurrent=1): when a sibling is active, cap
-    // engine-step burst so one model cannot HOL the single device turn for a
-    // full STREAM_ENGINE_STEP_BURST (64) decode steps — that starved sibling
-    // prefill (flip S1 Gemma e2e ~28s vs ~10s). Concurrent arbiter (max>1)
-    // lets each model hold its own GPU stream turn, so burst and fair-prefill
-    // quanta no longer mediate cross-model Metal time — restore full decode
-    // burst and non-fair prefill (device-layer overlap, mlxcel multi-process
-    // equivalent).
-    let concurrent_device = execution_target
-        .as_ref()
-        .is_some_and(|target| target.arbiter.max_concurrent() > 1);
+    // When a sibling is active, cap engine-step burst so one model cannot
+    // flood Metal with a full STREAM_ENGINE_STEP_BURST of quanta.
+    //
+    // Exclusive (max=1): large multi-step holds HOL the single device turn.
+    // Concurrent (max>1): dual holds still share one GPU — an uncapped
+    // prefill worker that loops 64 steps × 64-token quanta dumps ~4k tokens
+    // of Gemma work into the Metal queue and was measured to blow S1 gap
+    // p95 to ~350–500 ms (concurrent-rotating 2026-07-24). Fair prefill
+    // quanta alone are not enough; the worker-level burst must also stay
+    // under the stream-gap SLO so Qwen decode kernels keep getting airtime.
     let mut sibling_active_for_burst = false;
     if let Some(target) = execution_target.as_ref().filter(|_| {
         service_state
@@ -1296,10 +1400,10 @@ fn advance_shared_engine(
             target.model_id.as_ref(),
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
-        // Only force burst=1 under exclusive arbitration.
-        sibling_active_for_burst = sibling_active && !concurrent_device;
+        // Cap burst whenever a sibling is active (exclusive or concurrent).
+        sibling_active_for_burst = sibling_active;
         let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
-        if sibling_active && !concurrent_device {
+        if sibling_active {
             // Feedback-control quantum from last turn's runner wall time so
             // one prefill chunk stays under the stream-gap SLO mid-prompt
             // (fixed large quanta blow gap late in long Gemma prefills).
@@ -1324,14 +1428,16 @@ fn advance_shared_engine(
             service_state
                 .adaptive_prefill_tokens
                 .store(adjusted, Ordering::Release);
+            // Optional exclusive window (AX_SERVER_LONG_PREFILL_EXCLUSIVE=1):
+            // force single-hold after multi-token quanta for gap-first isolation.
+            // Default off so dual-hold can hide interactive decode under long
+            // Gemma prefill (S1 thr). Adaptive quantum sizes the turn for gap.
+            target.arbiter.mark_long_prefill_quantum();
             if !enabled || current_tokens != adjusted {
                 session.set_multi_prefill_fair(true, adjusted, inflight);
             }
         } else {
-            // Sibling idle, or concurrent multi-model device: restore
-            // single-model prefill throughput (fair off / full chunk). Concurrent
-            // mode relies on Metal time-slicing across dedicated streams rather
-            // than fair-token quanta for stream-gap isolation.
+            // Sibling idle: restore single-model prefill throughput.
             let start = adaptive_prefill_latency_tokens_per_step();
             service_state
                 .adaptive_prefill_tokens
@@ -1360,11 +1466,12 @@ fn advance_shared_engine(
             // worker tick so the direct pipeline is not paced by the SSE
             // consumer. Emit batching remains STREAM_TOKEN_EMIT_BATCH for the
             // 50 ms gap cap; engine burst is larger to keep GPU fed.
-            // Under multi-model load, burst=1 so the arbiter can re-schedule
-            // the sibling after every step (see sibling_active_for_burst).
-            // Multi-step sibling holds were measured to blow S1 gap p95.
+            // Under multi-model load (sibling active), use a small sibling
+            // burst so the Metal queue is not flooded with prefill quanta
+            // and the interactive stream keeps gap headroom (see
+            // sibling_engine_step_burst).
             let engine_burst = if sibling_active_for_burst {
-                1
+                sibling_engine_step_burst()
             } else {
                 STREAM_ENGINE_STEP_BURST
             };
@@ -1852,6 +1959,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sibling_engine_step_burst_defaults_between_one_and_full_burst() {
+        // Exclusive multi-model: not 1 (arbiter thr tax) and not full HOL burst.
+        assert!(SIBLING_ENGINE_STEP_BURST_DEFAULT >= 2);
+        assert!(SIBLING_ENGINE_STEP_BURST_DEFAULT < STREAM_ENGINE_STEP_BURST);
+        assert_eq!(SIBLING_ENGINE_STEP_BURST_DEFAULT, 16);
+    }
+
+    #[test]
     fn adaptive_prefill_latency_quantum_defaults_to_wall_time_slo_proxy() {
         // Must not regress to the historical 1-token sibling quantum that
         // serialized long prefills into thousands of arbiter turns (flip S1).
@@ -1878,16 +1993,26 @@ mod tests {
     fn adjust_adaptive_prefill_tokens_targets_gap_slo_from_us_per_tok() {
         // No measurement yet → hold.
         assert_eq!(adjust_adaptive_prefill_tokens(16, 0), 16);
-        // 16 tokens took 16 ms → 1 ms/tok → target ≈ 32; blend up from 16.
+        // 16 tokens took 16 ms → 1 ms/tok → target ≈ SLO/1ms; blend up from 16.
         let up = adjust_adaptive_prefill_tokens_with_work(16, 16_000, 16);
-        assert!(up > 16 && up <= 32, "up={up}");
-        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 6).
-        assert_eq!(adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16), 6);
+        let slo_tok = (ADAPTIVE_PREFILL_GAP_SLO_US / 1_000) as u32;
+        assert!(up > 16 && up <= slo_tok, "up={up} slo_tok={slo_tok}");
+        // Over budget: snap to target (16 tokens / 80 ms → 5 ms/tok → target 8 @ 40ms SLO).
+        assert_eq!(
+            adjust_adaptive_prefill_tokens_with_work(16, 80_000, 16),
+            (ADAPTIVE_PREFILL_GAP_SLO_US / 5_000) as u32
+        );
         // Very expensive → snap to 1.
         assert_eq!(adjust_adaptive_prefill_tokens_with_work(4, 200_000, 4), 1);
         // Cap at max.
         let capped = adjust_adaptive_prefill_tokens_with_work(100, 1_000, 100);
         assert!(capped <= ADAPTIVE_PREFILL_MAX_TOKENS);
+    }
+
+    #[test]
+    fn long_prefill_exclusive_defaults_on_for_gap_isolation() {
+        // Dual-hold without exclusive failed S1 gap; default stays isolation-on.
+        assert!(long_prefill_exclusive_enabled());
     }
 
     fn delegated_config() -> EngineSessionConfig {

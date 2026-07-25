@@ -1,0 +1,15 @@
+{
+  "packed_cold_ms": [
+    8572.164083016105,
+    9132.998874993064
+  ],
+  "split_cold_ms": [
+    9410.50041699782,
+    8834.025417047087
+  ],
+  "packed_mean": 8852.581479004584,
+  "split_mean": 9122.262917022454,
+  "ratio_split_over_packed": 1.030463592869206,
+  "keep_if_ratio_lt": 0.925,
+  "decision": "revert_max_511"
+}

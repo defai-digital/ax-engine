@@ -247,6 +247,24 @@ env_flag_default_on!(
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
 );
 
+env_flag!(
+    /// `AX_MLX_GEMMA_DUAL_GATE_UP_METAL` — multi-token Gemma dense FFN dual
+    /// gate/up affine-quantized Metal kernel with fused GEGLU product.
+    ///
+    /// **Default: OFF** (opt-in via `AX_MLX_GEMMA_DUAL_GATE_UP_METAL=1`).
+    ///
+    /// Profile residual (mbp-m5 pure Gemma 13.8k): gate_up dual qmm dominates.
+    /// `mx::compile` of MLX qmm regressed pure wall. Custom Metal path streams
+    /// X via threadgroup tiles (v2), dequants gate+up once per row tile, reuses
+    /// weight dequant across a token tile, and writes fused
+    /// `gelu_approx(gate)*up`. v1 (per-row global X re-read) measured ~8.5× pure
+    /// regression and stayed opt-in; v2 re-A/B required before default-on.
+    /// Production stays on two MLX qmm + Metal GEGLU until pure wall proves a
+    /// ≥~7.5% cut.
+    gemma_dual_gate_up_metal_enabled,
+    "AX_MLX_GEMMA_DUAL_GATE_UP_METAL"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_LAYER_SCALAR_FUSED_ADD` — fuse Gemma-family residual add plus
     /// scalar layer-scale multiply into one custom MLX Metal elementwise node.
@@ -277,6 +295,19 @@ env_flag_default_on!(
     "AX_MLX_GEMMA4_PER_LAYER_INPUT_GATE_COMPILE"
 );
 
+env_flag!(
+    /// `AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK` — after each *intermediate*
+    /// prefill chunk is evaluated, call MLX `clear_cache()` (return freelist
+    /// to the OS / pool) before building the next chunk's graph.
+    ///
+    /// **Default: OFF**. Residual vs mlxcel `chunked_prefill_last_logits`
+    /// (generate.rs / issue #672). On mbp-m5 pure Gemma 13.8k measured
+    /// ~+1.9% cold wall vs final-only clear — thr path keeps final-only.
+    /// Opt-in for peak-memory A/B.
+    prefill_clear_cache_per_chunk_enabled,
+    "AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_ROTATING_SLIDING_DECODE` — use a rotating backing store for
     /// sliding-window KV layers on rollback-free direct greedy decode.
@@ -291,6 +322,22 @@ env_flag_default_on!(
     /// greedy decode, where no n-gram rollback or sampling replay is required.
     rotating_sliding_decode_enabled,
     "AX_MLX_ROTATING_SLIDING_DECODE"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_ROTATING_SLIDING_PREFILL` — use rotating sliding-window KV
+    /// during multi-token prefill (not only decode).
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_ROTATING_SLIDING_PREFILL=0`).
+    ///
+    /// Keeps physical SWA storage O(window + slack) during long prefill like
+    /// mlx_lm RotatingKVCache. Cold layers initialize a capacity ring (not
+    /// ordered windowed views). Mask hoist uses ring.capacity when the ring
+    /// engages; standard layers rebuild locally if a shared mask disagrees
+    /// with post-append key_len.
+    rotating_sliding_prefill_enabled,
+    "AX_MLX_ROTATING_SLIDING_PREFILL"
 );
 
 env_flag_default_on!(
@@ -417,6 +464,20 @@ env_flag_default_on!(
     /// decode op count on hybrid Qwen linear-attention models.
     qwen_direct_cpp_qk_norm_rope_enabled,
     "AX_MLX_QWEN_DIRECT_CPP_QK_NORM_ROPE"
+);
+
+env_flag!(
+    /// `AX_MLX_GEMMA_DIRECT_CPP_QK_NORM_ROPE` — opt-in Gemma-family direct C++
+    /// route for standard-attention Q/K `as_strided -> rms_norm -> rope`
+    /// (including proportional-RoPE full-attention layers that pass freqs).
+    ///
+    /// **Default: OFF**. Residual vs mlxcel `compiled_q_path_proportional`:
+    /// AX already had the C++ composite. Enabling it for gemma* pure 13.8k
+    /// prefill on mbp-m5 (2026-07-24) measured ~+1.6% cold wall vs portable
+    /// multi-FFI path (pure-gemma-qkrope-ab). Keep opt-in for decode-focused
+    /// A/B; pure prefill thr path remains portable.
+    gemma_direct_cpp_qk_norm_rope_enabled,
+    "AX_MLX_GEMMA_DIRECT_CPP_QK_NORM_ROPE"
 );
 
 env_flag!(
@@ -920,6 +981,27 @@ pub fn select_prefill_chunk_for_request(
         (cold_prefill_chunk.max(1), PrefillChunkMode::Cold)
     } else {
         (warm_prefill_chunk.max(1), PrefillChunkMode::WarmExtend)
+    }
+}
+
+/// Long-prompt Metal-friendly prefill chunk (M5 Max Gemma-12B 4-bit pure
+/// sweep 2026-07-24: 512 tok/s-best; 1536/2048 slower).
+pub const LONG_PROMPT_PREFILL_CHUNK: usize = 512;
+/// Remaining-prompt threshold that engages [`LONG_PROMPT_PREFILL_CHUNK`].
+pub const LONG_PROMPT_PREFILL_THRESHOLD: usize = 2048;
+
+/// Scale a base prefill chunk for the remaining prompt length.
+///
+/// Long remaining prompts clamp to [`LONG_PROMPT_PREFILL_CHUNK`] so formal S1
+/// thr keeps the pure envelope when the session base is larger (e.g. 1536).
+/// Short prompts keep `base_chunk` (S0 34-token prompts are a single chunk
+/// either way, so TTFT is dominated by warmup/host, not chunk size).
+pub fn scale_prefill_chunk_for_remaining(base_chunk: usize, remaining_tokens: usize) -> usize {
+    let base = base_chunk.max(1);
+    if remaining_tokens >= LONG_PROMPT_PREFILL_THRESHOLD {
+        base.min(LONG_PROMPT_PREFILL_CHUNK).max(1)
+    } else {
+        base
     }
 }
 
@@ -1483,6 +1565,53 @@ mod tests {
     }
 
     #[test]
+    fn gemma_direct_cpp_qk_norm_rope_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_GEMMA_DIRECT_CPP_QK_NORM_ROPE_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_GEMMA_DIRECT_CPP_QK_NORM_ROPE_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_GEMMA_DIRECT_CPP_QK_NORM_ROPE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn gemma_dual_gate_up_metal_uses_opt_in_contract() {
+        // Pure-wall A/B on mbp-m5 measured ~8.5× regression when default-on;
+        // production remains opt-in only.
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_GEMMA_DUAL_GATE_UP_METAL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_GEMMA_DUAL_GATE_UP_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_GEMMA_DUAL_GATE_UP_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn prefill_clear_cache_per_chunk_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_PREFILL_CLEAR_CACHE_PER_CHUNK_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_PREFILL_CLEAR_CACHE_PER_CHUNK_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_PREFILL_CLEAR_CACHE_PER_CHUNK_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
     fn direct_cpp_gemma4_post_attn_ffn_uses_opt_in_contract() {
         assert!(!parse_bool_env(
             "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_UNSET"
@@ -1748,6 +1877,20 @@ mod tests {
                 "expected invalid sparse threshold for {value:?}"
             );
         }
+    }
+
+    #[test]
+    fn scale_prefill_chunk_for_remaining_clamps_long_prompts_only() {
+        assert_eq!(scale_prefill_chunk_for_remaining(1536, 34), 1536);
+        assert_eq!(scale_prefill_chunk_for_remaining(512, 34), 512);
+        assert_eq!(scale_prefill_chunk_for_remaining(1024, 512), 1024);
+        assert_eq!(
+            scale_prefill_chunk_for_remaining(1536, LONG_PROMPT_PREFILL_THRESHOLD),
+            LONG_PROMPT_PREFILL_CHUNK
+        );
+        assert_eq!(scale_prefill_chunk_for_remaining(1536, 13_826), 512);
+        assert_eq!(scale_prefill_chunk_for_remaining(256, 13_826), 256);
+        assert_eq!(scale_prefill_chunk_for_remaining(0, 100), 1);
     }
 
     #[test]

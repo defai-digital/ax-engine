@@ -1,0 +1,54 @@
+[
+  {
+    "name": "packed_r1",
+    "cold_ms": 8572.164083016105,
+    "warm_ms": 8457.744874991477,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "split_r1",
+    "cold_ms": 9410.50041699782,
+    "warm_ms": 9383.851458958816,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "packed_r2",
+    "cold_ms": 9132.998874993064,
+    "warm_ms": 8788.163999968674,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "split_r2",
+    "cold_ms": 8834.025417047087,
+    "warm_ms": 8908.637667016592,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  }
+]

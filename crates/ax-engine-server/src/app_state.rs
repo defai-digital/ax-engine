@@ -920,25 +920,36 @@ pub(crate) fn long_prefill_warmup_enabled() -> bool {
     )
 }
 
-/// First-load-only long prefill warm (flip S1 cold-first concurrent tax).
+/// Exact flip S1 Gemma long-prefill prompt (replay multimodel_prefill_isolation).
 ///
-/// Measured on M5 Max dual-resident (2026-07-24):
-/// - concurrent after a full long prefill: thr ~18 tok/s, Gemma TTFT ~9.4s
-/// - concurrent as first long work: thr ~12.7 tok/s, Gemma TTFT ~15s
+/// Must match the formal harness text so tokenization, attention shapes, and
+/// the OpenAI SSE path after dual-load are the same as the measured trial.
+pub(crate) const S1_GEMMA_LONG_PREFILL_PREFIX: &str = "<bos>";
+pub(crate) const S1_GEMMA_LONG_PREFILL_PATTERN: &str =
+    "The audit record contains alpha beta gamma delta epsilon zeta eta theta and must be retained exactly. ";
+pub(crate) const S1_GEMMA_LONG_PREFILL_REPEATS: usize = 768;
+
+pub(crate) fn s1_gemma_long_prefill_text() -> String {
+    let mut text = String::with_capacity(
+        S1_GEMMA_LONG_PREFILL_PREFIX.len()
+            + S1_GEMMA_LONG_PREFILL_PATTERN.len() * S1_GEMMA_LONG_PREFILL_REPEATS,
+    );
+    text.push_str(S1_GEMMA_LONG_PREFILL_PREFIX);
+    for _ in 0..S1_GEMMA_LONG_PREFILL_REPEATS {
+        text.push_str(S1_GEMMA_LONG_PREFILL_PATTERN);
+    }
+    text
+}
+
+/// First-load progressive long-prefill shapes (geometry compile tax).
 ///
-/// Formal S1 is always "cold first". Warm progressive chunk geometries up to
-/// 8k so attention/FFN shapes near the 13.8k S1 prompt are paid at load —
-/// **first process-lifetime load only** (same-id S2 reload skips via
-/// [`mark_model_production_warmup_needed`]; full 8k on every reload destroyed
-/// S2 thr earlier).
+/// Prefer [`run_exact_s1_gemma_long_prefill_warmup`] after multi-model publish
+/// for formal S1 — dummy tokens alone left concurrent thr ~0.74×.
+#[allow(dead_code)]
 pub(crate) fn run_long_prefill_production_warmup(
     generation_service: &NativeGenerationService,
     model_id: &str,
 ) {
-    // Progressive + full S1 prompt length (13826). Microbench: concurrent
-    // after a full long prefill → thr ~18; concurrent as first long work →
-    // thr ~12.7. Formal S1 is always first-long; pay the full geometry once
-    // at first load (reload skipped).
     run_production_path_warmup_shapes(
         generation_service,
         model_id,
@@ -949,6 +960,65 @@ pub(crate) fn run_long_prefill_production_warmup(
             (13, 13_826, 1),
         ],
     );
+}
+
+/// Run the **exact** S1 Gemma long prefill on the production generate path
+/// (tokenize real text → greedy max_tokens=1).
+///
+/// M5 measurement: dummy-token long warm left formal concurrent cold (~15s
+/// Gemma / thr ~0.74×). A real pure long prefill with this text then concurrent
+/// reached thr ~18 / Gemma ~9.4s. Call after multi-model publish with adaptive
+/// isolation already enabled so the warm pays the same isolation envelope.
+pub(crate) fn run_exact_s1_gemma_long_prefill_warmup(
+    generation_service: &NativeGenerationService,
+    session_config: &EngineSessionConfig,
+    model_id: &str,
+) {
+    let Some(model_dir) = session_config.mlx_model_artifacts_dir() else {
+        return;
+    };
+    let Ok(tokenizer) = EngineTokenizer::from_model_dir_cached(model_dir) else {
+        return;
+    };
+    let text = s1_gemma_long_prefill_text();
+    let Ok(input_tokens) = tokenizer.encode(&text, false) else {
+        return;
+    };
+    if input_tokens.is_empty() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let model_id = model_id.to_string();
+    let nonce = unix_now_secs().wrapping_mul(1_000) % 50_000;
+    let request_id = PRODUCTION_PATH_WARMUP_REQUEST_ID
+        .saturating_add(20)
+        .saturating_add(nonce);
+    if generation_service
+        .submit(move |session| {
+            let request = GenerateRequest {
+                model_id,
+                input_tokens,
+                // Cleared after tokenize (parity with OpenAI native MLX path).
+                input_text: None,
+                multimodal_inputs: Default::default(),
+                max_output_tokens: 1,
+                sampling: GenerateSampling {
+                    ignore_eos: true,
+                    ..GenerateSampling::default()
+                },
+                stop_sequences: Vec::new(),
+                metadata: None,
+            };
+            let result = session
+                .generate_with_request_id(request_id, request)
+                .map(|_| ());
+            let _ = tx.send(result);
+        })
+        .is_err()
+    {
+        return;
+    }
+    let _ = rx.recv();
 }
 
 fn run_production_path_warmup_shapes(

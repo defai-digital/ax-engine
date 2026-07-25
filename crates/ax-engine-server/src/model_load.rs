@@ -14,8 +14,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::{
-    AppState, build_live_state, build_replacement_live_state, run_long_prefill_production_warmup,
-    run_production_path_warmup,
+    AppState, build_live_state, build_replacement_live_state, run_production_path_warmup,
 };
 use crate::errors::{ErrorResponse, error_response, map_generation_service_error};
 use crate::generation::service::{
@@ -1101,7 +1100,11 @@ fn rewarm_published_long_prefill(state: &AppState, model_id: &str) {
     {
         return;
     }
-    run_long_prefill_production_warmup(&resident.generation_service, model_id);
+    crate::app_state::run_exact_s1_gemma_long_prefill_warmup(
+        &resident.generation_service,
+        resident.session_config.as_ref(),
+        model_id,
+    );
 }
 
 /// Maximum time to wait for one model generation to drain. A timeout fails the

@@ -1,7 +1,9 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
-    expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, maximum, multiply,
+    compiled_dual_gate_up_qmm, compiled_gelu_approx_split_mlp, expand_dims_axes,
+    gelu_approx_mul,
+    gelu_approx_mul_quantized_matmul, maximum, multiply,
     quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax,
     softmax_precise, sum_axis, take, take_along_axis, topk_axis, zeros,
 };
@@ -220,6 +222,9 @@ fn qkv_project_inner(
 
 // Greedy cold prefill keeps the final prompt token for the first-token graph,
 // so README prompt buckets 128 and 512 enter the backbone as 127 and 511.
+// Long pure uses `--prefill-chunk 512` (seq=512 → packed). mbp-m5 pure A/B
+// extending the cap so chunk-512 took split was ~3% slower than packed
+// (2026-07-25 pure-split-qkv-chunk512-ab); keep max=511.
 const GEMMA4_SPLIT_PREFILL_MIN_SEQ: i32 = 127;
 const GEMMA4_SPLIT_QKV_PREFILL_MAX_SEQ: i32 = 511;
 
@@ -462,6 +467,7 @@ static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static GEMMA_DUAL_GATE_UP_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN3_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -588,6 +594,142 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
         }
         float activated = g / (1.0f + exp(-g));
         out[row] = static_cast<OutT>(activated * u);
+    }
+"#;
+
+/// Multi-token dual gate/up affine qmm + GEGLU for Gemma pure prefill.
+///
+/// Multi-row × multi-token dual gate/up + fused GEGLU (v2).
+///
+/// v1 (one output row per TG) re-read all of X from global once per OutDim row
+/// and measured ~8.5× pure-wall regression on mbp-m5. v2 tiles BM output rows
+/// per threadgroup and streams X through threadgroup memory so activation is
+/// loaded once per (token-tile, K-chunk) across BM rows; gate+up weights are
+/// dequantized once per row tile and reused across the token tile.
+///
+/// Template ints: Leading, OutDim, PackedCols, InputDim, GroupSize, GroupCount,
+/// Bits, PackFactor, QuantMask. OutT is the activation dtype.
+/// Dispatch: grid.x = ceil(OutDim / BM) * 256, threadgroup = 256.
+const GEMMA_DUAL_GATE_UP_GEGLU_KERNEL_SOURCE: &str = r#"
+    // grid.x = num_row_blocks * 256, threadgroup = 256
+    // BM output rows share an X tile in threadgroup memory.
+    const uint BM = 4u;
+    const uint TOKEN_TILE = 8u;
+    const uint K_CHUNK = 64u; // must be multiple of GroupSize (64) and PackFactor
+    const uint TG = 256u;
+
+    uint flat = thread_position_in_grid.x;
+    uint row_block = flat / TG;
+    uint tid = flat % TG;
+    uint lane = tid % 32u;
+    uint sg = tid / 32u; // 0..7
+    uint row0 = row_block * BM;
+    if (row0 >= (uint)OutDim) {
+        return;
+    }
+    uint nrows = min(BM, (uint)OutDim - row0);
+
+    // X tile: TOKEN_TILE x K_CHUNK, cooperatively loaded.
+    threadgroup float x_tile[8 * 64];
+    // Per-simdgroup partials for (BM rows x TOKEN_TILE tokens) reduce.
+    // Layout: [row_in_block * TOKEN_TILE + ti][sg]
+    threadgroup float gate_partials[4 * 8 * 8];
+    threadgroup float up_partials[4 * 8 * 8];
+
+    for (uint t0 = 0u; t0 < (uint)Leading; t0 += TOKEN_TILE) {
+        uint ntok = min(TOKEN_TILE, (uint)Leading - t0);
+
+        // Accumulators: BM rows x TOKEN_TILE tokens (register file).
+        float gate_acc[4][8];
+        float up_acc[4][8];
+        for (uint r = 0u; r < BM; ++r) {
+            for (uint ti = 0u; ti < TOKEN_TILE; ++ti) {
+                gate_acc[r][ti] = 0.0f;
+                up_acc[r][ti] = 0.0f;
+            }
+        }
+
+        for (uint k0 = 0u; k0 < (uint)InputDim; k0 += K_CHUNK) {
+            uint nk = min(K_CHUNK, (uint)InputDim - k0);
+
+            // Cooperative load of X[ntok, nk] into x_tile (row-major TOKEN_TILE * K_CHUNK).
+            for (uint i = tid; i < TOKEN_TILE * K_CHUNK; i += TG) {
+                uint ti = i / K_CHUNK;
+                uint kk = i % K_CHUNK;
+                float v = 0.0f;
+                if (ti < ntok && kk < nk) {
+                    v = static_cast<float>(x[(t0 + ti) * (uint)InputDim + (k0 + kk)]);
+                }
+                x_tile[i] = v;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            // Each thread walks K_CHUNK with stride TG; dequant gate+up for each
+            // of nrows and FMA across the token tile (X from shared).
+            for (uint kk = tid; kk < nk; kk += TG) {
+                uint input_col = k0 + kk;
+                uint packed_col = input_col / (uint)PackFactor;
+                uint packed_lane = input_col % (uint)PackFactor;
+                uint group = input_col / (uint)GroupSize;
+                uint shift = packed_lane * (uint)Bits;
+
+                for (uint r = 0u; r < nrows; ++r) {
+                    uint row = row0 + r;
+                    uint row_base = row * (uint)PackedCols;
+                    uint scale_idx = row * (uint)GroupCount + group;
+                    uint gate_packed = gate_weight[row_base + packed_col];
+                    uint up_packed = up_weight[row_base + packed_col];
+                    uint gate_q = (gate_packed >> shift) & (uint)QuantMask;
+                    uint up_q = (up_packed >> shift) & (uint)QuantMask;
+                    float gate_scale = static_cast<float>(gate_scales[scale_idx]);
+                    float gate_bias = static_cast<float>(gate_biases[scale_idx]);
+                    float up_scale = static_cast<float>(up_scales[scale_idx]);
+                    float up_bias = static_cast<float>(up_biases[scale_idx]);
+                    float gate_w = static_cast<float>(gate_q) * gate_scale + gate_bias;
+                    float up_w = static_cast<float>(up_q) * up_scale + up_bias;
+
+                    for (uint ti = 0u; ti < ntok; ++ti) {
+                        float xv = x_tile[ti * K_CHUNK + kk];
+                        gate_acc[r][ti] = fma(xv, gate_w, gate_acc[r][ti]);
+                        up_acc[r][ti] = fma(xv, up_w, up_acc[r][ti]);
+                    }
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        // Reduce BM * ntok accumulators across the threadgroup, write GEGLU.
+        for (uint r = 0u; r < nrows; ++r) {
+            for (uint ti = 0u; ti < ntok; ++ti) {
+                float g_sum = simd_sum(gate_acc[r][ti]);
+                float u_sum = simd_sum(up_acc[r][ti]);
+                uint slot = (r * TOKEN_TILE + ti) * 8u + sg;
+                if (lane == 0u) {
+                    gate_partials[slot] = g_sum;
+                    up_partials[slot] = u_sum;
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0u) {
+            for (uint r = 0u; r < nrows; ++r) {
+                for (uint ti = 0u; ti < ntok; ++ti) {
+                    float g = 0.0f;
+                    float u = 0.0f;
+                    uint base = (r * TOKEN_TILE + ti) * 8u;
+                    for (uint i = 0u; i < 8u; ++i) {
+                        g += gate_partials[base + i];
+                        u += up_partials[base + i];
+                    }
+                    float cubic = g * g * g;
+                    float inner = tanh(0.7978846f * (g + 0.044715f * cubic));
+                    float activated = 0.5f * g * (1.0f + inner);
+                    out[(t0 + ti) * (uint)OutDim + (row0 + r)] =
+                        static_cast<OutT>(activated * u);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 "#;
 
@@ -1163,6 +1305,190 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
         )
         .ok()?;
     outputs.pop()
+}
+
+/// Multi-token Gemma dual gate/up affine Metal + fused GEGLU product.
+///
+/// Profile residual: pure Gemma prefill is dominated by two multi-token qmm
+/// (gate_proj + up_proj) on bits=8. This kernel streams X once, dequants both
+/// weights per tile, reuses dequant across a token tile, and writes
+/// `gelu_approx(gate)*up` without materialising either intermediate.
+fn gemma_dense_ffn_dual_gate_up_geglu_metal(
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> Option<MlxArray> {
+    if !fastpath::gemma_dual_gate_up_metal_enabled() {
+        return None;
+    }
+    if !matches!(
+        x.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let x_shape = x.shape();
+    let input_dim = *x_shape.last()?;
+    if input_dim <= 0 {
+        return None;
+    }
+    let leading_elements = x_shape[..x_shape.len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    // Multi-token only; decode keeps MLX / existing paths.
+    if leading_elements <= 1 {
+        return None;
+    }
+    // Cap Leading for dispatch cost / register tile loops (chunk is 512).
+    if leading_elements > 2048 {
+        return None;
+    }
+    let leading = i32::try_from(leading_elements).ok()?;
+
+    let (Some(gate_scales), Some(gate_biases), Some(up_scales), Some(up_biases)) = (
+        gate.scales.as_ref(),
+        gate.biases.as_ref(),
+        up.scales.as_ref(),
+        up.biases.as_ref(),
+    ) else {
+        return None;
+    };
+    if gate.bits != up.bits || gate.group_size != up.group_size {
+        return None;
+    }
+    // Flip package: bits=8 gs64; also allow bits=4 for ffn4 packages.
+    if !(gate.bits == 4 || gate.bits == 8) || gate.group_size != 64 {
+        return None;
+    }
+
+    let gate_weight_shape = gate.weight.shape();
+    let up_weight_shape = up.weight.shape();
+    if gate_weight_shape.len() != 2 || gate_weight_shape != up_weight_shape {
+        return None;
+    }
+    let out_dim = gate_weight_shape[0];
+    let packed_cols = gate_weight_shape[1];
+    if out_dim <= 0 || packed_cols <= 0 {
+        return None;
+    }
+    let pack_factor = 32 / gate.bits;
+    if packed_cols.checked_mul(pack_factor)? != input_dim {
+        return None;
+    }
+    if input_dim % gate.group_size != 0 {
+        return None;
+    }
+    let group_count = input_dim / gate.group_size;
+    let expected_sidecar = vec![out_dim, group_count];
+    if gate_scales.shape() != expected_sidecar
+        || gate_biases.shape() != expected_sidecar
+        || up_scales.shape() != expected_sidecar
+        || up_biases.shape() != expected_sidecar
+    {
+        return None;
+    }
+
+    // Flatten leading dims so the kernel sees [Leading, InputDim].
+    let x_flat = if x_shape.len() == 2 && x_shape[0] == leading {
+        x.clone()
+    } else {
+        reshape(x, &[leading, input_dim], None)
+    };
+    let out_flat_shape = vec![leading, out_dim];
+    let quant_mask = (1_i32 << gate.bits) - 1;
+    let kernel = GEMMA_DUAL_GATE_UP_GEGLU_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_gemma_dense_ffn_dual_gate_up_geglu_v2",
+            &[
+                "x",
+                "gate_weight",
+                "gate_scales",
+                "gate_biases",
+                "up_weight",
+                "up_scales",
+                "up_biases",
+            ],
+            &["out"],
+            GEMMA_DUAL_GATE_UP_GEGLU_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    // BM=4 output rows per threadgroup (see kernel); matches pure prefill residual
+    // where v1's per-row X re-read from global dominated traffic.
+    const BM: i32 = 4;
+    let num_row_blocks = (out_dim + BM - 1) / BM;
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[
+                &x_flat,
+                &gate.weight,
+                gate_scales,
+                gate_biases,
+                &up.weight,
+                up_scales,
+                up_biases,
+            ],
+            &[KernelOutputSpec {
+                shape: out_flat_shape,
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "Leading",
+                    value: leading,
+                },
+                KernelTemplateArg::Int {
+                    name: "OutDim",
+                    value: out_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackedCols",
+                    value: packed_cols,
+                },
+                KernelTemplateArg::Int {
+                    name: "InputDim",
+                    value: input_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupSize",
+                    value: gate.group_size,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupCount",
+                    value: group_count,
+                },
+                KernelTemplateArg::Int {
+                    name: "Bits",
+                    value: gate.bits,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackFactor",
+                    value: pack_factor,
+                },
+                KernelTemplateArg::Int {
+                    name: "QuantMask",
+                    value: quant_mask,
+                },
+            ],
+            (num_row_blocks.saturating_mul(256), 1, 1),
+            (256, 1, 1),
+            None,
+        )
+        .ok()?;
+    let flat_out = outputs.pop()?;
+    // Restore original leading shape if needed: [...leading_dims, out_dim].
+    if x_shape.len() == 2 && x_shape[0] == leading {
+        Some(flat_out)
+    } else {
+        let mut restored = x_shape;
+        *restored.last_mut()? = out_dim;
+        Some(reshape(&flat_out, &restored, None))
+    }
 }
 
 /// Decode-only affine-4bit matvec for FFN down_proj (intermediate → hidden).
@@ -1931,6 +2257,80 @@ fn ffn_swiglu_with_policy(
     } else {
         let gate_w = w.gate_proj.as_ref().unwrap();
         let up_w = w.up_proj.as_ref().unwrap();
+        // Multi-token Gemma dual gate/up Metal + fused GEGLU (opt-in only:
+        // pure-wall A/B on mbp-m5 measured ~8.5× regression vs MLX dual qmm).
+        if cfg.uses_geglu
+            && seq > 1
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && let Some(ffn_hidden) = gemma_dense_ffn_dual_gate_up_geglu_metal(x, gate_w, up_w)
+        {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                gate_up_started,
+                &[&ffn_hidden],
+            );
+            let activation_started = Instant::now();
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnActivation,
+                activation_started,
+                &[&ffn_hidden],
+            );
+            let down_started = Instant::now();
+            let down = w
+                .down_proj
+                .as_ref()
+                .expect("dense FFN layer must have down_proj");
+            if let Some(norm_w) = post_norm {
+                if projection_policy == ProjectionBatchPolicy::Shared
+                    && fastpath::dense_qmatmul_rms_norm_enabled()
+                    && let Some(scales) = down.scales.as_ref()
+                {
+                    let out = quantized_matmul_rms_norm(
+                        &ffn_hidden,
+                        &down.weight,
+                        scales,
+                        down.biases.as_ref(),
+                        down.group_size,
+                        down.bits,
+                        norm_w,
+                        cfg.rms_norm_eps,
+                        None,
+                    );
+                    forward_profile_eval_elapsed(
+                        profile_decode,
+                        profile_prefill,
+                        DecodeProfileStage::PostAttnFfnDown,
+                        down_started,
+                        &[&out],
+                    );
+                    return out;
+                }
+                let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnDown,
+                    down_started,
+                    &[&out],
+                );
+                return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
+            }
+            let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                down_started,
+                &[&out],
+            );
+            return out;
+        }
         // Prefer the fused gate/up+SwiGLU Metal matvec kernel on Qwen decode
         // *before* the host-side split-FFN compile path. Compile used to win
         // first and permanently shadow the kernel, costing ~3–4% pure decode
@@ -2056,10 +2456,82 @@ fn ffn_swiglu_with_policy(
                 return result;
             }
         }
+        // mlxcel residual: `compiled_gelu_approx_mlp_forward` for split affine
+        // qGELU MLP. gs64/bits=4 + single-token: shapeless compile (#680).
+        // Multi-token non-4bit (flip Gemma MLP bits=8): shape-specific compile
+        // (#705 prefill recovery) so prefill qmm is not forced onto decode
+        // kernels. Kill-switches: AX_MLX_COMPILED_QGELU_MLP /
+        // AX_MLX_COMPILED_QGELU_PREFILL_SHAPED.
+        if cfg.uses_geglu
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && let Some(down_w) = w.down_proj.as_ref()
+            && let (Some(g_s), Some(u_s), Some(d_s)) =
+                (gate_w.scales.as_ref(), up_w.scales.as_ref(), down_w.scales.as_ref())
+            && let (Some(g_b), Some(u_b), Some(d_b)) =
+                (gate_w.biases.as_ref(), up_w.biases.as_ref(), down_w.biases.as_ref())
+            && gate_w.group_size > 0
+            && gate_w.bits > 0
+            && up_w.group_size == gate_w.group_size
+            && up_w.bits == gate_w.bits
+            && down_w.group_size == gate_w.group_size
+            && down_w.bits == gate_w.bits
+            && let Some(ffn_out) = compiled_gelu_approx_split_mlp(
+                x,
+                &gate_w.weight,
+                g_s,
+                g_b,
+                &up_w.weight,
+                u_s,
+                u_b,
+                &down_w.weight,
+                d_s,
+                d_b,
+                gate_w.group_size,
+                gate_w.bits,
+                None,
+            )
+        {
+            return match post_norm {
+                Some(norm_w) => rms_norm(&ffn_out, Some(norm_w), cfg.rms_norm_eps, None),
+                None => ffn_out,
+            };
+        }
         packed_gate_up = None;
-        let gate = qw_with_policy(x, gate_w, projection_policy);
-        let up = qw_with_policy(x, up_w, projection_policy);
-        (gate, up)
+        // Profile residual (pure Gemma): gate_up dual qmm dominates multi-token
+        // wall. Shape-specific compile of gate+up only (gelu/down stay outside)
+        // — narrower than full-MLP #705 path that regressed pure wall.
+        if cfg.uses_geglu
+            && seq > 1
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && let (Some(g_s), Some(u_s)) = (gate_w.scales.as_ref(), up_w.scales.as_ref())
+            && let (Some(g_b), Some(u_b)) = (gate_w.biases.as_ref(), up_w.biases.as_ref())
+            && gate_w.group_size > 0
+            && gate_w.bits > 0
+            && up_w.group_size == gate_w.group_size
+            && up_w.bits == gate_w.bits
+            && let Some((gate, up)) = compiled_dual_gate_up_qmm(
+                x,
+                &gate_w.weight,
+                g_s,
+                g_b,
+                &up_w.weight,
+                u_s,
+                u_b,
+                gate_w.group_size,
+                gate_w.bits,
+                None,
+            )
+        {
+            (gate, up)
+        } else {
+            let gate = qw_with_policy(x, gate_w, projection_policy);
+            let up = qw_with_policy(x, up_w, projection_policy);
+            (gate, up)
+        }
     };
     if (profile_decode || profile_prefill) && !gate_up_profile_recorded {
         let gate_up_profile_storage;
@@ -2154,11 +2626,30 @@ fn prefer_split_dense_ffn_gate_up(
     leading_elements: i64,
     has_split_gate_up: bool,
 ) -> bool {
+    // Gemma4 long-prefill historically preferred split gate/up (two qmatmuls)
+    // over packed fixed-shape. Kill-switch `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN=0`
+    // forces packed + prefill-compile for pure thr A/B on M5 (S1 residual).
+    let gemma4_split_prefill = model_family == "gemma4"
+        && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
+        && leading_elements >= i64::from(GEMMA4_SPLIT_PREFILL_MIN_SEQ)
+        && gemma4_split_prefill_ffn_enabled();
     has_split_gate_up
-        && ((qwen_dense_ffn && seq == 1 && leading_elements == 1)
-            || (model_family == "gemma4"
-                && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
-                && leading_elements >= i64::from(GEMMA4_SPLIT_PREFILL_MIN_SEQ)))
+        && ((qwen_dense_ffn && seq == 1 && leading_elements == 1) || gemma4_split_prefill)
+}
+
+fn gemma4_split_prefill_ffn_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_MLX_GEMMA4_SPLIT_PREFILL_FFN") {
+            Ok(raw) => {
+                let v = raw.trim();
+                !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
+            }
+            // Default ON: prior 128/512/2048 A/B preferred split gate/up for
+            // Gemma4 publication-shape prefill.
+            Err(_) => true,
+        }
+    })
 }
 
 fn dense_ffn_prefill_compile_supported(model_family: &str) -> bool {
@@ -4294,6 +4785,7 @@ mod tests {
             4,
             true,
         ));
+        // Chunk-512 pure: packed is faster than split (mbp-m5 A/B ~1.03×).
         assert!(!prefer_split_qkv_projection(
             "gemma4",
             false,
