@@ -277,20 +277,15 @@ env_flag_default_on!(
     "AX_MLX_GEMMA4_PER_LAYER_INPUT_GATE_COMPILE"
 );
 
-env_flag_default_on!(
+env_flag!(
     /// `AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK` — after each *intermediate*
     /// prefill chunk is evaluated, call MLX `clear_cache()` (return freelist
     /// to the OS / pool) before building the next chunk's graph.
     ///
-    /// **Default: ON** (kill-switch via
-    /// `AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK=0`).
-    ///
-    /// Residual vs mlxcel `chunked_prefill_last_logits` (generate.rs / issue
-    /// #672): every chunk sees a different key length, so scores/masks/logits
-    /// land in differently-sized allocations; without inter-chunk clear the
-    /// allocator keeps each shape's high-water mark for the whole prompt.
-    /// Final chunk still clears after sampling (existing path). Pure-wall A/B
-    /// on mbp-m5 decides keep vs kill for thr.
+    /// **Default: OFF**. Residual vs mlxcel `chunked_prefill_last_logits`
+    /// (generate.rs / issue #672). On mbp-m5 pure Gemma 13.8k measured
+    /// ~+1.9% cold wall vs final-only clear — thr path keeps final-only.
+    /// Opt-in for peak-memory A/B.
     prefill_clear_cache_per_chunk_enabled,
     "AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK"
 );
