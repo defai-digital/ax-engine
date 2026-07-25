@@ -1,0 +1,233 @@
+{
+  "by_variant": {
+    "base": {
+      "cold": [
+        8399.214833974838,
+        8313.691916991957,
+        8376.41608301783
+      ],
+      "median": 8376.41608301783,
+      "mean": 8363.107611328209
+    },
+    "dual_gate": {
+      "cold": [
+        8463.022499985527,
+        8341.20908298064,
+        8405.623791972175
+      ],
+      "median": 8405.623791972175,
+      "mean": 8403.285124979448
+    },
+    "shaped": {
+      "cold": [
+        8343.822749971878,
+        8339.412708010059,
+        8294.835124979727
+      ],
+      "median": 8339.412708010059,
+      "mean": 8326.023527653888
+    },
+    "both": {
+      "cold": [
+        8264.72262502648,
+        8338.489999994636,
+        8319.29391704034
+      ],
+      "median": 8319.29391704034,
+      "mean": 8307.502180687152
+    }
+  },
+  "base_median": 8376.41608301783,
+  "ratios_vs_base": {
+    "base": 1.0,
+    "dual_gate": 1.0034868980557878,
+    "shaped": 0.995582433508432,
+    "both": 0.993180595924157
+  },
+  "keep_if_ratio_lt": 0.96,
+  "best": "both",
+  "results": [
+    {
+      "name": "base_r1",
+      "cold_ms": 8399.214833974838,
+      "warm_ms": 8478.273957967758,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "0",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "0"
+      }
+    },
+    {
+      "name": "dual_gate_r1",
+      "cold_ms": 8463.022499985527,
+      "warm_ms": 8990.972916944884,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "1",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "0"
+      }
+    },
+    {
+      "name": "shaped_r1",
+      "cold_ms": 8343.822749971878,
+      "warm_ms": 8523.210917017423,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "0",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "1"
+      }
+    },
+    {
+      "name": "both_r1",
+      "cold_ms": 8264.72262502648,
+      "warm_ms": 8323.889083985705,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "1",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "1"
+      }
+    },
+    {
+      "name": "base_r2",
+      "cold_ms": 8313.691916991957,
+      "warm_ms": 8397.732333047315,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "0",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "0"
+      }
+    },
+    {
+      "name": "dual_gate_r2",
+      "cold_ms": 8341.20908298064,
+      "warm_ms": 8349.152375012636,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "1",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "0"
+      }
+    },
+    {
+      "name": "shaped_r2",
+      "cold_ms": 8339.412708010059,
+      "warm_ms": 8368.963708984666,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "0",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "1"
+      }
+    },
+    {
+      "name": "both_r2",
+      "cold_ms": 8338.489999994636,
+      "warm_ms": 8344.581332989037,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "1",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "1"
+      }
+    },
+    {
+      "name": "base_r3",
+      "cold_ms": 8376.41608301783,
+      "warm_ms": 8434.649500006344,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "0",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "0"
+      }
+    },
+    {
+      "name": "dual_gate_r3",
+      "cold_ms": 8405.623791972175,
+      "warm_ms": 8518.944707990158,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "1",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "0"
+      }
+    },
+    {
+      "name": "shaped_r3",
+      "cold_ms": 8294.835124979727,
+      "warm_ms": 8425.461291975807,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "0",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "1"
+      }
+    },
+    {
+      "name": "both_r3",
+      "cold_ms": 8319.29391704034,
+      "warm_ms": 8401.20358299464,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_DUAL_GATE_UP": "1",
+        "AX_MLX_COMPILED_QGELU_PREFILL_SHAPED": "1"
+      }
+    }
+  ],
+  "decision": "keep_base",
+  "residual": "shape-stable dual_gate / #705 under cache_eval chunk=512"
+}

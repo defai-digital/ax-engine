@@ -118,3 +118,8 @@ c384 / c256 vs c512: ratios **1.038 / 1.089**. Keep **512**; no multi-process S1
 ## Compiled GeGLU activation (mlxcel parity, 2026-07-25)
 `AX_MLX_COMPILED_GEGLU_ACTIVATION=1` under cache_eval pure: median **1.018×** vs Metal GEGLU base.
 Imperative nometal **1.060×**. Keep Metal; compiled default OFF. Flip still not_yet.
+
+## Chunk-stable dual_gate / #705 under cache_eval (2026-07-25)
+Hypothesis: fixed chunk-512 shapes improve shape-specific compile reuse.
+Results: dual_gate **1.003×**, shaped **0.996×**, both **0.993×** vs base.
+Best ~0.7% pure — need ≤0.96. Keep both OFF. Flip still not_yet.
