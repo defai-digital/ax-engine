@@ -1,0 +1,40 @@
+[
+  {
+    "name": "metal_off",
+    "cold_ms": 8540.137832984328,
+    "warm_ms": 8452.04508403549,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "metal_on",
+    "cold_ms": 75009.37083299505,
+    "warm_ms": 75452.23566697678,
+    "usage": null
+  },
+  {
+    "name": "metal_off_r2",
+    "cold_ms": 9068.580958992243,
+    "warm_ms": 8426.706624974031,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "metal_on_r2",
+    "cold_ms": 74307.43512499612,
+    "warm_ms": 75389.70445800805,
+    "usage": null
+  }
+]

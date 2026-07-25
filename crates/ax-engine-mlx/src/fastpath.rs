@@ -247,6 +247,23 @@ env_flag_default_on!(
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
 );
 
+env_flag!(
+    /// `AX_MLX_GEMMA_DUAL_GATE_UP_METAL` — multi-token Gemma dense FFN dual
+    /// gate/up affine-quantized Metal kernel with fused GEGLU product.
+    ///
+    /// **Default: OFF** (opt-in via `AX_MLX_GEMMA_DUAL_GATE_UP_METAL=1`).
+    ///
+    /// Profile residual (mbp-m5 pure Gemma 13.8k): gate_up dual qmm dominates.
+    /// `mx::compile` of MLX qmm regressed pure wall; this custom Metal path was
+    /// a residual attempt to stream activation once, dequant gate+up once per
+    /// tile, reuse weight dequant across tokens, and write fused
+    /// `gelu_approx(gate)*up`. Measured pure-wall A/B on mbp-m5 (2026-07-25):
+    /// ON cold mean ~74.7s vs OFF ~8.8s (**~8.5× regression**). Keep opt-in for
+    /// further kernel work; production stays on two MLX qmm + Metal GEGLU.
+    gemma_dual_gate_up_metal_enabled,
+    "AX_MLX_GEMMA_DUAL_GATE_UP_METAL"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_LAYER_SCALAR_FUSED_ADD` — fuse Gemma-family residual add plus
     /// scalar layer-scale multiply into one custom MLX Metal elementwise node.
@@ -1557,6 +1574,23 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_GEMMA_DIRECT_CPP_QK_NORM_ROPE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn gemma_dual_gate_up_metal_uses_opt_in_contract() {
+        // Pure-wall A/B on mbp-m5 measured ~8.5× regression when default-on;
+        // production remains opt-in only.
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_GEMMA_DUAL_GATE_UP_METAL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_GEMMA_DUAL_GATE_UP_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_GEMMA_DUAL_GATE_UP_METAL_ENABLED",
             "1"
         ));
     }

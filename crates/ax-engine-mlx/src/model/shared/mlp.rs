@@ -464,6 +464,7 @@ static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static GEMMA_DUAL_GATE_UP_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN3_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -590,6 +591,113 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
         }
         float activated = g / (1.0f + exp(-g));
         out[row] = static_cast<OutT>(activated * u);
+    }
+"#;
+
+/// Multi-token dual gate/up affine qmm + GEGLU for Gemma pure prefill.
+///
+/// One output row per threadgroup (256 threads). Streams each input tile once
+/// while dequantizing gate+up weights, reuses dequant across a token tile, and
+/// writes fused gelu_approx(gate)*up so neither intermediate is materialised.
+/// Template ints: Leading, OutDim, PackedCols, InputDim, GroupSize, GroupCount,
+/// Bits, PackFactor, QuantMask. OutT is the activation dtype.
+const GEMMA_DUAL_GATE_UP_GEGLU_KERNEL_SOURCE: &str = r#"
+    // grid.x = OutDim * 256, threadgroup = 256
+    uint flat = thread_position_in_grid.x;
+    uint row = flat / 256u;
+    uint tid = flat % 256u;
+    uint lane = tid % 32u;
+    uint sg = tid / 32u; // 0..7
+    if (row >= (uint)OutDim) {
+        return;
+    }
+
+    const uint TOKEN_TILE = 4u;
+    const uint row_base = row * (uint)PackedCols;
+    const uint scale_row = row * (uint)GroupCount;
+    threadgroup float gate_partials[8];
+    threadgroup float up_partials[8];
+
+    for (uint t0 = 0u; t0 < (uint)Leading; t0 += TOKEN_TILE) {
+        uint ntok = min(TOKEN_TILE, (uint)Leading - t0);
+        float gate_acc0 = 0.0f;
+        float gate_acc1 = 0.0f;
+        float gate_acc2 = 0.0f;
+        float gate_acc3 = 0.0f;
+        float up_acc0 = 0.0f;
+        float up_acc1 = 0.0f;
+        float up_acc2 = 0.0f;
+        float up_acc3 = 0.0f;
+
+        for (uint packed_col = tid; packed_col < (uint)PackedCols; packed_col += 256u) {
+            uint gate_packed = gate_weight[row_base + packed_col];
+            uint up_packed = up_weight[row_base + packed_col];
+            for (uint packed_lane = 0u; packed_lane < (uint)PackFactor; ++packed_lane) {
+                uint input_col = packed_col * (uint)PackFactor + packed_lane;
+                uint gate_q = (gate_packed >> (packed_lane * (uint)Bits)) & (uint)QuantMask;
+                uint up_q = (up_packed >> (packed_lane * (uint)Bits)) & (uint)QuantMask;
+                uint group = input_col / (uint)GroupSize;
+                uint scale_idx = scale_row + group;
+                float gate_scale = static_cast<float>(gate_scales[scale_idx]);
+                float gate_bias = static_cast<float>(gate_biases[scale_idx]);
+                float up_scale = static_cast<float>(up_scales[scale_idx]);
+                float up_bias = static_cast<float>(up_biases[scale_idx]);
+                float gate_w = static_cast<float>(gate_q) * gate_scale + gate_bias;
+                float up_w = static_cast<float>(up_q) * up_scale + up_bias;
+
+                if (0u < ntok) {
+                    float xv0 = static_cast<float>(x[(t0 + 0u) * (uint)InputDim + input_col]);
+                    gate_acc0 = fma(xv0, gate_w, gate_acc0);
+                    up_acc0 = fma(xv0, up_w, up_acc0);
+                }
+                if (1u < ntok) {
+                    float xv1 = static_cast<float>(x[(t0 + 1u) * (uint)InputDim + input_col]);
+                    gate_acc1 = fma(xv1, gate_w, gate_acc1);
+                    up_acc1 = fma(xv1, up_w, up_acc1);
+                }
+                if (2u < ntok) {
+                    float xv2 = static_cast<float>(x[(t0 + 2u) * (uint)InputDim + input_col]);
+                    gate_acc2 = fma(xv2, gate_w, gate_acc2);
+                    up_acc2 = fma(xv2, up_w, up_acc2);
+                }
+                if (3u < ntok) {
+                    float xv3 = static_cast<float>(x[(t0 + 3u) * (uint)InputDim + input_col]);
+                    gate_acc3 = fma(xv3, gate_w, gate_acc3);
+                    up_acc3 = fma(xv3, up_w, up_acc3);
+                }
+            }
+        }
+
+        // Per-token simd + threadgroup reduce, then GEGLU write.
+        for (uint ti = 0u; ti < ntok; ++ti) {
+            float g_acc = 0.0f;
+            float u_acc = 0.0f;
+            if (ti == 0u) { g_acc = gate_acc0; u_acc = up_acc0; }
+            else if (ti == 1u) { g_acc = gate_acc1; u_acc = up_acc1; }
+            else if (ti == 2u) { g_acc = gate_acc2; u_acc = up_acc2; }
+            else { g_acc = gate_acc3; u_acc = up_acc3; }
+
+            float g_sum = simd_sum(g_acc);
+            float u_sum = simd_sum(u_acc);
+            if (lane == 0u) {
+                gate_partials[sg] = g_sum;
+                up_partials[sg] = u_sum;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (tid == 0u) {
+                float g = 0.0f;
+                float u = 0.0f;
+                for (uint i = 0u; i < 8u; ++i) {
+                    g += gate_partials[i];
+                    u += up_partials[i];
+                }
+                float cubic = g * g * g;
+                float inner = tanh(0.7978846f * (g + 0.044715f * cubic));
+                float activated = 0.5f * g * (1.0f + inner);
+                out[(t0 + ti) * (uint)OutDim + row] = static_cast<OutT>(activated * u);
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
     }
 "#;
 
@@ -1165,6 +1273,186 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
         )
         .ok()?;
     outputs.pop()
+}
+
+/// Multi-token Gemma dual gate/up affine Metal + fused GEGLU product.
+///
+/// Profile residual: pure Gemma prefill is dominated by two multi-token qmm
+/// (gate_proj + up_proj) on bits=8. This kernel streams X once, dequants both
+/// weights per tile, reuses dequant across a token tile, and writes
+/// `gelu_approx(gate)*up` without materialising either intermediate.
+fn gemma_dense_ffn_dual_gate_up_geglu_metal(
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> Option<MlxArray> {
+    if !fastpath::gemma_dual_gate_up_metal_enabled() {
+        return None;
+    }
+    if !matches!(
+        x.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let x_shape = x.shape();
+    let input_dim = *x_shape.last()?;
+    if input_dim <= 0 {
+        return None;
+    }
+    let leading_elements = x_shape[..x_shape.len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    // Multi-token only; decode keeps MLX / existing paths.
+    if leading_elements <= 1 {
+        return None;
+    }
+    // Cap Leading for dispatch cost / register tile loops (chunk is 512).
+    if leading_elements > 2048 {
+        return None;
+    }
+    let leading = i32::try_from(leading_elements).ok()?;
+
+    let (Some(gate_scales), Some(gate_biases), Some(up_scales), Some(up_biases)) = (
+        gate.scales.as_ref(),
+        gate.biases.as_ref(),
+        up.scales.as_ref(),
+        up.biases.as_ref(),
+    ) else {
+        return None;
+    };
+    if gate.bits != up.bits || gate.group_size != up.group_size {
+        return None;
+    }
+    // Flip package: bits=8 gs64; also allow bits=4 for ffn4 packages.
+    if !(gate.bits == 4 || gate.bits == 8) || gate.group_size != 64 {
+        return None;
+    }
+
+    let gate_weight_shape = gate.weight.shape();
+    let up_weight_shape = up.weight.shape();
+    if gate_weight_shape.len() != 2 || gate_weight_shape != up_weight_shape {
+        return None;
+    }
+    let out_dim = gate_weight_shape[0];
+    let packed_cols = gate_weight_shape[1];
+    if out_dim <= 0 || packed_cols <= 0 {
+        return None;
+    }
+    let pack_factor = 32 / gate.bits;
+    if packed_cols.checked_mul(pack_factor)? != input_dim {
+        return None;
+    }
+    if input_dim % gate.group_size != 0 {
+        return None;
+    }
+    let group_count = input_dim / gate.group_size;
+    let expected_sidecar = vec![out_dim, group_count];
+    if gate_scales.shape() != expected_sidecar
+        || gate_biases.shape() != expected_sidecar
+        || up_scales.shape() != expected_sidecar
+        || up_biases.shape() != expected_sidecar
+    {
+        return None;
+    }
+
+    // Flatten leading dims so the kernel sees [Leading, InputDim].
+    let x_flat = if x_shape.len() == 2 && x_shape[0] == leading {
+        x.clone()
+    } else {
+        reshape(x, &[leading, input_dim], None)
+    };
+    let out_flat_shape = vec![leading, out_dim];
+    let quant_mask = (1_i32 << gate.bits) - 1;
+    let kernel = GEMMA_DUAL_GATE_UP_GEGLU_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_gemma_dense_ffn_dual_gate_up_geglu_v1",
+            &[
+                "x",
+                "gate_weight",
+                "gate_scales",
+                "gate_biases",
+                "up_weight",
+                "up_scales",
+                "up_biases",
+            ],
+            &["out"],
+            GEMMA_DUAL_GATE_UP_GEGLU_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[
+                &x_flat,
+                &gate.weight,
+                gate_scales,
+                gate_biases,
+                &up.weight,
+                up_scales,
+                up_biases,
+            ],
+            &[KernelOutputSpec {
+                shape: out_flat_shape,
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "Leading",
+                    value: leading,
+                },
+                KernelTemplateArg::Int {
+                    name: "OutDim",
+                    value: out_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackedCols",
+                    value: packed_cols,
+                },
+                KernelTemplateArg::Int {
+                    name: "InputDim",
+                    value: input_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupSize",
+                    value: gate.group_size,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupCount",
+                    value: group_count,
+                },
+                KernelTemplateArg::Int {
+                    name: "Bits",
+                    value: gate.bits,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackFactor",
+                    value: pack_factor,
+                },
+                KernelTemplateArg::Int {
+                    name: "QuantMask",
+                    value: quant_mask,
+                },
+            ],
+            (out_dim.saturating_mul(256), 1, 1),
+            (256, 1, 1),
+            None,
+        )
+        .ok()?;
+    let flat_out = outputs.pop()?;
+    // Restore original leading shape if needed: [...leading_dims, out_dim].
+    if x_shape.len() == 2 && x_shape[0] == leading {
+        Some(flat_out)
+    } else {
+        let mut restored = x_shape;
+        *restored.last_mut()? = out_dim;
+        Some(reshape(&flat_out, &restored, None))
+    }
 }
 
 /// Decode-only affine-4bit matvec for FFN down_proj (intermediate → hidden).
@@ -1933,6 +2221,80 @@ fn ffn_swiglu_with_policy(
     } else {
         let gate_w = w.gate_proj.as_ref().unwrap();
         let up_w = w.up_proj.as_ref().unwrap();
+        // Multi-token Gemma dual gate/up Metal + fused GEGLU (opt-in only:
+        // pure-wall A/B on mbp-m5 measured ~8.5× regression vs MLX dual qmm).
+        if cfg.uses_geglu
+            && seq > 1
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && let Some(ffn_hidden) = gemma_dense_ffn_dual_gate_up_geglu_metal(x, gate_w, up_w)
+        {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                gate_up_started,
+                &[&ffn_hidden],
+            );
+            let activation_started = Instant::now();
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnActivation,
+                activation_started,
+                &[&ffn_hidden],
+            );
+            let down_started = Instant::now();
+            let down = w
+                .down_proj
+                .as_ref()
+                .expect("dense FFN layer must have down_proj");
+            if let Some(norm_w) = post_norm {
+                if projection_policy == ProjectionBatchPolicy::Shared
+                    && fastpath::dense_qmatmul_rms_norm_enabled()
+                    && let Some(scales) = down.scales.as_ref()
+                {
+                    let out = quantized_matmul_rms_norm(
+                        &ffn_hidden,
+                        &down.weight,
+                        scales,
+                        down.biases.as_ref(),
+                        down.group_size,
+                        down.bits,
+                        norm_w,
+                        cfg.rms_norm_eps,
+                        None,
+                    );
+                    forward_profile_eval_elapsed(
+                        profile_decode,
+                        profile_prefill,
+                        DecodeProfileStage::PostAttnFfnDown,
+                        down_started,
+                        &[&out],
+                    );
+                    return out;
+                }
+                let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnDown,
+                    down_started,
+                    &[&out],
+                );
+                return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
+            }
+            let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                down_started,
+                &[&out],
+            );
+            return out;
+        }
         // Prefer the fused gate/up+SwiGLU Metal matvec kernel on Qwen decode
         // *before* the host-side split-FFN compile path. Compile used to win
         // first and permanently shadow the kernel, costing ~3–4% pure decode
