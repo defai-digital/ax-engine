@@ -1,0 +1,106 @@
+[
+  {
+    "name": "scalar_off_r1",
+    "cold_ms": 8494.473541039042,
+    "warm_ms": 8310.696042026393,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "scalar_on_r1",
+    "cold_ms": 9220.004292030353,
+    "warm_ms": 9267.200250003953,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "scalar_off_r2",
+    "cold_ms": 9254.688542045187,
+    "warm_ms": 8808.646416000556,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "scalar_on_r2",
+    "cold_ms": 8774.285624967888,
+    "warm_ms": 8742.584708030336,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "qmm_rms_on_r1",
+    "cold_ms": 8377.070042013656,
+    "warm_ms": 8681.032875028905,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "qmm_rms_off_r1",
+    "cold_ms": 9511.641375022009,
+    "warm_ms": 8964.465500030201,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "qmm_rms_on_r2",
+    "cold_ms": 8618.25795803452,
+    "warm_ms": 8959.474957955536,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "qmm_rms_off_r2",
+    "cold_ms": 8577.600874996278,
+    "warm_ms": 8944.246458995622,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  }
+]

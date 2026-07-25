@@ -431,12 +431,13 @@ env_flag!(
 
 env_flag!(
     /// `AX_MLX_DENSE_QMATMUL_RMS_NORM` — fuse the dense FFN down-projection
-    /// and post-FFN RMSNorm into one C++ call.
+    /// and post-FFN RMSNorm into one C++ call (mlxcel post_feedforward_ln sits
+    /// on FFN out before residual add; AX fuses down qmm + that rms).
     ///
-    /// **Default: OFF**. A/B on Gemma 4 31B showed ~0.45% regression. The
-    /// C++ wrapper overhead (10 parameters, optional biases conversion) exceeds
-    /// the savings from one fewer Rust→C FFI crossing. MLX graph node count is
-    /// unchanged either way. Left as opt-in for future re-evaluation.
+    /// **Default: OFF**. First pure A/B on mbp-m5 looked ~6% faster but a
+    /// 3-rep confirm (2026-07-25 pure-qmm-rms-confirm) was median ~1.00×
+    /// (thermal noise). Prior Gemma 4 31B decode A/B also ~0.45% slower.
+    /// Opt-in only until a cool multi-rep pure win holds.
     dense_qmatmul_rms_norm_enabled,
     "AX_MLX_DENSE_QMATMUL_RMS_NORM"
 );

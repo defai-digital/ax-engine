@@ -1,0 +1,24 @@
+{
+  "scalar_off": [
+    8494.473541039042,
+    9254.688542045187
+  ],
+  "scalar_on": [
+    9220.004292030353,
+    8774.285624967888
+  ],
+  "scalar_ratio_on_over_off": 1.0138106707666854,
+  "qmm_rms_on": [
+    8377.070042013656,
+    8618.25795803452
+  ],
+  "qmm_rms_off": [
+    9511.641375022009,
+    8577.600874996278
+  ],
+  "qmm_rms_ratio_on_over_off": 0.9395268063277219,
+  "keep_scalar_mt_if_lt": 0.925,
+  "keep_qmm_rms_if_lt": 0.925,
+  "scalar_decision": "no_win",
+  "qmm_rms_decision": "default_on_small"
+}
