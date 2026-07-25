@@ -107,3 +107,10 @@ Default remains off. No cool S1 remeasure; thr headroom still short of 1.15×.
 ## Multi-process + cache_eval + DENSE_FFN_COMPILE=1 (2026-07-25)
 Cool S1 thr **1.103×**, gap ratio **1.119**, TTFT **0.904**.
 Worse thr than cache_eval-only **1.109×**. Reject — keep DENSE_FFN_COMPILE=0 on multi-process target.
+
+## M5 AUTO_BUFFER_CAPS kill (2026-07-25)
+`AX_MLX_AUTO_BUFFER_CAPS=0` (mlxcel M5 leave-default) under cache_eval pure: median ratio **0.989**.
+Insufficient for thr 1.15 physics (need ≤0.96). Keep auto-raise ON.
+
+## Smaller prefill chunk under cache_eval pure (2026-07-25)
+c384 / c256 vs c512: ratios **1.038 / 1.089**. Keep **512**; no multi-process S1.

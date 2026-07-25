@@ -1,0 +1,149 @@
+{
+  "by_variant": {
+    "c512": {
+      "cold": [
+        8449.412666959688,
+        12090.466541994829,
+        12675.07412499981
+      ],
+      "median": 12090.466541994829,
+      "mean": 11071.65111131811
+    },
+    "c256": {
+      "cold": [
+        9276.286290958524,
+        13529.01329199085,
+        13171.17791599594
+      ],
+      "median": 13171.17791599594,
+      "mean": 11992.159166315105
+    },
+    "c384": {
+      "cold": [
+        8873.920375015587,
+        13137.165332969744,
+        12553.060292033479
+      ],
+      "median": 12553.060292033479,
+      "mean": 11521.38200000627
+    }
+  },
+  "base_median_c512": 12090.466541994829,
+  "ratios_vs_c512": {
+    "c512": 1.0,
+    "c256": 1.0893854153805718,
+    "c384": 1.038261033884167
+  },
+  "results": [
+    {
+      "name": "c512_r1",
+      "cold_ms": 8449.412666959688,
+      "warm_ms": 8476.747417007573,
+      "chunk": 512,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      }
+    },
+    {
+      "name": "c256_r1",
+      "cold_ms": 9276.286290958524,
+      "warm_ms": 9918.519375030883,
+      "chunk": 256,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      }
+    },
+    {
+      "name": "c384_r1",
+      "cold_ms": 8873.920375015587,
+      "warm_ms": 8859.696583007462,
+      "chunk": 384,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      }
+    },
+    {
+      "name": "c512_r2",
+      "cold_ms": 12090.466541994829,
+      "warm_ms": 12488.222957996186,
+      "chunk": 512,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      }
+    },
+    {
+      "name": "c256_r2",
+      "cold_ms": 13529.01329199085,
+      "warm_ms": 13012.710042006802,
+      "chunk": 256,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      }
+    },
+    {
+      "name": "c384_r2",
+      "cold_ms": 13137.165332969744,
+      "warm_ms": 12398.620833992027,
+      "chunk": 384,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      }
+    },
+    {
+      "name": "c512_r3",
+      "cold_ms": 12675.07412499981,
+      "warm_ms": 12003.158166015055,
+      "chunk": 512,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      }
+    },
+    {
+      "name": "c256_r3",
+      "cold_ms": 13171.17791599594,
+      "warm_ms": 12585.127915954217,
+      "chunk": 256,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      }
+    },
+    {
+      "name": "c384_r3",
+      "cold_ms": 12553.060292033479,
+      "warm_ms": 12050.938208005391,
+      "chunk": 384,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      }
+    }
+  ],
+  "decision": "keep_512",
+  "note": "smaller chunks only useful for multi-process if pure tax << concurrent tax win"
+}

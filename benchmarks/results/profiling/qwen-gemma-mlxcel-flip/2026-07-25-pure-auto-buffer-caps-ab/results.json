@@ -1,0 +1,123 @@
+{
+  "by_variant": {
+    "base": {
+      "cold": [
+        8393.323833995964,
+        8401.418374967761,
+        10457.21533295
+      ],
+      "median": 8401.418374967761,
+      "mean": 9083.985847304575
+    },
+    "mlx_default": {
+      "cold": [
+        8305.113375012297,
+        8122.835124959238,
+        10266.62337500602
+      ],
+      "median": 8305.113375012297,
+      "mean": 8898.190624992518
+    }
+  },
+  "base_median": 8401.418374967761,
+  "ratios_vs_base": {
+    "base": 1.0,
+    "mlx_default": 0.9885370546189668
+  },
+  "keep_if_ratio_lt": 0.96,
+  "best": "mlx_default",
+  "results": [
+    {
+      "name": "base_r1",
+      "cold_ms": 8393.323833995964,
+      "warm_ms": 8470.547374978196,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_AUTO_BUFFER_CAPS": "1"
+      },
+      "log_saw_auto_raise": false
+    },
+    {
+      "name": "mlx_default_r1",
+      "cold_ms": 8305.113375012297,
+      "warm_ms": 8976.44679195946,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_AUTO_BUFFER_CAPS": "0"
+      },
+      "log_saw_auto_raise": false
+    },
+    {
+      "name": "base_r2",
+      "cold_ms": 8401.418374967761,
+      "warm_ms": 8519.632124982309,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_AUTO_BUFFER_CAPS": "1"
+      },
+      "log_saw_auto_raise": false
+    },
+    {
+      "name": "mlx_default_r2",
+      "cold_ms": 8122.835124959238,
+      "warm_ms": 8678.139625000767,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_AUTO_BUFFER_CAPS": "0"
+      },
+      "log_saw_auto_raise": false
+    },
+    {
+      "name": "base_r3",
+      "cold_ms": 10457.21533295,
+      "warm_ms": 9918.32075000275,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_AUTO_BUFFER_CAPS": "1"
+      },
+      "log_saw_auto_raise": false
+    },
+    {
+      "name": "mlx_default_r3",
+      "cold_ms": 10266.62337500602,
+      "warm_ms": 9695.891249983106,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_AUTO_BUFFER_CAPS": "0"
+      },
+      "log_saw_auto_raise": false
+    }
+  ],
+  "decision": "keep_base",
+  "residual": "mlxcel M5 leaves MLX buffer defaults; AX auto-raises 1024/1000"
+}
