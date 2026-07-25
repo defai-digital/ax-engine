@@ -1,12 +1,11 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
-    MlxVectorArray, add, argpartition_axis, argsort_axis, async_eval, astype,
+    MlxVectorArray, add, argpartition_axis, argsort_axis, astype, async_eval,
     compiled_dual_gate_up_qmm, compiled_gelu_approx_split_mlp, divide, dual_affine_qmm,
     dual_qmm_geglu, expand_dims, expand_dims_axes, gelu_approx_mul,
-    gelu_approx_mul_quantized_matmul, maximum, multiply,
-    quantized_matmul_rms_norm, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul,
-    slice_last_dim, softmax, softmax_precise, sum_axis, take, take_along_axis, topk_axis,
-    zeros,
+    gelu_approx_mul_quantized_matmul, maximum, multiply, quantized_matmul_rms_norm, reshape,
+    rms_norm, rms_norm_quantized_matmul, silu_mul, slice_last_dim, softmax, softmax_precise,
+    sum_axis, take, take_along_axis, topk_axis, zeros,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -83,7 +82,15 @@ pub(crate) fn qkv_project(
     x: &MlxArray,
     head_dim: usize,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
-    qkv_project_inner(cfg, w, x, head_dim, false, ProjectionBatchPolicy::Shared, None)
+    qkv_project_inner(
+        cfg,
+        w,
+        x,
+        head_dim,
+        false,
+        ProjectionBatchPolicy::Shared,
+        None,
+    )
 }
 
 /// Like [`qkv_project`], but when `input_norm` is provided and

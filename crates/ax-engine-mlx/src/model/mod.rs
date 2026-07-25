@@ -1,5 +1,5 @@
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, async_eval, astype, broadcast_to,
+    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, async_eval, broadcast_to,
     concatenate, dequantize_with_mode, divide, multiply, power, reshape, rms_norm, rope_dynamic,
     slice, split, stack, sum_axis, take, take_along_axis, transpose,
 };

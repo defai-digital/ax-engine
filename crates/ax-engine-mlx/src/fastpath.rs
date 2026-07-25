@@ -1848,14 +1848,8 @@ mod tests {
     #[test]
     fn attn_norm_qkv_fuse_uses_opt_in_contract() {
         assert!(!parse_bool_env("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_UNSET"));
-        assert!(!probe(
-            "AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_DISABLED",
-            "0"
-        ));
-        assert!(probe(
-            "AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_ENABLED",
-            "1"
-        ));
+        assert!(!probe("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_DISABLED", "0"));
+        assert!(probe("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_ENABLED", "1"));
     }
 
     #[test]
@@ -1867,10 +1861,7 @@ mod tests {
             "AX_FASTPATH_TEST_NATIVE_OFFSET_CAUSAL_DISABLED",
             "0"
         ));
-        assert!(probe(
-            "AX_FASTPATH_TEST_NATIVE_OFFSET_CAUSAL_ENABLED",
-            "1"
-        ));
+        assert!(probe("AX_FASTPATH_TEST_NATIVE_OFFSET_CAUSAL_ENABLED", "1"));
     }
 
     #[test]
@@ -1889,10 +1880,7 @@ mod tests {
             "AX_FASTPATH_TEST_CACHE_ONLY_CHUNK_EVAL_DISABLED",
             "0"
         ));
-        assert!(probe(
-            "AX_FASTPATH_TEST_CACHE_ONLY_CHUNK_EVAL_ENABLED",
-            "1"
-        ));
+        assert!(probe("AX_FASTPATH_TEST_CACHE_ONLY_CHUNK_EVAL_ENABLED", "1"));
     }
 
     #[test]

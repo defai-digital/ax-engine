@@ -55,11 +55,10 @@ use super::super::profile::{
 use super::super::shared::{
     KVConcatBuffer, add_then_multiply_scalar, attention_mask_array,
     attention_output_projection_batched, attention_output_projection_with_post_norm,
-    bidirectional_attention,
-    direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, ffn_swiglu_batched,
-    flatten_attention_output_bhsd, flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs,
-    full_precision_attention, linear_attention_forward_batched, moe_experts_forward,
-    moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
+    bidirectional_attention, direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu,
+    ffn_swiglu_batched, flatten_attention_output_bhsd, flatten_compiled_moe_inputs,
+    flatten_gemma4_dual_path_inputs, full_precision_attention, linear_attention_forward_batched,
+    moe_experts_forward, moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
     moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
     qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project,
@@ -723,18 +722,12 @@ fn layer_forward_internal(
 
     // 1. Attention norm (may be fused into packed QKV below when
     // AX_MLX_ATTN_NORM_QKV_FUSE=1).
-    let fuse_attn_norm_qkv = fastpath::attn_norm_qkv_fuse_enabled()
-        && w.qkv_packed.is_some()
-        && kv_source.is_none();
+    let fuse_attn_norm_qkv =
+        fastpath::attn_norm_qkv_fuse_enabled() && w.qkv_packed.is_some() && kv_source.is_none();
     let normed = if fuse_attn_norm_qkv {
         None
     } else {
-        Some(rms_norm(
-            hidden,
-            Some(&w.attn_norm),
-            cfg.rms_norm_eps,
-            None,
-        ))
+        Some(rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None))
     };
 
     let ring_layout = cache.sliding_ring_layout(sliding_window, seq);

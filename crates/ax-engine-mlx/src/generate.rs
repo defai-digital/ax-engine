@@ -298,9 +298,7 @@ pub fn chunked_prefill_with_sampling_buffers(
             // Opt-in `AX_MLX_CACHE_ONLY_CHUNK_EVAL=1` (mlxcel #672 residual):
             // eval after every cache-only chunk so pure long prefill (~27
             // chunks at 13.8k) does not span one giant lazy graph.
-            if end == cache_only_prefix_len
-                || crate::fastpath::cache_only_chunk_eval_enabled()
-            {
+            if end == cache_only_prefix_len || crate::fastpath::cache_only_chunk_eval_enabled() {
                 eval_kv_refs(cache);
             }
             offset = end;
@@ -787,9 +785,7 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             cache.advance(chunk.len());
             // See chunked_prefill_with_sampling_buffers: default last-chunk-only
             // eval; opt-in every-chunk eval via AX_MLX_CACHE_ONLY_CHUNK_EVAL.
-            if end == cache_only_prefix_len
-                || crate::fastpath::cache_only_chunk_eval_enabled()
-            {
+            if end == cache_only_prefix_len || crate::fastpath::cache_only_chunk_eval_enabled() {
                 eval_kv_refs(cache);
             }
             offset = end;
