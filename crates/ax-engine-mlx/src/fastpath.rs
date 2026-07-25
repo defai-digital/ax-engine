@@ -489,6 +489,24 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_CACHE_ONLY_CHUNK_EVAL` — materialise KV after **every** cache-only
+    /// prefill chunk (not only the last). Pure greedy long prompts use the
+    /// mlx-lm-style cache-only prefix (n−1 tokens) with deferred eval; for
+    /// pure Gemma 13.8k that is ~27 lazy chunks in one graph.
+    ///
+    /// mlxcel residual (`generate.rs` `chunked_prefill_last_logits` ~293–323,
+    /// issue #672): force `eval` between prefill chunks so the lazy graph and
+    /// freelist never span the whole prompt. AX already does this on the
+    /// non-cache-only loop (`eval_with_kv_refs` per chunk) but not on the
+    /// cache-only pure path.
+    ///
+    /// **Default: OFF** (opt-in pure A/B). Short prompts (≤2–3 chunks) keep
+    /// deferred final-barrier behaviour unless the flag is set.
+    cache_only_chunk_eval_enabled,
+    "AX_MLX_CACHE_ONLY_CHUNK_EVAL"
+);
+
+env_flag!(
     /// `AX_MLX_NATIVE_OFFSET_CAUSAL` — for full-attention multi-token prefill
     /// with KV cache offset (`key_len > seq`), skip materializing an
     /// O(seq×key_len) bool causal array and use MLX `mask="causal"` instead.
@@ -1728,6 +1746,21 @@ mod tests {
         assert!(!parse_bool_env("AX_FASTPATH_TEST_DUAL_QMM_GEGLU_UNSET"));
         assert!(!probe("AX_FASTPATH_TEST_DUAL_QMM_GEGLU_DISABLED", "0"));
         assert!(probe("AX_FASTPATH_TEST_DUAL_QMM_GEGLU_ENABLED", "1"));
+    }
+
+    #[test]
+    fn cache_only_chunk_eval_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_CACHE_ONLY_CHUNK_EVAL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_CACHE_ONLY_CHUNK_EVAL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_CACHE_ONLY_CHUNK_EVAL_ENABLED",
+            "1"
+        ));
     }
 
     #[test]

@@ -288,12 +288,19 @@ pub fn chunked_prefill_with_sampling_buffers(
             // Cache-only: skip lm_head projection (hidden×vocab_size).
             let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
             cache.advance(chunk.len());
-            // Materialise KV only after the *last* cache-only chunk. Intermediate
-            // barriers force a full layer-stack eval for every sub-chunk (Qwen
-            // linear-attention clamps to 1024, so p=2048 paid two full barriers).
-            // Lazy slice_update chains stay short for ≤2–3 chunks and the final
-            // barrier still matches mlx_lm's post-prefix eval before decode.
-            if end == cache_only_prefix_len {
+            // Default: materialise KV only after the *last* cache-only chunk.
+            // Intermediate barriers force a full layer-stack eval for every
+            // sub-chunk (Qwen linear-attention clamps to 1024, so p=2048 paid
+            // two full barriers). Lazy slice_update chains stay short for
+            // ≤2–3 chunks and the final barrier still matches mlx_lm's
+            // post-prefix eval before decode.
+            //
+            // Opt-in `AX_MLX_CACHE_ONLY_CHUNK_EVAL=1` (mlxcel #672 residual):
+            // eval after every cache-only chunk so pure long prefill (~27
+            // chunks at 13.8k) does not span one giant lazy graph.
+            if end == cache_only_prefix_len
+                || crate::fastpath::cache_only_chunk_eval_enabled()
+            {
                 eval_kv_refs(cache);
             }
             offset = end;
@@ -778,7 +785,11 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             // Cache-only: skip lm_head projection (hidden×vocab_size).
             let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
             cache.advance(chunk.len());
-            if end == cache_only_prefix_len {
+            // See chunked_prefill_with_sampling_buffers: default last-chunk-only
+            // eval; opt-in every-chunk eval via AX_MLX_CACHE_ONLY_CHUNK_EVAL.
+            if end == cache_only_prefix_len
+                || crate::fastpath::cache_only_chunk_eval_enabled()
+            {
                 eval_kv_refs(cache);
             }
             offset = end;
