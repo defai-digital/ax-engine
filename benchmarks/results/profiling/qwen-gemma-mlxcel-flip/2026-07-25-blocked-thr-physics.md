@@ -100,6 +100,7 @@ MLX qmm was not achieved.
 | #672 eval+clear | 0.959 | reject default OFF |
 | long chunk 768/1024 | 0.987/0.981 | keep 512 |
 | chunk 384/256 under cache_eval | 1.038/1.089 | keep 512 |
+| chunk 768/1024 under cache_eval | 1.015/1.347 | keep 512 |
 | `AUTO_BUFFER_CAPS=0` (mlxcel M5 leave-default) | 0.989 | keep auto-raise |
 | pipeline granularity block/layer | 1.04–1.07 | reject OFF |
 | compose norot / qmmrms | 1.18 / 1.026 | keep_base |
@@ -120,6 +121,7 @@ levers.
 | + full #672 eval+clear | 1.105 | 1.096 | 0.903 | no better thr |
 | + chunk 1024 | 1.077 | 1.369 | 0.925 | regress |
 | + DENSE_FFN_COMPILE=1 | 1.103 | 1.119 | 0.904 | regress thr |
+| + Qwen-only DENSE_FFN_COMPILE=1 | **1.110** | 1.111 | **0.897** | wash vs 1.109 |
 
 Topology recovers gap abs ≤50 ms while lifting thr vs exclusive, but **not** to
 1.15× thr **and** 0.90 gap ratio simultaneously.

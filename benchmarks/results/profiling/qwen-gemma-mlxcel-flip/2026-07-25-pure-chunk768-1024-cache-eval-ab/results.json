@@ -1,0 +1,186 @@
+{
+  "cold": {
+    "c512": [
+      8209.165874985047,
+      8315.051375015173,
+      11000.482416013256
+    ],
+    "c768": [
+      8438.326500006951,
+      8350.349416024983,
+      10997.255457972642
+    ],
+    "c1024": [
+      8778.002917009871,
+      11367.545625020284,
+      11201.874916965608
+    ]
+  },
+  "warm": {
+    "c512": [
+      8280.99870798178,
+      8367.973958025686,
+      10388.811959011946
+    ],
+    "c768": [
+      8858.963541977573,
+      8450.474874989595,
+      10363.716041028965
+    ],
+    "c1024": [
+      9195.594125019852,
+      10768.503750034142,
+      10388.414792018011
+    ]
+  },
+  "medians_cold": {
+    "c512": 8315.051375015173,
+    "c768": 8438.326500006951,
+    "c1024": 11201.874916965608
+  },
+  "ratios_vs_c512": {
+    "c512": 1.0,
+    "c768": 1.0148255397870651,
+    "c1024": 1.3471804817255464
+  },
+  "keep_if_ratio_lt": 0.96,
+  "decision": "reject_keep_c512",
+  "residual": "cache_eval barrier count scales with chunk count (#672)",
+  "results": [
+    {
+      "name": "c512_r1",
+      "chunk": 512,
+      "cold_ms": 8209.165874985047,
+      "warm_ms": 8280.99870798178,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "c768_r1",
+      "chunk": 768,
+      "cold_ms": 8438.326500006951,
+      "warm_ms": 8858.963541977573,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "c1024_r1",
+      "chunk": 1024,
+      "cold_ms": 8778.002917009871,
+      "warm_ms": 9195.594125019852,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "c512_r2",
+      "chunk": 512,
+      "cold_ms": 8315.051375015173,
+      "warm_ms": 8367.973958025686,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "c768_r2",
+      "chunk": 768,
+      "cold_ms": 8350.349416024983,
+      "warm_ms": 8450.474874989595,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "c1024_r2",
+      "chunk": 1024,
+      "cold_ms": 11367.545625020284,
+      "warm_ms": 10768.503750034142,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "c512_r3",
+      "chunk": 512,
+      "cold_ms": 11000.482416013256,
+      "warm_ms": 10388.811959011946,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "c768_r3",
+      "chunk": 768,
+      "cold_ms": 10997.255457972642,
+      "warm_ms": 10363.716041028965,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "c1024_r3",
+      "chunk": 1024,
+      "cold_ms": 11201.874916965608,
+      "warm_ms": 10388.414792018011,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    }
+  ]
+}

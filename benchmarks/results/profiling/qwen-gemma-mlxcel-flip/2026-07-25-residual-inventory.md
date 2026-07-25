@@ -144,3 +144,25 @@ See `2026-07-25-blocked-thr-physics.md`.
 - Exclusive thr ceiling ~1.03–1.05×; dual-hold gap 160–220 ms.
 - **Decision `not_yet`.** Gates not relaxed. Full S0–S3 flip not claimed without thr headroom.
 - Open path only: true GEMM-class dual-gate that beats MLX steel qmm (not yet achieved).
+
+## Multi-process + cache_eval + Qwen-only DENSE_FFN_COMPILE=1 (2026-07-25)
+Cool 3-rep dual-target S1 (`2026-07-25-s1-mp-cache-eval-qwen-compile`):
+
+| metric | AX median | mlxcel median | ratio | gate |
+|--------|----------:|--------------:|------:|------|
+| thr tok/s | 20.013 | 18.023 | **1.110** | FAIL (≥1.15) |
+| gap p95 ms | 39.18 | 35.26 | **1.111** | FAIL (≤0.90); abs ≤50 PASS |
+| TTFT p95 | 8914 | 9934 | **0.897** | PASS |
+
+Contention residual (faster Qwen free GPU for Gemma) is a **wash** vs best cache_eval thr **1.109**. Reject Qwen-only compile stack for thr; keep common `DENSE_FFN_COMPILE=0` on multi-process targets.
+
+## Pure larger-chunk under cache_eval (2026-07-25)
+Hypothesis residual: `#672` cache-only eval barrier count ∝ ceil(tokens/chunk); pure A/B c512 vs c768 vs c1024 under `CACHE_ONLY_CHUNK_EVAL=1` keep_base (bar ≤0.96).
+
+| chunk | cold median ms | ratio vs c512 |
+|------:|---------------:|--------------:|
+| 512 | 8315 | 1.000 |
+| 768 | 8438 | **1.015** |
+| 1024 | 11202 | **1.347** |
+
+**Decision `reject_keep_c512`.** Larger chunks do not cut pure under cache_eval (eval-barrier hypothesis fails; matmul/chunk shape tax dominates). No cool multi-process S1 remeasure. Artifact: `2026-07-25-pure-chunk768-1024-cache-eval-ab/`.

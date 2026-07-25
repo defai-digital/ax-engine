@@ -1,0 +1,35 @@
+{
+  "decision": "not_yet",
+  "passed": false,
+  "candidate_label": "ax-engine",
+  "baseline_label": "mlxcel",
+  "repetitions": 3,
+  "gates": {
+    "thr>=1.15": false,
+    "gap_ratio<=0.9": false,
+    "ttft_ratio<=0.9": true,
+    "gap_abs<=50": true
+  },
+  "scenarios": [
+    {
+      "scenario": "s1",
+      "candidate": {
+        "throughput_median_tok_s": 20.013146544770102,
+        "stream_gap_p95_median_ms": 39.18395849177614,
+        "ttft_p95_median_ms": 8913.59379310743
+      },
+      "baseline": {
+        "throughput_median_tok_s": 18.023379754322615,
+        "stream_gap_p95_median_ms": 35.264542006189004,
+        "ttft_p95_median_ms": 9933.619631532929
+      },
+      "ratios": {
+        "throughput": 1.1103992046758195,
+        "stream_gap_p95": 1.1111432692050636,
+        "ttft_p95": 0.8973157946185532
+      }
+    }
+  ],
+  "note": "multi-process cache_eval + Qwen-only DENSE_FFN_COMPILE=1",
+  "vs_best_prior": "prior best multi-proc+#672 cache-eval thr ~1.109"
+}
