@@ -364,11 +364,12 @@ pub(crate) const ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT: u32 = 64;
 pub(crate) const ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP: u32 = 256;
 /// Interactive p95 stream-gap SLO for one sibling prefill turn.
 /// Exclusive S1 gap p95 is ~9 ms vs ~37 ms mlxcel (ratio budget ~33 ms).
-/// Use 40 ms / max 128 so early cheap positions take large quanta (fewer
-/// arbiter turns). Adaptive shrinks from measured µs/tok as attention cost
-/// grows. Cold outliers previously hurt at fixed 96; adaptive start stays 64.
+/// Use 40 ms / max 256 so early cheap positions take large quanta (fewer
+/// arbiter turns → S1 thr). Adaptive shrinks from measured µs/tok as
+/// attention cost grows. Cool exclusive S1 gap p95 ~9 ms leaves headroom
+/// under the ~31 ms ratio budget (0.9× mlxcel ~35 ms) and 50 ms absolute.
 const ADAPTIVE_PREFILL_GAP_SLO_US: u64 = 40_000;
-const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 128;
+const ADAPTIVE_PREFILL_MAX_TOKENS: u32 = 256;
 /// Floor under sibling-active adaptive quanta. Concurrent dual-hold needs the
 /// floor at 1 so late long-context quanta can shrink under the 50 ms gap SLO
 /// (8-token floor still measured ~160 ms p95 on M5). Exclusive thr is pure-sum
@@ -1121,13 +1122,17 @@ const STREAM_ENGINE_STEP_BURST: usize = 64;
 /// Sibling-active exclusive-arbiter engine step burst.
 ///
 /// Under exclusive multi-model load, a full [`STREAM_ENGINE_STEP_BURST`] HOL
-/// blows interactive gap. Burst=1 was the historical safe default, but S1
-/// locked gap p95 is ~9 ms vs a ~33 ms ratio budget (and 50 ms absolute), so
-/// a small multi-step hold amortizes arbiter reacquire without consuming the
-/// gap headroom. Override via `AX_SERVER_SIBLING_ENGINE_STEP_BURST`.
-/// Default **4**: exclusive multi-model thr envelope (not 1 = thr tax, not full
-/// HOL burst). Concurrent dual-hold A/Bs may set 1 via env.
-const SIBLING_ENGINE_STEP_BURST_DEFAULT: usize = 4;
+/// blows interactive gap. Burst=1 was the historical safe default, but cool
+/// exclusive S1 on M5 Max measures gap p95 ~9 ms vs mlxcel ~35 ms (ratio
+/// budget ~31 ms, absolute 50 ms). Raising the sibling burst amortizes
+/// arbiter reacquire and increases interactive decode duty cycle during
+/// long sibling prefill (S1 thr residual). Override via
+/// `AX_SERVER_SIBLING_ENGINE_STEP_BURST`. Default **16**: exclusive thr
+/// envelope with measured gap headroom (not 1 = thr tax, not full HOL 64).
+/// Concurrent dual-hold A/Bs may set 1 via env. Only engages when a model
+/// worker has a single active stream (S3 multi-stream on one model is
+/// unaffected — see `active_streams.len() == 1` guard).
+const SIBLING_ENGINE_STEP_BURST_DEFAULT: usize = 16;
 
 fn sibling_engine_step_burst() -> usize {
     static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -1958,7 +1963,7 @@ mod tests {
         // Exclusive multi-model: not 1 (arbiter thr tax) and not full HOL burst.
         assert!(SIBLING_ENGINE_STEP_BURST_DEFAULT >= 2);
         assert!(SIBLING_ENGINE_STEP_BURST_DEFAULT < STREAM_ENGINE_STEP_BURST);
-        assert_eq!(SIBLING_ENGINE_STEP_BURST_DEFAULT, 4);
+        assert_eq!(SIBLING_ENGINE_STEP_BURST_DEFAULT, 16);
     }
 
     #[test]
