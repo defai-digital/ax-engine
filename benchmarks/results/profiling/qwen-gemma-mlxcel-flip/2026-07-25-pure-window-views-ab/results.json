@@ -1,0 +1,54 @@
+[
+  {
+    "name": "views_on_r1",
+    "cold_ms": 8603.759707999416,
+    "warm_ms": 8430.255540995859,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "views_off_r1",
+    "cold_ms": 9320.694916998036,
+    "warm_ms": 9205.086625006516,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "views_on_r2",
+    "cold_ms": 9141.57445897581,
+    "warm_ms": 8874.669915996492,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  },
+  {
+    "name": "views_off_r2",
+    "cold_ms": 8855.737291974947,
+    "warm_ms": 9050.743625033647,
+    "usage": {
+      "prompt_tokens": 13826,
+      "completion_tokens": 1,
+      "total_tokens": 13827,
+      "prompt_tokens_details": {
+        "cached_tokens": 13824
+      }
+    }
+  }
+]
