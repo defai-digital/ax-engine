@@ -253,14 +253,11 @@ env_flag!(
     ///
     /// **Default: OFF** (opt-in via `AX_MLX_GEMMA_DUAL_GATE_UP_METAL=1`).
     ///
-    /// Profile residual (mbp-m5 pure Gemma 13.8k): gate_up dual qmm dominates.
-    /// `mx::compile` of MLX qmm regressed pure wall. Custom Metal path streams
-    /// X via threadgroup tiles (v2), dequants gate+up once per row tile, reuses
-    /// weight dequant across a token tile, and writes fused
-    /// `gelu_approx(gate)*up`. v1 (per-row global X re-read) measured ~8.5× pure
-    /// regression and stayed opt-in; v2 re-A/B required before default-on.
-    /// Production stays on two MLX qmm + Metal GEGLU until pure wall proves a
-    /// ≥~7.5% cut.
+    /// Profile residual (mbp-m5 pure Gemma 13.8k): gate_up dual qmm ~3.3s
+    /// (~38% pure wall); thr≥1.15 needs ~11% pure cut. v1/v2 Metal regressed
+    /// pure wall (X re-read / idle-thread K stride). v3 is tiled GEMM
+    /// (BM×BN×BK, full-TG coop loads + fused gelu_approx*up). Production stays
+    /// on two MLX qmm + Metal GEGLU until pure wall proves a ≥~7.5% cut.
     gemma_dual_gate_up_metal_enabled,
     "AX_MLX_GEMMA_DUAL_GATE_UP_METAL"
 );

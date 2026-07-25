@@ -696,139 +696,117 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
     }
 "#;
 
-/// Multi-token dual gate/up affine qmm + GEGLU for Gemma pure prefill.
+/// Multi-token dual gate/up affine GEMM + GEGLU for Gemma pure prefill (v3).
 ///
-/// Multi-row × multi-token dual gate/up + fused GEGLU (v2).
-///
-/// v1 (one output row per TG) re-read all of X from global once per OutDim row
-/// and measured ~8.5× pure-wall regression on mbp-m5. v2 tiles BM output rows
-/// per threadgroup and streams X through threadgroup memory so activation is
-/// loaded once per (token-tile, K-chunk) across BM rows; gate+up weights are
-/// dequantized once per row tile and reused across the token tile.
+/// v1: one OutDim row per TG, re-read X from global → ~8.5× pure regression.
+/// v2: BM=4 / TOKEN_TILE=8 / K=64 / TG=256 but K-loop strided by TG left most
+///     threads idle → ~25× regression.
+/// v3: classical tiled GEMM over (BM×BN) output tiles with full-TG cooperative
+///     loads of X and dequantized W. BM*BN == TG so each thread owns one
+///     output element of the tile (no cross-TG reduction). Streams gate+up
+///     weights once per tile K-step and fuses gelu_approx * up at writeback.
 ///
 /// Template ints: Leading, OutDim, PackedCols, InputDim, GroupSize, GroupCount,
 /// Bits, PackFactor, QuantMask. OutT is the activation dtype.
-/// Dispatch: grid.x = ceil(OutDim / BM) * 256, threadgroup = 256.
+/// Dispatch: grid.x = num_row_blocks * num_token_blocks * TG, threadgroup = TG.
 const GEMMA_DUAL_GATE_UP_GEGLU_KERNEL_SOURCE: &str = r#"
-    // grid.x = num_row_blocks * 256, threadgroup = 256
-    // BM output rows share an X tile in threadgroup memory.
-    const uint BM = 4u;
-    const uint TOKEN_TILE = 8u;
-    const uint K_CHUNK = 64u; // must be multiple of GroupSize (64) and PackFactor
-    const uint TG = 256u;
+    // Tiled dual-qmm GEMM: each TG owns BM output rows × BN tokens.
+    // BM*BN must equal TG so one thread maps to one (row, token) of the tile.
+    const uint BM = 8u;
+    const uint BN = 16u;
+    const uint BK = 128u; // multiple of GroupSize(64) and PackFactor(4)
+    const uint TG = 128u; // BM * BN
 
     uint flat = thread_position_in_grid.x;
-    uint row_block = flat / TG;
+    uint block = flat / TG;
     uint tid = flat % TG;
-    uint lane = tid % 32u;
-    uint sg = tid / 32u; // 0..7
+
+    uint num_token_blocks = ((uint)Leading + BN - 1u) / BN;
+    uint row_block = block / max(num_token_blocks, 1u);
+    uint token_block = block % max(num_token_blocks, 1u);
     uint row0 = row_block * BM;
-    if (row0 >= (uint)OutDim) {
+    uint t0 = token_block * BN;
+    if (row0 >= (uint)OutDim || t0 >= (uint)Leading) {
         return;
     }
     uint nrows = min(BM, (uint)OutDim - row0);
+    uint ntok = min(BN, (uint)Leading - t0);
 
-    // X tile: TOKEN_TILE x K_CHUNK, cooperatively loaded.
-    threadgroup float x_tile[8 * 64];
-    // Per-simdgroup partials for (BM rows x TOKEN_TILE tokens) reduce.
-    // Layout: [row_in_block * TOKEN_TILE + ti][sg]
-    threadgroup float gate_partials[4 * 8 * 8];
-    threadgroup float up_partials[4 * 8 * 8];
+    // Thread owns one (r_local, t_local) of the BM×BN tile.
+    uint r_local = tid / BN;
+    uint t_local = tid % BN;
 
-    for (uint t0 = 0u; t0 < (uint)Leading; t0 += TOKEN_TILE) {
-        uint ntok = min(TOKEN_TILE, (uint)Leading - t0);
+    // X tile [BN, BK], W tiles [BM, BK] — all float dequantized.
+    threadgroup float x_tile[BN * BK];
+    threadgroup float gate_w_tile[BM * BK];
+    threadgroup float up_w_tile[BM * BK];
 
-        // Accumulators: BM rows x TOKEN_TILE tokens (register file).
-        float gate_acc[4][8];
-        float up_acc[4][8];
-        for (uint r = 0u; r < BM; ++r) {
-            for (uint ti = 0u; ti < TOKEN_TILE; ++ti) {
-                gate_acc[r][ti] = 0.0f;
-                up_acc[r][ti] = 0.0f;
+    float gate_acc = 0.0f;
+    float up_acc = 0.0f;
+
+    for (uint k0 = 0u; k0 < (uint)InputDim; k0 += BK) {
+        uint nk = min(BK, (uint)InputDim - k0);
+
+        // Cooperative load of X[ntok, nk] → x_tile (row-major BN*BK).
+        for (uint i = tid; i < BN * BK; i += TG) {
+            uint ti = i / BK;
+            uint kk = i % BK;
+            float v = 0.0f;
+            if (ti < ntok && kk < nk) {
+                v = static_cast<float>(x[(t0 + ti) * (uint)InputDim + (k0 + kk)]);
             }
+            x_tile[i] = v;
         }
 
-        for (uint k0 = 0u; k0 < (uint)InputDim; k0 += K_CHUNK) {
-            uint nk = min(K_CHUNK, (uint)InputDim - k0);
-
-            // Cooperative load of X[ntok, nk] into x_tile (row-major TOKEN_TILE * K_CHUNK).
-            for (uint i = tid; i < TOKEN_TILE * K_CHUNK; i += TG) {
-                uint ti = i / K_CHUNK;
-                uint kk = i % K_CHUNK;
-                float v = 0.0f;
-                if (ti < ntok && kk < nk) {
-                    v = static_cast<float>(x[(t0 + ti) * (uint)InputDim + (k0 + kk)]);
-                }
-                x_tile[i] = v;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-
-            // Each thread walks K_CHUNK with stride TG; dequant gate+up for each
-            // of nrows and FMA across the token tile (X from shared).
-            for (uint kk = tid; kk < nk; kk += TG) {
+        // Cooperative dequant of gate/up W[nrows, nk] → tiles (row-major BM*BK).
+        for (uint i = tid; i < BM * BK; i += TG) {
+            uint r = i / BK;
+            uint kk = i % BK;
+            float gw = 0.0f;
+            float uw = 0.0f;
+            if (r < nrows && kk < nk) {
+                uint row = row0 + r;
                 uint input_col = k0 + kk;
                 uint packed_col = input_col / (uint)PackFactor;
                 uint packed_lane = input_col % (uint)PackFactor;
                 uint group = input_col / (uint)GroupSize;
                 uint shift = packed_lane * (uint)Bits;
-
-                for (uint r = 0u; r < nrows; ++r) {
-                    uint row = row0 + r;
-                    uint row_base = row * (uint)PackedCols;
-                    uint scale_idx = row * (uint)GroupCount + group;
-                    uint gate_packed = gate_weight[row_base + packed_col];
-                    uint up_packed = up_weight[row_base + packed_col];
-                    uint gate_q = (gate_packed >> shift) & (uint)QuantMask;
-                    uint up_q = (up_packed >> shift) & (uint)QuantMask;
-                    float gate_scale = static_cast<float>(gate_scales[scale_idx]);
-                    float gate_bias = static_cast<float>(gate_biases[scale_idx]);
-                    float up_scale = static_cast<float>(up_scales[scale_idx]);
-                    float up_bias = static_cast<float>(up_biases[scale_idx]);
-                    float gate_w = static_cast<float>(gate_q) * gate_scale + gate_bias;
-                    float up_w = static_cast<float>(up_q) * up_scale + up_bias;
-
-                    for (uint ti = 0u; ti < ntok; ++ti) {
-                        float xv = x_tile[ti * K_CHUNK + kk];
-                        gate_acc[r][ti] = fma(xv, gate_w, gate_acc[r][ti]);
-                        up_acc[r][ti] = fma(xv, up_w, up_acc[r][ti]);
-                    }
-                }
+                uint row_base = row * (uint)PackedCols;
+                uint scale_idx = row * (uint)GroupCount + group;
+                uint gate_packed = gate_weight[row_base + packed_col];
+                uint up_packed = up_weight[row_base + packed_col];
+                uint gate_q = (gate_packed >> shift) & (uint)QuantMask;
+                uint up_q = (up_packed >> shift) & (uint)QuantMask;
+                float gate_scale = static_cast<float>(gate_scales[scale_idx]);
+                float gate_bias = static_cast<float>(gate_biases[scale_idx]);
+                float up_scale = static_cast<float>(up_scales[scale_idx]);
+                float up_bias = static_cast<float>(up_biases[scale_idx]);
+                gw = static_cast<float>(gate_q) * gate_scale + gate_bias;
+                uw = static_cast<float>(up_q) * up_scale + up_bias;
             }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
+            gate_w_tile[i] = gw;
+            up_w_tile[i] = uw;
         }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Reduce BM * ntok accumulators across the threadgroup, write GEGLU.
-        for (uint r = 0u; r < nrows; ++r) {
-            for (uint ti = 0u; ti < ntok; ++ti) {
-                float g_sum = simd_sum(gate_acc[r][ti]);
-                float u_sum = simd_sum(up_acc[r][ti]);
-                uint slot = (r * TOKEN_TILE + ti) * 8u + sg;
-                if (lane == 0u) {
-                    gate_partials[slot] = g_sum;
-                    up_partials[slot] = u_sum;
-                }
+        // Full-TG matmul for this K tile (one FMA stream per output element).
+        if (r_local < nrows && t_local < ntok) {
+            for (uint kk = 0u; kk < nk; ++kk) {
+                float xv = x_tile[t_local * BK + kk];
+                gate_acc = fma(xv, gate_w_tile[r_local * BK + kk], gate_acc);
+                up_acc = fma(xv, up_w_tile[r_local * BK + kk], up_acc);
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (tid == 0u) {
-            for (uint r = 0u; r < nrows; ++r) {
-                for (uint ti = 0u; ti < ntok; ++ti) {
-                    float g = 0.0f;
-                    float u = 0.0f;
-                    uint base = (r * TOKEN_TILE + ti) * 8u;
-                    for (uint i = 0u; i < 8u; ++i) {
-                        g += gate_partials[base + i];
-                        u += up_partials[base + i];
-                    }
-                    float cubic = g * g * g;
-                    float inner = tanh(0.7978846f * (g + 0.044715f * cubic));
-                    float activated = 0.5f * g * (1.0f + inner);
-                    out[(t0 + ti) * (uint)OutDim + (row0 + r)] =
-                        static_cast<OutT>(activated * u);
-                }
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Fused gelu_approx(gate) * up writeback (gelu_pytorch_tanh).
+    if (r_local < nrows && t_local < ntok) {
+        float cubic = gate_acc * gate_acc * gate_acc;
+        float inner = tanh(0.7978846f * (gate_acc + 0.044715f * cubic));
+        float activated = 0.5f * gate_acc * (1.0f + inner);
+        out[(t0 + t_local) * (uint)OutDim + (row0 + r_local)] =
+            static_cast<OutT>(activated * up_acc);
     }
 "#;
 
@@ -1497,7 +1475,7 @@ fn gemma_dense_ffn_dual_gate_up_geglu_metal(
     let quant_mask = (1_i32 << gate.bits) - 1;
     let kernel = GEMMA_DUAL_GATE_UP_GEGLU_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_gemma_dense_ffn_dual_gate_up_geglu_v2",
+            "ax_gemma_dense_ffn_dual_gate_up_geglu_v3",
             &[
                 "x",
                 "gate_weight",
@@ -1513,10 +1491,13 @@ fn gemma_dense_ffn_dual_gate_up_geglu_metal(
             true,
         )
     });
-    // BM=4 output rows per threadgroup (see kernel); matches pure prefill residual
-    // where v1's per-row X re-read from global dominated traffic.
-    const BM: i32 = 4;
+    // v3 tiled GEMM: BM=8 rows × BN=16 tokens per TG of 128 threads.
+    const BM: i32 = 8;
+    const BN: i32 = 16;
+    const TG: i32 = 128; // BM * BN
     let num_row_blocks = (out_dim + BM - 1) / BM;
+    let num_token_blocks = (leading + BN - 1) / BN;
+    let num_blocks = num_row_blocks.saturating_mul(num_token_blocks.max(1));
     let mut outputs = kernel
         .try_apply_with_template(
             &[
@@ -1574,8 +1555,8 @@ fn gemma_dense_ffn_dual_gate_up_geglu_metal(
                     value: quant_mask,
                 },
             ],
-            (num_row_blocks.saturating_mul(256), 1, 1),
-            (256, 1, 1),
+            (num_blocks.saturating_mul(TG), 1, 1),
+            (TG, 1, 1),
             None,
         )
         .ok()?;

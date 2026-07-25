@@ -71,3 +71,7 @@ with MLX 0.32; AX pure already ≳ mlxcel pure. Leave Metal4 bridge port deferre
 - Pure host/graph residuals max ~4%; stacks regress.
 - Flip under locked gates remains **not_yet** without a true ≥11% pure GPU cut
   (GEMM-class dual-gate) or a dual-stream product shape that still clears thr 1.15×.
+
+## Dual-gate Metal v3 tiled GEMM (2026-07-25)
+BM=8 / BN=16 / BK=128 full-TG coop loads: pure median **8.52×** slower, empty text.
+Reject. Host-side + naive custom GEMM still cannot beat MLX qmm for gate_up.
