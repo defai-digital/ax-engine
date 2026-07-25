@@ -1,0 +1,37 @@
+# Residual inventory — AX vs mlxcel flip (mbp-m5, 2026-07-25 tip)
+
+## Locked gates (unchanged)
+thr ≥1.15×, TTFT ≤0.90×, gap ≤0.90× and ≤50 ms, zero errors.
+
+## Current exclusive S1 (tip)
+| metric | AX | mlxcel | ratio | gate |
+|--------|---:|-------:|------:|------|
+| thr tok/s | 18.62 | 17.97 | **1.036** | FAIL (≥1.15) |
+| gap p95 ms | 8.9 | 34.9 | 0.256 | PASS |
+| TTFT p95 ms | 8239 | 9959 | 0.827 | PASS |
+
+Need thr ≳20.7 (scenario wall ≲9.3s from ~10.4s, ~11% cut).
+
+## Pure Gemma 13.8k rejects this session
+| lever | ratio_median | note |
+|-------|-------------:|------|
+| cache-only chunk eval | 0.968 | #672 half |
+| #672 eval+clear | 0.959 | full pair |
+| long chunk 768 | 0.987 | keep 512 |
+| long chunk 1024 | 0.981 | keep 512 |
+| qmm+rms 5-rep | 0.965 | thermal noise |
+| dual Metal v1/v2 | 8–25× | worse |
+| dual_qmm_geglu | 1.091 | worse |
+| native offset causal | 1.064 | worse |
+| … prior host fuses | ~1.00–1.03 | noise/reject |
+
+## Physics
+- AX pure already ≳ mlxcel pure (~14% faster historically).
+- mlxcel multi-token bits=8 MLP uses **op-at-a-time** qmm (same as AX); compile is decode/bits=4 only.
+- mlxcel S1 thr advantage is **multi-process dual-stream**, not a pure FFN residual we missed.
+- Dual-hold max=2 (including quantum=4) fails gap ~160–220 ms.
+
+## Open paths (residual-backed only)
+1. Pure GPU ≥11% beyond current best (needs GEMM-class dual-gate or MLX-level win).
+2. Dual-stream with gap ≤50 ms (no successful measurement yet on M5 Max).
+3. Do **not** relax gates; do **not** claim flip without S0–S3 decision=flip.
