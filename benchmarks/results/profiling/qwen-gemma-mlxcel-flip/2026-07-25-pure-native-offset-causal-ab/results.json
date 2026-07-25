@@ -1,0 +1,106 @@
+{
+  "off_cold": [
+    8476.034166000318,
+    9182.721583987586,
+    8619.320459023584
+  ],
+  "on_cold": [
+    9167.909584008157,
+    8845.024249982089,
+    9581.321417004801
+  ],
+  "off_mean": 8759.358736337163,
+  "on_mean": 9198.085083665015,
+  "off_median": 8619.320459023584,
+  "on_median": 9167.909584008157,
+  "ratio_median": 1.063646447256785,
+  "ratio_mean": 1.0500865828805308,
+  "keep_if_ratio_lt": 0.925,
+  "decision": "reject_keep_off",
+  "results": [
+    {
+      "name": "off_r1",
+      "cold_ms": 8476.034166000318,
+      "warm_ms": 8283.387958013918,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "on_r1",
+      "cold_ms": 9167.909584008157,
+      "warm_ms": 9243.706166977063,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "off_r2",
+      "cold_ms": 9182.721583987586,
+      "warm_ms": 8750.180542003363,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "on_r2",
+      "cold_ms": 8845.024249982089,
+      "warm_ms": 9006.44787499914,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "off_r3",
+      "cold_ms": 8619.320459023584,
+      "warm_ms": 8373.423083976377,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "on_r3",
+      "cold_ms": 9581.321417004801,
+      "warm_ms": 8990.854832984041,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    }
+  ]
+}

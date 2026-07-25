@@ -472,6 +472,27 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_NATIVE_OFFSET_CAUSAL` — for full-attention multi-token prefill
+    /// with KV cache offset (`key_len > seq`), skip materializing an
+    /// O(seq×key_len) bool causal array and use MLX `mask="causal"` instead.
+    ///
+    /// MLX steel SDPA sets `qL_off = key_len - query_len` so query i attends
+    /// keys j ≤ offset+i — same rule as `create_causal_mask(seq, offset, None)`.
+    /// mlxcel `causal_attention(window_size=0)` always uses
+    /// `fast_scaled_dot_product_attention_causal` (native causal), never an
+    /// array mask for full-window layers.
+    ///
+    /// Profile residual: pure Gemma 13.8k `sdpa` ~1.22s; 8/48 full-attention
+    /// layers grow full-context SDPA and currently pay array masks after the
+    /// first prefill chunk.
+    ///
+    /// **Default: OFF** (opt-in pure A/B). Sliding-window layers still need
+    /// explicit masks when the window constraint is active.
+    native_offset_causal_enabled,
+    "AX_MLX_NATIVE_OFFSET_CAUSAL"
+);
+
+env_flag!(
     /// `AX_MLX_DENSE_GEGLU_DOWN_FUSE` — multi-token split GEGLU product fused
     /// into the dense FFN down_proj quantized matmul (one C++ graph-build for
     /// gelu_approx(gate)*up → down qmm). Targets pure prefill residual after
@@ -1666,6 +1687,21 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn native_offset_causal_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_NATIVE_OFFSET_CAUSAL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_NATIVE_OFFSET_CAUSAL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_NATIVE_OFFSET_CAUSAL_ENABLED",
             "1"
         ));
     }

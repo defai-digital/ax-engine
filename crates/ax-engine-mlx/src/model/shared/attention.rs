@@ -373,7 +373,14 @@ pub(crate) fn attention_mask_array(
         }
         // Fall through to the standard causal / None path below.
     }
+    // Full-attention multi-token with KV offset: either materialize an array
+    // causal mask (legacy) or use MLX native `mask="causal"` (mlxcel parity).
+    // Steel kernels apply `qL_off = key_len - seq_len`, matching
+    // `create_causal_mask(seq, offset, None)` without the O(seq×key) array.
     if offset > 0 && seq_len > 1 {
+        if crate::fastpath::native_offset_causal_enabled() {
+            return None;
+        }
         return Some(create_causal_mask(seq_len, offset, None));
     }
     None

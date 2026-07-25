@@ -6203,6 +6203,8 @@ mod tests {
 
     #[test]
     fn attention_mask_array_uses_offset_mask_for_cached_prefill() {
+        // Default: materialize offset causal for full-attention cached prefill.
+        // With AX_MLX_NATIVE_OFFSET_CAUSAL=1 the mask is None (MLX native causal).
         let mask = attention_mask_array(2, 5, None).expect("cached prefill needs offset mask");
 
         assert_eq!(mask.shape(), vec![2, 5]);
