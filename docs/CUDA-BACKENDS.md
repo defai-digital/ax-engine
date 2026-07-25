@@ -349,6 +349,11 @@ As of 2026-07-24:
   their durations are never combined;
 - the x86_64 image and runtime closure exist, but native OCI execution and
   A6000 Unlimited-OCR/soak evidence remain release gates.
+- the active secondary x86 CUDA target is **RTX A6000 / SM86**
+  (`cuda-linux-x86_64-a6000-sm86`). Formal A100-SXM4-80GB / SM80 WNA16 remains
+  an optional legacy profile; A6000 is not required to impersonate A100, and
+  dual free A6000 hosts may split TensorRT-LLM vs Unlimited-OCR lanes instead
+  of concurrent double occupancy of one 48 GiB card.
 - same-worker TensorRT-LLM checks on `tnr-0` validate the portable control
   plane without restarting the preserved worker. Three 30-pair runs and one
   100-pair diagnostic meet the non-stream p50/p95 proxy-overhead gate after
@@ -356,6 +361,10 @@ As of 2026-07-24:
   loopback tests isolate sub-millisecond proxy overhead. These results are
   control-plane evidence only, not an engine speed ranking or an
   Unlimited-OCR/OCI release pass.
+- TensorRT-LLM smoke and operator scripts must pass machine-readable
+  `--tensorrt-llm-upstream-version` and `--tensorrt-llm-execution-backend`
+  (see `scripts/tensorrt_llm_a600_smoke.sh`). Missing identity must fail closed
+  before worker I/O (`scripts/validate_tensorrt_identity_fail_closed.sh`).
 
 These statements describe candidate evidence, not a GA promise. Keep
 production defaults and public support claims unchanged until every applicable
