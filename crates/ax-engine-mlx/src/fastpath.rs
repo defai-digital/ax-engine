@@ -1089,19 +1089,32 @@ pub fn select_prefill_chunk_for_request(
 /// Long-prompt Metal-friendly prefill chunk (M5 Max Gemma-12B 4-bit pure
 /// sweep 2026-07-24: 512 tok/s-best; 1536/2048 slower).
 pub const LONG_PROMPT_PREFILL_CHUNK: usize = 512;
-/// Remaining-prompt threshold that engages [`LONG_PROMPT_PREFILL_CHUNK`].
+/// Remaining-prompt threshold that engages [`long_prompt_prefill_chunk`].
 pub const LONG_PROMPT_PREFILL_THRESHOLD: usize = 2048;
+
+/// Cap applied to long remaining prompts. Default
+/// [`LONG_PROMPT_PREFILL_CHUNK`]; override with
+/// `AX_MLX_LONG_PROMPT_PREFILL_CHUNK=N` for pure / S1 thr A/B of intermediate
+/// sizes (e.g. 768) that the original 512-vs-1536/2048 sweep did not cover.
+pub fn long_prompt_prefill_chunk() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_positive_usize_env("AX_MLX_LONG_PROMPT_PREFILL_CHUNK")
+            .unwrap_or(LONG_PROMPT_PREFILL_CHUNK)
+            .max(1)
+    })
+}
 
 /// Scale a base prefill chunk for the remaining prompt length.
 ///
-/// Long remaining prompts clamp to [`LONG_PROMPT_PREFILL_CHUNK`] so formal S1
+/// Long remaining prompts clamp to [`long_prompt_prefill_chunk`] so formal S1
 /// thr keeps the pure envelope when the session base is larger (e.g. 1536).
 /// Short prompts keep `base_chunk` (S0 34-token prompts are a single chunk
 /// either way, so TTFT is dominated by warmup/host, not chunk size).
 pub fn scale_prefill_chunk_for_remaining(base_chunk: usize, remaining_tokens: usize) -> usize {
     let base = base_chunk.max(1);
     if remaining_tokens >= LONG_PROMPT_PREFILL_THRESHOLD {
-        base.clamp(1, LONG_PROMPT_PREFILL_CHUNK)
+        base.clamp(1, long_prompt_prefill_chunk())
     } else {
         base
     }
@@ -2053,11 +2066,22 @@ mod tests {
         assert_eq!(scale_prefill_chunk_for_remaining(1024, 512), 1024);
         assert_eq!(
             scale_prefill_chunk_for_remaining(1536, LONG_PROMPT_PREFILL_THRESHOLD),
-            LONG_PROMPT_PREFILL_CHUNK
+            long_prompt_prefill_chunk()
         );
-        assert_eq!(scale_prefill_chunk_for_remaining(1536, 13_826), 512);
+        assert_eq!(
+            scale_prefill_chunk_for_remaining(1536, 13_826),
+            long_prompt_prefill_chunk().min(1536)
+        );
         assert_eq!(scale_prefill_chunk_for_remaining(256, 13_826), 256);
         assert_eq!(scale_prefill_chunk_for_remaining(0, 100), 1);
+    }
+
+    #[test]
+    fn long_prompt_prefill_chunk_defaults_to_512() {
+        // Process-cached via OnceLock; assert the default constant and that
+        // the live helper never returns zero.
+        assert_eq!(LONG_PROMPT_PREFILL_CHUNK, 512);
+        assert!(long_prompt_prefill_chunk() >= 1);
     }
 
     #[test]
