@@ -69,14 +69,23 @@ pub(crate) fn direct_qk_norm_rope_route_enabled_for_family(
 ) -> bool {
     let qwen_family_default = qwen_direct_qk_norm_rope_default_family(model_family)
         && fastpath::qwen_direct_cpp_qk_norm_rope_enabled();
+    let gemma_family_default = gemma_direct_qk_norm_rope_default_family(model_family)
+        && fastpath::gemma_direct_cpp_qk_norm_rope_enabled();
     direct_qk_norm_rope_route_allowed(
-        fastpath::direct_cpp_qk_norm_rope_enabled() || qwen_family_default,
+        fastpath::direct_cpp_qk_norm_rope_enabled()
+            || qwen_family_default
+            || gemma_family_default,
         norm,
     )
 }
 
 fn qwen_direct_qk_norm_rope_default_family(model_family: &str) -> bool {
     model_family.starts_with("qwen")
+}
+
+fn gemma_direct_qk_norm_rope_default_family(model_family: &str) -> bool {
+    // gemma4, gemma3, gemma2, gemma4-assistant, …
+    model_family.starts_with("gemma")
 }
 
 #[allow(clippy::too_many_arguments)]

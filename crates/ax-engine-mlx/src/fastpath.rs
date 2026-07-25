@@ -436,6 +436,20 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_GEMMA_DIRECT_CPP_QK_NORM_ROPE` — opt-in Gemma-family direct C++
+    /// route for standard-attention Q/K `as_strided -> rms_norm -> rope`
+    /// (including proportional-RoPE full-attention layers that pass freqs).
+    ///
+    /// **Default: OFF**. Residual vs mlxcel `compiled_q_path_proportional`:
+    /// AX already had the C++ composite. Enabling it for gemma* pure 13.8k
+    /// prefill on mbp-m5 (2026-07-24) measured ~+1.6% cold wall vs portable
+    /// multi-FFI path (pure-gemma-qkrope-ab). Keep opt-in for decode-focused
+    /// A/B; pure prefill thr path remains portable.
+    gemma_direct_cpp_qk_norm_rope_enabled,
+    "AX_MLX_GEMMA_DIRECT_CPP_QK_NORM_ROPE"
+);
+
+env_flag!(
     /// `AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS` — opt-in direct C++ route
     /// for Qwen linear-attention packed QKVZ/BA projection staging. This
     /// global flag force-enables the route for any compatible caller shape.
@@ -1515,6 +1529,21 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_QWEN_DIRECT_CPP_QK_NORM_ROPE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn gemma_direct_cpp_qk_norm_rope_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_GEMMA_DIRECT_CPP_QK_NORM_ROPE_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_GEMMA_DIRECT_CPP_QK_NORM_ROPE_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_GEMMA_DIRECT_CPP_QK_NORM_ROPE_ENABLED",
             "1"
         ));
     }
