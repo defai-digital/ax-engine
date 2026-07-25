@@ -23,6 +23,7 @@ pub(crate) use mla::glm_mla_attention_forward;
 pub(crate) use mlp::per_layer_input_gate;
 pub(crate) use mlp::{
     attention_output_projection, attention_output_projection_batched,
+    attention_output_projection_with_post_norm,
     combine_gemma4_dual_path_outputs, ffn_swiglu, ffn_swiglu_batched, flatten_compiled_moe_inputs,
     flatten_gemma4_dual_path_inputs, moe_experts_forward, moe_experts_forward_gemma4,
     moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared,

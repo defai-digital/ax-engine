@@ -443,6 +443,21 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_O_PROJ_QMATMUL_RMS_NORM` — fuse attention `o_proj` quantized
+    /// matmul with Gemma sandwich `post_attention_layernorm` into one C++ call
+    /// (`quantized_matmul_rms_norm`). Profile residual: pure Gemma 13.8k
+    /// `post_attn_output_proj` ~0.78s (larger than rope_kv ~0.54s).
+    ///
+    /// mlxcel keeps `o_proj.forward` then `post_attention_layernorm.forward`
+    /// as separate ops (`gemma4.rs` project_output + layer residual).
+    ///
+    /// **Default: OFF** (opt-in pure A/B). Only applies when `attn_post_norm`
+    /// is present and there is no attention output gate.
+    o_proj_qmatmul_rms_norm_enabled,
+    "AX_MLX_O_PROJ_QMATMUL_RMS_NORM"
+);
+
+env_flag!(
     /// `AX_MLX_DENSE_GEGLU_DOWN_FUSE` — multi-token split GEGLU product fused
     /// into the dense FFN down_proj quantized matmul (one C++ graph-build for
     /// gelu_approx(gate)*up → down qmm). Targets pure prefill residual after
@@ -1609,6 +1624,21 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_GEMMA_DUAL_GATE_UP_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn o_proj_qmatmul_rms_norm_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_O_PROJ_QMATMUL_RMS_NORM_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_O_PROJ_QMATMUL_RMS_NORM_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_O_PROJ_QMATMUL_RMS_NORM_ENABLED",
             "1"
         ));
     }

@@ -53,8 +53,9 @@ use super::super::profile::{
     profile_eval_elapsed, record_gemma4_moe_decode_layer,
 };
 use super::super::shared::{
-    KVConcatBuffer, add_then_multiply_scalar, attention_mask_array, attention_output_projection,
-    attention_output_projection_batched, bidirectional_attention,
+    KVConcatBuffer, add_then_multiply_scalar, attention_mask_array,
+    attention_output_projection_batched, attention_output_projection_with_post_norm,
+    bidirectional_attention,
     direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, ffn_swiglu_batched,
     flatten_attention_output_bhsd, flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs,
     full_precision_attention, linear_attention_forward_batched, moe_experts_forward,
@@ -1095,21 +1096,17 @@ fn layer_forward_internal(
         post_attn_started = profile_forward_layer.then(Instant::now);
         let output_proj_started = profile_forward_layer.then(Instant::now);
 
-        // 10-11. Flatten + output projection.
+        // 10-11. Flatten + output projection (+ optional post-attn RMSNorm).
         let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
-        let attn_proj = attention_output_projection(
+        let attn_proj = attention_output_projection_with_post_norm(
             &attn_flat,
             attn_gate.as_ref(),
             w.o_proj
                 .as_ref()
                 .expect("full-attention layer must have o_proj"),
+            w.attn_post_norm.as_ref(),
+            cfg.rms_norm_eps,
         );
-        // 14. Optional post-attention layernorm.
-        let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
-            rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
-        } else {
-            attn_proj
-        };
         if let Some(started) = output_proj_started {
             forward_profile_eval_elapsed(
                 profile_decode_layer,
@@ -1619,18 +1616,15 @@ pub(crate) fn layer_forward_bidirectional(
     );
 
     let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
-    let attn_proj = attention_output_projection(
+    let attn_proj = attention_output_projection_with_post_norm(
         &attn_flat,
         attn_gate_raw.as_ref(),
         w.o_proj
             .as_ref()
             .expect("bidirectional attention layer must have o_proj"),
+        w.attn_post_norm.as_ref(),
+        cfg.rms_norm_eps,
     );
-    let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
-        rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
-    } else {
-        attn_proj
-    };
 
     // Delegate to shared post-attention pipeline (residual, FFN, gating).
     layer_shell_post_attention(

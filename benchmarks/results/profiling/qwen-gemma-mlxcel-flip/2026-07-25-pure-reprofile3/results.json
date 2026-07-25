@@ -1,0 +1,92 @@
+{
+  "base_cold": [
+    8572.119290999999,
+    9391.128124999997
+  ],
+  "base_mean": 8981.623708,
+  "profile": {
+    "enabled": 1,
+    "prefill_steps": 27,
+    "layers": 1296,
+    "tokens": 13824,
+    "per_layer_input_wall_us": 0,
+    "pre_sdpa_wall_us": 1885327,
+    "pre_sdpa_qkv_proj_wall_us": 1068148,
+    "pre_sdpa_qk_norm_wall_us": 281772,
+    "pre_sdpa_rope_kv_wall_us": 531317,
+    "sdpa_wall_us": 1221252,
+    "post_attn_wall_us": 7130792,
+    "post_attn_ffn_wall_us": 5886077,
+    "post_attn_ffn_gate_up_wall_us": 3256604,
+    "post_attn_ffn_activation_wall_us": 321595,
+    "post_attn_ffn_down_wall_us": 2078316,
+    "post_attn_output_proj_wall_us": 778263,
+    "post_attn_residual_norm_wall_us": 236387,
+    "post_attn_residual_gate_wall_us": 227313,
+    "lm_head_wall_us": 0
+  },
+  "results": [
+    {
+      "name": "base_r1",
+      "cold_ms": 8572.119290999999,
+      "warm_ms": 8718.773500000001,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "profile": {}
+    },
+    {
+      "name": "base_r2",
+      "cold_ms": 9391.128124999997,
+      "warm_ms": 8971.485042000004,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "profile": {}
+    },
+    {
+      "name": "profile",
+      "cold_ms": 10484.090749999992,
+      "warm_ms": 10373.677416000006,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "profile": {
+        "enabled": 1,
+        "prefill_steps": 27,
+        "layers": 1296,
+        "tokens": 13824,
+        "per_layer_input_wall_us": 0,
+        "pre_sdpa_wall_us": 1885327,
+        "pre_sdpa_qkv_proj_wall_us": 1068148,
+        "pre_sdpa_qk_norm_wall_us": 281772,
+        "pre_sdpa_rope_kv_wall_us": 531317,
+        "sdpa_wall_us": 1221252,
+        "post_attn_wall_us": 7130792,
+        "post_attn_ffn_wall_us": 5886077,
+        "post_attn_ffn_gate_up_wall_us": 3256604,
+        "post_attn_ffn_activation_wall_us": 321595,
+        "post_attn_ffn_down_wall_us": 2078316,
+        "post_attn_output_proj_wall_us": 778263,
+        "post_attn_residual_norm_wall_us": 236387,
+        "post_attn_residual_gate_wall_us": 227313,
+        "lm_head_wall_us": 0
+      }
+    }
+  ]
+}

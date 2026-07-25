@@ -258,6 +258,44 @@ pub(crate) fn attention_output_projection(
     )
 }
 
+/// Attention o_proj followed by optional post-attention RMSNorm.
+///
+/// When `AX_MLX_O_PROJ_QMATMUL_RMS_NORM=1`, `post_norm` is present, there is no
+/// attention gate, and scales are available, fuses into one
+/// `quantized_matmul_rms_norm` C++ call (pure prefill residual on Gemma
+/// sandwich `post_attention_layernorm`).
+pub(crate) fn attention_output_projection_with_post_norm(
+    attn_flat: &MlxArray,
+    attn_gate: Option<&MlxArray>,
+    o_proj: &QuantizedWeight,
+    post_norm: Option<&MlxArray>,
+    eps: f32,
+) -> MlxArray {
+    if attn_gate.is_none()
+        && let Some(norm_w) = post_norm
+        && fastpath::o_proj_qmatmul_rms_norm_enabled()
+        && let Some(scales) = o_proj.scales.as_ref()
+    {
+        return quantized_matmul_rms_norm(
+            attn_flat,
+            &o_proj.weight,
+            scales,
+            o_proj.biases.as_ref(),
+            o_proj.group_size,
+            o_proj.bits,
+            norm_w,
+            eps,
+            None,
+        );
+    }
+    let projected = attention_output_projection(attn_flat, attn_gate, o_proj);
+    if let Some(norm_w) = post_norm {
+        rms_norm(&projected, Some(norm_w), eps, None)
+    } else {
+        projected
+    }
+}
+
 pub(crate) fn attention_output_projection_batched(
     attn_flat: &MlxArray,
     attn_gate: Option<&MlxArray>,
