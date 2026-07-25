@@ -1,8 +1,11 @@
 #include "ax_shim_internal.h"
 
 #include <functional>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include "mlx/compile.h"
@@ -710,6 +713,168 @@ extern "C" int ax_mlx_gelu_approx_quantized_ffn(
             group_size,
             bits,
             s));
+    return 0;
+  } AX_CATCH
+}
+
+// mlxcel `compiled_gelu_approx_mlp_forward` residual (gemma4.rs dense MLP):
+// compile the full split gate/up/gelu_approx*up/down affine qmm chain with
+// shapeless=true for group_size=64/bits=4. Collapses ~14 elementwise ops plus
+// three qmm nodes into one fused Compiled primitive per layer. Prefill and
+// decode both engage for the legacy 4-bit shape (mlxcel issue #680).
+namespace {
+
+using CompiledQgeluMlpFn =
+    std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+
+CompiledQgeluMlpFn& get_compiled_qgelu_approx_split_mlp(int group_size, int bits) {
+  struct Key {
+    int group_size;
+    int bits;
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const noexcept {
+      size_t h = std::hash<int>{}(k.group_size);
+      h ^= std::hash<int>{}(k.bits) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  struct KeyEq {
+    bool operator()(const Key& a, const Key& b) const noexcept {
+      return a.group_size == b.group_size && a.bits == b.bits;
+    }
+  };
+  static std::mutex mu;
+  static std::unordered_map<Key, CompiledQgeluMlpFn, KeyHash, KeyEq> cache;
+  std::lock_guard<std::mutex> lock(mu);
+  Key key{group_size, bits};
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  auto fn = [group_size, bits](const std::vector<mx::array>& inputs)
+      -> std::vector<mx::array> {
+    // inputs: x, gate_w, gate_s, gate_b, up_w, up_s, up_b, down_w, down_s, down_b
+    const auto& x = inputs[0];
+    auto gate = mx::quantized_matmul(
+        x,
+        inputs[1],
+        inputs[2],
+        std::optional<mx::array>(inputs[3]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kAffineMode);
+    auto up = mx::quantized_matmul(
+        x,
+        inputs[4],
+        inputs[5],
+        std::optional<mx::array>(inputs[6]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kAffineMode);
+    // gelu_tanh_approx(gate) * up — same math as gelu_approx_mul_impl.
+    auto dtype = gate.dtype();
+    auto half = mx::array(0.5f, dtype);
+    auto one = mx::array(1.0f, dtype);
+    auto sqrt_2_over_pi = mx::array(0.7978846f, dtype);
+    auto coeff = mx::array(0.044715f, dtype);
+    auto gate2 = mx::multiply(gate, gate);
+    auto gate3 = mx::multiply(gate2, gate);
+    auto cubic = mx::multiply(coeff, gate3);
+    auto inner = mx::add(gate, cubic);
+    auto t = mx::tanh(mx::multiply(sqrt_2_over_pi, inner));
+    auto activated =
+        mx::multiply(mx::multiply(half, gate), mx::add(one, t));
+    activated = mx::multiply(activated, up);
+    auto down = mx::quantized_matmul(
+        activated,
+        inputs[7],
+        inputs[8],
+        std::optional<mx::array>(inputs[9]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kAffineMode);
+    return {std::move(down)};
+  };
+  mx::enable_compile();
+  auto [iter, _] = cache.emplace(key, mx::compile(fn, /*shapeless=*/true));
+  return iter->second;
+}
+
+bool compiled_qgelu_mlp_env_enabled() {
+  static const bool enabled = []() {
+    const char* v = std::getenv("AX_MLX_COMPILED_QGELU_MLP");
+    if (!v) {
+      return true;
+    }
+    std::string s(v);
+    return !(s == "0" || s == "false" || s == "off" || s == "no" || s == "FALSE" ||
+             s == "OFF" || s == "NO");
+  }();
+  return enabled;
+}
+
+} // namespace
+
+extern "C" int ax_mlx_compiled_gelu_approx_split_mlp(
+    mlx_array* res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    const mlx_array down_weight,
+    const mlx_array down_scales,
+    const mlx_array down_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    // Match mlxcel #680:
+    //   * gs64/bits=4: compile all shapes (prefill+decode)
+    //   * other affine (notably gs64/bits=8 mixed "4bit" Gemma packages):
+    //     compile only single-token decode — multi-token 8-bit prefill was
+    //     slower on measured backends.
+    // Kill-switch: AX_MLX_COMPILED_QGELU_MLP=0.
+    if (!compiled_qgelu_mlp_env_enabled()) {
+      return 1;
+    }
+    if (group_size <= 0 || bits <= 0) {
+      return 1;
+    }
+    // Biases required (quant group biases); null handle → fail-closed.
+    if (!gate_biases.ctx || !up_biases.ctx || !down_biases.ctx) {
+      return 1;
+    }
+    const auto& x_shape = aref(x).shape();
+    const bool is_single_token =
+        x_shape.size() >= 2 && x_shape[x_shape.size() - 2] == 1;
+    const bool legacy_4bit = (group_size == 64 && bits == 4);
+    if (!(legacy_4bit || is_single_token)) {
+      return 1;
+    }
+    auto& compiled_fn = get_compiled_qgelu_approx_split_mlp(group_size, bits);
+    auto result = compiled_fn({
+        aref(x),
+        aref(gate_weight),
+        aref(gate_scales),
+        aref(gate_biases),
+        aref(up_weight),
+        aref(up_scales),
+        aref(up_biases),
+        aref(down_weight),
+        aref(down_scales),
+        aref(down_biases),
+    });
+    if (result.size() != 1) {
+      return 1;
+    }
+    aset(res, std::move(result[0]));
     return 0;
   } AX_CATCH
 }

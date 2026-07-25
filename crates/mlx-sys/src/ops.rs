@@ -52,6 +52,24 @@ unsafe extern "C" {
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
+    /// mlxcel-style compiled split gate/up/gelu/down affine qmm (gs64/4bit).
+    fn ax_mlx_compiled_gelu_approx_split_mlp(
+        res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        gate_weight: ffi::mlx_array,
+        gate_scales: ffi::mlx_array,
+        gate_biases: ffi::mlx_array,
+        up_weight: ffi::mlx_array,
+        up_scales: ffi::mlx_array,
+        up_biases: ffi::mlx_array,
+        down_weight: ffi::mlx_array,
+        down_scales: ffi::mlx_array,
+        down_biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_qk_norm_rope_bhsd_from_proj(
         res: *mut ffi::mlx_array,
         proj: ffi::mlx_array,
@@ -431,6 +449,56 @@ pub fn gelu_approx_mul_quantized_matmul(
 /// out = quantized_matmul(hidden, down_weight, ...)
 /// ```
 ///
+/// mlxcel `compiled_gelu_approx_mlp_forward` for **split** gate/up/down affine
+/// 4-bit (group_size=64) projections. Compiles the full qmm+gelu_approx+qmm
+/// chain with `shapeless=true` so long Gemma4 prefill does not rebuild the
+/// ~14-op elementwise gelu graph every layer. Returns `None` when the quant
+/// layout is unsupported or the kill-switch `AX_MLX_COMPILED_QGELU_MLP=0` is
+/// set (fail-closed → portable split path).
+#[allow(clippy::too_many_arguments)]
+pub fn compiled_gelu_approx_split_mlp(
+    x: &MlxArray,
+    gate_weight: &MlxArray,
+    gate_scales: &MlxArray,
+    gate_biases: &MlxArray,
+    up_weight: &MlxArray,
+    up_scales: &MlxArray,
+    up_biases: &MlxArray,
+    down_weight: &MlxArray,
+    down_scales: &MlxArray,
+    down_biases: &MlxArray,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<MlxArray> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_compiled_gelu_approx_split_mlp(
+            &mut res.inner,
+            x.inner,
+            gate_weight.inner,
+            gate_scales.inner,
+            gate_biases.inner,
+            up_weight.inner,
+            up_scales.inner,
+            up_biases.inner,
+            down_weight.inner,
+            down_scales.inner,
+            down_biases.inner,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some(res);
+        }
+    }
+    crate::error::clear_stale_error();
+    None
+}
+
 /// This remains a probe surface until a real-shape artifact clears the PRD's
 /// promotion gate. Production model code should continue using the portable
 /// route unless a later commit adds explicit routing and kill switches.
@@ -2863,6 +2931,94 @@ mod tests {
             portable.data_f32().to_vec(),
             "direct C++ activation+quantized-matmul shim must preserve portable math"
         );
+    }
+
+    #[test]
+    fn compiled_gelu_approx_split_mlp_matches_portable_split_ffn() {
+        // mlxcel residual: shapeless compile of split gate/up/gelu/down for
+        // affine gs64/4bit must match the portable op-at-a-time path.
+        // x [2,4,64]; weight [out=64, in=64] so group_size=64 divides last dim.
+        let x_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
+        let w_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[2, 4, 64],
+            MlxDtype::Float32,
+        );
+        let w = MlxArray::from_raw_data(
+            w_data.as_ptr() as *const u8,
+            std::mem::size_of_val(w_data.as_slice()),
+            &[64, 64],
+            MlxDtype::Float32,
+        );
+        let q = quantize(
+            &w,
+            Some(64),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        let compiled = compiled_gelu_approx_split_mlp(
+            &x,
+            &q[0],
+            &q[1],
+            &q[2],
+            &q[0],
+            &q[1],
+            &q[2],
+            &q[0],
+            &q[1],
+            &q[2],
+            64,
+            4,
+            None,
+        )
+        .expect("gs64/4bit split MLP compile path should engage");
+        let gate = quantized_matmul(
+            &x,
+            &q[0],
+            &q[1],
+            Some(&q[2]),
+            true,
+            Some(64),
+            Some(4),
+            None,
+        );
+        let up = quantized_matmul(
+            &x,
+            &q[0],
+            &q[1],
+            Some(&q[2]),
+            true,
+            Some(64),
+            Some(4),
+            None,
+        );
+        let hidden = gelu_approx_mul(&gate, &up, None);
+        let portable = quantized_matmul(
+            &hidden,
+            &q[0],
+            &q[1],
+            Some(&q[2]),
+            true,
+            Some(64),
+            Some(4),
+            None,
+        );
+        eval(&[&compiled, &portable]);
+        assert_eq!(compiled.shape(), portable.shape());
+        let c = compiled.data_f32().to_vec();
+        let p = portable.data_f32().to_vec();
+        assert_eq!(c.len(), p.len());
+        for (a, b) in c.iter().zip(p.iter()) {
+            assert!(
+                (a - b).abs() < 1e-3 || (a - b).abs() / (b.abs().max(1e-6)) < 1e-3,
+                "compiled split MLP must match portable within tol: {a} vs {b}"
+            );
+        }
     }
 
     #[test]

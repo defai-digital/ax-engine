@@ -1,7 +1,8 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
-    expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, maximum, multiply,
+    compiled_gelu_approx_split_mlp, expand_dims_axes, gelu_approx_mul,
+    gelu_approx_mul_quantized_matmul, maximum, multiply,
     quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax,
     softmax_precise, sum_axis, take, take_along_axis, topk_axis, zeros,
 };
@@ -2055,6 +2056,46 @@ fn ffn_swiglu_with_policy(
             {
                 return result;
             }
+        }
+        // mlxcel residual: `compiled_gelu_approx_mlp_forward` for split affine
+        // qGELU MLP. Engages multi-token prefill only for gs64/bits=4; 8-bit
+        // multi-token stays portable (mlxcel #680). Decode (seq==1) may still
+        // compile 8-bit via the C++ single-token gate.
+        if cfg.uses_geglu
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && let Some(down_w) = w.down_proj.as_ref()
+            && let (Some(g_s), Some(u_s), Some(d_s)) =
+                (gate_w.scales.as_ref(), up_w.scales.as_ref(), down_w.scales.as_ref())
+            && let (Some(g_b), Some(u_b), Some(d_b)) =
+                (gate_w.biases.as_ref(), up_w.biases.as_ref(), down_w.biases.as_ref())
+            && gate_w.group_size > 0
+            && gate_w.bits > 0
+            && up_w.group_size == gate_w.group_size
+            && up_w.bits == gate_w.bits
+            && down_w.group_size == gate_w.group_size
+            && down_w.bits == gate_w.bits
+            && let Some(ffn_out) = compiled_gelu_approx_split_mlp(
+                x,
+                &gate_w.weight,
+                g_s,
+                g_b,
+                &up_w.weight,
+                u_s,
+                u_b,
+                &down_w.weight,
+                d_s,
+                d_b,
+                gate_w.group_size,
+                gate_w.bits,
+                None,
+            )
+        {
+            return match post_norm {
+                Some(norm_w) => rms_norm(&ffn_out, Some(norm_w), cfg.rms_norm_eps, None),
+                None => ffn_out,
+            };
         }
         packed_gate_up = None;
         let gate = qw_with_policy(x, gate_w, projection_policy);
