@@ -92,6 +92,7 @@ impl ModelExecutionArbiter {
     }
 }
 
+#[derive(Default)]
 struct ModelExecutionState {
     /// Models currently holding an execution turn. Size ≤ max_concurrent.
     held_models: BTreeSet<String>,
@@ -103,19 +104,6 @@ struct ModelExecutionState {
     /// prefill cannot dual-hold with interactive decode (S1 gap). Short
     /// multi-stream decode (S3) keeps concurrent slots after this expires.
     long_prefill_exclusive_until: Option<Instant>,
-}
-
-impl Default for ModelExecutionState {
-    fn default() -> Self {
-        Self {
-            held_models: BTreeSet::new(),
-            last_served: None,
-            last_activity: BTreeMap::new(),
-            waiters: BTreeMap::new(),
-            stats: BTreeMap::new(),
-            long_prefill_exclusive_until: None,
-        }
-    }
 }
 
 /// Resolve `AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT` (default 1 = exclusive).
@@ -1959,10 +1947,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sibling_engine_step_burst_defaults_between_one_and_full_burst() {
+    fn sibling_engine_step_burst_default_is_sixteen() {
         // Exclusive multi-model: not 1 (arbiter thr tax) and not full HOL burst.
-        assert!(SIBLING_ENGINE_STEP_BURST_DEFAULT >= 2);
-        assert!(SIBLING_ENGINE_STEP_BURST_DEFAULT < STREAM_ENGINE_STEP_BURST);
         assert_eq!(SIBLING_ENGINE_STEP_BURST_DEFAULT, 16);
     }
 

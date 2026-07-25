@@ -72,9 +72,7 @@ pub(crate) fn direct_qk_norm_rope_route_enabled_for_family(
     let gemma_family_default = gemma_direct_qk_norm_rope_default_family(model_family)
         && fastpath::gemma_direct_cpp_qk_norm_rope_enabled();
     direct_qk_norm_rope_route_allowed(
-        fastpath::direct_cpp_qk_norm_rope_enabled()
-            || qwen_family_default
-            || gemma_family_default,
+        fastpath::direct_cpp_qk_norm_rope_enabled() || qwen_family_default || gemma_family_default,
         norm,
     )
 }
@@ -884,23 +882,20 @@ pub(crate) fn build_layer_masks_for_forward(
         .iter()
         .map(|lc| {
             memo.entry(lc.sliding_window)
-                .or_insert_with(|| {
-                    match cache.sliding_ring_layout(lc.sliding_window, seq) {
-                        Some(ring) if ring.needs_mask(seq) => Some(create_ring_sliding_mask(
-                            seq,
-                            ring.window,
-                            ring.capacity,
-                            ring.write_start,
-                        )),
-                        Some(_) => None,
-                        None => {
-                            if seq == 1 {
-                                return None;
-                            }
-                            let mask_key_len =
-                                attention_mask_key_len(seq, key_len, lc.sliding_window);
-                            attention_mask_array(seq, mask_key_len, lc.sliding_window)
+                .or_insert_with(|| match cache.sliding_ring_layout(lc.sliding_window, seq) {
+                    Some(ring) if ring.needs_mask(seq) => Some(create_ring_sliding_mask(
+                        seq,
+                        ring.window,
+                        ring.capacity,
+                        ring.write_start,
+                    )),
+                    Some(_) => None,
+                    None => {
+                        if seq == 1 {
+                            return None;
                         }
+                        let mask_key_len = attention_mask_key_len(seq, key_len, lc.sliding_window);
+                        attention_mask_array(seq, mask_key_len, lc.sliding_window)
                     }
                 })
                 .clone()

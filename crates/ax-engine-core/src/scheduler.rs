@@ -2062,12 +2062,14 @@ mod tests {
 
         let schedule_plan = scheduler.plan(&input);
         // Exhausted: prefill budget 0 → no batch / all deferred.
-        assert!(schedule_plan.execution_batch.is_none() || {
-            schedule_plan
-                .execution_batch
-                .as_ref()
-                .is_some_and(|b| b.total_scheduled_tokens == 0)
-        });
+        assert!(
+            schedule_plan.execution_batch.is_none() || {
+                schedule_plan
+                    .execution_batch
+                    .as_ref()
+                    .is_some_and(|b| b.total_scheduled_tokens == 0)
+            }
+        );
         assert!(
             !schedule_plan.deferred_requests.is_empty()
                 || !schedule_plan.memory_blocked_requests.is_empty()

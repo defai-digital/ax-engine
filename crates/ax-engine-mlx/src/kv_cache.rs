@@ -2420,12 +2420,7 @@ impl MlxKVCache {
             new_tokens <= capacity,
             "rotating cold append cannot exceed ring capacity ({new_tokens} > {capacity})"
         );
-        let buf_shape = [
-            1i32,
-            append.n_kv_heads,
-            capacity as i32,
-            append.head_dim,
-        ];
+        let buf_shape = [1i32, append.n_kv_heads, capacity as i32, append.head_dim];
         let mut k_buf = zeros(&buf_shape, append.dtype, None);
         let mut v_buf = zeros(&buf_shape, append.dtype, None);
         // Scatter new tokens into ring slots (wraps at most once).

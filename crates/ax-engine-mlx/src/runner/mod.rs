@@ -12236,7 +12236,13 @@ mod tests {
             (false, 0)
         );
         assert_eq!(
-            cache_rotation_for_execution(ExecutionMode::Decode, Some((true, 8)), false, false, 1536),
+            cache_rotation_for_execution(
+                ExecutionMode::Decode,
+                Some((true, 8)),
+                false,
+                false,
+                1536
+            ),
             (true, 8)
         );
         assert_eq!(

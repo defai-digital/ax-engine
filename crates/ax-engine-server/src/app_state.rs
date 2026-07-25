@@ -925,8 +925,7 @@ pub(crate) fn long_prefill_warmup_enabled() -> bool {
 /// Must match the formal harness text so tokenization, attention shapes, and
 /// the OpenAI SSE path after dual-load are the same as the measured trial.
 pub(crate) const S1_GEMMA_LONG_PREFILL_PREFIX: &str = "<bos>";
-pub(crate) const S1_GEMMA_LONG_PREFILL_PATTERN: &str =
-    "The audit record contains alpha beta gamma delta epsilon zeta eta theta and must be retained exactly. ";
+pub(crate) const S1_GEMMA_LONG_PREFILL_PATTERN: &str = "The audit record contains alpha beta gamma delta epsilon zeta eta theta and must be retained exactly. ";
 pub(crate) const S1_GEMMA_LONG_PREFILL_REPEATS: usize = 768;
 
 pub(crate) fn s1_gemma_long_prefill_text() -> String {

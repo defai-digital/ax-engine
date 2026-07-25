@@ -3024,19 +3024,7 @@ mod tests {
         );
         assert_eq!(q.len(), 3);
         let compiled = compiled_gelu_approx_split_mlp(
-            &x,
-            &q[0],
-            &q[1],
-            &q[2],
-            &q[0],
-            &q[1],
-            &q[2],
-            &q[0],
-            &q[1],
-            &q[2],
-            64,
-            bits,
-            None,
+            &x, &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], 64, bits, None,
         )
         .unwrap_or_else(|| panic!("gs64/bits={bits} multi-token split MLP compile should engage"));
         let gate = quantized_matmul(
@@ -3113,16 +3101,11 @@ mod tests {
             None,
         );
         assert_eq!(q.len(), 3);
-        let (c_gate, c_up) = compiled_dual_gate_up_qmm(
-            &x, &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], 64, 8, None,
-        )
-        .expect("multi-token dual gate/up compile should engage for bits=8");
-        let p_gate = quantized_matmul(
-            &x, &q[0], &q[1], Some(&q[2]), true, Some(64), Some(8), None,
-        );
-        let p_up = quantized_matmul(
-            &x, &q[0], &q[1], Some(&q[2]), true, Some(64), Some(8), None,
-        );
+        let (c_gate, c_up) =
+            compiled_dual_gate_up_qmm(&x, &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], 64, 8, None)
+                .expect("multi-token dual gate/up compile should engage for bits=8");
+        let p_gate = quantized_matmul(&x, &q[0], &q[1], Some(&q[2]), true, Some(64), Some(8), None);
+        let p_up = quantized_matmul(&x, &q[0], &q[1], Some(&q[2]), true, Some(64), Some(8), None);
         eval(&[&c_gate, &c_up, &p_gate, &p_up]);
         assert_eq!(c_gate.shape(), p_gate.shape());
         assert_eq!(c_up.shape(), p_up.shape());

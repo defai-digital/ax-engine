@@ -1,11 +1,10 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
-    MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
-    compiled_dual_gate_up_qmm, compiled_gelu_approx_split_mlp, expand_dims_axes,
-    gelu_approx_mul,
-    gelu_approx_mul_quantized_matmul, maximum, multiply,
-    quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax,
-    softmax_precise, sum_axis, take, take_along_axis, topk_axis, zeros,
+    MlxVectorArray, add, argpartition_axis, argsort_axis, astype, compiled_dual_gate_up_qmm,
+    compiled_gelu_approx_split_mlp, divide, expand_dims, expand_dims_axes, gelu_approx_mul,
+    gelu_approx_mul_quantized_matmul, maximum, multiply, quantized_matmul_rms_norm, reshape,
+    rms_norm, silu_mul, slice_last_dim, softmax, softmax_precise, sum_axis, take, take_along_axis,
+    topk_axis, zeros,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -2467,10 +2466,16 @@ fn ffn_swiglu_with_policy(
             && !profile_prefill
             && projection_policy == ProjectionBatchPolicy::Shared
             && let Some(down_w) = w.down_proj.as_ref()
-            && let (Some(g_s), Some(u_s), Some(d_s)) =
-                (gate_w.scales.as_ref(), up_w.scales.as_ref(), down_w.scales.as_ref())
-            && let (Some(g_b), Some(u_b), Some(d_b)) =
-                (gate_w.biases.as_ref(), up_w.biases.as_ref(), down_w.biases.as_ref())
+            && let (Some(g_s), Some(u_s), Some(d_s)) = (
+                gate_w.scales.as_ref(),
+                up_w.scales.as_ref(),
+                down_w.scales.as_ref(),
+            )
+            && let (Some(g_b), Some(u_b), Some(d_b)) = (
+                gate_w.biases.as_ref(),
+                up_w.biases.as_ref(),
+                down_w.biases.as_ref(),
+            )
             && gate_w.group_size > 0
             && gate_w.bits > 0
             && up_w.group_size == gate_w.group_size

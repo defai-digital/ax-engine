@@ -999,7 +999,7 @@ pub const LONG_PROMPT_PREFILL_THRESHOLD: usize = 2048;
 pub fn scale_prefill_chunk_for_remaining(base_chunk: usize, remaining_tokens: usize) -> usize {
     let base = base_chunk.max(1);
     if remaining_tokens >= LONG_PROMPT_PREFILL_THRESHOLD {
-        base.min(LONG_PROMPT_PREFILL_CHUNK).max(1)
+        base.clamp(1, LONG_PROMPT_PREFILL_CHUNK)
     } else {
         base
     }

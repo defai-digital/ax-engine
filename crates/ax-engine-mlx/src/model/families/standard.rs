@@ -1045,24 +1045,16 @@ fn layer_forward_internal(
         // post-append key length (ring capacity when rotating). Rebuild
         // locally on mismatch so mask and K cannot disagree.
         let shared_usable = shared_mask.is_some_and(|m| match m.as_ref() {
-            Some(mask) => mask
-                .shape()
-                .last()
-                .is_some_and(|&k| k as usize == key_len),
+            Some(mask) => mask.shape().last().is_some_and(|&k| k as usize == key_len),
             None => true,
         });
         let local_mask: Option<MlxArray> = if shared_usable {
             None
         } else {
             match ring_layout {
-                Some(ring) if ring.needs_mask(seq) && key_len == ring.capacity => {
-                    Some(create_ring_sliding_mask(
-                        seq,
-                        ring.window,
-                        ring.capacity,
-                        ring.write_start,
-                    ))
-                }
+                Some(ring) if ring.needs_mask(seq) && key_len == ring.capacity => Some(
+                    create_ring_sliding_mask(seq, ring.window, ring.capacity, ring.write_start),
+                ),
                 _ => attention_mask_array(seq, key_len, sliding_window),
             }
         };
