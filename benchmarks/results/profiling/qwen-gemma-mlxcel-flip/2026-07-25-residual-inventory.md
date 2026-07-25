@@ -75,3 +75,7 @@ with MLX 0.32; AX pure already ≳ mlxcel pure. Leave Metal4 bridge port deferre
 ## Dual-gate Metal v3 tiled GEMM (2026-07-25)
 BM=8 / BN=16 / BK=128 full-TG coop loads: pure median **8.52×** slower, empty text.
 Reject. Host-side + naive custom GEMM still cannot beat MLX qmm for gate_up.
+
+## Formal multi-process AX S1 (2026-07-25)
+Harness AX multi-process target vs mlxcel: thr **1.062×**, gap ratio **1.32×** (46ms abs), TTFT **0.940×**.
+not_yet. Topology residual insufficient for locked thr≥1.15.

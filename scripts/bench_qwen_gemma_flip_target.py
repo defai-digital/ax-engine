@@ -327,6 +327,24 @@ class ProcessSupervisor:
     def command_for(self, model: ModelTarget) -> list[str]:
         if self.target.binary is None or model.model_path is None or model.port is None:
             raise RuntimeError(f"managed process configuration is incomplete for {model.model_id}")
+        # mlxcel multi-process CLI (`-m` / `--alias`). AX multi-process topology
+        # residual (mlxcel deep-review §S1): one process per model so Metal can
+        # time-share like the dual-process baseline; AX CLI is different.
+        if self.target.runtime == "ax-engine":
+            return [
+                self.target.binary,
+                "--model-id",
+                model.served_model or model.model_id,
+                "--mlx",
+                "--mlx-model-artifacts-dir",
+                str(model.model_path),
+                "--host",
+                self.target.host,
+                "--port",
+                str(model.port),
+                *self.target.common_args,
+                *model.args,
+            ]
         return [
             self.target.binary,
             "-m",
