@@ -278,6 +278,24 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK` — after each *intermediate*
+    /// prefill chunk is evaluated, call MLX `clear_cache()` (return freelist
+    /// to the OS / pool) before building the next chunk's graph.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK=0`).
+    ///
+    /// Residual vs mlxcel `chunked_prefill_last_logits` (generate.rs / issue
+    /// #672): every chunk sees a different key length, so scores/masks/logits
+    /// land in differently-sized allocations; without inter-chunk clear the
+    /// allocator keeps each shape's high-water mark for the whole prompt.
+    /// Final chunk still clears after sampling (existing path). Pure-wall A/B
+    /// on mbp-m5 decides keep vs kill for thr.
+    prefill_clear_cache_per_chunk_enabled,
+    "AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_ROTATING_SLIDING_DECODE` — use a rotating backing store for
     /// sliding-window KV layers on rollback-free direct greedy decode.
     ///
@@ -1544,6 +1562,21 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_GEMMA_DIRECT_CPP_QK_NORM_ROPE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn prefill_clear_cache_per_chunk_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_PREFILL_CLEAR_CACHE_PER_CHUNK_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_PREFILL_CLEAR_CACHE_PER_CHUNK_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_PREFILL_CLEAR_CACHE_PER_CHUNK_ENABLED",
             "1"
         ));
     }

@@ -366,6 +366,13 @@ pub fn chunked_prefill_with_sampling_buffers(
             // materialises the KV cache arrays alongside the hidden state to
             // prevent O(N²) lazy-graph growth across chunks.
             eval_with_kv_refs(&logits, cache);
+            // mlxcel residual (issue #672): release freelist between chunks so
+            // differently-sized attention/mask/logits transients do not keep
+            // each shape's high-water mark across the whole prompt. KV arrays
+            // are already materialised above and stay live in `cache`.
+            if crate::fastpath::prefill_clear_cache_per_chunk_enabled() {
+                clear_cache();
+            }
         }
     }
 }
