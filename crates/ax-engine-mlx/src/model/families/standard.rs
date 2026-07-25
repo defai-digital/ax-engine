@@ -63,7 +63,8 @@ use super::super::shared::{
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
     moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
     qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project,
-    qkv_project_batched, qw, rms_norm_opt, shape_element_count, shared_expert_forward,
+    qkv_project_batched, qkv_project_with_input_norm, qw, rms_norm_opt, shape_element_count,
+    shared_expert_forward,
 };
 use crate::attention_mask::{batched_decode_validity_mask_with_window, create_ring_sliding_mask};
 use crate::batched_kv_cache::BatchedKvCache;
@@ -720,8 +721,21 @@ fn layer_forward_internal(
         return hidden.clone();
     }
 
-    // 1. Attention norm.
-    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+    // 1. Attention norm (may be fused into packed QKV below when
+    // AX_MLX_ATTN_NORM_QKV_FUSE=1).
+    let fuse_attn_norm_qkv = fastpath::attn_norm_qkv_fuse_enabled()
+        && w.qkv_packed.is_some()
+        && kv_source.is_none();
+    let normed = if fuse_attn_norm_qkv {
+        None
+    } else {
+        Some(rms_norm(
+            hidden,
+            Some(&w.attn_norm),
+            cfg.rms_norm_eps,
+            None,
+        ))
+    };
 
     let ring_layout = cache.sliding_ring_layout(sliding_window, seq);
     let profile_gemma4_moe_decode =
@@ -737,8 +751,11 @@ fn layer_forward_internal(
         let pre_sdpa_started = profile_forward_layer.then(Instant::now);
         let (q_rope, attention_kv, attn_gate) = if let Some(src_layer) = kv_source {
             // KV-shared layer (Gemma4 layers 24-41): compute Q only.
+            let normed = normed
+                .as_ref()
+                .expect("KV-shared path keeps portable attn_norm");
             let q_raw = qw(
-                &normed,
+                normed,
                 w.q_proj.as_ref().expect("KV-shared layer must have q_proj"),
             );
             let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
@@ -825,7 +842,25 @@ fn layer_forward_internal(
         } else {
             // Normal layer: compute Q, K, V from own projections.
             let qkv_proj_started = profile_forward_layer.then(Instant::now);
-            let (q_raw, k_raw, v_raw, attn_gate_raw) = qkv_project(cfg, w, &normed, head_dim);
+            let (q_raw, k_raw, v_raw, attn_gate_raw) = if fuse_attn_norm_qkv {
+                qkv_project_with_input_norm(
+                    cfg,
+                    w,
+                    hidden,
+                    head_dim,
+                    Some(&w.attn_norm),
+                    cfg.rms_norm_eps,
+                )
+            } else {
+                qkv_project(
+                    cfg,
+                    w,
+                    normed
+                        .as_ref()
+                        .expect("portable path materializes attn_norm"),
+                    head_dim,
+                )
+            };
             let kv_heads = (k_raw.shape()[2] as usize)
                 .checked_div(head_dim)
                 .expect("k projection output must divide by head_dim");

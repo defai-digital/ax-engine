@@ -598,6 +598,32 @@ mx::array quantized_matmul_rms_norm_impl(
   return mx::fast::rms_norm(projected, norm_weight, eps, stream);
 }
 
+// Gemma residual (mbp-m5 pure 13.8k): pre_sdpa_qkv_proj ~1.07s after gate_up /
+// down / o_proj levers. mlxcel gemma4 layer keeps input_layernorm then separate
+// Q/K/V (or fused-QKV opt-in) as distinct ops. AX packed-QKV already collapses
+// the three projs; this fuses the preceding attn RMSNorm into the same C++
+// call: rms_norm(x) → quantized_matmul(packed_qkv).
+mx::array rms_norm_quantized_matmul_impl(
+    const mx::array& x,
+    const mx::array& norm_weight,
+    float eps,
+    const mx::array& weight,
+    const mx::array& scales,
+    std::optional<mx::array> biases,
+    int group_size,
+    int bits,
+    mx::StreamOrDevice stream) {
+  auto normed = mx::fast::rms_norm(x, norm_weight, eps, stream);
+  return quantized_matmul_affine_impl(
+      normed,
+      weight,
+      scales,
+      std::move(biases),
+      group_size,
+      bits,
+      stream);
+}
+
 } // namespace
 
 extern "C" int ax_mlx_gelu_approx_mul(
@@ -711,6 +737,34 @@ extern "C" int ax_mlx_quantized_matmul_rms_norm(
             bits,
             aref(norm_weight),
             eps,
+            sd(stream)));
+    return 0;
+  } AX_CATCH
+}
+
+extern "C" int ax_mlx_rms_norm_quantized_matmul(
+    mlx_array* res,
+    const mlx_array x,
+    const mlx_array norm_weight,
+    float eps,
+    const mlx_array weight,
+    const mlx_array scales,
+    const mlx_array biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    aset(
+        res,
+        rms_norm_quantized_matmul_impl(
+            aref(x),
+            aref(norm_weight),
+            eps,
+            aref(weight),
+            aref(scales),
+            opt_arr(biases),
+            group_size,
+            bits,
             sd(stream)));
     return 0;
   } AX_CATCH

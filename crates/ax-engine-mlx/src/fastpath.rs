@@ -458,6 +458,20 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_ATTN_NORM_QKV_FUSE` — fuse attention input RMSNorm with the
+    /// packed dense QKV quantized matmul into one C++ call
+    /// (`rms_norm_quantized_matmul`). Profile residual: pure Gemma 13.8k
+    /// `pre_sdpa_qkv_proj` ~1.07s (next largest after gate_up / down / o_proj).
+    ///
+    /// mlxcel: `input_layernorm.forward` then separate Q/K/V (or opt-in fused
+    /// QKV) — no norm+proj fuse (`gemma4.rs` layer residual).
+    ///
+    /// **Default: OFF** (opt-in pure A/B). Requires packed QKV + scales.
+    attn_norm_qkv_fuse_enabled,
+    "AX_MLX_ATTN_NORM_QKV_FUSE"
+);
+
+env_flag!(
     /// `AX_MLX_DENSE_GEGLU_DOWN_FUSE` — multi-token split GEGLU product fused
     /// into the dense FFN down_proj quantized matmul (one C++ graph-build for
     /// gelu_approx(gate)*up → down qmm). Targets pure prefill residual after
@@ -1639,6 +1653,19 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_O_PROJ_QMATMUL_RMS_NORM_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn attn_norm_qkv_fuse_uses_opt_in_contract() {
+        assert!(!parse_bool_env("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_UNSET"));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_ENABLED",
             "1"
         ));
     }

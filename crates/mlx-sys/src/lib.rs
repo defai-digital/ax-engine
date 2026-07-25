@@ -73,6 +73,7 @@ pub use ops::{
     layer_norm, less, less_equal, log, log1p, logical_and, matmul, maximum, minimum, multiply,
     negative, not_equal, outer, pad, power, put_along_axis, qk_norm_rope_bhsd_from_proj, quantize,
     quantized_matmul, quantized_matmul_rms_norm, quantized_matmul_with_mode,
+    rms_norm_quantized_matmul,
     qwen_linear_attention_inputs_packed, qwen_linear_attention_post_input, random_categorical,
     repeat, repeat_axis, reshape, sigmoid, silu_mul, sin, slice, slice_last_dim, slice_update,
     softmax, softmax_precise, split, stack, stop_gradient, subtract, sum_axis, swiglu_oai, take,

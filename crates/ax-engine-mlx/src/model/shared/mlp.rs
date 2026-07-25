@@ -3,8 +3,8 @@ use mlx_sys::{
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, compiled_dual_gate_up_qmm,
     compiled_gelu_approx_split_mlp, divide, expand_dims, expand_dims_axes, gelu_approx_mul,
     gelu_approx_mul_quantized_matmul, maximum, multiply, quantized_matmul_rms_norm, reshape,
-    rms_norm, silu_mul, slice_last_dim, softmax, softmax_precise, sum_axis, take, take_along_axis,
-    topk_axis, zeros,
+    rms_norm, rms_norm_quantized_matmul, silu_mul, slice_last_dim, softmax, softmax_precise,
+    sum_axis, take, take_along_axis, topk_axis, zeros,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -81,7 +81,30 @@ pub(crate) fn qkv_project(
     x: &MlxArray,
     head_dim: usize,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
-    qkv_project_inner(cfg, w, x, head_dim, false, ProjectionBatchPolicy::Shared)
+    qkv_project_inner(cfg, w, x, head_dim, false, ProjectionBatchPolicy::Shared, None)
+}
+
+/// Like [`qkv_project`], but when `input_norm` is provided and
+/// `AX_MLX_ATTN_NORM_QKV_FUSE=1`, fuses `rms_norm(x, input_norm)` into the
+/// packed-QKV quantized matmul (one C++ call). Falls back to portable
+/// rms_norm then project when the fuse path is unavailable.
+pub(crate) fn qkv_project_with_input_norm(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    head_dim: usize,
+    input_norm: Option<&MlxArray>,
+    eps: f32,
+) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
+    qkv_project_inner(
+        cfg,
+        w,
+        x,
+        head_dim,
+        false,
+        ProjectionBatchPolicy::Shared,
+        input_norm.map(|n| (n, eps)),
+    )
 }
 
 /// Projection policy for the batched-decode path: `RowExact` (per-row,
@@ -102,7 +125,15 @@ pub(crate) fn qkv_project_batched(
     x: &MlxArray,
     head_dim: usize,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
-    qkv_project_inner(cfg, w, x, head_dim, false, batched_projection_policy())
+    qkv_project_inner(
+        cfg,
+        w,
+        x,
+        head_dim,
+        false,
+        batched_projection_policy(),
+        None,
+    )
 }
 
 /// Embedding variant of `qkv_project`: prefers a packed-QKV single-matmul when
@@ -125,6 +156,7 @@ pub(crate) fn qkv_project_embed(
         head_dim,
         force_packed,
         ProjectionBatchPolicy::Shared,
+        None,
     )
 }
 
@@ -135,6 +167,7 @@ fn qkv_project_inner(
     head_dim: usize,
     force_packed: bool,
     projection_policy: ProjectionBatchPolicy,
+    input_norm: Option<(&MlxArray, f32)>,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
     let slices = qkv_slices(cfg, head_dim);
     let batch = x.shape().first().copied().unwrap_or(1);
@@ -148,7 +181,28 @@ fn qkv_project_inner(
         w.q_proj.is_some() && w.k_proj.is_some(),
     );
     if !prefer_split && let Some(packed) = &w.qkv_packed {
-        let out = qw_with_policy(x, packed, projection_policy);
+        let out = if let Some((norm_w, eps)) = input_norm
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && fastpath::attn_norm_qkv_fuse_enabled()
+            && let Some(scales) = packed.scales.as_ref()
+        {
+            rms_norm_quantized_matmul(
+                x,
+                norm_w,
+                eps,
+                &packed.weight,
+                scales,
+                packed.biases.as_ref(),
+                packed.group_size,
+                packed.bits,
+                None,
+            )
+        } else if let Some((norm_w, eps)) = input_norm {
+            let normed = rms_norm(x, Some(norm_w), eps, None);
+            qw_with_policy(&normed, packed, projection_policy)
+        } else {
+            qw_with_policy(x, packed, projection_policy)
+        };
         let (q, gate) = if let Some((gate_start, gate_end)) = slices.gate {
             // attn_output_gate=true: the q section of the packed output preserves
             // q_proj's per-head interleaved layout `[h0_q, h0_gate, h1_q, h1_gate, ...]`,
@@ -183,7 +237,14 @@ fn qkv_project_inner(
         let v = mlx_slice_last_dim(&out, slices.v.0, slices.v.1);
         (q, k, v, gate)
     } else {
-        let q_full = qw_with_policy(x, w.q_proj.as_ref().unwrap(), projection_policy);
+        let normed;
+        let x_in = if let Some((norm_w, eps)) = input_norm {
+            normed = rms_norm(x, Some(norm_w), eps, None);
+            &normed
+        } else {
+            x
+        };
+        let q_full = qw_with_policy(x_in, w.q_proj.as_ref().unwrap(), projection_policy);
         let (q, gate) = if slices.gate.is_some() {
             // attn_output_gate=true: q_proj output is [B, L, n_heads, 2*head_dim] interleaved.
             // Split by reshaping to [B, L, n_heads, 2*head_dim] and slicing last dim,
@@ -209,11 +270,11 @@ fn qkv_project_inner(
             // q_proj output is exactly [B, L, n_heads * head_dim] — no slice needed.
             (q_full, None)
         };
-        let k = qw_with_policy(x, w.k_proj.as_ref().unwrap(), projection_policy);
+        let k = qw_with_policy(x_in, w.k_proj.as_ref().unwrap(), projection_policy);
         let v = w
             .v_proj
             .as_ref()
-            .map(|v_proj| qw_with_policy(x, v_proj, projection_policy))
+            .map(|v_proj| qw_with_policy(x_in, v_proj, projection_policy))
             .unwrap_or_else(|| k.clone());
         (q, k, v, gate)
     }

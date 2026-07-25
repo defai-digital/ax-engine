@@ -144,6 +144,19 @@ unsafe extern "C" {
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
+    fn ax_mlx_rms_norm_quantized_matmul(
+        res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        norm_weight: ffi::mlx_array,
+        eps: libc::c_float,
+        weight: ffi::mlx_array,
+        scales: ffi::mlx_array,
+        biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_qwen_linear_attention_inputs_packed(
         qkv_res: *mut ffi::mlx_array,
         z_res: *mut ffi::mlx_array,
@@ -1066,6 +1079,57 @@ pub fn quantized_matmul_rms_norm(
         s,
     );
     crate::fast::rms_norm(&projected, Some(norm_weight), eps, s)
+}
+
+/// Compute `quantized_matmul(rms_norm(x, norm_weight, eps), weight, …)` in one
+/// C++ call (attn input-norm + packed QKV / linear pattern).
+///
+/// Falls back to `rms_norm + quantized_matmul` on shim error.
+#[allow(clippy::too_many_arguments)]
+pub fn rms_norm_quantized_matmul(
+    x: &MlxArray,
+    norm_weight: &MlxArray,
+    eps: f32,
+    weight: &MlxArray,
+    scales: &MlxArray,
+    biases: Option<&MlxArray>,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let biases_raw = biases.map(|b| b.inner).unwrap_or_else(null_ffi_array);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_rms_norm_quantized_matmul(
+            &mut res.inner,
+            x.inner,
+            norm_weight.inner,
+            eps,
+            weight.inner,
+            scales.inner,
+            biases_raw,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return res;
+        }
+    }
+    crate::error::clear_stale_error();
+    let normed = crate::fast::rms_norm(x, Some(norm_weight), eps, s);
+    quantized_matmul(
+        &normed,
+        weight,
+        scales,
+        biases,
+        true,
+        Some(group_size),
+        Some(bits),
+        s,
+    )
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
