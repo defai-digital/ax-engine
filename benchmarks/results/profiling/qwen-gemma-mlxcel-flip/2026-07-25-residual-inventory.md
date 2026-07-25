@@ -166,3 +166,16 @@ Hypothesis residual: `#672` cache-only eval barrier count ∝ ceil(tokens/chunk)
 | 1024 | 11202 | **1.347** |
 
 **Decision `reject_keep_c512`.** Larger chunks do not cut pure under cache_eval (eval-barrier hypothesis fails; matmul/chunk shape tax dominates). No cool multi-process S1 remeasure. Artifact: `2026-07-25-pure-chunk768-1024-cache-eval-ab/`.
+
+## GEMM-class dual-gate hybrid pure A/B (2026-07-25)
+mlxcel review: multi-token bits=8 uses op-at-a-time dual steel qmm (#680) — no dual-output GEMM. AX load-time `pack_dense_ffn_gate_up` is the GEMM-class lever (one steel qmm, single X load). Long Gemma prefill defaults to split; prior packed A/B ~1.03×.
+
+Hypothesis: packed qmm helps but `packed_geglu_metal` hurts. Hybrid under cache_eval keep_base:
+
+| variant | cold median ms | ratio vs base |
+|---------|---------------:|--------------:|
+| base (split prefill) | 8277 | 1.000 |
+| hybrid (packed qmm + split Metal GEGLU) | 8479 | **1.024** |
+| packed_metal (packed qmm + packed GEGLU metal) | 8307 | **1.004** |
+
+**Decision `reject_keep_base`.** Neither path ≤0.96. Packed single-qmm does not beat split dual steel qmm on M5 Max for bits=8 multi-token (weight bandwidth dominates X re-read). No cool S1 / no S0–S3. Artifact: `2026-07-25-pure-packed-split-geglu-ab/`.

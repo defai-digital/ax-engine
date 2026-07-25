@@ -85,6 +85,8 @@ Metal GEGLU (Metal wins pure 1.018× vs compiled GeGLU on M5).
 | `ASYNC_DUAL_GATE_UP` | 1.007 | reject OFF |
 | `DUAL_STREAM_GATE_UP` (2 GPU streams) | **1.147** | reject OFF |
 | Packed gate/up vs split | ~1.03 | keep split |
+| packed hybrid (qmm + split GEGLU) under cache_eval | **1.024** | reject keep split |
+| packed + packed_geglu_metal under cache_eval | **1.004** | reject keep split |
 | `COMPILED_GEGLU_ACTIVATION` | 1.018 | keep Metal GEGLU |
 
 **Conclusion:** Host-FFI collapse, compile, async co-submit, and dual Metal

@@ -1,0 +1,213 @@
+{
+  "cold": {
+    "base": [
+      8212.501167028677,
+      8304.893499996979,
+      8276.698041998316
+    ],
+    "hybrid": [
+      8587.207790988032,
+      8478.593249979895,
+      8457.485084014479
+    ],
+    "packed_metal": [
+      8548.520750016905,
+      8289.634709013626,
+      8307.354291027877
+    ]
+  },
+  "warm": {
+    "base": [
+      8287.799915997311,
+      8459.1955000069,
+      8296.658166975249
+    ],
+    "hybrid": [
+      9098.505292029586,
+      8487.027875031345,
+      8480.623750016093
+    ],
+    "packed_metal": [
+      8853.505167004187,
+      8333.556291996501,
+      8313.769583997782
+    ]
+  },
+  "medians_cold": {
+    "base": 8276.698041998316,
+    "hybrid": 8478.593249979895,
+    "packed_metal": 8307.354291027877
+  },
+  "ratios_vs_base": {
+    "base": 1.0,
+    "hybrid": 1.0243932069234742,
+    "packed_metal": 1.0037039226118922
+  },
+  "keep_if_ratio_lt": 0.96,
+  "decision": "reject_keep_base",
+  "residual": "GEMM-class dual-gate hybrid: one packed steel qmm (concat gate/up rows) + split Metal GEGLU; mlxcel multi-token bits=8 remains dual steel qmm (#680)",
+  "results": [
+    {
+      "name": "base_r1",
+      "cold_ms": 8212.501167028677,
+      "warm_ms": 8287.799915997311,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_GEMMA4_SPLIT_PREFILL_FFN": "1",
+        "AX_MLX_DENSE_GEGLU_PACKED_METAL": "1"
+      }
+    },
+    {
+      "name": "hybrid_r1",
+      "cold_ms": 8587.207790988032,
+      "warm_ms": 9098.505292029586,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_GEMMA4_SPLIT_PREFILL_FFN": "0",
+        "AX_MLX_DENSE_GEGLU_PACKED_METAL": "0"
+      }
+    },
+    {
+      "name": "packed_metal_r1",
+      "cold_ms": 8548.520750016905,
+      "warm_ms": 8853.505167004187,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_GEMMA4_SPLIT_PREFILL_FFN": "0",
+        "AX_MLX_DENSE_GEGLU_PACKED_METAL": "1"
+      }
+    },
+    {
+      "name": "base_r2",
+      "cold_ms": 8304.893499996979,
+      "warm_ms": 8459.1955000069,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_GEMMA4_SPLIT_PREFILL_FFN": "1",
+        "AX_MLX_DENSE_GEGLU_PACKED_METAL": "1"
+      }
+    },
+    {
+      "name": "hybrid_r2",
+      "cold_ms": 8478.593249979895,
+      "warm_ms": 8487.027875031345,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_GEMMA4_SPLIT_PREFILL_FFN": "0",
+        "AX_MLX_DENSE_GEGLU_PACKED_METAL": "0"
+      }
+    },
+    {
+      "name": "packed_metal_r2",
+      "cold_ms": 8289.634709013626,
+      "warm_ms": 8333.556291996501,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_GEMMA4_SPLIT_PREFILL_FFN": "0",
+        "AX_MLX_DENSE_GEGLU_PACKED_METAL": "1"
+      }
+    },
+    {
+      "name": "base_r3",
+      "cold_ms": 8276.698041998316,
+      "warm_ms": 8296.658166975249,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_GEMMA4_SPLIT_PREFILL_FFN": "1",
+        "AX_MLX_DENSE_GEGLU_PACKED_METAL": "1"
+      }
+    },
+    {
+      "name": "hybrid_r3",
+      "cold_ms": 8457.485084014479,
+      "warm_ms": 8480.623750016093,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_GEMMA4_SPLIT_PREFILL_FFN": "0",
+        "AX_MLX_DENSE_GEGLU_PACKED_METAL": "0"
+      }
+    },
+    {
+      "name": "packed_metal_r3",
+      "cold_ms": 8307.354291027877,
+      "warm_ms": 8313.769583997782,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_GEMMA4_SPLIT_PREFILL_FFN": "0",
+        "AX_MLX_DENSE_GEGLU_PACKED_METAL": "1"
+      }
+    }
+  ]
+}
