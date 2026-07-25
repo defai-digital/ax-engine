@@ -197,3 +197,7 @@ Path B probe: multi-process + cache_eval + asymmetric wired
 See `2026-07-25-best-practices-path.md`. Recommended: accept **`not_yet`**, keep
 locked gates, stop residual thrash until product supplies A/B/C with a real
 design or explicit gate policy.
+
+## Terminal decision (2026-07-25 resume)
+See `2026-07-25-terminal-decision.md`. Campaign closes **`not_yet`** under locked
+gates; best thr **1.109×**; full S0–S3 flip not claimed.
