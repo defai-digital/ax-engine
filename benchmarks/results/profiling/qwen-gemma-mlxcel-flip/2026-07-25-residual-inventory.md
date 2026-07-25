@@ -42,3 +42,7 @@ Need thr ≳20.7 (scenario wall ≲9.3s from ~10.4s, ~11% cut).
 | exclusive tip (default) | 1.036 | 8.9 ms | only thr fails |
 | dualhold-q4 | 1.054 | 166 ms | gap FAIL |
 | thr-quanta-128 exclusive | 1.045 | 8.9 ms | thr still FAIL |
+
+## Stacked small wins pure (2026-07-25)
+#672 eval+clear + qmm_rms + chunk1024 vs portable: median ratio **1.052×** (worse).
+Decision reject_stack — small wins do not compose under thermal/host interaction.

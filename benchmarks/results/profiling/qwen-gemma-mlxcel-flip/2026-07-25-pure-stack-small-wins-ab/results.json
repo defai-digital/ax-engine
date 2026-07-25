@@ -1,0 +1,97 @@
+{
+  "off_cold": [
+    8642.414958041627,
+    8675.560000003316,
+    10121.277083002497
+  ],
+  "stack_cold": [
+    9210.030457994435,
+    9122.739750018809,
+    9048.178208002355
+  ],
+  "off_median": 8675.560000003316,
+  "stack_median": 9122.739750018809,
+  "ratio_median": 1.0515447705987075,
+  "keep_if_ratio_lt": 0.925,
+  "decision": "reject_stack",
+  "results": [
+    {
+      "name": "off_r1",
+      "cold_ms": 8642.414958041627,
+      "warm_ms": 8633.27233295422,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "stack_r1",
+      "cold_ms": 9210.030457994435,
+      "warm_ms": 8932.030208001379,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "off_r2",
+      "cold_ms": 8675.560000003316,
+      "warm_ms": 8563.962832966354,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "stack_r2",
+      "cold_ms": 9122.739750018809,
+      "warm_ms": 9331.900499993935,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "off_r3",
+      "cold_ms": 10121.277083002497,
+      "warm_ms": 9378.749499970581,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "stack_r3",
+      "cold_ms": 9048.178208002355,
+      "warm_ms": 9288.552499958314,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    }
+  ]
+}
