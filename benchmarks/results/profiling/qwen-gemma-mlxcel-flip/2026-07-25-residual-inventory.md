@@ -35,3 +35,10 @@ Need thr ≳20.7 (scenario wall ≲9.3s from ~10.4s, ~11% cut).
 1. Pure GPU ≥11% beyond current best (needs GEMM-class dual-gate or MLX-level win).
 2. Dual-stream with gap ≤50 ms (no successful measurement yet on M5 Max).
 3. Do **not** relax gates; do **not** claim flip without S0–S3 decision=flip.
+
+## Schedule A/Bs this session (S1)
+| config | thr ratio | gap p95 | note |
+|--------|----------:|--------:|------|
+| exclusive tip (default) | 1.036 | 8.9 ms | only thr fails |
+| dualhold-q4 | 1.054 | 166 ms | gap FAIL |
+| thr-quanta-128 exclusive | 1.045 | 8.9 ms | thr still FAIL |
