@@ -349,6 +349,108 @@ qwen_linear_attention_post_input_impl(
   return {q, k, v, new_conv_state};
 }
 
+// mlxcel residual: `compiled_q_path_proportional` /
+// `compiled_proportional_rope` (mlx_cxx_bridge.cpp ~3071–3200) wrap
+// reshape → rms_norm → transpose → full-head rope (freqs with proportional
+// inf tail) in one `mx::core::compile` graph. AX's default path is multi-FFI
+// portable ops; the direct C++ composite below is imperative. This opt-in
+// compile path matches mlxcel's fused subgraph for proportional-RoPE layers
+// (and any call that supplies freqs). Default OFF — pure A/B on mbp-m5.
+bool compiled_qk_norm_rope_env_enabled() {
+  const char* v = std::getenv("AX_MLX_COMPILED_QK_NORM_ROPE");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+
+using CompiledQkNormRopeFn =
+    std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+
+// Process-static cache (intentionally not destroyed): matches other compile
+// caches in this file and mlxcel's leaked maps — CompilerCache teardown order.
+CompiledQkNormRopeFn& get_compiled_qk_norm_rope_freqs(
+    int n_heads,
+    int head_dim,
+    int rope_dims,
+    bool traditional,
+    float eps,
+    uint64_t shape_sig) {
+  struct Key {
+    int n_heads;
+    int head_dim;
+    int rope_dims;
+    int traditional;
+    float eps;
+    uint64_t shape_sig;
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const noexcept {
+      size_t h = std::hash<int>{}(k.n_heads);
+      h ^= std::hash<int>{}(k.head_dim) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<int>{}(k.rope_dims) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<int>{}(k.traditional) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<float>{}(k.eps) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<uint64_t>{}(k.shape_sig) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  struct KeyEq {
+    bool operator()(const Key& a, const Key& b) const noexcept {
+      return a.n_heads == b.n_heads && a.head_dim == b.head_dim &&
+             a.rope_dims == b.rope_dims && a.traditional == b.traditional &&
+             a.eps == b.eps && a.shape_sig == b.shape_sig;
+    }
+  };
+  static std::mutex& mu = *new std::mutex();
+  static std::unordered_map<Key, CompiledQkNormRopeFn, KeyHash, KeyEq>& cache =
+      *new std::unordered_map<Key, CompiledQkNormRopeFn, KeyHash, KeyEq>();
+  std::lock_guard<std::mutex> lock(mu);
+  Key key{n_heads, head_dim, rope_dims, traditional ? 1 : 0, eps, shape_sig};
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  // Mirror mlxcel compiled_q_path_proportional: reshape → rms_norm →
+  // transpose → full-head rope with freqs; offset is a scalar array so the
+  // graph is reusable across positions without recompilation.
+  auto fn = [n_heads, head_dim, rope_dims, traditional, eps](
+                const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
+    const auto& proj = inputs[0];       // [B, S, H * D]
+    const auto& norm_w = inputs[1];     // [head_dim]
+    const auto& freqs = inputs[2];      // [head_dim/2] proportional divisors
+    const auto& offset_arr = inputs[3]; // scalar int32
+    auto in_shape = proj.shape();
+    int B = in_shape[0];
+    int L = in_shape[1];
+    auto q = mx::reshape(proj, {B, L, n_heads, head_dim});
+    q = mx::fast::rms_norm(q, norm_w, eps);
+    q = mx::transpose(q, {0, 2, 1, 3});
+    auto out = mx::fast::rope(
+        q,
+        rope_dims,
+        traditional,
+        /*base=*/std::nullopt,
+        /*scale=*/1.0f,
+        offset_arr,
+        freqs);
+    return {std::move(out)};
+  };
+  mx::enable_compile();
+  auto [iter, _] = cache.emplace(key, mx::compile(fn, /*shapeless=*/false));
+  return iter->second;
+}
+
+uint64_t qk_norm_rope_shape_sig(const mx::array& proj) {
+  uint64_t h = static_cast<uint64_t>(proj.ndim());
+  for (auto d : proj.shape()) {
+    h = h * 1315423911u + static_cast<uint64_t>(static_cast<uint32_t>(d));
+  }
+  return h;
+}
+
 mx::array qk_norm_rope_bhsd_from_proj_impl(
     const mx::array& proj,
     std::optional<mx::array> norm,
@@ -373,6 +475,26 @@ mx::array qk_norm_rope_bhsd_from_proj_impl(
   auto width = proj.shape(2);
   if (width != n_heads * head_dim) {
     throw std::runtime_error("qk_norm_rope projection width does not match heads * head_dim");
+  }
+
+  // Compiled proportional / freqs path (mlxcel parity). Requires norm weight
+  // + freqs (proportional full-attention). Falls through for sliding default
+  // rope (base, no freqs) and for decode shapes when env is off.
+  if (compiled_qk_norm_rope_env_enabled() && norm.has_value() && freqs.has_value() &&
+      !has_base) {
+    auto offset_arr = mx::array(offset);
+    auto& compiled_fn = get_compiled_qk_norm_rope_freqs(
+        n_heads,
+        head_dim,
+        rope_dims,
+        traditional,
+        eps,
+        qk_norm_rope_shape_sig(proj));
+    auto result = compiled_fn({proj, *norm, *freqs, offset_arr});
+    if (result.size() != 1) {
+      throw std::runtime_error("compiled qk_norm_rope expected one output");
+    }
+    return std::move(result[0]);
   }
 
   mx::Shape bhsd_shape{batch, n_heads, seq, head_dim};

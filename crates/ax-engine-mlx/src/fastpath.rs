@@ -489,6 +489,10 @@ env_flag!(
     /// prefill on mbp-m5 (2026-07-24) measured ~+1.6% cold wall vs portable
     /// multi-FFI path (pure-gemma-qkrope-ab). Keep opt-in for decode-focused
     /// A/B; pure prefill thr path remains portable.
+    ///
+    /// Pair with `AX_MLX_COMPILED_QK_NORM_ROPE=1` (mlx-sys C++) to also wrap
+    /// the freqs path in `mx::compile` (mlxcel `compiled_q_path_proportional`
+    /// parity). Both flags stay opt-in until pure A/B shows a stable cut.
     gemma_direct_cpp_qk_norm_rope_enabled,
     "AX_MLX_GEMMA_DIRECT_CPP_QK_NORM_ROPE"
 );
