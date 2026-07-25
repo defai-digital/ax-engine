@@ -93,3 +93,13 @@ Still short of thr≥1.15 and gap ratio ≤0.90. Absolute gap under multi-proces
 
 **Best residual stack so far:** multi-process AX + Gemma cache-only chunk eval → thr **1.109×**, TTFT PASS, gap ratio fail.
 Still need ~3.7% thr and ~10% gap-ratio improvement for flip. Gates not relaxed.
+
+## Pure compose under cache_eval (2026-07-25)
+Baseline = multi-process Gemma env (`CACHE_ONLY_CHUNK_EVAL=1`). Candidates norot /
+qmmrms / both: medians **1.18× / 1.026× / 1.18×** vs base **8219 ms**. Decision
+**keep_base**.
+
+## Pipeline granularity (mlxcel M5 residual, 2026-07-25)
+`AX_MLX_PIPELINE_GRANULARITY` = `block:4` / `block:2` / `layer` vs off under
+cache_eval pure: ratios **1.070 / 1.040 / 1.049**. Decision **reject_keep_off**.
+Default remains off. No cool S1 remeasure; thr headroom still short of 1.15×.

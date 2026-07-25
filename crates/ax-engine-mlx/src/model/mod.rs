@@ -1,7 +1,7 @@
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, concatenate,
-    dequantize_with_mode, divide, multiply, power, reshape, rms_norm, rope_dynamic, slice, split,
-    stack, sum_axis, take, take_along_axis, transpose,
+    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, async_eval, astype, broadcast_to,
+    concatenate, dequantize_with_mode, divide, multiply, power, reshape, rms_norm, rope_dynamic,
+    slice, split, stack, sum_axis, take, take_along_axis, transpose,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -697,6 +697,7 @@ fn forward_and_logits_mode(
     let last_layer_idx = weights.layers.len().saturating_sub(1);
     let use_last_layer_optimization = seq > 1;
     let skip_last_layer_ffn = matches!(logits_mode, FinalLogitsMode::Skip);
+    let total_layers = weights.layers.len();
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         let shared_mask = masks
@@ -727,6 +728,11 @@ fn forward_and_logits_mode(
                 Some(shared_mask),
             )
         };
+        // mlxcel residual: `pipeline_hint` after non-final layers
+        // (`MLXCEL_PIPELINE_GRANULARITY` parity via AX_MLX_PIPELINE_GRANULARITY).
+        if crate::fastpath::pipeline_hint_should_fire(li, total_layers) {
+            async_eval(&[&hidden]);
+        }
     }
 
     // Cache-only: residual after the last layer (FFN already skipped) is only
@@ -820,6 +826,7 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     let last_layer_idx = weights.layers.len().saturating_sub(1);
     let use_last_layer_optimization = seq > 1;
     let skip_last_layer_ffn = matches!(logits_mode, FinalLogitsMode::Skip);
+    let total_layers = weights.layers.len();
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         let shared_mask = masks
@@ -850,6 +857,10 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
                 Some(shared_mask),
             )
         };
+        // mlxcel residual: `pipeline_hint` (AX_MLX_PIPELINE_GRANULARITY).
+        if crate::fastpath::pipeline_hint_should_fire(li, total_layers) {
+            async_eval(&[&hidden]);
+        }
     }
 
     if matches!(logits_mode, FinalLogitsMode::Skip) {

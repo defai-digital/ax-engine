@@ -503,6 +503,69 @@ env_flag!(
     "AX_MLX_CACHE_ONLY_CHUNK_EVAL"
 );
 
+/// mlxcel `MLXCEL_PIPELINE_GRANULARITY` parity — layer-boundary `async_eval`
+/// hints during multi-layer prefill.
+///
+/// mlxcel residual (`mlxcel_core::utils::pipeline_hint`, models/gemma4.rs layer
+/// loop): after each transformer layer, optionally `async_eval(hidden)` so MLX
+/// can start executing layer N while host builds layer N+1 / weight traffic
+/// overlaps. Documented for M5 (NA + GPU shader cores). Default `off` preserves
+/// full-graph fusion (same as mlxcel).
+///
+/// Values of `AX_MLX_PIPELINE_GRANULARITY`:
+/// - unset / `off` / empty → no intermediate eval
+/// - `layer` → hint after every non-final layer
+/// - `block:N` → hint every N layers (N≥1; invalid N falls back to 4)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineGranularity {
+    Off,
+    PerLayer,
+    PerBlock(usize),
+}
+
+/// Parse `AX_MLX_PIPELINE_GRANULARITY` without caching (tests / diagnostics).
+pub fn parse_pipeline_granularity(raw: &str) -> PipelineGranularity {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("off") {
+        return PipelineGranularity::Off;
+    }
+    if trimmed.eq_ignore_ascii_case("layer") {
+        return PipelineGranularity::PerLayer;
+    }
+    if let Some(rest) = trimmed
+        .strip_prefix("block:")
+        .or_else(|| trimmed.strip_prefix("BLOCK:"))
+        .or_else(|| trimmed.strip_prefix("Block:"))
+    {
+        let n = rest.trim().parse::<usize>().unwrap_or(4).max(1);
+        return PipelineGranularity::PerBlock(n);
+    }
+    // Unknown → fail-closed to off (preserve fusion).
+    PipelineGranularity::Off
+}
+
+/// Process-cached pipeline granularity. Default OFF.
+pub fn pipeline_granularity() -> PipelineGranularity {
+    static CACHED: OnceLock<PipelineGranularity> = OnceLock::new();
+    *CACHED.get_or_init(|| match std::env::var("AX_MLX_PIPELINE_GRANULARITY") {
+        Ok(raw) => parse_pipeline_granularity(&raw),
+        Err(_) => PipelineGranularity::Off,
+    })
+}
+
+/// Whether a layer-boundary pipeline hint should fire after `layer_idx`
+/// (0-based) of `total_layers`. Never fires after the final layer.
+pub fn pipeline_hint_should_fire(layer_idx: usize, total_layers: usize) -> bool {
+    if total_layers == 0 || layer_idx + 1 >= total_layers {
+        return false;
+    }
+    match pipeline_granularity() {
+        PipelineGranularity::Off => false,
+        PipelineGranularity::PerLayer => true,
+        PipelineGranularity::PerBlock(n) => (layer_idx + 1).is_multiple_of(n),
+    }
+}
+
 env_flag!(
     /// `AX_MLX_NATIVE_OFFSET_CAUSAL` — for full-attention multi-token prefill
     /// with KV cache offset (`key_len > seq`), skip materializing an
@@ -1786,6 +1849,43 @@ mod tests {
             "AX_FASTPATH_TEST_PREFILL_CLEAR_CACHE_PER_CHUNK_ENABLED",
             "1"
         ));
+    }
+
+    #[test]
+    fn parse_pipeline_granularity_matches_mlxcel_contract() {
+        assert_eq!(parse_pipeline_granularity(""), PipelineGranularity::Off);
+        assert_eq!(parse_pipeline_granularity("off"), PipelineGranularity::Off);
+        assert_eq!(parse_pipeline_granularity("OFF"), PipelineGranularity::Off);
+        assert_eq!(
+            parse_pipeline_granularity("layer"),
+            PipelineGranularity::PerLayer
+        );
+        assert_eq!(
+            parse_pipeline_granularity("LAYER"),
+            PipelineGranularity::PerLayer
+        );
+        assert_eq!(
+            parse_pipeline_granularity("block:4"),
+            PipelineGranularity::PerBlock(4)
+        );
+        assert_eq!(
+            parse_pipeline_granularity("block:1"),
+            PipelineGranularity::PerBlock(1)
+        );
+        assert_eq!(
+            parse_pipeline_granularity("block:0"),
+            PipelineGranularity::PerBlock(1),
+            "N=0 clamps to 1"
+        );
+        assert_eq!(
+            parse_pipeline_granularity("block:xyz"),
+            PipelineGranularity::PerBlock(4),
+            "invalid N falls back to 4"
+        );
+        assert_eq!(
+            parse_pipeline_granularity("garbage"),
+            PipelineGranularity::Off
+        );
     }
 
     #[test]

@@ -1,0 +1,220 @@
+{
+  "by_variant": {
+    "base": {
+      "cold": [
+        8134.108375001233,
+        8245.425165980123,
+        8218.90841703862
+      ],
+      "median": 8218.90841703862,
+      "mean": 8199.480652673325
+    },
+    "norot": {
+      "cold": [
+        10099.87000003457,
+        9700.226708024275,
+        9598.497083003167
+      ],
+      "median": 9700.226708024275,
+      "mean": 9799.531263687337
+    },
+    "qmmrms": {
+      "cold": [
+        8743.201332981698,
+        8278.90145801939,
+        8432.95670801308
+      ],
+      "median": 8432.95670801308,
+      "mean": 8485.019833004722
+    },
+    "both": {
+      "cold": [
+        9835.393416986335,
+        9706.331374996807,
+        9606.740917020943
+      ],
+      "median": 9706.331374996807,
+      "mean": 9716.155236334695
+    }
+  },
+  "base_median": 8218.90841703862,
+  "ratios_vs_base": {
+    "base": 1.0,
+    "norot": 1.1802329720470828,
+    "qmmrms": 1.0260433965331353,
+    "both": 1.1809757308981095
+  },
+  "keep_if_ratio_lt": 0.96,
+  "best": "base",
+  "results": [
+    {
+      "name": "base_r1",
+      "cold_ms": 8134.108375001233,
+      "warm_ms": 8312.937084003352,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "norot_r1",
+      "cold_ms": 10099.87000003457,
+      "warm_ms": 10093.026000016835,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "qmmrms_r1",
+      "cold_ms": 8743.201332981698,
+      "warm_ms": 8550.504624960013,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "both_r1",
+      "cold_ms": 9835.393416986335,
+      "warm_ms": 9411.68000001926,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "base_r2",
+      "cold_ms": 8245.425165980123,
+      "warm_ms": 8310.00541697722,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "norot_r2",
+      "cold_ms": 9700.226708024275,
+      "warm_ms": 9364.36591600068,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "qmmrms_r2",
+      "cold_ms": 8278.90145801939,
+      "warm_ms": 8317.058167012874,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "both_r2",
+      "cold_ms": 9706.331374996807,
+      "warm_ms": 9349.127082969062,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "base_r3",
+      "cold_ms": 8218.90841703862,
+      "warm_ms": 8302.91083297925,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "norot_r3",
+      "cold_ms": 9598.497083003167,
+      "warm_ms": 9256.70500000706,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "qmmrms_r3",
+      "cold_ms": 8432.95670801308,
+      "warm_ms": 8401.662749995012,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    },
+    {
+      "name": "both_r3",
+      "cold_ms": 9606.740917020943,
+      "warm_ms": 9158.337000000756,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      },
+      "text": " The"
+    }
+  ],
+  "decision": "keep_base"
+}
