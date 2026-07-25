@@ -124,6 +124,7 @@ levers.
 | + chunk 1024 | 1.077 | 1.369 | 0.925 | regress |
 | + DENSE_FFN_COMPILE=1 | 1.103 | 1.119 | 0.904 | regress thr |
 | + Qwen-only DENSE_FFN_COMPILE=1 | **1.110** | 1.111 | **0.897** | wash vs 1.109 |
+| + concurrent-tax wired asym | **1.100** | 1.138 | **0.906 FAIL** | reject |
 
 Topology recovers gap abs ≤50 ms while lifting thr vs exclusive, but **not** to
 1.15× thr **and** 0.90 gap ratio simultaneously.

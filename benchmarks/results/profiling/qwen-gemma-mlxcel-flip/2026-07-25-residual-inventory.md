@@ -179,3 +179,16 @@ Hypothesis: packed qmm helps but `packed_geglu_metal` hurts. Hybrid under cache_
 | packed_metal (packed qmm + packed GEGLU metal) | 8307 | **1.004** |
 
 **Decision `reject_keep_base`.** Neither path ≤0.96. Packed single-qmm does not beat split dual steel qmm on M5 Max for bits=8 multi-token (weight bandwidth dominates X re-read). No cool S1 / no S0–S3. Artifact: `2026-07-25-pure-packed-split-geglu-ab/`.
+
+## Concurrent-tax residual cool S1 (2026-07-25)
+Path B probe: multi-process + cache_eval + asymmetric wired
+(Gemma `WIRED_LIMIT_SCALE=0.55`, Qwen `0.30` + `BATCHED_DECODE=0`).
+
+| metric | ratio | vs best cache_eval 1.109 |
+|--------|------:|--------------------------|
+| thr | **1.100** | worse |
+| gap | **1.138** | worse |
+| TTFT | **0.906** | FAIL (was PASS) |
+| e2e max med | ~9460 ms | still ~9.46s (need ≲9.08) |
+
+**Decision `reject`.** Concurrent resource asymmetry does not cut multi-process tax enough for thr 1.15 or gap 0.90. Best stack remains multi-process + Gemma cache_eval thr **1.109**. Artifact: `2026-07-25-s1-mp-cache-eval-concurrent-tax/`.

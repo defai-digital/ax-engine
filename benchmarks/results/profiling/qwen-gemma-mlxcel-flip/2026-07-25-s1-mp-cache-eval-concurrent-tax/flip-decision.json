@@ -1,0 +1,36 @@
+{
+  "decision": "not_yet",
+  "passed": false,
+  "candidate_label": "ax-engine",
+  "baseline_label": "mlxcel",
+  "repetitions": 3,
+  "gates": {
+    "thr>=1.15": false,
+    "gap_ratio<=0.9": false,
+    "ttft_ratio<=0.9": false,
+    "gap_abs<=50": true
+  },
+  "scenarios": [
+    {
+      "scenario": "s1",
+      "candidate": {
+        "throughput_median_tok_s": 19.856718599843113,
+        "stream_gap_p95_median_ms": 39.359479502309114,
+        "ttft_p95_median_ms": 8984.636704120203,
+        "e2e_max_median_ms": 9459.623291972093
+      },
+      "baseline": {
+        "throughput_median_tok_s": 18.05435750820052,
+        "stream_gap_p95_median_ms": 34.59454150288366,
+        "ttft_p95_median_ms": 9917.558758959058,
+        "e2e_max_median_ms": 10436.225083016325
+      },
+      "ratios": {
+        "throughput": 1.0998296998840271,
+        "stream_gap_p95": 1.1377367004279642,
+        "ttft_p95": 0.905932288629387
+      }
+    }
+  ],
+  "note": "concurrent-tax residual: Gemma WIRED=0.55 + cache_eval; Qwen WIRED=0.30 + BATCHED_DECODE=0"
+}
