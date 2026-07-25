@@ -665,6 +665,76 @@ mx::array rms_norm_quantized_matmul_impl(
 
 } // namespace
 
+// mlxcel residual: `compiled_geglu_approx_activation` (mlx_cxx_bridge.cpp
+// ~1351–1368). Process-static `mx::compile(shapeless=true)` over
+// `gelu_tanh_approx(gate) * x` for Gemma4 multi-token FFN after dual qmm.
+// Opt-in via AX_MLX_COMPILED_GEGLU_ACTIVATION=1 (default OFF — pure A/B;
+// production stays Metal GEGLU or imperative gelu_approx_mul).
+namespace {
+
+using CompiledGegluApproxFn =
+    std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+
+CompiledGegluApproxFn& get_compiled_geglu_approx_activation() {
+  static std::once_flag once;
+  static CompiledGegluApproxFn compiled;
+  std::call_once(once, []() {
+    auto fn = [](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
+      const auto& gate = inputs[0];
+      const auto& x = inputs[1];
+      auto dtype = gate.dtype();
+      auto half = mx::array(0.5f, dtype);
+      auto one = mx::array(1.0f, dtype);
+      auto sqrt_2_over_pi = mx::array(0.7978846f, dtype);
+      auto coeff = mx::array(0.044715f, dtype);
+      auto gate2 = mx::multiply(gate, gate);
+      auto gate3 = mx::multiply(gate2, gate);
+      auto cubic = mx::multiply(coeff, gate3);
+      auto inner = mx::add(gate, cubic);
+      auto t = mx::tanh(mx::multiply(sqrt_2_over_pi, inner));
+      auto activated =
+          mx::multiply(mx::multiply(half, gate), mx::add(one, t));
+      auto out = mx::multiply(activated, x);
+      return {mx::astype(out, x.dtype())};
+    };
+    mx::enable_compile();
+    compiled = mx::compile(fn, /*shapeless=*/true);
+  });
+  return compiled;
+}
+
+bool compiled_geglu_activation_env_enabled() {
+  const char* v = std::getenv("AX_MLX_COMPILED_GEGLU_ACTIVATION");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+
+} // namespace
+
+extern "C" int ax_mlx_compiled_geglu_approx_activation(
+    mlx_array* res,
+    const mlx_array gate,
+    const mlx_array x,
+    const mlx_stream stream) {
+  AX_TRY {
+    (void)stream;
+    if (!compiled_geglu_activation_env_enabled()) {
+      return 1;
+    }
+    auto& compiled_fn = get_compiled_geglu_approx_activation();
+    auto result = compiled_fn({aref(gate), aref(x)});
+    if (result.empty()) {
+      return 1;
+    }
+    aset(res, std::move(result[0]));
+    return 0;
+  } AX_CATCH
+}
+
 extern "C" int ax_mlx_gelu_approx_mul(
     mlx_array* res,
     const mlx_array gate,

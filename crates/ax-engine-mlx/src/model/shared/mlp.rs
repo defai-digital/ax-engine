@@ -389,10 +389,17 @@ fn attention_output_projection_with_policy(
 ///
 /// This preserves mlx-lm's `nn.gelu_approx(gate) * x` math while using AX's
 /// direct MLX shim to collapse the scalar-heavy activation chain behind one
-/// stable FFI call. The older compiled-closure experiment was removed from the
-/// production surface because MLX compiled closures are thread/stream-registry
-/// sensitive in the Rust server worker model.
+/// stable FFI call.
+///
+/// Order (mlxcel residual `compiled_geglu_approx_activation`, gemma4.rs
+/// multi-token bits=8 FFN):
+/// 1. Opt-in process-static `mx::compile` via `AX_MLX_COMPILED_GEGLU_ACTIVATION=1`
+/// 2. Default-ON Metal GEGLU (`AX_MLX_GEGLU_MUL_METAL`)
+/// 3. Imperative `gelu_approx_mul` C++ shim
 pub(crate) fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
+    if let Some(out) = mlx_sys::compiled_geglu_approx_activation(gate, x, None) {
+        return out;
+    }
     if let Some(out) = gelu_approx_mul_metal(gate, x, fastpath::geglu_mul_metal_enabled()) {
         return out;
     }

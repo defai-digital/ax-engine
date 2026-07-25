@@ -4,6 +4,13 @@ use crate::ffi;
 use crate::stream::{MlxStream, default_gpu_raw};
 
 unsafe extern "C" {
+    fn ax_mlx_compiled_geglu_approx_activation(
+        res: *mut ffi::mlx_array,
+        gate: ffi::mlx_array,
+        x: ffi::mlx_array,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_gelu_approx_mul(
         res: *mut ffi::mlx_array,
         gate: ffi::mlx_array,
@@ -343,6 +350,31 @@ pub fn gelu_approx_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> 
     }
     crate::error::clear_stale_error();
     multiply(&gelu_approx(gate, s), x, s)
+}
+
+/// mlxcel `compiled_geglu_approx_activation` residual: process-static
+/// `mx::compile(shapeless=true)` over `gelu_tanh_approx(gate) * x`.
+///
+/// Gated by `AX_MLX_COMPILED_GEGLU_ACTIVATION=1` in C++ (fail-closed when
+/// unset). Returns `None` when the env kill-switch is off or the compiled
+/// path errors so callers can fall back to Metal / imperative GEGLU.
+pub fn compiled_geglu_approx_activation(
+    gate: &MlxArray,
+    x: &MlxArray,
+    s: Option<&MlxStream>,
+) -> Option<MlxArray> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        let rc =
+            ax_mlx_compiled_geglu_approx_activation(&mut res.inner, gate.inner, x.inner, stream);
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some(res);
+        }
+    }
+    crate::error::clear_stale_error();
+    None
 }
 
 /// OpenAI GPT-OSS / llama.cpp `SWIGLU_OAI` expert activation.

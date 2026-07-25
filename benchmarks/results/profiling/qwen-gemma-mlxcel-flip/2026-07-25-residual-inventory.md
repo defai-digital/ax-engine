@@ -114,3 +114,7 @@ Insufficient for thr 1.15 physics (need ≤0.96). Keep auto-raise ON.
 
 ## Smaller prefill chunk under cache_eval pure (2026-07-25)
 c384 / c256 vs c512: ratios **1.038 / 1.089**. Keep **512**; no multi-process S1.
+
+## Compiled GeGLU activation (mlxcel parity, 2026-07-25)
+`AX_MLX_COMPILED_GEGLU_ACTIVATION=1` under cache_eval pure: median **1.018×** vs Metal GEGLU base.
+Imperative nometal **1.060×**. Keep Metal; compiled default OFF. Flip still not_yet.

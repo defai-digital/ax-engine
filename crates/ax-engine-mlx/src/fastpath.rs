@@ -486,6 +486,19 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_COMPILED_GEGLU_ACTIVATION` — use mlxcel's process-static
+    /// `mx::compile(shapeless=true)` GEGLU activation
+    /// (`compiled_geglu_approx_activation` in mlx_cxx_bridge.cpp; gemma4.rs
+    /// multi-token bits=8 FFN after dual qmm).
+    ///
+    /// **Default: OFF** (opt-in pure A/B). Production stays Metal GEGLU
+    /// (`AX_MLX_GEGLU_MUL_METAL`) until pure wall under cache_eval proves a
+    /// stable cut. When ON, takes precedence over Metal in `geglu()`.
+    compiled_geglu_activation_enabled,
+    "AX_MLX_COMPILED_GEGLU_ACTIVATION"
+);
+
+env_flag!(
     /// `AX_MLX_CACHE_ONLY_CHUNK_EVAL` — materialise KV after **every** cache-only
     /// prefill chunk (not only the last). Pure greedy long prompts use the
     /// mlx-lm-style cache-only prefix (n−1 tokens) with deferred eval; for

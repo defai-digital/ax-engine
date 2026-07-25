@@ -1,0 +1,178 @@
+{
+  "by_variant": {
+    "base": {
+      "cold": [
+        8466.838542022742,
+        8409.719082992524,
+        8381.441750039812
+      ],
+      "median": 8409.719082992524,
+      "mean": 8419.33312501836
+    },
+    "compiled": {
+      "cold": [
+        8564.893666014541,
+        8477.078875002917,
+        8604.734541964717
+      ],
+      "median": 8564.893666014541,
+      "mean": 8548.902360994058
+    },
+    "nometal": {
+      "cold": [
+        8910.87449999759,
+        8916.776542027947,
+        8859.68374996446
+      ],
+      "median": 8910.87449999759,
+      "mean": 8895.778263996666
+    }
+  },
+  "base_median": 8409.719082992524,
+  "ratios_vs_base": {
+    "base": 1.0,
+    "compiled": 1.0184518152735726,
+    "nometal": 1.0595924087427109
+  },
+  "keep_if_ratio_lt": 0.96,
+  "best": "base",
+  "results": [
+    {
+      "name": "base_r1",
+      "cold_ms": 8466.838542022742,
+      "warm_ms": 8483.135041955393,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_GEGLU_ACTIVATION": "0",
+        "AX_MLX_GEGLU_MUL_METAL": "1"
+      }
+    },
+    {
+      "name": "compiled_r1",
+      "cold_ms": 8564.893666014541,
+      "warm_ms": 8749.815166986082,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_GEGLU_ACTIVATION": "1",
+        "AX_MLX_GEGLU_MUL_METAL": "0"
+      }
+    },
+    {
+      "name": "nometal_r1",
+      "cold_ms": 8910.87449999759,
+      "warm_ms": 8972.202999982983,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_GEGLU_ACTIVATION": "0",
+        "AX_MLX_GEGLU_MUL_METAL": "0"
+      }
+    },
+    {
+      "name": "base_r2",
+      "cold_ms": 8409.719082992524,
+      "warm_ms": 8464.660792029463,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_GEGLU_ACTIVATION": "0",
+        "AX_MLX_GEGLU_MUL_METAL": "1"
+      }
+    },
+    {
+      "name": "compiled_r2",
+      "cold_ms": 8477.078875002917,
+      "warm_ms": 8567.670917022042,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_GEGLU_ACTIVATION": "1",
+        "AX_MLX_GEGLU_MUL_METAL": "0"
+      }
+    },
+    {
+      "name": "nometal_r2",
+      "cold_ms": 8916.776542027947,
+      "warm_ms": 8977.592792012729,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_GEGLU_ACTIVATION": "0",
+        "AX_MLX_GEGLU_MUL_METAL": "0"
+      }
+    },
+    {
+      "name": "base_r3",
+      "cold_ms": 8381.441750039812,
+      "warm_ms": 8521.062708983663,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_GEGLU_ACTIVATION": "0",
+        "AX_MLX_GEGLU_MUL_METAL": "1"
+      }
+    },
+    {
+      "name": "compiled_r3",
+      "cold_ms": 8604.734541964717,
+      "warm_ms": 8602.511290984694,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_GEGLU_ACTIVATION": "1",
+        "AX_MLX_GEGLU_MUL_METAL": "0"
+      }
+    },
+    {
+      "name": "nometal_r3",
+      "cold_ms": 8859.68374996446,
+      "warm_ms": 9007.939458009787,
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827
+      },
+      "text": " The",
+      "env": {
+        "AX_MLX_COMPILED_GEGLU_ACTIVATION": "0",
+        "AX_MLX_GEGLU_MUL_METAL": "0"
+      }
+    }
+  ],
+  "decision": "keep_base",
+  "residual": "mlxcel compiled_geglu_approx_activation (gemma4 multi-token bits=8)"
+}
