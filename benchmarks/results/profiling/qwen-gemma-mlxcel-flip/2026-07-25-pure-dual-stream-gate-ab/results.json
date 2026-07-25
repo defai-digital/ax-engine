@@ -1,0 +1,166 @@
+{
+  "by_variant": {
+    "base": {
+      "cold": [
+        8151.521708990913,
+        8255.427542026155,
+        8244.675915979315
+      ],
+      "median": 8244.675915979315
+    },
+    "dual_qmm": {
+      "cold": [
+        8420.939790958073,
+        8267.464709002525,
+        8203.345875022933
+      ],
+      "median": 8267.464709002525
+    },
+    "dual_stream": {
+      "cold": [
+        9619.782124995254,
+        9439.743250026368,
+        9459.533790999558
+      ],
+      "median": 9459.533790999558
+    }
+  },
+  "base_median": 8244.675915979315,
+  "ratios_vs_base": {
+    "base": 1.0,
+    "dual_qmm": 1.0027640617115152,
+    "dual_stream": 1.1473505917516638
+  },
+  "best": "base",
+  "decision": "keep_base",
+  "keep_if_ratio_lt": 0.96,
+  "results": [
+    {
+      "name": "base_r1",
+      "cold_ms": 8151.521708990913,
+      "warm_ms": 8282.119125011377,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "dual_qmm_r1",
+      "cold_ms": 8420.939790958073,
+      "warm_ms": 8931.552625028417,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "dual_stream_r1",
+      "cold_ms": 9619.782124995254,
+      "warm_ms": 9286.501416994724,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "base_r2",
+      "cold_ms": 8255.427542026155,
+      "warm_ms": 8327.538667013869,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "dual_qmm_r2",
+      "cold_ms": 8267.464709002525,
+      "warm_ms": 8306.810874957591,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "dual_stream_r2",
+      "cold_ms": 9439.743250026368,
+      "warm_ms": 9022.125499963295,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "base_r3",
+      "cold_ms": 8244.675915979315,
+      "warm_ms": 8308.4563750308,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "dual_qmm_r3",
+      "cold_ms": 8203.345875022933,
+      "warm_ms": 8324.66637500329,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "dual_stream_r3",
+      "cold_ms": 9459.533790999558,
+      "warm_ms": 9041.332499997225,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    }
+  ],
+  "residual": "dual-stream gate/up qmm on M5 Max"
+}

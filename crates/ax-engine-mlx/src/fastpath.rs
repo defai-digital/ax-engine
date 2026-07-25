@@ -524,9 +524,24 @@ env_flag!(
     /// mlxcel multi-token bits=8: two `UnifiedLinear::forward` (each one FFI) +
     /// activation (gemma4.rs ~917–920).
     ///
-    /// **Default: OFF** (opt-in pure A/B under cache_eval).
+    /// **Default: OFF** (opt-in pure A/B under cache_eval). Pure 1.002× reject.
     dual_affine_qmm_enabled,
     "AX_MLX_DUAL_AFFINE_QMM"
+);
+
+env_flag!(
+    /// `AX_MLX_DUAL_STREAM_GATE_UP` — issue multi-token gate/up affine qmm on
+    /// two process-static GPU streams so independent matmuls can overlap on
+    /// M5 Max. Uses the same C++ entry as dual_affine_qmm (Metal GEGLU kept).
+    ///
+    /// Profile residual: pure Gemma gate_up ~3.26s is two sequential large
+    /// 8-bit qmms. Host-FFI dual alone was noise (1.002×); dual-stream targets
+    /// GPU concurrency. mlxcel still uses sequential UnifiedLinear; this is an
+    /// AX M5 Max experiment on the same residual.
+    ///
+    /// **Default: OFF** (opt-in pure A/B under cache_eval).
+    dual_stream_gate_up_enabled,
+    "AX_MLX_DUAL_STREAM_GATE_UP"
 );
 
 env_flag!(

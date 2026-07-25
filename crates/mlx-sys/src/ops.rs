@@ -587,7 +587,9 @@ pub fn dual_qmm_geglu(
 /// Dual affine qmm only (no compile, no GEGLU) — one C++ call returns
 /// `(gate, up)` so Metal GEGLU stays on the production path.
 ///
-/// Gated by `AX_MLX_DUAL_AFFINE_QMM=1` (default OFF). Fail-closed → `None`.
+/// Engages when `AX_MLX_DUAL_AFFINE_QMM=1` **or** `AX_MLX_DUAL_STREAM_GATE_UP=1`
+/// (default both OFF). Dual-stream issues gate/up on two process-static GPU
+/// streams for potential M5 Max concurrency. Fail-closed → `None`.
 #[allow(clippy::too_many_arguments)]
 pub fn dual_affine_qmm(
     x: &MlxArray,

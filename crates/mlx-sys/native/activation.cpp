@@ -1270,6 +1270,10 @@ extern "C" int ax_mlx_dual_qmm_geglu(
 // FFI round-trips into one while leaving Metal GEGLU on the AX production
 // path. Profile residual: pure Gemma gate_up ~3.26s. Opt-in
 // AX_MLX_DUAL_AFFINE_QMM=1 (default OFF).
+//
+// Optional dual-stream issue (AX_MLX_DUAL_STREAM_GATE_UP=1): gate and up
+// land on two process-static GPU streams so M5 Max can overlap independent
+// matmuls. GEGLU on the caller's stream inherits MLX cross-stream deps.
 namespace {
 bool dual_affine_qmm_env_enabled() {
   const char* v = std::getenv("AX_MLX_DUAL_AFFINE_QMM");
@@ -1279,6 +1283,26 @@ bool dual_affine_qmm_env_enabled() {
   std::string s(v);
   return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
           s == "ON" || s == "YES");
+}
+
+bool dual_stream_gate_up_env_enabled() {
+  const char* v = std::getenv("AX_MLX_DUAL_STREAM_GATE_UP");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+
+// Process-static dual GPU streams for concurrent gate/up issue. Created once
+// so per-layer cost is only the two qmm graph builds, not stream allocation.
+std::pair<mx::Stream, mx::Stream>& dual_gate_up_streams() {
+  static std::pair<mx::Stream, mx::Stream> streams = []() {
+    return std::make_pair(
+        mx::new_stream(mx::Device::gpu), mx::new_stream(mx::Device::gpu));
+  }();
+  return streams;
 }
 } // namespace
 
@@ -1296,7 +1320,7 @@ extern "C" int ax_mlx_dual_affine_qmm(
     int bits,
     const mlx_stream stream) {
   AX_TRY {
-    if (!dual_affine_qmm_env_enabled()) {
+    if (!dual_affine_qmm_env_enabled() && !dual_stream_gate_up_env_enabled()) {
       return 1;
     }
     if (group_size <= 0 || bits <= 0) {
@@ -1305,7 +1329,13 @@ extern "C" int ax_mlx_dual_affine_qmm(
     if (!gate_biases.ctx || !up_biases.ctx) {
       return 1;
     }
-    auto s = sd(stream);
+    mx::StreamOrDevice gate_s = sd(stream);
+    mx::StreamOrDevice up_s = gate_s;
+    if (dual_stream_gate_up_env_enabled()) {
+      auto& streams = dual_gate_up_streams();
+      gate_s = streams.first;
+      up_s = streams.second;
+    }
     auto gate = quantized_matmul_affine_impl(
         aref(x),
         aref(gate_weight),
@@ -1313,7 +1343,7 @@ extern "C" int ax_mlx_dual_affine_qmm(
         opt_arr(gate_biases),
         group_size,
         bits,
-        s);
+        gate_s);
     auto up = quantized_matmul_affine_impl(
         aref(x),
         aref(up_weight),
@@ -1321,7 +1351,7 @@ extern "C" int ax_mlx_dual_affine_qmm(
         opt_arr(up_biases),
         group_size,
         bits,
-        s);
+        up_s);
     aset(gate_res, std::move(gate));
     aset(up_res, std::move(up));
     return 0;

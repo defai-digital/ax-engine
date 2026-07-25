@@ -130,3 +130,7 @@ Best ~0.7% pure — need ≤0.96. Keep both OFF. Flip still not_yet.
 ## Dual affine qmm one-FFI (2026-07-25)
 `AX_MLX_DUAL_AFFINE_QMM=1` (dual qmm, Metal GEGLU kept) under cache_eval pure: median **1.002×**.
 Reject default OFF. Gate_up thr residual still needs GEMM-class win, not host-FFI collapse.
+
+## Dual-stream gate/up qmm (2026-07-25)
+`AX_MLX_DUAL_STREAM_GATE_UP=1` under cache_eval pure: median **1.147×** (worse).
+Same-stream dual_qmm **1.003×**. Reject both; defaults OFF. Gate_up still needs GEMM-class win.
