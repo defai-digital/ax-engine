@@ -46,3 +46,14 @@ Need thr ≳20.7 (scenario wall ≲9.3s from ~10.4s, ~11% cut).
 ## Stacked small wins pure (2026-07-25)
 #672 eval+clear + qmm_rms + chunk1024 vs portable: median ratio **1.052×** (worse).
 Decision reject_stack — small wins do not compose under thermal/host interaction.
+
+## Multi-process AX topology probe (not product flip target)
+Two single-model `ax-engine-server` processes (48GB each), concurrent Qwen stream + Gemma 13.8k prefill:
+
+| metric | median |
+|--------|-------:|
+| thr tok/s | **19.42** |
+| gap p95 ms | **48.2** (≤50) |
+
+vs exclusive tip thr 18.62 and mlxcel formal thr 17.97 → probe thr ratio vs mlxcel ~**1.08×** (still <1.15).
+Two-process Metal time-share gap is near SLO; thr still short of gate. Product flip remains single-process.

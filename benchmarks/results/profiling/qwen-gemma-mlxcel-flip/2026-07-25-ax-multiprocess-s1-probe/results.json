@@ -1,0 +1,75 @@
+{
+  "topology": "ax_two_process_single_model_each",
+  "reps": [
+    {
+      "rep": 1,
+      "scenario_wall_ms": 9935.783667024225,
+      "total_tokens": 193,
+      "throughput_tok_s": 19.424738547855647,
+      "interactive_gap_p95_ms": 47.471416008193046,
+      "qwen": {
+        "tokens": 192,
+        "wall_ms": 6795.390207960736,
+        "ttft_ms": 197.95333297224715,
+        "gap_p95_ms": 47.471416008193046,
+        "tok_s": 28.254448107346917
+      },
+      "gemma": {
+        "tokens": 1,
+        "wall_ms": 9884.924666024745,
+        "ttft_ms": 9884.895832976326,
+        "gap_p95_ms": null,
+        "tok_s": 0.10116414983283362
+      },
+      "errors": []
+    },
+    {
+      "rep": 2,
+      "scenario_wall_ms": 9888.763334020041,
+      "total_tokens": 193,
+      "throughput_tok_s": 19.517101732632977,
+      "interactive_gap_p95_ms": 48.16487501375377,
+      "qwen": {
+        "tokens": 192,
+        "wall_ms": 7138.796416053083,
+        "ttft_ms": 342.02650003135204,
+        "gap_p95_ms": 48.16487501375377,
+        "tok_s": 26.89529001951193
+      },
+      "gemma": {
+        "tokens": 1,
+        "wall_ms": 9835.878583951853,
+        "ttft_ms": 9835.85008396767,
+        "gap_p95_ms": null,
+        "tok_s": 0.10166859945095222
+      },
+      "errors": []
+    },
+    {
+      "rep": 3,
+      "scenario_wall_ms": 10029.679416038562,
+      "total_tokens": 193,
+      "throughput_tok_s": 19.242888231439558,
+      "interactive_gap_p95_ms": 48.777292016893625,
+      "qwen": {
+        "tokens": 192,
+        "wall_ms": 7173.5241250135,
+        "ttft_ms": 344.7131250286475,
+        "gap_p95_ms": 48.777292016893625,
+        "tok_s": 26.765087376023658
+      },
+      "gemma": {
+        "tokens": 1,
+        "wall_ms": 9968.971541966312,
+        "ttft_ms": 9968.940749997273,
+        "gap_p95_ms": null,
+        "tok_s": 0.10031125034215484
+      },
+      "errors": []
+    }
+  ],
+  "thr_median": 19.424738547855647,
+  "thr_mean": 19.39490950397606,
+  "gap_p95_median": 48.16487501375377,
+  "note": "Probe only; not flip product target (managed_single_process)."
+}
