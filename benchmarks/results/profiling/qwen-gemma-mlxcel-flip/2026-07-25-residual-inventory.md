@@ -88,3 +88,8 @@ not_yet. Topology residual insufficient for locked thr≥1.15.
 | + chunk 1024 | 1.077 | 1.369 | 0.925 | worse than 512 |
 
 Still short of thr≥1.15 and gap ratio ≤0.90. Absolute gap under multi-process+cache-eval is ~39 ms (≤50 abs ok).
+
+| + Gemma full #672 (eval+clear) | 1.105 | 1.096 | 0.903 | worse than eval-only |
+
+**Best residual stack so far:** multi-process AX + Gemma cache-only chunk eval → thr **1.109×**, TTFT PASS, gap ratio fail.
+Still need ~3.7% thr and ~10% gap-ratio improvement for flip. Gates not relaxed.
