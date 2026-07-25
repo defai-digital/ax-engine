@@ -718,36 +718,57 @@ extern "C" int ax_mlx_gelu_approx_quantized_ffn(
 }
 
 // mlxcel `compiled_gelu_approx_mlp_forward` residual (gemma4.rs dense MLP):
-// compile the full split gate/up/gelu_approx*up/down affine qmm chain with
-// shapeless=true for group_size=64/bits=4. Collapses ~14 elementwise ops plus
-// three qmm nodes into one fused Compiled primitive per layer. Prefill and
-// decode both engage for the legacy 4-bit shape (mlxcel issue #680).
+// compile the full split gate/up/gelu_approx*up/down affine qmm chain.
+// Collapses ~14 elementwise ops plus three qmm nodes into one fused Compiled
+// primitive per layer.
+//
+// Shape policy (mlxcel #680 + #705):
+//   * gs64/bits=4 and single-token decode: shapeless=true (validated).
+//   * multi-token non-4bit (flip Gemma mixed packages with MLP bits=8):
+//     shape-specific compile (shapeless=false). mlxcel #680 disabled
+//     *shapeless* multi-token 8-bit because it forced a decode-oriented qmm
+//     kernel onto large prefill matmuls (~8-9% slower on GB10). Issue #705
+//     recovers prefill fusion for the same root cause via shape-specific
+//     graphs (NVFP4 path); we apply that recovery to affine 8-bit prefill so
+//     the flip package can fuse gelu without the shapeless qmm regression.
 namespace {
 
 using CompiledQgeluMlpFn =
     std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
 
-CompiledQgeluMlpFn& get_compiled_qgelu_approx_split_mlp(int group_size, int bits) {
+// shape_sig: 0 for shapeless graphs; for shape-specific graphs packs the
+// trailing activation dims that differ across prefill chunks (seq, and batch
+// if present). Weight shapes are fixed per (group_size, bits) quant layout.
+CompiledQgeluMlpFn& get_compiled_qgelu_approx_split_mlp(
+    int group_size,
+    int bits,
+    bool shapeless,
+    uint64_t shape_sig) {
   struct Key {
     int group_size;
     int bits;
+    bool shapeless;
+    uint64_t shape_sig;
   };
   struct KeyHash {
     size_t operator()(const Key& k) const noexcept {
       size_t h = std::hash<int>{}(k.group_size);
       h ^= std::hash<int>{}(k.bits) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<bool>{}(k.shapeless) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<uint64_t>{}(k.shape_sig) + 0x9e3779b9 + (h << 6) + (h >> 2);
       return h;
     }
   };
   struct KeyEq {
     bool operator()(const Key& a, const Key& b) const noexcept {
-      return a.group_size == b.group_size && a.bits == b.bits;
+      return a.group_size == b.group_size && a.bits == b.bits &&
+             a.shapeless == b.shapeless && a.shape_sig == b.shape_sig;
     }
   };
   static std::mutex mu;
   static std::unordered_map<Key, CompiledQgeluMlpFn, KeyHash, KeyEq> cache;
   std::lock_guard<std::mutex> lock(mu);
-  Key key{group_size, bits};
+  Key key{group_size, bits, shapeless, shape_sig};
   auto it = cache.find(key);
   if (it != cache.end()) {
     return it->second;
@@ -800,7 +821,7 @@ CompiledQgeluMlpFn& get_compiled_qgelu_approx_split_mlp(int group_size, int bits
     return {std::move(down)};
   };
   mx::enable_compile();
-  auto [iter, _] = cache.emplace(key, mx::compile(fn, /*shapeless=*/true));
+  auto [iter, _] = cache.emplace(key, mx::compile(fn, /*shapeless=*/shapeless));
   return iter->second;
 }
 
@@ -815,6 +836,32 @@ bool compiled_qgelu_mlp_env_enabled() {
              s == "OFF" || s == "NO");
   }();
   return enabled;
+}
+
+// Opt-in for the #705 multi-token non-4bit shape-specific prefill recovery.
+// Default OFF: on mbp-m5 (flip Gemma MLP bits=8) pure 13.8k wall measured
+// ~+2% slower vs portable (2026-07-24 pure-shaped-ab). Set
+// AX_MLX_COMPILED_QGELU_PREFILL_SHAPED=1 to force the experimental path.
+// Read each call (not process-static) so unit tests and A/B can toggle.
+bool compiled_qgelu_prefill_shaped_enabled() {
+  const char* v = std::getenv("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+
+// MLX `array::shape()` is a SmallVector-like Shape, not std::vector.
+template <typename ShapeLike>
+uint64_t qgelu_activation_shape_sig(const ShapeLike& shape) {
+  // Pack rank + trailing dims (batch?, seq, hidden) into a stable signature.
+  uint64_t h = static_cast<uint64_t>(shape.size());
+  for (auto d : shape) {
+    h = h * 1315423911u + static_cast<uint64_t>(static_cast<uint32_t>(d));
+  }
+  return h;
 }
 
 } // namespace
@@ -835,12 +882,16 @@ extern "C" int ax_mlx_compiled_gelu_approx_split_mlp(
     int bits,
     const mlx_stream stream) {
   AX_TRY {
-    // Match mlxcel #680:
-    //   * gs64/bits=4: compile all shapes (prefill+decode)
-    //   * other affine (notably gs64/bits=8 mixed "4bit" Gemma packages):
-    //     compile only single-token decode — multi-token 8-bit prefill was
-    //     slower on measured backends.
-    // Kill-switch: AX_MLX_COMPILED_QGELU_MLP=0.
+    // Compile gate (mlxcel #680 + #705 residual):
+    //   * gs64/bits=4: shapeless compile on every shape (prefill+decode).
+    //   * single-token decode (any affine bits): shapeless compile.
+    //   * multi-token non-4bit (notably gs64/bits=8 flip Gemma MLP):
+    //     shape-specific compile so prefill qmm stays on the large-matmul
+    //     kernel while still fusing gelu elementwise ops (#705 recovery).
+    // Kill-switches:
+    //   AX_MLX_COMPILED_QGELU_MLP=0 — disable all compiled qGELU.
+    //   AX_MLX_COMPILED_QGELU_PREFILL_SHAPED=0 — disable only multi-token
+    //   non-4bit shape-specific path (falls back to portable).
     if (!compiled_qgelu_mlp_env_enabled()) {
       return 1;
     }
@@ -855,10 +906,20 @@ extern "C" int ax_mlx_compiled_gelu_approx_split_mlp(
     const bool is_single_token =
         x_shape.size() >= 2 && x_shape[x_shape.size() - 2] == 1;
     const bool legacy_4bit = (group_size == 64 && bits == 4);
-    if (!(legacy_4bit || is_single_token)) {
+    bool shapeless = true;
+    uint64_t shape_sig = 0;
+    if (legacy_4bit || is_single_token) {
+      shapeless = true;
+      shape_sig = 0;
+    } else if (compiled_qgelu_prefill_shaped_enabled()) {
+      // Multi-token non-4bit prefill recovery (#705 pattern).
+      shapeless = false;
+      shape_sig = qgelu_activation_shape_sig(x_shape);
+    } else {
       return 1;
     }
-    auto& compiled_fn = get_compiled_qgelu_approx_split_mlp(group_size, bits);
+    auto& compiled_fn =
+        get_compiled_qgelu_approx_split_mlp(group_size, bits, shapeless, shape_sig);
     auto result = compiled_fn({
         aref(x),
         aref(gate_weight),

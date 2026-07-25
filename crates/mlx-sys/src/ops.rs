@@ -450,11 +450,15 @@ pub fn gelu_approx_mul_quantized_matmul(
 /// ```
 ///
 /// mlxcel `compiled_gelu_approx_mlp_forward` for **split** gate/up/down affine
-/// 4-bit (group_size=64) projections. Compiles the full qmm+gelu_approx+qmm
-/// chain with `shapeless=true` so long Gemma4 prefill does not rebuild the
-/// ~14-op elementwise gelu graph every layer. Returns `None` when the quant
-/// layout is unsupported or the kill-switch `AX_MLX_COMPILED_QGELU_MLP=0` is
-/// set (fail-closed → portable split path).
+/// projections. Compiles the full qmm+gelu_approx+qmm chain:
+/// - gs64/bits=4 and single-token decode: `shapeless=true` (mlxcel #680)
+/// - multi-token non-4bit (flip Gemma MLP bits=8): opt-in shape-specific
+///   compile via `AX_MLX_COMPILED_QGELU_PREFILL_SHAPED=1` (mlxcel #705 pattern;
+///   default OFF after mbp-m5 pure wall measured ~+2% regression)
+///
+/// Returns `None` when the quant layout is unsupported, the kill-switch
+/// `AX_MLX_COMPILED_QGELU_MLP=0` is set, or multi-token non-4bit is left at the
+/// default-off opt-in. Fail-closed → portable split path.
 #[allow(clippy::too_many_arguments)]
 pub fn compiled_gelu_approx_split_mlp(
     x: &MlxArray,
@@ -2933,11 +2937,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compiled_gelu_approx_split_mlp_matches_portable_split_ffn() {
-        // mlxcel residual: shapeless compile of split gate/up/gelu/down for
-        // affine gs64/4bit must match the portable op-at-a-time path.
+    fn compiled_split_mlp_matches_portable(bits: i32) {
         // x [2,4,64]; weight [out=64, in=64] so group_size=64 divides last dim.
+        // bits=4 → shapeless (#680); bits=8 multi-token → shape-specific (#705).
         let x_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
         let w_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
         let x = MlxArray::from_raw_data(
@@ -2955,7 +2957,7 @@ mod tests {
         let q = quantize(
             &w,
             Some(64),
-            Some(4),
+            Some(bits),
             MlxQuantizationMode::Affine,
             None,
             None,
@@ -2973,10 +2975,10 @@ mod tests {
             &q[1],
             &q[2],
             64,
-            4,
+            bits,
             None,
         )
-        .expect("gs64/4bit split MLP compile path should engage");
+        .unwrap_or_else(|| panic!("gs64/bits={bits} multi-token split MLP compile should engage"));
         let gate = quantized_matmul(
             &x,
             &q[0],
@@ -2984,7 +2986,7 @@ mod tests {
             Some(&q[2]),
             true,
             Some(64),
-            Some(4),
+            Some(bits),
             None,
         );
         let up = quantized_matmul(
@@ -2994,7 +2996,7 @@ mod tests {
             Some(&q[2]),
             true,
             Some(64),
-            Some(4),
+            Some(bits),
             None,
         );
         let hidden = gelu_approx_mul(&gate, &up, None);
@@ -3005,7 +3007,7 @@ mod tests {
             Some(&q[2]),
             true,
             Some(64),
-            Some(4),
+            Some(bits),
             None,
         );
         eval(&[&compiled, &portable]);
@@ -3019,6 +3021,63 @@ mod tests {
                 "compiled split MLP must match portable within tol: {a} vs {b}"
             );
         }
+    }
+
+    #[test]
+    fn compiled_gelu_approx_split_mlp_matches_portable_split_ffn() {
+        compiled_split_mlp_matches_portable(4);
+    }
+
+    #[test]
+    fn compiled_gelu_approx_split_mlp_matches_portable_bits8_multitoken() {
+        // Flip Gemma MLP is bits=8; multi-token shape-specific path is opt-in
+        // (default OFF after mbp-m5 pure wall +2% reject).
+        // SAFETY: test process only; restored after assertion path.
+        // SAFETY: single-threaded test env mutation for kill-switch coverage.
+        unsafe {
+            std::env::set_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED", "1");
+        }
+        compiled_split_mlp_matches_portable(8);
+        unsafe {
+            std::env::remove_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
+        }
+    }
+
+    #[test]
+    fn compiled_gelu_approx_split_mlp_bits8_multitoken_default_off() {
+        unsafe {
+            std::env::remove_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
+        }
+        let x_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
+        let w_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[2, 4, 64],
+            MlxDtype::Float32,
+        );
+        let w = MlxArray::from_raw_data(
+            w_data.as_ptr() as *const u8,
+            std::mem::size_of_val(w_data.as_slice()),
+            &[64, 64],
+            MlxDtype::Float32,
+        );
+        let q = quantize(
+            &w,
+            Some(64),
+            Some(8),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        let compiled = compiled_gelu_approx_split_mlp(
+            &x, &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], 64, 8, None,
+        );
+        assert!(
+            compiled.is_none(),
+            "bits=8 multi-token must stay portable when PREFILL_SHAPED is unset"
+        );
     }
 
     #[test]

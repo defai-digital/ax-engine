@@ -2058,9 +2058,11 @@ fn ffn_swiglu_with_policy(
             }
         }
         // mlxcel residual: `compiled_gelu_approx_mlp_forward` for split affine
-        // qGELU MLP. Engages multi-token prefill only for gs64/bits=4; 8-bit
-        // multi-token stays portable (mlxcel #680). Decode (seq==1) may still
-        // compile 8-bit via the C++ single-token gate.
+        // qGELU MLP. gs64/bits=4 + single-token: shapeless compile (#680).
+        // Multi-token non-4bit (flip Gemma MLP bits=8): shape-specific compile
+        // (#705 prefill recovery) so prefill qmm is not forced onto decode
+        // kernels. Kill-switches: AX_MLX_COMPILED_QGELU_MLP /
+        // AX_MLX_COMPILED_QGELU_PREFILL_SHAPED.
         if cfg.uses_geglu
             && !profile_decode
             && !profile_prefill
