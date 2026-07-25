@@ -1266,6 +1266,68 @@ extern "C" int ax_mlx_dual_qmm_geglu(
   } AX_CATCH
 }
 
+// Dual affine qmm only (no compile, no GEGLU). Collapses two Rust→C++ qmm
+// FFI round-trips into one while leaving Metal GEGLU on the AX production
+// path. Profile residual: pure Gemma gate_up ~3.26s. Opt-in
+// AX_MLX_DUAL_AFFINE_QMM=1 (default OFF).
+namespace {
+bool dual_affine_qmm_env_enabled() {
+  const char* v = std::getenv("AX_MLX_DUAL_AFFINE_QMM");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+} // namespace
+
+extern "C" int ax_mlx_dual_affine_qmm(
+    mlx_array* gate_res,
+    mlx_array* up_res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    if (!dual_affine_qmm_env_enabled()) {
+      return 1;
+    }
+    if (group_size <= 0 || bits <= 0) {
+      return 1;
+    }
+    if (!gate_biases.ctx || !up_biases.ctx) {
+      return 1;
+    }
+    auto s = sd(stream);
+    auto gate = quantized_matmul_affine_impl(
+        aref(x),
+        aref(gate_weight),
+        aref(gate_scales),
+        opt_arr(gate_biases),
+        group_size,
+        bits,
+        s);
+    auto up = quantized_matmul_affine_impl(
+        aref(x),
+        aref(up_weight),
+        aref(up_scales),
+        opt_arr(up_biases),
+        group_size,
+        bits,
+        s);
+    aset(gate_res, std::move(gate));
+    aset(up_res, std::move(up));
+    return 0;
+  } AX_CATCH
+}
+
 extern "C" int ax_mlx_compiled_dual_gate_up_qmm(
     mlx_array* gate_res,
     mlx_array* up_res,

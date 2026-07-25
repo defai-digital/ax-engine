@@ -1,0 +1,115 @@
+{
+  "by_variant": {
+    "base": {
+      "cold": [
+        8261.097082984634,
+        8353.523208003026,
+        8223.8722909824
+      ],
+      "median": 8261.097082984634
+    },
+    "dual_qmm": {
+      "cold": [
+        8460.108957951888,
+        8275.944709021132,
+        8255.90975000523
+      ],
+      "median": 8275.944709021132
+    }
+  },
+  "base_median": 8261.097082984634,
+  "ratios_vs_base": {
+    "base": 1.0,
+    "dual_qmm": 1.0017972947040026
+  },
+  "best": "base",
+  "decision": "keep_base",
+  "keep_if_ratio_lt": 0.96,
+  "results": [
+    {
+      "name": "base_r1",
+      "cold_ms": 8261.097082984634,
+      "warm_ms": 8311.983541992959,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "dual_qmm_r1",
+      "cold_ms": 8460.108957951888,
+      "warm_ms": 8937.209583004005,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "base_r2",
+      "cold_ms": 8353.523208003026,
+      "warm_ms": 8549.353417009115,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "dual_qmm_r2",
+      "cold_ms": 8275.944709021132,
+      "warm_ms": 8339.674709015526,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "base_r3",
+      "cold_ms": 8223.8722909824,
+      "warm_ms": 8308.007834013551,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    },
+    {
+      "name": "dual_qmm_r3",
+      "cold_ms": 8255.90975000523,
+      "warm_ms": 8332.644083013292,
+      "text": " The",
+      "usage": {
+        "prompt_tokens": 13826,
+        "completion_tokens": 1,
+        "total_tokens": 13827,
+        "prompt_tokens_details": {
+          "cached_tokens": 13824
+        }
+      }
+    }
+  ],
+  "residual": "dual_affine_qmm one-FFI gate+up, Metal GEGLU kept"
+}

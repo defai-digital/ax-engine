@@ -515,6 +515,21 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_DUAL_AFFINE_QMM` — multi-token split gate/up as **one C++ call**
+    /// returning `(gate, up)` without `mx::compile` and without GEGLU (Metal
+    /// GEGLU stays on). Collapses two Rust→C++ qmm FFIs for pure gate_up
+    /// residual (~3.26s). Unlike `AX_MLX_DUAL_QMM_GEGLU` (rejected 1.09×), this
+    /// keeps production Metal GEGLU.
+    ///
+    /// mlxcel multi-token bits=8: two `UnifiedLinear::forward` (each one FFI) +
+    /// activation (gemma4.rs ~917–920).
+    ///
+    /// **Default: OFF** (opt-in pure A/B under cache_eval).
+    dual_affine_qmm_enabled,
+    "AX_MLX_DUAL_AFFINE_QMM"
+);
+
+env_flag!(
     /// `AX_MLX_CACHE_ONLY_CHUNK_EVAL` — materialise KV after **every** cache-only
     /// prefill chunk (not only the last). Pure greedy long prompts use the
     /// mlx-lm-style cache-only prefix (n−1 tokens) with deferred eval; for

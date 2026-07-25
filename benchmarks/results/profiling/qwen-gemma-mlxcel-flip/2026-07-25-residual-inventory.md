@@ -126,3 +126,7 @@ Best ~0.7% pure — need ≤0.96. Keep both OFF. Flip still not_yet.
 
 ## Async dual gate/up submit (2026-07-25)
 `AX_MLX_ASYNC_DUAL_GATE_UP=1` under cache_eval pure: median **1.007×**. Reject default OFF.
+
+## Dual affine qmm one-FFI (2026-07-25)
+`AX_MLX_DUAL_AFFINE_QMM=1` (dual qmm, Metal GEGLU kept) under cache_eval pure: median **1.002×**.
+Reject default OFF. Gate_up thr residual still needs GEMM-class win, not host-FFI collapse.

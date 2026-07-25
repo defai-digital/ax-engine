@@ -92,6 +92,21 @@ unsafe extern "C" {
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
+    fn ax_mlx_dual_affine_qmm(
+        gate_res: *mut ffi::mlx_array,
+        up_res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        gate_weight: ffi::mlx_array,
+        gate_scales: ffi::mlx_array,
+        gate_biases: ffi::mlx_array,
+        up_weight: ffi::mlx_array,
+        up_scales: ffi::mlx_array,
+        up_biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_compiled_dual_gate_up_qmm(
         gate_res: *mut ffi::mlx_array,
         up_res: *mut ffi::mlx_array,
@@ -563,6 +578,50 @@ pub fn dual_qmm_geglu(
         if rc == 0 {
             crate::op_count::bump();
             return Some(res);
+        }
+    }
+    crate::error::clear_stale_error();
+    None
+}
+
+/// Dual affine qmm only (no compile, no GEGLU) — one C++ call returns
+/// `(gate, up)` so Metal GEGLU stays on the production path.
+///
+/// Gated by `AX_MLX_DUAL_AFFINE_QMM=1` (default OFF). Fail-closed → `None`.
+#[allow(clippy::too_many_arguments)]
+pub fn dual_affine_qmm(
+    x: &MlxArray,
+    gate_weight: &MlxArray,
+    gate_scales: &MlxArray,
+    gate_biases: &MlxArray,
+    up_weight: &MlxArray,
+    up_scales: &MlxArray,
+    up_biases: &MlxArray,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<(MlxArray, MlxArray)> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut gate = MlxArray::empty();
+        let mut up = MlxArray::empty();
+        let rc = ax_mlx_dual_affine_qmm(
+            &mut gate.inner,
+            &mut up.inner,
+            x.inner,
+            gate_weight.inner,
+            gate_scales.inner,
+            gate_biases.inner,
+            up_weight.inner,
+            up_scales.inner,
+            up_biases.inner,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some((gate, up));
         }
     }
     crate::error::clear_stale_error();
