@@ -103,3 +103,7 @@ qmmrms / both: medians **1.18× / 1.026× / 1.18×** vs base **8219 ms**. Decisi
 `AX_MLX_PIPELINE_GRANULARITY` = `block:4` / `block:2` / `layer` vs off under
 cache_eval pure: ratios **1.070 / 1.040 / 1.049**. Decision **reject_keep_off**.
 Default remains off. No cool S1 remeasure; thr headroom still short of 1.15×.
+
+## Multi-process + cache_eval + DENSE_FFN_COMPILE=1 (2026-07-25)
+Cool S1 thr **1.103×**, gap ratio **1.119**, TTFT **0.904**.
+Worse thr than cache_eval-only **1.109×**. Reject — keep DENSE_FFN_COMPILE=0 on multi-process target.

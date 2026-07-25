@@ -1,0 +1,41 @@
+{
+  "schema_version": "ax.qwen_gemma_flip_campaign_summary.v1",
+  "decision": "not_yet",
+  "passed": false,
+  "candidate_label": "ax-engine",
+  "baseline_label": "mlxcel",
+  "repetitions": 3,
+  "scenarios": [
+    {
+      "scenario": "s1",
+      "passed": false,
+      "candidate": {
+        "throughput_median_tok_s": 19.44227826769426,
+        "stream_gap_p95_median_ms": 40.09602149017155,
+        "ttft_p95_median_ms": 9180.72899376275
+      },
+      "baseline": {
+        "throughput_median_tok_s": 17.63267362942206,
+        "stream_gap_p95_median_ms": 35.81970851519145,
+        "ttft_p95_median_ms": 10159.725446149241
+      },
+      "ratios": {
+        "throughput": 1.102627921114168,
+        "stream_gap_p95": 1.1193843599583306,
+        "ttft_p95": 0.9036394775060037
+      },
+      "failed_required_gates": [
+        "median_throughput_ratio",
+        "median_stream_gap_p95_ratio",
+        "median_ttft_p95_ratio"
+      ],
+      "note": "multi-process + cache_eval + DENSE_FFN_COMPILE=1; thr worse than cache_eval-only best 1.109"
+    }
+  ],
+  "thresholds": {
+    "min_throughput_ratio": 1.15,
+    "max_ttft_p95_ratio": 0.9,
+    "max_stream_gap_p95_ratio": 0.9,
+    "max_stream_gap_p95_ms": 50.0
+  }
+}
