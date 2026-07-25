@@ -57,3 +57,17 @@ Two single-model `ax-engine-server` processes (48GB each), concurrent Qwen strea
 
 vs exclusive tip thr 18.62 and mlxcel formal thr 17.97 → probe thr ratio vs mlxcel ~**1.08×** (still <1.15).
 Two-process Metal time-share gap is near SLO; thr still short of gate. Product flip remains single-process.
+
+## Metal4 / NAX attention residual
+mlxcel `metal4_attention` → C++ `fused_metal4_attention` with `(void)use_metal4` and
+delegates to upstream `mlx::core::fast::scaled_dot_product_attention` (same class as AX
+`scaled_dot_product_attention_with_mask`). **Not a distinct GPU kernel residual** on M5
+with MLX 0.32; AX pure already ≳ mlxcel pure. Leave Metal4 bridge port deferred.
+
+## Bottom line (2026-07-25)
+- Exclusive S1: thr **1.03–1.05×** FAIL, gap/TTFT PASS.
+- Dual-hold single-process: gap **~166 ms** FAIL.
+- Multi-process AX probe: thr **~1.08×**, gap **~48 ms** — still <1.15×.
+- Pure host/graph residuals max ~4%; stacks regress.
+- Flip under locked gates remains **not_yet** without a true ≥11% pure GPU cut
+  (GEMM-class dual-gate) or a dual-stream product shape that still clears thr 1.15×.
