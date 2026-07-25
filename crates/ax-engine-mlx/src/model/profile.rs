@@ -698,6 +698,56 @@ pub fn take_prefill_profile_snapshot() -> PrefillProfileSnapshot {
     let mut profile = lock_profile(prefill_profile());
     let snapshot = *profile;
     *profile = PrefillProfileSnapshot::default();
+    // Optional dump for pure-prefill stage A/B on mbp-m5 (not a production
+    // surface). Set AX_MLX_PREFILL_PROFILE_DUMP=/path/to/file.json.
+    if let Ok(path) = std::env::var("AX_MLX_PREFILL_PROFILE_DUMP")
+        && !path.is_empty()
+        && snapshot.enabled != 0
+    {
+        let payload = format!(
+            "{{\n\
+              \"enabled\": {enabled},\n\
+              \"prefill_steps\": {steps},\n\
+              \"layers\": {layers},\n\
+              \"tokens\": {tokens},\n\
+              \"per_layer_input_wall_us\": {pli},\n\
+              \"pre_sdpa_wall_us\": {pre},\n\
+              \"pre_sdpa_qkv_proj_wall_us\": {qkv},\n\
+              \"pre_sdpa_qk_norm_wall_us\": {qkn},\n\
+              \"pre_sdpa_rope_kv_wall_us\": {rope},\n\
+              \"sdpa_wall_us\": {sdpa},\n\
+              \"post_attn_wall_us\": {post},\n\
+              \"post_attn_ffn_wall_us\": {ffn},\n\
+              \"post_attn_ffn_gate_up_wall_us\": {gate},\n\
+              \"post_attn_ffn_activation_wall_us\": {act},\n\
+              \"post_attn_ffn_down_wall_us\": {down},\n\
+              \"post_attn_output_proj_wall_us\": {oproj},\n\
+              \"post_attn_residual_norm_wall_us\": {rnorm},\n\
+              \"post_attn_residual_gate_wall_us\": {rgate},\n\
+              \"lm_head_wall_us\": {lm}\n\
+            }}\n",
+            enabled = snapshot.enabled,
+            steps = snapshot.prefill_steps,
+            layers = snapshot.layers,
+            tokens = snapshot.tokens,
+            pli = snapshot.per_layer_input_wall_us,
+            pre = snapshot.pre_sdpa_wall_us,
+            qkv = snapshot.pre_sdpa_qkv_proj_wall_us,
+            qkn = snapshot.pre_sdpa_qk_norm_wall_us,
+            rope = snapshot.pre_sdpa_rope_kv_wall_us,
+            sdpa = snapshot.sdpa_wall_us,
+            post = snapshot.post_attn_wall_us,
+            ffn = snapshot.post_attn_ffn_wall_us,
+            gate = snapshot.post_attn_ffn_gate_up_wall_us,
+            act = snapshot.post_attn_ffn_activation_wall_us,
+            down = snapshot.post_attn_ffn_down_wall_us,
+            oproj = snapshot.post_attn_output_proj_wall_us,
+            rnorm = snapshot.post_attn_residual_norm_wall_us,
+            rgate = snapshot.post_attn_residual_gate_wall_us,
+            lm = snapshot.lm_head_wall_us,
+        );
+        let _ = std::fs::write(&path, payload);
+    }
     snapshot
 }
 

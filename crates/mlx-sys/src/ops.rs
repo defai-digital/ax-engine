@@ -70,6 +70,22 @@ unsafe extern "C" {
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
+    /// Profile-backed: shape-specific compile of multi-token gate+up qmm only.
+    fn ax_mlx_compiled_dual_gate_up_qmm(
+        gate_res: *mut ffi::mlx_array,
+        up_res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        gate_weight: ffi::mlx_array,
+        gate_scales: ffi::mlx_array,
+        gate_biases: ffi::mlx_array,
+        up_weight: ffi::mlx_array,
+        up_scales: ffi::mlx_array,
+        up_biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_qk_norm_rope_bhsd_from_proj(
         res: *mut ffi::mlx_array,
         proj: ffi::mlx_array,
@@ -449,6 +465,50 @@ pub fn gelu_approx_mul_quantized_matmul(
 /// out = quantized_matmul(hidden, down_weight, ...)
 /// ```
 ///
+/// Shape-specific compile of multi-token **gate + up** affine qmm only
+/// (profile residual: gate_up dominates pure Gemma prefill). Leaves gelu/down
+/// outside the compile window. **Default OFF** after mbp-m5 pure wall ~+2.1%;
+/// enable with `AX_MLX_COMPILED_DUAL_GATE_UP=1`.
+#[allow(clippy::too_many_arguments)]
+pub fn compiled_dual_gate_up_qmm(
+    x: &MlxArray,
+    gate_weight: &MlxArray,
+    gate_scales: &MlxArray,
+    gate_biases: &MlxArray,
+    up_weight: &MlxArray,
+    up_scales: &MlxArray,
+    up_biases: &MlxArray,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<(MlxArray, MlxArray)> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut gate = MlxArray::empty();
+        let mut up = MlxArray::empty();
+        let rc = ax_mlx_compiled_dual_gate_up_qmm(
+            &mut gate.inner,
+            &mut up.inner,
+            x.inner,
+            gate_weight.inner,
+            gate_scales.inner,
+            gate_biases.inner,
+            up_weight.inner,
+            up_scales.inner,
+            up_biases.inner,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some((gate, up));
+        }
+    }
+    crate::error::clear_stale_error();
+    None
+}
+
 /// mlxcel `compiled_gelu_approx_mlp_forward` for **split** gate/up/down affine
 /// projections. Compiles the full qmm+gelu_approx+qmm chain:
 /// - gs64/bits=4 and single-token decode: `shapeless=true` (mlxcel #680)
@@ -3019,6 +3079,63 @@ mod tests {
             assert!(
                 (a - b).abs() < 1e-3 || (a - b).abs() / (b.abs().max(1e-6)) < 1e-3,
                 "compiled split MLP must match portable within tol: {a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn compiled_dual_gate_up_qmm_matches_portable_multi_token() {
+        // Profile residual: multi-token dual gate/up compile vs two qmm.
+        // Path is default-off after pure wall reject; enable for parity test.
+        unsafe {
+            std::env::set_var("AX_MLX_COMPILED_DUAL_GATE_UP", "1");
+        }
+        let x_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
+        let w_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[2, 4, 64],
+            MlxDtype::Float32,
+        );
+        let w = MlxArray::from_raw_data(
+            w_data.as_ptr() as *const u8,
+            std::mem::size_of_val(w_data.as_slice()),
+            &[64, 64],
+            MlxDtype::Float32,
+        );
+        let q = quantize(
+            &w,
+            Some(64),
+            Some(8),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        let (c_gate, c_up) = compiled_dual_gate_up_qmm(
+            &x, &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], 64, 8, None,
+        )
+        .expect("multi-token dual gate/up compile should engage for bits=8");
+        let p_gate = quantized_matmul(
+            &x, &q[0], &q[1], Some(&q[2]), true, Some(64), Some(8), None,
+        );
+        let p_up = quantized_matmul(
+            &x, &q[0], &q[1], Some(&q[2]), true, Some(64), Some(8), None,
+        );
+        eval(&[&c_gate, &c_up, &p_gate, &p_up]);
+        assert_eq!(c_gate.shape(), p_gate.shape());
+        assert_eq!(c_up.shape(), p_up.shape());
+        for (a, b) in c_gate.data_f32().iter().zip(p_gate.data_f32().iter()) {
+            assert!(
+                (a - b).abs() < 1e-3 || (a - b).abs() / (b.abs().max(1e-6)) < 1e-3,
+                "compiled dual gate must match portable: {a} vs {b}"
+            );
+        }
+        for (a, b) in c_up.data_f32().iter().zip(p_up.data_f32().iter()) {
+            assert!(
+                (a - b).abs() < 1e-3 || (a - b).abs() / (b.abs().max(1e-6)) < 1e-3,
+                "compiled dual up must match portable: {a} vs {b}"
             );
         }
     }

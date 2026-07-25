@@ -940,6 +940,151 @@ extern "C" int ax_mlx_compiled_gelu_approx_split_mlp(
   } AX_CATCH
 }
 
+// Profile-backed residual (mbp-m5 pure Gemma prefill): gate_up qmm dominates
+// wall. Compile the *two* multi-token affine qmm (gate + up) only — leave gelu
+// and down outside the compile window so #680's "decode qmm on prefill" trap
+// is less likely than full-MLP compile. Shape-specific (#705 lesson).
+namespace {
+
+using CompiledDualGateUpFn =
+    std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+
+CompiledDualGateUpFn& get_compiled_dual_gate_up_qmm(
+    int group_size,
+    int bits,
+    uint64_t shape_sig) {
+  struct Key {
+    int group_size;
+    int bits;
+    uint64_t shape_sig;
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const noexcept {
+      size_t h = std::hash<int>{}(k.group_size);
+      h ^= std::hash<int>{}(k.bits) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<uint64_t>{}(k.shape_sig) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  struct KeyEq {
+    bool operator()(const Key& a, const Key& b) const noexcept {
+      return a.group_size == b.group_size && a.bits == b.bits &&
+             a.shape_sig == b.shape_sig;
+    }
+  };
+  static std::mutex mu;
+  static std::unordered_map<Key, CompiledDualGateUpFn, KeyHash, KeyEq> cache;
+  std::lock_guard<std::mutex> lock(mu);
+  Key key{group_size, bits, shape_sig};
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  auto fn = [group_size, bits](const std::vector<mx::array>& inputs)
+      -> std::vector<mx::array> {
+    // inputs: x, gate_w, gate_s, gate_b, up_w, up_s, up_b
+    const auto& x = inputs[0];
+    auto gate = mx::quantized_matmul(
+        x,
+        inputs[1],
+        inputs[2],
+        std::optional<mx::array>(inputs[3]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kAffineMode);
+    auto up = mx::quantized_matmul(
+        x,
+        inputs[4],
+        inputs[5],
+        std::optional<mx::array>(inputs[6]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kAffineMode);
+    return {std::move(gate), std::move(up)};
+  };
+  mx::enable_compile();
+  // shape-specific: multi-token prefill must not force decode qmm kernels.
+  auto [iter, _] = cache.emplace(key, mx::compile(fn, /*shapeless=*/false));
+  return iter->second;
+}
+
+// Default OFF after mbp-m5 pure 13.8k A/B measured ~+2.1% cold wall
+// (2026-07-24 pure-dual-gate-up-ab). Opt-in for further kernel A/B.
+bool compiled_dual_gate_up_env_enabled() {
+  const char* v = std::getenv("AX_MLX_COMPILED_DUAL_GATE_UP");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+
+template <typename ShapeLike>
+uint64_t dual_gate_up_shape_sig(const ShapeLike& shape) {
+  uint64_t h = static_cast<uint64_t>(shape.size());
+  for (auto d : shape) {
+    h = h * 1315423911u + static_cast<uint64_t>(static_cast<uint32_t>(d));
+  }
+  return h;
+}
+
+} // namespace
+
+extern "C" int ax_mlx_compiled_dual_gate_up_qmm(
+    mlx_array* gate_res,
+    mlx_array* up_res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    (void)stream;
+    if (!compiled_dual_gate_up_env_enabled()) {
+      return 1;
+    }
+    if (group_size <= 0 || bits <= 0) {
+      return 1;
+    }
+    if (!gate_biases.ctx || !up_biases.ctx) {
+      return 1;
+    }
+    const auto& x_shape = aref(x).shape();
+    // Multi-token prefill only (decode already has cheap seq==1 path).
+    const bool multi_token =
+        x_shape.size() >= 2 && x_shape[x_shape.size() - 2] > 1;
+    if (!multi_token) {
+      return 1;
+    }
+    const uint64_t shape_sig = dual_gate_up_shape_sig(x_shape);
+    auto& compiled_fn =
+        get_compiled_dual_gate_up_qmm(group_size, bits, shape_sig);
+    auto result = compiled_fn({
+        aref(x),
+        aref(gate_weight),
+        aref(gate_scales),
+        aref(gate_biases),
+        aref(up_weight),
+        aref(up_scales),
+        aref(up_biases),
+    });
+    if (result.size() != 2) {
+      return 1;
+    }
+    aset(gate_res, std::move(result[0]));
+    aset(up_res, std::move(result[1]));
+    return 0;
+  } AX_CATCH
+}
+
 extern "C" int ax_mlx_qwen_linear_attention_inputs_packed(
     mlx_array* qkv_res,
     mlx_array* z_res,

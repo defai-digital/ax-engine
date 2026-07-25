@@ -1,7 +1,8 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
-    compiled_gelu_approx_split_mlp, expand_dims_axes, gelu_approx_mul,
+    compiled_dual_gate_up_qmm, compiled_gelu_approx_split_mlp, expand_dims_axes,
+    gelu_approx_mul,
     gelu_approx_mul_quantized_matmul, maximum, multiply,
     quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax,
     softmax_precise, sum_axis, take, take_along_axis, topk_axis, zeros,
@@ -2100,9 +2101,39 @@ fn ffn_swiglu_with_policy(
             };
         }
         packed_gate_up = None;
-        let gate = qw_with_policy(x, gate_w, projection_policy);
-        let up = qw_with_policy(x, up_w, projection_policy);
-        (gate, up)
+        // Profile residual (pure Gemma): gate_up dual qmm dominates multi-token
+        // wall. Shape-specific compile of gate+up only (gelu/down stay outside)
+        // — narrower than full-MLP #705 path that regressed pure wall.
+        if cfg.uses_geglu
+            && seq > 1
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && let (Some(g_s), Some(u_s)) = (gate_w.scales.as_ref(), up_w.scales.as_ref())
+            && let (Some(g_b), Some(u_b)) = (gate_w.biases.as_ref(), up_w.biases.as_ref())
+            && gate_w.group_size > 0
+            && gate_w.bits > 0
+            && up_w.group_size == gate_w.group_size
+            && up_w.bits == gate_w.bits
+            && let Some((gate, up)) = compiled_dual_gate_up_qmm(
+                x,
+                &gate_w.weight,
+                g_s,
+                g_b,
+                &up_w.weight,
+                u_s,
+                u_b,
+                gate_w.group_size,
+                gate_w.bits,
+                None,
+            )
+        {
+            (gate, up)
+        } else {
+            let gate = qw_with_policy(x, gate_w, projection_policy);
+            let up = qw_with_policy(x, up_w, projection_policy);
+            (gate, up)
+        }
     };
     if (profile_decode || profile_prefill) && !gate_up_profile_recorded {
         let gate_up_profile_storage;
