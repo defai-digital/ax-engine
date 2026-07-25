@@ -1,10 +1,11 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, compiled_dual_gate_up_qmm,
-    compiled_gelu_approx_split_mlp, divide, expand_dims, expand_dims_axes, gelu_approx_mul,
-    gelu_approx_mul_quantized_matmul, maximum, multiply, quantized_matmul_rms_norm, reshape,
-    rms_norm, rms_norm_quantized_matmul, silu_mul, slice_last_dim, softmax, softmax_precise,
-    sum_axis, take, take_along_axis, topk_axis, zeros,
+    compiled_gelu_approx_split_mlp, divide, dual_qmm_geglu, expand_dims, expand_dims_axes,
+    gelu_approx_mul, gelu_approx_mul_quantized_matmul, maximum, multiply,
+    quantized_matmul_rms_norm, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul,
+    slice_last_dim, softmax, softmax_precise, sum_axis, take, take_along_axis, topk_axis,
+    zeros,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -2355,6 +2356,98 @@ fn ffn_swiglu_with_policy(
     } else {
         let gate_w = w.gate_proj.as_ref().unwrap();
         let up_w = w.up_proj.as_ref().unwrap();
+        // Multi-token dual qmm + GEGLU in one C++ call (opt-in; mlxcel sequence
+        // without mx::compile). Pure A/B residual: gate_up ~3.3s.
+        if cfg.uses_geglu
+            && seq > 1
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && fastpath::dual_qmm_geglu_enabled()
+            && let (Some(g_s), Some(u_s)) = (gate_w.scales.as_ref(), up_w.scales.as_ref())
+            && let (Some(g_b), Some(u_b)) = (gate_w.biases.as_ref(), up_w.biases.as_ref())
+            && gate_w.group_size > 0
+            && gate_w.bits > 0
+            && up_w.group_size == gate_w.group_size
+            && up_w.bits == gate_w.bits
+            && let Some(ffn_hidden) = dual_qmm_geglu(
+                x,
+                &gate_w.weight,
+                g_s,
+                g_b,
+                &up_w.weight,
+                u_s,
+                u_b,
+                gate_w.group_size,
+                gate_w.bits,
+                None,
+            )
+        {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                gate_up_started,
+                &[&ffn_hidden],
+            );
+            let activation_started = Instant::now();
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnActivation,
+                activation_started,
+                &[&ffn_hidden],
+            );
+            let down_started = Instant::now();
+            let down = w
+                .down_proj
+                .as_ref()
+                .expect("dense FFN layer must have down_proj");
+            if let Some(norm_w) = post_norm {
+                if projection_policy == ProjectionBatchPolicy::Shared
+                    && fastpath::dense_qmatmul_rms_norm_enabled()
+                    && let Some(scales) = down.scales.as_ref()
+                {
+                    let out = quantized_matmul_rms_norm(
+                        &ffn_hidden,
+                        &down.weight,
+                        scales,
+                        down.biases.as_ref(),
+                        down.group_size,
+                        down.bits,
+                        norm_w,
+                        cfg.rms_norm_eps,
+                        None,
+                    );
+                    forward_profile_eval_elapsed(
+                        profile_decode,
+                        profile_prefill,
+                        DecodeProfileStage::PostAttnFfnDown,
+                        down_started,
+                        &[&out],
+                    );
+                    return out;
+                }
+                let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnDown,
+                    down_started,
+                    &[&out],
+                );
+                return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
+            }
+            let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                down_started,
+                &[&out],
+            );
+            return out;
+        }
         // Multi-token Gemma dual gate/up Metal + fused GEGLU (opt-in only:
         // pure-wall A/B on mbp-m5 measured ~8.5× regression vs MLX dual qmm).
         if cfg.uses_geglu

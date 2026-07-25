@@ -71,6 +71,20 @@ unsafe extern "C" {
     ) -> libc::c_int;
 
     /// Profile-backed: shape-specific compile of multi-token gate+up qmm only.
+    fn ax_mlx_dual_qmm_geglu(
+        res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        gate_weight: ffi::mlx_array,
+        gate_scales: ffi::mlx_array,
+        gate_biases: ffi::mlx_array,
+        up_weight: ffi::mlx_array,
+        up_scales: ffi::mlx_array,
+        up_biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_compiled_dual_gate_up_qmm(
         gate_res: *mut ffi::mlx_array,
         up_res: *mut ffi::mlx_array,
@@ -478,6 +492,51 @@ pub fn gelu_approx_mul_quantized_matmul(
 /// out = quantized_matmul(hidden, down_weight, ...)
 /// ```
 ///
+/// Dual affine qmm + GEGLU product in one C++ call (no `mx::compile`):
+/// `gelu_approx(qmm(x,gate)) * qmm(x,up)`.
+///
+/// mlxcel multi-token bits=8 residual: two `UnifiedLinear::forward` +
+/// `compiled_geglu_approx_activation`. Collapses three host round-trips into
+/// one for pure prefill gate_up residual (~3.3s). Fail-closed: returns `None`
+/// on shim error so callers keep portable split + Metal GEGLU.
+#[allow(clippy::too_many_arguments)]
+pub fn dual_qmm_geglu(
+    x: &MlxArray,
+    gate_weight: &MlxArray,
+    gate_scales: &MlxArray,
+    gate_biases: &MlxArray,
+    up_weight: &MlxArray,
+    up_scales: &MlxArray,
+    up_biases: &MlxArray,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<MlxArray> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_dual_qmm_geglu(
+            &mut res.inner,
+            x.inner,
+            gate_weight.inner,
+            gate_scales.inner,
+            gate_biases.inner,
+            up_weight.inner,
+            up_scales.inner,
+            up_biases.inner,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some(res);
+        }
+    }
+    crate::error::clear_stale_error();
+    None
+}
+
 /// Shape-specific compile of multi-token **gate + up** affine qmm only
 /// (profile residual: gate_up dominates pure Gemma prefill). Leaves gelu/down
 /// outside the compile window. **Default OFF** after mbp-m5 pure wall ~+2.1%;

@@ -98,6 +98,45 @@ mx::array quantized_matmul_affine_impl(
       stream);
 }
 
+// mlxcel gemma4 multi-token bits=8 residual (gemma4.rs ~917–920):
+//   gate = gate_proj.forward(x);  // qmm
+//   up   = up_proj.forward(x);    // qmm
+//   hidden = compiled_geglu_approx_activation(gate, up);
+// AX already uses Metal GEGLU for the third step. This composite collapses
+// the three ops into one C++ entry (two affine qmm + gelu_approx_mul) to
+// cut Rust↔C++ FFI / host graph build on pure prefill where gate_up ~3.3s.
+// Does NOT use mx::compile (shapeless 8-bit prefill compile rejected #680 /
+// pure-shaped A/B). Opt-in via AX_MLX_DUAL_QMM_GEGLU.
+mx::array dual_qmm_geglu_impl(
+    const mx::array& x,
+    const mx::array& gate_weight,
+    const mx::array& gate_scales,
+    std::optional<mx::array> gate_biases,
+    const mx::array& up_weight,
+    const mx::array& up_scales,
+    std::optional<mx::array> up_biases,
+    int group_size,
+    int bits,
+    mx::StreamOrDevice stream) {
+  auto gate = quantized_matmul_affine_impl(
+      x,
+      gate_weight,
+      gate_scales,
+      std::move(gate_biases),
+      group_size,
+      bits,
+      stream);
+  auto up = quantized_matmul_affine_impl(
+      x,
+      up_weight,
+      up_scales,
+      std::move(up_biases),
+      group_size,
+      bits,
+      stream);
+  return gelu_approx_mul_impl(gate, up, stream);
+}
+
 mx::array projection_affine_or_dense_impl(
     const mx::array& x,
     const mx::array& weight,
@@ -1126,6 +1165,36 @@ uint64_t dual_gate_up_shape_sig(const ShapeLike& shape) {
 }
 
 } // namespace
+
+extern "C" int ax_mlx_dual_qmm_geglu(
+    mlx_array* res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    aset(
+        res,
+        dual_qmm_geglu_impl(
+            aref(x),
+            aref(gate_weight),
+            aref(gate_scales),
+            opt_arr(gate_biases),
+            aref(up_weight),
+            aref(up_scales),
+            opt_arr(up_biases),
+            group_size,
+            bits,
+            sd(stream)));
+    return 0;
+  } AX_CATCH
+}
 
 extern "C" int ax_mlx_compiled_dual_gate_up_qmm(
     mlx_array* gate_res,

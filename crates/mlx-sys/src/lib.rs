@@ -67,6 +67,7 @@ pub use ops::{
     MlxQuantizationMode, add, add_rms_norm_pair, arange, argmax, argpartition_axis, argsort_axis,
     as_strided, astype, broadcast_to, clip, compiled_dual_gate_up_qmm,
     compiled_gelu_approx_split_mlp, concatenate, contiguous, conv1d, conv2d, cos, cumsum,
+    dual_qmm_geglu,
     dequantize, dequantize_with_mode, divide, equal, erf, exp, expand_dims, expand_dims_axes,
     flatten, floor, from_fp8, gather_mm, gather_qmm, gather_qmm_with_mode, gelu, gelu_approx,
     gelu_approx_mul, gelu_approx_mul_quantized_matmul, gemma4_post_attn_ffn_block, greater_equal,

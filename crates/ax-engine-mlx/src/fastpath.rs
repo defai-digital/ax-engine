@@ -472,6 +472,23 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_DUAL_QMM_GEGLU` — multi-token split dense FFN: one C++ call for
+    /// `gelu_approx(qmm(x,gate)) * qmm(x,up)` (no mx::compile). Profile residual:
+    /// pure Gemma 13.8k `post_attn_ffn_gate_up` ~3.3s (only stage with thr≥21
+    /// pure-cut headroom after measured rejects).
+    ///
+    /// mlxcel multi-token bits=8: two `UnifiedLinear::forward` +
+    /// `compiled_geglu_approx_activation` (gemma4.rs ~917–920). Custom dual
+    /// Metal (v1/v2) and dual-qmm compile already rejected on mbp-m5; this is
+    /// the remaining host-FFI collapse of that same sequence.
+    ///
+    /// **Default: OFF** (opt-in pure A/B). Production stays portable dual qmm +
+    /// Metal GEGLU.
+    dual_qmm_geglu_enabled,
+    "AX_MLX_DUAL_QMM_GEGLU"
+);
+
+env_flag!(
     /// `AX_MLX_NATIVE_OFFSET_CAUSAL` — for full-attention multi-token prefill
     /// with KV cache offset (`key_len > seq`), skip materializing an
     /// O(seq×key_len) bool causal array and use MLX `mask="causal"` instead.
@@ -1704,6 +1721,13 @@ mod tests {
             "AX_FASTPATH_TEST_NATIVE_OFFSET_CAUSAL_ENABLED",
             "1"
         ));
+    }
+
+    #[test]
+    fn dual_qmm_geglu_uses_opt_in_contract() {
+        assert!(!parse_bool_env("AX_FASTPATH_TEST_DUAL_QMM_GEGLU_UNSET"));
+        assert!(!probe("AX_FASTPATH_TEST_DUAL_QMM_GEGLU_DISABLED", "0"));
+        assert!(probe("AX_FASTPATH_TEST_DUAL_QMM_GEGLU_ENABLED", "1"));
     }
 
     #[test]
