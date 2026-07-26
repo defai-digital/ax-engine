@@ -108,3 +108,17 @@ plain thr-b8 and Qwen thruput-tier 0 regress thr. No dual pass. still **not_yet*
 Pure under thr-b8 keep_base: packed **1.042×** vs split (reject). Concurrent
 thr-b8-util split-prefill smoke thr **1.145** / gap 1.201; packed thr 1.119.
 Keep default split prefill. still **not_yet**.
+
+## Path B: pipeline eval tail-layer overlay (`AX_MLX_PIPELINE_EVAL_TAIL_LAYERS`)
+
+Force layer-eval on last N multi-token layers over thr-b8 base. 1-rep S1 ladder
+on mbp-m5 (see `2026-07-26-pipeline-eval-tail-layers-residual/`):
+
+| config | thr | gap |
+|--------|----:|----:|
+| tail0 baseline | **1.146** | 1.172 |
+| tail8 (best gap) | 1.080 | **1.016** |
+| tail16 (best thr overlay) | 1.119 | 1.112 |
+
+Every `N>0` taxes thr; best gap 1.016 still ≫0.90. Formal skipped. **Reject
+tail overlay.** Keep default OFF. still **not_yet**.

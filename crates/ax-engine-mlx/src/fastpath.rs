@@ -789,12 +789,66 @@ fn pipeline_eval_should_fire_for(
     }
 }
 
+/// Parse `AX_MLX_PIPELINE_EVAL_TAIL_LAYERS` without caching.
+///
+/// Dual-stream concurrent residual: force per-layer blocking eval on the last
+/// `N` multi-token layers (final layer still exempt) so early prefill can use a
+/// thr-oriented base granularity (`block:8`) while the tail yields to a sibling
+/// decode process for stream-gap fairness. Default **0** (off). Malformed or
+/// empty values fail closed to **0**.
+pub fn parse_pipeline_eval_tail_layers(raw: &str) -> usize {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("off") {
+        return 0;
+    }
+    match trimmed.parse::<usize>() {
+        Ok(n) => n,
+        Err(_) => 0,
+    }
+}
+
+/// Process-cached tail-layer count. Default 0 (overlay off).
+pub fn pipeline_eval_tail_layers() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| match std::env::var("AX_MLX_PIPELINE_EVAL_TAIL_LAYERS") {
+        Ok(raw) => parse_pipeline_eval_tail_layers(&raw),
+        Err(_) => 0,
+    })
+}
+
+/// Pure predicate: is `layer_idx` among the last `tail_n` multi-token layers
+/// before the final layer?
+///
+/// Eligible layers are `0..total_layers-2` (final always exempt). Tail of size
+/// `N` is `[total-1-N, total-2]` clamped to zero. Used by the dual-stream
+/// concurrent residual so thr stacks can monopolize early layers then yield.
+pub fn pipeline_eval_layer_in_tail(
+    layer_idx: usize,
+    total_layers: usize,
+    tail_n: usize,
+) -> bool {
+    if tail_n == 0 || total_layers < 2 || layer_idx + 1 >= total_layers {
+        return false;
+    }
+    let first_tail = total_layers.saturating_sub(1).saturating_sub(tail_n);
+    layer_idx >= first_tail
+}
+
 /// Whether the diagnostic blocking barrier should fire after this layer.
 ///
 /// Decode (`seq_len == 1`) and the final transformer layer are always exempt.
 /// `yield:N` consults a process-wide last-fire timestamp (atomic) so multi-
 /// process concurrent thr stacks can cap GPU monopolization in wall time.
+/// When `AX_MLX_PIPELINE_EVAL_TAIL_LAYERS=N` is set, the last `N` multi-token
+/// layers force a layer-eval barrier regardless of the base granularity.
 pub fn pipeline_eval_should_fire(seq_len: usize, layer_idx: usize, total_layers: usize) -> bool {
+    if seq_len <= 1 || total_layers == 0 || layer_idx + 1 >= total_layers {
+        return false;
+    }
+    let tail_n = pipeline_eval_tail_layers();
+    if pipeline_eval_layer_in_tail(layer_idx, total_layers, tail_n) {
+        return true;
+    }
     match pipeline_eval_granularity() {
         PipelineEvalGranularity::YieldMs(yield_ms) => {
             use std::sync::atomic::{AtomicU64, Ordering};
@@ -805,7 +859,11 @@ pub fn pipeline_eval_should_fire(seq_len: usize, layer_idx: usize, total_layers:
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0);
             let last_raw = LAST_FIRE_NS.load(Ordering::Relaxed);
-            let last = if last_raw == 0 { None } else { Some(last_raw) };
+            let last = if last_raw == 0 {
+                None
+            } else {
+                Some(last_raw)
+            };
             if pipeline_eval_yield_should_fire(
                 last,
                 now_ns,
@@ -2287,6 +2345,34 @@ mod tests {
         assert!(!pipeline_eval_yield_should_fire(None, 1, 16, 1, 0, 4));
         assert!(!pipeline_eval_yield_should_fire(None, 1, 16, 8, 3, 4));
         assert!(!pipeline_eval_yield_should_fire(None, 1, 0, 8, 0, 4));
+    }
+
+    #[test]
+    fn parse_pipeline_eval_tail_layers_is_fail_closed() {
+        assert_eq!(parse_pipeline_eval_tail_layers(""), 0);
+        assert_eq!(parse_pipeline_eval_tail_layers("off"), 0);
+        assert_eq!(parse_pipeline_eval_tail_layers("OFF"), 0);
+        assert_eq!(parse_pipeline_eval_tail_layers("12"), 12);
+        assert_eq!(parse_pipeline_eval_tail_layers(" 8 "), 8);
+        assert_eq!(parse_pipeline_eval_tail_layers("0"), 0);
+        assert_eq!(parse_pipeline_eval_tail_layers("xyz"), 0);
+        assert_eq!(parse_pipeline_eval_tail_layers("-1"), 0);
+    }
+
+    #[test]
+    fn pipeline_eval_layer_in_tail_covers_last_n_before_final() {
+        // total=40 layers (0..39); final=39 exempt; tail=8 → layers 31..38.
+        assert!(!pipeline_eval_layer_in_tail(30, 40, 8));
+        assert!(pipeline_eval_layer_in_tail(31, 40, 8));
+        assert!(pipeline_eval_layer_in_tail(38, 40, 8));
+        assert!(!pipeline_eval_layer_in_tail(39, 40, 8));
+        // Off / tiny models.
+        assert!(!pipeline_eval_layer_in_tail(0, 40, 0));
+        assert!(!pipeline_eval_layer_in_tail(0, 1, 8));
+        // Tail larger than eligible set: all non-final layers.
+        assert!(pipeline_eval_layer_in_tail(0, 4, 100));
+        assert!(pipeline_eval_layer_in_tail(2, 4, 100));
+        assert!(!pipeline_eval_layer_in_tail(3, 4, 100));
     }
 
     #[test]
