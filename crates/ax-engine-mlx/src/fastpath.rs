@@ -672,15 +672,21 @@ pub fn pipeline_hint_should_fire(layer_idx: usize, total_layers: usize) -> bool 
 /// opt-in physical probe for measuring whether shorter GPU command bursts
 /// improve cross-process fairness; production defaults to `off`.
 ///
-/// Accepted values are `off`, `layer`, `block:N` (`N >= 1`), and `sublayer`.
-/// `sublayer` keeps the per-layer barriers and adds a Gemma4 text-prefill
-/// barrier between attention output projection and the post-attention FFN.
+/// Accepted values are `off`, `layer`, `block:N` (`N >= 1`), `sublayer`, and
+/// `yield:N` (`N >= 1` milliseconds). `sublayer` keeps the per-layer barriers
+/// and adds a Gemma4 text-prefill barrier between attention output projection
+/// and the post-attention FFN. `yield:N` is the dual-stream residual: fire a
+/// barrier at multi-token layer boundaries only when ≥ `N` ms of wall time
+/// have elapsed since the previous fire, capping GPU monopolization for a
+/// sibling process without forcing a barrier on every layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipelineEvalGranularity {
     Off,
     PerLayer,
     PerBlock(usize),
     Sublayer,
+    /// Wall-clock dual-stream yield: fire when ≥ N milliseconds elapsed.
+    YieldMs(u64),
 }
 
 /// Parse `AX_MLX_PIPELINE_EVAL_GRANULARITY` without caching.
@@ -698,12 +704,20 @@ pub fn parse_pipeline_eval_granularity(raw: &str) -> PipelineEvalGranularity {
     if trimmed.eq_ignore_ascii_case("sublayer") {
         return PipelineEvalGranularity::Sublayer;
     }
-    if let Some((prefix, value)) = trimmed.split_once(':')
-        && prefix.eq_ignore_ascii_case("block")
-        && let Ok(n) = value.trim().parse::<usize>()
-        && n > 0
-    {
-        return PipelineEvalGranularity::PerBlock(n);
+    if let Some((prefix, value)) = trimmed.split_once(':') {
+        let value = value.trim();
+        if prefix.eq_ignore_ascii_case("block")
+            && let Ok(n) = value.parse::<usize>()
+            && n > 0
+        {
+            return PipelineEvalGranularity::PerBlock(n);
+        }
+        if prefix.eq_ignore_ascii_case("yield")
+            && let Ok(n) = value.parse::<u64>()
+            && n > 0
+        {
+            return PipelineEvalGranularity::YieldMs(n);
+        }
     }
     PipelineEvalGranularity::Off
 }
@@ -715,6 +729,32 @@ pub fn pipeline_eval_granularity() -> PipelineEvalGranularity {
         Ok(raw) => parse_pipeline_eval_granularity(&raw),
         Err(_) => PipelineEvalGranularity::Off,
     })
+}
+
+/// Pure wall-clock yield predicate for dual-stream prefill barriers.
+///
+/// - Decode (`seq_len <= 1`) and the final layer never fire.
+/// - First eligible boundary fires when `last_fire_ns` is `None`.
+/// - Subsequent fires require `now_ns - last >= yield_ms * 1_000_000`.
+///
+/// Callers that fire must advance `last_fire_ns` to `now_ns` (see
+/// [`pipeline_eval_should_fire`]).
+pub fn pipeline_eval_yield_should_fire(
+    last_fire_ns: Option<u64>,
+    now_ns: u64,
+    yield_ms: u64,
+    seq_len: usize,
+    layer_idx: usize,
+    total_layers: usize,
+) -> bool {
+    if yield_ms == 0 || seq_len <= 1 || total_layers == 0 || layer_idx + 1 >= total_layers {
+        return false;
+    }
+    let Some(last) = last_fire_ns else {
+        return true;
+    };
+    let elapsed_ns = now_ns.saturating_sub(last);
+    elapsed_ns >= yield_ms.saturating_mul(1_000_000)
 }
 
 fn pipeline_eval_should_fire_for(
@@ -730,19 +770,49 @@ fn pipeline_eval_should_fire_for(
         PipelineEvalGranularity::Off => false,
         PipelineEvalGranularity::PerLayer | PipelineEvalGranularity::Sublayer => true,
         PipelineEvalGranularity::PerBlock(n) => (layer_idx + 1).is_multiple_of(n),
+        // YieldMs needs wall-clock state; use the process path in
+        // [`pipeline_eval_should_fire`]. Pure layer filters still apply.
+        PipelineEvalGranularity::YieldMs(_) => false,
     }
 }
 
 /// Whether the diagnostic blocking barrier should fire after this layer.
 ///
 /// Decode (`seq_len == 1`) and the final transformer layer are always exempt.
+/// `yield:N` consults a process-wide last-fire timestamp (atomic) so multi-
+/// process concurrent thr stacks can cap GPU monopolization in wall time.
 pub fn pipeline_eval_should_fire(seq_len: usize, layer_idx: usize, total_layers: usize) -> bool {
-    pipeline_eval_should_fire_for(
-        pipeline_eval_granularity(),
-        seq_len,
-        layer_idx,
-        total_layers,
-    )
+    match pipeline_eval_granularity() {
+        PipelineEvalGranularity::YieldMs(yield_ms) => {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            use std::time::{SystemTime, UNIX_EPOCH};
+            static LAST_FIRE_NS: AtomicU64 = AtomicU64::new(0);
+            let now_ns = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let last_raw = LAST_FIRE_NS.load(Ordering::Relaxed);
+            let last = if last_raw == 0 {
+                None
+            } else {
+                Some(last_raw)
+            };
+            if pipeline_eval_yield_should_fire(
+                last,
+                now_ns,
+                yield_ms,
+                seq_len,
+                layer_idx,
+                total_layers,
+            ) {
+                LAST_FIRE_NS.store(now_ns, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
+        }
+        other => pipeline_eval_should_fire_for(other, seq_len, layer_idx, total_layers),
+    }
 }
 
 fn pipeline_sublayer_eval_should_fire_for(
@@ -2120,11 +2190,27 @@ mod tests {
             PipelineEvalGranularity::PerBlock(1)
         );
         assert_eq!(
+            parse_pipeline_eval_granularity("yield:16"),
+            PipelineEvalGranularity::YieldMs(16)
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity(" YIELD:8 "),
+            PipelineEvalGranularity::YieldMs(8)
+        );
+        assert_eq!(
             parse_pipeline_eval_granularity("block:0"),
             PipelineEvalGranularity::Off
         );
         assert_eq!(
+            parse_pipeline_eval_granularity("yield:0"),
+            PipelineEvalGranularity::Off
+        );
+        assert_eq!(
             parse_pipeline_eval_granularity("block:xyz"),
+            PipelineEvalGranularity::Off
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity("yield:xyz"),
             PipelineEvalGranularity::Off
         );
         assert_eq!(
@@ -2135,7 +2221,7 @@ mod tests {
 
     #[test]
     fn pipeline_eval_granularity_only_blocks_multi_token_non_final_layers() {
-        use PipelineEvalGranularity::{Off, PerBlock, PerLayer, Sublayer};
+        use PipelineEvalGranularity::{Off, PerBlock, PerLayer, Sublayer, YieldMs};
 
         assert!(!pipeline_eval_should_fire_for(Off, 8, 0, 4));
         assert!(!pipeline_eval_should_fire_for(PerLayer, 1, 0, 4));
@@ -2154,6 +2240,37 @@ mod tests {
             !pipeline_eval_should_fire_for(PerBlock(2), 8, 5, 6),
             "final layer remains exempt even when it closes a block"
         );
+        // YieldMs pure path is wall-clock only; layer filters still apply via
+        // pipeline_eval_yield_should_fire, not the layer-index matcher.
+        assert!(!pipeline_eval_should_fire_for(YieldMs(16), 8, 0, 4));
+    }
+
+    #[test]
+    fn pipeline_eval_yield_predicate_is_wall_clock_and_fail_closed() {
+        // First eligible boundary always fires.
+        assert!(pipeline_eval_yield_should_fire(None, 1_000_000_000, 16, 8, 0, 4));
+        // Within window: no fire.
+        assert!(!pipeline_eval_yield_should_fire(
+            Some(1_000_000_000),
+            1_000_000_000 + 15_000_000,
+            16,
+            8,
+            1,
+            4
+        ));
+        // At/after window: fire.
+        assert!(pipeline_eval_yield_should_fire(
+            Some(1_000_000_000),
+            1_000_000_000 + 16_000_000,
+            16,
+            8,
+            1,
+            4
+        ));
+        // Decode / final layer / zero ms never fire.
+        assert!(!pipeline_eval_yield_should_fire(None, 1, 16, 1, 0, 4));
+        assert!(!pipeline_eval_yield_should_fire(None, 1, 16, 8, 3, 4));
+        assert!(!pipeline_eval_yield_should_fire(None, 1, 0, 8, 0, 4));
     }
 
     #[test]
