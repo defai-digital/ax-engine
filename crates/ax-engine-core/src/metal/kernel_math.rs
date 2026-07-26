@@ -2441,22 +2441,13 @@ pub(super) fn apply_model_gate_up_product_with_optional_native_path(
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.ffn_gate_product.compute");
 
-            encoder.set_compute_pipeline_state(&pipeline.pipeline);
-            encoder.set_buffer(0, Some(&gate_buffer), 0);
-            encoder.set_buffer(1, Some(&up_buffer), 0);
-            encoder.set_buffer(2, Some(&output_buffer), 0);
-            set_ffn_gate_product_dispatch_params(encoder, 3, saturating_usize_to_u32(gate.len()));
-            encoder.dispatch_threads(
-                MTLSize::new(gate.len().max(1) as u64, 1, 1),
-                MTLSize::new(
-                    pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(gate.len().max(1) as u64),
-                    1,
-                    1,
-                ),
+            encode_gate_product_elementwise(
+                encoder,
+                pipeline,
+                kernel_name,
+                &[&gate_buffer, &up_buffer],
+                &output_buffer,
+                saturating_usize_to_u32(gate.len()),
             );
 
             encoder.end_encoding();

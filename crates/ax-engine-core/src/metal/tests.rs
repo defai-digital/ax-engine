@@ -7545,6 +7545,41 @@ fn ast_signature_validator_accepts_matching_ast() {
 }
 
 #[test]
+fn ast_signature_validator_accepts_matching_gate_product_ast() {
+    assert_eq!(
+        build::validate_kernel_signatures_against_ast(
+            &synthetic_projection_ast_json(),
+            build::GATE_PRODUCT_KERNEL_SIGNATURES,
+            build::GATE_PRODUCT_PARAM_STRUCT_EXPECTATIONS,
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn ast_signature_validator_rejects_drifted_gate_product_index() {
+    let mut ast: serde_json::Value =
+        serde_json::from_str(&synthetic_projection_ast_json()).expect("synthetic AST should parse");
+    // Renumber linear_attention_beta_sigmoid_f32's params slot from 2 to 3.
+    let kernel = ast["inner"]
+        .as_array_mut()
+        .expect("inner array")
+        .iter_mut()
+        .find(|node| node["name"] == "linear_attention_beta_sigmoid_f32")
+        .expect("kernel present");
+    kernel["inner"][3]["inner"][0]["inner"][0]["value"] = serde_json::json!("3");
+
+    let error = build::validate_kernel_signatures_against_ast(
+        &ast.to_string(),
+        build::GATE_PRODUCT_KERNEL_SIGNATURES,
+        build::GATE_PRODUCT_PARAM_STRUCT_EXPECTATIONS,
+    )
+    .expect_err("drifted buffer index must be rejected");
+    assert!(error.contains("linear_attention_beta_sigmoid_f32"));
+    assert!(error.contains("drifted"));
+}
+
+#[test]
 fn ast_signature_validator_rejects_drifted_buffer_index() {
     let mut ast: serde_json::Value =
         serde_json::from_str(&synthetic_projection_ast_json()).expect("synthetic AST should parse");
@@ -7647,10 +7682,13 @@ fn metal_kernel_builder_reuses_valid_compiled_artifacts_without_recompiling() {
 
 /// Minimal `-ast-dump=json`-shaped document containing exactly the nodes
 /// the AST signature gate inspects, generated from the gate's own
-/// expectation tables (`PROJECTION_KERNEL_SIGNATURES`,
-/// `PROJECTION_PARAM_STRUCT_EXPECTATIONS`).
+/// expectation tables (projection and gate-product kernel signatures and
+/// param structs), so fixture and gate cannot drift apart.
 fn synthetic_projection_ast_json() -> String {
-    let kernels = build::PROJECTION_KERNEL_SIGNATURES.iter().map(|signature| {
+    let signatures = build::PROJECTION_KERNEL_SIGNATURES
+        .iter()
+        .chain(build::GATE_PRODUCT_KERNEL_SIGNATURES);
+    let kernels = signatures.map(|signature| {
         let mut inner = vec![serde_json::json!({"kind": "MetalKernelAttr"})];
         inner.extend(signature.buffers.iter().map(|(name, index, qual_type)| {
             serde_json::json!({
@@ -7667,6 +7705,7 @@ fn synthetic_projection_ast_json() -> String {
     });
     let records = build::PROJECTION_PARAM_STRUCT_EXPECTATIONS
         .iter()
+        .chain(build::GATE_PRODUCT_PARAM_STRUCT_EXPECTATIONS)
         .map(|(name, fields)| {
             serde_json::json!({
                 "kind": "CXXRecordDecl",
@@ -10600,4 +10639,592 @@ fn qwen35_9b_q4km_gguf_loads_and_creates_metal_buffers() {
         "Metal buffers should be bound; debug: {runner_debug:.200}"
     );
     eprintln!("Metal buffers bound for Qwen3.5-9B-Q4_K_M.gguf ✓");
+}
+
+// -------------------------------------------------------------------------
+// Tier 5: CPU-vs-Metal differential property tests. The same computation
+// runs on a CPU oracle and the real Metal kernel over randomized inputs;
+// outputs must agree within a per-kernel tolerance. One bringup compile is
+// shared across all cases of a test, and each test skips gracefully when
+// the toolchain, device, or kernel is unavailable — the same policy as the
+// Tier 4 fixed-value tests above. Randomized shapes deliberately straddle
+// simd-width and thread-execution-width boundaries, the regions fixed-value
+// tests tend to miss.
+// -------------------------------------------------------------------------
+
+/// Drive `cases` random inputs from `strategy` through `check`, panicking
+/// with proptest's shrunk minimal input on failure. Failure persistence is
+/// disabled: the shrunk input printed in the panic message is the
+/// reproduction artifact.
+#[cfg(target_os = "macos")]
+fn run_differential_cases<S>(
+    strategy: S,
+    cases: u32,
+    check: impl Fn(&S::Value) -> Result<(), proptest::test_runner::TestCaseError>,
+) where
+    S: proptest::strategy::Strategy,
+    S::Value: std::fmt::Debug,
+{
+    use proptest::test_runner::{Config, TestError, TestRunner};
+    let mut runner = TestRunner::new(Config {
+        cases,
+        failure_persistence: None,
+        ..Config::default()
+    });
+    match runner.run(&strategy, |value| check(&value)) {
+        Ok(()) => {}
+        Err(TestError::Fail(reason, value)) => {
+            panic!("differential case failed: {reason}\nminimal input: {value:?}")
+        }
+        Err(TestError::Abort(reason)) => panic!("differential run aborted: {reason}"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn differential_close_rel(
+    actual: f32,
+    expected: f32,
+    relative_tolerance: f32,
+    context: &str,
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    let bound = relative_tolerance * expected.abs().max(1.0);
+    if (actual - expected).abs() <= bound {
+        Ok(())
+    } else {
+        Err(proptest::test_runner::TestCaseError::fail(format!(
+            "{context}: gpu={actual} cpu={expected} (allowed |diff| <= {bound})"
+        )))
+    }
+}
+
+/// `decode_logits_projection_f32` vs a plain CPU dot product, at random
+/// row counts and column widths that are not simd-width multiples.
+#[cfg(target_os = "macos")]
+#[test]
+fn differential_decode_projection_f32_matches_cpu_dot_product() {
+    use proptest::prelude::{Just, Strategy};
+
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return; // xcrun / Metal toolchain unavailable — skip
+    };
+    let device = Device::system_default().expect("Metal device should exist");
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let Some((kernel_name, pipeline_idx)) = plan.projection_kernel(NativeTensorDataType::F32)
+    else {
+        let _ = fs::remove_dir_all(output_dir);
+        return;
+    };
+    let pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_idx,
+    )
+    .expect("f32 projection pipeline should compile");
+
+    let strategy = (1_usize..=13, 1_usize..=3).prop_flat_map(|(rows, width_factor)| {
+        let cols = width_factor * 33 + 7; // never a multiple of the 32-lane simd width
+        (
+            Just(rows),
+            Just(cols),
+            proptest::collection::vec(-4.0_f32..4.0, cols),
+            proptest::collection::vec(-4.0_f32..4.0, rows * cols),
+        )
+    });
+    run_differential_cases(strategy, 24, |(rows, cols, hidden, weights)| {
+        let (rows, cols) = (*rows, *cols);
+        let gpu = autoreleasepool(|| {
+            let hidden_buf = new_shared_buffer_with_data(&device, hidden);
+            let weight_buf = new_shared_buffer_with_data(&device, weights);
+            let output_buf = new_zeroed_shared_buffer::<f32>(&device, rows as u32);
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            let encoder = command_buffer.new_compute_command_encoder();
+            encode_fused_projection(
+                encoder,
+                pipeline,
+                &hidden_buf,
+                &weight_buf,
+                0,
+                &output_buf,
+                NativeTensorDataType::F32,
+                rows as u32,
+                cols as u32,
+                cols as u32,
+            );
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+            read_shared_buffer_prefix(&output_buf, rows as u32)
+        });
+        for (row, gpu_value) in gpu.iter().enumerate() {
+            let expected: f32 = weights[row * cols..(row + 1) * cols]
+                .iter()
+                .zip(hidden.iter())
+                .map(|(weight, value)| weight * value)
+                .sum();
+            differential_close_rel(
+                *gpu_value,
+                expected,
+                1e-3,
+                &format!("projection f32 row {row} of {rows}x{cols}"),
+            )?;
+        }
+        Ok(())
+    });
+
+    let _ = fs::remove_dir_all(output_dir);
+}
+
+/// `decode_projection_q4km` vs the Rust port of llama.cpp's dequantizer,
+/// over fully random Q4_K blocks — including the j>=4 scale-overflow
+/// encoding fixed-value tests avoid.
+#[cfg(target_os = "macos")]
+#[test]
+fn differential_decode_projection_q4km_matches_reference_dequantizer() {
+    use proptest::prelude::{Just, Strategy};
+
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+    let device = Device::system_default().expect("Metal device should exist");
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let Some((kernel_name, pipeline_idx)) = plan.projection_kernel(NativeTensorDataType::Q4Km)
+    else {
+        let _ = fs::remove_dir_all(output_dir);
+        return;
+    };
+    let pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_idx,
+    )
+    .expect("q4km projection pipeline should compile");
+
+    let block_strategy = (
+        0.01_f32..1.0,
+        0.0_f32..0.5,
+        proptest::collection::vec(proptest::prelude::any::<u8>(), 12),
+        proptest::collection::vec(proptest::prelude::any::<u8>(), 128),
+    );
+    let strategy = (1_usize..=3, 1_usize..=2).prop_flat_map(move |(rows, blocks_per_row)| {
+        let input_width = blocks_per_row * 256;
+        (
+            Just(rows),
+            Just(input_width),
+            proptest::collection::vec(block_strategy.clone(), rows * blocks_per_row),
+            proptest::collection::vec(-2.0_f32..2.0, input_width),
+        )
+    });
+    run_differential_cases(strategy, 16, |(rows, input_width, blocks, hidden)| {
+        let (rows, input_width) = (*rows, *input_width);
+        let mut weight_bytes = Vec::with_capacity(blocks.len() * 144);
+        let mut dequantized_rows: Vec<Vec<f32>> = vec![Vec::new(); rows];
+        for (index, (d, dmin, scales, qs)) in blocks.iter().enumerate() {
+            // Round-trip through f16 bits so the CPU reference sees the
+            // exact scale values the GPU kernel decodes from the block.
+            let d_bits = encode_f32_to_f16_bits(*d);
+            let dmin_bits = encode_f32_to_f16_bits(*dmin);
+            let scales: [u8; 12] = scales.as_slice().try_into().expect("12 scale bytes");
+            let qs: [u8; 128] = qs.as_slice().try_into().expect("128 nibble bytes");
+            weight_bytes.extend_from_slice(&make_q4k_block(d_bits, dmin_bits, &scales, &qs));
+            dequantized_rows[index / (input_width / 256)].extend(dequantize_q4k_block_ref(
+                decode_f16_to_f32(d_bits),
+                decode_f16_to_f32(dmin_bits),
+                &scales,
+                &qs,
+            ));
+        }
+
+        let gpu = autoreleasepool(|| {
+            let hidden_buf = new_shared_buffer_with_data(&device, hidden);
+            let weight_buf = new_shared_buffer_with_data(&device, &weight_bytes);
+            let output_buf = new_zeroed_shared_buffer::<f32>(&device, rows as u32);
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            let encoder = command_buffer.new_compute_command_encoder();
+            encode_fused_projection(
+                encoder,
+                pipeline,
+                &hidden_buf,
+                &weight_buf,
+                0,
+                &output_buf,
+                NativeTensorDataType::Q4Km,
+                rows as u32,
+                input_width as u32,
+                input_width as u32,
+            );
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+            read_shared_buffer_prefix(&output_buf, rows as u32)
+        });
+        for (row, gpu_value) in gpu.iter().enumerate() {
+            let expected: f32 = dequantized_rows[row]
+                .iter()
+                .zip(hidden.iter())
+                .map(|(weight, value)| weight * value)
+                .sum();
+            differential_close_rel(
+                *gpu_value,
+                expected,
+                1e-3,
+                &format!("q4km row {row}, width {input_width}"),
+            )?;
+        }
+        Ok(())
+    });
+
+    let _ = fs::remove_dir_all(output_dir);
+}
+
+/// The elementwise gate-product family (silu/gelu gate-up, beta sigmoid,
+/// decay, attention output gate) vs its scalar CPU references, at random
+/// element counts straddling the thread-execution-width boundary. Also
+/// exercises the table-driven `encode_gate_product_elementwise` bindings
+/// end-to-end on the GPU.
+#[cfg(target_os = "macos")]
+#[test]
+fn differential_gate_product_family_matches_cpu_oracles() {
+    use proptest::prelude::{Just, Strategy};
+
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+
+    let strategy = (1_usize..=4, 1_usize..=70).prop_flat_map(|(rows, width)| {
+        (
+            Just(rows),
+            Just(width),
+            proptest::collection::vec(-6.0_f32..6.0, rows * width),
+            proptest::collection::vec(-6.0_f32..6.0, rows * width),
+            proptest::collection::vec(-3.0_f32..3.0, width),
+            proptest::collection::vec(-3.0_f32..3.0, width),
+        )
+    });
+    run_differential_cases(
+        strategy,
+        24,
+        |(_rows, width, a_flat, b_flat, a_log, dt_bias)| {
+            let width = *width;
+            let a_rows: Vec<Vec<f32>> = a_flat.chunks(width).map(<[f32]>::to_vec).collect();
+            let b_rows: Vec<Vec<f32>> = b_flat.chunks(width).map(<[f32]>::to_vec).collect();
+
+            for activation in [ModelFfnActivation::Silu, ModelFfnActivation::GeluApprox] {
+                if let Some(gpu) = apply_model_gate_up_product_with_optional_native_path(
+                    Some(&bringup),
+                    activation,
+                    a_flat,
+                    b_flat,
+                    None,
+                ) {
+                    for (index, (gpu_value, (gate, up))) in
+                        gpu.iter().zip(a_flat.iter().zip(b_flat.iter())).enumerate()
+                    {
+                        let activated = match activation {
+                            ModelFfnActivation::Silu => silu(*gate),
+                            ModelFfnActivation::GeluApprox => gelu_approx(*gate),
+                        };
+                        differential_close_rel(
+                            *gpu_value,
+                            activated * up,
+                            1e-4,
+                            &format!("{activation:?} gate-up element {index}"),
+                        )?;
+                    }
+                }
+            }
+
+            if let Some(gpu_rows) = compute_linear_attention_beta_rows_with_optional_native_path(
+                Some(&bringup),
+                &a_rows,
+            ) {
+                for (row, (gpu_row, a_row)) in gpu_rows.iter().zip(a_rows.iter()).enumerate() {
+                    let cpu_row = compute_linear_attention_beta(a_row).expect("cpu beta reference");
+                    for (index, (gpu_value, cpu_value)) in
+                        gpu_row.iter().zip(cpu_row.iter()).enumerate()
+                    {
+                        differential_close_rel(
+                            *gpu_value,
+                            *cpu_value,
+                            1e-5,
+                            &format!("beta sigmoid row {row} element {index}"),
+                        )?;
+                    }
+                }
+            }
+
+            if let Some(gpu_rows) = compute_linear_attention_decay_rows_with_optional_native_path(
+                Some(&bringup),
+                &a_rows,
+                a_log,
+                dt_bias,
+            ) {
+                for (row, (gpu_row, a_row)) in gpu_rows.iter().zip(a_rows.iter()).enumerate() {
+                    let cpu_row = compute_linear_attention_decay(a_row, a_log, dt_bias)
+                        .expect("cpu decay reference");
+                    for (index, (gpu_value, cpu_value)) in
+                        gpu_row.iter().zip(cpu_row.iter()).enumerate()
+                    {
+                        differential_close_rel(
+                            *gpu_value,
+                            *cpu_value,
+                            1e-4,
+                            &format!("decay row {row} element {index}"),
+                        )?;
+                    }
+                }
+            }
+
+            if let Some(gpu_rows) = apply_attention_output_gate_with_optional_native_path(
+                Some(&bringup),
+                &b_rows,
+                a_flat,
+                width,
+            ) {
+                for (row, (gpu_row, b_row)) in gpu_rows.iter().zip(b_rows.iter()).enumerate() {
+                    for (index, (gpu_value, input)) in gpu_row.iter().zip(b_row.iter()).enumerate()
+                    {
+                        let gate = a_flat[row * width + index];
+                        differential_close_rel(
+                            *gpu_value,
+                            sigmoid(gate) * input,
+                            1e-5,
+                            &format!("output gate row {row} element {index}"),
+                        )?;
+                    }
+                }
+            }
+
+            Ok(())
+        },
+    );
+
+    let _ = fs::remove_dir_all(output_dir);
+}
+
+/// The f16/bf16 single-token projection kernels vs a CPU dot product over
+/// the precision-rounded weights — same divergent-reduction regression
+/// surface as the f32 test, at half-precision weight dtypes.
+#[cfg(target_os = "macos")]
+#[test]
+fn differential_decode_projection_half_precision_matches_cpu_dot_product() {
+    use proptest::prelude::{Just, Strategy};
+
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+    let device = Device::system_default().expect("Metal device should exist");
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+
+    let strategy = (1_usize..=9, 1_usize..=3).prop_flat_map(|(rows, width_factor)| {
+        let cols = width_factor * 33 + 7;
+        (
+            Just(rows),
+            Just(cols),
+            proptest::collection::vec(-4.0_f32..4.0, cols),
+            proptest::collection::vec(-4.0_f32..4.0, rows * cols),
+        )
+    });
+    run_differential_cases(strategy, 16, |(rows, cols, hidden, weights)| {
+        let (rows, cols) = (*rows, *cols);
+        for dtype in [NativeTensorDataType::F16, NativeTensorDataType::Bf16] {
+            let Some((kernel_name, pipeline_idx)) = plan.projection_kernel(dtype) else {
+                continue;
+            };
+            let Ok(pipeline) = find_optional_pipeline_handle_by_index(
+                &bringup.state,
+                &bringup.metallib.path,
+                kernel_name,
+                pipeline_idx,
+            ) else {
+                continue;
+            };
+            // Round-trip weights through the storage precision so the CPU
+            // oracle sees exactly what the GPU kernel reads.
+            let (weight_bits, rounded): (Vec<u16>, Vec<f32>) = weights
+                .iter()
+                .map(|weight| match dtype {
+                    NativeTensorDataType::F16 => {
+                        let bits = encode_f32_to_f16_bits(*weight);
+                        (bits, decode_f16_to_f32(bits))
+                    }
+                    _ => {
+                        let bits = (weight.to_bits() >> 16) as u16;
+                        (bits, f32::from_bits(u32::from(bits) << 16))
+                    }
+                })
+                .unzip();
+
+            let gpu = autoreleasepool(|| {
+                let hidden_buf = new_shared_buffer_with_data(&device, hidden);
+                let weight_buf = new_shared_buffer_with_data(&device, &weight_bits);
+                let output_buf = new_zeroed_shared_buffer::<f32>(&device, rows as u32);
+                let command_buffer = bringup.state.command_queue.new_command_buffer();
+                let encoder = command_buffer.new_compute_command_encoder();
+                encode_fused_projection(
+                    encoder,
+                    pipeline,
+                    &hidden_buf,
+                    &weight_buf,
+                    0,
+                    &output_buf,
+                    dtype,
+                    rows as u32,
+                    cols as u32,
+                    cols as u32,
+                );
+                encoder.end_encoding();
+                command_buffer.commit();
+                command_buffer.wait_until_completed();
+                read_shared_buffer_prefix(&output_buf, rows as u32)
+            });
+            for (row, gpu_value) in gpu.iter().enumerate() {
+                let expected: f32 = rounded[row * cols..(row + 1) * cols]
+                    .iter()
+                    .zip(hidden.iter())
+                    .map(|(weight, value)| weight * value)
+                    .sum();
+                differential_close_rel(
+                    *gpu_value,
+                    expected,
+                    1e-3,
+                    &format!("{dtype:?} projection row {row} of {rows}x{cols}"),
+                )?;
+            }
+        }
+        Ok(())
+    });
+
+    let _ = fs::remove_dir_all(output_dir);
+}
+
+/// The batched projection kernels (f32/f16/bf16) vs a per-(token, row) CPU
+/// dot product, with a hidden stride wider than input_width to exercise
+/// the stride/width distinction the single-token kernels do not have.
+#[cfg(target_os = "macos")]
+#[test]
+fn differential_decode_projection_batched_matches_cpu_dot_product() {
+    use proptest::prelude::{Just, Strategy};
+
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+    let device = Device::system_default().expect("Metal device should exist");
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let slots = &*PROJECTION_SLOTS;
+
+    let strategy =
+        (1_usize..=3, 1_usize..=5, 1_usize..=2).prop_flat_map(|(tokens, rows, width_factor)| {
+            let cols = width_factor * 33 + 7;
+            let stride = cols + 8; // hidden rows padded past input_width
+            (
+                Just(tokens),
+                Just(rows),
+                Just(cols),
+                Just(stride),
+                proptest::collection::vec(-4.0_f32..4.0, tokens * stride),
+                proptest::collection::vec(-4.0_f32..4.0, rows * cols),
+            )
+        });
+    run_differential_cases(
+        strategy,
+        16,
+        |(tokens, rows, cols, stride, hidden, weights)| {
+            let (tokens, rows, cols, stride) = (*tokens, *rows, *cols, *stride);
+            for dtype in [
+                NativeTensorDataType::F32,
+                NativeTensorDataType::F16,
+                NativeTensorDataType::Bf16,
+            ] {
+                let Some((kernel_name, pipeline_idx)) = plan.batched_projection_kernel(dtype)
+                else {
+                    continue;
+                };
+                let Ok(pipeline) = find_optional_pipeline_handle_by_index(
+                    &bringup.state,
+                    &bringup.metallib.path,
+                    kernel_name,
+                    pipeline_idx,
+                ) else {
+                    continue;
+                };
+                let (weight_buf, oracle_weights) = match dtype {
+                    NativeTensorDataType::F32 => (
+                        new_shared_buffer_with_data(&device, weights),
+                        weights.clone(),
+                    ),
+                    NativeTensorDataType::F16 => {
+                        let (bits, rounded): (Vec<u16>, Vec<f32>) = weights
+                            .iter()
+                            .map(|weight| {
+                                let bits = encode_f32_to_f16_bits(*weight);
+                                (bits, decode_f16_to_f32(bits))
+                            })
+                            .unzip();
+                        (new_shared_buffer_with_data(&device, &bits), rounded)
+                    }
+                    _ => {
+                        let (bits, rounded): (Vec<u16>, Vec<f32>) = weights
+                            .iter()
+                            .map(|weight| {
+                                let bits = (weight.to_bits() >> 16) as u16;
+                                (bits, f32::from_bits(u32::from(bits) << 16))
+                            })
+                            .unzip();
+                        (new_shared_buffer_with_data(&device, &bits), rounded)
+                    }
+                };
+
+                let flat_count = tokens * rows;
+                let gpu = autoreleasepool(|| {
+                    let hidden_buf = new_shared_buffer_with_data(&device, hidden);
+                    let output_buf = new_zeroed_shared_buffer::<f32>(&device, flat_count as u32);
+                    let command_buffer = bringup.state.command_queue.new_command_buffer();
+                    let encoder = command_buffer.new_compute_command_encoder();
+                    encoder.set_compute_pipeline_state(&pipeline.pipeline);
+                    encoder.set_buffer(slots.input, Some(&hidden_buf), 0);
+                    encoder.set_buffer(slots.weights, Some(&weight_buf), 0);
+                    encoder.set_buffer(slots.output, Some(&output_buf), 0);
+                    set_batched_logits_projection_dispatch_params(
+                        encoder,
+                        slots.params,
+                        tokens as u32,
+                        rows as u32,
+                        cols as u32,
+                        cols as u32,
+                        stride as u32,
+                    );
+                    encoder.dispatch_threads(
+                        MTLSize::new(projection_dispatch_threads(flat_count), 1, 1),
+                        MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                    );
+                    encoder.end_encoding();
+                    command_buffer.commit();
+                    command_buffer.wait_until_completed();
+                    read_shared_buffer_prefix(&output_buf, flat_count as u32)
+                });
+                for (flat, gpu_value) in gpu.iter().enumerate() {
+                    let token = flat / rows;
+                    let row = flat % rows;
+                    let expected: f32 = oracle_weights[row * cols..(row + 1) * cols]
+                        .iter()
+                        .zip(hidden[token * stride..token * stride + cols].iter())
+                        .map(|(weight, value)| weight * value)
+                        .sum();
+                    differential_close_rel(
+                        *gpu_value,
+                        expected,
+                        1e-3,
+                        &format!(
+                            "{dtype:?} batched token {token} row {row} of {tokens}x{rows}x{cols}"
+                        ),
+                    )?;
+                }
+            }
+            Ok(())
+        },
+    );
+
+    let _ = fs::remove_dir_all(output_dir);
 }

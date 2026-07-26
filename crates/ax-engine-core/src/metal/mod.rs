@@ -11843,25 +11843,13 @@ fn compute_linear_attention_beta_rows_with_optional_native_path(
             command_buffer.set_label("ax.phase1.linear_attention_beta");
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.linear_attention_beta.compute");
-            encoder.set_compute_pipeline_state(&pipeline.pipeline);
-            encoder.set_buffer(0, Some(&beta_buffer), 0);
-            encoder.set_buffer(1, Some(&output_buffer), 0);
-            set_ffn_gate_product_dispatch_params(
+            encode_gate_product_elementwise(
                 encoder,
-                2,
+                pipeline,
+                kernel_name,
+                &[&beta_buffer],
+                &output_buffer,
                 saturating_usize_to_u32(element_count),
-            );
-            encoder.dispatch_threads(
-                MTLSize::new(element_count.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(element_count.max(1) as u64),
-                    1,
-                    1,
-                ),
             );
             encoder.end_encoding();
             command_buffer.commit();
@@ -12018,27 +12006,13 @@ fn compute_linear_attention_decay_rows_with_optional_native_path(
             command_buffer.set_label("ax.phase1.linear_attention_decay");
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.linear_attention_decay.compute");
-            encoder.set_compute_pipeline_state(&pipeline.pipeline);
-            encoder.set_buffer(0, Some(&a_buffer), 0);
-            encoder.set_buffer(1, Some(&a_log_buffer), 0);
-            encoder.set_buffer(2, Some(&dt_bias_buffer), 0);
-            encoder.set_buffer(3, Some(&output_buffer), 0);
-            set_ffn_gate_product_dispatch_params(
+            encode_gate_product_elementwise(
                 encoder,
-                4,
+                pipeline,
+                kernel_name,
+                &[&a_buffer, &a_log_buffer, &dt_bias_buffer],
+                &output_buffer,
                 saturating_usize_to_u32(element_count),
-            );
-            encoder.dispatch_threads(
-                MTLSize::new(element_count.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(element_count.max(1) as u64),
-                    1,
-                    1,
-                ),
             );
             encoder.end_encoding();
             command_buffer.commit();
@@ -12253,26 +12227,13 @@ fn apply_attention_output_gate_with_optional_native_path(
             command_buffer.set_label("ax.phase1.attention_output_gate");
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.attention_output_gate.compute");
-            encoder.set_compute_pipeline_state(&pipeline.pipeline);
-            encoder.set_buffer(0, Some(&gate_buffer), 0);
-            encoder.set_buffer(1, Some(&row_buffer), 0);
-            encoder.set_buffer(2, Some(&output_buffer), 0);
-            set_ffn_gate_product_dispatch_params(
+            encode_gate_product_elementwise(
                 encoder,
-                3,
+                pipeline,
+                kernel_name,
+                &[&gate_buffer, &row_buffer],
+                &output_buffer,
                 saturating_usize_to_u32(element_count),
-            );
-            encoder.dispatch_threads(
-                MTLSize::new(element_count.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(element_count.max(1) as u64),
-                    1,
-                    1,
-                ),
             );
             encoder.end_encoding();
             command_buffer.commit();
@@ -12400,26 +12361,13 @@ fn apply_linear_attention_gate_with_optional_native_path(
             command_buffer.set_label("ax.phase1.linear_attention_gate");
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.linear_attention_gate.compute");
-            encoder.set_compute_pipeline_state(&pipeline.pipeline);
-            encoder.set_buffer(0, Some(&z_buffer), 0);
-            encoder.set_buffer(1, Some(&output_in_buffer), 0);
-            encoder.set_buffer(2, Some(&output_buffer), 0);
-            set_ffn_gate_product_dispatch_params(
+            encode_gate_product_elementwise(
                 encoder,
-                3,
+                pipeline,
+                kernel_name,
+                &[&z_buffer, &output_in_buffer],
+                &output_buffer,
                 saturating_usize_to_u32(element_count),
-            );
-            encoder.dispatch_threads(
-                MTLSize::new(element_count.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(element_count.max(1) as u64),
-                    1,
-                    1,
-                ),
             );
             encoder.end_encoding();
             command_buffer.commit();
@@ -13149,22 +13097,13 @@ fn fused_linear_attn_tail_on_gpu(
         );
 
         // 2. Linear gate: normed × silu(z) → gated
-        encoder.set_compute_pipeline_state(&gate_pipeline.pipeline);
-        encoder.set_buffer(0, Some(&z_buf), 0);
-        encoder.set_buffer(1, Some(&normed_buf), 0);
-        encoder.set_buffer(2, Some(&gated_buf), 0);
-        set_ffn_gate_product_dispatch_params(encoder, 3, value_dim_u32);
-        encoder.dispatch_threads(
-            MTLSize::new(value_dim as u64, 1, 1),
-            MTLSize::new(
-                gate_pipeline
-                    .pipeline
-                    .thread_execution_width()
-                    .max(1)
-                    .min(value_dim as u64),
-                1,
-                1,
-            ),
+        encode_gate_product_elementwise(
+            encoder,
+            gate_pipeline,
+            gate_kernel_name,
+            &[&z_buf, &normed_buf],
+            &gated_buf,
+            value_dim_u32,
         );
 
         // 3. Out projection: gated → hidden

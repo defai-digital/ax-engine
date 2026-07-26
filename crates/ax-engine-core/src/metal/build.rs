@@ -325,6 +325,13 @@ pub fn build_phase1_kernel_artifacts(
                 PROJECTION_KERNEL_SIGNATURES,
                 PROJECTION_PARAM_STRUCT_EXPECTATIONS,
             )
+            .and_then(|()| {
+                validate_kernel_signatures_against_ast(
+                    &ast_json,
+                    GATE_PRODUCT_KERNEL_SIGNATURES,
+                    GATE_PRODUCT_PARAM_STRUCT_EXPECTATIONS,
+                )
+            })
             .map_err(|message| format!("metal AST signature gate failed: {message}"))
         });
         let compile_result = compile_result.and_then(|_| {
@@ -1144,6 +1151,78 @@ pub(super) const PROJECTION_KERNEL_SIGNATURES: &[ExpectedKernelSignature] = &[
             ("weights", 1, "const device uint8_t *"),
             ("output", 2, "device float *"),
             ("params", 3, "const constant Q4KMProjectionParams &"),
+        ],
+    },
+];
+
+/// The single param struct shared by the elementwise gate-product kernel
+/// family. Must stay in lockstep with `FfnGateProductDispatchParams` in
+/// `dispatch_params.rs`; the width cross-check test lives there.
+pub(super) const GATE_PRODUCT_PARAM_STRUCT_EXPECTATIONS: &[(&str, &[(&str, &str)])] =
+    &[("FfnGateProductParams", &[("element_count", "uint")])];
+
+const GATE_PRODUCT_PARAMS: &str = "const constant FfnGateProductParams &";
+const CONST_F32: &str = "const device float *";
+const MUT_F32: &str = "device float *";
+
+/// The elementwise gate-product kernel family: every kernel binds N const
+/// float inputs, one mutable float output, then `FfnGateProductParams` —
+/// but N varies (1–3), so unlike the projection family one uniform slot
+/// layout cannot serve them all. Dispatch derives per-kernel slots from
+/// this table (`gate_product_slots` in `dispatch_params.rs`).
+pub(super) const GATE_PRODUCT_KERNEL_SIGNATURES: &[ExpectedKernelSignature] = &[
+    ExpectedKernelSignature {
+        kernel: "ffn_gate_silu_product_f32",
+        buffers: &[
+            ("gate", 0, CONST_F32),
+            ("up", 1, CONST_F32),
+            ("output", 2, MUT_F32),
+            ("params", 3, GATE_PRODUCT_PARAMS),
+        ],
+    },
+    ExpectedKernelSignature {
+        kernel: "ffn_gate_gelu_approx_product_f32",
+        buffers: &[
+            ("gate", 0, CONST_F32),
+            ("up", 1, CONST_F32),
+            ("output", 2, MUT_F32),
+            ("params", 3, GATE_PRODUCT_PARAMS),
+        ],
+    },
+    ExpectedKernelSignature {
+        kernel: "linear_attention_gate_silu_f32",
+        buffers: &[
+            ("gate", 0, CONST_F32),
+            ("input", 1, CONST_F32),
+            ("output", 2, MUT_F32),
+            ("params", 3, GATE_PRODUCT_PARAMS),
+        ],
+    },
+    ExpectedKernelSignature {
+        kernel: "attention_output_gate_sigmoid_product_f32",
+        buffers: &[
+            ("gate", 0, CONST_F32),
+            ("input", 1, CONST_F32),
+            ("output", 2, MUT_F32),
+            ("params", 3, GATE_PRODUCT_PARAMS),
+        ],
+    },
+    ExpectedKernelSignature {
+        kernel: "linear_attention_beta_sigmoid_f32",
+        buffers: &[
+            ("input", 0, CONST_F32),
+            ("output", 1, MUT_F32),
+            ("params", 2, GATE_PRODUCT_PARAMS),
+        ],
+    },
+    ExpectedKernelSignature {
+        kernel: "linear_attention_decay_f32",
+        buffers: &[
+            ("input", 0, CONST_F32),
+            ("a_log", 1, CONST_F32),
+            ("dt_bias", 2, CONST_F32),
+            ("output", 3, MUT_F32),
+            ("params", 4, GATE_PRODUCT_PARAMS),
         ],
     },
 ];

@@ -639,7 +639,10 @@ kernel void row_vector_scale_f32(
 
 // Projection kernels use one simd-group (32 threads) per output row.
 // Each thread handles every 32nd input element; simd_sum reduces to the dot
-// product. This achieves near-memory-bandwidth-limited throughput for GEMV
+// product. The reduction must run in uniform control flow, before the lane-0
+// branch: after a ragged accumulation loop (input_width not a multiple of
+// 32), a simd_sum inside `if (lane == 0)` sums only the active lane and
+// silently drops the other 31 partials. This achieves near-memory-bandwidth-limited throughput for GEMV
 // (single-token decode) by fully utilising the GPU's SIMD parallelism.
 // Dispatch: vocab_rows * 32 total threads, threadgroup size 32.
 
@@ -659,8 +662,9 @@ kernel void decode_logits_projection_f32(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += projection[row_base + col] * hidden[col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[out_row] = simd_sum(partial);
+        logits[out_row] = total;
     }
 }
 
@@ -680,8 +684,9 @@ kernel void decode_logits_projection_f16(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += float(projection[row_base + col]) * hidden[col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[out_row] = simd_sum(partial);
+        logits[out_row] = total;
     }
 }
 
@@ -701,8 +706,9 @@ kernel void decode_logits_projection_bf16(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += float(projection[row_base + col]) * hidden[col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[out_row] = simd_sum(partial);
+        logits[out_row] = total;
     }
 }
 
@@ -729,8 +735,9 @@ kernel void decode_logits_projection_batched_f32(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += projection[row_base + col] * hidden[hidden_base + col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[flat_index] = simd_sum(partial);
+        logits[flat_index] = total;
     }
 }
 
@@ -754,8 +761,9 @@ kernel void decode_logits_projection_batched_f16(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += float(projection[row_base + col]) * hidden[hidden_base + col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[flat_index] = simd_sum(partial);
+        logits[flat_index] = total;
     }
 }
 
@@ -779,8 +787,9 @@ kernel void decode_logits_projection_batched_bf16(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += float(projection[row_base + col]) * hidden[hidden_base + col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[flat_index] = simd_sum(partial);
+        logits[flat_index] = total;
     }
 }
 

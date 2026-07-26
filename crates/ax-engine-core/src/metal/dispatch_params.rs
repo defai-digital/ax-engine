@@ -314,6 +314,108 @@ pub(super) fn encode_fused_projection(
     }
 }
 
+/// Buffer slots for one member of the elementwise gate-product kernel
+/// family (`FfnGateProductParams` cluster). Input arity varies across the
+/// family (1–3 const inputs), so slots are resolved per kernel from the
+/// AST-validated expectation table in `build.rs` — the same table the
+/// build gate checks against the shader.
+pub(super) struct GateProductSlots {
+    pub(super) inputs: Vec<u64>,
+    pub(super) output: u64,
+    pub(super) params: u64,
+}
+
+pub(super) static GATE_PRODUCT_SLOTS: std::sync::LazyLock<
+    std::collections::BTreeMap<&'static str, GateProductSlots>,
+> = std::sync::LazyLock::new(|| {
+    super::build::GATE_PRODUCT_KERNEL_SIGNATURES
+        .iter()
+        .map(|signature| {
+            // Family invariant: N const inputs, then the mutable output,
+            // then the params struct, bound at contiguous indices in
+            // declaration order. The AST gate proves table == shader;
+            // this proves table == dispatch.
+            let buffers = signature.buffers;
+            assert!(
+                buffers.len() >= 3,
+                "gate-product kernel {} must bind at least input/output/params",
+                signature.kernel
+            );
+            for (position, (_, index, _)) in buffers.iter().enumerate() {
+                assert_eq!(
+                    *index as usize, position,
+                    "gate-product kernel {} binds slot {position} at index {index}",
+                    signature.kernel
+                );
+            }
+            let params = buffers[buffers.len() - 1];
+            let output = buffers[buffers.len() - 2];
+            assert!(
+                params.2.contains("FfnGateProductParams"),
+                "gate-product kernel {} must bind FfnGateProductParams last",
+                signature.kernel
+            );
+            assert!(
+                !output.2.starts_with("const"),
+                "gate-product kernel {} output slot must be mutable",
+                signature.kernel
+            );
+            let slots = GateProductSlots {
+                inputs: buffers[..buffers.len() - 2]
+                    .iter()
+                    .map(|(_, index, _)| u64::from(*index))
+                    .collect(),
+                output: u64::from(output.1),
+                params: u64::from(params.1),
+            };
+            (signature.kernel, slots)
+        })
+        .collect()
+});
+
+/// Encode one elementwise gate-product dispatch (pipeline state, buffer
+/// bindings, params, thread grid) into an already-open encoder, with the
+/// buffer indices driven by the AST-validated table. `inputs` must match
+/// the kernel's declared input arity.
+pub(super) fn encode_gate_product_elementwise(
+    encoder: &ComputeCommandEncoderRef,
+    pipeline: &MetalPipelineHandle,
+    kernel_name: &str,
+    inputs: &[&Buffer],
+    output: &Buffer,
+    element_count: u32,
+) {
+    let slots = GATE_PRODUCT_SLOTS
+        .get(kernel_name)
+        .unwrap_or_else(|| panic!("kernel {kernel_name} is not in the gate-product table"));
+    assert_eq!(
+        inputs.len(),
+        slots.inputs.len(),
+        "kernel {kernel_name} expects {} inputs, caller bound {}",
+        slots.inputs.len(),
+        inputs.len()
+    );
+    encoder.set_compute_pipeline_state(&pipeline.pipeline);
+    for (slot, input) in slots.inputs.iter().zip(inputs) {
+        encoder.set_buffer(*slot, Some(input), 0);
+    }
+    encoder.set_buffer(slots.output, Some(output), 0);
+    set_ffn_gate_product_dispatch_params(encoder, slots.params, element_count);
+    let threads = u64::from(element_count).max(1);
+    encoder.dispatch_threads(
+        MTLSize::new(threads, 1, 1),
+        MTLSize::new(
+            pipeline
+                .pipeline
+                .thread_execution_width()
+                .max(1)
+                .min(threads),
+            1,
+            1,
+        ),
+    );
+}
+
 pub(super) fn set_cache_dispatch_params(
     encoder: &ComputeCommandEncoderRef,
     buffer_index: u64,
@@ -684,6 +786,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Parity between the table-driven gate-product slots and the
+    /// historical hand-coded literals at each encode site: the migration
+    /// away from literals must be behavior-preserving.
+    #[test]
+    fn gate_product_slots_match_historical_literals() {
+        let slots = &*super::GATE_PRODUCT_SLOTS;
+        let expect = |kernel: &str, inputs: &[u64], output: u64, params: u64| {
+            let entry = &slots[kernel];
+            assert_eq!(entry.inputs, inputs, "{kernel} input slots");
+            assert_eq!(entry.output, output, "{kernel} output slot");
+            assert_eq!(entry.params, params, "{kernel} params slot");
+        };
+        expect("ffn_gate_silu_product_f32", &[0, 1], 2, 3);
+        expect("ffn_gate_gelu_approx_product_f32", &[0, 1], 2, 3);
+        expect("linear_attention_gate_silu_f32", &[0, 1], 2, 3);
+        expect("attention_output_gate_sigmoid_product_f32", &[0, 1], 2, 3);
+        expect("linear_attention_beta_sigmoid_f32", &[0], 1, 2);
+        expect("linear_attention_decay_f32", &[0, 1, 2], 3, 4);
+        assert_eq!(slots.len(), 6, "gate-product family size");
+    }
+
+    /// Every gate-product kernel must bind contiguous slots in
+    /// declaration order with the params struct last — the invariants
+    /// the slot derivation in `GATE_PRODUCT_SLOTS` relies on.
+    #[test]
+    fn gate_product_table_is_contiguous_with_params_last() {
+        for signature in super::super::build::GATE_PRODUCT_KERNEL_SIGNATURES {
+            for (position, (_, index, _)) in signature.buffers.iter().enumerate() {
+                assert_eq!(
+                    *index as usize, position,
+                    "kernel {} binds slot {position} at index {index}",
+                    signature.kernel
+                );
+            }
+            let (name, _, qual_type) = signature.buffers[signature.buffers.len() - 1];
+            assert_eq!(name, "params", "kernel {} last slot", signature.kernel);
+            assert!(
+                qual_type.contains("FfnGateProductParams"),
+                "kernel {} params type",
+                signature.kernel
+            );
+        }
+    }
+
+    #[test]
+    fn gate_product_param_expectation_matches_rust_mirror_width() {
+        let (_, fields) = super::super::build::GATE_PRODUCT_PARAM_STRUCT_EXPECTATIONS[0];
+        assert_eq!(
+            fields.len() * 4,
+            size_of::<super::FfnGateProductDispatchParams>()
+        );
     }
 
     #[test]

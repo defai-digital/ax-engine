@@ -934,6 +934,65 @@ fn max_recommended_working_set_size() -> u64 {
     0
 }
 
+/// Metal working-set budget for load admission: the device-reported
+/// recommended working set, floored by the IOGPU wired-limit policy.
+/// `recommendedMaxWorkingSetSize` is dynamic and underreports under memory
+/// pressure on Apple Silicon (mistral.rs#2127), which would turn transient
+/// pressure into spurious `insufficient_memory` rejections; the sysctl
+/// `iogpu.wired_limit_mb` (or Apple's default wired-limit policy when the
+/// sysctl is unset) is the stable bound operators actually configured.
+fn metal_memory_budget() -> u64 {
+    combined_metal_budget(
+        max_recommended_working_set_size(),
+        iogpu_wired_limit_floor(),
+    )
+}
+
+/// A zero device budget means "unknowable" and must keep skipping admission;
+/// the floor only ever raises a known budget.
+fn combined_metal_budget(device_budget: u64, floor: Option<u64>) -> u64 {
+    if device_budget == 0 {
+        return 0;
+    }
+    device_budget.max(floor.unwrap_or(0))
+}
+
+/// Apple's default IOGPU wired-limit policy when `iogpu.wired_limit_mb` is
+/// unset: two thirds of system RAM up to 36 GiB, three quarters above.
+fn default_iogpu_floor_mb(total_ram_mb: u64) -> u64 {
+    if total_ram_mb <= 36 * 1024 {
+        total_ram_mb * 2 / 3
+    } else {
+        total_ram_mb * 3 / 4
+    }
+}
+
+/// The macOS IOGPU wired-limit floor in bytes: `sysctl iogpu.wired_limit_mb`
+/// when set to a non-zero value, otherwise the default policy applied to
+/// `hw.memsize`. Load admission is a rare control-plane operation, so the
+/// sysctl process spawns are acceptable here.
+#[cfg(target_os = "macos")]
+fn iogpu_wired_limit_floor() -> Option<u64> {
+    fn sysctl_value(name: &str) -> Option<u64> {
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", name])
+            .output()
+            .ok()?;
+        String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+    }
+    let total_ram_mb = sysctl_value("hw.memsize")? / (1024 * 1024);
+    let floor_mb = match sysctl_value("iogpu.wired_limit_mb") {
+        Some(0) | None => default_iogpu_floor_mb(total_ram_mb),
+        Some(configured) => configured,
+    };
+    Some(floor_mb * 1024 * 1024)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn iogpu_wired_limit_floor() -> Option<u64> {
+    None
+}
+
 #[cfg(feature = "mlx-native-server")]
 fn mlx_device_active_bytes() -> Option<u64> {
     mlx_sys::device_active_bytes()
@@ -957,7 +1016,7 @@ fn validate_load_memory_preflight(
     if memory_preflight_disabled() {
         return Ok(());
     }
-    let budget = max_recommended_working_set_size();
+    let budget = metal_memory_budget();
     if budget == 0 {
         return Ok(());
     }
@@ -2009,6 +2068,30 @@ mod tests {
             ),
             35
         );
+    }
+
+    #[test]
+    fn combined_metal_budget_floors_pressured_device_value_only_when_known() {
+        // An unknowable device budget keeps skipping admission — the floor
+        // must never turn 0 into a hard gate.
+        assert_eq!(combined_metal_budget(0, Some(64 << 30)), 0);
+        // Under memory pressure the device value dips below the configured
+        // wired limit; the floor restores the stable bound.
+        assert_eq!(combined_metal_budget(20 << 30, Some(48 << 30)), 48 << 30);
+        // A healthy device value above the floor wins.
+        assert_eq!(combined_metal_budget(50 << 30, Some(48 << 30)), 50 << 30);
+        // No floor available (sysctl unreadable): device value passes through.
+        assert_eq!(combined_metal_budget(50 << 30, None), 50 << 30);
+    }
+
+    #[test]
+    fn default_iogpu_floor_follows_apple_wired_limit_policy() {
+        // Two thirds of RAM up to 36 GiB.
+        assert_eq!(default_iogpu_floor_mb(24 * 1024), 16 * 1024);
+        assert_eq!(default_iogpu_floor_mb(36 * 1024), 24 * 1024);
+        // Three quarters above 36 GiB.
+        assert_eq!(default_iogpu_floor_mb(64 * 1024), 48 * 1024);
+        assert_eq!(default_iogpu_floor_mb(128 * 1024), 96 * 1024);
     }
 
     #[test]
