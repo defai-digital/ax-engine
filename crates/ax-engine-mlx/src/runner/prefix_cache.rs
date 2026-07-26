@@ -982,6 +982,7 @@ pub(crate) struct MlxPrefixCacheTelemetry {
     pub(crate) blocked_unsupported_layout: u32,
     pub(crate) blocked_trim_failure: u32,
     pub(crate) blocked_snapshot_incomplete: u32,
+    pub(crate) blocked_media_identity: u32,
     pub(crate) stores: u32,
     pub(crate) evictions: u32,
     pub(crate) reused_tokens: u32,
@@ -1047,6 +1048,9 @@ impl MlxPrefixCacheTelemetry {
         self.blocked_snapshot_incomplete = self
             .blocked_snapshot_incomplete
             .saturating_add(other.blocked_snapshot_incomplete);
+        self.blocked_media_identity = self
+            .blocked_media_identity
+            .saturating_add(other.blocked_media_identity);
         self.stores = self.stores.saturating_add(other.stores);
         self.evictions = self.evictions.saturating_add(other.evictions);
         self.reused_tokens = self.reused_tokens.saturating_add(other.reused_tokens);
@@ -1129,6 +1133,10 @@ impl MlxPrefixCacheTelemetry {
             (
                 ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_SNAPSHOT_INCOMPLETE,
                 self.blocked_snapshot_incomplete,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_MEDIA_IDENTITY,
+                self.blocked_media_identity,
             ),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES, self.stores),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS, self.evictions),
@@ -1255,6 +1263,11 @@ impl MlxPrefixCacheTelemetry {
     pub(crate) fn record_blocked_snapshot_incomplete(&mut self) {
         self.blocked = self.blocked.saturating_add(1);
         self.blocked_snapshot_incomplete = self.blocked_snapshot_incomplete.saturating_add(1);
+    }
+
+    pub(crate) fn record_blocked_media_identity(&mut self) {
+        self.blocked = self.blocked.saturating_add(1);
+        self.blocked_media_identity = self.blocked_media_identity.saturating_add(1);
     }
 
     pub(crate) fn record_disk_hit(&mut self) {

@@ -206,6 +206,8 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_TRIM_FAILURE: &str =
     "ax_mlx_prefix_cache_blocked_trim_failure";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_SNAPSHOT_INCOMPLETE: &str =
     "ax_mlx_prefix_cache_blocked_snapshot_incomplete";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_MEDIA_IDENTITY: &str =
+    "ax_mlx_prefix_cache_blocked_media_identity";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES: &str = "ax_mlx_prefix_cache_stores";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS: &str = "ax_mlx_prefix_cache_evictions";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_REUSED_TOKENS: &str = "ax_mlx_prefix_cache_reused_tokens";
@@ -516,7 +518,9 @@ struct PromptPrefixSnapshotStoreOptions<'a> {
     greedy_prefill_output_token: Option<u32>,
     cold_prefill_us: u64,
     /// WS-M3 media digests folded into prefix keys (empty for text-only).
-    media_key: &'a str,
+    /// `None` = media present but no digest available; the store fails
+    /// closed instead of writing a text-only key for a media prompt.
+    media_key: Option<&'a str>,
 }
 
 impl RequestState {
@@ -4142,6 +4146,8 @@ impl MlxRunner {
         };
         // WS-M3: when multimodal prefix reuse is enabled, restore like text
         // (media identity is folded into the prefix key via media_key).
+        // `None` = media present without a digest; restore and store both
+        // fail closed on it rather than using a text-only key.
         let media_key = self.media_key_from_inputs(multimodal_inputs);
         let mut prefix_cache =
             if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
@@ -4154,7 +4160,7 @@ impl MlxRunner {
                     model_id,
                     block_size_tokens,
                     sampling,
-                    &media_key,
+                    media_key.as_deref(),
                 )
             };
         prefix_cache.native_evictions = prefix_cache.native_evictions.saturating_add(
@@ -4248,7 +4254,7 @@ impl MlxRunner {
                                 greedy_prefill_output_token:
                                     prefill_output_token_cacheable(ctx, sampling).then_some(tok),
                                 cold_prefill_us: u64::from(cold_prefill_us),
-                                media_key: &media_key,
+                                media_key: media_key.as_deref(),
                             },
                         ));
                         prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
@@ -4331,7 +4337,7 @@ impl MlxRunner {
                                 greedy_prefill_output_token:
                                     prefill_output_token_cacheable(ctx, sampling).then_some(tok),
                                 cold_prefill_us: u64::from(cold_prefill_us),
-                                media_key: &media_key,
+                                media_key: media_key.as_deref(),
                             },
                         ));
                         prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
@@ -4414,7 +4420,7 @@ impl MlxRunner {
                                 greedy_prefill_output_token:
                                     prefill_output_token_cacheable(ctx, sampling).then_some(tok),
                                 cold_prefill_us: u64::from(cold_prefill_us),
-                                media_key: &media_key,
+                                media_key: media_key.as_deref(),
                             },
                         ));
                         prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
@@ -4497,7 +4503,7 @@ impl MlxRunner {
                                 greedy_prefill_output_token:
                                     prefill_output_token_cacheable(ctx, sampling).then_some(tok),
                                 cold_prefill_us: u64::from(cold_prefill_us),
-                                media_key: &media_key,
+                                media_key: media_key.as_deref(),
                             },
                         ));
                         prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
@@ -4847,7 +4853,7 @@ impl MlxRunner {
                                     .then_some(tok)
                                     .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
                                 cold_prefill_us: u64::from(cold_prefill_us),
-                                media_key: &media_key,
+                                media_key: media_key.as_deref(),
                             },
                         ),
                     );
@@ -5191,24 +5197,17 @@ impl MlxRunner {
             .unwrap_or_else(|| self.model_artifacts_root.clone())
     }
 
-    fn media_key_from_inputs(&self, multimodal_inputs: Option<&RequestMultimodalInputs>) -> String {
-        let Some(inputs) = multimodal_inputs else {
-            return String::new();
-        };
-        let fp = self.media_model_fingerprint();
-        if let Some(g) = inputs.gemma4_unified.as_ref().filter(|g| !g.is_empty()) {
-            return g.media_prefix_key(&fp);
-        }
-        if let Some(q) = inputs.qwen3_vl.as_ref().filter(|q| !q.is_empty()) {
-            return q.media_prefix_key(&fp);
-        }
-        if let Some(minicpm) = inputs.minicpm_v46.as_ref().filter(|v| !v.is_empty()) {
-            return minicpm.media_prefix_key(&fp);
-        }
-        if let Some(omni) = inputs.nemotron_omni.as_ref().filter(|v| !v.is_empty()) {
-            return omni.media_prefix_key(&fp);
-        }
-        String::new()
+    /// `Some(key)` when the request is text-only (empty key) or a
+    /// recognized multimodal family produced a content digest; `None`
+    /// when media is present but no digest covers it. `None` must fail
+    /// closed at every prefix-cache touch point: a text-only key for a
+    /// media-bearing prompt would let two prompts with identical tokens
+    /// but different media share KV.
+    fn media_key_from_inputs(
+        &self,
+        multimodal_inputs: Option<&RequestMultimodalInputs>,
+    ) -> Option<String> {
+        media_key_for_fingerprint(multimodal_inputs, &self.media_model_fingerprint())
     }
 
     fn prefix_cache_key_with_media(
@@ -5427,9 +5426,35 @@ impl MlxRunner {
         model_id: &str,
         block_size_tokens: u32,
         sampling: MlxSamplingParams,
-        media_key: &str,
+        media_identity: Option<&str>,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
+        // Media present but no digest: never touch the prefix-cache
+        // keyspace (a text-only key would alias prompts with different
+        // media). Runs before the probe so an unidentifiable request
+        // cannot match snapshots either. Warm semantics mirror the other
+        // blocked_* branches below.
+        let Some(media_key) = media_identity else {
+            telemetry.record_blocked_media_identity();
+            let reused_tokens: &[u32] = &item.reused_prefix_token_slice;
+            if !reused_tokens.is_empty() && state.cache.seq_len() == 0 {
+                let capture_prefill_output = item.mode == ExecutionMode::Decode
+                    && ctx.is_some_and(|ctx| ctx.generated_len == 0);
+                if item.mode != ExecutionMode::Prefill {
+                    self.warm_reused_prefix_without_cache(
+                        state,
+                        item.request_id,
+                        reused_tokens,
+                        sampling,
+                        capture_prefill_output,
+                    );
+                }
+                telemetry.warmup_tokens = telemetry
+                    .warmup_tokens
+                    .saturating_add(saturating_u32(reused_tokens.len()));
+            }
+            return telemetry;
+        };
         // Scheduler annotation comes from `ax-engine-core`'s prefix-lookup
         // table, which is keyed on the scheduler-side block table. That
         // table can disagree with the runner-side `MlxPrefixCache` in two
@@ -6056,6 +6081,13 @@ impl MlxRunner {
         if block_size_tokens == 0 || state.prompt_prefix_tokens.is_empty() {
             return telemetry;
         }
+        // Media present without a digest: storing under a text-only key
+        // would let a later prompt with identical tokens but different
+        // media adopt this KV. Fail closed.
+        let Some(media_key) = media_key else {
+            telemetry.record_blocked_media_identity();
+            return telemetry;
+        };
         if !self.prefix_cache_supported() {
             telemetry.record_blocked_unsupported_layout();
             return telemetry;
@@ -9709,6 +9741,39 @@ fn prefill_output_token_cacheable(
     is_greedy && !sampling.uses_logits_processors()
 }
 
+/// Derive the media component of a prefix-cache key. `Some("")` for
+/// text-only requests, `Some(digest)` when a recognized family covers the
+/// media, and `None` when media is present but no family digest maps it —
+/// today `unlimited_ocr`, and any future `RequestMultimodalInputs` field
+/// added without a `media_prefix_key` mapping here. Callers must treat
+/// `None` as "prefix cache unusable for this request" (fail closed), never
+/// as a text-only key.
+fn media_key_for_fingerprint(
+    multimodal_inputs: Option<&RequestMultimodalInputs>,
+    fingerprint: &str,
+) -> Option<String> {
+    let Some(inputs) = multimodal_inputs else {
+        return Some(String::new());
+    };
+    if let Some(g) = inputs.gemma4_unified.as_ref().filter(|g| !g.is_empty()) {
+        return Some(g.media_prefix_key(fingerprint));
+    }
+    if let Some(q) = inputs.qwen3_vl.as_ref().filter(|q| !q.is_empty()) {
+        return Some(q.media_prefix_key(fingerprint));
+    }
+    if let Some(minicpm) = inputs.minicpm_v46.as_ref().filter(|v| !v.is_empty()) {
+        return Some(minicpm.media_prefix_key(fingerprint));
+    }
+    if let Some(omni) = inputs.nemotron_omni.as_ref().filter(|v| !v.is_empty()) {
+        return Some(omni.media_prefix_key(fingerprint));
+    }
+    if inputs.is_empty() {
+        Some(String::new())
+    } else {
+        None
+    }
+}
+
 fn hash_prefix_tokens(tokens: &[u32]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for token in tokens {
@@ -11479,6 +11544,36 @@ mod tests {
     }
 
     #[test]
+    fn media_key_is_fail_closed_for_undigested_media() {
+        // Text-only requests keep the empty (cacheable) key.
+        assert_eq!(media_key_for_fingerprint(None, "fp"), Some(String::new()));
+        let empty = ax_engine_core::RequestMultimodalInputs::default();
+        assert_eq!(
+            media_key_for_fingerprint(Some(&empty), "fp"),
+            Some(String::new())
+        );
+
+        // Media without a digest mapping (unlimited_ocr) must yield None —
+        // a text-only key here would alias prompts with different images.
+        let ocr = ax_engine_core::RequestMultimodalInputs {
+            unlimited_ocr: Some(ax_engine_core::unlimited_ocr::UnlimitedOcrRuntimeInputs {
+                image_token_id: 7,
+                soft_token_count: 4,
+                cropping: false,
+                images: vec![
+                    ax_engine_core::unlimited_ocr::UnlimitedOcrImageRuntimeInput {
+                        width: 1,
+                        height: 1,
+                        rgb_bytes: vec![1, 2, 3],
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        assert_eq!(media_key_for_fingerprint(Some(&ocr), "fp"), None);
+    }
+
+    #[test]
     fn multimodal_prefix_layout_folds_media_digest() {
         let base = "layers=12;ordered-prefix-v2";
         assert_eq!(format_prefix_layer_layout(base, ""), base);
@@ -11851,16 +11946,18 @@ mod tests {
         let mut other = MlxPrefixCacheTelemetry::default();
         other.record_blocked_trim_failure();
         other.record_blocked_snapshot_incomplete();
+        other.record_blocked_media_identity();
         other.record_blocked_unsupported_layout();
         other.record_disk_store_committed(8192, 2);
         other.record_disk_store_enqueued(4096);
         telemetry.merge_from(other);
 
-        assert_eq!(telemetry.blocked, 5);
+        assert_eq!(telemetry.blocked, 6);
         assert_eq!(telemetry.blocked_policy_disabled, 1);
         assert_eq!(telemetry.blocked_unsupported_layout, 2);
         assert_eq!(telemetry.blocked_trim_failure, 1);
         assert_eq!(telemetry.blocked_snapshot_incomplete, 1);
+        assert_eq!(telemetry.blocked_media_identity, 1);
         assert_eq!(telemetry.disk_inserts, 1);
         assert_eq!(telemetry.disk_store_committed, 1);
         assert_eq!(telemetry.disk_store_enqueued, 1);
@@ -11878,6 +11975,7 @@ mod tests {
             blocked_unsupported_layout: 1,
             blocked_trim_failure: 1,
             blocked_snapshot_incomplete: 1,
+            blocked_media_identity: 1,
             stores: 4,
             evictions: 5,
             reused_tokens: 16,
@@ -11908,6 +12006,7 @@ mod tests {
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_unsupported_layout".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_trim_failure".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_snapshot_incomplete".into(), 1)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_media_identity".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_evictions".into(), 5)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_bytes_kib".into(), 4)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_native_hits".into(), 11)));
