@@ -122,3 +122,14 @@ on mbp-m5 (see `2026-07-26-pipeline-eval-tail-layers-residual/`):
 
 Every `N>0` taxes thr; best gap 1.016 still ≫0.90. Formal skipped. **Reject
 tail overlay.** Keep default OFF. still **not_yet**.
+
+## thr-b8 config residual: linear pack ON + Qwen background
+
+| config | thr | gap |
+|--------|----:|----:|
+| thr-b8-util baseline (pack=0) | **1.146** | 1.172 |
+| linear-pack=1 | 1.142 | 1.265 |
+| qwen background | 1.123 | 1.222 |
+| bg + linear-pack | 1.111 | 1.239 |
+
+**Reject.** Keep pack force-OFF and utility QoS on thr-b8. still **not_yet**.
