@@ -983,6 +983,9 @@ pub(crate) struct MlxPrefixCacheTelemetry {
     pub(crate) blocked_trim_failure: u32,
     pub(crate) blocked_snapshot_incomplete: u32,
     pub(crate) blocked_media_identity: u32,
+    /// A cached payload was found but failed to restore (deserialize error
+    /// or shared-pool admission failure) and was treated as a miss.
+    pub(crate) blocked_restore_error: u32,
     pub(crate) stores: u32,
     pub(crate) evictions: u32,
     pub(crate) reused_tokens: u32,
@@ -1013,13 +1016,37 @@ pub(crate) struct MlxPrefixCacheTelemetry {
     pub(crate) disk_bytes_read_kib: u32,
     pub(crate) disk_admitted: u32,
     pub(crate) disk_admission_rejected: u32,
+    /// Last-event scalar kept for route-decision compatibility; the
+    /// per-variant truth lives in `disk_admission_reason_counts`.
     pub(crate) disk_admission_reason_code: u32,
+    /// Per-reason event counts indexed by `DiskAdmissionReason::code() - 1`
+    /// (slot 8 / code 9 is reserved by a deleted variant and stays zero).
+    /// Unlike the scalar above, merges are element-wise adds, so a batched
+    /// request cannot lose all but the last reason.
+    pub(crate) disk_admission_reason_counts: [u32; 10],
     pub(crate) disk_store_enqueued: u32,
     pub(crate) disk_store_committed: u32,
     pub(crate) disk_store_commit_failed: u32,
     pub(crate) disk_store_dropped: u32,
     pub(crate) disk_fallback_recompute: u32,
 }
+
+/// Per-reason route-decision keys for `disk_admission_reason_counts`,
+/// indexed by `DiskAdmissionReason::code() - 1`. Suffixes are pinned to
+/// `DiskAdmissionReason::label()` by a unit test; slot 8 (code 9) is a
+/// reserved placeholder that never emits.
+const DISK_ADMISSION_REASON_ROUTE_KEYS: [&str; 10] = [
+    "ax_mlx_prefix_cache_disk_reason_admitted_always",
+    "ax_mlx_prefix_cache_disk_reason_admitted_positive_value",
+    "ax_mlx_prefix_cache_disk_reason_disabled",
+    "ax_mlx_prefix_cache_disk_reason_unsupported_layout",
+    "ax_mlx_prefix_cache_disk_reason_prefix_too_short",
+    "ax_mlx_prefix_cache_disk_reason_entry_too_large",
+    "ax_mlx_prefix_cache_disk_reason_no_cost_model",
+    "ax_mlx_prefix_cache_disk_reason_predicted_no_savings",
+    "ax_mlx_prefix_cache_disk_reason_reserved_code_9",
+    "ax_mlx_prefix_cache_disk_reason_artifact_identity_unavailable",
+];
 
 /// Stable route codes for `restore_source_code`.
 pub(crate) const RESTORE_SOURCE_MEMORY_L1: u32 = 2;
@@ -1051,6 +1078,9 @@ impl MlxPrefixCacheTelemetry {
         self.blocked_media_identity = self
             .blocked_media_identity
             .saturating_add(other.blocked_media_identity);
+        self.blocked_restore_error = self
+            .blocked_restore_error
+            .saturating_add(other.blocked_restore_error);
         self.stores = self.stores.saturating_add(other.stores);
         self.evictions = self.evictions.saturating_add(other.evictions);
         self.reused_tokens = self.reused_tokens.saturating_add(other.reused_tokens);
@@ -1091,6 +1121,13 @@ impl MlxPrefixCacheTelemetry {
             .saturating_add(other.disk_admission_rejected);
         if other.disk_admission_reason_code != 0 {
             self.disk_admission_reason_code = other.disk_admission_reason_code;
+        }
+        for (mine, theirs) in self
+            .disk_admission_reason_counts
+            .iter_mut()
+            .zip(other.disk_admission_reason_counts.iter())
+        {
+            *mine = mine.saturating_add(*theirs);
         }
         self.disk_store_enqueued = self
             .disk_store_enqueued
@@ -1137,6 +1174,10 @@ impl MlxPrefixCacheTelemetry {
             (
                 ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_MEDIA_IDENTITY,
                 self.blocked_media_identity,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_RESTORE_ERROR,
+                self.blocked_restore_error,
             ),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES, self.stores),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS, self.evictions),
@@ -1243,6 +1284,15 @@ impl MlxPrefixCacheTelemetry {
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);
         }
+
+        // Per-reason admission counters (emitted only when non-zero so the
+        // route map stays compact). Keys are pinned to
+        // `DiskAdmissionReason::label()` by a unit test.
+        for (slot, count) in self.disk_admission_reason_counts.iter().enumerate() {
+            if *count > 0 {
+                decisions.upsert_route_decision(DISK_ADMISSION_REASON_ROUTE_KEYS[slot], *count);
+            }
+        }
     }
 
     pub(crate) fn record_blocked_policy_disabled(&mut self) {
@@ -1268,6 +1318,11 @@ impl MlxPrefixCacheTelemetry {
     pub(crate) fn record_blocked_media_identity(&mut self) {
         self.blocked = self.blocked.saturating_add(1);
         self.blocked_media_identity = self.blocked_media_identity.saturating_add(1);
+    }
+
+    pub(crate) fn record_blocked_restore_error(&mut self) {
+        self.blocked = self.blocked.saturating_add(1);
+        self.blocked_restore_error = self.blocked_restore_error.saturating_add(1);
     }
 
     pub(crate) fn record_disk_hit(&mut self) {
@@ -1334,6 +1389,9 @@ impl MlxPrefixCacheTelemetry {
             self.disk_admission_rejected = self.disk_admission_rejected.saturating_add(1);
         }
         self.disk_admission_reason_code = reason.code();
+        let slot = (reason.code() - 1) as usize;
+        self.disk_admission_reason_counts[slot] =
+            self.disk_admission_reason_counts[slot].saturating_add(1);
     }
 
     pub(crate) fn record_disk_restore_stages(
@@ -1448,6 +1506,139 @@ mod tests {
         assert_eq!(pool.snapshot().allocated_blocks, 1);
         drop(adopted);
         assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn native_insert_rejects_empty_tokens() {
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 4,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let producer = native_test_cache(&pool, 1.0);
+        let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 2,
+        });
+
+        let outcome = cache.insert(
+            native_prefix_key(7),
+            MlxNativePrefixSnapshot::new(producer, Vec::new(), 64, None),
+        );
+
+        assert!(!outcome.stored);
+        assert_eq!(outcome.retired.len(), 1);
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn native_insert_rejects_seq_len_token_count_mismatch() {
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 4,
+            hard_cap: true,
+        })
+        .expect("pool");
+        // Producer holds 4 tokens of KV; claim 8 tokens in the snapshot.
+        let producer = native_test_cache(&pool, 1.0);
+        assert_eq!(producer.seq_len(), 4);
+        let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 2,
+        });
+
+        let outcome = cache.insert(
+            native_prefix_key(7),
+            MlxNativePrefixSnapshot::new(producer, vec![7; 8], 64, None),
+        );
+
+        assert!(!outcome.stored);
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn native_insert_rejects_non_pool_backed_cache() {
+        // A contiguous cache without the shared FA pool must never enter
+        // the native tier (is_native_fa_shareable() == false).
+        let mut plain = MlxKVCache::new_contiguous(1);
+        plain.set_seq_len(4);
+        let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 2,
+        });
+
+        let outcome = cache.insert(
+            native_prefix_key(7),
+            MlxNativePrefixSnapshot::new(plain, vec![7; 4], 64, None),
+        );
+
+        assert!(!outcome.stored);
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn native_lookup_rejects_incompatible_key_fields() {
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 4,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let producer = native_test_cache(&pool, 1.0);
+        let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 4,
+        });
+        let key = native_prefix_key(7);
+        let tokens = vec![7; 4];
+        assert!(
+            cache
+                .insert(
+                    key.clone(),
+                    MlxNativePrefixSnapshot::new(producer, tokens.clone(), 64, None),
+                )
+                .stored
+        );
+
+        // Every identity field must participate in compatibility: a
+        // mismatch on any one of them must exclude the entry from the
+        // longest-prefix scan.
+        let mut wrong_model = key.clone();
+        wrong_model.model_id = "other-model".into();
+        assert!(cache.get_longest_prefix(&wrong_model, &tokens).is_none());
+
+        let mut wrong_route = key.clone();
+        wrong_route.route_policy = "other-route".into();
+        assert!(cache.get_longest_prefix(&wrong_route, &tokens).is_none());
+
+        let mut wrong_layout = key.clone();
+        wrong_layout.layer_layout = "layers=3;other".into();
+        assert!(cache.get_longest_prefix(&wrong_layout, &tokens).is_none());
+
+        let mut wrong_block_size = key.clone();
+        wrong_block_size.block_size_tokens = 8;
+        assert!(
+            cache
+                .get_longest_prefix(&wrong_block_size, &tokens)
+                .is_none()
+        );
+
+        // Sanity: the unmodified key still hits.
+        assert!(cache.get_longest_prefix(&key, &tokens).is_some());
+    }
+
+    #[test]
+    fn disk_admission_reason_route_keys_match_labels() {
+        for reason in crate::disk_prefix_cache::DiskAdmissionReason::ALL {
+            let slot = (reason.code() - 1) as usize;
+            let key = DISK_ADMISSION_REASON_ROUTE_KEYS[slot];
+            assert!(
+                key.ends_with(reason.label()),
+                "route key {key} must end with label {}",
+                reason.label()
+            );
+        }
     }
 
     #[test]

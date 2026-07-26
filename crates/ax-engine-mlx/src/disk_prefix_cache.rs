@@ -119,11 +119,28 @@ pub enum DiskAdmissionReason {
     EntryTooLarge,
     NoCostModel,
     PredictedNoSavings,
-    CapacityPressure,
+    // Code 9 (`CapacityPressure`) was declared but never emitted by any
+    // caller; deleted rather than kept as dead surface. The code stays
+    // reserved so the remaining codes are stable.
     ArtifactIdentityUnavailable,
 }
 
 impl DiskAdmissionReason {
+    /// Every variant, in stable code order. Route-decision export and the
+    /// exhaustiveness tests iterate this so a new variant cannot be added
+    /// without wiring its telemetry.
+    pub const ALL: &[Self] = &[
+        Self::AdmittedAlways,
+        Self::AdmittedPositiveValue,
+        Self::Disabled,
+        Self::UnsupportedLayout,
+        Self::PrefixTooShort,
+        Self::EntryTooLarge,
+        Self::NoCostModel,
+        Self::PredictedNoSavings,
+        Self::ArtifactIdentityUnavailable,
+    ];
+
     /// Stable numeric telemetry code (never a Rust discriminant).
     pub fn code(self) -> u32 {
         match self {
@@ -135,8 +152,22 @@ impl DiskAdmissionReason {
             Self::EntryTooLarge => 6,
             Self::NoCostModel => 7,
             Self::PredictedNoSavings => 8,
-            Self::CapacityPressure => 9,
             Self::ArtifactIdentityUnavailable => 10,
+        }
+    }
+
+    /// Stable snake_case telemetry label for per-reason counters.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AdmittedAlways => "admitted_always",
+            Self::AdmittedPositiveValue => "admitted_positive_value",
+            Self::Disabled => "disabled",
+            Self::UnsupportedLayout => "unsupported_layout",
+            Self::PrefixTooShort => "prefix_too_short",
+            Self::EntryTooLarge => "entry_too_large",
+            Self::NoCostModel => "no_cost_model",
+            Self::PredictedNoSavings => "predicted_no_savings",
+            Self::ArtifactIdentityUnavailable => "artifact_identity_unavailable",
         }
     }
 
@@ -322,9 +353,8 @@ impl DiskPrefixCachePolicy {
     /// `expected_hits` defaults to 1 unless a later session-retention hint
     /// raises it. Hard size/length floors apply before the value model;
     /// `always` bypasses only the value model, never the size caps.
-    /// `UnsupportedLayout`, `CapacityPressure`, and
-    /// `ArtifactIdentityUnavailable` are closed reasons emitted by callers
-    /// outside this value model.
+    /// `UnsupportedLayout` and `ArtifactIdentityUnavailable` are closed
+    /// reasons emitted by callers outside this value model.
     pub fn evaluate_admission(
         &self,
         prefix_tokens: u32,
@@ -3173,23 +3203,27 @@ mod tests {
             DiskAdmissionReason::EntryTooLarge
         );
 
-        // Every reason has a distinct stable code.
-        let reasons = [
-            DiskAdmissionReason::AdmittedAlways,
-            DiskAdmissionReason::AdmittedPositiveValue,
-            DiskAdmissionReason::Disabled,
-            DiskAdmissionReason::UnsupportedLayout,
-            DiskAdmissionReason::PrefixTooShort,
-            DiskAdmissionReason::EntryTooLarge,
-            DiskAdmissionReason::NoCostModel,
-            DiskAdmissionReason::PredictedNoSavings,
-            DiskAdmissionReason::CapacityPressure,
-            DiskAdmissionReason::ArtifactIdentityUnavailable,
-        ];
-        let mut codes: Vec<u32> = reasons.iter().map(|r| r.code()).collect();
-        codes.sort_unstable();
+        // Every reason has a distinct stable code and label, and `ALL`
+        // covers the whole enum in code order.
+        let mut codes: Vec<u32> = DiskAdmissionReason::ALL.iter().map(|r| r.code()).collect();
+        assert!(
+            codes.windows(2).all(|pair| pair[0] < pair[1]),
+            "ALL in code order"
+        );
         codes.dedup();
-        assert_eq!(codes.len(), reasons.len(), "codes must be distinct");
+        assert_eq!(
+            codes.len(),
+            DiskAdmissionReason::ALL.len(),
+            "codes must be distinct"
+        );
+        let mut labels: Vec<&str> = DiskAdmissionReason::ALL.iter().map(|r| r.label()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            DiskAdmissionReason::ALL.len(),
+            "labels must be distinct"
+        );
     }
 
     #[test]

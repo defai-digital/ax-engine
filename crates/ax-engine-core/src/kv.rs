@@ -1783,6 +1783,26 @@ mod tests {
     }
 
     #[test]
+    fn cached_block_key_separates_cache_groups() {
+        // The retained-cache map key must never collide across cache
+        // groups even for identical block hashes: today one KvManager
+        // serves one group, so the field is defensive — this pins it so
+        // a future shared map cannot silently cross-share KV.
+        let a = CachedBlockKey {
+            cache_group_id: CacheGroupId(1),
+            block_hash: 0xDEAD_BEEF,
+        };
+        let b = CachedBlockKey {
+            cache_group_id: CacheGroupId(2),
+            block_hash: 0xDEAD_BEEF,
+        };
+        assert_ne!(a, b);
+        let mut map = std::collections::HashMap::new();
+        map.insert(a, 1u32);
+        assert!(!map.contains_key(&b));
+    }
+
+    #[test]
     fn prefix_lookup_returns_miss_when_prompt_is_shorter_than_one_block() {
         let mut manager = make_manager(4, 4);
         manager

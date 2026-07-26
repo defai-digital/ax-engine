@@ -208,6 +208,8 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_SNAPSHOT_INCOMPLETE: &str =
     "ax_mlx_prefix_cache_blocked_snapshot_incomplete";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_MEDIA_IDENTITY: &str =
     "ax_mlx_prefix_cache_blocked_media_identity";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_RESTORE_ERROR: &str =
+    "ax_mlx_prefix_cache_blocked_restore_error";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES: &str = "ax_mlx_prefix_cache_stores";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS: &str = "ax_mlx_prefix_cache_evictions";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_REUSED_TOKENS: &str = "ax_mlx_prefix_cache_reused_tokens";
@@ -5593,6 +5595,10 @@ impl MlxRunner {
                     .saturating_add(saturating_u32(matched_len));
                 return telemetry;
             }
+            // Symmetric with the store path's blocked_trim_failure: the
+            // native hit was unusable; the portable tiers below may
+            // still serve the prefix.
+            telemetry.record_blocked_trim_failure();
         }
 
         if let Some(snapshot) = hit {
@@ -5649,6 +5655,7 @@ impl MlxRunner {
                                 return telemetry;
                             }
                             Err(e) => {
+                                telemetry.record_blocked_restore_error();
                                 tracing::warn!(
                                     target: "ax_engine_mlx::prefix_cache",
                                     error = %e,
@@ -5659,6 +5666,7 @@ impl MlxRunner {
                     }
                 }
                 Err(e) => {
+                    telemetry.record_blocked_restore_error();
                     tracing::warn!(
                         target: "ax_engine_mlx::prefix_cache",
                         error = %e,
@@ -5681,6 +5689,15 @@ impl MlxRunner {
         // per F3 PRD §3 (fail-closed): the cache miss path still runs,
         // the request still completes, telemetry records the disk
         // miss for observability.
+        if mla_extend_unsafe && self.disk_prefix_cache.is_some() {
+            // D9: the MLA-extend safety gate suppresses the entire L2
+            // tier for this request; name the suppression instead of
+            // skipping silently.
+            telemetry.record_blocked_unsupported_layout();
+            telemetry.record_disk_admission(
+                crate::disk_prefix_cache::DiskAdmissionReason::UnsupportedLayout,
+            );
+        }
         if !mla_extend_unsafe && self.disk_prefix_cache.is_some() {
             self.record_disk_artifact_identity_if_unavailable(&mut telemetry);
             if let Some(writer) = self.disk_prefix_writer.as_ref() {
@@ -5711,6 +5728,9 @@ impl MlxRunner {
                     }
                     if restored.cache.has_rotated_sliding_layers() {
                         telemetry.record_blocked_unsupported_layout();
+                        telemetry.record_disk_admission(
+                            crate::disk_prefix_cache::DiskAdmissionReason::UnsupportedLayout,
+                        );
                         telemetry.record_disk_fallback_recompute();
                         tracing::warn!(
                             target: "ax_engine_mlx::prefix_cache",
@@ -5757,6 +5777,7 @@ impl MlxRunner {
                                     error = %e,
                                     "disk prefix-cache payload could not enter the shared FA pool; recomputing",
                                 );
+                                telemetry.record_blocked_restore_error();
                                 telemetry.record_disk_fallback_recompute();
                             }
                         }
@@ -11947,22 +11968,65 @@ mod tests {
         other.record_blocked_trim_failure();
         other.record_blocked_snapshot_incomplete();
         other.record_blocked_media_identity();
+        other.record_blocked_restore_error();
         other.record_blocked_unsupported_layout();
         other.record_disk_store_committed(8192, 2);
         other.record_disk_store_enqueued(4096);
         telemetry.merge_from(other);
 
-        assert_eq!(telemetry.blocked, 6);
+        assert_eq!(telemetry.blocked, 7);
         assert_eq!(telemetry.blocked_policy_disabled, 1);
         assert_eq!(telemetry.blocked_unsupported_layout, 2);
         assert_eq!(telemetry.blocked_trim_failure, 1);
         assert_eq!(telemetry.blocked_snapshot_incomplete, 1);
         assert_eq!(telemetry.blocked_media_identity, 1);
+        assert_eq!(telemetry.blocked_restore_error, 1);
         assert_eq!(telemetry.disk_inserts, 1);
         assert_eq!(telemetry.disk_store_committed, 1);
         assert_eq!(telemetry.disk_store_enqueued, 1);
         assert_eq!(telemetry.disk_insert_bytes, 8192);
         assert_eq!(telemetry.disk_evictions, 2);
+    }
+
+    #[test]
+    fn prefix_cache_telemetry_merges_per_reason_admission_counts() {
+        use crate::disk_prefix_cache::DiskAdmissionReason;
+
+        // The last-write-wins scalar loses all but one reason per merge;
+        // the per-variant counts must not.
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        telemetry.record_disk_admission(DiskAdmissionReason::ArtifactIdentityUnavailable);
+
+        let mut other = MlxPrefixCacheTelemetry::default();
+        other.record_disk_admission(DiskAdmissionReason::PrefixTooShort);
+        other.record_disk_admission(DiskAdmissionReason::PrefixTooShort);
+        telemetry.merge_from(other);
+
+        let artifact_slot = (DiskAdmissionReason::ArtifactIdentityUnavailable.code() - 1) as usize;
+        let short_slot = (DiskAdmissionReason::PrefixTooShort.code() - 1) as usize;
+        assert_eq!(telemetry.disk_admission_reason_counts[artifact_slot], 1);
+        assert_eq!(telemetry.disk_admission_reason_counts[short_slot], 2);
+        assert_eq!(
+            telemetry.disk_admission_reason_code,
+            DiskAdmissionReason::PrefixTooShort.code()
+        );
+        assert_eq!(telemetry.disk_admission_rejected, 3);
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        assert!(decisions.contains(&(
+            "ax_mlx_prefix_cache_disk_reason_artifact_identity_unavailable".into(),
+            1
+        )));
+        assert!(
+            decisions.contains(&("ax_mlx_prefix_cache_disk_reason_prefix_too_short".into(), 2))
+        );
+        // Zero-count reasons stay out of the route map.
+        assert!(
+            !decisions
+                .iter()
+                .any(|(key, _)| key == "ax_mlx_prefix_cache_disk_reason_disabled")
+        );
     }
 
     #[test]
@@ -11976,6 +12040,7 @@ mod tests {
             blocked_trim_failure: 1,
             blocked_snapshot_incomplete: 1,
             blocked_media_identity: 1,
+            blocked_restore_error: 1,
             stores: 4,
             evictions: 5,
             reused_tokens: 16,
@@ -12007,6 +12072,7 @@ mod tests {
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_trim_failure".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_snapshot_incomplete".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_media_identity".into(), 1)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_restore_error".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_evictions".into(), 5)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_bytes_kib".into(), 4)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_native_hits".into(), 11)));
