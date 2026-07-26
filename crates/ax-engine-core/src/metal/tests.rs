@@ -6395,6 +6395,60 @@ fn metal_assets_reject_missing_deferred_kernel() {
 }
 
 #[test]
+fn metal_assets_reject_manifest_kernel_missing_from_tier_constants() {
+    // A manifest kernel that no PHASE1_*_METAL_KERNELS constant lists is
+    // compiled-but-dead: the runtime builds its optional inventory from
+    // those constants, so the kernel can never resolve. This is the drift
+    // class the sg-projection kernels shipped in.
+    let fixture = write_phase1_fixture(
+        MetalBuildStatus::Compiled,
+        Some(|manifest: &mut MetalKernelManifest| {
+            manifest.kernels.push(MetalKernelSpec {
+                name: "orphaned_kernel_not_in_constants".to_string(),
+                tier: MetalKernelTier::Optional,
+                purpose: "wiring-completeness negative fixture".to_string(),
+            });
+        }),
+    );
+
+    let error = MetalKernelAssets::from_build_dir(&fixture.build_dir)
+        .expect_err("assets should reject a manifest kernel absent from tier constants");
+    let MetalRuntimeError::InvalidManifest { message } = error else {
+        panic!("expected invalid manifest error");
+    };
+    assert!(message.contains("orphaned_kernel_not_in_constants"));
+    assert!(message.contains("not in any PHASE1_"));
+
+    fixture.cleanup();
+}
+
+#[test]
+fn phase1_optional_constant_covers_every_manifest_optional_kernel() {
+    // Forward direction of the wiring-completeness invariant, checked
+    // against the real on-disk manifest so the sg-projection regression
+    // cannot recur silently.
+    let manifest_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../metal/phase1-kernels.json");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("manifest readable"))
+            .expect("manifest parses");
+    for kernel in manifest["kernels"].as_array().expect("kernels array") {
+        let name = kernel["name"].as_str().expect("kernel name");
+        let tier = kernel["tier"].as_str().expect("kernel tier");
+        let constant: &[&str] = match tier {
+            "required" => PHASE1_REQUIRED_METAL_KERNELS,
+            "deferred" => PHASE1_DEFERRED_METAL_KERNELS,
+            "optional" => PHASE1_OPTIONAL_METAL_KERNELS,
+            other => panic!("unknown tier {other} for kernel {name}"),
+        };
+        assert!(
+            constant.contains(&name),
+            "manifest kernel {name} (tier {tier}) is missing from its PHASE1 constant"
+        );
+    }
+}
+
+#[test]
 fn metal_assets_reject_non_phase1_block_size_policy() {
     let fixture = write_phase1_fixture(
         MetalBuildStatus::Compiled,

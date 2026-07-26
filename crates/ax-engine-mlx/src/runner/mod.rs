@@ -67,7 +67,7 @@ use crate::kv_block_pool::{
     fa_block_pool_max_blocks_override, fa_kv_block_pool_enabled, fa_kv_block_sharing_enabled,
     fa_native_paged_attention_enabled,
 };
-use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
+use crate::kv_cache::{MlxKVCache, MlxKVCacheSerializeError, MlxKVCacheUsage};
 use crate::model::{
     DecodeProfileSnapshot, DenseFfnFastpathSnapshot, Gemma4MoeProfileSnapshot,
     LinearAttentionProfileSnapshot, ModelConfig, MoeProfileSnapshot, PrefillProfileSnapshot,
@@ -204,6 +204,8 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_UNSUPPORTED_LAYOUT: &str =
     "ax_mlx_prefix_cache_blocked_unsupported_layout";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_TRIM_FAILURE: &str =
     "ax_mlx_prefix_cache_blocked_trim_failure";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_SNAPSHOT_INCOMPLETE: &str =
+    "ax_mlx_prefix_cache_blocked_snapshot_incomplete";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES: &str = "ax_mlx_prefix_cache_stores";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS: &str = "ax_mlx_prefix_cache_evictions";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_REUSED_TOKENS: &str = "ax_mlx_prefix_cache_reused_tokens";
@@ -5383,6 +5385,39 @@ impl MlxRunner {
         }
     }
 
+    /// Per-layer mask of positions that must carry complete linear
+    /// (conv + recurrent) state in a restored prefix snapshot, or `None`
+    /// for families whose layer kinds are classified from weights rather
+    /// than the `full_attention_interval` pattern (nemotron-style): the
+    /// pattern cannot be trusted for them, and their MLP/MoE layers
+    /// legitimately serialize as `EMPTY`.
+    fn restored_linear_layer_requirements(&self) -> Option<Vec<bool>> {
+        self.cfg.linear_attention.as_ref()?;
+        if self.cfg.model_family.starts_with("nemotron") {
+            return None;
+        }
+        Some(
+            (0..self.cfg.layer_count)
+                .map(|idx| self.cfg.is_linear_attention_layer(idx))
+                .collect(),
+        )
+    }
+
+    /// Fail-closed structural check for a snapshot about to be adopted
+    /// from the portable L1 or durable L2 prefix cache. Key equality
+    /// proves token identity, not payload completeness; this rejects
+    /// snapshots whose layer structure cannot represent the claimed
+    /// prefix (all-`EMPTY` layers, truncated layer count, missing
+    /// linear conv/recurrent state).
+    fn verify_restored_prefix_snapshot(
+        &self,
+        cache: &MlxKVCache,
+        expected_tokens: usize,
+    ) -> Result<(), MlxKVCacheSerializeError> {
+        let required = self.restored_linear_layer_requirements();
+        cache.verify_restored_snapshot(self.cfg.layer_count, expected_tokens, required.as_deref())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn restore_reused_prefix_state(
         &self,
@@ -5556,34 +5591,45 @@ impl MlxRunner {
                     // this guard also contains in-process legacy entries.
                 }
                 Ok(restored_cache) => {
-                    let (prepared, pressure_evictions) =
-                        self.prepare_portable_prefix_restore(restored_cache);
-                    telemetry.native_evictions = telemetry
-                        .native_evictions
-                        .saturating_add(pressure_evictions);
-                    match prepared {
-                        Ok(restored_cache) => {
-                            state.cache = restored_cache;
-                            state.prompt_prefix_tokens = reused_tokens.to_vec();
-                            // Only inherit the producer's greedy token when this request
-                            // would compute it too; otherwise leave it unset so the
-                            // consume site resamples with the request's own sampling.
-                            state.cached_prefill_output_token = snapshot
-                                .greedy_prefill_output_token
-                                .filter(|_| prefill_output_token_cacheable(ctx, sampling));
-                            telemetry.hits = telemetry.hits.saturating_add(1);
-                            telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
-                            telemetry.reused_tokens = telemetry
-                                .reused_tokens
-                                .saturating_add(saturating_u32(snapshot.token_count));
-                            return telemetry;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                target: "ax_engine_mlx::prefix_cache",
-                                error = %e,
-                                "L1 prefix-cache payload could not enter the shared FA pool; treating as miss",
-                            );
+                    if let Err(e) =
+                        self.verify_restored_prefix_snapshot(&restored_cache, reused_tokens.len())
+                    {
+                        telemetry.record_blocked_snapshot_incomplete();
+                        tracing::warn!(
+                            target: "ax_engine_mlx::prefix_cache",
+                            error = %e,
+                            "L1 prefix-cache payload is structurally incomplete; treating as miss",
+                        );
+                    } else {
+                        let (prepared, pressure_evictions) =
+                            self.prepare_portable_prefix_restore(restored_cache);
+                        telemetry.native_evictions = telemetry
+                            .native_evictions
+                            .saturating_add(pressure_evictions);
+                        match prepared {
+                            Ok(restored_cache) => {
+                                state.cache = restored_cache;
+                                state.prompt_prefix_tokens = reused_tokens.to_vec();
+                                // Only inherit the producer's greedy token when this request
+                                // would compute it too; otherwise leave it unset so the
+                                // consume site resamples with the request's own sampling.
+                                state.cached_prefill_output_token = snapshot
+                                    .greedy_prefill_output_token
+                                    .filter(|_| prefill_output_token_cacheable(ctx, sampling));
+                                telemetry.hits = telemetry.hits.saturating_add(1);
+                                telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
+                                telemetry.reused_tokens = telemetry
+                                    .reused_tokens
+                                    .saturating_add(saturating_u32(snapshot.token_count));
+                                return telemetry;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "ax_engine_mlx::prefix_cache",
+                                    error = %e,
+                                    "L1 prefix-cache payload could not enter the shared FA pool; treating as miss",
+                                );
+                            }
                         }
                     }
                 }
@@ -5645,6 +5691,17 @@ impl MlxRunner {
                             target: "ax_engine_mlx::prefix_cache",
                             "disk prefix-cache payload contains slot-ordered rotating KV; \
                              treating as miss and recomputing ordered prefix state",
+                        );
+                    } else if let Err(e) =
+                        self.verify_restored_prefix_snapshot(&restored.cache, reused_tokens.len())
+                    {
+                        telemetry.record_blocked_snapshot_incomplete();
+                        telemetry.record_disk_fallback_recompute();
+                        tracing::warn!(
+                            target: "ax_engine_mlx::prefix_cache",
+                            error = %e,
+                            "disk prefix-cache payload is structurally incomplete; \
+                             treating as miss and recomputing",
                         );
                     } else {
                         let (prepared, pressure_evictions) =
@@ -11793,15 +11850,17 @@ mod tests {
 
         let mut other = MlxPrefixCacheTelemetry::default();
         other.record_blocked_trim_failure();
+        other.record_blocked_snapshot_incomplete();
         other.record_blocked_unsupported_layout();
         other.record_disk_store_committed(8192, 2);
         other.record_disk_store_enqueued(4096);
         telemetry.merge_from(other);
 
-        assert_eq!(telemetry.blocked, 4);
+        assert_eq!(telemetry.blocked, 5);
         assert_eq!(telemetry.blocked_policy_disabled, 1);
         assert_eq!(telemetry.blocked_unsupported_layout, 2);
         assert_eq!(telemetry.blocked_trim_failure, 1);
+        assert_eq!(telemetry.blocked_snapshot_incomplete, 1);
         assert_eq!(telemetry.disk_inserts, 1);
         assert_eq!(telemetry.disk_store_committed, 1);
         assert_eq!(telemetry.disk_store_enqueued, 1);
@@ -11818,6 +11877,7 @@ mod tests {
             blocked_policy_disabled: 1,
             blocked_unsupported_layout: 1,
             blocked_trim_failure: 1,
+            blocked_snapshot_incomplete: 1,
             stores: 4,
             evictions: 5,
             reused_tokens: 16,
@@ -11847,6 +11907,7 @@ mod tests {
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_policy_disabled".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_unsupported_layout".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_trim_failure".into(), 1)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_snapshot_incomplete".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_evictions".into(), 5)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_bytes_kib".into(), 4)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_native_hits".into(), 11)));

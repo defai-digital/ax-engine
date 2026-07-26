@@ -695,6 +695,18 @@ pub enum MlxKVCacheSerializeError {
     UnknownLayerKind(u8),
     /// Tensor metadata declared an unsupported rank.
     BadShape(usize),
+    /// Restored payload carries a different layer count than the model
+    /// it is being adopted for.
+    LayerCountMismatch { expected: usize, actual: usize },
+    /// Restored logical `seq_len` disagrees with the token count the
+    /// caller is adopting the snapshot for.
+    TokenCountMismatch { expected: usize, actual: usize },
+    /// `seq_len > 0` but every layer deserialized as `EMPTY` — the
+    /// payload claims a prefix it holds no state for.
+    EmptySnapshot,
+    /// A layer the model requires to carry linear-attention state is
+    /// missing its conv or recurrent tensor.
+    IncompleteLinearLayer(usize),
 }
 
 impl std::fmt::Display for MlxKVCacheSerializeError {
@@ -706,6 +718,21 @@ impl std::fmt::Display for MlxKVCacheSerializeError {
             Self::UnknownDtype(t) => write!(f, "kv-cache payload has unknown dtype tag {t}"),
             Self::UnknownLayerKind(t) => write!(f, "kv-cache payload has unknown layer kind {t}"),
             Self::BadShape(n) => write!(f, "kv-cache payload has bad tensor rank {n}"),
+            Self::LayerCountMismatch { expected, actual } => write!(
+                f,
+                "kv-cache payload has {actual} layers but the model has {expected}"
+            ),
+            Self::TokenCountMismatch { expected, actual } => write!(
+                f,
+                "kv-cache payload holds {actual} tokens but {expected} were requested"
+            ),
+            Self::EmptySnapshot => {
+                write!(f, "kv-cache payload claims tokens but every layer is empty")
+            }
+            Self::IncompleteLinearLayer(idx) => write!(
+                f,
+                "kv-cache payload is missing linear conv/recurrent state for layer {idx}"
+            ),
         }
     }
 }
@@ -1830,6 +1857,65 @@ impl MlxKVCache {
         }
 
         Ok(cache)
+    }
+
+    /// Structural completeness check for a snapshot restored from the
+    /// portable L1 / durable L2 prefix cache. The wire format cannot
+    /// express which layers the model requires, so a payload can
+    /// deserialize cleanly while being structurally incomplete (e.g.
+    /// every layer `EMPTY`, or a truncated layer count); adopting such a
+    /// snapshot silently produces wrong generation. Fail closed instead.
+    ///
+    /// - `expected_layer_count` is the runner's model layer count; the
+    ///   payload's own header value is not trusted.
+    /// - `expected_tokens` is the prefix length the caller is adopting.
+    /// - `required_linear_layers` marks positions that must carry both
+    ///   conv and recurrent state. Pass `None` for families whose layer
+    ///   kinds cannot be derived from config alone (weight-driven
+    ///   classification), where MLP/MoE layers legitimately serialize
+    ///   as `EMPTY`.
+    pub fn verify_restored_snapshot(
+        &self,
+        expected_layer_count: usize,
+        expected_tokens: usize,
+        required_linear_layers: Option<&[bool]>,
+    ) -> Result<(), MlxKVCacheSerializeError> {
+        if self.layers.len() != expected_layer_count {
+            return Err(MlxKVCacheSerializeError::LayerCountMismatch {
+                expected: expected_layer_count,
+                actual: self.layers.len(),
+            });
+        }
+        if self.seq_len != expected_tokens {
+            return Err(MlxKVCacheSerializeError::TokenCountMismatch {
+                expected: expected_tokens,
+                actual: self.seq_len,
+            });
+        }
+        if expected_tokens == 0 {
+            return Ok(());
+        }
+        let layer_has_state = |idx: usize| {
+            self.layers[idx].is_some()
+                || self.glm_mla_layers[idx].is_some()
+                || self.linear_layers[idx].conv_state.is_some()
+                || self.linear_layers[idx].recurrent_state.is_some()
+        };
+        if !(0..self.layers.len()).any(layer_has_state) {
+            return Err(MlxKVCacheSerializeError::EmptySnapshot);
+        }
+        if let Some(required) = required_linear_layers {
+            for (idx, required_linear) in required.iter().enumerate().take(self.layers.len()) {
+                if !*required_linear {
+                    continue;
+                }
+                let state = &self.linear_layers[idx];
+                if state.conv_state.is_none() || state.recurrent_state.is_none() {
+                    return Err(MlxKVCacheSerializeError::IncompleteLinearLayer(idx));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Append new K/V tokens for `layer` and return the full logical K/V for SDPA.
@@ -4291,6 +4377,79 @@ mod tests {
             result,
             Err(MlxKVCacheSerializeError::UnexpectedEof)
         ));
+    }
+
+    #[test]
+    fn verify_restored_snapshot_rejects_all_empty_layers() {
+        let mut cache = MlxKVCache::new_contiguous(2);
+        cache.set_seq_len(8);
+        // Round-trip to prove the wire format itself accepts this payload;
+        // the structural check is the only thing standing between it and
+        // adoption as a valid 8-token prefix.
+        let restored = MlxKVCache::try_deserialize_from_bytes(&cache.serialize_to_bytes()).unwrap();
+        assert!(matches!(
+            restored.verify_restored_snapshot(2, 8, None),
+            Err(MlxKVCacheSerializeError::EmptySnapshot)
+        ));
+    }
+
+    #[test]
+    fn verify_restored_snapshot_rejects_layer_count_mismatch() {
+        let mut cache = MlxKVCache::new_contiguous(2);
+        cache.set_seq_len(8);
+        let restored = MlxKVCache::try_deserialize_from_bytes(&cache.serialize_to_bytes()).unwrap();
+        assert!(matches!(
+            restored.verify_restored_snapshot(4, 8, None),
+            Err(MlxKVCacheSerializeError::LayerCountMismatch {
+                expected: 4,
+                actual: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn verify_restored_snapshot_rejects_token_count_mismatch() {
+        let mut cache = MlxKVCache::new_contiguous(2);
+        cache.set_seq_len(8);
+        assert!(matches!(
+            cache.verify_restored_snapshot(2, 4, None),
+            Err(MlxKVCacheSerializeError::TokenCountMismatch {
+                expected: 4,
+                actual: 8
+            })
+        ));
+    }
+
+    #[test]
+    fn verify_restored_snapshot_rejects_one_sided_linear_state() {
+        let mut cache = MlxKVCache::new_contiguous(2);
+        cache.set_seq_len(8);
+        // Forge a payload whose linear layer carries conv state but no
+        // recurrent state — the serializer writes it, the reader accepts
+        // it, and only the completeness check rejects it.
+        cache.linear_layers[0].conv_state = Some(MlxArray::from_f32_slice(&[0.0]));
+        let restored = MlxKVCache::try_deserialize_from_bytes(&cache.serialize_to_bytes()).unwrap();
+        assert!(matches!(
+            restored.verify_restored_snapshot(2, 8, Some(&[true, false])),
+            Err(MlxKVCacheSerializeError::IncompleteLinearLayer(0))
+        ));
+    }
+
+    #[test]
+    fn verify_restored_snapshot_accepts_complete_linear_snapshot() {
+        let mut cache = MlxKVCache::new_contiguous(2);
+        cache.set_seq_len(8);
+        cache.set_linear_state(
+            0,
+            MlxArray::from_f32_slice(&[0.0]),
+            MlxArray::from_f32_slice(&[0.0]),
+        );
+        let restored = MlxKVCache::try_deserialize_from_bytes(&cache.serialize_to_bytes()).unwrap();
+        assert!(
+            restored
+                .verify_restored_snapshot(2, 8, Some(&[true, false]))
+                .is_ok()
+        );
     }
 
     #[test]

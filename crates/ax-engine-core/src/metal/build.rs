@@ -891,6 +891,38 @@ fn validate_phase1_manifest(manifest: &MetalKernelManifest) -> Result<(), MetalR
         }
     }
 
+    // Wiring completeness: every manifest kernel must be reachable through
+    // exactly one of the tier constants, or the runtime can never resolve
+    // it — a compiled-but-dead kernel that no other validation sees. (The
+    // five `decode_logits_projection_*sg*` kernels shipped in exactly that
+    // state: declared in the shader and manifest, absent from
+    // `PHASE1_OPTIONAL_METAL_KERNELS`, unreachable even with
+    // `AX_MLX_GEMV_SIMDGROUP_MATRIX=1`.)
+    for kernel in &manifest.kernels {
+        let name = kernel.name.as_str();
+        let tier_memberships = usize::from(PHASE1_REQUIRED_METAL_KERNELS.contains(&name))
+            + usize::from(PHASE1_DEFERRED_METAL_KERNELS.contains(&name))
+            + usize::from(PHASE1_OPTIONAL_METAL_KERNELS.contains(&name));
+        match tier_memberships {
+            0 => {
+                return Err(MetalRuntimeError::InvalidManifest {
+                    message: format!(
+                        "kernel {name} is in the manifest but not in any PHASE1_*_METAL_KERNELS \
+                         constant; the runtime can never resolve it"
+                    ),
+                });
+            }
+            1 => {}
+            _ => {
+                return Err(MetalRuntimeError::InvalidManifest {
+                    message: format!(
+                        "kernel {name} appears in more than one PHASE1_*_METAL_KERNELS constant"
+                    ),
+                });
+            }
+        }
+    }
+
     for kernel_name in PHASE1_REQUIRED_METAL_KERNELS {
         let Some(kernel) = manifest
             .kernels

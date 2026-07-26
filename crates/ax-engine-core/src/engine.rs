@@ -94,6 +94,12 @@ pub struct EngineCore {
     /// Default generation paradigm applied to new submissions (ADR-038).
     generation_kind: GenerationKind,
     next_step_id: u64,
+    /// Consecutive runner panics contained at the step boundary. Reset on
+    /// every successful dispatch; at `RUNNER_PANIC_RETIREMENT_THRESHOLD`
+    /// the panic is re-raised so the service-level catch retires the
+    /// worker (a Metal/MLX state that keeps failing is not trustworthy
+    /// enough to keep serving).
+    consecutive_runner_panics: u32,
     // Per-step scratch buffers — cleared and reused each step to avoid heap churn.
     scratch_seen_request_ids: HashSet<RequestId>,
     scratch_update_index: HashMap<RequestId, usize>,
@@ -171,6 +177,7 @@ impl EngineCore {
             max_inflight_prefill_requests: 0,
             generation_kind: GenerationKind::Autoregressive,
             next_step_id: 0,
+            consecutive_runner_panics: 0,
             scratch_seen_request_ids: HashSet::with_capacity(32),
             scratch_update_index: HashMap::with_capacity(32),
             scratch_logits_index: HashMap::with_capacity(32),
@@ -856,7 +863,48 @@ impl EngineCore {
         );
         let runner_input = self.build_runner_input(&execution_batch)?;
         let runner_started = Instant::now();
-        let runner_output = self.runner.run(runner_input);
+        // Contain runner panics at the step boundary (P0-C stage 1). MLX
+        // turns runtime failures into panics; without this catch, a single
+        // eval failure unwinds through the worker loop and retires the
+        // whole model worker. Catching here routes the failure through the
+        // caller's existing recovery arm — the scheduled requests are
+        // failed with a structured error and their KV blocks and
+        // runner-side state are released via `drain_terminal_cleanup` /
+        // `release_request_state` — while requests not in this step and
+        // the worker itself keep running. Repeated panics still retire the
+        // worker via the consecutive-failure threshold, and
+        // `AX_DISABLE_STEP_PANIC_CONTAINMENT=1` restores the historical
+        // unwind-to-retirement behavior unconditionally.
+        let step_id = execution_batch.step_id;
+        let runner_output = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.runner.run(runner_input)
+        })) {
+            Ok(output) => {
+                self.consecutive_runner_panics = 0;
+                output
+            }
+            Err(payload) => {
+                self.consecutive_runner_panics = self.consecutive_runner_panics.saturating_add(1);
+                let message = runner_panic_payload_message(payload.as_ref()).to_string();
+                if step_panic_containment_disabled()
+                    || self.consecutive_runner_panics >= RUNNER_PANIC_RETIREMENT_THRESHOLD
+                {
+                    error!(
+                        panic = %message,
+                        consecutive_runner_panics = self.consecutive_runner_panics,
+                        "runner panic threshold reached (or containment disabled); \
+                         re-raising so the worker retires"
+                    );
+                    std::panic::resume_unwind(payload);
+                }
+                error!(
+                    panic = %message,
+                    consecutive_runner_panics = self.consecutive_runner_panics,
+                    "runner panicked; failing this step's scheduled requests and continuing"
+                );
+                return Err(EngineCoreError::RunnerPanicked { step_id, message });
+            }
+        };
         let runner_time_us = runner_started.elapsed().as_micros() as u64;
         // Contract checks run unconditionally: a scheduled request whose
         // update never arrives stays `Running` forever and leaks its KV
@@ -1562,7 +1610,30 @@ pub struct EngineStepOutcome {
     pub sampled_tokens: Vec<SampledToken>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+/// Consecutive contained runner panics after which the panic is re-raised
+/// so the service-level catch retires the worker. A device that fails
+/// every step is not recoverable by per-step containment; bounded retries
+/// prevent an infinite fail-requests-and-continue loop.
+const RUNNER_PANIC_RETIREMENT_THRESHOLD: u32 = 3;
+
+/// Kill switch: `AX_DISABLE_STEP_PANIC_CONTAINMENT=1` restores the
+/// historical behavior where any runner panic unwinds through the worker
+/// loop and retires the model worker.
+fn step_panic_containment_disabled() -> bool {
+    std::env::var("AX_DISABLE_STEP_PANIC_CONTAINMENT").is_ok_and(|value| value == "1")
+}
+
+fn runner_panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.as_str()
+    } else {
+        "<non-string panic payload>"
+    }
+}
+
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum EngineCoreError {
     #[error("invalid request submission {request_id:?}: {message}")]
     InvalidRequestSubmission {
@@ -1580,6 +1651,8 @@ pub enum EngineCoreError {
     },
     #[error("step ID counter overflowed")]
     StepIdOverflow,
+    #[error("execution runner panicked at {step_id:?}: {message}")]
+    RunnerPanicked { step_id: StepId, message: String },
 }
 
 #[cfg(test)]
@@ -1846,6 +1919,26 @@ mod tests {
                 route_metadata: input.execution_batch.route_metadata.clone(),
                 execution_status: crate::runner::ExecutionStatus::Failed,
             }
+        }
+    }
+
+    /// Panics for the first `remaining` dispatches, then behaves like
+    /// `DeterministicRunner` — models an MLX eval failure that clears
+    /// (first case) or persists (remaining = u32::MAX).
+    #[derive(Debug)]
+    struct PanicNTimesRunner {
+        remaining: std::sync::atomic::AtomicU32,
+    }
+
+    impl ExecutionRunner for PanicNTimesRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            let remaining = self.remaining.load(std::sync::atomic::Ordering::SeqCst);
+            if remaining > 0 {
+                self.remaining
+                    .store(remaining - 1, std::sync::atomic::Ordering::SeqCst);
+                panic!("simulated MLX eval failure");
+            }
+            DeterministicRunner.run(input)
         }
     }
 
@@ -2263,6 +2356,67 @@ mod tests {
 
         assert!(outcome.metrics.runner_time_us >= 1_000);
         assert!(outcome.metrics.cpu_time_us >= outcome.metrics.runner_time_us);
+    }
+
+    #[test]
+    fn runner_panic_is_contained_to_the_step_and_engine_survives() {
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+            PanicNTimesRunner {
+                remaining: std::sync::atomic::AtomicU32::new(1),
+            },
+            DeterministicSampler,
+        );
+        engine.submit(make_submission(1, 1, 1)).unwrap();
+
+        let error = engine
+            .step(8, true)
+            .expect_err("runner panic must surface as a step error, not unwind");
+        assert!(matches!(error, EngineCoreError::RunnerPanicked { .. }));
+        // The scheduled request was failed with a structured error.
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(1))
+                .unwrap()
+                .state,
+            RequestState::Failed
+        );
+
+        // The engine (worker) remains serviceable for later submissions.
+        engine.submit(make_submission(2, 2, 1)).unwrap();
+        let outcome = engine
+            .step(8, true)
+            .expect("engine must recover after a contained runner panic");
+        assert_eq!(outcome.schedule_plan.selected_requests, vec![RequestId(2)]);
+    }
+
+    #[test]
+    fn consecutive_runner_panics_reraise_at_threshold() {
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+            PanicNTimesRunner {
+                remaining: std::sync::atomic::AtomicU32::new(u32::MAX),
+            },
+            DeterministicSampler,
+        );
+
+        for round in 1..RUNNER_PANIC_RETIREMENT_THRESHOLD as u64 {
+            engine.submit(make_submission(round, round, 1)).unwrap();
+            let error = engine
+                .step(8, true)
+                .expect_err("contained panic surfaces as a step error");
+            assert!(matches!(error, EngineCoreError::RunnerPanicked { .. }));
+        }
+
+        engine.submit(make_submission(99, 99, 1)).unwrap();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = engine.step(8, true);
+        }));
+        assert!(
+            unwound.is_err(),
+            "panic at the consecutive-failure threshold must re-raise so the worker retires"
+        );
     }
 
     #[test]

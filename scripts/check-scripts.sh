@@ -180,6 +180,8 @@ bash scripts/check-qa.sh
   scripts/test_check_direct_mlx_hotpath_probe_artifact.py \
   scripts/test_check_direct_mlx_no_production_route.py \
   scripts/test_check_mlx_fastpath_env_controls.py \
+  scripts/check_mlx_eval_sites.py \
+  scripts/test_check_mlx_eval_sites.py \
   scripts/test_check_mlx_version.py \
   scripts/repair_mlx_metallib_wheel.py \
   scripts/test_repair_mlx_metallib_wheel.py \
@@ -270,6 +272,7 @@ bash scripts/check-qa.sh
   scripts/test_check_direct_mlx_hotpath_probe_artifact.py \
   scripts/test_check_direct_mlx_no_production_route.py \
   scripts/test_check_mlx_fastpath_env_controls.py \
+  scripts/test_check_mlx_eval_sites.py \
   scripts/test_check_mlx_version.py \
   scripts/test_repair_mlx_metallib_wheel.py \
   scripts/test_build_pypi_wheel_minos.py \
@@ -300,6 +303,7 @@ bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_decode_hot_path_kernel_admission.py
 "$PYTHON_BIN" scripts/check_direct_mlx_no_production_route.py
 "$PYTHON_BIN" scripts/check_mlx_fastpath_env_controls.py
+"$PYTHON_BIN" scripts/check_mlx_eval_sites.py
 "$PYTHON_BIN" scripts/check_linear_attention_pack_promotion.py
 "$PYTHON_BIN" scripts/check_qwen_post_input_route_promotion.py
 "$PYTHON_BIN" scripts/check_mla_prefix_restore_evidence.py
