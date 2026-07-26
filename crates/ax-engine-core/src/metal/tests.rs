@@ -11228,3 +11228,278 @@ fn differential_decode_projection_batched_matches_cpu_dot_product() {
 
     let _ = fs::remove_dir_all(output_dir);
 }
+
+/// The simdgroup-matrix projection kernels (sg family) vs the same CPU dot
+/// product, at row counts straddling the 8-row tile boundary and widths
+/// exercising the K-remainder scalar loop. Pipelines are resolved directly
+/// from the dispatch plan, bypassing the `AX_MLX_GEMV_SIMDGROUP_MATRIX`
+/// gate: correctness must hold whenever the kernels exist, not only when
+/// the fast path is enabled. Completes CPU-oracle coverage of the full
+/// 12-kernel projection family.
+#[cfg(target_os = "macos")]
+#[test]
+fn differential_decode_projection_sg_matches_cpu_dot_product() {
+    use proptest::prelude::{Just, Strategy};
+
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+    let device = Device::system_default().expect("Metal device should exist");
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let slots = &*PROJECTION_SLOTS;
+    let variants: Vec<(&str, usize, NativeTensorDataType, bool)> = [
+        (
+            "decode_logits_projection_sg_f32",
+            plan.projection_sg_f32,
+            NativeTensorDataType::F32,
+            false,
+        ),
+        (
+            "decode_logits_projection_sg_f16",
+            plan.projection_sg_f16,
+            NativeTensorDataType::F16,
+            false,
+        ),
+        (
+            "decode_logits_projection_sg_bf16",
+            plan.projection_sg_bf16,
+            NativeTensorDataType::Bf16,
+            false,
+        ),
+        (
+            "decode_logits_projection_batched_sg_f16",
+            plan.batched_projection_sg_f16,
+            NativeTensorDataType::F16,
+            true,
+        ),
+        (
+            "decode_logits_projection_batched_sg_bf16",
+            plan.batched_projection_sg_bf16,
+            NativeTensorDataType::Bf16,
+            true,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, index, dtype, batched)| index.map(|index| (name, index, dtype, batched)))
+    .collect();
+    assert_eq!(
+        variants.len(),
+        5,
+        "all five sg projection kernels must resolve (P0-B wiring)"
+    );
+
+    let strategy =
+        (1_usize..=17, 1_usize..=3, 1_usize..=2).prop_flat_map(|(rows, width_factor, tokens)| {
+            // Not a multiple of the 8-wide K tile, so the remainder loop runs.
+            let cols = width_factor * 29 + 5;
+            let stride = cols + 8;
+            (
+                Just(rows),
+                Just(cols),
+                Just(tokens),
+                Just(stride),
+                proptest::collection::vec(-4.0_f32..4.0, tokens * stride),
+                proptest::collection::vec(-4.0_f32..4.0, rows * cols),
+            )
+        });
+    run_differential_cases(
+        strategy,
+        16,
+        |(rows, cols, tokens, stride, hidden, weights)| {
+            let (rows, cols, tokens, stride) = (*rows, *cols, *tokens, *stride);
+            for (kernel_name, pipeline_index, dtype, batched) in &variants {
+                let Ok(pipeline) = find_optional_pipeline_handle_by_index(
+                    &bringup.state,
+                    &bringup.metallib.path,
+                    kernel_name,
+                    *pipeline_index,
+                ) else {
+                    continue;
+                };
+                let (weight_buf, oracle_weights) = match dtype {
+                    NativeTensorDataType::F32 => (
+                        new_shared_buffer_with_data(&device, weights),
+                        weights.clone(),
+                    ),
+                    NativeTensorDataType::F16 => {
+                        let (bits, rounded): (Vec<u16>, Vec<f32>) = weights
+                            .iter()
+                            .map(|weight| {
+                                let bits = encode_f32_to_f16_bits(*weight);
+                                (bits, decode_f16_to_f32(bits))
+                            })
+                            .unzip();
+                        (new_shared_buffer_with_data(&device, &bits), rounded)
+                    }
+                    _ => {
+                        let (bits, rounded): (Vec<u16>, Vec<f32>) = weights
+                            .iter()
+                            .map(|weight| {
+                                let bits = (weight.to_bits() >> 16) as u16;
+                                (bits, f32::from_bits(u32::from(bits) << 16))
+                            })
+                            .unzip();
+                        (new_shared_buffer_with_data(&device, &bits), rounded)
+                    }
+                };
+                let token_count = if *batched { tokens } else { 1 };
+                let flat_count = token_count * rows;
+                let gpu = autoreleasepool(|| {
+                    let hidden_buf = new_shared_buffer_with_data(&device, hidden);
+                    let output_buf = new_zeroed_shared_buffer::<f32>(&device, flat_count as u32);
+                    let command_buffer = bringup.state.command_queue.new_command_buffer();
+                    let encoder = command_buffer.new_compute_command_encoder();
+                    encoder.set_compute_pipeline_state(&pipeline.pipeline);
+                    encoder.set_buffer(slots.input, Some(&hidden_buf), 0);
+                    encoder.set_buffer(slots.weights, Some(&weight_buf), 0);
+                    encoder.set_buffer(slots.output, Some(&output_buf), 0);
+                    let tg_per_token = sg_projection_tg_count(rows);
+                    if *batched {
+                        set_batched_logits_projection_dispatch_params(
+                            encoder,
+                            slots.params,
+                            token_count as u32,
+                            rows as u32,
+                            cols as u32,
+                            cols as u32,
+                            stride as u32,
+                        );
+                        encoder.dispatch_thread_groups(
+                            MTLSize::new(tg_per_token * token_count as u64, 1, 1),
+                            MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                        );
+                    } else {
+                        set_logits_projection_dispatch_params(
+                            encoder,
+                            slots.params,
+                            rows as u32,
+                            cols as u32,
+                            cols as u32,
+                        );
+                        encoder.dispatch_thread_groups(
+                            MTLSize::new(tg_per_token, 1, 1),
+                            MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                        );
+                    }
+                    encoder.end_encoding();
+                    command_buffer.commit();
+                    command_buffer.wait_until_completed();
+                    read_shared_buffer_prefix(&output_buf, flat_count as u32)
+                });
+                for (flat, gpu_value) in gpu.iter().enumerate() {
+                    let token = flat / rows;
+                    let row = flat % rows;
+                    // Single-token kernels read hidden from offset zero.
+                    let hidden_base = if *batched { token * stride } else { 0 };
+                    let expected: f32 = oracle_weights[row * cols..(row + 1) * cols]
+                        .iter()
+                        .zip(hidden[hidden_base..hidden_base + cols].iter())
+                        .map(|(weight, value)| weight * value)
+                        .sum();
+                    differential_close_rel(
+                        *gpu_value,
+                        expected,
+                        1e-3,
+                        &format!("{kernel_name} token {token} row {row} of {rows}x{cols}"),
+                    )?;
+                }
+            }
+            Ok(())
+        },
+    );
+
+    let _ = fs::remove_dir_all(output_dir);
+}
+
+/// Throughput comparison: simd-sum GEMV vs simdgroup-matrix GEMV at a
+/// production-like decode logits projection shape (f16 weights). Closes the
+/// P0-B follow-up question of whether the repaired sg fast path deserves
+/// default-on.
+///
+/// Opt-in (`#[ignore]`): run with
+///   `cargo test -p ax-engine-core --release decode_projection_sg_vs_simple_throughput -- --ignored --nocapture`
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore]
+fn decode_projection_sg_vs_simple_throughput() {
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        eprintln!("sg throughput: bringup unavailable, skipping");
+        return;
+    };
+    let device = Device::system_default().expect("Metal device should exist");
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let slots = &*PROJECTION_SLOTS;
+
+    // Qwen-like decode logits GEMV: 32k vocab rows x 2048 hidden, f16.
+    let rows: usize = 32_000;
+    let cols: usize = 2_048;
+    let weights: Vec<u16> = (0..rows * cols)
+        .map(|index| encode_f32_to_f16_bits(((index % 97) as f32 - 48.0) / 48.0))
+        .collect();
+    let hidden: Vec<f32> = (0..cols)
+        .map(|index| ((index % 89) as f32 - 44.0) / 44.0)
+        .collect();
+    let weight_buf = new_shared_buffer_with_data(&device, &weights);
+    let hidden_buf = new_shared_buffer_with_data(&device, &hidden);
+    let output_buf = new_zeroed_shared_buffer::<f32>(&device, rows as u32);
+    let bytes_per_gemv = rows * cols * 2;
+
+    let measure = |kernel_name: &str, pipeline_index: usize, sg: bool| -> Option<f64> {
+        let pipeline = find_optional_pipeline_handle_by_index(
+            &bringup.state,
+            &bringup.metallib.path,
+            kernel_name,
+            pipeline_index,
+        )
+        .ok()?;
+        let dispatch = |reps: usize| {
+            autoreleasepool(|| {
+                let command_buffer = bringup.state.command_queue.new_command_buffer();
+                let encoder = command_buffer.new_compute_command_encoder();
+                for _ in 0..reps {
+                    encoder.set_compute_pipeline_state(&pipeline.pipeline);
+                    encoder.set_buffer(slots.input, Some(&hidden_buf), 0);
+                    encoder.set_buffer(slots.weights, Some(&weight_buf), 0);
+                    encoder.set_buffer(slots.output, Some(&output_buf), 0);
+                    set_logits_projection_dispatch_params(
+                        encoder,
+                        slots.params,
+                        rows as u32,
+                        cols as u32,
+                        cols as u32,
+                    );
+                    if sg {
+                        encoder.dispatch_thread_groups(
+                            MTLSize::new(sg_projection_tg_count(rows), 1, 1),
+                            MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                        );
+                    } else {
+                        encoder.dispatch_threads(
+                            MTLSize::new(projection_dispatch_threads(rows), 1, 1),
+                            MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                        );
+                    }
+                }
+                encoder.end_encoding();
+                command_buffer.commit();
+                command_buffer.wait_until_completed();
+            });
+        };
+        dispatch(3); // warm the pipeline and caches
+        let reps = 50;
+        let started = std::time::Instant::now();
+        dispatch(reps);
+        let seconds = started.elapsed().as_secs_f64();
+        Some(bytes_per_gemv as f64 * reps as f64 / seconds / 1e9)
+    };
+
+    let simple = plan
+        .projection_kernel(NativeTensorDataType::F16)
+        .and_then(|(name, index)| measure(name, index, false));
+    let sg = plan
+        .projection_sg_f16
+        .and_then(|index| measure("decode_logits_projection_sg_f16", index, true));
+    eprintln!("decode logits GEMV f16 {rows}x{cols}: simple {simple:?} GB/s, sg {sg:?} GB/s");
+
+    let _ = fs::remove_dir_all(output_dir);
+}
