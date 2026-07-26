@@ -1414,6 +1414,30 @@ impl MlxRunner {
             } else {
                 None
             };
+        // Load-time Metal kernel warm-up (P1-B): compile the decode-shape
+        // gated-delta / conv1d specializations now so the lazy MSL →
+        // pipeline compile does not land inside the first request. Only
+        // interval-classified linear families run these kernels; nemotron
+        // routes through its own mamba path. Best-effort by design.
+        if let Some(linear) = cfg.linear_attention.as_ref()
+            && !cfg.model_family.starts_with("nemotron")
+            && linear_attention_chunk_cap.is_some()
+            && crate::fastpath::load_kernel_warmup_enabled()
+        {
+            let warm_started = std::time::Instant::now();
+            match crate::linear_attention_ops::warm_gated_delta_decode_kernels(linear) {
+                Ok(()) => tracing::info!(
+                    target: "ax_engine_mlx::runner",
+                    elapsed_ms = warm_started.elapsed().as_millis() as u64,
+                    "warmed linear-attention Metal kernels at model load"
+                ),
+                Err(error) => tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    %error,
+                    "linear-attention kernel warm-up failed; first request pays the lazy compile"
+                ),
+            }
+        }
         let clamp_to_linear_cap = |chunk: usize| -> usize {
             match linear_attention_chunk_cap {
                 Some(cap) => chunk.min(cap).max(1),

@@ -70,6 +70,57 @@ pub(crate) fn compute_gated_delta_beta(b_raw: &MlxArray) -> MlxArray {
     astype(&beta_act, MlxDtype::Float32, None)
 }
 
+/// Compile the linear-attention Metal kernel specializations a decode
+/// step will hit, at production head dimensions, before the first
+/// request arrives. MLX builds each MSL→pipeline specialization lazily
+/// on the first eval that materializes it, so without this the compile
+/// stall lands inside the first request's latency. Shapes mirror the
+/// decode path exactly (batch 1, seq 1, cfg head dims) because template
+/// specialization is shape-keyed — warming a different shape compiles a
+/// different pipeline. Best-effort by contract: the caller logs and
+/// continues on `Err`.
+pub fn warm_gated_delta_decode_kernels(cfg: &LinearAttentionConfig) -> Result<(), String> {
+    // Mirror the fused kernel's own precondition: configs below it never
+    // dispatch the custom kernel in production either, so there is
+    // nothing to warm.
+    if !cfg.key_head_dim.is_multiple_of(32) {
+        return Ok(());
+    }
+    let key_heads = cfg.num_key_heads as i32;
+    let key_dim = cfg.key_head_dim as i32;
+    let value_heads = cfg.num_value_heads as i32;
+    let value_dim = cfg.value_head_dim as i32;
+
+    let q = zeros(&[1, 1, key_heads, key_dim], MlxDtype::Float32, None);
+    let k = zeros(&[1, 1, key_heads, key_dim], MlxDtype::Float32, None);
+    let v = zeros(&[1, 1, value_heads, value_dim], MlxDtype::Float32, None);
+    let a_log = zeros(&[value_heads], MlxDtype::Float32, None);
+    let a_raw = zeros(&[1, 1, value_heads], MlxDtype::Float32, None);
+    let dt_bias = zeros(&[value_heads], MlxDtype::Float32, None);
+    let b_raw = zeros(&[1, 1, value_heads], MlxDtype::Float32, None);
+    let state = zeros(
+        &[1, value_heads, value_dim, key_dim],
+        MlxDtype::Float32,
+        None,
+    );
+    let (y, new_state) = gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+    mlx_sys::try_eval(&[&y, &new_state])
+        .map_err(|error| format!("gated-delta decode warm-up failed: {error}"))?;
+
+    // The per-token conv1d + tail update is the other custom path a
+    // decode step touches every token.
+    let qkv = zeros(&[1, 1, cfg.conv_dim() as i32], MlxDtype::Float32, None);
+    let conv_weight = zeros(
+        &[cfg.conv_dim() as i32, cfg.conv_kernel_dim as i32, 1],
+        MlxDtype::Float32,
+        None,
+    );
+    let (conv_out, conv_tail) = linear_attention_conv1d(cfg, &qkv, &conv_weight, None);
+    mlx_sys::try_eval(&[&conv_out, &conv_tail])
+        .map_err(|error| format!("linear-attention conv1d warm-up failed: {error}"))?;
+    Ok(())
+}
+
 /// Apply Qwen3.5's depthwise conv over `[cached_tail, qkv]`.
 ///
 /// Inputs/outputs follow mlx-lm and mlx-swift-lm:
@@ -1332,6 +1383,32 @@ mod tests {
         }
 
         (y, state)
+    }
+
+    #[test]
+    fn warm_gated_delta_decode_kernels_compiles_decode_specializations() {
+        // Exercises the exact load-time warm path — decode-shape gated
+        // delta (seq=1 specialization) plus conv1d — at kernel-eligible
+        // head dims (key_head_dim divisible by 32, like every production
+        // linear-attention config). Must succeed on any Metal host that
+        // can serve the model at all.
+        let (q_scale, k_scale) = linear_attention_qk_scale(32);
+        let production_like = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 2,
+            num_key_heads: 1,
+            key_head_dim: 32,
+            value_head_dim: 4,
+            conv_kernel_dim: 4,
+            q_scale,
+            k_scale,
+        };
+        warm_gated_delta_decode_kernels(&production_like)
+            .expect("warm-up must compile decode kernels");
+
+        // Sub-threshold dims never dispatch the custom kernel; the warm
+        // path must be a no-op success, not a panic.
+        warm_gated_delta_decode_kernels(&cfg()).expect("ineligible dims must be a no-op");
     }
 
     #[test]

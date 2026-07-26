@@ -18,6 +18,9 @@
   "crates/ax-engine-mlx/src/kv_cache.rs": {
     "eval": 1
   },
+  "crates/ax-engine-mlx/src/linear_attention_ops.rs": {
+    "try_eval": 2
+  },
   "crates/ax-engine-mlx/src/model/families/standard.rs": {
     "eval": 2
   },

@@ -120,6 +120,19 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_LOAD_KERNEL_WARMUP` — at model load, compile the custom
+    /// Metal kernel specializations the decode path will hit (currently
+    /// the linear-attention gated-delta + conv1d family) so the lazy
+    /// MSL→pipeline compile does not land inside the first request's
+    /// latency. Best-effort: warm-up failure logs a warning and the
+    /// model still loads.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_LOAD_KERNEL_WARMUP=0`).
+    load_kernel_warmup_enabled,
+    "AX_MLX_LOAD_KERNEL_WARMUP"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_GEMMA4_ASSISTANT_MTP_COALESCED_VERIFY` — coalesce independent
     /// greedy Gemma 4 assistant-MTP verify graphs into one MLX completion
     /// barrier. The route stays row-exact: every request retains its own
@@ -792,11 +805,7 @@ pub fn pipeline_eval_should_fire(seq_len: usize, layer_idx: usize, total_layers:
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0);
             let last_raw = LAST_FIRE_NS.load(Ordering::Relaxed);
-            let last = if last_raw == 0 {
-                None
-            } else {
-                Some(last_raw)
-            };
+            let last = if last_raw == 0 { None } else { Some(last_raw) };
             if pipeline_eval_yield_should_fire(
                 last,
                 now_ns,
@@ -2248,7 +2257,14 @@ mod tests {
     #[test]
     fn pipeline_eval_yield_predicate_is_wall_clock_and_fail_closed() {
         // First eligible boundary always fires.
-        assert!(pipeline_eval_yield_should_fire(None, 1_000_000_000, 16, 8, 0, 4));
+        assert!(pipeline_eval_yield_should_fire(
+            None,
+            1_000_000_000,
+            16,
+            8,
+            0,
+            4
+        ));
         // Within window: no fire.
         assert!(!pipeline_eval_yield_should_fire(
             Some(1_000_000_000),
