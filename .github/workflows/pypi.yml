@@ -113,6 +113,7 @@ jobs:
             --root target/release-candidate-wheel \
             --tag "$GITHUB_REF_NAME" \
             --commit "$GITHUB_SHA" \
+            --mlx-version "$(tr -d '[:space:]' < mlx.version)" \
             --group wheel
           mkdir -p target/wheels/delocated
           cp target/release-candidate-wheel/wheel/ax_engine-*.whl target/wheels/delocated/

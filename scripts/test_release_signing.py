@@ -1,34 +1,25 @@
-"""Release-signing contract tests.
-
-The macOS Homebrew package links against Homebrew-provided MLX dylibs. Those
-dylibs are ad-hoc signed, so Developer ID hardened-runtime binaries must be
-signed with disable-library-validation or dyld rejects them at startup.
-"""
+"""Release-signing and standalone-runtime contract tests."""
 
 import os
-import plistlib
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENTITLEMENTS = os.path.join(REPO_ROOT, "scripts", "macos-release.entitlements.plist")
 PUBLISH_SCRIPT = os.path.join(REPO_ROOT, "scripts", "publish-github-release.sh")
 BREW_RELEASE_SCRIPT = os.path.join(REPO_ROOT, "scripts", "brew-release.sh")
 
 
 class ReleaseSigningTests(unittest.TestCase):
-    def test_entitlements_allow_homebrew_mlx_dylibs(self):
-        with open(ENTITLEMENTS, "rb") as fh:
-            data = plistlib.load(fh)
+    def test_publisher_signs_bundled_libraries_without_weakening_validation(self):
+        with open(PUBLISH_SCRIPT, encoding="utf-8") as fh:
+            text = fh.read()
 
-        self.assertIs(data.get("com.apple.security.cs.disable-library-validation"), True)
-
-    def test_release_scripts_codesign_with_entitlements(self):
-        for script in (PUBLISH_SCRIPT, BREW_RELEASE_SCRIPT):
-            with self.subTest(script=os.path.basename(script)):
-                with open(script, encoding="utf-8") as fh:
-                    text = fh.read()
-                self.assertIn("MACOS_RELEASE_ENTITLEMENTS=", text)
-                self.assertIn('--entitlements "$MACOS_RELEASE_ENTITLEMENTS"', text)
+        self.assertIn('"$STAGING_DIR/libmlx.dylib"', text)
+        self.assertIn('"$STAGING_DIR/libjaccl.dylib"', text)
+        self.assertIn("--options runtime", text)
+        self.assertNotIn("MACOS_RELEASE_ENTITLEMENTS", text)
+        self.assertNotIn('--entitlements "$', text)
+        self.assertIn("unexpectedly disables hardened-runtime library validation", text)
+        self.assertIn('"disable_library_validation": False', text)
 
     def test_publisher_fails_closed_and_verifies_uploaded_release(self):
         with open(PUBLISH_SCRIPT, encoding="utf-8") as fh:
@@ -46,11 +37,21 @@ class ReleaseSigningTests(unittest.TestCase):
         self.assertIn('codesign --verify --strict --verbose=2 -R="notarized"', text)
         self.assertNotIn("spctl --assess", text)
         self.assertIn("release_args+=(--draft)", text)
-        self.assertIn("release $TAG is already published; refusing to replace verified assets", text)
+        self.assertIn(
+            "release $TAG is already published; refusing to replace verified assets", text
+        )
         self.assertIn("release $TAG is no longer a draft; refusing to publish or mutate it", text)
-        self.assertIn("cmp \"$REPOSITORY_MINISIGN_PUBLIC_KEY\"", text)
+        self.assertIn('cmp "$REPOSITORY_MINISIGN_PUBLIC_KEY"', text)
         self.assertIn("minisign -V", text)
-        self.assertLess(text.rindex("verify_uploaded_release"), text.index('gh release edit "$TAG"'))
+        self.assertIn("prepare-mlx-release-runtime.sh", text)
+        self.assertIn("prepare-standalone-release.sh", text)
+        self.assertIn("validate-standalone.sh", text)
+        self.assertIn('validate-standalone.sh" --doctor', text)
+        self.assertIn("ax.github_release_manifest.v2", text)
+        self.assertIn("@loader_path/../libexec", text)
+        self.assertLess(
+            text.rindex("verify_uploaded_release"), text.index('gh release edit "$TAG"')
+        )
         # Server ships with panic=unwind so catch_unwind containment works.
         self.assertIn("--profile release-server", text)
         self.assertIn("target/release-server/ax-engine-server", text)
@@ -59,9 +60,13 @@ class ReleaseSigningTests(unittest.TestCase):
         with open(BREW_RELEASE_SCRIPT, encoding="utf-8") as fh:
             text = fh.read()
 
-        self.assertIn("scripts/brew-release.sh is a legacy preview and may not publish releases", text)
+        self.assertIn(
+            "scripts/brew-release.sh is a legacy preview and may not publish releases", text
+        )
         self.assertIn('if [[ "$DRY_RUN" = false ]]', text)
-        self.assertIn("--profile release-server", text)
+        self.assertIn("canonical_args=(", text)
+        self.assertIn("--dry-run", text)
+        self.assertIn('exec "$SCRIPT_DIR/publish-github-release.sh"', text)
 
 
 if __name__ == "__main__":

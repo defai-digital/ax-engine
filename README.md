@@ -51,31 +51,16 @@ memory).**
 
 ```bash
 brew tap defai-digital/ax-engine
-brew trust --formula \
-  defai-digital/ax-engine/ax-engine \
-  defai-digital/ax-engine/mlx \
-  defai-digital/ax-engine/mlx-c
+brew trust --formula defai-digital/ax-engine/ax-engine
 brew install defai-digital/ax-engine/ax-engine
 ax-engine doctor
 ```
 
 Homebrew is the primary install path for the CLI, server, and bench tools.
-First install builds this tap's `mlx` / `mlx-c` from source (can take a while)
-and needs full Xcode, not just Command Line Tools. On Xcode 26+, also install
-Apple's Metal Toolchain component:
-
-```bash
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-sudo xcodebuild -runFirstLaunch
-xcodebuild -downloadComponent metalToolchain
-```
-
-If you already have Homebrew's `mlx` / `mlx-c` from `homebrew/core`, remove
-them before installing AX Engine:
-
-```bash
-brew uninstall mlx-c mlx
-```
+The self-contained release formula installs the release's pinned
+`libmlx.dylib`, `libjaccl.dylib`, and precompiled `mlx.metallib`; it does not
+build MLX from source. End users therefore do not need Python, Xcode, or the
+Metal Toolchain.
 
 ### Python SDK (pip)
 

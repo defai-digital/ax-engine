@@ -5,7 +5,6 @@ from __future__ import annotations
 import pathlib
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 WORKFLOWS_DIR = ROOT / ".github" / "workflows"
@@ -80,9 +79,7 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         )
 
     def test_runtime_validation_uses_macos_26_or_later(self) -> None:
-        workflow_texts = {
-            path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")
-        }
+        workflow_texts = {path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")}
 
         for workflow in ("coverage.yml",):
             runner_lines = [
@@ -101,20 +98,24 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("Formula metadata only", brew)
         self.assertIn("runs-on: ubuntu-latest", brew)
         self.assertNotIn("bash scripts/build-pypi-wheel.sh", brew)
-        # Release archives embed pip/venv @rpath/libmlx.dylib; brew-release must
-        # refuse to ship a formula that skips install-time load-command rewrite.
+        # Homebrew consumes the same self-contained release and must preserve
+        # its signatures while splitting the colocated archive into bin/libexec.
         for marker in (
-            "relink_release_binaries_to_tap_mlx!",
-            "change_install_name",
             "libmlx.dylib",
-            "defai-digital/ax-engine/mlx",
-            "codesign",
+            "libjaccl.dylib",
+            "mlx.metallib",
+            "MLX-LICENSE.txt",
+            "@loader_path/../libexec",
+            "ax.github_release_manifest.v2",
+            "disable_library_validation",
         ):
             self.assertIn(
                 marker,
                 brew,
                 f"brew-release.yml must fail-closed on missing formula marker {marker!r}",
             )
+        self.assertIn("obsolete MLX relinking", brew)
+        self.assertIn("packaging/homebrew/Formula/ax-engine.rb?ref=${TOOLING_SHA}", brew)
 
         ci = workflow_texts["ci.yml"]
         for job_name in (
@@ -146,11 +147,13 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("name: Build and validate macOS release candidate", candidate)
         self.assertIn("runs-on: macos-26", candidate)
         self.assertIn("bash scripts/build-pypi-wheel.sh", candidate)
+        self.assertIn("prepare-mlx-release-runtime.sh", candidate)
+        self.assertIn("prepare-standalone-release.sh", candidate)
+        self.assertIn("validate-standalone.sh", candidate)
+        self.assertIn("target/release-candidate/runtime", candidate)
 
     def test_release_candidate_and_promotion_are_bound_to_exact_sha(self) -> None:
-        workflows = {
-            path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")
-        }
+        workflows = {path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")}
         candidate = workflows["release-candidate.yml"]
         pypi = workflows["pypi.yml"]
 
@@ -161,6 +164,7 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("shared-key: release-macos-arm64", candidate)
         self.assertIn('ARTIFACT_NAME="ax-engine-pypi-wheel-${RELEASE_SHA}"', pypi)
         self.assertIn("scripts/release_candidate.py verify", pypi)
+        self.assertIn("--mlx-version", pypi)
         self.assertIn("shared-key: release-macos-arm64", pypi)
 
     def test_homebrew_is_dispatched_only_after_release_assets_are_verified(self) -> None:
@@ -250,10 +254,7 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("MLX_LIB_DIR=", helper)
         self.assertIn("GITHUB_ENV", helper)
 
-        workflow_texts = {
-            path.name: path.read_text()
-            for path in WORKFLOWS_DIR.glob("*.yml")
-        }
+        workflow_texts = {path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")}
         direct_install_workflows = [
             name
             for name, text in workflow_texts.items()
@@ -272,7 +273,7 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         # mlx-sys/build.rs prefers the active Python's mlx package.
         coverage = workflow_texts["coverage.yml"]
         self.assertIn("maturin>=1.7,<2", coverage)
-        self.assertRegex(coverage, r'pip install .*mlx')
+        self.assertRegex(coverage, r"pip install .*mlx")
 
         for path in (
             ROOT / "scripts" / "check-python-preview.sh",
@@ -290,7 +291,6 @@ class CiWorkflowPolicyTests(unittest.TestCase):
                 text,
                 f"{path.name} must install the pinned MLX into its maturin venv",
             )
-
 
     def test_release_paths_build_server_with_unwind_profile(self) -> None:
         """Shipped ax-engine-server must use release-server (panic=unwind).

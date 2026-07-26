@@ -21,6 +21,7 @@ env:
   TAP_REPO: defai-digital/homebrew-ax-engine
   TAP_FORMULA: Formula/ax-engine.rb
   RELEASE_PAYLOADS: ax-engine ax-engine-server ax-engine-bench ax-engine-download-model.py ax-engine-prepare-mtp-sidecar.py ax-engine-prepare-gemma4-assistant-mtp.py ax-engine-prepare-glm-mtp-sidecar.py ax-engine-prepare-qwen36-mtp-sidecar.py ax-engine-check-mtp-sidecar-provenance.py
+  RELEASE_RUNTIME_PAYLOADS: libmlx.dylib libjaccl.dylib mlx.metallib
 
 jobs:
   update-tap:
@@ -119,31 +120,84 @@ jobs:
             exit 1
           }
 
+          read -r -a runtime_payloads <<< "$RELEASE_RUNTIME_PAYLOADS"
           {
             echo "archive=$ARCHIVE"
             echo "manifest=$MANIFEST"
             echo "sha256=$SHA256"
             echo "download_url=$DOWNLOAD_URL"
-            python3 - "/tmp/${MANIFEST}" "$ARCHIVE" "$SHA256" <<'PY'
+            python3 - \
+              "/tmp/${MANIFEST}" \
+              "/tmp/${ARCHIVE}" \
+              "$ARCHIVE" \
+              "$SHA256" \
+              "$(tr -d '[:space:]' < mlx.version)" \
+              "${runtime_payloads[@]}" <<'PY'
           from __future__ import annotations
 
+          import hashlib
           import json
           import sys
+          import tarfile
           from pathlib import Path
 
           manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          expected_archive = sys.argv[2]
-          expected_sha256 = sys.argv[3]
+          archive_path = Path(sys.argv[2])
+          expected_archive = sys.argv[3]
+          expected_sha256 = sys.argv[4]
+          expected_mlx_version = sys.argv[5]
+          expected_runtime = set(sys.argv[6:])
           archive = manifest.get("archive") or {}
           code_signing = manifest.get("code_signing") or {}
+          runtime = manifest.get("mlx_runtime") or {}
+          runtime_assets = runtime.get("assets") or {}
+          licenses = manifest.get("third_party_licenses") or {}
           apple_signed = bool(code_signing.get("apple_developer_id"))
           apple_notarized = bool(code_signing.get("notarized"))
+          if manifest.get("schema_version") != "ax.github_release_manifest.v2":
+              raise SystemExit("Homebrew requires the standalone v2 release manifest")
           if archive.get("name") != expected_archive or archive.get("sha256") != expected_sha256:
               raise SystemExit("release manifest archive identity does not match verified bytes")
           if not apple_signed or not apple_notarized:
               raise SystemExit("Homebrew release requires Developer ID signing and Apple notarization")
+          if code_signing.get("disable_library_validation") is not False:
+              raise SystemExit("standalone release unexpectedly disables library validation")
+          if runtime.get("version") != expected_mlx_version:
+              raise SystemExit("release MLX runtime version does not match mlx.version")
+          if runtime.get("layout") != "colocated":
+              raise SystemExit("release MLX runtime is not declared colocated")
+          if runtime.get("rpaths") != ["@loader_path", "@loader_path/../libexec"]:
+              raise SystemExit("release does not support both archive and Homebrew rpaths")
+          if set(runtime_assets) != expected_runtime:
+              raise SystemExit("release MLX runtime file set is incomplete")
+          if set(licenses) != {"MLX-LICENSE.txt"}:
+              raise SystemExit("release MLX license is missing")
+
+          with tarfile.open(archive_path, "r:gz") as release:
+              members = {
+                  member.name.removeprefix("./"): member
+                  for member in release.getmembers()
+                  if member.isfile()
+              }
+              if set(members) != set(manifest.get("payload") or []):
+                  raise SystemExit("release archive members do not match its manifest")
+              for name, record in {**runtime_assets, **licenses}.items():
+                  member = members.get(name)
+                  if member is None:
+                      raise SystemExit(f"release archive is missing {name}")
+                  source = release.extractfile(member)
+                  if source is None:
+                      raise SystemExit(f"could not read release archive member {name}")
+                  digest = hashlib.sha256()
+                  for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                      digest.update(chunk)
+                  if record.get("path") != name or record.get("sha256") != digest.hexdigest():
+                      raise SystemExit(f"release manifest digest mismatch for {name}")
+                  if record.get("size") != member.size:
+                      raise SystemExit(f"release manifest size mismatch for {name}")
           print(f"apple_signed={str(apple_signed).lower()}")
           print(f"apple_notarized={str(apple_notarized).lower()}")
+          print(f"mlx_version={runtime['version']}")
           PY
           } >> "$GITHUB_OUTPUT"
           echo "Resolved checksum from signed release asset: $SHA256"
@@ -158,8 +212,6 @@ jobs:
           VERSION="${{ steps.tag.outputs.version }}"
           SHA256="${{ steps.asset.outputs.sha256 }}"
           DOWNLOAD_URL="${{ steps.asset.outputs.download_url }}"
-          APPLE_SIGNED="${{ steps.asset.outputs.apple_signed }}"
-          APPLE_NOTARIZED="${{ steps.asset.outputs.apple_notarized }}"
 
           TAP_DIR="$(mktemp -d /tmp/ax-engine-tap.XXXXXX)"
           trap 'rm -rf "$TAP_DIR"' EXIT
@@ -178,6 +230,14 @@ jobs:
             echo "error: $TAP_FORMULA not found in tap" >&2
             exit 1
           fi
+
+          # The checked-in formula is canonical. Refresh the tap's structure
+          # from the exact workflow revision before applying release metadata,
+          # so deployment-layout changes cannot depend on a manual tap edit.
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/packaging/homebrew/Formula/ax-engine.rb?ref=${TOOLING_SHA}" \
+            > "$FORMULA_PATH"
 
           # GNU sed (ubuntu runner): in-place edit without the BSD '' backup arg.
           sed -i \
@@ -200,109 +260,30 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/contents/scripts/update_homebrew_bin_install.py?ref=${TOOLING_SHA}" \
             | python3 - "$FORMULA_PATH" "${release_payloads[@]}"
 
-          python3 - "$FORMULA_PATH" "$APPLE_SIGNED" "$APPLE_NOTARIZED" <<'PY'
-          from __future__ import annotations
-
-          import re
-          import sys
-          from pathlib import Path
-          from textwrap import dedent, indent
-
-          formula_path = Path(sys.argv[1])
-          apple_signed = sys.argv[2] == "true"
-          apple_notarized = sys.argv[3] == "true"
-          text = formula_path.read_text(encoding="utf-8")
-
-          # Shared notes: release archives link pip MLX; the formula must
-          # rewrite load commands to the tap-local mlx formula at install.
-          linkage_notes = dedent("""\
-            Install rewrites libmlx load commands on ax-engine-server and
-            ax-engine-bench to this tap's mlx formula, then ad-hoc re-signs
-            those binaries (required after Mach-O edits). Do not expect the
-            release tarball to run against pip site-packages MLX on its own.
-
-            The mlx / mlx-c dependencies build from this tap's formulas (not
-            homebrew-core bottles) so MLX NAX acceleration is not silently
-            disabled on macOS 26.x. Xcode -- including its Metal Toolchain
-            component, a separate download since Xcode 26
-            (xcodebuild -downloadComponent metalToolchain) -- is required for
-            that source build; an Apple Developer account is not.
-          """)
-
-          if apple_notarized:
-              signing = (
-                  "ax-engine binaries for this release are Developer ID signed "
-                  "and notarized by Apple."
-              )
-              gatekeeper = ""
-          elif apple_signed:
-              signing = (
-                  "ax-engine binaries for this release are Developer ID signed "
-                  "but not notarized by Apple."
-              )
-              gatekeeper = dedent("""\
-
-                If macOS shows "cannot be opened because Apple cannot verify it":
-                  1. Open System Settings → Privacy & Security
-                  2. Scroll to the Security section
-                  3. Click "Allow Anyway" next to the ax-engine entry
-                  4. Run the command again and click "Open" in the dialog
-              """)
-          else:
-              signing = (
-                  "ax-engine binaries for this release are ad-hoc signed "
-                  "(not notarized by Apple)."
-              )
-              gatekeeper = dedent("""\
-
-                If macOS shows "cannot be opened because Apple cannot verify it":
-                  1. Open System Settings → Privacy & Security
-                  2. Scroll to the Security section
-                  3. Click "Allow Anyway" next to the ax-engine entry
-                  4. Run the command again and click "Open" in the dialog
-
-                Or clear the quarantine flag from the terminal (one-time):
-                  sudo xattr -dr com.apple.quarantine "$(which ax-engine)"
-                  sudo xattr -dr com.apple.quarantine "$(which ax-engine-server)"
-                  sudo xattr -dr com.apple.quarantine "$(which ax-engine-bench)"
-              """)
-
-          body = f"{signing}\n\n{linkage_notes.rstrip()}{gatekeeper.rstrip()}\n"
-          caveats = indent(
-              "def caveats\n  <<~EOS\n"
-              + indent(body, "    ")
-              + "  EOS\nend",
-              "  ",
-          )
-
-          pattern = re.compile(r"^  def caveats\n    <<~EOS\n.*?^  end\n", re.MULTILINE | re.DOTALL)
-          if pattern.search(text):
-              text = pattern.sub(caveats + "\n", text, count=1)
-          else:
-              text = text.replace("\n  test do\n", "\n" + caveats + "\n\n  test do\n", 1)
-          formula_path.write_text(text, encoding="utf-8")
-          PY
-
           EXPECTED_BIN_LINE="bin.install $(printf '"%s", ' "${release_payloads[@]}" | sed 's/, $//')"
           if ! grep -qF "$EXPECTED_BIN_LINE" "$FORMULA_PATH"; then
             echo "error: formula does not contain canonical line: $EXPECTED_BIN_LINE" >&2
             exit 1
           fi
 
-          # Fail closed: Homebrew install must re-point release binaries at
-          # tap-local libmlx. Without this, dyld looks for the release
-          # builder's pip site-packages path and ax-engine doctor dies with
-          # empty JSON from ax-engine-bench.
+          # Fail closed on the self-contained bin/libexec install contract. Homebrew
+          # must preserve the signed binaries instead of rewriting them.
           for required in \
+            'libexec.install "libmlx.dylib", "libjaccl.dylib", "mlx.metallib"' \
+            'doc.install "MLX-LICENSE.txt"' \
+            'without rewriting the signed Mach-O files'; do
+            if ! grep -qF "$required" "$FORMULA_PATH"; then
+              echo "error: formula missing standalone runtime marker: $required" >&2
+              exit 1
+            fi
+          done
+          for forbidden in \
             'relink_release_binaries_to_tap_mlx!' \
             'change_install_name' \
-            'libmlx.dylib' \
-            'defai-digital/ax-engine/mlx' \
-            'codesign'; do
-            if ! grep -qF "$required" "$FORMULA_PATH"; then
-              echo "error: formula missing required libmlx relink marker: $required" >&2
-              echo "       Release archives embed pip/venv @rpath/libmlx.dylib; the" >&2
-              echo "       formula must rewrite load commands at install time." >&2
+            'defai-digital/ax-engine/mlx-c' \
+            'defai-digital/ax-engine/mlx"'; do
+            if grep -qF "$forbidden" "$FORMULA_PATH"; then
+              echo "error: formula still contains obsolete MLX relinking: $forbidden" >&2
               exit 1
             fi
           done
@@ -337,6 +318,7 @@ jobs:
           DOWNLOAD_URL="${{ steps.asset.outputs.download_url }}"
           APPLE_SIGNED="${{ steps.asset.outputs.apple_signed }}"
           APPLE_NOTARIZED="${{ steps.asset.outputs.apple_notarized }}"
+          MLX_VERSION="${{ steps.asset.outputs.mlx_version }}"
 
           {
             echo "## Brew Release: ${TAG}"
@@ -350,6 +332,7 @@ jobs:
             echo "| SHA256 | \`${SHA256}\` |"
             echo "| Apple signed | \`${APPLE_SIGNED}\` |"
             echo "| Apple notarized | \`${APPLE_NOTARIZED}\` |"
+            echo "| Bundled MLX | \`${MLX_VERSION}\` |"
             echo "| Download | ${DOWNLOAD_URL} |"
             echo "| Tap | \`${TAP_FORMULA}\` in \`${TAP_REPO}\` |"
             echo

@@ -5,10 +5,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+MLX_PIN="$(tr -d '[:space:]' < "$ROOT_DIR/mlx.version")"
 
 MAIN_REPO="${AX_RELEASE_REPO:-defai-digital/ax-engine}"
 RELEASE_BINS=(ax-engine ax-engine-server ax-engine-bench)
-MACOS_RELEASE_ENTITLEMENTS="$ROOT_DIR/scripts/macos-release.entitlements.plist"
+MLX_RUNTIME_FILES=(libmlx.dylib libjaccl.dylib mlx.metallib)
+MLX_LICENSE_FILES=(MLX-LICENSE.txt)
 REPOSITORY_MINISIGN_PUBLIC_KEY="$ROOT_DIR/docs/ax-minisign.pub"
 RELEASE_HELPER_SOURCES=(
     "scripts/download_model.py:ax-engine-download-model.py"
@@ -49,6 +51,7 @@ CLOBBER_ASSETS=false
 APPLE_API_KEY_TEMP=""
 RESOLVED_SIGN_IDENTITY=""
 RELEASE_BIN_DIR="$ROOT_DIR/target/release"
+MLX_RUNTIME_DIR=""
 CANDIDATE_WORKFLOW="release-candidate.yml"
 
 cleanup() {
@@ -67,10 +70,11 @@ Publishes the macOS arm64 GitHub release assets for AX Engine:
   1. validate clean checkout and tag/version consistency
   2. require a successful CI run for the exact release commit
   3. reuse a validated macOS release candidate, or build locally for dry-runs
-  4. Apple Developer ID sign and notarize binaries for every published release
-  5. package tarball, sha256, and release manifest
-  6. minisign artifacts
-  7. upload to a draft, independently verify, publish, then dispatch Homebrew
+  4. bundle pinned MLX dylibs/metallib and rewrite relocatable Mach-O rpaths
+  5. Apple Developer ID sign and notarize the complete standalone payload
+  6. package tarball, sha256, and release manifest
+  7. minisign artifacts
+  8. upload to a draft, independently verify, publish, then dispatch Homebrew
 
 Options:
   --dry-run                  Run local checks/build/package/sign, but do not push or upload.
@@ -246,11 +250,13 @@ prepare_release_candidate() {
         --root "$candidate_dir" \
         --tag "$TAG" \
         --commit "$head_commit" \
-        --group binaries
+        --mlx-version "$MLX_PIN" \
+        --group standalone
     for bin in "${RELEASE_BINS[@]}"; do
         chmod +x "$candidate_dir/bin/$bin"
     done
     RELEASE_BIN_DIR="$candidate_dir/bin"
+    MLX_RUNTIME_DIR="$candidate_dir/runtime"
 }
 
 NOTARY_ARGS=()
@@ -280,47 +286,108 @@ resolve_notary_args() {
     fi
 }
 
-codesign_release_binaries() {
-    local bin
-    local resolved_authority
-    local signature_details
-    if [[ -z "$SIGN_IDENTITY" ]]; then
-        echo "warning: no --sign-identity provided; release binaries will not be Apple Developer ID signed" >&2
-        return
-    fi
+binary_rpaths() {
+    otool -l "$1" | awk '
+        $1 == "cmd" && $2 == "LC_RPATH" { want_path = 1; next }
+        want_path && $1 == "path" { print $2; want_path = 0 }
+    '
+}
 
-    echo "Codesigning release binaries with identity: $SIGN_IDENTITY"
-    [[ -f "$MACOS_RELEASE_ENTITLEMENTS" ]] || die "macOS release entitlements not found: $MACOS_RELEASE_ENTITLEMENTS"
-    for bin in "${RELEASE_BINS[@]}"; do
-        run codesign \
-            --sign "$SIGN_IDENTITY" \
-            --options runtime \
-            --entitlements "$MACOS_RELEASE_ENTITLEMENTS" \
-            --timestamp \
-            --force \
-            "$RELEASE_BIN_DIR/$bin"
+resolve_local_mlx_lib_dir() {
+    local bin
+    local candidate
+    local resolved=""
+
+    for bin in ax-engine-server ax-engine-bench; do
+        while IFS= read -r candidate; do
+            [[ -f "$candidate/libmlx.dylib" ]] || continue
+            candidate="$(cd "$candidate" && pwd -P)"
+            if [[ -n "$resolved" && "$resolved" != "$candidate" ]]; then
+                die "release binaries resolve different MLX library directories: $resolved and $candidate"
+            fi
+            resolved="$candidate"
+        done < <(binary_rpaths "$RELEASE_BIN_DIR/$bin")
     done
 
-    echo "Verifying codesignatures"
-    for bin in "${RELEASE_BINS[@]}"; do
-        run codesign --verify --strict --verbose=2 "$RELEASE_BIN_DIR/$bin"
-        signature_details="$(codesign -dv --verbose=4 "$RELEASE_BIN_DIR/$bin" 2>&1)"
+    if [[ -n "${MLX_LIB_DIR:-}" ]]; then
+        [[ -d "$MLX_LIB_DIR" ]] || die "MLX_LIB_DIR does not exist: $MLX_LIB_DIR"
+        candidate="$(cd "$MLX_LIB_DIR" && pwd -P)"
+        if [[ -n "$resolved" && "$resolved" != "$candidate" ]]; then
+            die "MLX_LIB_DIR does not match the MLX directory embedded in release binaries"
+        fi
+        resolved="$candidate"
+    fi
+
+    [[ -n "$resolved" ]] || {
+        die "could not resolve the pip MLX directory used by local release binaries; set MLX_LIB_DIR"
+    }
+    printf '%s\n' "$resolved"
+}
+
+codesign_release_payload() {
+    local image
+    local resolved_authority
+    local signature_details
+    local entitlement_details
+    local release_machos=(
+        "$STAGING_DIR/libmlx.dylib"
+        "$STAGING_DIR/libjaccl.dylib"
+        "$STAGING_DIR/ax-engine"
+        "$STAGING_DIR/ax-engine-server"
+        "$STAGING_DIR/ax-engine-bench"
+    )
+
+    if [[ -z "$SIGN_IDENTITY" ]]; then
+        echo "warning: no --sign-identity provided; applying ad-hoc signatures for local validation" >&2
+        for image in "${release_machos[@]}"; do
+            run codesign --force --sign - "$image"
+        done
+    else
+        echo "Codesigning standalone payload with identity: $SIGN_IDENTITY"
+        # Libraries are signed first. The hardened-runtime executables can then
+        # retain library validation because every bundled Mach-O has our Team ID.
+        for image in "${release_machos[@]}"; do
+            run codesign \
+                --sign "$SIGN_IDENTITY" \
+                --options runtime \
+                --timestamp \
+                --force \
+                "$image"
+        done
+    fi
+
+    echo "Verifying standalone payload code signatures"
+    for image in "${release_machos[@]}"; do
+        run codesign --verify --strict --verbose=2 "$image"
+        if [[ -z "$SIGN_IDENTITY" ]]; then
+            continue
+        fi
+        signature_details="$(codesign -dv --verbose=4 "$image" 2>&1)"
         grep -F "Authority=Developer ID Application: DEFAI PRIVATE LIMITED" <<<"$signature_details" >/dev/null || {
-            die "$bin is not signed by the expected Developer ID authority"
+            die "$(basename "$image") is not signed by the expected Developer ID authority"
         }
         grep -F "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details" >/dev/null || {
-            die "$bin is not signed by Apple team $EXPECTED_APPLE_TEAM_ID"
+            die "$(basename "$image") is not signed by Apple team $EXPECTED_APPLE_TEAM_ID"
         }
         resolved_authority="$(awk -F= '/^Authority=Developer ID Application:/ {sub(/^Authority=/, ""); print; exit}' <<<"$signature_details")"
-        [[ -n "$resolved_authority" ]] || die "could not resolve the Developer ID authority for $bin"
+        [[ -n "$resolved_authority" ]] || {
+            die "could not resolve the Developer ID authority for $(basename "$image")"
+        }
         if [[ -n "$RESOLVED_SIGN_IDENTITY" && "$RESOLVED_SIGN_IDENTITY" != "$resolved_authority" ]]; then
-            die "release binaries were signed by different Developer ID identities"
+            die "release Mach-O files were signed by different Developer ID identities"
         fi
         RESOLVED_SIGN_IDENTITY="$resolved_authority"
     done
+
+    for image in "$STAGING_DIR/ax-engine" "$STAGING_DIR/ax-engine-server" "$STAGING_DIR/ax-engine-bench"; do
+        entitlement_details="$(codesign -d --entitlements - "$image" 2>&1 || true)"
+        if grep -F "com.apple.security.cs.disable-library-validation" <<<"$entitlement_details" >/dev/null; then
+            die "$(basename "$image") unexpectedly disables hardened-runtime library validation"
+        fi
+    done
 }
 
-notarize_release_binaries() {
+notarize_release_payload() {
     if [[ -z "$SIGN_IDENTITY" ]]; then
         return
     fi
@@ -334,22 +401,29 @@ notarize_release_binaries() {
     fi
 
     local notarize_zip="$ARTIFACT_DIR/ax-engine-${TAG}-notarize.zip"
-    local notarize_inputs=()
-    local bin
     rm -f "$notarize_zip"
-    for bin in "${RELEASE_BINS[@]}"; do
-        notarize_inputs+=("$RELEASE_BIN_DIR/$bin")
-    done
-    run zip -j "$notarize_zip" "${notarize_inputs[@]}"
+    (
+        cd "$STAGING_DIR"
+        run zip -qry "$notarize_zip" .
+    )
     run xcrun notarytool submit "$notarize_zip" "${NOTARY_ARGS[@]}" --wait
     rm -f "$notarize_zip"
 }
 
 verify_uploaded_release() {
+    local entitlement_details
+    local image
     local signature_details
     local verify_dir
     local expect_notarized=false
     local expect_signed=false
+    local release_machos=(
+        libmlx.dylib
+        libjaccl.dylib
+        ax-engine
+        ax-engine-server
+        ax-engine-bench
+    )
     if [[ -n "$SIGN_IDENTITY" ]]; then
         expect_signed=true
         if [[ "$SKIP_NOTARIZATION" = false ]]; then
@@ -381,57 +455,117 @@ verify_uploaded_release() {
         fi
 
         (cd "$verify_dir" && shasum -a 256 -c "$(basename "$SHA256_PATH")")
+        mkdir "$verify_dir/payload"
+        tar -xzf "$verify_dir/$ARCHIVE" -C "$verify_dir/payload"
         python3 - \
             "$verify_dir/$(basename "$MANIFEST_PATH")" \
+            "$verify_dir/$ARCHIVE" \
+            "$verify_dir/payload" \
             "$SHA256" \
             "$EXPECTED_APPLE_TEAM_ID" \
             "$expect_signed" \
-            "$expect_notarized" <<'PY'
+            "$expect_notarized" \
+            "$MLX_PIN" \
+            "--" \
+            "${release_payload[@]}" <<'PY'
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
+import tarfile
 from pathlib import Path
 
-manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-expected_sha256 = sys.argv[2]
-expected_team = sys.argv[3]
-expect_signed = sys.argv[4] == "true"
-expect_notarized = sys.argv[5] == "true"
+separator = sys.argv.index("--")
+(
+    manifest_path,
+    archive_path,
+    payload_dir,
+    expected_sha256,
+    expected_team,
+    expect_signed_raw,
+    expect_notarized_raw,
+    expected_mlx_version,
+) = sys.argv[1:separator]
+expected_payload = sys.argv[separator + 1 :]
+expect_signed = expect_signed_raw == "true"
+expect_notarized = expect_notarized_raw == "true"
+manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
 archive = manifest.get("archive") or {}
 signing = manifest.get("code_signing") or {}
+runtime = manifest.get("mlx_runtime") or {}
+runtime_assets = runtime.get("assets") or {}
+license_assets = manifest.get("third_party_licenses") or {}
+expected_runtime = {"libmlx.dylib", "libjaccl.dylib", "mlx.metallib"}
+
+if manifest.get("schema_version") != "ax.github_release_manifest.v2":
+    raise SystemExit("release manifest schema is not the standalone v2 contract")
 if archive.get("sha256") != expected_sha256:
     raise SystemExit("release manifest SHA256 does not match the verified archive")
+if manifest.get("payload") != expected_payload:
+    raise SystemExit("release manifest payload does not match the publisher contract")
 if bool(signing.get("apple_developer_id")) != expect_signed:
     raise SystemExit("release manifest Developer ID signing state is incorrect")
 if bool(signing.get("notarized")) != expect_notarized:
     raise SystemExit("release manifest notarization state is incorrect")
+if signing.get("disable_library_validation") is not False:
+    raise SystemExit("standalone release must retain hardened-runtime library validation")
 if expect_signed:
     identity = str(signing.get("identity") or "")
     if expected_team not in identity:
         raise SystemExit(f"release manifest signing identity does not contain Apple team {expected_team}")
+if runtime.get("version") != expected_mlx_version:
+    raise SystemExit("release manifest MLX version does not match the repository pin")
+if runtime.get("layout") != "colocated":
+    raise SystemExit("release manifest MLX runtime layout is not colocated")
+if set(runtime_assets) != expected_runtime:
+    raise SystemExit("release manifest MLX runtime set is incomplete")
+if set(license_assets) != {"MLX-LICENSE.txt"}:
+    raise SystemExit("release manifest MLX license record is incomplete")
+if runtime.get("rpaths") != ["@loader_path", "@loader_path/../libexec"]:
+    raise SystemExit("release manifest relocatable rpath contract is incorrect")
+
+with tarfile.open(archive_path, "r:gz") as archive_file:
+    archive_members = [member for member in archive_file.getmembers() if member.isfile()]
+    archive_names = [member.name.removeprefix("./") for member in archive_members]
+if archive_names != expected_payload:
+    raise SystemExit("release archive members do not match the signed manifest payload")
+
+payload_root = Path(payload_dir)
+for name, record in {**runtime_assets, **license_assets}.items():
+    path = payload_root / name
+    if not path.is_file():
+        raise SystemExit(f"release archive is missing MLX runtime asset {name}")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if record.get("path") != name or record.get("sha256") != digest:
+        raise SystemExit(f"release manifest digest mismatch for {name}")
+    if record.get("size") != path.stat().st_size:
+        raise SystemExit(f"release manifest size mismatch for {name}")
 PY
 
+        run bash "$SCRIPT_DIR/validate-standalone.sh" --doctor "$verify_dir/payload"
+
         if [[ -n "$SIGN_IDENTITY" ]]; then
-            mkdir "$verify_dir/payload"
-            tar -xzf "$verify_dir/$ARCHIVE" -C "$verify_dir/payload"
-            for bin in "${RELEASE_BINS[@]}"; do
-                run codesign --verify --strict --verbose=2 "$verify_dir/payload/$bin"
-                signature_details="$(codesign -dv --verbose=4 "$verify_dir/payload/$bin" 2>&1)"
+            for image in "${release_machos[@]}"; do
+                run codesign --verify --strict --verbose=2 "$verify_dir/payload/$image"
+                signature_details="$(codesign -dv --verbose=4 "$verify_dir/payload/$image" 2>&1)"
                 grep -F "Authority=Developer ID Application: DEFAI PRIVATE LIMITED" <<<"$signature_details" >/dev/null || {
-                    die "uploaded $bin has the wrong Developer ID authority"
+                    die "uploaded $image has the wrong Developer ID authority"
                 }
                 grep -F "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details" >/dev/null || {
-                    die "uploaded $bin has the wrong Apple team"
+                    die "uploaded $image has the wrong Apple team"
                 }
                 if [[ "$SKIP_NOTARIZATION" = false ]]; then
                     # --check-notarization only modifies verification; it is not a
                     # standalone codesign operation (see codesign(1)).
-                    run codesign --verify --strict --check-notarization --verbose=2 "$verify_dir/payload/$bin"
-                    # Release payloads are raw Mach-O command-line tools, not app
-                    # bundles. Verify Apple's notarized code requirement directly;
-                    # spctl rejects this packaging form as "not an app".
-                    run codesign --verify --strict --verbose=2 -R="notarized" "$verify_dir/payload/$bin"
+                    run codesign --verify --strict --check-notarization --verbose=2 "$verify_dir/payload/$image"
+                    run codesign --verify --strict --verbose=2 -R="notarized" "$verify_dir/payload/$image"
+                fi
+            done
+            for image in ax-engine ax-engine-server ax-engine-bench; do
+                entitlement_details="$(codesign -d --entitlements - "$verify_dir/payload/$image" 2>&1 || true)"
+                if grep -F "com.apple.security.cs.disable-library-validation" <<<"$entitlement_details" >/dev/null; then
+                    die "uploaded $image unexpectedly disables library validation"
                 fi
             done
         fi
@@ -559,6 +693,11 @@ check_cmd cargo "install Rust: https://rustup.rs"
 check_cmd python3 "install Python 3"
 check_cmd shasum "shasum is required for release checksums"
 check_cmd tar "tar is required for release packaging"
+check_cmd file "file is required for standalone Mach-O validation"
+check_cmd lipo "lipo is required for arm64 runtime validation"
+check_cmd otool "otool is required for Mach-O dependency validation"
+check_cmd install_name_tool "install_name_tool is required for relocatable release rpaths"
+check_cmd codesign "codesign is required after Mach-O release rewrites"
 
 if [[ "$MINISIGN" = true ]]; then
     check_cmd minisign "install minisign: brew install minisign"
@@ -571,7 +710,6 @@ if [[ "$MINISIGN" = true ]]; then
     }
 fi
 if [[ -n "$SIGN_IDENTITY" ]]; then
-    check_cmd codesign "codesign is required for Apple Developer ID signing"
     if [[ "$SKIP_NOTARIZATION" = false ]]; then
         check_cmd xcrun "xcrun notarytool is required for notarization"
         check_cmd zip "zip is required for notarization submission"
@@ -659,19 +797,30 @@ for bin in "${RELEASE_BINS[@]}"; do
     [[ -x "$RELEASE_BIN_DIR/$bin" ]] || die "missing executable $RELEASE_BIN_DIR/$bin"
 done
 
-codesign_release_binaries
-
 mkdir -p "$ARTIFACT_DIR"
+ARTIFACT_DIR="$(cd "$ARTIFACT_DIR" && pwd -P)"
+
+if [[ -z "$MLX_RUNTIME_DIR" ]]; then
+    LOCAL_MLX_LIB_DIR="$(resolve_local_mlx_lib_dir)"
+    MLX_RUNTIME_DIR="$ARTIFACT_DIR/mlx-runtime-source"
+    rm -rf "$MLX_RUNTIME_DIR"
+    run bash "$SCRIPT_DIR/prepare-mlx-release-runtime.sh" \
+        "$LOCAL_MLX_LIB_DIR" \
+        "$MLX_RUNTIME_DIR"
+fi
+
 STAGING_DIR="$ARTIFACT_DIR/payload"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
 
-notarize_release_binaries
+run bash "$SCRIPT_DIR/prepare-standalone-release.sh" \
+    "$RELEASE_BIN_DIR" \
+    "$MLX_RUNTIME_DIR" \
+    "$STAGING_DIR"
 
 release_payload=()
+release_helpers=()
 for bin in "${RELEASE_BINS[@]}"; do
-    cp "$RELEASE_BIN_DIR/$bin" "$STAGING_DIR/$bin"
-    chmod +x "$STAGING_DIR/$bin"
     release_payload+=("$bin")
 done
 for mapping in "${RELEASE_HELPER_SOURCES[@]}"; do
@@ -681,7 +830,15 @@ for mapping in "${RELEASE_HELPER_SOURCES[@]}"; do
     cp "$source_path" "$STAGING_DIR/$install_name"
     chmod +x "$STAGING_DIR/$install_name"
     release_payload+=("$install_name")
+    release_helpers+=("$install_name")
 done
+for name in "${MLX_RUNTIME_FILES[@]}" "${MLX_LICENSE_FILES[@]}"; do
+    release_payload+=("$name")
+done
+
+codesign_release_payload
+run bash "$SCRIPT_DIR/validate-standalone.sh" --doctor "$STAGING_DIR"
+notarize_release_payload
 
 ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
 ARCHIVE_PATH="$ARTIFACT_DIR/$ARCHIVE"
@@ -695,21 +852,84 @@ printf '%s  %s\n' "$SHA256" "$ARCHIVE" > "$SHA256_PATH"
 
 AX_RELEASE_CODESIGN_IDENTITY="${RESOLVED_SIGN_IDENTITY:-$SIGN_IDENTITY}" \
 AX_RELEASE_NOTARIZED="$([[ -n "$SIGN_IDENTITY" && "$SKIP_NOTARIZATION" = false && "$DRY_RUN" = false ]] && echo true || echo false)" \
-python3 - "$TAG" "$VERSION" "$MAIN_REPO" "$head_commit" "$ARCHIVE" "$SHA256" "$DOWNLOAD_URL" "$MANIFEST_PATH" "${RELEASE_BINS[@]}" "--" "${release_payload[@]}" <<'PY'
+python3 - \
+    "$TAG" \
+    "$VERSION" \
+    "$MAIN_REPO" \
+    "$head_commit" \
+    "$ARCHIVE" \
+    "$SHA256" \
+    "$DOWNLOAD_URL" \
+    "$MANIFEST_PATH" \
+    "$STAGING_DIR" \
+    "$MLX_PIN" \
+    "--binaries" \
+    "${RELEASE_BINS[@]}" \
+    "--helpers" \
+    "${release_helpers[@]}" \
+    "--runtime" \
+    "${MLX_RUNTIME_FILES[@]}" \
+    "--licenses" \
+    "${MLX_LICENSE_FILES[@]}" \
+    "--payload" \
+    "${release_payload[@]}" <<'PY'
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
 import sys
 from datetime import datetime, timezone
 
-args = sys.argv[1:]
-separator = args.index("--")
-tag, version, repo, commit, archive, sha256, download_url, manifest_path, *bins = args[:separator]
-payload = args[separator + 1 :]
+
+def values_between(args: list[str], start: str, end: str | None) -> list[str]:
+    begin = args.index(start) + 1
+    finish = args.index(end) if end is not None else len(args)
+    return args[begin:finish]
+
+
+def file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def asset_record(staging: pathlib.Path, name: str) -> dict[str, object]:
+    path = staging / name
+    if not path.is_file():
+        raise SystemExit(f"release payload is missing {name}")
+    return {
+        "path": name,
+        "sha256": file_sha256(path),
+        "size": path.stat().st_size,
+    }
+
+
+(
+    tag,
+    version,
+    repo,
+    commit,
+    archive,
+    sha256,
+    download_url,
+    manifest_path,
+    staging_dir,
+    mlx_version,
+) = sys.argv[1:11]
+args = sys.argv[11:]
+bins = values_between(args, "--binaries", "--helpers")
+helpers = values_between(args, "--helpers", "--runtime")
+runtime_files = values_between(args, "--runtime", "--licenses")
+license_files = values_between(args, "--licenses", "--payload")
+payload = values_between(args, "--payload", None)
+staging = pathlib.Path(staging_dir)
+
 manifest = {
-    "schema_version": "ax.github_release_manifest.v1",
+    "schema_version": "ax.github_release_manifest.v2",
     "project": "ax-engine",
     "repository": repo,
     "tag": tag,
@@ -723,12 +943,26 @@ manifest = {
         "download_url": download_url,
     },
     "binaries": bins,
+    "helpers": helpers,
     "payload": payload,
+    "mlx_runtime": {
+        "version": mlx_version,
+        "layout": "colocated",
+        "rpaths": ["@loader_path", "@loader_path/../libexec"],
+        "assets": {
+            name: asset_record(staging, name)
+            for name in runtime_files
+        },
+    },
+    "third_party_licenses": {
+        name: asset_record(staging, name)
+        for name in license_files
+    },
     "code_signing": {
         "apple_developer_id": bool(os.environ.get("AX_RELEASE_CODESIGN_IDENTITY")),
         "identity": os.environ.get("AX_RELEASE_CODESIGN_IDENTITY") or None,
         "notarized": os.environ.get("AX_RELEASE_NOTARIZED") == "true",
-        "disable_library_validation": bool(os.environ.get("AX_RELEASE_CODESIGN_IDENTITY")),
+        "disable_library_validation": False,
     },
 }
 path = pathlib.Path(manifest_path)

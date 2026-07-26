@@ -129,22 +129,46 @@ jobs:
         run: |
           set -euo pipefail
           CANDIDATE_DIR="target/release-candidate"
-          mkdir -p "$CANDIDATE_DIR/bin" "$CANDIDATE_DIR/wheel"
+          MLX_VERSION="$(tr -d '[:space:]' < mlx.version)"
+          mkdir -p "$CANDIDATE_DIR/bin" "$CANDIDATE_DIR/runtime" "$CANDIDATE_DIR/wheel"
           cp target/release/ax-engine "$CANDIDATE_DIR/bin/ax-engine"
           # Server is built with --profile release-server (panic=unwind) by
           # scripts/build-pypi-wheel.sh so worker catch_unwind containment works.
           cp target/release-server/ax-engine-server "$CANDIDATE_DIR/bin/ax-engine-server"
           cp target/release/ax-engine-bench "$CANDIDATE_DIR/bin/ax-engine-bench"
+          bash scripts/prepare-mlx-release-runtime.sh \
+            "$MLX_LIB_DIR" \
+            "$CANDIDATE_DIR/runtime"
           cp target/wheels/delocated/ax_engine-*.whl "$CANDIDATE_DIR/wheel/"
           chmod +x "$CANDIDATE_DIR"/bin/*
           python3 scripts/release_candidate.py create \
             --root "$CANDIDATE_DIR" \
             --tag "$RELEASE_TAG" \
-            --commit "$RELEASE_COMMIT"
+            --commit "$RELEASE_COMMIT" \
+            --mlx-version "$MLX_VERSION"
           python3 scripts/release_candidate.py verify \
             --root "$CANDIDATE_DIR" \
             --tag "$RELEASE_TAG" \
-            --commit "$RELEASE_COMMIT"
+            --commit "$RELEASE_COMMIT" \
+            --mlx-version "$MLX_VERSION"
+
+          # Exercise the exact candidate binaries and MLX bytes as a relocatable
+          # payload before making them immutable. Production signing is applied
+          # later by publish-github-release.sh after the same Mach-O rewrites.
+          STANDALONE_SMOKE="target/release-candidate-standalone-smoke"
+          bash scripts/prepare-standalone-release.sh \
+            "$CANDIDATE_DIR/bin" \
+            "$CANDIDATE_DIR/runtime" \
+            "$STANDALONE_SMOKE"
+          for image in \
+            "$STANDALONE_SMOKE/libmlx.dylib" \
+            "$STANDALONE_SMOKE/libjaccl.dylib" \
+            "$STANDALONE_SMOKE/ax-engine" \
+            "$STANDALONE_SMOKE/ax-engine-server" \
+            "$STANDALONE_SMOKE/ax-engine-bench"; do
+            codesign --force --sign - "$image"
+          done
+          bash scripts/validate-standalone.sh "$STANDALONE_SMOKE"
 
       - name: Upload standalone binary candidate
         uses: actions/upload-artifact@v7
@@ -153,6 +177,7 @@ jobs:
           path: |
             target/release-candidate/candidate-manifest.json
             target/release-candidate/bin
+            target/release-candidate/runtime
           if-no-files-found: error
           retention-days: 14
 

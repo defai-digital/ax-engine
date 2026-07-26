@@ -14,33 +14,38 @@ reference when updating the tap.
 | Consumer | `libmlx` source | How it resolves |
 |----------|-----------------|-----------------|
 | Source / pip wheel builds | pip / venv MLX | `mlx-sys` embeds absolute LC_RPATH to that dylib (NAX-correct) |
-| GitHub release tarball | same as release builder | ships `@rpath/libmlx.dylib` + builder-host rpath |
-| Homebrew install | tap `defai-digital/ax-engine/mlx` | formula rewrites load commands at install time |
+| GitHub release tarball | pinned pip MLX from the release candidate | bundles `libmlx.dylib`, `libjaccl.dylib`, and colocated `mlx.metallib`; binaries use `@loader_path` |
+| Homebrew install | same signed runtime from the release tarball | installs binaries to `bin/` and the private runtime to `libexec/`; binaries also carry `@loader_path/../libexec` |
 
-Do **not** bake `/opt/homebrew/opt/mlx` into the notarized release archive.
-Release builds intentionally track pip MLX for performance parity with
-`mlx-lm`. Homebrew is the only place that should re-point prebuilt binaries
-at formula-owned libraries (`MachO::Tools.change_install_name` + ad-hoc
-`codesign`).
+Do **not** bake build-host, Python, or `/opt/homebrew` paths into a release.
+Release builds intentionally track the pinned pip MLX bytes for performance
+parity with `mlx-lm`; the immutable candidate carries those exact runtime
+files into the final archive. Homebrew must not rewrite the signed Mach-O
+files. It places the bundled runtime in the formula-private `libexec/`
+directory so a separately installed `mlx` formula cannot collide with AX
+Engine's pinned dylibs.
 
-## Metal Toolchain preflight
+The standalone archive keeps binaries and runtime files colocated for
+backward-compatible direct extraction. Its two relative rpaths support both
+layouts:
 
-The tap's `Formula/mlx.rb` (no mirror here) declares a custom
-`MetalToolchainRequirement` that runs `xcrun metal --version` before the
-source build and aborts with `xcodebuild -downloadComponent metalToolchain`
-instructions when it fails. Since Xcode 26 the Metal Toolchain is a separate
-download; without the preflight the mlx kernel build dies mid-compile with an
-opaque error (issue #68). Keep the requirement when touching the tap formula.
+- `@loader_path` — direct archive extraction.
+- `@loader_path/../libexec` — Homebrew `bin/` plus private `libexec/`.
+
+`mlx.metallib` must remain next to the loaded `libmlx.dylib` in both layouts.
+The release also ships `MLX-LICENSE.txt`. Homebrew users consume the
+precompiled runtime and therefore do not need Xcode or the Metal Toolchain.
 
 ## Required install markers
 
-`scripts/brew-release.sh` and `.github/workflows/brew-release.yml` fail if the
-tap formula is missing:
+The legacy `scripts/brew-release.sh` preview delegates to the canonical
+publisher. `.github/workflows/brew-release.yml` fails if the tap formula is
+missing:
 
-- `relink_release_binaries_to_tap_mlx!`
-- `change_install_name`
-- `libmlx.dylib`
-- `defai-digital/ax-engine/mlx`
-- `codesign`
+- `libexec.install "libmlx.dylib", "libjaccl.dylib", "mlx.metallib"`
+- `doc.install "MLX-LICENSE.txt"`
+
+The workflow also fails if obsolete install-time relinking or tap-local MLX
+dependencies return.
 
 When changing install logic, update both this mirror and the tap formula.

@@ -20,19 +20,26 @@ The publisher performs this sequence:
    the exact 40-character source commit.
 2. Reuse an unexpired release candidate for that commit or dispatch
    `.github/workflows/release-candidate.yml` and wait for it.
-3. Verify the candidate manifest and SHA-256 digest of every standalone binary.
-4. Developer ID sign and notarize the binaries locally (required for real
-   publishes; dry-run may skip notarization), then package and minisign the
-   GitHub release assets.
+3. Verify the candidate manifest and SHA-256 digest of every standalone binary,
+   the pinned `libmlx.dylib` / `libjaccl.dylib`, `mlx.metallib`, and the MLX
+   license. Runtime acquisition also requires matching pinned `mlx` and
+   `mlx-metal` arm64 wheel tags and verifies each dylib's `minos` against that
+   wheel platform tag; this is an artifact-integrity check, not a NAX feature
+   proxy.
+4. Assemble a relocatable payload, remove builder-host rpaths, install
+   `@loader_path` plus `@loader_path/../libexec`, then sign the bundled dylibs
+   before the binaries. A clean-environment `ax-engine doctor` must report
+   ready on the release host. Real publishes notarize the complete payload;
+   dry-runs use ad-hoc signatures and skip notarization.
 5. Push the tag, create the GitHub release as a **draft**, upload assets, then
-   independently re-download and verify checksum / minisign / codesign /
-   notarization on the uploaded bytes before flipping draft → published.
+   independently re-download and verify checksum / minisign / runtime digests /
+   rpaths / clean-environment startup / codesign / notarization on the uploaded
+   bytes before flipping draft → published.
 6. Dispatch `brew-release.yml` only after the release is published and verified.
-   Homebrew refuses draft tags. That workflow updates formula metadata only; it
-   must keep the install-time `libmlx` relink
-   (`relink_release_binaries_to_tap_mlx!`). Release archives intentionally ship
-   pip/venv `@rpath/libmlx.dylib`; Homebrew rewrites load commands to the
-   tap-local `mlx` formula. See `packaging/homebrew/README.md`.
+   Homebrew refuses draft tags. That workflow updates formula metadata only and
+   installs the same signed runtime to the formula's private `libexec/`
+   directory. It must not rewrite or ad-hoc re-sign the binaries. See
+   `packaging/homebrew/README.md`.
 7. Let the tag-triggered PyPI workflow promote the exact-SHA candidate wheel.
    If no candidate exists, that workflow fails over to the original macOS wheel
    build and smoke-test path.
@@ -43,6 +50,11 @@ notarization are required for real publishes (fail-closed). The
 (`panic = "unwind"`) so generation-worker panic containment works; bench/CLI
 keep plain `--release`. Re-uploading to an existing draft requires
 `--clobber-assets`.
+
+The archive keeps binaries, `libmlx.dylib`, `libjaccl.dylib`, and
+`mlx.metallib` colocated so direct extraction remains backward-compatible.
+`mlx.metallib` and both dylibs must come from the exact MLX version in
+`mlx.version`; do not substitute Homebrew MLX during publication.
 
 ## Operator options
 

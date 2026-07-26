@@ -103,8 +103,10 @@ throughput baselines.
   with timeout and `AX_CARGO_JOBS=1` by default so a stuck full workspace run
   does not leave orphaned compiler processes.
 - `brew-release.sh`: legacy local Homebrew release preview. Production mutation
-  is disabled; only `--dry-run` is accepted. Use `publish-github-release.sh`
-  for current releases so Developer ID signing, notarization, Minisign,
+  is disabled; only `--dry-run` is accepted. It delegates artifact assembly to
+  `publish-github-release.sh` so MLX staging and rpath logic cannot drift. Use
+  the canonical publisher directly for current releases so Developer ID
+  signing, notarization, Minisign,
   independent draft verification, GitHub publication, PyPI tag promotion, and
   the publisher-dispatched Homebrew update stay on the same release source.
 - `minisign-keygen.sh`: generates the minisign keypair for signing release
@@ -131,12 +133,14 @@ throughput baselines.
   reuses the SHA-bound artifact from `.github/workflows/release-candidate.yml`.
   That macOS workflow builds the standalone binaries and PyPI wheel once and
   smoke-tests the wheel before publishing immutable candidate manifests.
-  The local publisher verifies every binary digest, optionally signs and
-  notarizes the three binaries with `--sign-identity`, writes a tarball,
-  SHA256 file, and manifest under `target/release-artifacts/<tag>/`, signs those
-  artifacts with minisign, pushes the tag, publishes and verifies the GitHub
-  assets (including the repository-pinned `ax-minisign.pub`), then dispatches
-  the Homebrew formula update. The tag-triggered PyPI
+  The local publisher verifies every binary and pinned MLX runtime digest,
+  rewrites builder rpaths to relocatable `@loader_path` entries, signs the
+  dylibs before the three binaries, and notarizes the complete standalone
+  payload with `--sign-identity`. It writes a tarball, SHA256 file, and v2
+  manifest under `target/release-artifacts/<tag>/`, signs those artifacts with
+  minisign, pushes the tag, publishes and verifies the GitHub assets (including
+  the repository-pinned `ax-minisign.pub`), then dispatches the Homebrew
+  formula update. The tag-triggered PyPI
   workflow promotes the matching wheel instead of rebuilding it.
   Notarization can use the local
   `AX_NOTARY_PROFILE` / `--notary-profile` Keychain profile or the same
@@ -150,9 +154,20 @@ throughput baselines.
   gates after exact-SHA CI, `--local-build` for an explicit local build, or
   `--skip-brew-dispatch` when intentionally publishing GitHub-only assets.
 - `release_candidate.py`: writes and verifies the
-  `ax.release_candidate.v1` manifest shared by the local GitHub publisher and
-  PyPI promotion workflow. Candidate binaries and wheels are accepted only
-  when their tag, full source commit, paths, sizes, and SHA-256 digests match.
+  `ax.release_candidate.v2` manifest shared by the local GitHub publisher and
+  PyPI promotion workflow. Candidate binaries, MLX runtime assets, license, and
+  wheels are accepted only when their tag, full source commit, pinned MLX
+  version, paths, sizes, and SHA-256 digests match.
+- `prepare-mlx-release-runtime.sh`: stages the three pinned pip MLX runtime
+  files plus license and rejects Homebrew, non-arm64, mismatched `mlx` /
+  `mlx-metal` wheel platforms, or dylib `minos` values that disagree with the
+  selected wheel tag.
+- `prepare-standalone-release.sh`: removes builder-host rpaths and prepares the
+  dual direct-extraction/Homebrew relative layout. Codesigning happens after
+  this mutation.
+- `validate-standalone.sh`: fails closed on missing runtime assets, unresolved
+  non-system dylibs, absolute rpaths, wrong install names, or clean-environment
+  startup failures.
 - `download_model.py`: MLX LLM download helper. It delegates acquisition to
   `mlx-lm`, resolves the resulting cache snapshot, validates local model files,
   and generates the AX model manifest when `ax-engine-bench` or Cargo is

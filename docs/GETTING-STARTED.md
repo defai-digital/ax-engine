@@ -101,10 +101,7 @@ Install the signed macOS arm64 CLI, server, and bench binaries:
 
 ```bash
 brew tap defai-digital/ax-engine
-brew trust --formula \
-  defai-digital/ax-engine/ax-engine \
-  defai-digital/ax-engine/mlx \
-  defai-digital/ax-engine/mlx-c
+brew trust --formula defai-digital/ax-engine/ax-engine
 brew install defai-digital/ax-engine/ax-engine
 ax-engine doctor
 ```
@@ -113,52 +110,33 @@ That installs `ax-engine`, `ax-engine-server`, `ax-engine-bench`, and the model
 helper scripts onto your `PATH`.
 
 > [!NOTE]
-> The formula depends on this tap's own `mlx` / `mlx-c` formulas (not
-> homebrew-core bottles) so MLX NAX acceleration is not silently disabled on
-> macOS 26.x. Those deps **build from source** and need **Xcode** with its
-> **Metal Toolchain** component (no Apple Developer account). Since Xcode 26
-> the Metal Toolchain is a separate download; if it is missing, the `mlx`
-> formula aborts before building and prints the fix:
->
-> ```bash
-> xcodebuild -downloadComponent metalToolchain
-> ```
->
-> Run that once after installing or upgrading Xcode, then re-run
-> `brew install`. First install can take a while.
+> The self-contained release formula installs the release's pinned,
+> precompiled MLX runtime. It does not depend on or build the tap's `mlx` /
+> `mlx-c` formulas, so end users do not need Python, Xcode, or the Metal
+> Toolchain.
 
 #### Homebrew troubleshooting
 
-If install fails with `xcrun metal --version` or `metallib` missing, make sure
-Homebrew is using full Xcode and the Metal Toolchain is installed:
+Artifacts produced by the self-contained release pipeline bundle the pinned
+MLX runtime and precompiled `mlx.metallib`. Homebrew users do not need Xcode,
+Python MLX, or the Metal Toolchain. Verify the installed layout and executable
+startup with:
 
 ```bash
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-sudo xcodebuild -runFirstLaunch
-sudo xcodebuild -license accept
-xcodebuild -downloadComponent metalToolchain
-xcrun --kill-cache
-xcrun metal --version
-xcrun -find metallib
-```
-
-If install fails with `mlx is already installed from homebrew/core`, remove the
-core MLX packages and retry the AX Engine install:
-
-```bash
-brew uninstall mlx-c mlx
-brew install defai-digital/ax-engine/ax-engine
+brew reinstall defai-digital/ax-engine/ax-engine
+brew test defai-digital/ax-engine/ax-engine
+ls "$(brew --prefix ax-engine)/libexec/libmlx.dylib"
+ls "$(brew --prefix ax-engine)/libexec/mlx.metallib"
 ```
 
 The `steipete/tap` trust warning sometimes shown by Homebrew is unrelated to
 AX Engine.
 
-**Linkage model:** GitHub release binaries are built against pip/venv MLX (for
-source and wheel performance parity) and ship with `@rpath/libmlx.dylib`. The
-formula rewrites those load commands at install time to
-`$(brew --prefix)/opt/mlx/lib/libmlx.dylib` from this tap, then ad-hoc re-signs
-`ax-engine-server` and `ax-engine-bench`. The release tarball is not a
-standalone installer with bundled dylibs.
+**Linkage model:** GitHub release binaries are built against the pinned pip MLX
+for source/wheel performance parity. The standalone tarball bundles
+`libmlx.dylib`, `libjaccl.dylib`, and `mlx.metallib`; it contains no
+builder-host rpath. Homebrew installs those same signed bytes under its
+`bin/` and private `libexec/` layout without modifying Mach-O load commands.
 
 ```bash
 ax-engine doctor
@@ -167,8 +145,8 @@ ax-engine-bench doctor
 ```
 
 If `ax-engine-bench` / `ax-engine doctor` fails with
-`Library not loaded: @rpath/libmlx.dylib` (or empty doctor JSON), the formula
-is too old to rewrite linkage. Update the tap and reinstall:
+`Library not loaded: @rpath/libmlx.dylib`, the formula or archive predates the
+self-contained runtime contract. Update the tap and reinstall:
 
 ```bash
 brew update
@@ -268,23 +246,22 @@ only). The build also consults the repo-local `.venv` even when it is not
 activated, so a bare `cargo build` on a dev machine cannot silently drift to
 another MLX install. `scripts/check-mlx-version.sh` verifies the same
 contract without compiling: pinned version, wheel-bundled `libmlx.dylib`, and
-an `LC_BUILD_VERSION` target of 26.2+ (the NAX kernel floor). Bumping the pin
-is deliberate: update `mlx.version`, rerun the qmm microbench parity gate and
-the bit-exactness suites, and only then trust results.
+non-Homebrew provenance. It reports `LC_BUILD_VERSION` for diagnosis, but does
+not use `minos` as a NAX proxy: the admitted PyPI MLX 0.32.0 wheel targets
+macOS 15.0 and still contains the certified kernels. Bumping the pin is
+deliberate: update `mlx.version`, rerun the qmm microbench parity gate and the
+bit-exactness suites, and only then trust results.
 
 > [!IMPORTANT]
 > Install `mlx` with `pip`, not `brew install mlx`. Homebrew's `mlx` formula
-> derives its build's deployment target from `MacOS.version.major.minor`,
-> which structurally truncates to `26.0` on every macOS 26.x host (Homebrew
-> stopped tracking minor OS versions after Big Sur). MLX's NAX (Neural
-> Accelerator) GEMM/attention kernels require a build target of macOS 26.2+;
-> below that they silently compile out — no build error, ~3-4x slower
-> prefill, only visible via `otool -l libmlx.dylib`'s `LC_BUILD_VERSION`.
-> `crates/mlx-sys/build.rs` already prefers a pip-installed `mlx` over
-> Homebrew's when both are present, so installing it into the active venv
-> before `cargo build` is what makes that resolution pick the correct one.
-> See `scripts/build-pypi-wheel.sh`'s header comment for the full
-> investigation.
+> is not the admitted, byte-identical runtime used for AX Engine's release and
+> performance qualification. Some Homebrew builds have also shown materially
+> different Metal backend performance. `minos` alone does not establish which
+> kernels are present, so the build and release gates use pinned version,
+> wheel provenance, exact asset digests, and runtime tests instead.
+> `crates/mlx-sys/build.rs` prefers a pip-installed `mlx` when both are
+> present; install it into the active venv before `cargo build`. See
+> `scripts/build-pypi-wheel.sh`'s header comment for the full investigation.
 
 Run the Python test slice from the same environment with:
 

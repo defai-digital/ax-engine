@@ -9,32 +9,32 @@ from scripts.update_homebrew_bin_install import rewrite_bin_install
 
 class UpdateHomebrewBinInstallTests(unittest.TestCase):
     def test_replaces_complete_multiline_statement(self) -> None:
-        formula = '''class AxEngine < Formula
+        formula = """class AxEngine < Formula
   def install
     bin.install "ax-engine", "ax-engine-server",
                 "old-helper.py",
                 "old-check.py"
 
-    relink_release_binaries_to_tap_mlx!
+    libexec.install "libmlx.dylib", "mlx.metallib"
   end
 end
-'''
+"""
 
         updated = rewrite_bin_install(formula, ["ax-engine", "new-helper.py"])
 
         self.assertIn('    bin.install "ax-engine", "new-helper.py"\n', updated)
         self.assertNotIn("old-helper.py", updated)
         self.assertNotIn("old-check.py", updated)
-        self.assertIn("    relink_release_binaries_to_tap_mlx!", updated)
+        self.assertIn('    libexec.install "libmlx.dylib", "mlx.metallib"', updated)
 
     def test_coalesces_multiple_install_statements(self) -> None:
-        formula = '''class AxEngine < Formula
+        formula = """class AxEngine < Formula
   def install
     bin.install "ax-engine"
     bin.install "ax-engine-server"
   end
 end
-'''
+"""
 
         updated = rewrite_bin_install(formula, ["ax-engine", "ax-engine-server"])
 
@@ -46,7 +46,7 @@ end
             rewrite_bin_install("class AxEngine < Formula\nend\n", ["ax-engine"])
 
     def test_rejects_unsafe_continuation(self) -> None:
-        formula = '  bin.install "ax-engine",\n  relink_release_binaries_to_tap_mlx!\n'
+        formula = '  bin.install "ax-engine",\n  libexec.install "libmlx.dylib"\n'
 
         with self.assertRaisesRegex(ValueError, "unsupported bin.install continuation"):
             rewrite_bin_install(formula, ["ax-engine"])

@@ -226,6 +226,7 @@ bash scripts/check-qa.sh
   scripts/release_candidate.py \
   scripts/test_release_candidate.py \
   scripts/test_release_signing.py \
+  scripts/test_standalone_release.py \
   scripts/test_minisign_artifact.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
@@ -292,6 +293,7 @@ bash scripts/check-qa.sh
   scripts/test_ci_workflow_policy.py \
   scripts/test_release_candidate.py \
   scripts/test_release_signing.py \
+  scripts/test_standalone_release.py \
   scripts/test_minisign_artifact.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-offline-policy-search-artifacts.sh
