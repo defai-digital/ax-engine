@@ -2888,29 +2888,65 @@ fn prefer_split_dense_ffn_gate_up(
     leading_elements: i64,
     has_split_gate_up: bool,
 ) -> bool {
-    // Gemma4 long-prefill historically preferred split gate/up (two qmatmuls)
-    // over packed fixed-shape. Kill-switch `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN=0`
-    // forces packed + prefill-compile for pure thr A/B on M5 (S1 residual).
+    prefer_split_dense_ffn_gate_up_for(
+        model_family,
+        qwen_dense_ffn,
+        seq,
+        leading_elements,
+        has_split_gate_up,
+        gemma4_split_prefill_ffn_enabled(),
+    )
+}
+
+/// Pure gate-up routing predicate (unit-tested).
+///
+/// When `gemma4_split_prefill` is true, Gemma4 multi-token prefill keeps the
+/// historical split dual-qmm path even if `gate_up_packed` is loaded. Path A
+/// residual kill-switch `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN=0` sets that flag
+/// false so packed steel dual-output + prefill compile engage under keep_base.
+pub fn prefer_split_dense_ffn_gate_up_for(
+    model_family: &str,
+    qwen_dense_ffn: bool,
+    seq: i32,
+    leading_elements: i64,
+    has_split_gate_up: bool,
+    gemma4_split_prefill: bool,
+) -> bool {
     let gemma4_split_prefill = model_family == "gemma4"
         && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
         && leading_elements >= i64::from(GEMMA4_SPLIT_PREFILL_MIN_SEQ)
-        && gemma4_split_prefill_ffn_enabled();
+        && gemma4_split_prefill;
     has_split_gate_up
         && ((qwen_dense_ffn && seq == 1 && leading_elements == 1) || gemma4_split_prefill)
+}
+
+/// Parse `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN` without caching.
+///
+/// Default **true** (split prefill — historical keep_base). Only explicit
+/// `0` / `false` / `off` select the packed-prefill residual. Empty and
+/// unrecognized values fail closed to the default (split), so a typo cannot
+/// silently force packed routing.
+pub fn parse_gemma4_split_prefill_ffn(raw: Option<&str>) -> bool {
+    match raw {
+        None => true,
+        Some(s) => {
+            let v = s.trim();
+            if v.is_empty() {
+                return true;
+            }
+            !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
+        }
+    }
 }
 
 fn gemma4_split_prefill_ffn_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
-        match std::env::var("AX_MLX_GEMMA4_SPLIT_PREFILL_FFN") {
-            Ok(raw) => {
-                let v = raw.trim();
-                !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
-            }
-            // Default ON: prior 128/512/2048 A/B preferred split gate/up for
-            // Gemma4 publication-shape prefill.
-            Err(_) => true,
-        }
+        parse_gemma4_split_prefill_ffn(
+            std::env::var("AX_MLX_GEMMA4_SPLIT_PREFILL_FFN")
+                .ok()
+                .as_deref(),
+        )
     })
 }
 
@@ -5832,5 +5868,41 @@ mod tests {
             max_diff > 1.0e-3,
             "shapeless compiled linear closure unexpectedly became shape-polymorphic; re-evaluate the Tier 3A guardrail before enabling it"
         );
+    }
+
+    #[test]
+    fn parse_gemma4_split_prefill_ffn_defaults_on_and_fail_closed() {
+        assert!(parse_gemma4_split_prefill_ffn(None));
+        assert!(parse_gemma4_split_prefill_ffn(Some("")));
+        assert!(parse_gemma4_split_prefill_ffn(Some("1")));
+        assert!(parse_gemma4_split_prefill_ffn(Some("true")));
+        assert!(parse_gemma4_split_prefill_ffn(Some("garbage")));
+        assert!(!parse_gemma4_split_prefill_ffn(Some("0")));
+        assert!(!parse_gemma4_split_prefill_ffn(Some(" false ")));
+        assert!(!parse_gemma4_split_prefill_ffn(Some("OFF")));
+    }
+
+    #[test]
+    fn prefer_split_dense_ffn_gate_up_respects_gemma4_packed_prefill_residual() {
+        // Long Gemma4 prefill with split available + residual flag on → split.
+        assert!(prefer_split_dense_ffn_gate_up_for(
+            "gemma4", false, 512, 512, true, true
+        ));
+        // Same but residual kill-switch off → packed path eligible.
+        assert!(!prefer_split_dense_ffn_gate_up_for(
+            "gemma4", false, 512, 512, true, false
+        ));
+        // Short prefill under min seq never forces split via gemma4 policy.
+        assert!(!prefer_split_dense_ffn_gate_up_for(
+            "gemma4", false, 64, 64, true, true
+        ));
+        // Decode-only Qwen dense still prefers split for matvec fast path.
+        assert!(prefer_split_dense_ffn_gate_up_for(
+            "qwen3_5", true, 1, 1, true, true
+        ));
+        // No split weights → never prefer split.
+        assert!(!prefer_split_dense_ffn_gate_up_for(
+            "gemma4", false, 512, 512, false, true
+        ));
     }
 }

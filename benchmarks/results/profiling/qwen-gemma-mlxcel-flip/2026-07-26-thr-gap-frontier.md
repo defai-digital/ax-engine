@@ -102,3 +102,9 @@ Keep pack default ON (steel dual-output single qmm is faster under this stack).
 
 Cool concurrent smokes: thr-b8-util **1.142 / gap 1.223** (matches formal);
 plain thr-b8 and Qwen thruput-tier 0 regress thr. No dual pass. still **not_yet**.
+
+## Path A: force packed Gemma4 prefill (SPLIT_PREFILL=0)
+
+Pure under thr-b8 keep_base: packed **1.042×** vs split (reject). Concurrent
+thr-b8-util split-prefill smoke thr **1.145** / gap 1.201; packed thr 1.119.
+Keep default split prefill. still **not_yet**.

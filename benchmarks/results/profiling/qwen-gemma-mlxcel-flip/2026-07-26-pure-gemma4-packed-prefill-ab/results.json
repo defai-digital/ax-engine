@@ -1,0 +1,40 @@
+{
+  "schema": "ax.pure_ab.v1",
+  "host": "mbp-m5",
+  "keep_if": 0.96,
+  "decision": "reject_keep_split_prefill",
+  "results": [
+    {
+      "variant": "split_prefill",
+      "times_ms": [
+        7823.189625050873,
+        7780.482333037071,
+        8265.895374934189
+      ],
+      "median_ms": 7823.189625050873,
+      "texts": [
+        " The",
+        " The",
+        " The"
+      ],
+      "ratio_vs_split_prefill": 1.0,
+      "keep": false
+    },
+    {
+      "variant": "packed_prefill",
+      "times_ms": [
+        8365.05595908966,
+        8043.365249992348,
+        8148.783250013366
+      ],
+      "median_ms": 8148.783250013366,
+      "texts": [
+        " The",
+        " The",
+        " The"
+      ],
+      "ratio_vs_split_prefill": 1.0416190378307975,
+      "keep": false
+    }
+  ]
+}
