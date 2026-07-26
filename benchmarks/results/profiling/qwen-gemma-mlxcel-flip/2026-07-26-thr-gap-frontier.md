@@ -94,3 +94,11 @@ Multi-process concurrent thr/gap dual still physics-blocked under locked gates.
 Best formal thr **1.141** (need ≥1.15); best formal gap **1.000** (need ≤0.90).
 No S0–S3. Gates file unchanged.
 
+
+## Pack/split pure + thr-b8 priority smokes (2026-07-26 cont.)
+
+Under thr-b8-like pure env: **pack ON median 7819 ms**, split 8246 ms (1.055×).
+Keep pack default ON (steel dual-output single qmm is faster under this stack).
+
+Cool concurrent smokes: thr-b8-util **1.142 / gap 1.223** (matches formal);
+plain thr-b8 and Qwen thruput-tier 0 regress thr. No dual pass. still **not_yet**.
