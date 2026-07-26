@@ -238,6 +238,50 @@ pub(super) fn fused_weight_byte_offset(
     }
 }
 
+/// Buffer slots shared by the whole fused/decode projection kernel
+/// family, in semantic order (input hidden state, weights, output,
+/// params struct). Derived from the AST-validated expectation table in
+/// `build.rs` — the same table the build gate checks against the shader
+/// — so dispatch code has no hand-coded index literals to drift.
+pub(super) struct ProjectionSlots {
+    pub(super) input: u64,
+    pub(super) weights: u64,
+    pub(super) output: u64,
+    pub(super) params: u64,
+}
+
+pub(super) static PROJECTION_SLOTS: std::sync::LazyLock<ProjectionSlots> =
+    std::sync::LazyLock::new(|| {
+        let signatures = super::build::PROJECTION_KERNEL_SIGNATURES;
+        let first = signatures
+            .first()
+            .expect("projection expectation table must not be empty");
+        // One slot layout serves the family: every kernel must bind the
+        // same four indices in the same declaration order. The AST gate
+        // proves table == shader; this proves table == dispatch.
+        for signature in signatures {
+            assert_eq!(
+                signature.buffers.len(),
+                first.buffers.len(),
+                "projection kernel {} has a different buffer arity",
+                signature.kernel
+            );
+            for (position, (_, index, _)) in signature.buffers.iter().enumerate() {
+                assert_eq!(
+                    *index, first.buffers[position].1,
+                    "projection kernel {} binds slot {position} at a different index",
+                    signature.kernel
+                );
+            }
+        }
+        ProjectionSlots {
+            input: u64::from(first.buffers[0].1),
+            weights: u64::from(first.buffers[1].1),
+            output: u64::from(first.buffers[2].1),
+            params: u64::from(first.buffers[3].1),
+        }
+    });
+
 /// Encode a single GEMV projection dispatch into an already-open encoder.
 /// Handles both float (F16/BF16/F32) and Q4Km weight dtypes.
 pub(super) fn encode_fused_projection(
@@ -252,16 +296,17 @@ pub(super) fn encode_fused_projection(
     cols: u32,
     input_width: u32,
 ) {
+    let slots = &*PROJECTION_SLOTS;
     encoder.set_compute_pipeline_state(&pipeline.pipeline);
-    encoder.set_buffer(0, Some(input_buf), 0);
-    encoder.set_buffer(1, Some(weight_buf), weight_byte_offset);
-    encoder.set_buffer(2, Some(output_buf), 0);
+    encoder.set_buffer(slots.input, Some(input_buf), 0);
+    encoder.set_buffer(slots.weights, Some(weight_buf), weight_byte_offset);
+    encoder.set_buffer(slots.output, Some(output_buf), 0);
     if weight_dtype == NativeTensorDataType::Q4Km {
-        set_q4km_projection_dispatch_params(encoder, 3, n_rows, input_width);
+        set_q4km_projection_dispatch_params(encoder, slots.params, n_rows, input_width);
         let (tg_count, tg_size) = q4km_dispatch(n_rows as usize);
         encoder.dispatch_thread_groups(tg_count, tg_size);
     } else {
-        set_logits_projection_dispatch_params(encoder, 3, n_rows, cols, input_width);
+        set_logits_projection_dispatch_params(encoder, slots.params, n_rows, cols, input_width);
         encoder.dispatch_threads(
             MTLSize::new(projection_dispatch_threads(n_rows as usize), 1, 1),
             MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
@@ -607,6 +652,40 @@ mod tests {
     /// (4 bytes), so field count * 4 must equal the Rust struct width —
     /// a size-only check is enough here because field names/order are
     /// pinned against the shader by the gate.
+    /// Parity between the table-driven slots and the historical
+    /// hand-coded literals (input=0, weights=1, output=2, params=3):
+    /// the migration away from literals must be behavior-preserving.
+    #[test]
+    fn projection_slots_match_historical_literals() {
+        let slots = &*super::PROJECTION_SLOTS;
+        assert_eq!(slots.input, 0);
+        assert_eq!(slots.weights, 1);
+        assert_eq!(slots.output, 2);
+        assert_eq!(slots.params, 3);
+    }
+
+    /// Every projection kernel in the expectation table must bind the
+    /// same four slots in declaration order — the uniformity that lets
+    /// one `ProjectionSlots` serve the whole family.
+    #[test]
+    fn projection_table_is_uniform_and_gap_free() {
+        for signature in super::super::build::PROJECTION_KERNEL_SIGNATURES {
+            assert_eq!(
+                signature.buffers.len(),
+                4,
+                "kernel {} must bind exactly four buffers",
+                signature.kernel
+            );
+            for (position, (_, index, _)) in signature.buffers.iter().enumerate() {
+                assert_eq!(
+                    *index as usize, position,
+                    "kernel {} binds slot {position} at index {index}",
+                    signature.kernel
+                );
+            }
+        }
+    }
+
     #[test]
     fn projection_param_expectations_match_rust_mirror_widths() {
         let widths: std::collections::BTreeMap<&str, usize> =

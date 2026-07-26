@@ -4588,13 +4588,14 @@ fn project_decode_token_with_optional_native_path(
                     saturating_usize_to_u32(input_width),
                 );
             } else {
+                let slots = &*PROJECTION_SLOTS;
                 encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
-                encoder.set_buffer(0, Some(&hidden_buffer), 0);
-                encoder.set_buffer(1, Some(&decode_projection.native_buffer), 0);
-                encoder.set_buffer(2, Some(&logits_buffer), 0);
+                encoder.set_buffer(slots.input, Some(&hidden_buffer), 0);
+                encoder.set_buffer(slots.weights, Some(&decode_projection.native_buffer), 0);
+                encoder.set_buffer(slots.output, Some(&logits_buffer), 0);
                 set_logits_projection_dispatch_params(
                     encoder,
-                    3,
+                    slots.params,
                     saturating_usize_to_u32(vocab_rows),
                     saturating_usize_to_u32(projection_cols),
                     saturating_usize_to_u32(input_width),
@@ -4720,13 +4721,14 @@ fn project_decode_logits_with_optional_native_path(
                     saturating_usize_to_u32(input_width),
                 );
             } else {
+                let slots = &*PROJECTION_SLOTS;
                 encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
-                encoder.set_buffer(0, Some(&hidden_buffer), 0);
-                encoder.set_buffer(1, Some(&decode_projection.native_buffer), 0);
-                encoder.set_buffer(2, Some(&logits_buffer), 0);
+                encoder.set_buffer(slots.input, Some(&hidden_buffer), 0);
+                encoder.set_buffer(slots.weights, Some(&decode_projection.native_buffer), 0);
+                encoder.set_buffer(slots.output, Some(&logits_buffer), 0);
                 set_logits_projection_dispatch_params(
                     encoder,
-                    3,
+                    slots.params,
                     saturating_usize_to_u32(vocab_rows),
                     saturating_usize_to_u32(projection_cols),
                     saturating_usize_to_u32(input_width),
@@ -4868,13 +4870,14 @@ fn project_batched_decode_logits_with_optional_native_path(
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.decode_logits_projection_batched.compute");
 
+            let slots = &*PROJECTION_SLOTS;
             encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
-            encoder.set_buffer(0, Some(&hidden_buffer), 0);
-            encoder.set_buffer(1, Some(&decode_projection.native_buffer), 0);
-            encoder.set_buffer(2, Some(&logits_buffer), 0);
+            encoder.set_buffer(slots.input, Some(&hidden_buffer), 0);
+            encoder.set_buffer(slots.weights, Some(&decode_projection.native_buffer), 0);
+            encoder.set_buffer(slots.output, Some(&logits_buffer), 0);
             set_batched_logits_projection_dispatch_params(
                 encoder,
-                3,
+                slots.params,
                 saturating_usize_to_u32(token_count),
                 saturating_usize_to_u32(vocab_rows),
                 saturating_usize_to_u32(projection_cols),
@@ -5044,13 +5047,14 @@ fn project_batched_decode_tokens_with_optional_native_path(
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.decode_logits_argmax_batched.compute");
 
+            let slots = &*PROJECTION_SLOTS;
             encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
-            encoder.set_buffer(0, Some(&hidden_buffer), 0);
-            encoder.set_buffer(1, Some(&decode_projection.native_buffer), 0);
-            encoder.set_buffer(2, Some(&logits_buffer), 0);
+            encoder.set_buffer(slots.input, Some(&hidden_buffer), 0);
+            encoder.set_buffer(slots.weights, Some(&decode_projection.native_buffer), 0);
+            encoder.set_buffer(slots.output, Some(&logits_buffer), 0);
             set_batched_logits_projection_dispatch_params(
                 encoder,
-                3,
+                slots.params,
                 saturating_usize_to_u32(token_count),
                 saturating_usize_to_u32(vocab_rows),
                 saturating_usize_to_u32(projection_cols),
@@ -5903,13 +5907,18 @@ fn project_batched_moe_expert_matrix_rows_with_tally(
                         let encoder = command_buffer.new_compute_command_encoder();
                         encoder.set_label("ax.phase1.project_moe_expert_rows_batched.compute");
 
+                        let slots = &*PROJECTION_SLOTS;
                         encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
-                        encoder.set_buffer(0, Some(&hidden_buffer), 0);
-                        encoder.set_buffer(1, Some(&binding.native_buffer), row_byte_offset as u64);
-                        encoder.set_buffer(2, Some(&output_buffer), 0);
+                        encoder.set_buffer(slots.input, Some(&hidden_buffer), 0);
+                        encoder.set_buffer(
+                            slots.weights,
+                            Some(&binding.native_buffer),
+                            row_byte_offset as u64,
+                        );
+                        encoder.set_buffer(slots.output, Some(&output_buffer), 0);
                         set_batched_logits_projection_dispatch_params(
                             encoder,
-                            3,
+                            slots.params,
                             saturating_usize_to_u32(row_count),
                             saturating_usize_to_u32(output_dim),
                             saturating_usize_to_u32(cols),
@@ -6123,13 +6132,18 @@ fn project_batched_moe_expert_gate_up_multi_dispatch(
                 .checked_mul(native_dtype_size_bytes(task.binding.native_dtype))?;
             let output_element_count = row_count.checked_mul(task.output_dim)?;
 
+            let slots = &*PROJECTION_SLOTS;
             encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
-            encoder.set_buffer(0, Some(&hidden_buffer), 0);
-            encoder.set_buffer(1, Some(&task.binding.native_buffer), row_byte_offset as u64);
-            encoder.set_buffer(2, Some(output_buffer), 0);
+            encoder.set_buffer(slots.input, Some(&hidden_buffer), 0);
+            encoder.set_buffer(
+                slots.weights,
+                Some(&task.binding.native_buffer),
+                row_byte_offset as u64,
+            );
+            encoder.set_buffer(slots.output, Some(output_buffer), 0);
             set_batched_logits_projection_dispatch_params(
                 encoder,
-                3,
+                slots.params,
                 saturating_usize_to_u32(row_count),
                 saturating_usize_to_u32(task.output_dim),
                 saturating_usize_to_u32(cols),
