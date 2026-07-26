@@ -18,6 +18,7 @@ pub mod minicpm_v;
 pub mod model;
 pub mod multimodal_adapter;
 pub mod nemotron_omni;
+pub mod prefill_cohort;
 pub mod qwen3_vl;
 pub mod request;
 pub mod request_manager;
