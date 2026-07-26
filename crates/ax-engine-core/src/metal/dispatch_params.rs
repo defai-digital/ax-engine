@@ -591,3 +591,40 @@ pub(super) fn set_embedding_gather_dispatch_params(
     };
     set_dispatch_params(encoder, buffer_index, &params);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BatchedLogitsProjectionDispatchParams, LogitsProjectionDispatchParams,
+        Q4KMProjectionDispatchParams,
+    };
+    use std::mem::size_of;
+
+    /// The AST signature gate proves the shader-side param structs match
+    /// the expectations table in `build.rs`; this test closes the loop by
+    /// proving the table matches the Rust `#[repr(C)]` mirrors used at
+    /// encode time. Every projection param field is a Metal `uint`
+    /// (4 bytes), so field count * 4 must equal the Rust struct width —
+    /// a size-only check is enough here because field names/order are
+    /// pinned against the shader by the gate.
+    #[test]
+    fn projection_param_expectations_match_rust_mirror_widths() {
+        let widths: std::collections::BTreeMap<&str, usize> =
+            super::super::build::PROJECTION_PARAM_STRUCT_EXPECTATIONS
+                .iter()
+                .map(|(name, fields)| (*name, fields.len() * 4))
+                .collect();
+        assert_eq!(
+            widths["LogitsProjectionParams"],
+            size_of::<LogitsProjectionDispatchParams>()
+        );
+        assert_eq!(
+            widths["BatchedLogitsProjectionParams"],
+            size_of::<BatchedLogitsProjectionDispatchParams>()
+        );
+        assert_eq!(
+            widths["Q4KMProjectionParams"],
+            size_of::<Q4KMProjectionDispatchParams>()
+        );
+    }
+}

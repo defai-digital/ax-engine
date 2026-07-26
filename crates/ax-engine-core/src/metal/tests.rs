@@ -7395,7 +7395,8 @@ fn metal_kernel_builder_compiles_with_fake_xcrun_toolchain() {
 
     assert_eq!(artifacts.build_status(), MetalBuildStatus::Compiled);
     assert!(!artifacts.reused_existing_artifacts());
-    assert_eq!(artifacts.build_report.compile_commands.len(), 3);
+    // ast-signature gate + air + metalar + metallib
+    assert_eq!(artifacts.build_report.compile_commands.len(), 4);
     assert!(
         artifacts
             .build_report
@@ -7463,7 +7464,8 @@ fn metal_kernel_builder_compiles_without_metal_ar() {
         .expect("builder should compile directly from AIR when metal-ar is unavailable");
 
     assert_eq!(artifacts.build_status(), MetalBuildStatus::Compiled);
-    assert_eq!(artifacts.build_report.compile_commands.len(), 2);
+    // ast-signature gate + air + metallib (no metal-ar)
+    assert_eq!(artifacts.build_report.compile_commands.len(), 3);
     assert!(artifacts.build_report.outputs.metalar.is_none());
     assert!(artifacts.build_report.outputs.metalar_sha256.is_none());
     assert!(
@@ -7476,6 +7478,127 @@ fn metal_kernel_builder_compiles_without_metal_ar() {
     );
 
     fixture.cleanup();
+}
+
+#[test]
+fn metal_kernel_builder_fails_closed_on_ast_signature_drift() {
+    let fixture = write_phase1_fixture(MetalBuildStatus::SkippedToolchainUnavailable, None);
+    let bin_dir = fixture.root.join("fake-bin");
+    fs::create_dir_all(&bin_dir).expect("fake bin directory should create");
+    let fake_xcrun = bin_dir.join("xcrun");
+    fs::write(&fake_xcrun, fake_xcrun_script()).expect("fake xcrun should write");
+    let mut permissions = fs::metadata(&fake_xcrun)
+        .expect("fake xcrun metadata should load")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_xcrun, permissions).expect("fake xcrun should be executable");
+
+    // Drop one projection kernel from the AST the fake toolchain serves —
+    // models a shader edit that renamed the kernel or removed its
+    // `kernel` qualifier without the Rust dispatch table noticing.
+    let source_path = fixture.root.join("metal/kernels/phase1_dense_path.metal");
+    let ast_path = format!("{}.ast.json", source_path.display());
+    let mut ast: serde_json::Value =
+        serde_json::from_str(&synthetic_projection_ast_json()).expect("synthetic AST should parse");
+    ast["inner"]
+        .as_array_mut()
+        .expect("synthetic AST inner array")
+        .retain(|node| node["name"] != "decode_projection_q4km");
+    fs::write(&ast_path, ast.to_string()).expect("tampered AST should write");
+
+    let original_path = std::env::var_os("PATH");
+    let fake_path = prepend_to_path(&bin_dir, original_path.as_ref());
+    let request = MetalKernelBuildRequest {
+        manifest_path: fixture.root.join("metal/phase1-kernels.json"),
+        output_dir: fixture.build_dir.clone(),
+        doctor: sample_build_doctor(true, true),
+        toolchain_path_override: Some(fake_path),
+    };
+
+    let artifacts =
+        build_phase1_kernel_artifacts(&request).expect("builder should emit failed report");
+
+    assert_eq!(artifacts.build_status(), MetalBuildStatus::FailedCompile);
+    assert!(
+        artifacts
+            .build_report
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("metal AST signature gate failed")
+                && reason.contains("decode_projection_q4km"))
+    );
+    assert!(artifacts.build_report.outputs.metallib.is_none());
+
+    fixture.cleanup();
+}
+
+#[test]
+fn ast_signature_validator_accepts_matching_ast() {
+    assert_eq!(
+        build::validate_kernel_signatures_against_ast(
+            &synthetic_projection_ast_json(),
+            build::PROJECTION_KERNEL_SIGNATURES,
+            build::PROJECTION_PARAM_STRUCT_EXPECTATIONS,
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn ast_signature_validator_rejects_drifted_buffer_index() {
+    let mut ast: serde_json::Value =
+        serde_json::from_str(&synthetic_projection_ast_json()).expect("synthetic AST should parse");
+    // Renumber decode_logits_projection_f32's params slot from 3 to 4.
+    let kernel = ast["inner"]
+        .as_array_mut()
+        .expect("inner array")
+        .iter_mut()
+        .find(|node| node["name"] == "decode_logits_projection_f32")
+        .expect("kernel present");
+    kernel["inner"][4]["inner"][0]["inner"][0]["value"] = serde_json::json!("4");
+
+    let error = build::validate_kernel_signatures_against_ast(
+        &ast.to_string(),
+        build::PROJECTION_KERNEL_SIGNATURES,
+        build::PROJECTION_PARAM_STRUCT_EXPECTATIONS,
+    )
+    .expect_err("drifted buffer index must be rejected");
+    assert!(error.contains("decode_logits_projection_f32"));
+    assert!(error.contains("drifted"));
+}
+
+#[test]
+fn ast_signature_validator_rejects_renamed_struct_field() {
+    let renamed = synthetic_projection_ast_json().replace("\"n_rows\"", "\"row_count\"");
+    let error = build::validate_kernel_signatures_against_ast(
+        &renamed,
+        build::PROJECTION_KERNEL_SIGNATURES,
+        build::PROJECTION_PARAM_STRUCT_EXPECTATIONS,
+    )
+    .expect_err("renamed param-struct field must be rejected");
+    assert!(error.contains("Q4KMProjectionParams"));
+}
+
+#[test]
+fn ast_signature_validator_rejects_unrecognized_root() {
+    let error = build::validate_kernel_signatures_against_ast(
+        r#"{"kind": "SomethingElse", "inner": []}"#,
+        build::PROJECTION_KERNEL_SIGNATURES,
+        build::PROJECTION_PARAM_STRUCT_EXPECTATIONS,
+    )
+    .expect_err("unknown AST root must be rejected");
+    assert!(error.contains("TranslationUnitDecl"));
+}
+
+#[test]
+fn ast_signature_validator_rejects_unparseable_dump() {
+    let error = build::validate_kernel_signatures_against_ast(
+        "not json at all",
+        build::PROJECTION_KERNEL_SIGNATURES,
+        build::PROJECTION_PARAM_STRUCT_EXPECTATIONS,
+    )
+    .expect_err("non-JSON dump must be rejected");
+    assert!(error.contains("did not parse"));
 }
 
 #[test]
@@ -7522,6 +7645,49 @@ fn metal_kernel_builder_reuses_valid_compiled_artifacts_without_recompiling() {
     fixture.cleanup();
 }
 
+/// Minimal `-ast-dump=json`-shaped document containing exactly the nodes
+/// the AST signature gate inspects, generated from the gate's own
+/// expectation tables (`PROJECTION_KERNEL_SIGNATURES`,
+/// `PROJECTION_PARAM_STRUCT_EXPECTATIONS`).
+fn synthetic_projection_ast_json() -> String {
+    let kernels = build::PROJECTION_KERNEL_SIGNATURES.iter().map(|signature| {
+        let mut inner = vec![serde_json::json!({"kind": "MetalKernelAttr"})];
+        inner.extend(signature.buffers.iter().map(|(name, index, qual_type)| {
+            serde_json::json!({
+                "kind": "ParmVarDecl",
+                "name": name,
+                "type": {"qualType": qual_type},
+                "inner": [{
+                    "kind": "MetalBufferIndexAttr",
+                    "inner": [{"kind": "IntegerLiteral", "value": index.to_string()}],
+                }],
+            })
+        }));
+        serde_json::json!({"kind": "FunctionDecl", "name": signature.kernel, "inner": inner})
+    });
+    let records = build::PROJECTION_PARAM_STRUCT_EXPECTATIONS
+        .iter()
+        .map(|(name, fields)| {
+            serde_json::json!({
+                "kind": "CXXRecordDecl",
+                "name": name,
+                "inner": fields
+                    .iter()
+                    .map(|(field, qual_type)| serde_json::json!({
+                        "kind": "FieldDecl",
+                        "name": field,
+                        "type": {"qualType": qual_type},
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        });
+    serde_json::json!({
+        "kind": "TranslationUnitDecl",
+        "inner": kernels.chain(records).collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
 fn write_phase1_fixture(
     status: MetalBuildStatus,
     manifest_edit: Option<fn(&mut MetalKernelManifest)>,
@@ -7536,6 +7702,14 @@ fn write_phase1_fixture(
     let source_path = kernels_dir.join("phase1_dense_path.metal");
     let source_text = phase1_source_text();
     fs::write(&source_path, source_text.as_bytes()).expect("source file should write");
+    // The fake xcrun serves `<src>.ast.json` for the AST signature gate;
+    // generate it from the same expectation tables the gate validates
+    // against, so fixture and gate cannot drift apart.
+    fs::write(
+        format!("{}.ast.json", source_path.display()),
+        synthetic_projection_ast_json(),
+    )
+    .expect("synthetic AST fixture should write");
 
     let manifest_path = metal_dir.join("phase1-kernels.json");
     let mut manifest = MetalKernelManifest {
@@ -8014,6 +8188,7 @@ case "${tool:-}" in
   metal)
     out=""
     src=""
+    ast=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -o)
@@ -8026,13 +8201,24 @@ case "${tool:-}" in
         -std=*)
           shift
           ;;
+        -fsyntax-only|-Xclang)
+          shift
+          ;;
+        -ast-dump=json)
+          ast="1"
+          shift
+          ;;
         *)
           src="$1"
           shift
           ;;
       esac
     done
-    cp "$src" "$out"
+    if [ "$ast" = "1" ]; then
+      cat "${src}.ast.json"
+    else
+      cp "$src" "$out"
+    fi
     ;;
   metal-ar)
     archive=""

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -287,7 +287,9 @@ pub fn build_phase1_kernel_artifacts(
         build_report.reason =
             Some("AX native bring-up is not allowed on this machine without override".to_string());
     } else {
-        build_report.compile_commands = vec![compile_air_cmd.clone()];
+        let ast_gate_cmd =
+            ast_dump_command(&manifest.metal_language_standard, &resolved_source_file);
+        build_report.compile_commands = vec![ast_gate_cmd.clone(), compile_air_cmd.clone()];
         if request.doctor.metal_toolchain.metal_ar.available {
             build_report
                 .compile_commands
@@ -304,12 +306,35 @@ pub fn build_phase1_kernel_artifacts(
         ]);
 
         let developer_dir_candidates = xcrun_developer_dir_candidates("xcrun");
-        let compile_result = run_toolchain_command(
-            &compile_air_cmd,
+        // The AST signature gate runs first: a drifted kernel signature
+        // must fail the build before any artifact is produced. Cached
+        // reuse (`try_reuse_compiled_phase1_kernel_artifacts`) keys on
+        // source_sha256, so an unchanged source skips the gate along with
+        // the compile; a fresh build always re-runs it.
+        let compile_result = run_toolchain_command_with_output(
+            &ast_gate_cmd,
             &workspace_root,
             request.toolchain_path_override.as_ref(),
             &developer_dir_candidates,
-        );
+        )
+        .and_then(|stdout| {
+            let ast_json = String::from_utf8(stdout)
+                .map_err(|_| "metal AST dump was not valid UTF-8".to_string())?;
+            validate_kernel_signatures_against_ast(
+                &ast_json,
+                PROJECTION_KERNEL_SIGNATURES,
+                PROJECTION_PARAM_STRUCT_EXPECTATIONS,
+            )
+            .map_err(|message| format!("metal AST signature gate failed: {message}"))
+        });
+        let compile_result = compile_result.and_then(|_| {
+            run_toolchain_command(
+                &compile_air_cmd,
+                &workspace_root,
+                request.toolchain_path_override.as_ref(),
+                &developer_dir_candidates,
+            )
+        });
         let compile_result = if request.doctor.metal_toolchain.metal_ar.available {
             compile_result.and_then(|_| {
                 run_toolchain_command(
@@ -678,6 +703,19 @@ fn run_toolchain_command(
     path_override: Option<&OsString>,
     developer_dir_candidates: &[Option<String>],
 ) -> Result<(), String> {
+    run_toolchain_command_with_output(command, cwd, path_override, developer_dir_candidates)
+        .map(|_| ())
+}
+
+/// Like [`run_toolchain_command`] but returns the command's stdout on
+/// success — needed by the AST signature gate, whose `-ast-dump=json`
+/// output has no `-o` form.
+fn run_toolchain_command_with_output(
+    command: &[String],
+    cwd: &Path,
+    path_override: Option<&OsString>,
+    developer_dir_candidates: &[Option<String>],
+) -> Result<Vec<u8>, String> {
     let Some((program, args)) = command.split_first() else {
         return Err("toolchain command must not be empty".to_string());
     };
@@ -712,7 +750,7 @@ fn run_toolchain_command(
         };
 
         if output.status.success() {
-            return Ok(());
+            return Ok(output.stdout);
         }
 
         let status = output.status.code().map_or_else(
@@ -968,6 +1006,332 @@ fn validate_phase1_manifest(manifest: &MetalKernelManifest) -> Result<(), MetalR
             return Err(MetalRuntimeError::InvalidManifest {
                 message: format!("kernel {kernel_name} must be tier=deferred"),
             });
+        }
+    }
+
+    Ok(())
+}
+
+// ===== AST-derived kernel signature gate (P1-A pilot) =====
+//
+// The build validates kernel *names* in both directions, but nothing
+// validated arity, `[[buffer(N)]]` indices, or param-struct layout — the
+// exact drift class behind the q4km/float param mix-up risk in
+// `encode_fused_projection`. This gate parses the Metal compiler's own
+// AST (`-Xclang -ast-dump=json`, available on the metal3.1 baseline) and
+// fails the build when the shader's host-visible signature no longer
+// matches the Rust dispatch expectations below. Pilot scope: the
+// fused/decode projection family. AST unavailability or schema drift is
+// a hard failure — never a silent skip — but only once the toolchain is
+// fully available and bringup is allowed (non-Apple hosts keep the
+// existing Skipped* statuses).
+
+/// One kernel's expected host-visible Metal signature.
+pub(super) struct ExpectedKernelSignature {
+    pub(super) kernel: &'static str,
+    /// Every `[[buffer(N)]]` parameter in declaration order:
+    /// (argument name, buffer index, Metal qualified type).
+    pub(super) buffers: &'static [(&'static str, u32, &'static str)],
+}
+
+/// Param structs the projection kernels bind at slot 3, as
+/// (struct name, fields as (name, Metal type)). Must stay in lockstep
+/// with the `#[repr(C)]` mirrors in `dispatch_params.rs`
+/// (`LogitsProjectionDispatchParams`, `BatchedLogitsProjectionDispatchParams`,
+/// `Q4KMProjectionDispatchParams`); the width cross-check test lives there.
+pub(super) const PROJECTION_PARAM_STRUCT_EXPECTATIONS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "LogitsProjectionParams",
+        &[
+            ("vocab_rows", "uint"),
+            ("projection_cols", "uint"),
+            ("input_width", "uint"),
+        ],
+    ),
+    (
+        "BatchedLogitsProjectionParams",
+        &[
+            ("token_count", "uint"),
+            ("vocab_rows", "uint"),
+            ("projection_cols", "uint"),
+            ("input_width", "uint"),
+            ("hidden_stride", "uint"),
+        ],
+    ),
+    (
+        "Q4KMProjectionParams",
+        &[("n_rows", "uint"), ("input_width", "uint")],
+    ),
+];
+
+const SINGLE_PROJECTION_PARAMS: &str = "const constant LogitsProjectionParams &";
+const BATCHED_PROJECTION_PARAMS: &str = "const constant BatchedLogitsProjectionParams &";
+
+macro_rules! projection_signature {
+    ($kernel:literal, $weights:literal, $params:expr) => {
+        ExpectedKernelSignature {
+            kernel: $kernel,
+            buffers: &[
+                ("hidden", 0, "const device float *"),
+                ("projection", 1, $weights),
+                ("logits", 2, "device float *"),
+                ("params", 3, $params),
+            ],
+        }
+    };
+}
+
+pub(super) const PROJECTION_KERNEL_SIGNATURES: &[ExpectedKernelSignature] = &[
+    projection_signature!(
+        "decode_logits_projection_f32",
+        "const device float *",
+        SINGLE_PROJECTION_PARAMS
+    ),
+    projection_signature!(
+        "decode_logits_projection_f16",
+        "const device half *",
+        SINGLE_PROJECTION_PARAMS
+    ),
+    projection_signature!(
+        "decode_logits_projection_bf16",
+        "const device bfloat *",
+        SINGLE_PROJECTION_PARAMS
+    ),
+    projection_signature!(
+        "decode_logits_projection_batched_f32",
+        "const device float *",
+        BATCHED_PROJECTION_PARAMS
+    ),
+    projection_signature!(
+        "decode_logits_projection_batched_f16",
+        "const device half *",
+        BATCHED_PROJECTION_PARAMS
+    ),
+    projection_signature!(
+        "decode_logits_projection_batched_bf16",
+        "const device bfloat *",
+        BATCHED_PROJECTION_PARAMS
+    ),
+    projection_signature!(
+        "decode_logits_projection_sg_f32",
+        "const device float *",
+        SINGLE_PROJECTION_PARAMS
+    ),
+    projection_signature!(
+        "decode_logits_projection_sg_f16",
+        "const device half *",
+        SINGLE_PROJECTION_PARAMS
+    ),
+    projection_signature!(
+        "decode_logits_projection_sg_bf16",
+        "const device bfloat *",
+        SINGLE_PROJECTION_PARAMS
+    ),
+    projection_signature!(
+        "decode_logits_projection_batched_sg_f16",
+        "const device half *",
+        BATCHED_PROJECTION_PARAMS
+    ),
+    projection_signature!(
+        "decode_logits_projection_batched_sg_bf16",
+        "const device bfloat *",
+        BATCHED_PROJECTION_PARAMS
+    ),
+    ExpectedKernelSignature {
+        kernel: "decode_projection_q4km",
+        buffers: &[
+            ("hidden", 0, "const device float *"),
+            ("weights", 1, "const device uint8_t *"),
+            ("output", 2, "device float *"),
+            ("params", 3, "const constant Q4KMProjectionParams &"),
+        ],
+    },
+];
+
+fn ast_dump_command(metal_language_standard: &str, source: &Path) -> Vec<String> {
+    vec![
+        "xcrun".to_string(),
+        "--sdk".to_string(),
+        "macosx".to_string(),
+        "metal".to_string(),
+        format!("-std={metal_language_standard}"),
+        source.display().to_string(),
+        "-fsyntax-only".to_string(),
+        "-Xclang".to_string(),
+        "-ast-dump=json".to_string(),
+    ]
+}
+
+fn ast_node_kind(node: &serde_json::Value) -> &str {
+    node.get("kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+}
+
+fn ast_node_name(node: &serde_json::Value) -> Option<&str> {
+    node.get("name").and_then(serde_json::Value::as_str)
+}
+
+fn ast_node_qual_type(node: &serde_json::Value) -> Option<&str> {
+    node.get("type")?
+        .get("qualType")
+        .and_then(serde_json::Value::as_str)
+}
+
+fn ast_node_inner(node: &serde_json::Value) -> &[serde_json::Value] {
+    node.get("inner")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn ast_param_buffer_index(param: &serde_json::Value) -> Result<Option<u32>, String> {
+    for attr in ast_node_inner(param) {
+        if ast_node_kind(attr) != "MetalBufferIndexAttr" {
+            continue;
+        }
+        for literal in ast_node_inner(attr) {
+            if ast_node_kind(literal) != "IntegerLiteral" {
+                continue;
+            }
+            let value = literal
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    "MetalBufferIndexAttr IntegerLiteral has no string value (AST schema drift)"
+                        .to_string()
+                })?;
+            let index = value.parse::<u32>().map_err(|_| {
+                format!("MetalBufferIndexAttr value {value:?} is not a u32 (AST schema drift)")
+            })?;
+            return Ok(Some(index));
+        }
+        return Err(
+            "MetalBufferIndexAttr without an IntegerLiteral child (AST schema drift)".to_string(),
+        );
+    }
+    Ok(None)
+}
+
+/// Validate expected kernel signatures and param-struct layouts against a
+/// `metal … -Xclang -ast-dump=json` dump. Every mismatch — including an
+/// unparseable dump or an unrecognized schema — is an error: a toolchain
+/// whose AST output drifts must break the build, not silently stop
+/// checking.
+pub(super) fn validate_kernel_signatures_against_ast(
+    ast_json: &str,
+    expected_kernels: &[ExpectedKernelSignature],
+    expected_structs: &[(&str, &[(&str, &str)])],
+) -> Result<(), String> {
+    let ast: serde_json::Value = serde_json::from_str(ast_json)
+        .map_err(|error| format!("metal AST dump did not parse as JSON: {error}"))?;
+    if ast_node_kind(&ast) != "TranslationUnitDecl" {
+        return Err(format!(
+            "metal AST root is {:?}, expected TranslationUnitDecl (AST schema drift)",
+            ast_node_kind(&ast)
+        ));
+    }
+
+    let mut kernel_buffers: BTreeMap<String, Vec<(String, u32, String)>> = BTreeMap::new();
+    let mut record_fields: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut stack: Vec<&serde_json::Value> = vec![&ast];
+    while let Some(node) = stack.pop() {
+        let kind = ast_node_kind(node);
+        if kind == "FunctionDecl"
+            && let Some(name) = ast_node_name(node)
+            && ast_node_inner(node)
+                .iter()
+                .any(|child| ast_node_kind(child) == "MetalKernelAttr")
+        {
+            let mut buffers = Vec::new();
+            for param in ast_node_inner(node) {
+                if ast_node_kind(param) != "ParmVarDecl" {
+                    continue;
+                }
+                if let Some(index) = ast_param_buffer_index(param)
+                    .map_err(|error| format!("kernel {name}: {error}"))?
+                {
+                    buffers.push((
+                        ast_node_name(param).unwrap_or_default().to_string(),
+                        index,
+                        ast_node_qual_type(param).unwrap_or_default().to_string(),
+                    ));
+                }
+            }
+            match kernel_buffers.get(name) {
+                Some(existing) if *existing != buffers => {
+                    return Err(format!(
+                        "kernel {name} appears twice in the AST with different buffer signatures"
+                    ));
+                }
+                _ => {
+                    kernel_buffers.insert(name.to_string(), buffers);
+                }
+            }
+        } else if kind == "CXXRecordDecl"
+            && let Some(name) = ast_node_name(node)
+        {
+            let fields: Vec<(String, String)> = ast_node_inner(node)
+                .iter()
+                .filter(|child| ast_node_kind(child) == "FieldDecl")
+                .map(|field| {
+                    (
+                        ast_node_name(field).unwrap_or_default().to_string(),
+                        ast_node_qual_type(field).unwrap_or_default().to_string(),
+                    )
+                })
+                .collect();
+            // Records surface once as a definition (with fields) and once
+            // as an injected reference (empty); only definitions count.
+            if !fields.is_empty() {
+                match record_fields.get(name) {
+                    Some(existing) if *existing != fields => {
+                        return Err(format!(
+                            "struct {name} appears twice in the AST with different fields"
+                        ));
+                    }
+                    _ => {
+                        record_fields.insert(name.to_string(), fields);
+                    }
+                }
+            }
+        }
+        stack.extend(ast_node_inner(node));
+    }
+
+    for expected in expected_kernels {
+        let Some(actual) = kernel_buffers.get(expected.kernel) else {
+            return Err(format!(
+                "kernel {} is missing from the AST (renamed, deleted, or lost its kernel qualifier)",
+                expected.kernel
+            ));
+        };
+        let expected_buffers: Vec<(String, u32, String)> = expected
+            .buffers
+            .iter()
+            .map(|(name, index, qual_type)| (name.to_string(), *index, qual_type.to_string()))
+            .collect();
+        if *actual != expected_buffers {
+            return Err(format!(
+                "kernel {} buffer signature drifted; Rust dispatch expects {:?}, shader AST has {:?}",
+                expected.kernel, expected_buffers, actual
+            ));
+        }
+    }
+
+    for (name, fields) in expected_structs {
+        let Some(actual) = record_fields.get(*name) else {
+            return Err(format!("param struct {name} is missing from the AST"));
+        };
+        let expected_fields: Vec<(String, String)> = fields
+            .iter()
+            .map(|(field, qual_type)| (field.to_string(), qual_type.to_string()))
+            .collect();
+        if *actual != expected_fields {
+            return Err(format!(
+                "param struct {name} layout drifted; Rust mirror expects {:?}, shader AST has {:?}",
+                expected_fields, actual
+            ));
         }
     }
 
