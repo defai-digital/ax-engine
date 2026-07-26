@@ -1,0 +1,40 @@
+{
+  "schema": "ax.pure_ab.v1",
+  "host": "mbp-m5",
+  "keep_if": 0.96,
+  "decision": "reject_keep_base",
+  "results": [
+    {
+      "variant": "base",
+      "times_ms": [
+        8065.614374936558,
+        8138.659583986737,
+        8479.580957908183
+      ],
+      "median_ms": 8138.659583986737,
+      "texts": [
+        " The",
+        " The",
+        " The"
+      ],
+      "ratio_vs_base": 1.0,
+      "keep": false
+    },
+    {
+      "variant": "dual_v4",
+      "times_ms": [
+        66115.78258301597,
+        66185.9048330225,
+        66006.38112507295
+      ],
+      "median_ms": 66115.78258301597,
+      "texts": [
+        "",
+        "",
+        ""
+      ],
+      "ratio_vs_base": 8.123669739560361,
+      "keep": false
+    }
+  ]
+}

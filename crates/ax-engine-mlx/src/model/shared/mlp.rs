@@ -711,15 +711,16 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
     }
 "#;
 
-/// Multi-token dual gate/up affine GEMM + GEGLU for Gemma pure prefill (v3).
+/// Multi-token dual gate/up affine GEMM + GEGLU for Gemma pure prefill (v4).
 ///
 /// v1: one OutDim row per TG, re-read X from global → ~8.5× pure regression.
 /// v2: BM=4 / TOKEN_TILE=8 / K=64 / TG=256 but K-loop strided by TG left most
 ///     threads idle → ~25× regression.
-/// v3: classical tiled GEMM over (BM×BN) output tiles with full-TG cooperative
-///     loads of X and dequantized W. BM*BN == TG so each thread owns one
-///     output element of the tile (no cross-TG reduction). Streams gate+up
-///     weights once per tile K-step and fuses gelu_approx * up at writeback.
+/// v3: BM=8 / BN=16 / BK=128 / TG=128 classical tile → ~8.5× pure regression.
+/// v4: steel-matched tile sizes from MLX `steel_gemm_*` (BM=16, BN=16, BK=64
+///     = GroupSize) so TG=256. Still host-authored dual-output GEMM — Path A
+///     residual: can a steel-shaped dual beat sequential MLX qmm on multi-token
+///     bits=8? Default OFF; pure A/B bar ≤0.96 under cache_eval.
 ///
 /// Template ints: Leading, OutDim, PackedCols, InputDim, GroupSize, GroupCount,
 /// Bits, PackFactor, QuantMask. OutT is the activation dtype.
@@ -727,10 +728,11 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
 const GEMMA_DUAL_GATE_UP_GEGLU_KERNEL_SOURCE: &str = r#"
     // Tiled dual-qmm GEMM: each TG owns BM output rows × BN tokens.
     // BM*BN must equal TG so one thread maps to one (row, token) of the tile.
-    const uint BM = 8u;
+    // v4 steel-matched: BM=16 BN=16 BK=64 (matches GroupSize for bits=8 gs64).
+    const uint BM = 16u;
     const uint BN = 16u;
-    const uint BK = 128u; // multiple of GroupSize(64) and PackFactor(4)
-    const uint TG = 128u; // BM * BN
+    const uint BK = 64u; // == GroupSize; multiple of PackFactor(4)
+    const uint TG = 256u; // BM * BN
 
     uint flat = thread_position_in_grid.x;
     uint block = flat / TG;
@@ -1490,7 +1492,7 @@ fn gemma_dense_ffn_dual_gate_up_geglu_metal(
     let quant_mask = (1_i32 << gate.bits) - 1;
     let kernel = GEMMA_DUAL_GATE_UP_GEGLU_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_gemma_dense_ffn_dual_gate_up_geglu_v3",
+            "ax_gemma_dense_ffn_dual_gate_up_geglu_v4",
             &[
                 "x",
                 "gate_weight",
@@ -1506,10 +1508,10 @@ fn gemma_dense_ffn_dual_gate_up_geglu_metal(
             true,
         )
     });
-    // v3 tiled GEMM: BM=8 rows × BN=16 tokens per TG of 128 threads.
-    const BM: i32 = 8;
+    // v4 steel-matched tiled GEMM: BM=16 rows × BN=16 tokens per TG of 256.
+    const BM: i32 = 16;
     const BN: i32 = 16;
-    const TG: i32 = 128; // BM * BN
+    const TG: i32 = 256; // BM * BN
     let num_row_blocks = (out_dim + BM - 1) / BM;
     let num_token_blocks = (leading + BN - 1) / BN;
     let num_blocks = num_row_blocks.saturating_mul(num_token_blocks.max(1));

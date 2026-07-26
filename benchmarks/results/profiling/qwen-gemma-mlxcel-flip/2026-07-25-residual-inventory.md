@@ -216,3 +216,17 @@ See `2026-07-26-path-b-fairness-residual.md`.
 Decision remains **not_yet**. Gates unchanged. S0–S3 not run (thr cannot clear 1.15).
 Open: Path A steel dual-gate pure ≤0.96, or concurrent design that lifts thr
 without undoing gap (none measured).
+
+## Path A async-chunk + dual metal v4 (2026-07-26)
+
+See `2026-07-26-path-a-async-chunk-residual.md`.
+
+| lever | pure / S1 | decision |
+|-------|----------:|----------|
+| CACHE_ONLY_CHUNK_ASYNC_EVAL pure | 0.972 | pure short of 0.96 |
+| async_chunk multi-process S1 | thr 1.103 | reject thr transfer fail |
+| async_chunk + pipeline layer S1 | thr **1.137**, gap 1.99 | best thr; gap collapse |
+| + eval block:8 S1 | thr 1.137, gap 1.27 | abs gap ok; thr still short |
+| dual metal v4 pure | **8.12×** empty text | reject OFF |
+
+Best formal thr **1.137×** (need 1.15). Flip still **not_yet**.

@@ -562,6 +562,46 @@ env_flag!(
     "AX_MLX_CACHE_ONLY_CHUNK_EVAL"
 );
 
+env_flag!(
+    /// `AX_MLX_CACHE_ONLY_CHUNK_ASYNC_EVAL` — under cache-only chunk eval,
+    /// submit intermediate chunk KV with `async_eval` instead of blocking
+    /// `eval`, so the host can build chunk N+1 while GPU runs chunk N.
+    /// The final cache-only chunk still uses a blocking barrier so decode
+    /// sees fully materialised KV.
+    ///
+    /// Path A residual (mbp-m5 pure thr): multi-process keep_base already uses
+    /// `CACHE_ONLY_CHUNK_EVAL=1` (~27 blocking barriers on Gemma 13.8k). Those
+    /// barriers serialise host graph build behind GPU completion. Async
+    /// intermediate barriers target host/GPU overlap without collapsing the
+    /// #672 "no giant lazy graph" property (each chunk is still submitted).
+    ///
+    /// No-op unless `AX_MLX_CACHE_ONLY_CHUNK_EVAL=1`. **Default: OFF**.
+    cache_only_chunk_async_eval_enabled,
+    "AX_MLX_CACHE_ONLY_CHUNK_ASYNC_EVAL"
+);
+
+/// Whether a cache-only prefill chunk should use non-blocking KV submit.
+///
+/// Intermediate chunks under both `CACHE_ONLY_CHUNK_EVAL` and
+/// `CACHE_ONLY_CHUNK_ASYNC_EVAL` async-submit; the final cache-only chunk
+/// always blocks so the subsequent decode step sees settled KV.
+pub fn cache_only_chunk_should_async_eval(is_final_cache_only_chunk: bool) -> bool {
+    cache_only_chunk_should_async_eval_for(
+        cache_only_chunk_eval_enabled(),
+        cache_only_chunk_async_eval_enabled(),
+        is_final_cache_only_chunk,
+    )
+}
+
+/// Pure helper for [`cache_only_chunk_should_async_eval`] (unit-testable).
+pub fn cache_only_chunk_should_async_eval_for(
+    chunk_eval_enabled: bool,
+    async_eval_enabled: bool,
+    is_final_cache_only_chunk: bool,
+) -> bool {
+    chunk_eval_enabled && async_eval_enabled && !is_final_cache_only_chunk
+}
+
 /// mlxcel `MLXCEL_PIPELINE_GRANULARITY` parity — layer-boundary `async_eval`
 /// hints during multi-layer prefill.
 ///
@@ -1979,6 +2019,18 @@ mod tests {
             "0"
         ));
         assert!(probe("AX_FASTPATH_TEST_CACHE_ONLY_CHUNK_EVAL_ENABLED", "1"));
+    }
+
+    #[test]
+    fn cache_only_chunk_async_eval_only_for_non_final_under_both_flags() {
+        // Both off / either off → never async.
+        assert!(!cache_only_chunk_should_async_eval_for(false, false, false));
+        assert!(!cache_only_chunk_should_async_eval_for(true, false, false));
+        assert!(!cache_only_chunk_should_async_eval_for(false, true, false));
+        // Final chunk always blocks even when both flags are on.
+        assert!(!cache_only_chunk_should_async_eval_for(true, true, true));
+        // Intermediate chunk under both flags → async.
+        assert!(cache_only_chunk_should_async_eval_for(true, true, false));
     }
 
     #[test]
