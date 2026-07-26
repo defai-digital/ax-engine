@@ -1107,6 +1107,17 @@ const STREAM_TOKEN_EMIT_BATCH: usize = 1;
 /// when the async SSE consumer is slightly behind.
 const STREAM_ENGINE_STEP_BURST: usize = 64;
 
+/// A single-stream burst may continue only while the original request remains
+/// active and no command is waiting for the generation worker.
+///
+/// `StartStream` increments `queued_commands` before publishing the command to
+/// the worker channel. Checking the counter between engine steps therefore
+/// bounds admission head-of-line blocking to the in-flight step instead of the
+/// remainder of a 64-step burst.
+fn should_continue_single_stream_burst(request_still_active: bool, queued_commands: usize) -> bool {
+    request_still_active && queued_commands == 0
+}
+
 /// Sibling-active exclusive-arbiter engine step burst.
 ///
 /// Under exclusive multi-model load, a full [`STREAM_ENGINE_STEP_BURST`] HOL
@@ -1466,7 +1477,10 @@ fn advance_shared_engine(
             if active_streams.len() == 1 && request_ids.len() == 1 && engine_burst > 1 {
                 let request_id = request_ids[0];
                 for _ in 1..engine_burst {
-                    if !active_streams.contains_key(&request_id) {
+                    if !should_continue_single_stream_burst(
+                        active_streams.contains_key(&request_id),
+                        service_state.queued_commands.load(Ordering::Acquire),
+                    ) {
                         break;
                     }
                     match session.step_report_with_request_ids() {
@@ -1950,6 +1964,14 @@ mod tests {
     fn sibling_engine_step_burst_default_is_sixteen() {
         // Exclusive multi-model: not 1 (arbiter thr tax) and not full HOL burst.
         assert_eq!(SIBLING_ENGINE_STEP_BURST_DEFAULT, 16);
+    }
+
+    #[test]
+    fn single_stream_burst_yields_to_queued_admission() {
+        assert!(should_continue_single_stream_burst(true, 0));
+        assert!(!should_continue_single_stream_burst(true, 1));
+        assert!(!should_continue_single_stream_burst(true, usize::MAX));
+        assert!(!should_continue_single_stream_burst(false, 0));
     }
 
     #[test]

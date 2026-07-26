@@ -625,6 +625,104 @@ pub fn pipeline_hint_should_fire(layer_idx: usize, total_layers: usize) -> bool 
     }
 }
 
+/// Blocking layer-boundary evaluation for prefill fairness diagnostics.
+///
+/// Unlike [`pipeline_granularity`], which only submits an `async_eval` hint,
+/// `AX_MLX_PIPELINE_EVAL_GRANULARITY` inserts a completion barrier. This is an
+/// opt-in physical probe for measuring whether shorter GPU command bursts
+/// improve cross-process fairness; production defaults to `off`.
+///
+/// Accepted values are `off`, `layer`, `block:N` (`N >= 1`), and `sublayer`.
+/// `sublayer` keeps the per-layer barriers and adds a Gemma4 text-prefill
+/// barrier between attention output projection and the post-attention FFN.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineEvalGranularity {
+    Off,
+    PerLayer,
+    PerBlock(usize),
+    Sublayer,
+}
+
+/// Parse `AX_MLX_PIPELINE_EVAL_GRANULARITY` without caching.
+///
+/// Malformed values fail closed to [`PipelineEvalGranularity::Off`] so a typo
+/// cannot introduce blocking barriers into the normal prefill path.
+pub fn parse_pipeline_eval_granularity(raw: &str) -> PipelineEvalGranularity {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("off") {
+        return PipelineEvalGranularity::Off;
+    }
+    if trimmed.eq_ignore_ascii_case("layer") {
+        return PipelineEvalGranularity::PerLayer;
+    }
+    if trimmed.eq_ignore_ascii_case("sublayer") {
+        return PipelineEvalGranularity::Sublayer;
+    }
+    if let Some((prefix, value)) = trimmed.split_once(':')
+        && prefix.eq_ignore_ascii_case("block")
+        && let Ok(n) = value.trim().parse::<usize>()
+        && n > 0
+    {
+        return PipelineEvalGranularity::PerBlock(n);
+    }
+    PipelineEvalGranularity::Off
+}
+
+/// Process-cached blocking prefill-eval granularity. Default OFF.
+pub fn pipeline_eval_granularity() -> PipelineEvalGranularity {
+    static CACHED: OnceLock<PipelineEvalGranularity> = OnceLock::new();
+    *CACHED.get_or_init(|| match std::env::var("AX_MLX_PIPELINE_EVAL_GRANULARITY") {
+        Ok(raw) => parse_pipeline_eval_granularity(&raw),
+        Err(_) => PipelineEvalGranularity::Off,
+    })
+}
+
+fn pipeline_eval_should_fire_for(
+    granularity: PipelineEvalGranularity,
+    seq_len: usize,
+    layer_idx: usize,
+    total_layers: usize,
+) -> bool {
+    if seq_len <= 1 || total_layers == 0 || layer_idx + 1 >= total_layers {
+        return false;
+    }
+    match granularity {
+        PipelineEvalGranularity::Off => false,
+        PipelineEvalGranularity::PerLayer | PipelineEvalGranularity::Sublayer => true,
+        PipelineEvalGranularity::PerBlock(n) => (layer_idx + 1).is_multiple_of(n),
+    }
+}
+
+/// Whether the diagnostic blocking barrier should fire after this layer.
+///
+/// Decode (`seq_len == 1`) and the final transformer layer are always exempt.
+pub fn pipeline_eval_should_fire(seq_len: usize, layer_idx: usize, total_layers: usize) -> bool {
+    pipeline_eval_should_fire_for(
+        pipeline_eval_granularity(),
+        seq_len,
+        layer_idx,
+        total_layers,
+    )
+}
+
+fn pipeline_sublayer_eval_should_fire_for(
+    granularity: PipelineEvalGranularity,
+    seq_len: usize,
+    model_family: &str,
+) -> bool {
+    matches!(granularity, PipelineEvalGranularity::Sublayer)
+        && seq_len > 1
+        && model_family == "gemma4"
+}
+
+/// Whether to block after standard Gemma4 text attention output projection.
+///
+/// This exact family gate deliberately excludes decode, Gemma VL/unified,
+/// assistant, diffusion, and every non-Gemma target from the diagnostic probe.
+pub fn pipeline_sublayer_eval_should_fire(seq_len: usize, model_family: &str) -> bool {
+    pipeline_sublayer_eval_should_fire_for(pipeline_eval_granularity(), seq_len, model_family)
+}
+
 env_flag!(
     /// `AX_MLX_NATIVE_OFFSET_CAUSAL` — for full-attention multi-token prefill
     /// with KV cache offset (`key_len > seq`), skip materializing an
@@ -1933,6 +2031,106 @@ mod tests {
             parse_pipeline_granularity("garbage"),
             PipelineGranularity::Off
         );
+    }
+
+    #[test]
+    fn parse_pipeline_eval_granularity_is_strict_and_case_insensitive() {
+        assert_eq!(
+            parse_pipeline_eval_granularity(""),
+            PipelineEvalGranularity::Off
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity(" OFF "),
+            PipelineEvalGranularity::Off
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity("layer"),
+            PipelineEvalGranularity::PerLayer
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity("LAYER"),
+            PipelineEvalGranularity::PerLayer
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity(" sublayer "),
+            PipelineEvalGranularity::Sublayer
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity("SUBLAYER"),
+            PipelineEvalGranularity::Sublayer
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity("block:4"),
+            PipelineEvalGranularity::PerBlock(4)
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity(" BLOCK:1 "),
+            PipelineEvalGranularity::PerBlock(1)
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity("block:0"),
+            PipelineEvalGranularity::Off
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity("block:xyz"),
+            PipelineEvalGranularity::Off
+        );
+        assert_eq!(
+            parse_pipeline_eval_granularity("garbage"),
+            PipelineEvalGranularity::Off
+        );
+    }
+
+    #[test]
+    fn pipeline_eval_granularity_only_blocks_multi_token_non_final_layers() {
+        use PipelineEvalGranularity::{Off, PerBlock, PerLayer, Sublayer};
+
+        assert!(!pipeline_eval_should_fire_for(Off, 8, 0, 4));
+        assert!(!pipeline_eval_should_fire_for(PerLayer, 1, 0, 4));
+        assert!(pipeline_eval_should_fire_for(PerLayer, 8, 0, 4));
+        assert!(pipeline_eval_should_fire_for(PerLayer, 8, 2, 4));
+        assert!(!pipeline_eval_should_fire_for(PerLayer, 8, 3, 4));
+        assert!(!pipeline_eval_should_fire_for(PerLayer, 8, 0, 0));
+        assert!(pipeline_eval_should_fire_for(Sublayer, 8, 0, 4));
+        assert!(!pipeline_eval_should_fire_for(Sublayer, 1, 0, 4));
+        assert!(!pipeline_eval_should_fire_for(Sublayer, 8, 3, 4));
+
+        assert!(!pipeline_eval_should_fire_for(PerBlock(2), 8, 0, 6));
+        assert!(pipeline_eval_should_fire_for(PerBlock(2), 8, 1, 6));
+        assert!(pipeline_eval_should_fire_for(PerBlock(2), 8, 3, 6));
+        assert!(
+            !pipeline_eval_should_fire_for(PerBlock(2), 8, 5, 6),
+            "final layer remains exempt even when it closes a block"
+        );
+    }
+
+    #[test]
+    fn pipeline_sublayer_eval_is_limited_to_gemma4_multi_token_prefill() {
+        use PipelineEvalGranularity::{Off, PerLayer, Sublayer};
+
+        assert!(!pipeline_sublayer_eval_should_fire_for(Off, 8, "gemma4"));
+        assert!(!pipeline_sublayer_eval_should_fire_for(
+            PerLayer, 8, "gemma4"
+        ));
+        assert!(!pipeline_sublayer_eval_should_fire_for(
+            Sublayer, 1, "gemma4"
+        ));
+        assert!(pipeline_sublayer_eval_should_fire_for(
+            Sublayer, 8, "gemma4"
+        ));
+        assert!(!pipeline_sublayer_eval_should_fire_for(
+            Sublayer, 8, "qwen3_5"
+        ));
+        assert!(!pipeline_sublayer_eval_should_fire_for(
+            Sublayer,
+            8,
+            "gemma4_vl"
+        ));
+        assert!(!pipeline_sublayer_eval_should_fire_for(
+            Sublayer,
+            8,
+            "gemma4_unified"
+        ));
     }
 
     #[test]

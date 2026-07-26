@@ -733,6 +733,12 @@ fn forward_and_logits_mode(
         if crate::fastpath::pipeline_hint_should_fire(li, total_layers) {
             async_eval(&[&hidden]);
         }
+        // Diagnostic/fairness probe: unlike the async pipeline hint above,
+        // this blocks at selected non-final prefill layer boundaries to shorten
+        // individual GPU command bursts. Default OFF preserves the lazy graph.
+        if crate::fastpath::pipeline_eval_should_fire(seq, li, total_layers) {
+            mlx_sys::eval(&[&hidden]);
+        }
     }
 
     // Cache-only: residual after the last layer (FFN already skipped) is only
@@ -860,6 +866,11 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
         // mlxcel residual: `pipeline_hint` (AX_MLX_PIPELINE_GRANULARITY).
         if crate::fastpath::pipeline_hint_should_fire(li, total_layers) {
             async_eval(&[&hidden]);
+        }
+        // Keep the multimodal standard path on the same opt-in blocking
+        // prefill-fairness probe as the text-only standard loop.
+        if crate::fastpath::pipeline_eval_should_fire(seq, li, total_layers) {
+            mlx_sys::eval(&[&hidden]);
         }
     }
 

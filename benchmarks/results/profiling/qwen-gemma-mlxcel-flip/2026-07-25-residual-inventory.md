@@ -201,3 +201,18 @@ design or explicit gate policy.
 ## Terminal decision (2026-07-25 resume)
 See `2026-07-25-terminal-decision.md`. Campaign closes **`not_yet`** under locked
 gates; best thr **1.109×**; full S0–S3 flip not claimed.
+
+## Path B fairness residual (2026-07-26 tip)
+
+See `2026-07-26-path-b-fairness-residual.md`.
+
+| stack | thr ratio | gap ratio | note |
+|-------|----------:|----------:|------|
+| baseline cache_eval recheck | **1.113** | 1.028 | tip thr ceiling |
+| blocking layer-eval | 1.110 | **1.000** | gap parity; thr unchanged |
+| async pipeline layer | **1.122** | 1.113 | best thr; gap unchanged |
+| QoS / FAST_SYNCH / composites | ≤1.13 smoke | ≥1.09 | no thr+gap dual clear |
+
+Decision remains **not_yet**. Gates unchanged. S0–S3 not run (thr cannot clear 1.15).
+Open: Path A steel dual-gate pure ≤0.96, or concurrent design that lifts thr
+without undoing gap (none measured).

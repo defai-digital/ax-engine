@@ -33,6 +33,40 @@ TARGET_SCHEMA_VERSION = "ax.qwen_gemma_flip_target.v1"
 OPENAI_ENDPOINT = "/v1/completions"
 
 
+# macOS process-group QoS clamps accepted by `taskpolicy -c` for multi-process
+# concurrent-tax probes. Empty / unset fails closed to no wrap.
+_PROCESS_QOS_CLAMPS = frozenset({"utility", "background", "maintenance"})
+
+
+def parse_process_qos_clamp(raw: Any, *, field: str) -> str | None:
+    """Parse optional macOS `taskpolicy -c` clamp; malformed values fail closed."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise SystemExit(f"{field} must be a string when set")
+    trimmed = raw.strip().lower()
+    if not trimmed or trimmed in {"off", "none", "default"}:
+        return None
+    if trimmed not in _PROCESS_QOS_CLAMPS:
+        raise SystemExit(
+            f"{field} must be one of {sorted(_PROCESS_QOS_CLAMPS)} or off; got {raw!r}"
+        )
+    return trimmed
+
+
+def wrap_command_with_process_qos(command: list[str], qos_clamp: str | None) -> list[str]:
+    """Prefix a managed command with `taskpolicy -c <clamp>` when configured."""
+    if not qos_clamp:
+        return command
+    taskpolicy = shutil.which("taskpolicy")
+    if taskpolicy is None:
+        raise SystemExit(
+            "process_qos_clamp requires /usr/sbin/taskpolicy (macOS); "
+            f"binary not found while clamping to {qos_clamp!r}"
+        )
+    return [taskpolicy, "-c", qos_clamp, "--", *command]
+
+
 @dataclass(frozen=True)
 class ModelTarget:
     model_id: str
@@ -43,6 +77,7 @@ class ModelTarget:
     args: tuple[str, ...]
     env: dict[str, str]
     memory_cap_bytes: int | None
+    process_qos_clamp: str | None = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +252,10 @@ def load_target(path: Path) -> TargetSpec:
             args=_string_list(model_raw.get("args"), field=f"models.{model_id}.args"),
             env=_string_map(model_raw.get("env"), field=f"models.{model_id}.env"),
             memory_cap_bytes=memory_cap,
+            process_qos_clamp=parse_process_qos_clamp(
+                model_raw.get("process_qos_clamp"),
+                field=f"models.{model_id}.process_qos_clamp",
+            ),
         )
 
     if managed and any(model.port is None for model in models.values()):
@@ -331,7 +370,7 @@ class ProcessSupervisor:
         # residual (mlxcel deep-review §S1): one process per model so Metal can
         # time-share like the dual-process baseline; AX CLI is different.
         if self.target.runtime == "ax-engine":
-            return [
+            command = [
                 self.target.binary,
                 "--model-id",
                 model.served_model or model.model_id,
@@ -345,19 +384,24 @@ class ProcessSupervisor:
                 *self.target.common_args,
                 *model.args,
             ]
-        return [
-            self.target.binary,
-            "-m",
-            str(model.model_path),
-            "--alias",
-            model.served_model,
-            "--host",
-            self.target.host,
-            "--port",
-            str(model.port),
-            *self.target.common_args,
-            *model.args,
-        ]
+        else:
+            command = [
+                self.target.binary,
+                "-m",
+                str(model.model_path),
+                "--alias",
+                model.served_model,
+                "--host",
+                self.target.host,
+                "--port",
+                str(model.port),
+                *self.target.common_args,
+                *model.args,
+            ]
+        # Path B concurrent-tax residual: optional macOS QoS clamp via taskpolicy
+        # so prefill vs decode processes can be scheduled asymmetrically. Default
+        # OFF (no wrap) preserves the historical fair multi-process launch.
+        return wrap_command_with_process_qos(command, model.process_qos_clamp)
 
     def start(self, model_id: str) -> tuple[bool, dict[str, Any]]:
         model = self.target.models.get(model_id)

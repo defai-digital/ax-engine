@@ -1146,6 +1146,13 @@ fn layer_forward_internal(
         }
         attn_proj
     };
+    // Static S1 fairness probe: split each standard Gemma4 text-prefill layer
+    // after attention output projection, before the residual/FFN graph is
+    // encoded. `sublayer` also retains the caller's normal layer-boundary
+    // barrier; the default-off path adds no evaluation.
+    if fastpath::pipeline_sublayer_eval_should_fire(seq, &cfg.model_family) {
+        mlx_sys::eval(&[&attn_proj]);
+    }
     if let Some(started) = attention_started {
         profile_eval_elapsed(
             profile_gemma4_moe_decode,

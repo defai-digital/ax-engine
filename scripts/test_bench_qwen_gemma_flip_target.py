@@ -263,6 +263,34 @@ class FlipTargetBenchmarkTests(unittest.TestCase):
         self.assertTrue(observed["ok"])
         supervisor.stop.assert_called_once_with("gemma-4-12b-it")
 
+    def test_parse_process_qos_clamp_is_strict_and_fail_closed(self) -> None:
+        self.assertIsNone(flip.parse_process_qos_clamp(None, field="q"))
+        self.assertIsNone(flip.parse_process_qos_clamp("", field="q"))
+        self.assertIsNone(flip.parse_process_qos_clamp(" OFF ", field="q"))
+        self.assertIsNone(flip.parse_process_qos_clamp("default", field="q"))
+        self.assertEqual(flip.parse_process_qos_clamp("utility", field="q"), "utility")
+        self.assertEqual(flip.parse_process_qos_clamp(" Background ", field="q"), "background")
+        self.assertEqual(
+            flip.parse_process_qos_clamp("MAINTENANCE", field="q"), "maintenance"
+        )
+        with self.assertRaises(SystemExit):
+            flip.parse_process_qos_clamp("realtime", field="q")
+        with self.assertRaises(SystemExit):
+            flip.parse_process_qos_clamp(1, field="q")
+
+    def test_wrap_command_with_process_qos_prefixes_taskpolicy(self) -> None:
+        bare = ["/bin/ax-engine-server", "--port", "1"]
+        self.assertEqual(flip.wrap_command_with_process_qos(bare, None), bare)
+        with mock.patch.object(flip.shutil, "which", return_value="/usr/sbin/taskpolicy"):
+            wrapped = flip.wrap_command_with_process_qos(bare, "utility")
+        self.assertEqual(
+            wrapped,
+            ["/usr/sbin/taskpolicy", "-c", "utility", "--", *bare],
+        )
+        with mock.patch.object(flip.shutil, "which", return_value=None):
+            with self.assertRaises(SystemExit):
+                flip.wrap_command_with_process_qos(bare, "utility")
+
 
 if __name__ == "__main__":
     unittest.main()
