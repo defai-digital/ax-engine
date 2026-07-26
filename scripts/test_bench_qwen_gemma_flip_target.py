@@ -291,6 +291,39 @@ class FlipTargetBenchmarkTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 flip.wrap_command_with_process_qos(bare, "utility")
 
+    def test_parse_process_thruput_tier_is_strict_and_fail_closed(self) -> None:
+        self.assertIsNone(flip.parse_process_thruput_tier(None, field="t"))
+        self.assertIsNone(flip.parse_process_thruput_tier("", field="t"))
+        self.assertIsNone(flip.parse_process_thruput_tier("off", field="t"))
+        self.assertEqual(flip.parse_process_thruput_tier(0, field="t"), 0)
+        self.assertEqual(flip.parse_process_thruput_tier("2", field="t"), 2)
+        self.assertEqual(flip.parse_process_thruput_tier(" 3 ", field="t"), 3)
+        with self.assertRaises(SystemExit):
+            flip.parse_process_thruput_tier(4, field="t")
+        with self.assertRaises(SystemExit):
+            flip.parse_process_thruput_tier(-1, field="t")
+        with self.assertRaises(SystemExit):
+            flip.parse_process_thruput_tier("x", field="t")
+
+    def test_wrap_command_with_process_policy_composes_thruput_and_qos(self) -> None:
+        bare = ["/bin/ax-engine-server", "--port", "1"]
+        self.assertEqual(
+            flip.wrap_command_with_process_policy(bare, qos_clamp=None, thruput_tier=None),
+            bare,
+        )
+        with mock.patch.object(flip.shutil, "which", return_value="/usr/sbin/taskpolicy"):
+            thr_only = flip.wrap_command_with_process_policy(
+                bare, qos_clamp=None, thruput_tier=0
+            )
+            both = flip.wrap_command_with_process_policy(
+                bare, qos_clamp="utility", thruput_tier=0
+            )
+        self.assertEqual(thr_only, ["/usr/sbin/taskpolicy", "-t", "0", "--", *bare])
+        self.assertEqual(
+            both,
+            ["/usr/sbin/taskpolicy", "-t", "0", "-c", "utility", "--", *bare],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

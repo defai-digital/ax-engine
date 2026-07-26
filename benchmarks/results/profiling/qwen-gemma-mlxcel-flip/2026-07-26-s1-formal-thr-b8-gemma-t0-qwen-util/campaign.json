@@ -1,0 +1,251 @@
+{
+  "comparison_contract": {
+    "hardware": "AKMBPM5MAXx/applegpu_g17s",
+    "id": "qwen3-gemma4-m5max-openai-v1",
+    "request_surface": "openai_completions_sse",
+    "sampling": "temperature=0,top_p=1,top_k=0,seed=0",
+    "scenario_suite": "S0-S3-text-v1",
+    "total_memory_cap_bytes": 103079215104
+  },
+  "created_at": "2026-07-26T09:22:35+00:00",
+  "methodology": {
+    "cooldown_s": 90.0,
+    "fresh_process_per_trial": true,
+    "repetitions": 3,
+    "reported_stat": "raw trials; aggregate median is computed by the flip report",
+    "target_order": "forward on odd repetitions, reverse on even repetitions"
+  },
+  "pair_contracts": [
+    {
+      "baseline_process_count": 2,
+      "baseline_runtime": "mlxcel",
+      "candidate_process_count": 2,
+      "candidate_runtime": "ax-engine",
+      "mismatches": [],
+      "passed": true,
+      "repetition": 1,
+      "scenario": "s1"
+    },
+    {
+      "baseline_process_count": 2,
+      "baseline_runtime": "mlxcel",
+      "candidate_process_count": 2,
+      "candidate_runtime": "ax-engine",
+      "mismatches": [],
+      "passed": true,
+      "repetition": 2,
+      "scenario": "s1"
+    },
+    {
+      "baseline_process_count": 2,
+      "baseline_runtime": "mlxcel",
+      "candidate_process_count": 2,
+      "candidate_runtime": "ax-engine",
+      "mismatches": [],
+      "passed": true,
+      "repetition": 3,
+      "scenario": "s1"
+    }
+  ],
+  "passed": true,
+  "runs": [
+    {
+      "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/ax-engine-s1-r1.json",
+      "artifact_sha256": "f9a6cac52c6f6e105839e8552ee7e08dd5965c2806178d9b9f837b59392b371a",
+      "command": [
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
+        "/Users/akiralam/code/ax-engine/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/targets/ax-qwen-gemma-m5max-multiprocess-cache-eval-thr-b8-gemma-t0-qwen-util.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/logs/ax-engine-s1-r1",
+        "--output",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/ax-engine-s1-r1.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 1,
+      "runner_exit_code": 0,
+      "runtime": "ax-engine",
+      "runtime_revision": "thr-b8-gemma-t0",
+      "scenario": "s1",
+      "target": "ax-engine"
+    },
+    {
+      "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/mlxcel-s1-r1.json",
+      "artifact_sha256": "0cae9f7c9b80447c0d0c1348ae62a905fda8b77b8dcaadd17a179e1c61d80296",
+      "command": [
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
+        "/Users/akiralam/code/ax-engine/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/targets/mlxcel-v0.4.2-qwen-gemma-m5max.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/logs/mlxcel-s1-r1",
+        "--output",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/mlxcel-s1-r1.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 1,
+      "runner_exit_code": 0,
+      "runtime": "mlxcel",
+      "runtime_revision": "v0.4.2@1b9a0018d01d40ba7314c80060d8758533ed6b0e",
+      "scenario": "s1",
+      "target": "mlxcel"
+    },
+    {
+      "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/mlxcel-s1-r2.json",
+      "artifact_sha256": "0080dd800aed15f616b634e6eb5092ae9a35bcd5f71c3f8ecb00e588aeb4c3a0",
+      "command": [
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
+        "/Users/akiralam/code/ax-engine/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/targets/mlxcel-v0.4.2-qwen-gemma-m5max.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/logs/mlxcel-s1-r2",
+        "--output",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/mlxcel-s1-r2.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 2,
+      "runner_exit_code": 0,
+      "runtime": "mlxcel",
+      "runtime_revision": "v0.4.2@1b9a0018d01d40ba7314c80060d8758533ed6b0e",
+      "scenario": "s1",
+      "target": "mlxcel"
+    },
+    {
+      "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/ax-engine-s1-r2.json",
+      "artifact_sha256": "4db2d8ac7af913e6db75e7714af20b13d06c7cb327423d9734652f7e718f79a5",
+      "command": [
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
+        "/Users/akiralam/code/ax-engine/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/targets/ax-qwen-gemma-m5max-multiprocess-cache-eval-thr-b8-gemma-t0-qwen-util.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/logs/ax-engine-s1-r2",
+        "--output",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/ax-engine-s1-r2.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 2,
+      "runner_exit_code": 0,
+      "runtime": "ax-engine",
+      "runtime_revision": "thr-b8-gemma-t0",
+      "scenario": "s1",
+      "target": "ax-engine"
+    },
+    {
+      "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/ax-engine-s1-r3.json",
+      "artifact_sha256": "afce736ef4de6c9a0be33b775d1c73bac238a182dfef9a5c4ec59a8db31fc395",
+      "command": [
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
+        "/Users/akiralam/code/ax-engine/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/targets/ax-qwen-gemma-m5max-multiprocess-cache-eval-thr-b8-gemma-t0-qwen-util.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/logs/ax-engine-s1-r3",
+        "--output",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/ax-engine-s1-r3.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 3,
+      "runner_exit_code": 0,
+      "runtime": "ax-engine",
+      "runtime_revision": "thr-b8-gemma-t0",
+      "scenario": "s1",
+      "target": "ax-engine"
+    },
+    {
+      "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/mlxcel-s1-r3.json",
+      "artifact_sha256": "abff73c056c94b3baf20bd68d15507b2125369df17049a9d64eb10c01e843144",
+      "command": [
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
+        "/Users/akiralam/code/ax-engine/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/targets/mlxcel-v0.4.2-qwen-gemma-m5max.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/logs/mlxcel-s1-r3",
+        "--output",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/artifacts/mlxcel-s1-r3.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 3,
+      "runner_exit_code": 0,
+      "runtime": "mlxcel",
+      "runtime_revision": "v0.4.2@1b9a0018d01d40ba7314c80060d8758533ed6b0e",
+      "scenario": "s1",
+      "target": "mlxcel"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "s1",
+      "path": "/Users/akiralam/code/ax-engine/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+      "sha256": "e17d3b74ef553779038b3cf4e0a2798b3cf024612c70effb46bd755407134826"
+    }
+  ],
+  "schema_version": "ax.qwen_gemma_flip_campaign.v1",
+  "targets": [
+    {
+      "label": "ax-engine",
+      "name": "ax-multiprocess-qwen-gemma-cache-eval-thr-b8-gemma-t0-qwen-util",
+      "path": "/Users/akiralam/code/ax-engine/benchmarks/manifests/targets/ax-qwen-gemma-m5max-multiprocess-cache-eval-thr-b8-gemma-t0-qwen-util.json",
+      "runtime": "ax-engine",
+      "runtime_revision": "thr-b8-gemma-t0"
+    },
+    {
+      "label": "mlxcel",
+      "name": "mlxcel-v0.4.2-multiprocess-qwen-gemma",
+      "path": "/Users/akiralam/code/ax-engine/benchmarks/manifests/targets/mlxcel-v0.4.2-qwen-gemma-m5max.json",
+      "runtime": "mlxcel",
+      "runtime_revision": "v0.4.2@1b9a0018d01d40ba7314c80060d8758533ed6b0e"
+    }
+  ]
+}

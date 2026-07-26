@@ -1,0 +1,64 @@
+{
+  "schema_version": "ax.qwen_gemma_flip_target.v1",
+  "name": "ax-multiprocess-qwen-gemma-cache-eval-thr-b8-gemma-t0",
+  "runtime": "ax-engine",
+  "runtime_revision_env": "AX_BENCH_RUNTIME_REVISION_CANDIDATE",
+  "official_source": "https://github.com/defai-digital/ax-engine",
+  "managed_processes": true,
+  "managed_single_process": false,
+  "binary_env": "AX_SERVER_BIN_CANDIDATE",
+  "host": "127.0.0.1",
+  "health_path": "/health",
+  "startup_timeout_s": 900,
+  "shutdown_timeout_s": 30,
+  "common_args": [
+    "--max-concurrent-requests",
+    "4",
+    "--prefill-chunk",
+    "512"
+  ],
+  "env": {
+    "AX_NO_SPEC": "1",
+    "AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS": "0",
+    "AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY": "1",
+    "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL": "1",
+    "AX_MLX_DENSE_FFN_COMPILE": "0",
+    "AX_MLX_DENSE_FFN_COMPILE_PREFILL": "1",
+    "AX_MLX_GEGLU_MUL_METAL": "1",
+    "AX_MLX_DENSE_GEGLU_PACKED_METAL": "1",
+    "AX_MLX_BATCHED_DECODE": "1"
+  },
+  "models": {
+    "qwen3.5-9b": {
+      "served_model": "qwen3.5-9b",
+      "model_path_env": "AX_BENCH_QWEN_MODEL_DIR",
+      "port": 31421,
+      "memory_cap_bytes": 51539607552,
+      "env": {
+        "AX_MLX_MEMORY_LIMIT": "51539607552"
+      }
+    },
+    "gemma-4-12b-it": {
+      "served_model": "gemma-4-12b-it",
+      "model_path_env": "AX_BENCH_GEMMA_MODEL_DIR",
+      "port": 31422,
+      "memory_cap_bytes": 51539607552,
+      "env": {
+        "AX_MLX_MEMORY_LIMIT": "51539607552",
+        "AX_MLX_CACHE_ONLY_CHUNK_EVAL": "1",
+        "AX_MLX_CACHE_ONLY_CHUNK_ASYNC_EVAL": "1",
+        "AX_MLX_PIPELINE_GRANULARITY": "layer",
+        "AX_MLX_PIPELINE_EVAL_GRANULARITY": "block:8"
+      },
+      "process_thruput_tier": 0
+    }
+  },
+  "comparison_contract": {
+    "id": "qwen3-gemma4-m5max-openai-v1",
+    "hardware": "AKMBPM5MAXx/applegpu_g17s",
+    "scenario_suite": "S0-S3-text-v1",
+    "request_surface": "openai_completions_sse",
+    "sampling": "temperature=0,top_p=1,top_k=0,seed=0",
+    "total_memory_cap_bytes": 103079215104
+  }
+}

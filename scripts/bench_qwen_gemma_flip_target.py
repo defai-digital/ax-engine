@@ -54,17 +54,64 @@ def parse_process_qos_clamp(raw: Any, *, field: str) -> str | None:
     return trimmed
 
 
-def wrap_command_with_process_qos(command: list[str], qos_clamp: str | None) -> list[str]:
-    """Prefix a managed command with `taskpolicy -c <clamp>` when configured."""
-    if not qos_clamp:
+def parse_process_thruput_tier(raw: Any, *, field: str) -> int | None:
+    """Parse optional macOS `taskpolicy -t` thruput tier (0=highest .. 3).
+
+    Malformed values fail closed to None so a typo cannot alter scheduling.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise SystemExit(f"{field} must be an integer 0..3 when set")
+    if isinstance(raw, int):
+        tier = raw
+    elif isinstance(raw, str):
+        trimmed = raw.strip().lower()
+        if not trimmed or trimmed in {"off", "none", "default"}:
+            return None
+        try:
+            tier = int(trimmed)
+        except ValueError as exc:
+            raise SystemExit(f"{field} must be an integer 0..3 when set") from exc
+    else:
+        raise SystemExit(f"{field} must be an integer 0..3 when set")
+    if tier < 0 or tier > 3:
+        raise SystemExit(f"{field} must be in 0..3 (0=highest thruput); got {tier}")
+    return tier
+
+
+def wrap_command_with_process_policy(
+    command: list[str],
+    *,
+    qos_clamp: str | None = None,
+    thruput_tier: int | None = None,
+) -> list[str]:
+    """Prefix a managed command with `taskpolicy` when QoS/thruput is configured.
+
+    Residual (Path B concurrent): asymmetric macOS process policy so prefill
+    (Gemma) can take thruput tier 0 while decode (Qwen) is clamped to utility,
+    cutting concurrent tax without dual-hold gap collapse. Default is no wrap.
+    """
+    if qos_clamp is None and thruput_tier is None:
         return command
     taskpolicy = shutil.which("taskpolicy")
     if taskpolicy is None:
         raise SystemExit(
-            "process_qos_clamp requires /usr/sbin/taskpolicy (macOS); "
-            f"binary not found while clamping to {qos_clamp!r}"
+            "process_qos_clamp/process_thruput_tier requires /usr/sbin/taskpolicy "
+            f"(macOS); binary not found (qos={qos_clamp!r}, thruput={thruput_tier!r})"
         )
-    return [taskpolicy, "-c", qos_clamp, "--", *command]
+    prefix: list[str] = [taskpolicy]
+    if thruput_tier is not None:
+        prefix.extend(["-t", str(thruput_tier)])
+    if qos_clamp is not None:
+        prefix.extend(["-c", qos_clamp])
+    prefix.append("--")
+    return [*prefix, *command]
+
+
+def wrap_command_with_process_qos(command: list[str], qos_clamp: str | None) -> list[str]:
+    """Backward-compatible wrapper: QoS clamp only."""
+    return wrap_command_with_process_policy(command, qos_clamp=qos_clamp)
 
 
 @dataclass(frozen=True)
@@ -78,6 +125,7 @@ class ModelTarget:
     env: dict[str, str]
     memory_cap_bytes: int | None
     process_qos_clamp: str | None = None
+    process_thruput_tier: int | None = None
 
 
 @dataclass(frozen=True)
@@ -256,6 +304,10 @@ def load_target(path: Path) -> TargetSpec:
                 model_raw.get("process_qos_clamp"),
                 field=f"models.{model_id}.process_qos_clamp",
             ),
+            process_thruput_tier=parse_process_thruput_tier(
+                model_raw.get("process_thruput_tier"),
+                field=f"models.{model_id}.process_thruput_tier",
+            ),
         )
 
     if managed and any(model.port is None for model in models.values()):
@@ -401,7 +453,11 @@ class ProcessSupervisor:
         # Path B concurrent-tax residual: optional macOS QoS clamp via taskpolicy
         # so prefill vs decode processes can be scheduled asymmetrically. Default
         # OFF (no wrap) preserves the historical fair multi-process launch.
-        return wrap_command_with_process_qos(command, model.process_qos_clamp)
+        return wrap_command_with_process_policy(
+            command,
+            qos_clamp=model.process_qos_clamp,
+            thruput_tier=model.process_thruput_tier,
+        )
 
     def start(self, model_id: str) -> tuple[bool, dict[str, Any]]:
         model = self.target.models.get(model_id)

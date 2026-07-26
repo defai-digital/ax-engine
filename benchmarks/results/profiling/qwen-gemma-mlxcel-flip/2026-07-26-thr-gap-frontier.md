@@ -41,3 +41,56 @@ still not achieved (custom Metal v1–v4 reject).
 ## Product posture
 
 Gates unchanged. Opt-ins default OFF. Multi-process measurement only. No flip claim.
+
+## Continuation (same day) — process_thruput_tier + noasync formal
+
+### Harness residual
+- `process_thruput_tier` (taskpolicy `-t` 0..3) in `bench_qwen_gemma_flip_target.py`, fail-closed, unit-tested.
+- Target smokes: thr-b8-gemma-t0-qwen-util thr **1.145** gap 1.217 (non-theater); thr-b8 alone t0 regresses.
+
+### Cool formal ≥3-rep S1: pipe-b8 + Qwen util **no async**
+Artifact: `2026-07-26-s1-formal-pipe-b8-util-noasync/`
+
+| metric | AX median | mlxcel median | ratio | gate |
+|--------|----------:|--------------:|------:|------|
+| thr tok/s | 20.86 | 18.37 | **1.136** | FAIL (≥1.15) |
+| gap p95 ms | 38.2 | 36.1 | **1.057** | FAIL (≤0.90); abs PASS |
+| TTFT p95 | — | — | **0.877** | PASS |
+
+vs thr-b8+async formal (1.141 / 1.216): dropping async **improves gap** (1.216→1.057) but **taxes thr** below 1.15.
+Smoke thr 1.1515 was inflated (mlxcel thr 18.07). Decision: **not_yet**.
+
+### Cool formal ≥3-rep S1: thr-b8 + Gemma thruput tier 0 + Qwen util
+Artifact: `2026-07-26-s1-formal-thr-b8-gemma-t0-qwen-util/`
+
+| metric | AX median | mlxcel median | ratio | gate |
+|--------|----------:|--------------:|------:|------|
+| thr tok/s | 20.91 | 18.39 | **1.137** | FAIL (≥1.15) |
+| gap p95 ms | 41.7 | 34.4 | **1.213** | FAIL (≤0.90); abs PASS |
+| TTFT p95 | — | — | **0.876** | PASS |
+
+Gemma `process_thruput_tier=0` does **not** beat thr-b8+qwen-util formal thr 1.141.
+Smoke thr 1.145 was noise. Reject as thr unlock.
+
+### Smoke: pipe-b8 + gemma t0 + qwen util noasync
+thr **1.080** gap 1.175 — thr regress. Reject.
+
+**Best formal thr remains thr-b8+qwen-util 1.141 / gap 1.216.** Gates unchanged. S0–S3 withheld.
+
+### Residual: wire dead `decode_logits_projection_sg_*` optional kernels + `AX_MLX_GEMV_SIMDGROUP_MATRIX=1`
+Wiring completeness residual (kernels were compiled but absent from `PHASE1_OPTIONAL_METAL_KERNELS`).
+Unit-tested. Smoke A/B on new binary (mbp-m5):
+
+| stack | thr | gap | ax_thr | ax_gap | note |
+|-------|----:|----:|-------:|-------:|------|
+| thr-b8-util rebin | 1.143 | 1.175 | 21.32 | 41.2 | same-binary baseline |
+| thr-b8-util + GEMV_SG | **1.117** | **1.272** | 20.90 | 44.0 | thr+gap regress |
+| layer-eval + GEMV_SG | 1.081 | 1.036 | 20.19 | 36.1 | thr regress vs layer-eval formal 1.110 |
+
+**Reject GEMV_SG as thr/gap unlock.** Wiring fix still correct (fail-closed opt-in remains default OFF).
+
+## Session terminal
+Multi-process concurrent thr/gap dual still physics-blocked under locked gates.
+Best formal thr **1.141** (need ≥1.15); best formal gap **1.000** (need ≤0.90).
+No S0–S3. Gates file unchanged.
+
