@@ -230,3 +230,11 @@ See `2026-07-26-path-a-async-chunk-residual.md`.
 | dual metal v4 pure | **8.12×** empty text | reject OFF |
 
 Best formal thr **1.137×** (need 1.15). Flip still **not_yet**.
+
+## Thr/gap frontier (2026-07-26 continuation)
+
+See `2026-07-26-thr-gap-frontier.md`.
+
+Best formal thr **1.141×** (thr-b8 + Qwen utility QoS). Best multi-process gap
+ratio **1.000** (layer-eval). Neither stack clears thr≥1.15 **and** gap≤0.90.
+Ngram and dual_gate compose regress thr. Flip still **not_yet**.
