@@ -1,0 +1,24 @@
+{
+  "decision": "not_yet",
+  "host": "AKMBPM5MAX",
+  "candidate": "ax-qwen-gemma-m5max-multiprocess-cache-eval-thr-b8-qwen-util",
+  "baseline": "mlxcel-v0.4.2-qwen-gemma-m5max",
+  "scenario": "s1",
+  "repetitions": 3,
+  "medians": {
+    "candidate_thr_tok_s": 20.944046758838606,
+    "baseline_thr_tok_s": 18.37421779270647,
+    "thr_ratio": 1.13986,
+    "candidate_gap_p95_ms": 41.35981254512444,
+    "baseline_gap_p95_ms": 34.69145850976929,
+    "gap_ratio": 1.19222,
+    "ttft_ratio": 0.87405
+  },
+  "gates": {
+    "thr_ge_1_15": false,
+    "gap_le_0_90": false,
+    "abs_gap_le_50": true,
+    "ttft_le_0_90": true
+  },
+  "notes": "Tip formal remeasure after Path A/B residual commits; thr consistent with prior 1.141 formal; smoke 1.146 was optimistic."
+}

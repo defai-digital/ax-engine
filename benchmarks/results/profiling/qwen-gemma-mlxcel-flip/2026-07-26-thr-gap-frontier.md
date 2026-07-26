@@ -133,3 +133,16 @@ tail overlay.** Keep default OFF. still **not_yet**.
 | bg + linear-pack | 1.111 | 1.239 |
 
 **Reject.** Keep pack force-OFF and utility QoS on thr-b8. still **not_yet**.
+
+## Cool formal tip remeasure: thr-b8-util (3-rep)
+
+Artifact: `2026-07-26-s1-formal-thr-b8-util-tip/`
+
+| metric | ratio | gate |
+|--------|------:|------|
+| thr | **1.140** | FAIL (≥1.15) |
+| gap | **1.192** | FAIL (≤0.90) |
+| TTFT | **0.874** | PASS |
+
+Consistent with prior formal thr **1.141**. Smoke thr 1.146 was optimistic.
+still **not_yet**. Best formal thr remains ~**1.140–1.141**.
