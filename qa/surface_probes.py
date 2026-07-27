@@ -202,6 +202,31 @@ def extract_sse_chat_text(raw: str) -> str:
     return "".join(pieces)
 
 
+def openclaw_sse_contract(raw: str) -> tuple[bool, bool]:
+    """Return whether an OpenClaw-shaped stream has final usage and ``[DONE]``."""
+    has_usage = False
+    has_done = False
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            has_done = True
+            continue
+        try:
+            obj = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(obj, dict)
+            and obj.get("choices") == []
+            and isinstance(obj.get("usage"), dict)
+        ):
+            has_usage = True
+    return has_usage, has_done
+
+
 def chat_completion_payload(
     model: str,
     content: str | list[dict[str, Any]],
@@ -387,6 +412,12 @@ def probe_stream_and_nonstream(
     stream_payload = chat_completion_payload(
         model, prompt, max_tokens=16, temperature=0.0, stream=True
     )
+    # Current OpenClaw openai-completions shape: it uses the modern output
+    # field, requests the terminal usage chunk, and sends the Qwen
+    # chat-template thinking switch when that compat mode is configured.
+    stream_payload["max_completion_tokens"] = stream_payload.pop("max_tokens")
+    stream_payload["stream_options"] = {"include_usage": True}
+    stream_payload["chat_template_kwargs"] = {"enable_thinking": False}
     data = json.dumps(stream_payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -400,9 +431,13 @@ def probe_stream_and_nonstream(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
-        stream_ok = "data:" in raw and raw.strip() != ""
+        has_usage, has_done = openclaw_sse_contract(raw)
+        stream_ok = "data:" in raw and raw.strip() != "" and has_usage and has_done
         stream_text = extract_sse_chat_text(raw)
-        stream_detail = f"sse_bytes={len(raw)} stream_chars={len(stream_text)}"
+        stream_detail = (
+            f"sse_bytes={len(raw)} stream_chars={len(stream_text)} "
+            f"usage={has_usage} done={has_done}"
+        )
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
         stream_detail = f"stream_error={exc}"
         stream_ok = False

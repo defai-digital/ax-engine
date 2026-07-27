@@ -35,6 +35,7 @@ the path explicit when reading or claiming:
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md) |
 | Reproduce or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
 | Serve OpenAI / Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md), [Multi-model](SERVER.md#multi-model-serving) |
+| Run OpenClaw on local Qwen | [OpenClaw](OPENCLAW.md) | [Server](SERVER.md), [Supported Models](SUPPORTED-MODELS.md) |
 | Deploy on Linux CUDA or Thor | [CUDA Backends](CUDA-BACKENDS.md) | [Server](SERVER.md), [TensorRT L2 Image Forwarding](TENSORRT-L2-MULTIMODAL.md) |
 | Integrate from an app or agent | [SDK Docs](sdk/README.md) | [Server](SERVER.md), [Local Engine Clients](LOCAL-ENGINE-CLIENTS.md) |
 | Debug long context, prefix reuse, or KV | [Long Context](LONG-CONTEXT.md) | [KV Cache](KV-CACHE.md), [Scheduler](SCHEDULER.md) |
@@ -92,6 +93,7 @@ history, or out of scope for a claim.
 - [Server](SERVER.md) — HTTP routes, multi-model load/unload, streaming, auth, embeddings, backends
 - [CUDA Backends](CUDA-BACKENDS.md) — Mac/CUDA boundary, shared vLLM provider, runtime profiles, TensorRT lanes, release gates
 - [API Compatibility](API-COMPATIBILITY.md) — OpenAI-compatible contract and boundaries
+- [OpenClaw](OPENCLAW.md) — local Qwen tools, thinking, vision, provider config, and verification
 - [SDK Docs](sdk/README.md) — Rust, Python, JS/TS, Go, Ruby, Swift, Mojo
 - [Local Engine Clients](LOCAL-ENGINE-CLIENTS.md) — in-process vs sidecar HTTP for first-party apps
 - [LAN Discovery](LAN-DISCOVERY.md) — local network discovery notes

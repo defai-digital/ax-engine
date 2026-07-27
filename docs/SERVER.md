@@ -218,8 +218,8 @@ in-flight counts are exact regardless.
 ## OpenAI Surface Extensions
 
 The OpenAI-compatible endpoints accept a few agentic-contract fields in
-preview form. Everything below is non-streaming only; streaming requests that
-ask for these contracts are rejected with `400 unsupported_parameter` rather
+preview form. Each field below states its streaming behavior; unsupported
+streaming combinations are rejected with `400 unsupported_parameter` rather
 than silently dropped.
 
 - **`logprobs`** (completions and chat): when the engine observed sampled-token
@@ -242,6 +242,11 @@ than silently dropped.
   with marker holdback; Gemma 4 via the channel-token filter) interleaved
   before/alongside content deltas; other families and delegated backends
   keep rejecting `reasoning` + `stream` with `400 unsupported_parameter`.
+  Qwen clients may instead send
+  `chat_template_kwargs.enable_thinking`; this takes precedence over
+  `reasoning`. `chat_template_kwargs.preserve_thinking=true` replays assistant
+  `reasoning_content` in multi-turn history. This is the request shape used by
+  OpenClaw's `qwen-chat-template` compatibility mode.
 - **`usage.prompt_tokens_details.cached_tokens`**: when the engine served
   part of the prompt from the prefix cache, non-streaming responses report
   the reused token count in the OpenAI prompt-caching shape; the block is
@@ -281,18 +286,18 @@ than silently dropped.
   misalign with the truncated text. The Anthropic surface reports the
   matched sequence as `stop_sequence` with `stop_reason:"stop_sequence"`.
   gRPC requests do not get server-side native stop enforcement yet.
-- **`tools` / `tool_choice`** (chat): experimental. Native Qwen ChatML and
-  native Gemma 4 text sessions render tool schemas into the prompt, replay
+- **`tools` / `tool_choice`** (chat): experimental. Native Qwen ChatML
+  sessions, including Qwen inline-media chat, and native Gemma 4 text sessions
+  render tool schemas into the prompt, replay
   assistant `tool_calls` history, and parse generated spans back into
   `message.tool_calls` with `finish_reason=tool_calls`. Native Qwen ChatML tool
   prompting follows the matching Ollama template for the selected model family:
   Qwen3 dense uses the JSON
   `<tool_call>{"name": ..., "arguments": ...}</tool_call>` contract,
-  Qwen3.5 uses the function-XML contract, and Qwen3.6 plus Qwen3-Coder-Next
-  use the Qwen3-Coder XML contract. AX mirrors the selected Ollama-family
-  template shape: Qwen3.5 renders tool schemas as OpenAI tool JSON lines before
-  asking for function-XML calls, while Qwen3.6 and Qwen3-Coder render XML tool
-  declarations.
+  Qwen3.5 and Qwen3.6 use function-XML calls with JSON tool schemas, while
+  Qwen3-Coder-Next uses XML tool declarations plus function-XML calls. AX
+  mirrors the selected hub template rather than applying one generic Qwen
+  preamble.
   Gemma 4 text chat uses the Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and
   `<|tool_response>` DSL. Gemma 4 tools still fail closed for delegated,
   pre-tokenized, and inline-media chat requests because AX cannot safely inject
@@ -326,13 +331,16 @@ AX also exposes a focused Ollama-shaped adapter for loaded local models:
   AX model.
 - `POST /api/show`, `GET /api/ps`, and `GET /api/version` provide the
   Ollama-style metadata/readiness probes common clients use before issuing a
-  chat request. `/api/show` accepts `verbose=false` as a probe shape, but
-  `verbose=true` fails closed until AX can return the larger verbose Ollama
-  metadata payload.
-- `POST /api/chat` accepts Ollama text `messages`, `tools`, `format`, `stream`,
-  and common `options` fields. It maps them onto the same chat builder used by
-  `/v1/chat/completions`, so supported Qwen/Gemma templates and tool-call
-  parsing stay identical across the OpenAI and Ollama surfaces.
+  chat request. `/api/show` accepts either `model` or `name` and advertises
+  `vision`, `thinking`, and `tools` when supported. It accepts `verbose=false`
+  as a probe shape, but `verbose=true` fails closed until AX can return the
+  larger verbose Ollama metadata payload.
+- `POST /api/chat` accepts Ollama `messages`, raw-base64 `images`, assistant
+  `thinking` and tool-call IDs, tool-result `tool_name`, `tools`, `think`,
+  `format`, `stream`, and common `options` fields including `num_ctx`. It maps
+  them onto the same chat builder used by `/v1/chat/completions`, so supported
+  Qwen/Gemma templates, reasoning separation, vision, and tool-call parsing
+  stay identical across the OpenAI and Ollama surfaces.
 - `POST /api/generate` accepts Ollama `prompt`, optional `system`, `format`,
   `stream`, `raw`, and common `options` fields, then maps them onto the same
   completion builder used by `/v1/completions`. When `raw=true`, AX sends the
@@ -349,10 +357,13 @@ buffered text or tool-call message and the final chunk carries `done=true` plus
 available token counts. This is an Ollama envelope compatibility layer, not a
 full Ollama daemon: model pull/push/create/copy/delete, arbitrary Modelfile
 templates, stateful prompt context replay, `/api/generate` images, Ollama
-thinking/logprob controls, and other unsupported fields fail closed with
+logprobs, and other unsupported fields fail closed with
 `400 unsupported_parameter` instead of being ignored. Harmless Ollama lifecycle
 fields such as `keep_alive` are accepted as no-ops, and empty `/api/generate`
 prompts return Ollama-style load/unload no-op responses.
+
+For current OpenClaw provider configuration, Qwen model guidance, exact
+context-limit alignment, and live verification, see [OpenClaw](OPENCLAW.md).
 
 ## Examples
 
@@ -683,20 +694,24 @@ real HTTP:
 bash scripts/check-server-preview.sh
 ```
 
-To run a direct native-MLX model compatibility smoke for the coder-facing
-Qwen3-Coder-Next, Qwen3.6 35B-A3B, and Gemma 4 routes, provide local AX model
-artifacts and run:
+To run a direct native-MLX model compatibility smoke for Qwen3-Coder-Next,
+Qwen3-VL, Qwen3.5 9B, Qwen3.6 27B/35B-A3B, and Gemma 4 routes, provide any
+installed local AX model artifacts and run:
 
 ```text
 AX_ENGINE_QWEN_CODER_NEXT_ARTIFACTS_DIR=/absolute/path/to/qwen3-coder-next-artifacts \
+AX_ENGINE_QWEN3_VL_ARTIFACTS_DIR=/absolute/path/to/qwen3-vl-artifacts \
+AX_ENGINE_QWEN35_9B_ARTIFACTS_DIR=/absolute/path/to/qwen3.5-9b-artifacts \
+AX_ENGINE_QWEN36_27B_ARTIFACTS_DIR=/absolute/path/to/qwen3.6-27b-artifacts \
 AX_ENGINE_QWEN36_35B_ARTIFACTS_DIR=/absolute/path/to/qwen3.6-35b-a3b-artifacts \
 AX_ENGINE_GEMMA4_ARTIFACTS_DIR=/absolute/path/to/gemma4-artifacts \
 python3 scripts/check_direct_model_compat_smoke.py
 ```
 
 The check starts `ax-engine-server` with `--mlx`, verifies `/health` selected the
-native MLX backend, verifies `/v1/models` advertises tool-call support, then
-sends equivalent tool-enabled requests through OpenAI
+native MLX backend, verifies `/v1/models` advertises tool-call support, checks
+the current OpenClaw `/api/show` discovery request and capabilities, then sends
+equivalent tool-enabled requests through OpenAI
 `/v1/chat/completions` and Ollama `/api/chat`. It fails if either surface leaks
 raw tool-call markup instead of returning a normal response envelope. Add
 `--expect-tool-call` when the local model/configuration is expected to choose an

@@ -143,7 +143,9 @@ fn infer_gemma4_model_id(path_label: &str) -> String {
 }
 
 fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
-    let mut model_id = if path_label.contains("qwen3-embedding-0-6b") {
+    let mut model_id = if path_label.contains("qwen3-vl") {
+        infer_qwen3_vl_model_id(path_label)
+    } else if path_label.contains("qwen3-embedding-0-6b") {
         "qwen3-embedding-0.6b".to_string()
     } else if path_label.contains("qwen3-embedding-4b") {
         "qwen3-embedding-4b".to_string()
@@ -170,6 +172,21 @@ fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
 
     if path_label.contains("mtp") && !model_id.contains("mtp") {
         model_id.push_str("-mtp");
+    }
+    model_id
+}
+
+fn infer_qwen3_vl_model_id(path_label: &str) -> String {
+    let size = ["235b-a22b", "30b-a3b", "32b", "8b", "4b", "2b"]
+        .into_iter()
+        .find(|size| path_label.contains(&format!("qwen3-vl-{size}")));
+    let mut model_id = size
+        .map(|size| format!("qwen3-vl-{size}"))
+        .unwrap_or_else(|| "qwen3-vl".to_string());
+    if path_label.contains("thinking") {
+        model_id.push_str("-thinking");
+    } else if path_label.contains("instruct") {
+        model_id.push_str("-instruct");
     }
     model_id
 }

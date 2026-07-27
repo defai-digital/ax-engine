@@ -20,9 +20,15 @@ SPEC.loader.exec_module(smoke)
 def args(**overrides: object) -> argparse.Namespace:
     values = {
         "qwen_artifacts": None,
+        "qwen3_vl_artifacts": None,
+        "qwen35_artifacts": None,
+        "qwen36_27b_artifacts": None,
         "qwen36_artifacts": None,
         "gemma4_artifacts": None,
         "qwen_model_id": "ax-engine/qwen3-coder-next",
+        "qwen3_vl_model_id": "Qwen/Qwen3-VL-8B-Instruct",
+        "qwen35_model_id": "Qwen3.5-9B-4bit",
+        "qwen36_27b_model_id": "Qwen3.6-27B-4bit",
         "qwen36_model_id": "Qwen3.6-35B-A3B-4bit",
         "gemma4_model_id": "gemma4-e2b-it",
     }
@@ -59,6 +65,9 @@ class DirectModelCompatSmokeTests(unittest.TestCase):
         targets = smoke.resolve_smoke_targets(
             args(
                 qwen_artifacts=Path("/models/qwen"),
+                qwen3_vl_artifacts=Path("/models/qwen3-vl"),
+                qwen35_artifacts=Path("/models/qwen35"),
+                qwen36_27b_artifacts=Path("/models/qwen36-27b"),
                 qwen36_artifacts=Path("/models/qwen36"),
                 gemma4_artifacts=Path("/models/gemma4"),
             ),
@@ -67,11 +76,25 @@ class DirectModelCompatSmokeTests(unittest.TestCase):
 
         self.assertEqual(
             [target.kind for target in targets],
-            ["qwen3-coder-next", "qwen3.6-35b-a3b", "gemma4"],
+            [
+                "qwen3-coder-next",
+                "qwen3-vl",
+                "qwen3.5-9b",
+                "qwen3.6-27b",
+                "qwen3.6-35b-a3b",
+                "gemma4",
+            ],
         )
         self.assertEqual(
             [target.model_id for target in targets],
-            ["ax-engine/qwen3-coder-next", "Qwen3.6-35B-A3B-4bit", "gemma4-e2b-it"],
+            [
+                "ax-engine/qwen3-coder-next",
+                "Qwen/Qwen3-VL-8B-Instruct",
+                "Qwen3.5-9B-4bit",
+                "Qwen3.6-27B-4bit",
+                "Qwen3.6-35B-A3B-4bit",
+                "gemma4-e2b-it",
+            ],
         )
 
     def test_resolve_targets_uses_qwen36_env(self) -> None:
@@ -93,13 +116,21 @@ class DirectModelCompatSmokeTests(unittest.TestCase):
         self.assertNotIn("system", {message["role"] for message in request["messages"]})
         self.assertEqual(request["tools"][0]["function"]["name"], "read_file")
         self.assertEqual(request["tool_choice"], "auto")
+        self.assertEqual(request["max_completion_tokens"], 96)
+        self.assertNotIn("max_tokens", request)
+        self.assertEqual(
+            request["chat_template_kwargs"], {"enable_thinking": False}
+        )
+        self.assertEqual(request["store"], False)
 
     def test_ollama_tool_request_uses_ollama_non_streaming_envelope(self) -> None:
         request = smoke.build_ollama_chat_request("gemma4-e2b-it")
 
         self.assertEqual(request["model"], "gemma4-e2b-it")
         self.assertEqual(request["stream"], False)
+        self.assertEqual(request["think"], False)
         self.assertIn("options", request)
+        self.assertEqual(request["options"]["num_ctx"], 16_384)
         self.assertEqual(request["tools"][0]["function"]["parameters"]["type"], "object")
 
     def test_model_metadata_matches_target_when_target_is_not_first(self) -> None:
@@ -141,6 +172,25 @@ class DirectModelCompatSmokeTests(unittest.TestCase):
     def test_raw_tool_marker_detection_fails_closed(self) -> None:
         with self.assertRaises(smoke.SmokeFailure):
             smoke.assert_no_raw_tool_markers("<tool_call>{}</tool_call>", "content")
+
+    def test_ollama_show_contract_matches_openclaw_discovery(self) -> None:
+        capabilities = smoke.assert_ollama_show_response(
+            {
+                "capabilities": ["completion", "thinking", "tools", "vision"],
+                "model_info": {"ax_engine.context_length": 32_768},
+            },
+            {
+                "context_length": 32_768,
+                "capabilities": {
+                    "reasoning": True,
+                    "input": {"text": True, "image": True},
+                },
+            },
+        )
+
+        self.assertEqual(
+            capabilities, ["completion", "thinking", "tools", "vision"]
+        )
 
 
 if __name__ == "__main__":

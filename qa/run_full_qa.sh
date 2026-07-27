@@ -35,7 +35,8 @@ INVENTORY="$REPORT_DIR/qa-matrix-full.txt"
 MODELS=(
   "glm4_moe_lite|$HF_CACHE/models--mlx-community--GLM-4.7-Flash-4bit/snapshots/1454cffb1a21737e162f508e5bc70be9def89276"
   "gemma4-e2b|$HF_CACHE/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd"
-  "qwen3.5-27b|$HF_CACHE/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282"
+  "qwen3.5-9b|$HF_CACHE/models--mlx-community--Qwen3.5-9B-MLX-4bit/snapshots/938d8919941c6e7efd3c7150eff7fe9d12afa631"
+  "qwen3.6-27b|$HF_CACHE/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282"
   "qwen3.6-35b|$HF_CACHE/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46"
 )
 

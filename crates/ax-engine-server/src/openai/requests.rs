@@ -31,9 +31,10 @@ static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 use crate::openai::chat_requests::{
     ChatPromptRenderOptions, is_minicpm_v46_model_id, is_nemotron_omni_model_dir,
     is_nemotron_omni_model_id, is_qwen3_vl_model_id, messages_contain_inline_media,
-    reject_video_chat_content, render_gemma4_unified_chat_with_media,
-    render_minicpm_v46_chat_with_media, render_nemotron_omni_chat_with_media,
-    render_openai_chat_prompt_with_options, render_qwen3_vl_chat_with_media,
+    openai_tool_choice_disables_tools, reject_video_chat_content,
+    render_gemma4_unified_chat_with_media, render_minicpm_v46_chat_with_media,
+    render_nemotron_omni_chat_with_media, render_openai_chat_prompt_with_options,
+    render_qwen3_vl_chat_with_media,
 };
 pub(crate) use crate::openai::chat_requests::{
     chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
@@ -251,7 +252,7 @@ impl OpenAiResponseOptions {
         reject_unsupported_top_logprobs(request.top_logprobs)?;
         Ok(Self {
             include_logprobs: request.logprobs,
-            include_reasoning: openai_reasoning_is_enabled(request.reasoning.as_ref()),
+            include_reasoning: openai_chat_thinking_is_enabled(request),
             include_stream_usage: request.stream_options.include_usage,
             validate_json_object: openai_response_format_is_json_object(
                 request.response_format.as_ref(),
@@ -466,6 +467,7 @@ pub(crate) fn build_openai_chat_request(
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    let prompt_options = openai_chat_prompt_render_options(&request);
     let streaming_reasoning_supported = live.runtime_report.selected_backend
         == SelectedBackend::Mlx
         && matches!(
@@ -543,9 +545,14 @@ pub(crate) fn build_openai_chat_request(
                     .as_deref()
                     .is_some_and(|f| f == "qwen3_vl" || f == "qwen3_vl_moe" || f == "qwen3_5")
             {
-                if let Some(prompt) =
-                    render_qwen3_vl_chat_with_media(model_id, model_dir, &request.messages)?
-                {
+                if let Some(prompt) = render_qwen3_vl_chat_with_media(
+                    model_id,
+                    model_dir,
+                    &request.messages,
+                    request.tools.as_ref(),
+                    request.tool_choice.as_ref(),
+                    prompt_options,
+                )? {
                     input_tokens = prompt.input_tokens;
                     multimodal_inputs.qwen3_vl = Some(prompt.runtime_inputs);
                     true
@@ -567,19 +574,12 @@ pub(crate) fn build_openai_chat_request(
         if media_rendered {
             None
         } else {
-            // Gemma 4: request.reasoning enables the official
-            // enable_thinking path (`<|think|>` + open thought channel).
-            // Other families keep their existing thinking defaults.
-            let enable_thinking = matches!(
-                chat::ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
-                chat::ChatPromptTemplate::Gemma4
-            ) && openai_reasoning_is_enabled(request.reasoning.as_ref());
             Some(render_openai_chat_prompt_with_options(
                 live.model_id.as_ref(),
                 &request.messages,
                 request.tools.as_ref(),
                 request.tool_choice.as_ref(),
-                ChatPromptRenderOptions { enable_thinking },
+                prompt_options,
             )?)
         }
     };
@@ -729,7 +729,7 @@ pub(crate) fn build_openai_vllm_chat_request(
             "vLLM logprobs are not exposed by the AX vLLM response contract".to_string(),
         ));
     }
-    if openai_reasoning_is_enabled(request.reasoning.as_ref()) {
+    if openai_chat_thinking_is_enabled(&request) {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "unsupported_parameter",
@@ -1543,6 +1543,9 @@ fn openai_workload_metadata(
 }
 
 fn openai_tools_are_enabled(tools: Option<&Value>, tool_choice: Option<&Value>) -> bool {
+    if tool_choice.is_some_and(openai_tool_choice_disables_tools) {
+        return false;
+    }
     tools.map(openai_value_is_present).unwrap_or(false)
         || tool_choice
             .map(openai_tool_choice_enables_tool_call)
@@ -1740,6 +1743,28 @@ pub(crate) fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
             .unwrap_or(!object.is_empty()),
         value => openai_value_is_present(value),
     }
+}
+
+/// Resolve the two Qwen chat-template switches accepted by the OpenAI chat
+/// route. `chat_template_kwargs.enable_thinking` takes precedence over AX's
+/// older `reasoning` extension because OpenClaw emits the former when
+/// `compat.thinkingFormat` is `qwen-chat-template`.
+pub(crate) fn openai_chat_prompt_render_options(
+    request: &OpenAiChatCompletionHttpRequest,
+) -> ChatPromptRenderOptions {
+    let template = request.chat_template_kwargs.as_ref();
+    ChatPromptRenderOptions {
+        enable_thinking: template
+            .and_then(|kwargs| kwargs.enable_thinking)
+            .unwrap_or_else(|| openai_reasoning_is_enabled(request.reasoning.as_ref())),
+        preserve_thinking: template
+            .and_then(|kwargs| kwargs.preserve_thinking)
+            .unwrap_or(false),
+    }
+}
+
+pub(crate) fn openai_chat_thinking_is_enabled(request: &OpenAiChatCompletionHttpRequest) -> bool {
+    openai_chat_prompt_render_options(request).enable_thinking
 }
 
 /// Resolve the requested output-token budget for an OpenAI-shaped request.

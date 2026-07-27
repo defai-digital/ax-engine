@@ -4,6 +4,9 @@
 The check is artifact-gated. With no configured local MLX model artifacts it
 prints a JSON skip result and exits zero, so CI and local review can include the
 gate without requiring model downloads on every host.
+
+The Qwen request shapes cover the fields OpenClaw currently sends through its
+OpenAI-completions and native Ollama transports.
 """
 
 from __future__ import annotations
@@ -25,6 +28,9 @@ from typing import Any, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QWEN_ARTIFACTS_ENV = "AX_ENGINE_QWEN_CODER_NEXT_ARTIFACTS_DIR"
+QWEN3_VL_ARTIFACTS_ENV = "AX_ENGINE_QWEN3_VL_ARTIFACTS_DIR"
+QWEN35_ARTIFACTS_ENV = "AX_ENGINE_QWEN35_9B_ARTIFACTS_DIR"
+QWEN36_27B_ARTIFACTS_ENV = "AX_ENGINE_QWEN36_27B_ARTIFACTS_DIR"
 QWEN36_ARTIFACTS_ENV = "AX_ENGINE_QWEN36_35B_ARTIFACTS_DIR"
 GEMMA4_ARTIFACTS_ENV = "AX_ENGINE_GEMMA4_ARTIFACTS_DIR"
 LEGACY_MLX_ARTIFACTS_ENV = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR"
@@ -42,17 +48,35 @@ def parser() -> argparse.ArgumentParser:
     parsed = argparse.ArgumentParser(
         description=(
             "Start ax-engine-server against native MLX Qwen3-Coder-Next, "
-            "Qwen3.6 35B, or Gemma 4 "
+            "Qwen3-VL, Qwen3.5 9B, Qwen3.6 27B/35B, or Gemma 4 "
             "artifacts and verify OpenAI/Ollama tool-call compatibility surfaces."
         )
     )
     parsed.add_argument("--qwen-artifacts", type=Path)
+    parsed.add_argument("--qwen3-vl-artifacts", type=Path)
+    parsed.add_argument("--qwen35-artifacts", type=Path)
+    parsed.add_argument("--qwen36-27b-artifacts", type=Path)
     parsed.add_argument("--qwen36-artifacts", type=Path)
     parsed.add_argument("--gemma4-artifacts", type=Path)
     parsed.add_argument(
         "--qwen-model-id",
         default="ax-engine/qwen3-coder-next",
         help="model id to expose while testing Qwen3-Coder-Next artifacts",
+    )
+    parsed.add_argument(
+        "--qwen3-vl-model-id",
+        default="Qwen/Qwen3-VL-8B-Instruct",
+        help="model id to expose while testing Qwen3-VL artifacts",
+    )
+    parsed.add_argument(
+        "--qwen35-model-id",
+        default="Qwen3.5-9B-4bit",
+        help="model id to expose while testing Qwen3.5 9B artifacts",
+    )
+    parsed.add_argument(
+        "--qwen36-27b-model-id",
+        default="Qwen3.6-27B-4bit",
+        help="model id to expose while testing Qwen3.6 27B artifacts",
     )
     parsed.add_argument(
         "--qwen36-model-id",
@@ -99,6 +123,11 @@ def resolve_smoke_targets(
     qwen = args.qwen_artifacts or _env_path(env, QWEN_ARTIFACTS_ENV)
     if qwen is None:
         qwen = _env_path(env, LEGACY_MLX_ARTIFACTS_ENV)
+    qwen3_vl = args.qwen3_vl_artifacts or _env_path(env, QWEN3_VL_ARTIFACTS_ENV)
+    qwen35 = args.qwen35_artifacts or _env_path(env, QWEN35_ARTIFACTS_ENV)
+    qwen36_27b = args.qwen36_27b_artifacts or _env_path(
+        env, QWEN36_27B_ARTIFACTS_ENV
+    )
     qwen36 = args.qwen36_artifacts or _env_path(env, QWEN36_ARTIFACTS_ENV)
     gemma4 = args.gemma4_artifacts or _env_path(env, GEMMA4_ARTIFACTS_ENV)
 
@@ -109,6 +138,30 @@ def resolve_smoke_targets(
                 kind="qwen3-coder-next",
                 model_id=args.qwen_model_id,
                 artifacts_dir=Path(qwen),
+            )
+        )
+    if qwen3_vl is not None:
+        targets.append(
+            SmokeTarget(
+                kind="qwen3-vl",
+                model_id=args.qwen3_vl_model_id,
+                artifacts_dir=Path(qwen3_vl),
+            )
+        )
+    if qwen35 is not None:
+        targets.append(
+            SmokeTarget(
+                kind="qwen3.5-9b",
+                model_id=args.qwen35_model_id,
+                artifacts_dir=Path(qwen35),
+            )
+        )
+    if qwen36_27b is not None:
+        targets.append(
+            SmokeTarget(
+                kind="qwen3.6-27b",
+                model_id=args.qwen36_27b_model_id,
+                artifacts_dir=Path(qwen36_27b),
             )
         )
     if qwen36 is not None:
@@ -145,7 +198,9 @@ def build_openai_tool_request(model_id: str) -> dict[str, Any]:
         "tools": [_read_file_tool_spec()],
         "tool_choice": "auto",
         "temperature": 0,
-        "max_tokens": 96,
+        "max_completion_tokens": 96,
+        "chat_template_kwargs": {"enable_thinking": False},
+        "store": False,
         "stream": False,
     }
 
@@ -163,7 +218,12 @@ def build_ollama_chat_request(model_id: str) -> dict[str, Any]:
             }
         ],
         "tools": [_read_file_tool_spec()],
-        "options": {"temperature": 0, "num_predict": 96},
+        "think": False,
+        "options": {
+            "temperature": 0,
+            "num_ctx": 16_384,
+            "num_predict": 96,
+        },
         "stream": False,
     }
 
@@ -178,8 +238,10 @@ def main() -> int:
                     "schema": "ax.direct_model_compat_smoke.v1",
                     "status": "skipped",
                     "reason": (
-                        f"set {QWEN_ARTIFACTS_ENV}, {QWEN36_ARTIFACTS_ENV}, "
-                        f"and/or {GEMMA4_ARTIFACTS_ENV} to run native MLX "
+                        f"set {QWEN_ARTIFACTS_ENV}, {QWEN3_VL_ARTIFACTS_ENV}, "
+                        f"{QWEN35_ARTIFACTS_ENV}, {QWEN36_27B_ARTIFACTS_ENV}, "
+                        f"{QWEN36_ARTIFACTS_ENV}, and/or {GEMMA4_ARTIFACTS_ENV} "
+                        "to run native MLX "
                         "compatibility smoke checks"
                     ),
                     "results": [],
@@ -193,7 +255,7 @@ def main() -> int:
     try:
         server_bin = ensure_server_binary(args)
         results = [run_target(args, server_bin, target) for target in targets]
-    except SmokeFailure as error:
+    except (OSError, SmokeFailure) as error:
         print(
             json.dumps(
                 {
@@ -265,6 +327,15 @@ def run_target(
                 "GET", f"{base_url}/v1/models", None, args.request_timeout_sec
             )
             model_card = assert_model_metadata(models, target.model_id)
+            ollama_show = http_json(
+                "POST",
+                f"{base_url}/api/show",
+                {"name": target.model_id},
+                args.request_timeout_sec,
+            )
+            ollama_capabilities = assert_ollama_show_response(
+                ollama_show, model_card
+            )
             openai = http_json(
                 "POST",
                 f"{base_url}/v1/chat/completions",
@@ -288,6 +359,7 @@ def run_target(
                     "openai_tool_calling_supported"
                 ],
                 "capabilities_toolcall": model_card["capabilities"]["toolcall"],
+                "ollama_capabilities": ollama_capabilities,
                 "openai_tool_call_count": openai_tool_calls,
                 "ollama_tool_call_count": ollama_tool_calls,
                 "log_path": str(log_path),
@@ -436,6 +508,37 @@ def assert_openai_chat_response(response: dict[str, Any], expect_tool_call: bool
     if expect_tool_call and not tool_calls:
         raise SmokeFailure("OpenAI chat response did not include parsed tool_calls")
     return len(tool_calls)
+
+
+def assert_ollama_show_response(
+    response: dict[str, Any], model_card: dict[str, Any]
+) -> list[str]:
+    capabilities = response.get("capabilities")
+    if not isinstance(capabilities, list) or "completion" not in capabilities:
+        raise SmokeFailure("/api/show did not advertise completion capability")
+    if "tools" not in capabilities:
+        raise SmokeFailure("/api/show did not advertise tools capability")
+    model_info = response.get("model_info")
+    if not isinstance(model_info, dict):
+        raise SmokeFailure("/api/show did not return model_info")
+    context_length = model_info.get("ax_engine.context_length")
+    if context_length != model_card.get("context_length"):
+        raise SmokeFailure(
+            "/api/show context length does not match /v1/models: "
+            f"{context_length!r} != {model_card.get('context_length')!r}"
+        )
+    advertised = model_card.get("capabilities")
+    if isinstance(advertised, dict):
+        modalities = advertised.get("input")
+        if (
+            isinstance(modalities, dict)
+            and modalities.get("image") is True
+            and "vision" not in capabilities
+        ):
+            raise SmokeFailure("/api/show omitted vision for an image-capable model")
+        if advertised.get("reasoning") is True and "thinking" not in capabilities:
+            raise SmokeFailure("/api/show omitted thinking for a reasoning-capable model")
+    return [str(capability) for capability in capabilities]
 
 
 def assert_ollama_chat_response(response: dict[str, Any], expect_tool_call: bool) -> int:

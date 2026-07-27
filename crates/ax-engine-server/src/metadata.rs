@@ -204,6 +204,7 @@ fn model_card(live: &LiveState) -> ModelCard {
         video: native_multimodal.video || delegated_multimodal.video,
     };
     let openai_tool_calling = openai_tool_calling_supported_live(live, openai_text);
+    let openai_reasoning = openai_reasoning_supported_live(live, openai_text);
     ModelCard {
         id: live.model_id.to_string(),
         object: "model",
@@ -212,6 +213,7 @@ fn model_card(live: &LiveState) -> ModelCard {
             openai_text,
             advertised_multimodal,
             openai_tool_calling,
+            openai_reasoning,
             whisper,
         ),
         limit: ModelLimit {
@@ -246,11 +248,12 @@ fn model_capabilities(
     openai_text: bool,
     native_multimodal: NativeProcessedMultimodalSupport,
     openai_tool_calling: bool,
+    openai_reasoning: bool,
     whisper: bool,
 ) -> ModelCapabilities {
     ModelCapabilities {
         temperature: openai_text,
-        reasoning: false,
+        reasoning: openai_reasoning,
         attachment: native_multimodal.any() || whisper,
         toolcall: openai_tool_calling,
         input: ModelModalities {
@@ -307,6 +310,25 @@ fn ax_engine_model_metadata(
         coding_supported,
         coding_only,
     }
+}
+
+fn openai_reasoning_supported_live(live: &LiveState, openai_text: bool) -> bool {
+    openai_text
+        && live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && (chat::is_qwen_thinking_model(live.model_id.as_ref())
+            || matches!(
+                ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+                ChatPromptTemplate::Gemma4
+            ))
+}
+
+pub(crate) fn model_supports_reasoning(live: &LiveState) -> bool {
+    openai_reasoning_supported_live(live, openai_text_supported_live(live))
+}
+
+pub(crate) fn model_supports_image(live: &LiveState) -> bool {
+    native_processed_multimodal_support_live(live).image
+        || delegated_multimodal_support_live(live).image
 }
 
 fn openai_tool_calling_supported_live(live: &LiveState, openai_text: bool) -> bool {

@@ -151,6 +151,7 @@ impl AnthropicMessagesRequest {
                     role: "system".to_string(),
                     content: Some(OpenAiChatContent::Text(content)),
                     tool_calls: None,
+                    reasoning_content: None,
                     _tool_call_id: None,
                     _name: None,
                 });
@@ -172,6 +173,7 @@ impl AnthropicMessagesRequest {
                     message.content.into_text("messages[].content")?,
                 )),
                 tool_calls: None,
+                reasoning_content: None,
                 _tool_call_id: None,
                 _name: None,
             });
@@ -205,6 +207,7 @@ impl AnthropicMessagesRequest {
             logprobs: false,
             top_logprobs: None,
             reasoning: None,
+            chat_template_kwargs: None,
             metadata: None,
             multimodal_inputs: Default::default(),
             response_format: None,

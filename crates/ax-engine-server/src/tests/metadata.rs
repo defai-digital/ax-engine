@@ -48,6 +48,36 @@ async fn models_reports_ax_code_safe_capabilities() {
 }
 
 #[tokio::test]
+async fn models_advertises_reasoning_for_openclaw_qwen_thinking_variants() {
+    let artifact_dir = minimal_tokenizer_artifact("openclaw-qwen-reasoning-metadata");
+    for (model_id, expected) in [
+        ("qwen3.5-9b-mtp", true),
+        ("qwen3.6-27b-mtp", true),
+        ("qwen3-vl-8b-thinking", true),
+        ("qwen3-vl-8b-instruct", false),
+    ] {
+        let app = build_router(native_mlx_openai_builder_state(model_id, &artifact_dir));
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("GET")
+                .uri("/v1/models")
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "{model_id}");
+        assert_eq!(
+            json["data"][0]["capabilities"]["reasoning"],
+            json!(expected),
+            "{model_id}"
+        );
+    }
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn models_advertises_vllm_unlimited_ocr_image_and_profile_limits() {
     let (server_url, server_handle) = spawn_vllm_readiness_server("baidu/Unlimited-OCR", 32_768);
     let app = build_router(vllm_delegated_state(

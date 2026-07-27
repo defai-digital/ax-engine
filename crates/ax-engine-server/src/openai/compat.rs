@@ -5,13 +5,10 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::{AppState, LiveState};
-use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
 use crate::metadata::context_length;
-use crate::openai::chat_requests::{
-    ChatPromptRenderOptions, render_openai_chat_prompt_with_options,
-};
-use crate::openai::requests::openai_reasoning_is_enabled;
+use crate::openai::chat_requests::render_openai_chat_prompt_with_options;
+use crate::openai::requests::openai_chat_prompt_render_options;
 use crate::openai::schema::OpenAiChatCompletionHttpRequest;
 use crate::openai::validation::select_model;
 
@@ -102,19 +99,16 @@ pub(crate) async fn apply_template(
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
 ) -> Result<Json<ApplyTemplateResponse>, HttpErrorResponse> {
     let live = select_model(&state, request.model.as_deref())?;
-    // Match /v1/chat/completions: tools/tool_choice and Gemma thinking
-    // (request.reasoning → enable_thinking) so this preview shows the exact
-    // prompt generation would see.
-    let enable_thinking = matches!(
-        chat::ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
-        chat::ChatPromptTemplate::Gemma4
-    ) && openai_reasoning_is_enabled(request.reasoning.as_ref());
+    // Match /v1/chat/completions: tools/tool_choice plus native
+    // reasoning/chat-template controls, so this preview shows the exact
+    // text-only prompt generation would see.
+    let prompt_options = openai_chat_prompt_render_options(&request);
     let prompt = render_openai_chat_prompt_with_options(
         live.model_id.as_ref(),
         &request.messages,
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
-        ChatPromptRenderOptions { enable_thinking },
+        prompt_options,
     )?;
     Ok(Json(ApplyTemplateResponse { prompt }))
 }

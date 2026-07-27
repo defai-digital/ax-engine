@@ -7,7 +7,8 @@ use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
     build_openai_chat_request_offloading_media, build_openai_edge_llm_chat_request,
     build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
-    chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
+    chat_template_kwargs_for_model_id, openai_chat_prompt_render_options,
+    openai_chat_stop_sequences,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::openai::validation::validate_openai_request;
@@ -60,6 +61,99 @@ fn openai_chat_prompt_renderer_uses_model_family_templates() {
         render_openai_chat_prompt("unknown-local-model", &messages).expect("plain prompt"),
         "system: Be concise.\nuser: Hello\nassistant:"
     );
+}
+
+#[test]
+fn openclaw_qwen_chat_template_thinking_controls_generation_and_replay() {
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "messages": [
+            {"role": "user", "content": "Inspect the workspace"},
+            {
+                "role": "assistant",
+                "content": "I will inspect it.",
+                "reasoning_content": "First identify the relevant files."
+            },
+            {"role": "user", "content": "Continue"}
+        ],
+        "stream": true,
+        "stream_options": {"include_usage": true},
+        "max_completion_tokens": 8192,
+        "chat_template_kwargs": {
+            "enable_thinking": true,
+            "preserve_thinking": true
+        }
+    }))
+    .expect("OpenClaw Qwen request should deserialize");
+
+    let options = openai_chat_prompt_render_options(&request);
+    assert!(options.enable_thinking);
+    assert!(options.preserve_thinking);
+    let prompt = render_openai_chat_prompt_with_options(
+        "Qwen3.6-27B-4bit",
+        &request.messages,
+        None,
+        None,
+        options,
+    )
+    .expect("Qwen thinking prompt should render");
+
+    assert!(prompt.contains("<think>\nFirst identify the relevant files.\n</think>"));
+    assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING));
+
+    let override_request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Reply briefly"}],
+        "reasoning": true,
+        "chat_template_kwargs": {"enable_thinking": false}
+    }))
+    .expect("explicit thinking override should deserialize");
+    assert!(
+        !openai_chat_prompt_render_options(&override_request).enable_thinking,
+        "chat-template kwargs must override AX's legacy reasoning extension"
+    );
+}
+
+#[test]
+fn openclaw_tool_choice_none_removes_qwen_tool_contract() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Answer without tools"}
+    ]))
+    .expect("messages should deserialize");
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read a file",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }
+        }
+    }]);
+
+    let disabled = render_openai_chat_prompt_with_tools(
+        "Qwen3.6-27B-4bit",
+        &messages,
+        Some(&tools),
+        Some(&json!("none")),
+    )
+    .expect("disabled tool prompt should render");
+    let baseline = render_openai_chat_prompt_with_tools("Qwen3.6-27B-4bit", &messages, None, None)
+        .expect("baseline prompt should render");
+    assert_eq!(disabled, baseline);
+
+    let forced = render_openai_chat_prompt_with_tools(
+        "Qwen3.6-27B-4bit",
+        &messages,
+        Some(&tools),
+        Some(&json!({
+            "type": "function",
+            "function": {"name": "read_file"}
+        })),
+    )
+    .expect("named tool prompt should render");
+    assert!(forced.contains("requires calling the function `read_file`"));
 }
 
 #[test]
@@ -1000,6 +1094,7 @@ fn openai_gemma4_enable_thinking_matches_canonical_template() {
         None,
         ChatPromptRenderOptions {
             enable_thinking: true,
+            ..Default::default()
         },
     )
     .expect("thinking-on gemma4 prompt");
@@ -1101,6 +1196,7 @@ fn openai_gemma4_tool_roundtrip_with_thinking_opens_thought_channel() {
         Some(&json!("auto")),
         ChatPromptRenderOptions {
             enable_thinking: true,
+            ..Default::default()
         },
     )
     .expect("thinking tool roundtrip");
@@ -1967,6 +2063,133 @@ async fn openai_chat_request_decodes_inline_image_into_qwen3_vl_inputs() {
         "expanded prompt should contain image pad token id 10"
     );
     assert_eq!(built.generate_request.input_text, None);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openclaw_qwen_image_tools_and_tool_history_share_one_native_prompt() {
+    use crate::tests::fixtures::qwen3_vl_artifact;
+    use base64::Engine as _;
+
+    let artifact_dir = qwen3_vl_artifact("openclaw-qwen-image-tools");
+    let state = native_mlx_openai_builder_state("Qwen3.6-27B-4bit", &artifact_dir);
+    let live = state.snapshot();
+    let png = include_bytes!("fixtures/gemma4_golden/image_noresize.png");
+    let data_uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "record_image_finding",
+            "description": "Record a finding from an image",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "finding": {"type": "string"},
+                    "confidence": {"type": "number"}
+                },
+                "required": ["finding"]
+            }
+        }
+    }]);
+    let image_message = json!({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "describe"},
+            {"type": "image_url", "image_url": {"url": data_uri.clone()}}
+        ]
+    });
+
+    let baseline_request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "messages": [image_message.clone()],
+        "max_completion_tokens": 32
+    }))
+    .expect("baseline image request should deserialize");
+    let baseline =
+        build_openai_chat_request(&live, baseline_request).expect("baseline image should build");
+
+    let first_turn_request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "messages": [image_message.clone()],
+        "stream": true,
+        "stream_options": {"include_usage": true},
+        "max_completion_tokens": 32,
+        "tools": tools.clone(),
+        "tool_choice": "auto",
+        "store": false
+    }))
+    .expect("OpenClaw image-plus-tools request should deserialize");
+    let first_turn = build_openai_chat_request(&live, first_turn_request)
+        .expect("OpenClaw image-plus-tools request should build");
+
+    assert!(first_turn.stream);
+    assert!(first_turn.response_options.include_stream_usage);
+    assert!(first_turn.response_options.parse_tool_calls);
+    assert!(
+        first_turn.generate_request.input_tokens.len()
+            > baseline.generate_request.input_tokens.len(),
+        "the multimodal prompt must include the tool schema, not silently drop it"
+    );
+    assert!(
+        first_turn
+            .generate_request
+            .multimodal_inputs
+            .qwen3_vl
+            .as_ref()
+            .is_some_and(|inputs| inputs.images.len() == 1)
+    );
+
+    let followup_request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "messages": [
+            image_message,
+            {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_openclaw_1",
+                    "type": "function",
+                    "function": {
+                        "name": "record_image_finding",
+                        "arguments": "{\"finding\":\"a small square\",\"confidence\":0.9}"
+                    }
+                }]
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_openclaw_1",
+                "content": "{\"saved\":true}"
+            },
+            {"role": "user", "content": "Summarize the saved result"}
+        ],
+        "stream": true,
+        "stream_options": {"include_usage": true},
+        "max_completion_tokens": 32,
+        "tools": tools,
+        "tool_choice": "auto"
+    }))
+    .expect("OpenClaw tool-result replay should deserialize");
+    let followup = build_openai_chat_request(&live, followup_request)
+        .expect("OpenClaw image/tool history should build");
+
+    assert!(followup.response_options.parse_tool_calls);
+    assert!(
+        followup.generate_request.input_tokens.len()
+            > first_turn.generate_request.input_tokens.len(),
+        "assistant tool calls and tool results must remain in multimodal history"
+    );
+    assert!(
+        followup
+            .generate_request
+            .multimodal_inputs
+            .qwen3_vl
+            .as_ref()
+            .is_some_and(|inputs| inputs.images.len() == 1)
+    );
 
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }

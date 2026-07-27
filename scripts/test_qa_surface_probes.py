@@ -19,6 +19,7 @@ from surface_probes import (  # noqa: E402
     extract_sse_chat_text,
     model_advertises_image,
     normalize_answer_text,
+    openclaw_sse_contract,
     probe_cancel_request,
     probe_concurrent_chat,
     probe_multimodal_image,
@@ -106,7 +107,12 @@ class SurfaceProbeHelperTests(unittest.TestCase):
         def fake_post(url, payload, timeout=60.0):
             return 200, {"choices": [{"message": {"content": "7"}}]}
 
-        sse = 'data: {"choices":[{"delta":{"content":"7"}}]}\n\ndata: [DONE]\n'
+        sse = (
+            'data: {"choices":[{"delta":{"content":"7"}}]}\n\n'
+            'data: {"choices":[],"usage":{"prompt_tokens":4,'
+            '"completion_tokens":1,"total_tokens":5}}\n\n'
+            "data: [DONE]\n"
+        )
 
         class _Resp:
             def __enter__(self):
@@ -135,6 +141,13 @@ class SurfaceProbeHelperTests(unittest.TestCase):
             "hi",
         )
         self.assertEqual(normalize_answer_text("  A  B\n"), "a b")
+        self.assertEqual(
+            openclaw_sse_contract(
+                'data: {"choices":[],"usage":{"total_tokens":5}}\n'
+                "data: [DONE]\n"
+            ),
+            (True, True),
+        )
         self.assertTrue(
             model_advertises_image(
                 {"capabilities": {"input": {"image": True}}}

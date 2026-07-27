@@ -20,15 +20,15 @@ tool execution policy, planner state, file editing model, or task memory.
 | `POST /v1/model/load` | Load or hot-swap a native MLX model | MLX-native only | `model_id`, `model_path`, optional `load_mode` (`replace` / `add`), `make_default`, `load_policy` | `{ model_id, state, context_length, load_policy, load_mode, default_model_id }`; see [Multi-model serving](SERVER.md#multi-model-serving) |
 | `POST /v1/model/unload` | Retire a non-last loaded model | Multi-model registry | `model_id` | `{ model_id, state, default_model_id }`; last model cannot be unloaded |
 | `POST /v1/completions` | Preview-compatible text completion | repo-owned MLX sessions with tokenizer artifacts, `llama_cpp`, `mlx_lm_delegated` | `prompt` as one string or one token array; string-array batch prompts are rejected until per-prompt result assembly is implemented; `max_completion_tokens` takes precedence over legacy `max_tokens`, default 256; `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `seed`, `stream`, `stream_options.include_usage`, `metadata`, `stop`, optional `model` for multi-model routing; non-streaming `response_format` (`json_object` / Phase A `json_schema`) is validated post-hoc — see `docs/SERVER.md` | OpenAI-style completion envelope or SSE chunks with `system_fingerprint: null`; authoritative usage is returned non-streaming and as a final empty-`choices` chunk when requested for a stream |
-| `POST /v1/chat/completions`, `POST /chat/completions` | Preview-compatible chat completion; the unversioned alias matches `mlx_lm.server` | repo-owned MLX sessions with tokenizer and supported chat-template artifacts, `llama_cpp`, `mlx_lm_delegated` | text messages; manifest-capable native MLX Gemma/Qwen sessions also accept inline base64 `image_url` and bounded `video_url`; Gemma 4 unified and Nemotron additionally accept supported audio parts; roles `system`, `user`, `assistant`, `tool`, `function`; `max_completion_tokens` takes precedence over legacy `max_tokens`, default 256; `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `stream`, `stream_options.include_usage`, `metadata`, `stop`, optional `model` for multi-model routing; `tools`, `tool_choice`, and non-streaming `response_format` (`json_object` / Phase A `json_schema`) | OpenAI-style chat envelope or SSE chunks with `system_fingerprint: null` after AX renders messages with the selected model-family prompt template; requested stream usage is a final empty-`choices` chunk; Gemma 4 thinking-channel framing is stripped from chat content; non-streaming native Qwen and native Gemma 4 text tool spans are converted into `message.tool_calls` with `finish_reason=tool_calls` |
+| `POST /v1/chat/completions`, `POST /chat/completions` | Preview-compatible chat completion; the unversioned alias matches `mlx_lm.server` | repo-owned MLX sessions with tokenizer and supported chat-template artifacts, `llama_cpp`, `mlx_lm_delegated` | text messages; manifest-capable native MLX Gemma/Qwen sessions also accept inline base64 `image_url` and bounded `video_url`; Gemma 4 unified and Nemotron additionally accept supported audio parts; roles `system`, `user`, `assistant`, `tool`, `function`; assistant `reasoning_content`; `max_completion_tokens` takes precedence over legacy `max_tokens`, default 256; `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `stream`, `stream_options.include_usage`, `metadata`, `stop`, optional `model` for multi-model routing; Qwen `chat_template_kwargs.enable_thinking` / `preserve_thinking`; `tools`, `tool_choice`, and non-streaming `response_format` (`json_object` / Phase A `json_schema`) | OpenAI-style chat envelope or SSE chunks with `system_fingerprint: null` after AX renders messages with the selected model-family prompt template; requested stream usage is a final empty-`choices` chunk; opted-in native Qwen/Gemma reasoning is separated into `reasoning_content`; native Qwen (including image requests) and native Gemma 4 text tool spans are converted into `message.tool_calls` with `finish_reason=tool_calls` |
 | `POST /v1/responses` | Stateless Responses API subset | Same text runtime paths as `/v1/chat/completions`; function tools require a native AX-rendered model-family tool path | string input or message/function-call/function-output item arrays; `instructions`, `max_output_tokens`, sampling, function tools/tool choice, reasoning, and text format are mapped to the chat contract; non-streaming only; `store` defaults to false in AX | OpenAI Responses-shaped completed/incomplete envelope, output text/function-call items, and usage; delegated tools, persisted continuation, MCP, hosted prompts, background mode, and include expansions fail closed |
 | `POST /v1/embeddings` | OpenAI-shaped embedding route | repo-owned MLX embedding-capable sessions with tokenizer artifacts for text input | string, string batch, token-array, or token-array batch `input`; AX appends a configured EOS to text input; optional `pooling` and `normalize`; `encoding_format=float` only; explicit `dimensions` fails closed | OpenAI-style embedding list with float vectors and token usage |
 | `POST /v1/embedding_records` | AX-native structured RAG ingestion batch | repo-owned MLX embedding-capable sessions with `tokenizer.json` | `records[]` with `text` or deterministic `fields` rendering, optional chunking and metadata | Chunk-level embeddings with stable record/chunk indexes and metadata |
 | `GET /api/tags` | Ollama-shaped local model list | All server modes | None | Ollama-style `models` array for the currently loaded AX model |
-| `POST /api/show` | Ollama-shaped loaded-model metadata | All server modes | Optional `model` matching the loaded model; `verbose=false` accepted; `verbose=true` and unknown fields fail closed | Ollama-style metadata, `modified_at`, details, model info, and conservative capabilities for the current AX model |
+| `POST /api/show` | Ollama-shaped loaded-model metadata | All server modes | Optional `model` or Ollama-compatible `name` matching the loaded model; `verbose=false` accepted; `verbose=true` and unknown fields fail closed | Ollama-style metadata, `modified_at`, details, model info, and conservative `completion`, `tools`, `vision`, and `thinking` capabilities for the current AX model |
 | `GET /api/ps` | Ollama-shaped loaded-model list | All server modes | None | Ollama-style running-model list with the current AX model and advertised `context_length` |
 | `GET /api/version` | Ollama-shaped version probe | All server modes | None | `{"version": "<ax-engine-server crate version>"}` for clients that probe Ollama readiness |
-| `POST /api/chat` | Ollama-shaped chat adapter | Same runtime paths as `/v1/chat/completions` | Ollama `messages`, `tools`, `format`, `stream`, and `options` mapped onto the OpenAI chat builder; `options.num_predict`, `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `repeat_last_n`, `seed`, and `stop` are honored | Ollama chat JSON when `stream=false`; Ollama NDJSON chunks when `stream=true` or omitted; native AX-rendered Qwen/Gemma tool calls are returned as Ollama `message.tool_calls` |
+| `POST /api/chat` | Ollama-shaped chat adapter | Same runtime paths as `/v1/chat/completions` | Ollama `messages`, raw-base64 `messages[].images`, assistant `thinking` / `tool_calls`, tool-result `tool_name`, `tools`, `think`, `format`, `stream`, and `options` mapped onto the OpenAI chat builder; `options.num_ctx`, `num_predict`, `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `repeat_last_n`, `seed`, and `stop` are honored | Ollama chat JSON when `stream=false`; Ollama NDJSON chunks when `stream=true` or omitted; separated `message.thinking`; native AX-rendered Qwen/Gemma tool calls, including IDs, are returned as Ollama `message.tool_calls` |
 | `POST /api/generate` | Ollama-shaped generate adapter | Same runtime paths as `/v1/completions` | Ollama `prompt`, `system`, `format`, `stream`, `keep_alive`, `raw`, and the same supported `options` fields as `/api/chat`; `raw=true` sends the prompt without AX's simple system-prefix wrapper; unsupported `context`, template, image, suffix, think, logprobs, and unknown fields fail closed; empty prompts return Ollama-style load/unload no-op responses | Ollama generate JSON when `stream=false`; Ollama NDJSON chunks when `stream=true` or omitted |
 
 ## Explicit Non-Goals Today
@@ -59,8 +59,8 @@ These are not in the current compatibility contract:
 - LM Studio's native `/api/v1/*` model load/unload/download and stateful chat
   API, or ABI compatibility with LM Studio's internal `mlx-engine` library
 - full Ollama daemon parity such as model pull/push/create/copy/delete,
-  arbitrary Modelfile templates, stateful prompt context replay, thinking
-  control, Ollama logprobs, or image payloads on `/api/generate`
+  arbitrary Modelfile templates, stateful prompt context replay, Ollama
+  logprobs, or image payloads on `/api/generate`
 
 Repo-owned MLX generation remains token-first on `POST /v1/generate`, but the
 OpenAI-shaped completion and chat endpoints can tokenize text when the configured
@@ -94,8 +94,9 @@ client methods it exposes.
 
 ## Tool Calling Status
 
-Native Qwen ChatML and native Gemma 4 text sessions support model-family
-tool-call contracts. AX Engine renders OpenAI `tools` into the prompt, replays
+Native Qwen ChatML sessions (text and Qwen inline-media chat) and native Gemma
+4 text sessions support model-family tool-call contracts. AX Engine renders
+OpenAI `tools` into the prompt, replays
 assistant `tool_calls` history, and parses generated spans back into OpenAI
 `message.tool_calls` with `finish_reason=tool_calls`. Native Qwen ChatML tool
 prompting follows the matching hub `chat_template.jinja` for the selected model
@@ -124,11 +125,11 @@ models set `primary_use="coding"`, `coding_only=true`, and `chat_default=false`;
 Qwen3.6 models set `primary_use="general"`, `coding_supported=true`, and
 `chat_default=true`, so they can remain default chat/general-agent choices while
 still supporting tools via the hub function-XML contract.
-Streaming requests with `tools` on native AX-rendered tool-call paths return
-buffered OpenAI-shaped SSE chunks with `delta.tool_calls`; they do not stream
-the tool call token-by-token yet. Integrations such as `ax-code` should treat
-these fields as authoritative instead of assuming generic OpenAI-compatible
-providers support tool calls.
+Streaming requests with `tools` on native AX-rendered Qwen/Gemma paths emit
+content incrementally and emit each complete call as a `delta.tool_calls`
+fragment; argument text is not emitted token-by-token. Integrations should
+treat these structured fields as authoritative instead of parsing tool markup
+from content.
 
 Native MLX OpenAI text/chat requests are tokenized before generation and checked
 against the advertised `context_length`. If `prompt_tokens + max_tokens` would

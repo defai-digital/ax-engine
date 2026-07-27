@@ -11,6 +11,7 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -22,7 +23,9 @@ use crate::chat::ChatPromptTemplate;
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
 use crate::generation::streaming::{StreamStateSource, build_stream_state};
-use crate::metadata::{MODEL_OWNER, context_length};
+use crate::metadata::{
+    MODEL_OWNER, context_length, model_supports_image, model_supports_reasoning,
+};
 use crate::openai::generation::{populate_native_mlx_output_text, validate_openai_response_format};
 use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
@@ -32,8 +35,9 @@ use crate::openai::requests::{
 use crate::openai::responses::{openai_chat_completion_response, openai_finish_reason};
 use crate::openai::schema::{
     OpenAiChatCompletionHttpRequest, OpenAiChatCompletionResponse, OpenAiChatContent,
-    OpenAiChatMessage, OpenAiCompletionHttpRequest, OpenAiPromptInput, OpenAiStopInput,
-    OpenAiStreamKind, OpenAiToolCall,
+    OpenAiChatContentPart, OpenAiChatMessage, OpenAiChatTemplateKwargs,
+    OpenAiCompletionHttpRequest, OpenAiPromptInput, OpenAiStopInput, OpenAiStreamKind,
+    OpenAiToolCall,
 };
 use crate::openai::streaming::{ChatChannelStreamFilter, IncrementalDecoder};
 use crate::openai::validation::select_openai_model;
@@ -54,6 +58,8 @@ pub(crate) struct OllamaChatRequest {
     format: Option<Value>,
     #[serde(default)]
     keep_alive: Option<Value>,
+    #[serde(default)]
+    think: Option<Value>,
     #[serde(default, flatten)]
     unsupported: BTreeMap<String, Value>,
 }
@@ -66,13 +72,19 @@ pub(crate) struct OllamaMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     images: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OllamaToolCall>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_name: Option<String>,
     #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
     unsupported: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct OllamaToolCall {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
     function: OllamaFunctionCall,
     #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
     unsupported: BTreeMap<String, Value>,
@@ -91,6 +103,8 @@ pub(crate) struct OllamaFunctionCall {
 pub(crate) struct OllamaOptions {
     #[serde(default)]
     num_predict: Option<u32>,
+    #[serde(default)]
+    num_ctx: Option<u32>,
     #[serde(default)]
     temperature: Option<f32>,
     #[serde(default)]
@@ -157,7 +171,7 @@ pub(crate) struct OllamaGenerateRequest {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OllamaShowRequest {
-    #[serde(default)]
+    #[serde(default, alias = "name")]
     model: Option<String>,
     #[serde(default)]
     verbose: Option<bool>,
@@ -320,6 +334,16 @@ pub(crate) async fn ollama_chat(
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let live = select_openai_model(&state, request.model.as_deref())?;
     reject_ollama_tools_without_support(&live, request.tools.as_ref())?;
+    validate_ollama_num_ctx(&live, request.options.num_ctx)?;
+    let thinking = resolve_ollama_thinking(request.think.as_ref())?;
+    if thinking == Some(true) && !model_supports_reasoning(&live) {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "Ollama-compatible field `think` is enabled, but the selected AX Engine model does not advertise native reasoning support"
+                .to_string(),
+        ));
+    }
     let stream = request.stream;
     // True per-token NDJSON streaming for the native MLX backend. Tool and
     // format requests keep the buffered two-chunk emulation because their
@@ -329,8 +353,9 @@ pub(crate) async fn ollama_chat(
     let can_true_stream = stream
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
         && request.tools.is_none()
-        && request.format.is_none();
-    let openai_request = ollama_chat_to_openai_request(request)?;
+        && request.format.is_none()
+        && thinking != Some(true);
+    let openai_request = ollama_chat_to_openai_request(request, thinking)?;
     if can_true_stream {
         let OpenAiBuiltRequest {
             generate_request,
@@ -362,6 +387,7 @@ pub(crate) async fn ollama_generate(
     Json(request): Json<OllamaGenerateRequest>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let live = select_openai_model(&state, request.model.as_deref())?;
+    validate_ollama_num_ctx(&live, request.options.num_ctx)?;
     if let Some(response) = ollama_generate_lifecycle_response(&live, &request) {
         return Ok(Json(response).into_response());
     }
@@ -668,6 +694,7 @@ fn send_ollama_ndjson_line(
 
 fn ollama_chat_to_openai_request(
     request: OllamaChatRequest,
+    thinking: Option<bool>,
 ) -> Result<OpenAiChatCompletionHttpRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_unsupported_fields(&request.unsupported, "request")?;
     reject_unsupported_fields(&request.options.unsupported, "options")?;
@@ -701,7 +728,11 @@ fn ollama_chat_to_openai_request(
         logit_bias: None,
         logprobs: false,
         top_logprobs: None,
-        reasoning: None,
+        reasoning: thinking.map(Value::Bool),
+        chat_template_kwargs: thinking.map(|enable_thinking| OpenAiChatTemplateKwargs {
+            enable_thinking: Some(enable_thinking),
+            preserve_thinking: Some(true),
+        }),
         metadata: Some("ollama:/api/chat".to_string()),
         multimodal_inputs: Default::default(),
         response_format: ollama_format_to_openai(request.format),
@@ -822,6 +853,53 @@ fn reject_ollama_tools_without_support(
     ))
 }
 
+fn validate_ollama_num_ctx(
+    live: &LiveState,
+    requested: Option<u32>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    let available = context_length(live);
+    if requested == 0 || requested > available {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "context_length_exceeded",
+            format!(
+                "Ollama options.num_ctx requested {requested} tokens, but this AX Engine session is configured for {available}; restart AX with a matching --total-blocks value or lower OpenClaw's contextTokens/contextWindow"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_ollama_thinking(
+    value: Option<&Value>,
+) -> Result<Option<bool>, (StatusCode, Json<ErrorResponse>)> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value {
+        Value::Bool(enabled) => Ok(Some(*enabled)),
+        Value::String(level) => match level.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "false" | "disabled" => Ok(Some(false)),
+            "low" | "medium" | "high" | "minimal" | "xhigh" | "adaptive" | "max" => Ok(Some(true)),
+            _ => Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "Ollama-compatible field `think` must be false, true, off, low, medium, or high"
+                    .to_string(),
+            )),
+        },
+        _ => Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Ollama-compatible field `think` must be a boolean or thinking level string"
+                .to_string(),
+        )),
+    }
+}
+
 fn ollama_value_is_present(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => false,
@@ -846,7 +924,7 @@ fn ollama_message_to_openai_message(
     message: OllamaMessage,
 ) -> Result<OpenAiChatMessage, (StatusCode, Json<ErrorResponse>)> {
     reject_unsupported_fields(&message.unsupported, "messages[]")?;
-    reject_unused_field(message.images, "messages[].images")?;
+    let content = ollama_message_content(message.content, message.images)?;
     let tool_calls = match message.tool_calls {
         Some(calls) => {
             for call in &calls {
@@ -862,11 +940,78 @@ fn ollama_message_to_openai_message(
     };
     Ok(OpenAiChatMessage {
         role: message.role,
-        content: Some(OpenAiChatContent::Text(message.content)),
+        content: Some(content),
         tool_calls,
+        reasoning_content: message.thinking,
         _tool_call_id: None,
-        _name: None,
+        _name: message.tool_name,
     })
+}
+
+fn ollama_message_content(
+    text: String,
+    images: Option<Vec<String>>,
+) -> Result<OpenAiChatContent, (StatusCode, Json<ErrorResponse>)> {
+    let Some(images) = images.filter(|images| !images.is_empty()) else {
+        return Ok(OpenAiChatContent::Text(text));
+    };
+    let mut parts = Vec::with_capacity(images.len() + usize::from(!text.is_empty()));
+    if !text.is_empty() {
+        parts.push(OpenAiChatContentPart {
+            part_type: "text".to_string(),
+            text: Some(text),
+            image_url: None,
+            video_url: None,
+            input_audio: None,
+            audio_url: None,
+        });
+    }
+    for image in images {
+        let url = ollama_image_data_uri(&image)?;
+        parts.push(OpenAiChatContentPart {
+            part_type: "image_url".to_string(),
+            text: None,
+            image_url: Some(json!({ "url": url })),
+            video_url: None,
+            input_audio: None,
+            audio_url: None,
+        });
+    }
+    Ok(OpenAiChatContent::Parts(parts))
+}
+
+fn ollama_image_data_uri(encoded: &str) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
+    if encoded.starts_with("data:") {
+        return Ok(encoded.to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("messages[].images contains invalid base64: {error}"),
+            )
+        })?;
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"BM") {
+        "image/bmp"
+    } else {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_modality",
+            "messages[].images must contain base64 PNG, JPEG, GIF, WebP, or BMP image data"
+                .to_string(),
+        ));
+    };
+    Ok(format!("data:{mime};base64,{encoded}"))
 }
 
 fn ollama_format_to_openai(format: Option<Value>) -> Option<Value> {
@@ -1007,7 +1152,9 @@ fn ollama_chat_response_from_openai(
             role: "assistant".to_string(),
             content: choice.message.content,
             images: None,
+            thinking: choice.message.reasoning_content,
             tool_calls,
+            tool_name: None,
             unsupported: BTreeMap::new(),
         },
         done: true,
@@ -1047,6 +1194,7 @@ fn ollama_tool_call(call: OpenAiToolCall) -> OllamaToolCall {
     let arguments = serde_json::from_str::<Value>(&call.function.arguments)
         .unwrap_or(Value::String(call.function.arguments));
     OllamaToolCall {
+        id: Some(call.id),
         function: OllamaFunctionCall {
             name: call.function.name,
             arguments,
@@ -1256,6 +1404,12 @@ fn ollama_model_info(live: &LiveState) -> Value {
 
 fn ollama_capabilities(live: &LiveState) -> Vec<&'static str> {
     let mut capabilities = vec!["completion"];
+    if model_supports_image(live) {
+        capabilities.push("vision");
+    }
+    if model_supports_reasoning(live) {
+        capabilities.push("thinking");
+    }
     if ollama_tools_supported(live) {
         capabilities.push("tools");
     }
@@ -1357,7 +1511,9 @@ mod tests {
                 role: "user".to_string(),
                 content: "hello".to_string(),
                 images: None,
+                thinking: None,
                 tool_calls: None,
+                tool_name: None,
                 unsupported: BTreeMap::new(),
             }],
             stream: true,
@@ -1373,10 +1529,11 @@ mod tests {
             ),
             format: Some(json!("json")),
             keep_alive: None,
+            think: None,
             unsupported: BTreeMap::new(),
         };
 
-        let openai = ollama_chat_to_openai_request(request).expect("request should map");
+        let openai = ollama_chat_to_openai_request(request, None).expect("request should map");
 
         assert_eq!(openai.model.as_deref(), Some("qwen3"));
         assert_eq!(openai.max_tokens, Some(16));
@@ -1386,6 +1543,91 @@ mod tests {
         assert_eq!(openai.response_format, Some(json!({"type": "json_object"})));
         assert!(!openai.stream);
         assert_eq!(openai.messages.len(), 1);
+    }
+
+    #[test]
+    fn openclaw_native_ollama_request_maps_images_thinking_and_tool_ids() {
+        let request: OllamaChatRequest = serde_json::from_value(json!({
+            "model": "Qwen3.6-27B-4bit",
+            "stream": true,
+            "think": "low",
+            "options": {"num_ctx": 16384},
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "describe",
+                    "images": ["iVBORw0KGgo="]
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "thinking": "inspect the image",
+                    "tool_calls": [{
+                        "id": "call_openclaw_1",
+                        "function": {
+                            "name": "record",
+                            "arguments": {"finding": "square"}
+                        }
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "content": "{\"saved\":true}",
+                    "tool_name": "record"
+                }
+            ],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "record",
+                    "description": "Record a finding",
+                    "parameters": {"type": "object"}
+                }
+            }]
+        }))
+        .expect("current OpenClaw Ollama request should deserialize");
+
+        assert_eq!(request.options.num_ctx, Some(16_384));
+        let thinking =
+            resolve_ollama_thinking(request.think.as_ref()).expect("thinking level should map");
+        assert_eq!(thinking, Some(true));
+        let openai = ollama_chat_to_openai_request(request, thinking).expect("request should map");
+
+        assert_eq!(
+            openai
+                .chat_template_kwargs
+                .map(|kwargs| kwargs.enable_thinking),
+            Some(Some(true))
+        );
+        let OpenAiChatContent::Parts(parts) = openai.messages[0]
+            .content
+            .as_ref()
+            .expect("image message content")
+        else {
+            panic!("Ollama images must become OpenAI multipart content");
+        };
+        assert_eq!(parts[0].text.as_deref(), Some("describe"));
+        assert_eq!(
+            parts[1]
+                .image_url
+                .as_ref()
+                .and_then(|value| value.get("url"))
+                .and_then(Value::as_str),
+            Some("data:image/png;base64,iVBORw0KGgo=")
+        );
+        assert_eq!(
+            openai.messages[1]
+                .tool_calls
+                .as_ref()
+                .and_then(|calls| calls[0].get("id"))
+                .and_then(Value::as_str),
+            Some("call_openclaw_1")
+        );
+        assert_eq!(
+            openai.messages[1].reasoning_content.as_deref(),
+            Some("inspect the image")
+        );
+        assert_eq!(openai.messages[2]._name.as_deref(), Some("record"));
     }
 
     #[test]
@@ -1401,7 +1643,7 @@ mod tests {
                 message: OpenAiChatMessageResponse {
                     role: "assistant",
                     content: String::new(),
-                    reasoning_content: None,
+                    reasoning_content: Some("reasoning body".to_string()),
                     tool_calls: Some(vec![OpenAiToolCall {
                         id: "call_0".to_string(),
                         tool_type: "function",
@@ -1428,11 +1670,13 @@ mod tests {
         assert_eq!(ollama.done_reason, Some("stop"));
         assert_eq!(ollama.prompt_eval_count, 3);
         assert_eq!(ollama.eval_count, 2);
+        assert_eq!(ollama.message.thinking.as_deref(), Some("reasoning body"));
         let calls = ollama
             .message
             .tool_calls
             .expect("tool calls should be present");
         assert_eq!(calls[0].function.name, "lookup");
+        assert_eq!(calls[0].id.as_deref(), Some("call_0"));
         assert_eq!(calls[0].function.arguments, json!({"query": "weather"}));
     }
 

@@ -139,10 +139,14 @@ const NEMOTRON_OMNI_MAX_AUDIO_SECONDS: u32 = 300;
 /// Options for OpenAI chat prompt rendering beyond tools/messages.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ChatPromptRenderOptions {
-    /// When true, Gemma 4 injects `<|think|>` and leaves the thought channel
-    /// open for generation (Google `enable_thinking=true`). Default false
-    /// pre-fills an empty thought channel so short answers skip CoT.
+    /// When true, Qwen leaves `<think>` open and Gemma 4 injects `<|think|>`
+    /// for generation. Default false pre-fills a closed/empty thought channel
+    /// so short answers skip CoT.
     pub(crate) enable_thinking: bool,
+    /// Replay an assistant message's `reasoning_content` inside Qwen
+    /// `<think>` tags. Disabled by default so hidden reasoning does not grow
+    /// ordinary agent transcripts.
+    pub(crate) preserve_thinking: bool,
 }
 
 /// Tools-free convenience wrapper for tests that don't care about tool
@@ -222,10 +226,12 @@ pub(crate) fn render_openai_chat_prompt_with_options(
         return render_llama3_openai_chat_prompt(messages, tools);
     }
     let tool_contract_style = qwen_tool_contract_style(model_id);
-    let rendered_messages = render_openai_chat_message_pairs(messages, tool_contract_style)?;
+    let rendered_messages =
+        render_openai_chat_message_pairs(messages, tool_contract_style, options.preserve_thinking)?;
     let rendered_messages =
         prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
-    chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
+    chat::render_prompt_with_qwen_thinking(model_id, &rendered_messages, options.enable_thinking)
+        .map_err(chat_error_response)
 }
 
 /// Render an OpenAI chat request for the GLM 4.x family, including native GLM
@@ -761,6 +767,9 @@ fn render_glm_tool_contract_system_message(
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
 ) -> Option<String> {
+    if tool_choice.is_some_and(openai_tool_choice_disables_tools) {
+        return None;
+    }
     let tools = tools?;
     if !openai_value_is_present(tools) {
         return None;
@@ -780,13 +789,7 @@ fn render_glm_tool_contract_system_message(
          For each function call, output the function name and arguments within the following XML format:\n\
          <tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call>",
     );
-    if let Some(choice) = tool_choice
-        && tool_choice_forces_tool_call(choice)
-    {
-        message.push_str(
-            "\nThe current tool_choice requires using a tool when a matching function is available.",
-        );
-    }
+    append_tool_choice_instruction(&mut message, tool_choice);
     Some(message)
 }
 
@@ -888,6 +891,7 @@ pub(crate) fn openai_chat_stop_sequences(
 fn render_openai_chat_message_pairs(
     messages: &[OpenAiChatMessage],
     tool_contract_style: QwenToolContractStyle,
+    preserve_thinking: bool,
 ) -> Result<ChatMessagePairs, HttpErrorResponse> {
     if messages.is_empty() {
         return Err(empty_chat_messages_error());
@@ -897,23 +901,57 @@ fn render_openai_chat_message_pairs(
         .map(|message| {
             let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
             let mut content = render_openai_chat_content(message.content.as_ref())?;
-            if role == "assistant"
-                && let Some(tool_calls) = message.tool_calls.as_ref()
-                && let Some(rendered_tool_calls) =
-                    render_assistant_tool_calls(tool_calls, tool_contract_style)
-            {
-                if !content.trim().is_empty() {
-                    if tool_contract_style.uses_xml_tool_calls() {
-                        content.push_str("\n\n");
-                    } else {
-                        content.push('\n');
-                    }
-                }
-                content.push_str(&rendered_tool_calls);
-            }
+            append_qwen_assistant_history(
+                role,
+                &mut content,
+                message,
+                tool_contract_style,
+                preserve_thinking,
+            );
             Ok((role.to_string(), content))
         })
         .collect()
+}
+
+fn append_qwen_assistant_history(
+    role: &str,
+    content: &mut String,
+    message: &OpenAiChatMessage,
+    tool_contract_style: QwenToolContractStyle,
+    preserve_thinking: bool,
+) {
+    if role != "assistant" {
+        return;
+    }
+    if preserve_thinking
+        && let Some(reasoning) = message
+            .reasoning_content
+            .as_deref()
+            .map(str::trim)
+            .filter(|reasoning| !reasoning.is_empty())
+    {
+        let visible = std::mem::take(content);
+        content.push_str("<think>\n");
+        content.push_str(reasoning);
+        content.push_str("\n</think>");
+        if !visible.trim().is_empty() {
+            content.push_str("\n\n");
+            content.push_str(&visible);
+        }
+    }
+    if let Some(tool_calls) = message.tool_calls.as_ref()
+        && let Some(rendered_tool_calls) =
+            render_assistant_tool_calls(tool_calls, tool_contract_style)
+    {
+        if !content.trim().is_empty() {
+            if tool_contract_style.uses_xml_tool_calls() {
+                content.push_str("\n\n");
+            } else {
+                content.push('\n');
+            }
+        }
+        content.push_str(&rendered_tool_calls);
+    }
 }
 
 fn empty_chat_messages_error() -> HttpErrorResponse {
@@ -1568,6 +1606,9 @@ fn render_tool_contract_system_message(
     tool_choice: Option<&Value>,
     style: QwenToolContractStyle,
 ) -> Option<String> {
+    if tool_choice.is_some_and(openai_tool_choice_disables_tools) {
+        return None;
+    }
     let tools = tools?;
     if !openai_value_is_present(tools) {
         return None;
@@ -1608,13 +1649,7 @@ fn render_json_tool_contract_system_message(
          </tool_call>",
     );
 
-    if let Some(choice) = tool_choice
-        && tool_choice_forces_tool_call(choice)
-    {
-        message.push_str(
-            "\nThe current tool_choice requires using a tool when a matching function is available.",
-        );
-    }
+    append_tool_choice_instruction(&mut message, tool_choice);
 
     Some(message)
 }
@@ -1656,13 +1691,7 @@ fn render_qwen_function_tool_contract_system_message(
          </IMPORTANT>",
     );
 
-    if let Some(choice) = tool_choice
-        && tool_choice_forces_tool_call(choice)
-    {
-        message.push_str(
-            "\nThe current tool_choice requires using a tool when a matching function is available.",
-        );
-    }
+    append_tool_choice_instruction(&mut message, tool_choice);
 
     Some(message)
 }
@@ -1698,13 +1727,7 @@ fn render_qwen_coder_tool_contract_system_message(
          </IMPORTANT>",
     );
 
-    if let Some(choice) = tool_choice
-        && tool_choice_forces_tool_call(choice)
-    {
-        message.push_str(
-            "\nThe current tool_choice requires using a tool when a matching function is available.",
-        );
-    }
+    append_tool_choice_instruction(&mut message, tool_choice);
 
     Some(message)
 }
@@ -1891,6 +1914,32 @@ fn tool_choice_forces_tool_call(value: &Value) -> bool {
         Value::Array(values) => !values.is_empty(),
         Value::Object(object) => !object.is_empty(),
         Value::Number(value) => json_number_is_nonzero(value),
+    }
+}
+
+pub(crate) fn openai_tool_choice_disables_tools(value: &Value) -> bool {
+    match value {
+        Value::Bool(false) => true,
+        Value::String(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "none" | "false" | "off" | "disabled"
+        ),
+        _ => false,
+    }
+}
+
+fn append_tool_choice_instruction(message: &mut String, tool_choice: Option<&Value>) {
+    let Some(choice) = tool_choice else {
+        return;
+    };
+    if let Some(name) = forced_tool_choice_name(Some(choice)) {
+        message.push_str("\nThe current tool_choice requires calling the function `");
+        message.push_str(name);
+        message.push_str("`.");
+    } else if tool_choice_forces_tool_call(choice) {
+        message.push_str(
+            "\nThe current tool_choice requires using a tool when a matching function is available.",
+        );
     }
 }
 
@@ -2244,6 +2293,9 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
     model_id: &str,
     model_dir: &Path,
     messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+    options: ChatPromptRenderOptions,
 ) -> Result<Option<Qwen3VlChatPrompt>, HttpErrorResponse> {
     if !messages_contain_inline_media(messages) {
         return Ok(None);
@@ -2251,6 +2303,7 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
     if messages.is_empty() {
         return Err(empty_chat_messages_error());
     }
+    validate_openai_tool_names(messages, tools, tool_choice)?;
 
     // Qwen3-VL, visual Qwen3.5, and Qwen 3.6 accept vision media but not audio.
     for part in messages
@@ -2283,22 +2336,32 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
 
     let mut collected = CollectedMedia::default();
     let mut pairs: ChatMessagePairs = Vec::with_capacity(messages.len());
+    let tool_contract_style = qwen_tool_contract_style(model_id);
     for message in messages {
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
-        let content = render_content_collecting_media(
+        let mut content = render_content_collecting_media(
             message.content.as_ref(),
             QWEN3_VL_IMAGE_MARKUP,
             "", // audio unused (rejected above)
             QWEN3_VL_VIDEO_MARKUP,
             &mut collected,
         )?;
+        append_qwen_assistant_history(
+            role,
+            &mut content,
+            message,
+            tool_contract_style,
+            options.preserve_thinking,
+        );
         pairs.push((role.to_string(), content));
     }
     if collected.images.is_empty() && collected.videos.is_empty() {
         return Ok(None);
     }
 
-    let prompt = chat::render_prompt(model_id, &pairs).map_err(chat_error_response)?;
+    let pairs = prepend_qwen_tool_contract(model_id, pairs, tools, tool_choice);
+    let prompt = chat::render_prompt_with_qwen_thinking(model_id, &pairs, options.enable_thinking)
+        .map_err(chat_error_response)?;
     let base_tokens = tokenizer.encode(&prompt, false).map_err(|error| {
         error_response(
             StatusCode::BAD_REQUEST,

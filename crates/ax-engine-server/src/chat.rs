@@ -297,13 +297,18 @@ fn json_contains_u64(value: &Value, target: u64) -> bool {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
     let m = model_id.to_ascii_lowercase();
     if !m.contains("qwen") {
         return false;
     }
-    if m.contains("3.6") || m.contains("3_6") || m.contains("qwen36") {
+    if m.contains("3.5")
+        || m.contains("3_5")
+        || m.contains("qwen35")
+        || m.contains("3.6")
+        || m.contains("3_6")
+        || m.contains("qwen36")
+    {
         return true;
     }
     if m.contains("qwen3-coder-next") || m.contains("qwen3-coder") {
@@ -314,6 +319,7 @@ pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect();
     normalized.contains("qwen3-next")
+        || (normalized.contains("qwen3-vl") && normalized.contains("thinking"))
 }
 
 pub(crate) fn stop_sequences(model_id: &str, mut user_stops: Vec<String>) -> Vec<String> {
@@ -353,6 +359,19 @@ pub(crate) fn render_prompt(
     model_id: &str,
     messages: &[(String, String)],
 ) -> Result<String, String> {
+    render_prompt_with_qwen_thinking(model_id, messages, false)
+}
+
+/// Render a server-owned chat template while selecting the Qwen generation
+/// prompt explicitly. Non-Qwen templates ignore `qwen_thinking_enabled`.
+///
+/// Keeping this switch in the shared renderer makes text and multimodal chat
+/// use the same `<think>` prefill semantics.
+pub(crate) fn render_prompt_with_qwen_thinking(
+    model_id: &str,
+    messages: &[(String, String)],
+    qwen_thinking_enabled: bool,
+) -> Result<String, String> {
     if messages.is_empty() {
         return Err("chat.completions requires at least one message".to_string());
     }
@@ -365,7 +384,7 @@ pub(crate) fn render_prompt(
         ));
     }
 
-    render_prompt_with_template_for_model(model_id, template, messages, false)
+    render_prompt_with_template_for_model(model_id, template, messages, qwen_thinking_enabled)
 }
 
 fn render_prompt_with_template_for_model(
@@ -1474,14 +1493,17 @@ mod tests {
     #[test]
     fn qwen_thinking_model_match_is_limited_to_known_reasoning_families() {
         for model_id in [
+            "ax-qwen3.5-9b",
             "qwen3_6-35b-a3b-4bit",
             "Qwen3.6-35B-A3B-4bit",
             "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
+            "Qwen/Qwen3-VL-8B-Thinking",
         ] {
             assert!(is_qwen_thinking_model(model_id), "{model_id}");
         }
 
         for model_id in [
+            "Qwen/Qwen3-VL-8B-Instruct",
             "Qwen3-Coder-Next-4bit",
             "qwen-nextgen-v2",
             "qwen2.5-next-demo",

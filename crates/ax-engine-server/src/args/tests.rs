@@ -889,9 +889,24 @@ fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
     // the same product model ids as the unbranded artifact layouts.
     let cases = [
         (
+            "models--AutomatosX--AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
+            "qwen3_5",
+            "qwen3.5-9b-mtp",
+        ),
+        (
             "models--AutomatosX--AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
             "qwen3_5",
             "qwen3.6-27b-mtp",
+        ),
+        (
+            "models--mlx-community--Qwen3-VL-8B-Thinking-4bit",
+            "qwen3_vl",
+            "qwen3-vl-8b-thinking",
+        ),
+        (
+            "models--mlx-community--Qwen3-VL-4B-Instruct-4bit",
+            "qwen3_vl",
+            "qwen3-vl-4b-instruct",
         ),
         (
             "models--AutomatosX--AX-Qwen3-Coder-Next-MLX-4bit",

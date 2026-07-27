@@ -185,6 +185,11 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) top_logprobs: Option<u32>,
     #[serde(default)]
     pub(crate) reasoning: Option<Value>,
+    /// Qwen-compatible chat-template controls used by OpenClaw, vLLM, and
+    /// mlx-lm. AX owns prompt rendering on native MLX, so accept only the
+    /// switches whose behavior it can reproduce exactly.
+    #[serde(default)]
+    pub(crate) chat_template_kwargs: Option<OpenAiChatTemplateKwargs>,
     #[serde(default)]
     pub(crate) metadata: Option<String>,
     #[serde(default)]
@@ -201,6 +206,15 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
 pub(crate) struct OpenAiStreamOptions {
     #[serde(default)]
     pub(crate) include_usage: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OpenAiChatTemplateKwargs {
+    #[serde(default)]
+    pub(crate) enable_thinking: Option<bool>,
+    #[serde(default)]
+    pub(crate) preserve_thinking: Option<bool>,
 }
 
 /// OpenAI `stop` field: either a single string or an array of strings.
@@ -235,6 +249,10 @@ pub(crate) struct OpenAiChatMessage {
     pub(crate) content: Option<OpenAiChatContent>,
     #[serde(default)]
     pub(crate) tool_calls: Option<Value>,
+    /// Provider-compatible assistant reasoning replay. It is included in a
+    /// Qwen history prompt only when `preserve_thinking=true`.
+    #[serde(default)]
+    pub(crate) reasoning_content: Option<String>,
     #[serde(default)]
     #[serde(rename = "tool_call_id")]
     pub(crate) _tool_call_id: Option<String>,

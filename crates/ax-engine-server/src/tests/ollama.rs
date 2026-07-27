@@ -5,7 +5,8 @@ use serde_json::{Value, json};
 
 use super::fixtures::{
     json_request_body, json_response, llama_cpp_server_state, llama_cpp_state,
-    spawn_llama_cpp_completion_server, text_response,
+    native_mlx_openai_builder_state, qwen3_vl_artifact, spawn_llama_cpp_completion_server,
+    text_response,
 };
 
 fn assert_unsupported_parameter_response(json: &Value, message_fragment: &str) {
@@ -113,6 +114,44 @@ async fn ollama_show_accepts_verbose_false_probe() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["details"]["family"], json!("qwen"));
+}
+
+#[tokio::test]
+async fn openclaw_ollama_discovery_advertises_qwen_reasoning_vision_and_tools() {
+    let artifact_dir = qwen3_vl_artifact("openclaw-ollama-discovery");
+    let app = build_router(native_mlx_openai_builder_state(
+        "Qwen3.6-27B-4bit",
+        &artifact_dir,
+    ));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/show")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "name": "Qwen3.6-27B-4bit"
+            }))))
+            .expect("request should build"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let capabilities = json["capabilities"]
+        .as_array()
+        .expect("capabilities should be an array");
+    for capability in ["completion", "thinking", "tools", "vision"] {
+        assert!(
+            capabilities.contains(&json!(capability)),
+            "missing OpenClaw discovery capability {capability}: {capabilities:?}"
+        );
+    }
+    assert_eq!(
+        json["model_info"]["ax_engine.context_length"],
+        json!(16 * 1024)
+    );
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
 #[tokio::test]
@@ -234,8 +273,13 @@ async fn ollama_chat_non_stream_maps_to_openai_chat_and_returns_ollama_shape() {
                 "model": "qwen3",
                 "keep_alive": "5m",
                 "stream": false,
+                "think": false,
                 "messages": [{"role": "user", "content": "hello ollama"}],
-                "options": {"num_predict": 7, "temperature": 0.0}
+                "options": {
+                    "num_ctx": 4096,
+                    "num_predict": 7,
+                    "temperature": 0.0
+                }
             }))))
             .unwrap(),
     )
@@ -534,7 +578,7 @@ async fn ollama_generate_rejects_unknown_top_level_fields() {
 }
 
 #[tokio::test]
-async fn ollama_generate_rejects_unknown_options_fields() {
+async fn ollama_generate_rejects_num_ctx_above_ax_session_limit() {
     let app = build_router(llama_cpp_state());
     let (status, json) = json_response(
         &app,
@@ -545,18 +589,24 @@ async fn ollama_generate_rejects_unknown_options_fields() {
             .body(Body::from(json_request_body(&json!({
                 "model": "qwen3",
                 "prompt": "hello",
-                "options": {"num_ctx": 4096}
+                "options": {"num_ctx": 32768}
             }))))
             .unwrap(),
     )
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`options.num_ctx`");
+    assert_eq!(json["error"]["code"], json!("context_length_exceeded"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("configured for 16384")
+    );
 }
 
 #[tokio::test]
-async fn ollama_chat_rejects_unknown_top_level_fields() {
+async fn ollama_chat_rejects_thinking_for_nonreasoning_model() {
     let app = build_router(llama_cpp_state());
     let (status, json) = json_response(
         &app,
@@ -662,7 +712,7 @@ async fn ollama_chat_rejects_unknown_message_fields() {
                 "messages": [{
                     "role": "user",
                     "content": "hello",
-                    "thinking": "unsupported"
+                    "annotations": ["unsupported"]
                 }]
             }))))
             .unwrap(),
@@ -670,7 +720,7 @@ async fn ollama_chat_rejects_unknown_message_fields() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`messages[].thinking`");
+    assert_unsupported_parameter_response(&json, "`messages[].annotations`");
 }
 
 #[tokio::test]
@@ -689,6 +739,7 @@ async fn ollama_chat_rejects_unknown_tool_call_fields() {
                     "content": "",
                     "tool_calls": [{
                         "id": "call_1",
+                        "index": 0,
                         "function": {
                             "name": "lookup",
                             "arguments": {}
@@ -701,5 +752,5 @@ async fn ollama_chat_rejects_unknown_tool_call_fields() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`messages[].tool_calls[].id`");
+    assert_unsupported_parameter_response(&json, "`messages[].tool_calls[].index`");
 }
