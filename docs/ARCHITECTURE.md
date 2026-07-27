@@ -232,9 +232,10 @@ AX Engine is consumed in two supported ways:
 2. **Sidecar HTTP** via `ax-engine-server` / `ax-engine serve` exposing OpenAI-compatible `/v1/*`
 
 Product defaults, lifecycle phases, and non-goals are specified in
-[LOCAL-ENGINE-CLIENTS.md](./LOCAL-ENGINE-CLIENTS.md). AX Studio defaults to
-in-process MLX; AX Code defaults to a managed local server. Do not force a
-single process model across products.
+[LOCAL-ENGINE-CLIENTS.md](./LOCAL-ENGINE-CLIENTS.md). AX Studio and AX Code
+default to managed sidecar HTTP and can explicitly attach to an existing local
+server without taking over its lifecycle. In-process SDK embedding remains
+available to hosts that deliberately own a native `EngineSession`.
 
 AX OCR consumes the sidecar HTTP surface when using CUDA. Its document
 workflow, accuracy corpus, model artifact policy, and release acceptance stay
