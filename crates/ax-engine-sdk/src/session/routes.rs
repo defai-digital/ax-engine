@@ -7,6 +7,11 @@ use super::LLAMA_CPP_STREAM_EXECUTION_PLAN;
 // call and would be silently zeroed by a plain last-step-wins merge. Prefix-reuse
 // counters land on the prefill step only; without max-merge they are overwritten by
 // the subsequent decode steps, which is the bug the W1 evidence report identified.
+//
+// Decode-path identity counters (pipeline / single / ngram / decode steps) are
+// cumulative on the MLX request state: prefill snapshots carry bootstrap only,
+// and later decode snapshots must max-merge into the stored route so terminal
+// SSE telemetry is not frozen at the prefill-only map (2026-07-26 Gemma@2048).
 const MONOTONIC_CROSSOVER_DECISION_KEYS: &[&str] = &[
     "prefix_reused_requests",
     "live_share_hits",
@@ -21,7 +26,55 @@ const MONOTONIC_CROSSOVER_DECISION_KEYS: &[&str] = &[
     "branch_decode_requests",
     "branch_prefill_tail_tokens",
     "branch_decode_tokens",
+    "ax_mlx_decode_steps",
+    "ax_mlx_decode_wall_us",
+    "ax_mlx_direct_bootstrap_steps",
+    "ax_mlx_direct_bootstrap_wall_us",
+    "ax_mlx_direct_pipeline_steps",
+    "ax_mlx_direct_pipeline_wall_us",
+    "ax_mlx_direct_pipeline_forward_wall_us",
+    "ax_mlx_direct_pipeline_async_eval_wall_us",
+    "ax_mlx_direct_pipeline_pending_eval_wall_us",
+    "ax_mlx_single_decode_steps",
+    "ax_mlx_single_decode_wall_us",
+    "ax_mlx_ngram_decode_steps",
+    "ax_mlx_ngram_decode_wall_us",
+    "ax_mlx_production_decode_evals",
 ];
+
+/// True when the stored route already observed real decode work (pipeline /
+/// single / ngram / outer decode counters). Prefill-only snapshots that only
+/// carry bootstrap must keep refreshing until decode counters appear.
+pub(super) fn route_has_decode_path_work(route: &GenerateRouteReport) -> bool {
+    const KEYS: &[&str] = &[
+        "ax_mlx_direct_pipeline_steps",
+        "ax_mlx_single_decode_steps",
+        "ax_mlx_ngram_decode_steps",
+        "ax_mlx_decode_steps",
+    ];
+    KEYS.iter()
+        .any(|key| route.decision(key).unwrap_or(0) > 0)
+}
+
+/// Decide whether this native step must materialise full route metadata.
+///
+/// Prefill / multi-token / first-request / terminal steps always capture.
+/// Pure single-token decode can skip once a stored route already has decode
+/// path counters (perf); until then we must refresh so terminal telemetry is
+/// not stuck on a prefill-only bootstrap snapshot.
+pub(super) fn native_step_needs_route_capture(
+    batch_tokens: u32,
+    ttft_events: u32,
+    has_terminal_update: bool,
+    any_request_missing_route: bool,
+    any_stored_route_lacks_decode_work: bool,
+) -> bool {
+    batch_tokens > 1
+        || ttft_events > 0
+        || has_terminal_update
+        || any_request_missing_route
+        || any_stored_route_lacks_decode_work
+}
 
 // Apply per-step route metadata onto the route accumulated so far for the same
 // request. String fields are last-wins, except `prefix_cache_path` keeps a more
@@ -191,5 +244,79 @@ mod tests {
             stored.prefix_cache_path.as_deref(),
             Some("retained_prompt_prefix_cache")
         );
+    }
+
+    #[test]
+    fn merge_native_route_maxes_pipeline_decode_counters() {
+        // Prefill stores bootstrap only; terminal decode must raise pipeline
+        // steps rather than last-wins zeroing or freezing the prefill map.
+        let mut stored = GenerateRouteReport {
+            crossover_decisions: [
+                ("ax_mlx_direct_bootstrap_steps".to_string(), 1u32),
+                ("ax_mlx_direct_pipeline_steps".to_string(), 0u32),
+                ("ax_mlx_decode_steps".to_string(), 0u32),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let terminal = GenerateRouteReport {
+            crossover_decisions: [
+                ("ax_mlx_direct_bootstrap_steps".to_string(), 1u32),
+                ("ax_mlx_direct_pipeline_steps".to_string(), 127u32),
+                ("ax_mlx_decode_steps".to_string(), 127u32),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        merge_native_route_into(&mut stored, terminal);
+        assert_eq!(
+            stored.crossover_decisions.get("ax_mlx_direct_pipeline_steps"),
+            Some(&127)
+        );
+        assert_eq!(
+            stored.crossover_decisions.get("ax_mlx_decode_steps"),
+            Some(&127)
+        );
+        assert_eq!(
+            stored
+                .crossover_decisions
+                .get("ax_mlx_direct_bootstrap_steps"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn route_has_decode_path_work_ignores_bootstrap_only() {
+        let bootstrap_only = GenerateRouteReport {
+            crossover_decisions: [("ax_mlx_direct_bootstrap_steps".to_string(), 1u32)]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        assert!(
+            !route_has_decode_path_work(&bootstrap_only),
+            "bootstrap-only prefill snapshot is not decode work"
+        );
+        let pipeline = GenerateRouteReport {
+            crossover_decisions: [("ax_mlx_direct_pipeline_steps".to_string(), 3u32)]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        assert!(route_has_decode_path_work(&pipeline));
+    }
+
+    #[test]
+    fn native_step_needs_route_capture_refreshes_until_decode_and_terminal() {
+        // Intermediate pure single-token decode after counters exist can skip.
+        assert!(!native_step_needs_route_capture(1, 0, false, false, false));
+        // Prefill / multi-token / terminal / missing / bootstrap-only must capture.
+        assert!(native_step_needs_route_capture(2, 0, false, false, false));
+        assert!(native_step_needs_route_capture(1, 1, false, false, false));
+        assert!(native_step_needs_route_capture(1, 0, true, false, false));
+        assert!(native_step_needs_route_capture(1, 0, false, true, false));
+        assert!(native_step_needs_route_capture(1, 0, false, false, true));
     }
 }

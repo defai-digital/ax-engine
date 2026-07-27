@@ -2896,6 +2896,21 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             ),
             "direct_pipeline_baseline",
         )
+        # Bootstrap-only (prefill prime) must not claim pipeline — that gamed
+        # the 2026-07-26 Gemma@2048 readout where pipeline_steps stayed 0.
+        self.assertEqual(
+            bench.ax_decode_effective_route(
+                direct_mode=True,
+                model_metadata={},
+                telemetry={},
+                ax_mlx_telemetry={
+                    "ax_mlx_direct_bootstrap_steps": 5,
+                    "ax_mlx_direct_pipeline_steps": 0,
+                    "ax_mlx_single_decode_steps": 0,
+                },
+            ),
+            "direct_decode_route_unobserved",
+        )
 
     def test_summarize_ngram_accept_at_depth_yields_histogram_or_empty(self) -> None:
         # No depth keys at all => empty (do not annotate older runtime rows).

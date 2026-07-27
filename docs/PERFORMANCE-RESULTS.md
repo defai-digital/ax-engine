@@ -322,17 +322,18 @@ and charts.
 | 2026-07-12 AX-only validation | Gemma 4 E2B/31B and Qwen 3.6 27B 4-bit; one warmup and three measurements | Diagnostic only; [artifacts](benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-validate/sweep_summary.md) |
 | 2026-07-11 v6.8.2 composite | Gemma 4 and Qwen 3.6, mixed historical sessions | Archived row-level evidence below; not current-head performance |
 
-#### v6.11.1 AX-only direct snapshot (2026-07-27 Gemma loop-detection fix)
+#### v6.11.1 AX-only direct snapshot (2026-07-27 Gemma pipeline-honest)
 
 This complete AX-only direct sweep is published as a dated snapshot: AX Engine
 `v6.11.1`, admitted PyPI MLX `0.32.0` (`python_mlx`), Apple M5 Max 128 GB,
 2 warmups, 5 measurements, and 128 generated tokens at each prompt depth.
-**Gemma 4 rows were remeasured on 2026-07-27** after fixed-token `ignore_eos`
-benches stopped early under default Gemma 4 loop detection (collapsed decode
-windows to ~4–12 tokens and understated long-context decode tok/s). Qwen 3.6
-AX rows remain retained from the 2026-07-26 e13cb731 sweep (already full-length).
-Historical `mlx_lm`, llama.cpp, and other peer values are unchanged retained
-references.
+**Gemma 4 rows were remeasured on 2026-07-27** after (1) fixed-token `ignore_eos`
+benches no longer stop under default Gemma 4 loop detection and (2) native SSE
+route export keeps cumulative `ax_mlx_direct_pipeline_steps` on the terminal
+route (prefill-only freeze fixed). Primary Gemma@2048 rows export pipeline_steps=635
+(127×5), matching the 2026-07-14 honest pipeline identity. Qwen 3.6 AX rows remain
+retained from the 2026-07-26 e13cb731 sweep. Historical `mlx_lm`, llama.cpp, and
+other peer values are unchanged retained references.
 
 The box-and-whisker charts use this AX snapshot with retained historical
 `mlx_lm` and llama.cpp rows. They summarize the peer-compatible Gemma
@@ -358,23 +359,23 @@ same-session peer benchmark; the exact AX values are in the table below.
 
 | Model | Quant | Decode 128 | Decode 512 | Decode 2K | Prefill 128 | Prefill 512 | Prefill 2K | TTFT 128 | TTFT 512 | TTFT 2K |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Gemma 4 E2B | 4-bit | 232.7 | 223.1 | 211.1 | 2,205.8 | 7,216.7 | 13,481.8 | 58.0 | 70.9 | 151.9 |
-| Gemma 4 E2B | 6-bit | 187.4 | 180.3 | 171.7 | 1,962.8 | 6,624.7 | 12,773.5 | 65.2 | 77.3 | 160.3 |
-| Gemma 4 E4B | 4-bit | 143.9 | 138.9 | 131.6 | 1,443.0 | 3,791.1 | 5,564.4 | 88.7 | 135.1 | 368.1 |
-| Gemma 4 E4B | 6-bit | 111.6 | 108.3 | 104.1 | 1,336.1 | 3,421.2 | 5,364.4 | 95.8 | 149.7 | 381.8 |
-| Gemma 4 26B A4B | 4-bit | 144.3 | 133.6 | 126.1 | 659.1 | 1,691.9 | 2,420.1 | 194.2 | 302.6 | 846.2 |
-| Gemma 4 26B A4B | 6-bit | 114.3 | 108.0 | 101.8 | 515.6 | 1,420.1 | 2,176.9 | 248.3 | 360.5 | 940.8 |
-| Gemma 4 31B | 4-bit | 28.5 | 26.7 | 25.1 | 328.7 | 542.4 | 699.1 | 389.5 | 944.0 | 2,929.5 |
-| Gemma 4 31B | 6-bit | 19.8 | 19.1 | 18.2 | 254.8 | 473.2 | 637.4 | 502.4 | 1,082.0 | 3,213.0 |
+| Gemma 4 E2B | 4-bit | 232.7 | 223.1 | 212.1 | 2,205.8 | 7,216.7 | 13,158.1 | 58.0 | 70.9 | 155.6 |
+| Gemma 4 E2B | 6-bit | 187.4 | 180.3 | 170.8 | 1,962.8 | 6,624.7 | 12,465.5 | 65.2 | 77.3 | 164.3 |
+| Gemma 4 E4B | 4-bit | 143.9 | 138.9 | 132.0 | 1,443.0 | 3,791.1 | 5,681.5 | 88.7 | 135.1 | 360.5 |
+| Gemma 4 E4B | 6-bit | 111.6 | 108.3 | 104.1 | 1,336.1 | 3,421.2 | 5,355.3 | 95.8 | 149.7 | 382.4 |
+| Gemma 4 26B A4B | 4-bit | 144.3 | 133.6 | 126.1 | 659.1 | 1,691.9 | 2,406.3 | 194.2 | 302.6 | 851.1 |
+| Gemma 4 26B A4B | 6-bit | 114.3 | 108.0 | 101.3 | 515.6 | 1,420.1 | 2,144.6 | 248.3 | 360.5 | 955.0 |
+| Gemma 4 31B | 4-bit | 28.5 | 26.7 | 24.7 | 328.7 | 542.4 | 660.9 | 389.5 | 944.0 | 3,098.6 |
+| Gemma 4 31B | 6-bit | 19.8 | 19.1 | 17.8 | 254.8 | 473.2 | 632.3 | 502.4 | 1,082.0 | 3,238.8 |
 | Qwen 3.6 27B | 4-bit | 36.8 | 36.5 | 35.7 | 391.7 | 636.9 | 809.7 | 326.8 | 803.9 | 2,529.4 |
 | Qwen 3.6 27B | 6-bit | 25.6 | 25.4 | 25.0 | 301.0 | 541.3 | 738.9 | 425.2 | 945.8 | 2,771.7 |
 | Qwen 3.6 35B A3B | 4-bit | 173.9 | 171.2 | 165.0 | 505.9 | 1,329.7 | 2,079.7 | 253.0 | 385.1 | 984.7 |
 | Qwen 3.6 35B A3B | 6-bit | 141.4 | 139.7 | 135.6 | 387.1 | 1,145.8 | 1,911.4 | 330.7 | 446.9 | 1,071.5 |
 
 Decode and prefill values are tok/s; TTFT values are ms. Full raw results:
-[`sweep_results.json`](benchmarks/results/inference/ax-direct/2026-07-27-gemma-loopfix-m5max-ax-direct-only/sweep_results.json).
+[`sweep_results.json`](benchmarks/results/inference/ax-direct/2026-07-27-gemma-pipeline-honest-m5max-ax-direct-only/sweep_results.json).
 
-<!-- readme-ax-direct-snapshot: benchmarks/results/inference/ax-direct/2026-07-27-gemma-loopfix-m5max-ax-direct-only/sweep_results.json -->
+<!-- readme-ax-direct-snapshot: benchmarks/results/inference/ax-direct/2026-07-27-gemma-pipeline-honest-m5max-ax-direct-only/sweep_results.json -->
 
 #### Gemma 4 12B retained v6.8.2 case study
 

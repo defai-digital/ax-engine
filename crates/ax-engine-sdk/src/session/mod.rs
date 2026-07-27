@@ -40,7 +40,10 @@ use llama_lifecycle::{LlamaCppLifecycleRequest, LlamaCppLifecycleRequestSlot};
 use native::build_native_core;
 #[cfg(feature = "mlx-native")]
 use native::{build_native_core_with_mlx_shares, load_native_whisper_model};
-use routes::{apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into};
+use routes::{
+    apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into,
+    native_step_needs_route_capture, route_has_decode_path_work,
+};
 pub use stream::{GenerateStream, GenerateStreamState};
 use stream::{
     GenerateStreamPhase, LlamaCppGenerateStreamState, NativeGenerateStreamState,
@@ -785,20 +788,33 @@ impl EngineSession {
             .map(|trace| MetalDispatchStepReport::from_trace(&trace));
         // Decode steps re-emit large crossover maps every token. Building the
         // full GenerateRouteReport (String clones + BTreeMap) per token was a
-        // multi-ms tax on M5 Max Qwen3.5-9B SSE. Skip route conversion on pure
-        // single-token decode steps once a route is already stored for every
-        // selected request; still capture prefill / first / multi-token steps.
-        let needs_route = {
-            let batch_tokens = outcome.metrics.scheduled_tokens;
-            let ttft = outcome.metrics.ttft_events;
-            if batch_tokens > 1 || ttft > 0 {
-                true
-            } else {
-                selected_request_ids
-                    .iter()
-                    .any(|request_id| !self.native_request_routes.contains_key(request_id))
-            }
-        };
+        // multi-ms tax on M5 Max Qwen3.5-9B SSE. Skip intermediate pure
+        // single-token decode conversion only after a stored route already
+        // carries real decode-path counters. Always capture prefill, first
+        // decode after prefill (bootstrap-only → pipeline/single), multi-token
+        // steps, and the terminal step so cumulative pipeline_steps reach the
+        // harness (2026-07-26 Gemma@2048 froze prefill-only bootstrap).
+        let has_terminal_update = outcome.runner_output.as_ref().is_some_and(|output| {
+            output
+                .request_updates
+                .iter()
+                .any(|update| update.stop_reason.is_some())
+        });
+        let any_request_missing_route = selected_request_ids
+            .iter()
+            .any(|request_id| !self.native_request_routes.contains_key(request_id));
+        let any_stored_route_lacks_decode_work = selected_request_ids.iter().any(|request_id| {
+            self.native_request_routes
+                .get(request_id)
+                .is_some_and(|route| !route_has_decode_path_work(route))
+        });
+        let needs_route = native_step_needs_route_capture(
+            outcome.metrics.scheduled_tokens,
+            outcome.metrics.ttft_events,
+            has_terminal_update,
+            any_request_missing_route,
+            any_stored_route_lacks_decode_work,
+        );
         let report = if needs_route {
             let report = EngineStepReport::from_native_outcome(&outcome, metal_dispatch);
             if let Some(route) = report.route.as_ref() {
@@ -814,13 +830,10 @@ impl EngineSession {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
+                // Always merge when we paid to materialise the route: decode
+                // counters are max-merged into any prefill-only store.
                 for request_id in request_ids {
-                    let should_store = !self.native_request_routes.contains_key(&request_id)
-                        || report.scheduled_tokens > 1
-                        || report.ttft_events > 0;
-                    if should_store {
-                        self.store_native_request_route(request_id, route.clone());
-                    }
+                    self.store_native_request_route(request_id, route.clone());
                 }
             }
             report

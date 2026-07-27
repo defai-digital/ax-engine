@@ -259,7 +259,7 @@ the same 6-bit package, with 100% MTP step coverage.
 
 ### Direct: AX Engine vs mlx-lm vs llama.cpp
 
-Non-speculative generation. Charts: **v6.11.1 AX-only snapshot (2026-07-26)**
+Non-speculative generation. Charts: **v6.11.1 AX-only snapshot (2026-07-27)**
 overlaid with **retained** historical `mlx-lm` and `llama.cpp` Metal rows
 (cross-run distribution view, not a same-session peer matrix). Peer engines
 were not re-run in this refresh. Exact AX numbers:
@@ -341,7 +341,8 @@ curl http://127.0.0.1:31418/v1/runtime
 
 Auth, streaming, embeddings, Ollama-shaped routes, and delegated backends:
 [Server](docs/SERVER.md) · [CUDA Backends](docs/CUDA-BACKENDS.md) ·
-[API Compatibility](docs/API-COMPATIBILITY.md).
+[API Compatibility](docs/API-COMPATIBILITY.md) ·
+[OpenClaw](docs/OPENCLAW.md).
 
 ## Documentation
 
@@ -353,7 +354,7 @@ Auth, streaming, embeddings, Ollama-shaped routes, and delegated backends:
 | Hardware / FAQ | [FAQ](docs/FAQ.md) |
 | Full performance tables | [Performance Results](docs/PERFORMANCE-RESULTS.md) |
 | Reproduce benchmarks | [Benchmarks](docs/BENCHMARKS.md) |
-| Server / API / SDKs | [Server](docs/SERVER.md) · [API](docs/API-COMPATIBILITY.md) · [SDKs](docs/sdk/README.md) |
+| Server / API / SDKs | [Server](docs/SERVER.md) · [API](docs/API-COMPATIBILITY.md) · [OpenClaw](docs/OPENCLAW.md) · [SDKs](docs/sdk/README.md) |
 | Linux CUDA / Thor routing | [CUDA Backends](docs/CUDA-BACKENDS.md) · [TensorRT multimodal](docs/TENSORRT-L2-MULTIMODAL.md) |
 | Architecture | [Architecture](docs/ARCHITECTURE.md) |
 

@@ -1417,18 +1417,15 @@ def ax_decode_effective_route(
     ngram_decode_steps = int(ax_mlx_telemetry.get("ax_mlx_ngram_decode_steps", 0))
 
     if direct_mode:
+        # Honest route identity: only claim pipeline / single when decode
+        # counters are present. Bootstrap-only (prefill prime) must not be
+        # reclassified as pipeline — that gamed 2026-07-26 Gemma@2048 rows
+        # that never exported direct_pipeline_steps.
         if direct_steps > 0:
             return "direct_pipeline_baseline"
         if single_steps > 0:
             return "direct_single_decode_baseline"
-        # Prefill-boundary bootstrap without exported decode counters still
-        # means the pure-direct double-buffer path was engaged (the harness
-        # may keep a prefill-only route snapshot when step-local counters are
-        # sparse). Prefer pipeline over single in that case.
-        bootstrap_steps = int(ax_mlx_telemetry.get("ax_mlx_direct_bootstrap_steps", 0))
-        if bootstrap_steps > 0:
-            return "direct_pipeline_baseline"
-        return "direct_single_decode_baseline"
+        return "direct_decode_route_unobserved"
 
     if mtp_disable_ngram_stacking:
         if int(telemetry.get("ax_mtp_ngram_hit_steps", 0)) > 0:
