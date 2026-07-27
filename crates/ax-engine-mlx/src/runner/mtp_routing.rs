@@ -167,14 +167,17 @@ pub(super) const fn should_bootstrap_direct_pipeline(
     has_mtp: bool,
     mtp_uses_direct_pipeline: bool,
 ) -> bool {
-    // `session_direct` means that n-gram acceleration is disabled; it does not
-    // disable an attached/requested MTP route. Bootstrapping a pending direct
-    // token while strict MTP is selected causes every subsequent decode step
-    // to drain the direct pipeline before `run_model_decode` can enter MTP.
+    // Pure session-direct (n-gram disabled at the runner boundary) is the
+    // README/direct-mode contract: always prime the double-buffer pipeline.
+    // MTP weights may still be attached to the package, but pure direct
+    // sessions clear `mtp_requested` so they must not skip bootstrap.
     //
-    // The explicit MTP direct-fallback decision remains authoritative for
-    // unsupported sampling configurations.
-    mtp_uses_direct_pipeline || (!has_mtp && (session_direct || request_ngram_disabled))
+    // When the session still allows speculation, only bootstrap when MTP is
+    // explicitly on the direct-fallback route, or when no MTP is attached and
+    // the request itself disabled n-gram.
+    session_direct
+        || mtp_uses_direct_pipeline
+        || (request_ngram_disabled && !has_mtp)
 }
 
 pub(super) const fn should_use_session_direct_pipeline(
@@ -183,7 +186,12 @@ pub(super) const fn should_use_session_direct_pipeline(
     has_mtp: bool,
     mtp_requested: bool,
 ) -> bool {
-    session_direct && is_greedy && (!has_mtp || !mtp_requested)
+    // Pure direct sessions (n-gram disabled at the session boundary) must use
+    // the double-buffer pipeline for greedy decode. MTP is only an alternative
+    // when it is both attached and still requested; callers that want direct
+    // mode must clear `mtp_requested` when constructing the runner (see
+    // `MlxRunner::from_artifacts_inner`).
+    session_direct && is_greedy && !(has_mtp && mtp_requested)
 }
 
 #[allow(clippy::too_many_arguments)]

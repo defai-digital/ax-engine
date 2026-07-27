@@ -1665,7 +1665,12 @@ impl MlxRunner {
             batched_session,
             _stream: stream,
             disable_ngram_acceleration,
-            mtp_requested: !speculation_disabled,
+            // Session-level n-gram disable is the pure direct contract used by
+            // AX-only README benches (`--ax-direct` / `AX_NO_SPEC`). Leave MTP
+            // requested only when speculation remains enabled so greedy direct
+            // decode keeps the double-buffer pipeline instead of falling into
+            // `run_non_ngram_decode` → single-decode.
+            mtp_requested: !disable_ngram_acceleration,
             disable_mtp_ngram_stacking,
             mtp_optimistic: mtp_optimistic_from_env(),
             mtp_skip_state: mtp_skip_state_from_env(),
@@ -3167,27 +3172,33 @@ impl ExecutionRunner for MlxRunner {
             prefix_cache.merge_from(result.prefix_cache);
             request_updates.push(result.update);
         }
-        if !skip_route_telemetry {
+        // Always export decode path counters (pipeline / single / bootstrap).
+        // `AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY` only omits the heavy profile /
+        // layout maps used for residual campaigns — not the effective-route
+        // identity counters required by README publication gates.
+        {
             let mut route_decisions =
                 IndexedRouteDecisions::new(&mut route_metadata.crossover_decisions);
-            ngram_acceleration.append_route_decisions(&mut route_decisions);
-            mtp_telemetry.append_route_decisions(&mut route_decisions);
             decode_telemetry.append_route_decisions(&mut route_decisions);
-            gemma4_moe_profile.append_route_decisions(&mut route_decisions);
-            moe_profile.append_route_decisions(&mut route_decisions);
-            linear_attention_profile.append_route_decisions(&mut route_decisions);
-            dense_ffn_fastpath.append_route_decisions(&mut route_decisions);
-            prefill_profile.append_route_decisions(&mut route_decisions);
-            decode_profile.append_route_decisions(&mut route_decisions);
-            self.weight_layout_telemetry
-                .append_route_decisions(&mut route_decisions);
-            self.gemma4_assistant_mtp_status()
-                .append_route_decisions(gemma4_assistant_mtp_telemetry, &mut route_decisions);
-            gemma4_unified_multimodal_telemetry.append_route_decisions(&mut route_decisions);
-            self.affine_quant_telemetry
-                .append_route_decisions(&mut route_decisions);
-            kv_cache.append_route_decisions(&mut route_decisions);
-            prefix_cache.append_route_decisions(&mut route_decisions);
+            if !skip_route_telemetry {
+                ngram_acceleration.append_route_decisions(&mut route_decisions);
+                mtp_telemetry.append_route_decisions(&mut route_decisions);
+                gemma4_moe_profile.append_route_decisions(&mut route_decisions);
+                moe_profile.append_route_decisions(&mut route_decisions);
+                linear_attention_profile.append_route_decisions(&mut route_decisions);
+                dense_ffn_fastpath.append_route_decisions(&mut route_decisions);
+                prefill_profile.append_route_decisions(&mut route_decisions);
+                decode_profile.append_route_decisions(&mut route_decisions);
+                self.weight_layout_telemetry
+                    .append_route_decisions(&mut route_decisions);
+                self.gemma4_assistant_mtp_status()
+                    .append_route_decisions(gemma4_assistant_mtp_telemetry, &mut route_decisions);
+                gemma4_unified_multimodal_telemetry.append_route_decisions(&mut route_decisions);
+                self.affine_quant_telemetry
+                    .append_route_decisions(&mut route_decisions);
+                kv_cache.append_route_decisions(&mut route_decisions);
+                prefix_cache.append_route_decisions(&mut route_decisions);
+            }
         }
 
         let tokens_written: u32 = input
@@ -4329,8 +4340,19 @@ impl MlxRunner {
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
             })
             .unwrap_or_default();
+        // Prefer the engine's deterministic-argmax bit, but also treat
+        // temperature-0 / default-greedy shaped contexts as greedy so pure
+        // direct sessions never miss the double-buffer pipeline when a session
+        // flag omitted `deterministic` for temperature-0 requests.
         let is_greedy = ctx
-            .map(|c| c.deterministic_argmax_sampling)
+            .map(|c| {
+                c.deterministic_argmax_sampling
+                    || (c.temperature <= 0.0
+                        && c.top_k == 0
+                        && c.top_p >= 1.0
+                        && (c.repetition_penalty - 1.0).abs() < f32::EPSILON
+                        && c.no_repeat_ngram_size == 0)
+            })
             .unwrap_or(sampling == MlxSamplingParams::greedy());
 
         // Extract per-request state from the map and release the lock before GPU
@@ -4376,11 +4398,11 @@ impl MlxRunner {
         );
 
         // Apply the request's rotating sliding-KV decision. Prefill may rotate
-        // when `AX_MLX_ROTATING_SLIDING_PREFILL` is on (default): SWA layers
+        // when `AX_MLX_ROTATING_SLIDING_PREFILL=1` (default OFF): SWA layers
         // then keep O(window+slack) physical storage instead of O(context)
-        // contiguous buffers (mlx_lm RotatingKVCache prefill trim). Slack is
-        // sized to the session prefill chunk so multi-token isolation quanta
-        // and cold chunks fit. Decode still latches in
+        // contiguous buffers. Default stays ordered so pure window decode can
+        // convert cleanly without carrying oversized prefill ring capacity
+        // through long-context tok/s. Decode still latches in
         // `initialize_generation_state`; the latch wins on later runs.
         let (rotate_sliding, rotate_slack) = cache_rotation_for_execution(
             item.mode,
@@ -5194,11 +5216,20 @@ impl MlxRunner {
             max_output,
             terminal_token_ids,
         );
+        // Fixed-token / `ignore_eos` requests (README AX-direct benches) must
+        // run through `max_output_tokens`. Gemma 4 loop detection is default-on
+        // for production chat quality, but on random-prompt greedy decode it
+        // fires within a handful of tokens and collapses the measured decode
+        // window from 128 → ~4 tokens — the 2026-07-26 Gemma@2048 "slow"
+        // readout compared a micro-burst against the 7/14 full-length run.
         let (sampled_tokens, stop_reason) = apply_loop_detection_stop(
             sampled_tokens,
             stop_reason,
             &state.generated_tokens,
-            loop_detection_config_for_family(&self.cfg.model_family),
+            loop_detection_for_request(
+                ctx.map(|c| c.ignore_eos).unwrap_or(false),
+                &self.cfg.model_family,
+            ),
         );
         // Keep tokens for LoopDetected (and continuing decode).
         if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
@@ -6769,16 +6800,23 @@ impl MlxRunner {
         // mlx_lm's `_step(y)` → `async_eval(next_y)` → `eval(y)` loop and
         // eliminates the GPU idle gap between consecutive direct decode steps.
         //
-        // The pipeline is bootstrapped lazily on the first decode call rather
-        // than inside initialize_generation_state, so that the prefill runner
-        // step returns (and the first SSE event fires) without waiting for the
-        // decode graph construction.
-        if should_use_session_direct_pipeline(
-            self.disable_ngram_acceleration,
-            is_greedy,
-            self.has_mtp(),
-            self.mtp_requested,
-        ) {
+        // Pure session-direct (README `--ax-direct` / `AX_NO_SPEC`) must take
+        // this path for temperature-0 shaped decode *before* MTP / n-gram
+        // branches so a stale context bit or attached MTP package cannot
+        // regress long-context Gemma to single-step decode (the 2026-07-26
+        // decode@2048 failure mode). Speculative sessions still use the
+        // stricter `should_use_session_direct_pipeline` predicate.
+        let pure_direct_pipeline = self.disable_ngram_acceleration
+            && !sampling.uses_logits_processors()
+            && (is_greedy || sampling.temperature <= 0.0);
+        let direct_pipeline = pure_direct_pipeline
+            || should_use_session_direct_pipeline(
+                self.disable_ngram_acceleration,
+                is_greedy || sampling.temperature <= 0.0,
+                self.has_mtp(),
+                self.mtp_requested,
+            );
+        if direct_pipeline {
             let last_token = state
                 .next_model_last_token
                 .or_else(|| input_tokens.last().copied())
@@ -6858,37 +6896,19 @@ impl MlxRunner {
     }
 
     fn run_direct_pipeline_bootstrap(&self, state: &mut RequestState, last_token: u32) -> u32 {
-        // First generated token: single forward + eval only (TTFT path).
-        // The historical start+advance bootstrap paid two full model forwards
-        // before the first SSE text frame. After token 1, re-enter Bootstrap
-        // once more to establish the double-buffer (start+advance) so the
-        // remaining stream overlaps host graph build with GPU work.
+        // Always establish the double-buffer on bootstrap (start + advance),
+        // matching the 2026-07-14 sustained decode path that recorded
+        // `direct_pipeline_steps` ≈ generation_tokens and overlapped async_eval
+        // with the next graph build. Prefill already primes `pending_direct`
+        // when possible so the common path is ContinuePending rather than
+        // Bootstrap; when Bootstrap does run, keep the pipeline live instead
+        // of finishing a single lazy token and dropping the pending slot.
         let bootstrap_started = Instant::now();
         let first_lazy =
             start_direct_pipeline(&self.cfg, &self.weights, last_token, &mut state.cache);
         state
             .decode_telemetry
             .record_direct_bootstrap(elapsed_us(bootstrap_started));
-        if state.direct_pipeline_emitted_tokens == 0 {
-            let branch_started = Instant::now();
-            let (tok, pending_eval_wall_us, pending_read_wall_us) =
-                finish_pending_token(&first_lazy);
-            state
-                .decode_telemetry
-                .record_direct_pipeline(elapsed_us(branch_started));
-            state
-                .decode_telemetry
-                .record_direct_pipeline_timings(DirectPipelineTimings {
-                    pending_eval_wall_us,
-                    pending_read_wall_us,
-                    ..DirectPipelineTimings::default()
-                });
-            state.decode_telemetry.record_production_decode_eval();
-            state.pending_direct = None;
-            state.direct_pipeline_emitted_tokens = 1;
-            return tok;
-        }
-        // Second entry: catch up to double-buffer for the rest of the stream.
         self.run_direct_pipeline_once(state, first_lazy)
     }
 
@@ -7087,7 +7107,20 @@ impl MlxRunner {
         is_greedy: bool,
         final_by_max_output: bool,
     ) -> Option<Vec<u32>> {
+        // Fail-closed safety net: session-direct temperature-0 must never
+        // regress to single-decode. Non-greedy (temp>0) direct still uses
+        // single-decode because the pipeline is argmax-only.
         if self.disable_ngram_acceleration {
+            if !sampling.uses_logits_processors()
+                && (is_greedy || sampling.temperature <= 0.0)
+            {
+                return Some(vec![self.run_direct_pipeline_decode(
+                    state,
+                    last_token,
+                    final_by_max_output,
+                    false,
+                )]);
+            }
             return Some(self.run_single_decode(state, last_token, sampling));
         }
 
@@ -8918,12 +8951,17 @@ impl MlxRunner {
         // direct pipeline at the same prefill/first-token boundary so the
         // measured generation interval starts with a pending token instead of
         // paying one decode-step bootstrap.
+        //
+        // Pure session-direct also primes when temperature is already 0 even
+        // if the engine's deterministic-argmax bit was not latched (bench
+        // requests often omit `deterministic: true` and inherit a non-det
+        // session default while still sending temperature=0).
         if should_bootstrap_direct_pipeline(
             self.disable_ngram_acceleration,
             state.ngram_acceleration_disabled_for_request,
             self.has_mtp(),
             mtp_uses_direct_pipeline,
-        ) && is_greedy
+        ) && (is_greedy || (self.disable_ngram_acceleration && temperature <= 0.0))
             && max_output > 1
             && let Some(prefill_tok) = prefill_output_token
         {
@@ -9907,6 +9945,19 @@ fn loop_detection_config_for_family(
     is_gemma4.then_some(ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT)
 }
 
+/// Loop detection for one request. Fixed-token `ignore_eos` benches never arm
+/// it so generation always reaches `max_output_tokens`.
+fn loop_detection_for_request(
+    ignore_eos: bool,
+    model_family: &str,
+) -> Option<ax_engine_core::LoopDetectionConfig> {
+    if ignore_eos {
+        None
+    } else {
+        loop_detection_config_for_family(model_family)
+    }
+}
+
 fn token_is_terminal(token: u32, terminal_token_ids: &[u32]) -> bool {
     terminal_token_ids.contains(&token)
 }
@@ -9948,15 +9999,30 @@ fn cache_rotation_for_execution(
     is_greedy: bool,
     prefill_chunk: usize,
 ) -> (bool, usize) {
+    cache_rotation_for_execution_with_prefill_flag(
+        mode,
+        request_latch,
+        session_rotating_decode,
+        is_greedy,
+        prefill_chunk,
+        crate::fastpath::rotating_sliding_prefill_enabled(),
+    )
+}
+
+fn cache_rotation_for_execution_with_prefill_flag(
+    mode: ExecutionMode,
+    request_latch: Option<(bool, usize)>,
+    session_rotating_decode: bool,
+    is_greedy: bool,
+    prefill_chunk: usize,
+    prefill_rotation_enabled: bool,
+) -> (bool, usize) {
     if mode == ExecutionMode::Prefill {
-        // Ordered prefill is the historical default (portable prefix snapshots).
-        // When prefill rotation is enabled, size slack so multi-token chunks
-        // (isolation quantum or cold prefill_chunk) fit the ring eligibility
-        // gate in `sliding_ring_layout` (seq <= rotating_slack).
-        if session_rotating_decode
-            && is_greedy
-            && crate::fastpath::rotating_sliding_prefill_enabled()
-        {
+        // Ordered prefill is the production default (portable prefix snapshots
+        // + pure window decode). When prefill rotation is opted in, size slack
+        // so multi-token chunks fit the ring eligibility gate in
+        // `sliding_ring_layout` (seq <= rotating_slack).
+        if session_rotating_decode && is_greedy && prefill_rotation_enabled {
             let slack = prefill_chunk.max(64);
             return (true, slack);
         }
@@ -10926,9 +10992,11 @@ mod tests {
 
     #[test]
     fn direct_pipeline_bootstrap_does_not_overlap_strict_mtp() {
+        // Session-direct always primes the double-buffer, even when MTP weights
+        // are attached (pure direct clears mtp_requested at construction).
         assert!(
-            !should_bootstrap_direct_pipeline(true, false, true, false),
-            "disabling n-gram must not silently disable a strict MTP route",
+            should_bootstrap_direct_pipeline(true, false, true, false),
+            "session-direct must bootstrap the greedy pipeline for long decode",
         );
         assert!(should_bootstrap_direct_pipeline(true, false, false, false));
         assert!(should_bootstrap_direct_pipeline(false, true, false, false));
@@ -10936,13 +11004,101 @@ mod tests {
         assert!(!should_bootstrap_direct_pipeline(false, true, true, false));
         assert!(
             !should_use_session_direct_pipeline(true, true, true, true),
-            "session-level n-gram disable must still enter requested MTP",
+            "when MTP remains requested, decode must not steal the direct pipeline",
         );
-        assert!(should_use_session_direct_pipeline(true, true, true, false));
+        assert!(
+            should_use_session_direct_pipeline(true, true, true, false),
+            "Gemma/Qwen pure direct (mtp_requested=false) must use pipeline",
+        );
         assert!(should_use_session_direct_pipeline(true, true, false, false));
+        assert!(
+            should_use_session_direct_pipeline(true, true, false, true),
+            "no MTP attached: pipeline is eligible regardless of mtp_requested bit",
+        );
         assert!(!should_use_session_direct_pipeline(
             true, false, false, false
         ));
+    }
+
+    #[test]
+    fn pure_direct_session_keeps_pipeline_for_long_context_shapes() {
+        // Regression guard for the 2026-07-26 Gemma@2048 readout: pure direct
+        // sessions must select the double-buffer pipeline for greedy decode at
+        // every prompt depth, including long-context shapes used by README
+        // direct tables (128 / 512 / 2048).
+        for has_mtp in [false, true] {
+            assert!(
+                should_use_session_direct_pipeline(true, true, has_mtp, false),
+                "session_direct greedy pipeline required (has_mtp={has_mtp})"
+            );
+            assert!(
+                should_bootstrap_direct_pipeline(true, false, has_mtp, false),
+                "session_direct must bootstrap pipeline (has_mtp={has_mtp})"
+            );
+        }
+        // Construction contract: after `disable_ngram || AX_NO_SPEC`, the
+        // runner must clear `mtp_requested` so the pure-direct gate cannot be
+        // defeated by leftover MTP-request bits from CLI/env mismatch.
+        let disable_ngram = true;
+        let speculation_disabled = true;
+        let session_direct = disable_ngram || speculation_disabled;
+        let mtp_requested = !session_direct;
+        assert!(!mtp_requested);
+        assert!(should_use_session_direct_pipeline(
+            session_direct,
+            true,
+            true,
+            mtp_requested
+        ));
+    }
+
+    #[test]
+    fn pure_direct_pipeline_gate_ignores_mtp_request_bit() {
+        // decode_one pure-direct force path: session_direct + temp0 must not
+        // consult has_mtp/mtp_requested (those only apply to speculative sessions).
+        assert!(
+            should_use_session_direct_pipeline(true, true, true, false),
+            "pure direct with mtp weights attached still uses pipeline"
+        );
+        // When mtp_requested is wrongly left true, the *predicate* fails, which
+        // is why decode_one also forces pipeline from disable_ngram alone.
+        assert!(!should_use_session_direct_pipeline(true, true, true, true));
+    }
+
+    #[test]
+    fn ignore_eos_disables_gemma4_loop_detection_for_fixed_token_benches() {
+        // README AX-direct rows send ignore_eos=true so generation_tokens is a
+        // hard length. Loop detection must not arm and truncate that window.
+        assert!(
+            loop_detection_for_request(true, "gemma4").is_none(),
+            "ignore_eos must suppress Gemma 4 loop detection"
+        );
+        assert!(
+            loop_detection_for_request(true, "gemma4text").is_none(),
+            "ignore_eos suppresses loop detection for any family"
+        );
+        // Without ignore_eos, default Gemma 4 still enables detection (env on).
+        // Force via family match only when env is default-on.
+        let chat = loop_detection_for_request(false, "gemma4");
+        // May be None if AX_GEMMA4_LOOP_DETECTION=off in the test env; when set
+        // on/default, chat path is armed.
+        if std::env::var("AX_GEMMA4_LOOP_DETECTION")
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "off" | "0" | "false" | "no"
+                )
+            })
+            .unwrap_or(false)
+        {
+            assert!(chat.is_none());
+        } else {
+            assert!(chat.is_some(), "chat path keeps Gemma 4 loop detection");
+        }
+        assert!(
+            loop_detection_for_request(false, "qwen3").is_none(),
+            "non-Gemma families do not enable this detector"
+        );
     }
 
     #[test]
@@ -12677,17 +12833,50 @@ mod tests {
 
     #[test]
     fn prefill_rotation_follows_prefill_flag_and_decode_latch() {
-        // Prefill rotates when session rotating + greedy + prefill flag (default ON).
+        // Prefill rotates only when the opt-in prefill flag is engaged.
         assert_eq!(
-            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, true, 1536),
+            cache_rotation_for_execution_with_prefill_flag(
+                ExecutionMode::Prefill,
+                None,
+                true,
+                true,
+                1536,
+                true
+            ),
             (true, 1536)
         );
         assert_eq!(
-            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, true, 32),
+            cache_rotation_for_execution_with_prefill_flag(
+                ExecutionMode::Prefill,
+                None,
+                true,
+                true,
+                32,
+                true
+            ),
             (true, 64)
         );
+        // Production default: prefill rotation OFF → ordered prefill.
         assert_eq!(
-            cache_rotation_for_execution(ExecutionMode::Prefill, None, true, false, 1536),
+            cache_rotation_for_execution_with_prefill_flag(
+                ExecutionMode::Prefill,
+                None,
+                true,
+                true,
+                1536,
+                false
+            ),
+            (false, 0)
+        );
+        assert_eq!(
+            cache_rotation_for_execution_with_prefill_flag(
+                ExecutionMode::Prefill,
+                None,
+                true,
+                false,
+                1536,
+                true
+            ),
             (false, 0)
         );
         assert_eq!(

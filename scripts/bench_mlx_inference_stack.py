@@ -1417,11 +1417,18 @@ def ax_decode_effective_route(
     ngram_decode_steps = int(ax_mlx_telemetry.get("ax_mlx_ngram_decode_steps", 0))
 
     if direct_mode:
-        return (
-            "direct_pipeline_baseline"
-            if direct_steps > 0
-            else "direct_single_decode_baseline"
-        )
+        if direct_steps > 0:
+            return "direct_pipeline_baseline"
+        if single_steps > 0:
+            return "direct_single_decode_baseline"
+        # Prefill-boundary bootstrap without exported decode counters still
+        # means the pure-direct double-buffer path was engaged (the harness
+        # may keep a prefill-only route snapshot when step-local counters are
+        # sparse). Prefer pipeline over single in that case.
+        bootstrap_steps = int(ax_mlx_telemetry.get("ax_mlx_direct_bootstrap_steps", 0))
+        if bootstrap_steps > 0:
+            return "direct_pipeline_baseline"
+        return "direct_single_decode_baseline"
 
     if mtp_disable_ngram_stacking:
         if int(telemetry.get("ax_mtp_ngram_hit_steps", 0)) > 0:
@@ -2605,6 +2612,17 @@ def start_axengine(
     if max_batch_tokens is not None:
         cmd.extend(["--max-batch-tokens", str(max_batch_tokens)])
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
+    if direct_mode:
+        # Publication pure-direct contract: force greedy double-buffer pipeline,
+        # full route telemetry (so effective_route cannot be mis-labeled), and
+        # ordered prefill so decode keeps pure window rings rather than
+        # oversized prefill geometry. Disable Gemma 4 loop detection so
+        # fixed-token `ignore_eos` runs reach generation_tokens (random-prompt
+        # greedy loops otherwise stop at ~4 tokens and poison decode@2048).
+        env["AX_NO_SPEC"] = "1"
+        env["AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY"] = "0"
+        env["AX_MLX_ROTATING_SLIDING_PREFILL"] = "0"
+        env["AX_GEMMA4_LOOP_DETECTION"] = "off"
     if not prefix_cache_enabled:
         env.update(AX_PREFIX_CACHE_DISABLED_ENV)
     if gemma4_moe_profile:
@@ -2863,7 +2881,12 @@ def route_with_more_decisions(
         *AX_MLX_DECODE_PROFILE_KEYS,
     }
 
-    def priority_score(decisions: dict[str, Any]) -> tuple[int, int, int, int]:
+    def priority_score(decisions: dict[str, Any]) -> tuple[int, int, int, int, int]:
+        # Prefer routes that actually observed decode work (pipeline / single)
+        # over prefill-only snapshots that only carry bootstrap + KV gauges.
+        decode_work = int(decisions.get("ax_mlx_direct_pipeline_steps", 0)) + int(
+            decisions.get("ax_mlx_single_decode_steps", 0)
+        ) + int(decisions.get("ax_mlx_decode_steps", 0))
         priority_values = [
             int(decisions.get(key, 0))
             for key in static_priority_keys
@@ -2875,6 +2898,7 @@ def route_with_more_decisions(
             if any(k.startswith(p) for p in AX_NGRAM_TELEMETRY_PREFIXES) and int(v) > 0
         ]
         return (
+            decode_work,
             len(priority_values),
             sum(priority_values),
             len(decisions),
@@ -2884,6 +2908,27 @@ def route_with_more_decisions(
     if priority_score(candidate_decisions) > priority_score(current_decisions):
         return candidate
     return current
+
+
+# Decode-path counters accumulate on RequestState across steps. Prefer the
+# max observed on any SSE step so a prefill-only final_route cannot hide
+# sustained pipeline / single / decode work (Gemma@2048 readout bug).
+AX_MLX_DECODE_PATH_MAX_KEYS = (
+    "ax_mlx_decode_steps",
+    "ax_mlx_decode_wall_us",
+    "ax_mlx_direct_bootstrap_steps",
+    "ax_mlx_direct_bootstrap_wall_us",
+    "ax_mlx_direct_pipeline_steps",
+    "ax_mlx_direct_pipeline_wall_us",
+    "ax_mlx_direct_pipeline_forward_wall_us",
+    "ax_mlx_direct_pipeline_async_eval_wall_us",
+    "ax_mlx_direct_pipeline_pending_eval_wall_us",
+    "ax_mlx_single_decode_steps",
+    "ax_mlx_single_decode_wall_us",
+    "ax_mlx_ngram_decode_steps",
+    "ax_mlx_ngram_decode_wall_us",
+    "ax_mlx_production_decode_evals",
+)
 
 
 def merge_step_local_route_decisions(
@@ -2902,6 +2947,8 @@ def merge_step_local_route_decisions(
     for key in AX_MLX_PREFIX_CACHE_MAX_KEYS:
         totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
     for key in AX_CORE_PREFIX_REUSE_MAX_KEYS:
+        totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
+    for key in AX_MLX_DECODE_PATH_MAX_KEYS:
         totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
 
 

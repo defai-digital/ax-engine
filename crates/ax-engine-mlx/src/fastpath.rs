@@ -370,18 +370,19 @@ env_flag_default_on!(
     "AX_MLX_ROTATING_SLIDING_DECODE"
 );
 
-env_flag_default_on!(
+env_flag!(
     /// `AX_MLX_ROTATING_SLIDING_PREFILL` — use rotating sliding-window KV
     /// during multi-token prefill (not only decode).
     ///
-    /// **Default: ON** (kill-switch via
-    /// `AX_MLX_ROTATING_SLIDING_PREFILL=0`).
+    /// **Default: OFF** (opt-in via `AX_MLX_ROTATING_SLIDING_PREFILL=1`).
     ///
-    /// Keeps physical SWA storage O(window + slack) during long prefill like
-    /// mlx_lm RotatingKVCache. Cold layers initialize a capacity ring (not
-    /// ordered windowed views). Mask hoist uses ring.capacity when the ring
-    /// engages; standard layers rebuild locally if a shared mask disagrees
-    /// with post-append key_len.
+    /// When enabled, prefill sizes rings as `window + prefill_chunk` so
+    /// multi-token chunks fit the ring eligibility gate. That geometry cannot
+    /// be safely shrunk for pure single-token decode without remapping, and
+    /// keeping the oversized ring through long-context decode was measured to
+    /// regress Gemma 4 decode@2048 by ~15–35% vs the 2026-07-14 pure-window
+    /// path. Ordered prefill + pure window decode (default) restores that
+    /// contract; enable this flag only for peak-memory A/B of long prefill.
     rotating_sliding_prefill_enabled,
     "AX_MLX_ROTATING_SLIDING_PREFILL"
 );
