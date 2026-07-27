@@ -63,8 +63,8 @@ curl -s http://127.0.0.1:31418/v1/models |
 
 Copy the returned `id`, `context_length`, and `max_output_tokens` into
 OpenClaw. Never configure OpenClaw above those values. Native Ollama requests
-whose `options.num_ctx` exceeds the AX session are rejected with
-`context_length_exceeded` instead of being silently truncated.
+whose `options.num_ctx` exceeds the AX session are rejected with an
+explanatory error instead of being silently truncated.
 
 ## Recommended OpenAI Configuration
 
@@ -136,12 +136,24 @@ without mixing it into visible assistant content.
 AX also satisfies OpenClaw's current native Ollama contract:
 
 - `/api/tags`, `/api/show`, `/api/ps`, and `/api/version` discovery;
-- `/api/show` requests using `{ "name": "<model>" }`;
+- `/api/show` requests using `{ "name": "<model>" }`, with the context window
+  published under both `model_info["<architecture>.context_length"]` (the key
+  real Ollama clients read) and `model_info["ax_engine.context_length"]`;
 - NDJSON `/api/chat` streaming;
-- `think`, `options.num_ctx`, and the common sampling options;
+- `think` (the `thinking` spelling is accepted as an alias), `options.num_ctx`,
+  `options.num_predict` including Ollama's `-1`/`-2` sentinels (both map to
+  the session's advertised `max_output_tokens`), and the common sampling
+  options;
 - function tools, assistant tool-call IDs, and `tool_name` on results;
-- raw base64 `messages[].images`; and
+- raw base64 `messages[].images` (a `data:` URI form is also accepted and
+  validated the same way); and
 - `completion`, `tools`, `vision`, and `thinking` capabilities when supported.
+
+Errors on `/api/*` routes use the real Ollama body shape — `error` is a plain
+string, for example `{"error": "Ollama options.num_ctx requested 65536
+tokens, but this AX Engine session is configured for 32768; ..."}` — so
+OpenClaw and ollama-js/ollama-python render the message directly. The
+structured OpenAI envelope is returned only on `/v1/*` routes.
 
 The native base URL must not include `/v1`:
 
@@ -197,15 +209,22 @@ schemas, assistant `tool_calls`, tool results, and images are preserved in one
 prompt, including multi-turn image/tool sessions.
 
 AX intentionally rejects remote `http(s)` media URLs. OpenClaw must upload the
-image bytes. If a visual checkpoint reports no image capability, regenerate
-its manifest and restart the server:
+image bytes. Malformed, empty, or non-image payloads are rejected with a
+specific 400 on both routes, and a single request may carry at most 40 inline
+images. Sending an image to a checkpoint that has no vision preprocessing
+config returns a clear "cannot accept inline images" error rather than a raw
+filesystem message. If a visual checkpoint reports no image capability,
+regenerate its manifest and restart the server:
 
 ```bash
 ax-engine-bench generate-manifest --force /absolute/path/to/model
 ```
 
 Do not declare `input: ["text", "image"]` until `/v1/models` confirms image
-support.
+support. Likewise, `reasoning: true` (which makes OpenClaw send
+`chat_template_kwargs.enable_thinking=true`) is rejected with a 400 when
+`/v1/models` reports `capabilities.reasoning=false`, matching the native
+Ollama route's `think` gate.
 
 ## Verification
 

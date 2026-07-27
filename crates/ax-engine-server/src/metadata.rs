@@ -331,6 +331,12 @@ pub(crate) fn model_supports_image(live: &LiveState) -> bool {
         || delegated_multimodal_support_live(live).image
 }
 
+/// Single source of truth for tool-call capability, shared by `/v1/models`
+/// and the Ollama discovery/gating surfaces so they can never disagree.
+pub(crate) fn model_supports_tool_calling(live: &LiveState) -> bool {
+    openai_tool_calling_supported_live(live, openai_text_supported_live(live))
+}
+
 fn openai_tool_calling_supported_live(live: &LiveState, openai_text: bool) -> bool {
     openai_text
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
@@ -548,7 +554,7 @@ pub(crate) fn context_length(live: &LiveState) -> u32 {
         .saturating_mul(live.session_config.kv_config.total_blocks)
 }
 
-fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u32 {
+pub(crate) fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u32 {
     if live.runtime_report.selected_backend == SelectedBackend::Vllm
         && live
             .session_config

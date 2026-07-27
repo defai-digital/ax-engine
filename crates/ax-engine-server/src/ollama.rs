@@ -58,7 +58,9 @@ pub(crate) struct OllamaChatRequest {
     format: Option<Value>,
     #[serde(default)]
     keep_alive: Option<Value>,
-    #[serde(default)]
+    /// Ollama's own field is `think`; OpenClaw model `params` commonly carry
+    /// the switch as `thinking`, so both spellings are accepted.
+    #[serde(default, alias = "thinking")]
     think: Option<Value>,
     #[serde(default, flatten)]
     unsupported: BTreeMap<String, Value>,
@@ -101,8 +103,11 @@ pub(crate) struct OllamaFunctionCall {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct OllamaOptions {
+    /// Signed to accept Ollama's documented sentinels: `-1` (no fixed budget)
+    /// and `-2` (fill the context). Resolved against the session's advertised
+    /// output limit in [`resolve_ollama_num_predict`].
     #[serde(default)]
-    num_predict: Option<u32>,
+    num_predict: Option<i64>,
     #[serde(default)]
     num_ctx: Option<u32>,
     #[serde(default)]
@@ -278,7 +283,26 @@ pub(crate) async fn ollama_tags(State(state): State<AppState>) -> Json<OllamaTag
     })
 }
 
+/// Convert an internal OpenAI-shaped error into the body real Ollama clients
+/// expect: `{"error": "<message>"}` with the same HTTP status. ollama-js,
+/// ollama-python, and OpenClaw's Ollama provider all read `error` as a plain
+/// string; the structured OpenAI envelope belongs to `/v1/*` only.
+fn ollama_error_http_response(error: (StatusCode, Json<ErrorResponse>)) -> Response {
+    let (status, Json(body)) = error;
+    (status, Json(json!({ "error": body.error.message }))).into_response()
+}
+
 pub(crate) async fn ollama_show(
+    state: State<AppState>,
+    request: Json<OllamaShowRequest>,
+) -> Response {
+    match ollama_show_inner(state, request).await {
+        Ok(response) => response.into_response(),
+        Err(error) => ollama_error_http_response(error),
+    }
+}
+
+async fn ollama_show_inner(
     State(state): State<AppState>,
     Json(request): Json<OllamaShowRequest>,
 ) -> Result<Json<OllamaShowResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -329,6 +353,16 @@ pub(crate) async fn ollama_version() -> Json<OllamaVersionResponse> {
 }
 
 pub(crate) async fn ollama_chat(
+    state: State<AppState>,
+    request: Json<OllamaChatRequest>,
+) -> Response {
+    match ollama_chat_inner(state, request).await {
+        Ok(response) => response,
+        Err(error) => ollama_error_http_response(error),
+    }
+}
+
+async fn ollama_chat_inner(
     State(state): State<AppState>,
     Json(request): Json<OllamaChatRequest>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
@@ -355,7 +389,8 @@ pub(crate) async fn ollama_chat(
         && request.tools.is_none()
         && request.format.is_none()
         && thinking != Some(true);
-    let openai_request = ollama_chat_to_openai_request(request, thinking)?;
+    let max_tokens = resolve_ollama_num_predict(&live, request.options.num_predict)?;
+    let openai_request = ollama_chat_to_openai_request(request, thinking, max_tokens)?;
     if can_true_stream {
         let OpenAiBuiltRequest {
             generate_request,
@@ -383,6 +418,16 @@ pub(crate) async fn ollama_chat(
 }
 
 pub(crate) async fn ollama_generate(
+    state: State<AppState>,
+    request: Json<OllamaGenerateRequest>,
+) -> Response {
+    match ollama_generate_inner(state, request).await {
+        Ok(response) => response,
+        Err(error) => ollama_error_http_response(error),
+    }
+}
+
+async fn ollama_generate_inner(
     State(state): State<AppState>,
     Json(request): Json<OllamaGenerateRequest>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
@@ -395,7 +440,8 @@ pub(crate) async fn ollama_generate(
     let can_true_stream = stream
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
         && request.format.is_none();
-    let openai_request = ollama_generate_to_openai_request(request)?;
+    let max_tokens = resolve_ollama_num_predict(&live, request.options.num_predict)?;
+    let openai_request = ollama_generate_to_openai_request(request, max_tokens)?;
     if can_true_stream {
         let OpenAiBuiltRequest {
             generate_request,
@@ -695,6 +741,7 @@ fn send_ollama_ndjson_line(
 fn ollama_chat_to_openai_request(
     request: OllamaChatRequest,
     thinking: Option<bool>,
+    max_tokens: Option<u32>,
 ) -> Result<OpenAiChatCompletionHttpRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_unsupported_fields(&request.unsupported, "request")?;
     reject_unsupported_fields(&request.options.unsupported, "options")?;
@@ -708,7 +755,7 @@ fn ollama_chat_to_openai_request(
         model: request.model,
         messages,
         input_tokens: Vec::new(),
-        max_tokens: request.options.num_predict,
+        max_tokens,
         max_completion_tokens: None,
         temperature: request.options.temperature,
         top_p: request.options.top_p,
@@ -729,9 +776,13 @@ fn ollama_chat_to_openai_request(
         logprobs: false,
         top_logprobs: None,
         reasoning: thinking.map(Value::Bool),
+        // Replay prior `thinking` history only when thinking is on for this
+        // turn. With `think: false` the Qwen templates strip reasoning from
+        // history; replaying it into a no-think prompt would contradict the
+        // requested mode.
         chat_template_kwargs: thinking.map(|enable_thinking| OpenAiChatTemplateKwargs {
             enable_thinking: Some(enable_thinking),
-            preserve_thinking: Some(true),
+            preserve_thinking: Some(enable_thinking),
         }),
         metadata: Some("ollama:/api/chat".to_string()),
         multimodal_inputs: Default::default(),
@@ -743,6 +794,7 @@ fn ollama_chat_to_openai_request(
 
 fn ollama_generate_to_openai_request(
     request: OllamaGenerateRequest,
+    max_tokens: Option<u32>,
 ) -> Result<OpenAiCompletionHttpRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_unsupported_fields(&request.unsupported, "request")?;
     reject_unsupported_fields(&request.options.unsupported, "options")?;
@@ -758,7 +810,7 @@ fn ollama_generate_to_openai_request(
     Ok(OpenAiCompletionHttpRequest {
         model: request.model,
         prompt: OpenAiPromptInput::Text(prompt),
-        max_tokens: request.options.num_predict,
+        max_tokens,
         max_completion_tokens: None,
         temperature: request.options.temperature,
         top_p: request.options.top_p,
@@ -873,6 +925,33 @@ fn validate_ollama_num_ctx(
     Ok(())
 }
 
+/// Resolve Ollama `options.num_predict` into an OpenAI `max_tokens` value.
+/// Positive budgets pass through. Ollama's documented sentinels `-1` (no
+/// fixed budget) and `-2` (fill the context) map to the session's advertised
+/// `max_output_tokens` instead of the conservative OpenAI default; other
+/// non-positive values are rejected.
+fn resolve_ollama_num_predict(
+    live: &LiveState,
+    num_predict: Option<i64>,
+) -> Result<Option<u32>, (StatusCode, Json<ErrorResponse>)> {
+    match num_predict {
+        None => Ok(None),
+        Some(value) if value > 0 => Ok(Some(u32::try_from(value).unwrap_or(u32::MAX))),
+        Some(-1) | Some(-2) => Ok(Some(crate::metadata::max_output_tokens_live(
+            live,
+            context_length(live),
+        ))),
+        Some(value) => Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "Ollama options.num_predict must be a positive token budget or the \
+sentinels -1/-2 (received {value})"
+            ),
+        )),
+    }
+}
+
 fn resolve_ollama_thinking(
     value: Option<&Value>,
 ) -> Result<Option<bool>, (StatusCode, Json<ErrorResponse>)> {
@@ -981,8 +1060,34 @@ fn ollama_message_content(
 }
 
 fn ollama_image_data_uri(encoded: &str) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
-    if encoded.starts_with("data:") {
-        return Ok(encoded.to_string());
+    // Ollama's contract is raw base64, but some clients send a full data URI.
+    // Accept it by unwrapping to the payload, then validate exactly like raw
+    // base64 — a `data:` prefix must not bypass decoding or magic-byte checks.
+    let encoded = if let Some(rest) = encoded.trim().strip_prefix("data:") {
+        let Some((meta, payload)) = rest.split_once(',') else {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "messages[].images data: URI is malformed (missing comma)".to_string(),
+            ));
+        };
+        if !meta.contains("base64") {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "messages[].images data: URI must be base64-encoded".to_string(),
+            ));
+        }
+        payload.trim()
+    } else {
+        encoded.trim()
+    };
+    if encoded.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "messages[].images contains an empty image payload".to_string(),
+        ));
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
@@ -1393,13 +1498,19 @@ fn ollama_model_details(live: &LiveState) -> OllamaModelDetails {
 }
 
 fn ollama_model_info(live: &LiveState) -> Value {
-    json!({
-        "general.architecture": ollama_model_family(live.model_id.as_ref()),
+    let family = ollama_model_family(live.model_id.as_ref());
+    let mut info = json!({
+        "general.architecture": family,
         "general.name": live.model_id.as_ref(),
         "ax_engine.backend": format!("{:?}", live.runtime_report.selected_backend),
         "ax_engine.context_length": context_length(live),
         "ax_engine.max_batch_tokens": live.session_config.max_batch_tokens,
-    })
+    });
+    // Real Ollama exposes the window as `<architecture>.context_length`;
+    // Ollama clients (including OpenClaw) read that key for the context-size
+    // default, so publish it alongside the AX-native keys.
+    info[format!("{family}.context_length")] = json!(context_length(live));
+    info
 }
 
 fn ollama_capabilities(live: &LiveState) -> Vec<&'static str> {
@@ -1417,11 +1528,9 @@ fn ollama_capabilities(live: &LiveState) -> Vec<&'static str> {
 }
 
 fn ollama_tools_supported(live: &LiveState) -> bool {
-    live.runtime_report.selected_backend == SelectedBackend::Mlx
-        && matches!(
-            ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
-            ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Gemma4
-        )
+    // Delegate to the shared capability probe so `/api/show` and `/api/chat`
+    // gating always agree with `/v1/models` `capabilities.toolcall`.
+    crate::metadata::model_supports_tool_calling(live)
 }
 
 fn ollama_parameters(live: &LiveState) -> String {
@@ -1533,7 +1642,8 @@ mod tests {
             unsupported: BTreeMap::new(),
         };
 
-        let openai = ollama_chat_to_openai_request(request, None).expect("request should map");
+        let openai =
+            ollama_chat_to_openai_request(request, None, Some(16)).expect("request should map");
 
         assert_eq!(openai.model.as_deref(), Some("qwen3"));
         assert_eq!(openai.max_tokens, Some(16));
@@ -1591,7 +1701,8 @@ mod tests {
         let thinking =
             resolve_ollama_thinking(request.think.as_ref()).expect("thinking level should map");
         assert_eq!(thinking, Some(true));
-        let openai = ollama_chat_to_openai_request(request, thinking).expect("request should map");
+        let openai =
+            ollama_chat_to_openai_request(request, thinking, None).expect("request should map");
 
         assert_eq!(
             openai
@@ -1628,6 +1739,36 @@ mod tests {
             Some("inspect the image")
         );
         assert_eq!(openai.messages[2]._name.as_deref(), Some("record"));
+    }
+
+    #[test]
+    fn ollama_think_true_replays_history_and_think_false_does_not() {
+        let request = |think: Value| -> OllamaChatRequest {
+            serde_json::from_value(json!({
+                "model": "Qwen3.6-27B-4bit",
+                "think": think,
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+            .expect("think request should deserialize")
+        };
+
+        let on = ollama_chat_to_openai_request(request(json!(true)), Some(true), None)
+            .expect("think=true should map")
+            .chat_template_kwargs
+            .expect("kwargs should be set");
+        assert_eq!(on.enable_thinking, Some(true));
+        assert_eq!(on.preserve_thinking, Some(true));
+
+        let off = ollama_chat_to_openai_request(request(json!(false)), Some(false), None)
+            .expect("think=false should map")
+            .chat_template_kwargs
+            .expect("kwargs should be set");
+        assert_eq!(off.enable_thinking, Some(false));
+        assert_eq!(
+            off.preserve_thinking,
+            Some(false),
+            "think=false must not replay prior reasoning into a no-think prompt"
+        );
     }
 
     #[test]

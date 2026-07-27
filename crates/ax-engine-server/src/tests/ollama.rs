@@ -9,20 +9,16 @@ use super::fixtures::{
     text_response,
 };
 
-fn assert_unsupported_parameter_response(json: &Value, message_fragment: &str) {
-    assert_eq!(
-        json.get("error")
-            .and_then(|error| error.get("code"))
-            .and_then(Value::as_str),
-        Some("unsupported_parameter")
-    );
+/// Ollama-compatible routes return real Ollama error bodies: `error` is a
+/// plain string, never the structured OpenAI envelope.
+fn assert_ollama_error_response(json: &Value, message_fragment: &str) {
+    let message = json
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("Ollama error body must be a string: {json}"));
     assert!(
-        json.get("error")
-            .and_then(|error| error.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .contains(message_fragment),
-        "error message should include expected fragment"
+        message.contains(message_fragment),
+        "error message should include {message_fragment:?}: {message}"
     );
 }
 
@@ -172,7 +168,7 @@ async fn ollama_show_rejects_verbose_true_until_supported() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`verbose`");
+    assert_ollama_error_response(&json, "`verbose`");
 }
 
 #[tokio::test]
@@ -193,7 +189,7 @@ async fn ollama_show_rejects_unknown_fields() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`license`");
+    assert_ollama_error_response(&json, "`license`");
 }
 
 #[tokio::test]
@@ -552,7 +548,7 @@ async fn ollama_generate_rejects_context_replay_until_supported() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`context`");
+    assert_ollama_error_response(&json, "`context`");
 }
 
 #[tokio::test]
@@ -574,7 +570,7 @@ async fn ollama_generate_rejects_unknown_top_level_fields() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`suffix`");
+    assert_ollama_error_response(&json, "`suffix`");
 }
 
 #[tokio::test]
@@ -596,13 +592,8 @@ async fn ollama_generate_rejects_num_ctx_above_ax_session_limit() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(json["error"]["code"], json!("context_length_exceeded"));
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("configured for 16384")
-    );
+    assert_ollama_error_response(&json, "options.num_ctx");
+    assert_ollama_error_response(&json, "configured for 16384");
 }
 
 #[tokio::test]
@@ -624,7 +615,7 @@ async fn ollama_chat_rejects_thinking_for_nonreasoning_model() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`think`");
+    assert_ollama_error_response(&json, "`think`");
 }
 
 #[tokio::test]
@@ -653,7 +644,7 @@ async fn ollama_chat_rejects_tools_when_model_does_not_advertise_tool_capability
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`tools`");
+    assert_ollama_error_response(&json, "`tools`");
 }
 
 #[tokio::test]
@@ -720,7 +711,7 @@ async fn ollama_chat_rejects_unknown_message_fields() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`messages[].annotations`");
+    assert_ollama_error_response(&json, "`messages[].annotations`");
 }
 
 #[tokio::test]
@@ -752,5 +743,207 @@ async fn ollama_chat_rejects_unknown_tool_call_fields() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_unsupported_parameter_response(&json, "`messages[].tool_calls[].index`");
+    assert_ollama_error_response(&json, "`messages[].tool_calls[].index`");
+}
+
+#[tokio::test]
+async fn ollama_chat_rejects_invalid_base64_image() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "messages": [{
+                    "role": "user",
+                    "content": "describe",
+                    "images": ["!!!not-base64!!!"]
+                }]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "invalid base64");
+}
+
+#[tokio::test]
+async fn ollama_chat_rejects_non_image_magic_bytes() {
+    use base64::Engine as _;
+
+    let payload = base64::engine::general_purpose::STANDARD.encode(b"plain text bytes");
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "messages": [{
+                    "role": "user",
+                    "content": "describe",
+                    "images": [payload]
+                }]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "must contain base64 PNG, JPEG, GIF, WebP, or BMP");
+}
+
+#[tokio::test]
+async fn ollama_chat_rejects_empty_image_payload() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "messages": [{
+                    "role": "user",
+                    "content": "describe",
+                    "images": [""]
+                }]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "empty image payload");
+}
+
+#[tokio::test]
+async fn ollama_chat_validates_data_uri_prefixed_images() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "messages": [{
+                    "role": "user",
+                    "content": "describe",
+                    "images": ["data:image/png;base64"]
+                }]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "missing comma");
+}
+
+#[tokio::test]
+async fn ollama_chat_accepts_thinking_alias_for_think() {
+    // `thinking: true` must resolve through the same gate as `think: true`
+    // (llama.cpp backend advertises no reasoning), not fail as an unknown
+    // top-level field.
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "thinking": true,
+                "messages": [{"role": "user", "content": "hello"}]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "`think`");
+}
+
+#[tokio::test]
+async fn ollama_chat_rejects_unsupported_negative_num_predict() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "messages": [{"role": "user", "content": "hello"}],
+                "options": {"num_predict": -3}
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "num_predict");
+}
+
+#[tokio::test]
+async fn ollama_generate_maps_num_predict_sentinel_to_advertised_budget() {
+    let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
+        json!({
+            "content": "unbounded reply",
+            "tokens": [10, 11, 12],
+            "stop": true,
+            "stop_type": "eos"
+        })
+        .to_string(),
+        |payload| {
+            let n_predict = payload
+                .get("n_predict")
+                .and_then(Value::as_u64)
+                .expect("num_predict -1 must forward a concrete n_predict");
+            assert!(
+                n_predict > 0,
+                "sentinel must map to the advertised output budget, got {n_predict}"
+            );
+        },
+    );
+    let app = build_router(llama_cpp_server_state(llama_server_url));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "prompt": "hello",
+                "options": {"num_predict": -1}
+            }))))
+            .unwrap(),
+    )
+    .await;
+    llama_cpp_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["response"], json!("unbounded reply"));
+    assert_eq!(json["done"], json!(true));
 }
