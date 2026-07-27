@@ -69,9 +69,12 @@ SERIES = [
 ]
 
 
-def direct_versions_footnote(engine_version: str) -> str:
+def direct_versions_footnote(
+    engine_version: str, *, snapshot_date: str | None = None
+) -> str:
+    date_label = snapshot_date or "current"
     return (
-        f"AX Engine v{engine_version} snapshot (2026-07-14) · retained "
+        f"AX Engine v{engine_version} snapshot ({date_label}) · retained "
         "mlx-lm 0.31.3 · retained llama.cpp b9910 · cross-run distribution"
     )
 
@@ -189,7 +192,7 @@ class EmbeddingModelBoxGroup:
 
 
 BOX_CHART_SUBTITLE = (
-    "AX v6.9.0 snapshot vs retained peer rows | cross-run distribution; "
+    "AX-only snapshot vs retained peer rows | cross-run distribution; "
     "use the exact table for per-model values."
 )
 CHARTS: tuple[ChartSpec, ...] = (
@@ -330,8 +333,8 @@ EMBEDDING_SCALE_REFERENCE_ARTIFACT = Path(
 )
 EMBEDDING_SCALE_AX_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
-    "2026-07-17-ax-only-length-affinity-refresh-qwen/"
-    "2026-07-17-013116/embedding_ingest_scale.json"
+    "2026-07-27-e13cb731-m5max-ax-only-qwen/"
+    "2026-07-27-004454/embedding_ingest_scale.json"
 )
 # Back-compat aliases used by older call sites and tests.
 EMBEDDING_SCALE_PAIRED_06_ARTIFACT = EMBEDDING_SCALE_PAIRED_ARTIFACT
@@ -343,8 +346,8 @@ EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
 )
 EMBEDDINGGEMMA_SCALE_AX_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
-    "2026-07-17-ax-only-length-affinity-refresh-embeddinggemma/"
-    "2026-07-17-025900/embedding_ingest_scale.json"
+    "2026-07-27-e13cb731-m5max-ax-only-embeddinggemma/"
+    "2026-07-27-021706/embedding_ingest_scale.json"
 )
 EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
 EMBEDDINGGEMMA_SCALE_CHART_OUTPUT = (
@@ -773,13 +776,26 @@ def load_ax_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
         toolchain = host.get("toolchain")
         if not isinstance(version, str) or not isinstance(commit, str):
             raise ChartError("AX-only direct snapshot row has incomplete build identity")
-        if not isinstance(toolchain, dict) or not isinstance(
-            toolchain.get("homebrew_mlx"), str
-        ):
+        if not isinstance(toolchain, dict):
+            raise ChartError("AX-only direct snapshot row has incomplete MLX identity")
+        # Prefer Homebrew MLX identity when present; otherwise accept the
+        # admitted PyPI/python wheel path used by AX-only refresh sweeps.
+        mlx_identity: str | None = None
+        homebrew_mlx = toolchain.get("homebrew_mlx")
+        python_mlx = toolchain.get("python_mlx")
+        resolved_libmlx = build.get("resolved_libmlx")
+        if isinstance(homebrew_mlx, str) and homebrew_mlx.strip():
+            mlx_identity = homebrew_mlx.strip()
+        elif isinstance(python_mlx, str) and python_mlx.strip():
+            if isinstance(resolved_libmlx, str) and resolved_libmlx.strip():
+                mlx_identity = f"python_mlx {python_mlx.strip()}"
+            else:
+                mlx_identity = f"python_mlx {python_mlx.strip()}"
+        if mlx_identity is None:
             raise ChartError("AX-only direct snapshot row has incomplete MLX identity")
         versions.add(version)
         commits.add(commit)
-        mlx_versions.add(toolchain["homebrew_mlx"])
+        mlx_versions.add(mlx_identity)
 
         model = row.get("readme_model")
         quant = row.get("readme_quant")
@@ -928,6 +944,7 @@ def render_family_chart(
     engine_groups: list[EngineGroupStats],
     *,
     ax_engine_version: str | None = None,
+    snapshot_date: str | None = None,
 ) -> str:
     all_maxima = [cs.stats.maximum for eg in engine_groups for cs in eg.context_stats]
     axis_max = nice_axis_ceiling(max(all_maxima) * 1.05)
@@ -994,7 +1011,7 @@ def render_family_chart(
         f"</text>",
         # Footnote (versions)
         f'<text x="{FAMILY_LEFT}" y="62" font-family="{FONT}"'
-        f' font-size="10" fill="#6b7280">{escape(direct_versions_footnote(ax_engine_version or AX_ENGINE_VERSION))}</text>',
+        f' font-size="10" fill="#6b7280">{escape(direct_versions_footnote(ax_engine_version or AX_ENGINE_VERSION, snapshot_date=snapshot_date))}</text>',
         # Unit pill badge (top-right)
         f'<rect x="{header_right - unit_w}" y="13" width="{unit_w}" height="22"'
         f' rx="11" fill="#eef2ff" stroke="#c7d2fe"/>',
@@ -3086,6 +3103,7 @@ def main() -> int:
                     ax_engine_version=str(snapshot["engine_version"]),
                 ),
                 ax_engine_version=str(snapshot["engine_version"]),
+                snapshot_date=str(snapshot.get("date")),
             )
             if not write_chart(output_path, content, args.check):
                 mismatches.append(output_path)
@@ -3161,7 +3179,7 @@ def main() -> int:
             "box=IQR | whiskers=min/max | dots=six chunk×batch shapes."
         ),
         source_label=(
-            "Sources: retained 2026-07-12 mlx-lm reference + 2026-07-17 "
+            "Sources: retained 2026-07-12 mlx-lm reference + 2026-07-27 "
             "current-main AX-only refresh (0.6B/4B/8B); cross-run directional view, not B=1"
         ),
         ax_label=(
@@ -3188,7 +3206,7 @@ def main() -> int:
         ),
         source_label=(
             "Sources: 2026-07-02 EmbeddingGemma paired reference + "
-            "2026-07-17 current-main AX-only refresh; cross-run directional view"
+            "2026-07-27 current-main AX-only refresh; cross-run directional view"
         ),
         ax_label=(
             "AX Engine v"
@@ -3225,12 +3243,20 @@ def main() -> int:
             if not args.results_dir and ax_direct_snapshot is not None
             else None
         )
+        snapshot_date = (
+            str(ax_direct_snapshot["date"])
+            if not args.results_dir and ax_direct_snapshot is not None
+            else None
+        )
         engine_groups = collect_family_values(
             rows, spec, ax_engine_version=snapshot_version
         )
         output_path = args.output_dir / chart_output_name(spec)
         content = render_family_chart(
-            spec, engine_groups, ax_engine_version=snapshot_version
+            spec,
+            engine_groups,
+            ax_engine_version=snapshot_version,
+            snapshot_date=snapshot_date,
         )
         if not write_chart(output_path, content, args.check):
             mismatches.append(output_path)

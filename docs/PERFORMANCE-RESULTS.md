@@ -32,14 +32,15 @@ denominator.
 > admission check at throughput parity with 0.31.2 (56.3 TFLOP/s qmm,
 > 2026-07-15) and is the admitted build for new benchmark sessions.
 
-**Benchmarking session baseline (14-Jul-2026):** New AX Engine benchmark rows
-use AX Engine `v6.9.0`. Direct-mode peer benchmarking is limited to the existing
-local `llama.cpp` and `mlx-lm` versions: `llama.cpp` `b9910` / `ggml` `0.15.3`
-for GGUF Metal reference rows and `mlx-lm` `0.31.3` for MLX reference rows.
-MTP peer benchmarking uses the current local MTPLX release, `MTPLX 2.0.1`.
-The v6.8.2 direct high-water composite is retained below as a collapsed
-historical audit, not a current headline matrix. v6.9.0 headline tables and
-charts are regenerated only from complete 2-warmup/5-measurement sweeps.
+**Benchmarking session baseline (26-Jul-2026):** New AX Engine benchmark rows
+use AX Engine `v6.11.1` (commit `e13cb731`) on the admitted PyPI MLX `0.32.0`
+wheel. Direct-mode peer columns remain **retained historical** references only:
+`llama.cpp` `b9910` / `ggml` `0.15.3` and `mlx-lm` `0.31.3` are not re-run in
+this refresh. MTP peer benchmarking still cites the retained local MTPLX
+release, `MTPLX 2.0.1`. The v6.8.2 direct high-water composite and the
+v6.9.0 (14-Jul) snapshot remain below as archived audit evidence. Current
+headline AX-only tables and charts are regenerated from complete
+2-warmup/5-measurement AX sweeps.
 
 Performance results are grouped by **Session mode**. Read each mode as a
 separate benchmark session with its own route, workload shape, and headline
@@ -321,56 +322,55 @@ and charts.
 | 2026-07-12 AX-only validation | Gemma 4 E2B/31B and Qwen 3.6 27B 4-bit; one warmup and three measurements | Diagnostic only; [artifacts](benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-validate/sweep_summary.md) |
 | 2026-07-11 v6.8.2 composite | Gemma 4 and Qwen 3.6, mixed historical sessions | Archived row-level evidence below; not current-head performance |
 
-#### v6.9.0 AX-only direct snapshot (2026-07-14)
+#### v6.11.1 AX-only direct snapshot (2026-07-26)
 
 This complete AX-only direct sweep is published as a dated snapshot: AX Engine
-`v6.9.0`, MLX `0.31.2`, Apple M5 Max, 2 warmups, 5 measurements, and 128
-generated tokens at each prompt depth. It was measured from clean commit
-`ed483404`; it is **not** a claim about the later current `main` runtime.
-No historical `mlx_lm`, llama.cpp, or other peer value is changed; the peer
-series below are retained reference artifacts only.
+`v6.11.1`, admitted PyPI MLX `0.32.0` (`python_mlx`), Apple M5 Max 128 GB,
+2 warmups, 5 measurements, and 128 generated tokens at each prompt depth. It
+was measured from commit `e13cb731`. **Only AX rows were refreshed**; historical
+`mlx_lm`, llama.cpp, and other peer values are unchanged retained references.
 
-The restored box-and-whisker charts use this AX snapshot with retained historical
-`mlx_lm` and llama.cpp rows. They summarize the 7 peer-compatible Gemma
-model/quant rows or 4 Qwen rows across 128 / 512 / 2,048 prompt depths. They
+The box-and-whisker charts use this AX snapshot with retained historical
+`mlx_lm` and llama.cpp rows. They summarize the peer-compatible Gemma
+model/quant rows or Qwen rows across 128 / 512 / 2,048 prompt depths. They
 are cross-run distribution diagnostics, not exact per-model deltas or a
 same-session peer benchmark; the exact AX values are in the table below.
 
 **Gemma 4:**
 
-<img width="100%" src="assets/perf-gemma4-decode-box-whisker.svg" alt="Gemma 4 direct decode box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+<img width="100%" src="assets/perf-gemma4-decode-box-whisker.svg" alt="Gemma 4 direct decode box plot comparing AX Engine v6.11.1 snapshot with retained mlx-lm and llama.cpp reference rows">
 
-<img width="100%" src="assets/perf-gemma4-prefill-box-whisker.svg" alt="Gemma 4 direct prefill box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+<img width="100%" src="assets/perf-gemma4-prefill-box-whisker.svg" alt="Gemma 4 direct prefill box plot comparing AX Engine v6.11.1 snapshot with retained mlx-lm and llama.cpp reference rows">
 
-<img width="100%" src="assets/perf-gemma4-ttft-box-whisker.svg" alt="Gemma 4 direct TTFT box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+<img width="100%" src="assets/perf-gemma4-ttft-box-whisker.svg" alt="Gemma 4 direct TTFT box plot comparing AX Engine v6.11.1 snapshot with retained mlx-lm and llama.cpp reference rows">
 
 **Qwen 3.6:**
 
-<img width="100%" src="assets/perf-qwen-decode-box-whisker.svg" alt="Qwen 3.6 direct decode box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+<img width="100%" src="assets/perf-qwen-decode-box-whisker.svg" alt="Qwen 3.6 direct decode box plot comparing AX Engine v6.11.1 snapshot with retained mlx-lm and llama.cpp reference rows">
 
-<img width="100%" src="assets/perf-qwen-prefill-box-whisker.svg" alt="Qwen 3.6 direct prefill box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+<img width="100%" src="assets/perf-qwen-prefill-box-whisker.svg" alt="Qwen 3.6 direct prefill box plot comparing AX Engine v6.11.1 snapshot with retained mlx-lm and llama.cpp reference rows">
 
-<img width="100%" src="assets/perf-qwen-ttft-box-whisker.svg" alt="Qwen 3.6 direct TTFT box plot comparing AX Engine v6.9.0 snapshot with retained mlx-lm and llama.cpp reference rows">
+<img width="100%" src="assets/perf-qwen-ttft-box-whisker.svg" alt="Qwen 3.6 direct TTFT box plot comparing AX Engine v6.11.1 snapshot with retained mlx-lm and llama.cpp reference rows">
 
 | Model | Quant | Decode 128 | Decode 512 | Decode 2K | Prefill 128 | Prefill 512 | Prefill 2K | TTFT 128 | TTFT 512 | TTFT 2K |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Gemma 4 E2B | 4-bit | 231.8 | 227.6 | 216.9 | 2,259.7 | 7,298.5 | 16,754.1 | 56.6 | 70.2 | 122.2 |
-| Gemma 4 E2B | 6-bit | 187.8 | 181.3 | 174.5 | 1,977.1 | 6,620.4 | 15,315.0 | 64.7 | 77.3 | 133.7 |
-| Gemma 4 E4B | 4-bit | 145.2 | 142.2 | 138.8 | 1,621.7 | 4,214.2 | 7,442.3 | 78.9 | 121.5 | 275.2 |
-| Gemma 4 E4B | 6-bit | 112.1 | 110.3 | 108.1 | 1,398.7 | 3,783.8 | 6,842.4 | 91.5 | 135.3 | 299.3 |
-| Gemma 4 26B A4B | 4-bit | 145.4 | 141.4 | 135.2 | 662.5 | 1,947.0 | 3,839.8 | 193.2 | 263.0 | 533.4 |
-| Gemma 4 26B A4B | 6-bit | 113.4 | 110.9 | 107.0 | 505.5 | 1,579.5 | 3,333.2 | 253.2 | 324.2 | 614.4 |
-| Gemma 4 31B | 4-bit | 29.2 | 28.7 | 27.5 | 312.8 | 596.1 | 734.4 | 409.2 | 858.9 | 2,788.8 |
-| Gemma 4 31B | 6-bit | 20.4 | 20.0 | 18.9 | 224.8 | 479.2 | 641.8 | 569.4 | 1,068.4 | 3,191.1 |
-| Qwen 3.6 27B | 4-bit | 35.0 | 34.9 | 34.5 | 415.6 | 730.2 | 899.4 | 308.0 | 701.2 | 2,277.2 |
-| Qwen 3.6 27B | 6-bit | 25.4 | 25.4 | 25.0 | 294.1 | 595.1 | 800.0 | 435.2 | 860.4 | 2,560.1 |
-| Qwen 3.6 35B A3B | 4-bit | 155.8 | 156.5 | 153.7 | 550.8 | 1,612.3 | 3,021.3 | 232.4 | 317.6 | 677.9 |
-| Qwen 3.6 35B A3B | 6-bit | 125.9 | 124.0 | 122.6 | 413.7 | 1,326.6 | 2,672.0 | 309.4 | 385.9 | 766.5 |
+| Gemma 4 E2B | 4-bit | 254.7 | 232.0 | 171.8 | 2,334.4 | 7,631.8 | 12,509.4 | 54.8 | 67.1 | 163.7 |
+| Gemma 4 E2B | 6-bit | 201.1 | 189.1 | 151.7 | 2,050.2 | 6,892.7 | 11,970.0 | 62.4 | 74.3 | 171.1 |
+| Gemma 4 E4B | 4-bit | 149.5 | 141.9 | 89.0 | 1,509.0 | 3,858.5 | 5,315.5 | 84.8 | 132.7 | 385.3 |
+| Gemma 4 E4B | 6-bit | 117.7 | 122.3 | 88.4 | 1,275.4 | 3,404.1 | 5,072.3 | 100.4 | 150.4 | 403.8 |
+| Gemma 4 26B A4B | 4-bit | 156.6 | 136.0 | 107.8 | 644.4 | 1,678.3 | 2,258.9 | 198.6 | 305.1 | 906.6 |
+| Gemma 4 26B A4B | 6-bit | 118.5 | 168.3 | 97.5 | 511.4 | 1,377.3 | 2,114.1 | 250.3 | 371.8 | 968.7 |
+| Gemma 4 31B | 4-bit | 38.5 | 37.4 | 22.8 | 320.0 | 535.1 | 676.2 | 400.0 | 956.8 | 3,028.9 |
+| Gemma 4 31B | 6-bit | 27.2 | 26.9 | 15.5 | 253.7 | 466.7 | 615.1 | 504.5 | 1,097.0 | 3,329.4 |
+| Qwen 3.6 27B | 4-bit | 36.8 | 36.5 | 35.7 | 391.7 | 636.9 | 809.7 | 326.8 | 803.9 | 2,529.4 |
+| Qwen 3.6 27B | 6-bit | 25.6 | 25.4 | 25.0 | 301.0 | 541.3 | 738.9 | 425.2 | 945.8 | 2,771.7 |
+| Qwen 3.6 35B A3B | 4-bit | 173.9 | 171.2 | 165.0 | 505.9 | 1,329.7 | 2,079.7 | 253.0 | 385.1 | 984.7 |
+| Qwen 3.6 35B A3B | 6-bit | 141.4 | 139.7 | 135.6 | 387.1 | 1,145.8 | 1,911.4 | 330.7 | 446.9 | 1,071.5 |
 
 Decode and prefill values are tok/s; TTFT values are ms. Full raw results:
-[`sweep_results.json`](benchmarks/results/inference/ax-direct/2026-07-14-v6.9.0-ax-direct-only/sweep_results.json).
+[`sweep_results.json`](benchmarks/results/inference/ax-direct/2026-07-26-e13cb731-m5max-ax-direct-only/sweep_results.json).
 
-<!-- readme-ax-direct-snapshot: benchmarks/results/inference/ax-direct/2026-07-14-v6.9.0-ax-direct-only/sweep_results.json -->
+<!-- readme-ax-direct-snapshot: benchmarks/results/inference/ax-direct/2026-07-26-e13cb731-m5max-ax-direct-only/sweep_results.json -->
 
 #### Gemma 4 12B retained v6.8.2 case study
 
@@ -803,13 +803,13 @@ sustained-ingest claim.
 
 #### Qwen3-Embedding ingest scale
 
-The current-main Qwen3 AX-only refresh covers 0.6B / 4B / 8B (2026-07-17). It
-is shown beside the retained 2026-07-12 `mlx-lm` medians as a **cross-run
-directional view**, not a same-session paired result. The current AX artifact
-passes `ax_absolute_trend`; retained-reference differences are intentionally
-ineligible for `paired_delta` claims because they come from separate runs. The
-percentages below describe direction against the retained reference only, not
-a locked engine-to-engine delta.
+The current-main Qwen3 AX-only refresh covers 0.6B / 4B / 8B (2026-07-27,
+`v6.11.1`). It is shown beside the retained 2026-07-12 `mlx-lm` medians as a
+**cross-run directional view**, not a same-session paired result. The current
+AX artifact passes `ax_absolute_trend`; retained-reference differences are
+intentionally ineligible for `paired_delta` claims because they come from
+separate runs. The percentages below describe direction against the retained
+reference only, not a locked engine-to-engine delta.
 
 For larger RAG ingest jobs, use the sustained scale harness instead of
 extrapolating from one isolated batch. The scale harness keeps the same
@@ -825,7 +825,7 @@ buckets by default. Because this scale corpus uses uniform fixed-length chunks,
 it does not isolate their mixed-length batch benefit.
 
 Fresh AX-only artifact:
-`benchmarks/results/embedding/embedding-scale/2026-07-17-ax-only-length-affinity-refresh-qwen/2026-07-17-013116/`.
+`benchmarks/results/embedding/embedding-scale/2026-07-27-e13cb731-m5max-ax-only-qwen/2026-07-27-004454/`.
 
 The chart overlays all **18 batched shapes** (3 models × 2 chunk lengths × 3
 batch sizes), grouped 0.6B → 4B → 8B (`mlx-lm` yellow retained reference, AX
@@ -836,32 +836,33 @@ model; both series are batched encode, but their cross-run gap is directional.
 
 | Model | Workload | Batch | Batches/trial | Retained mlx-lm tok/s | Fresh AX-only tok/s | Directional vs retained | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 48,901.2 | 48,558.1 | −0.7% | 189.7 | 42.0 |
-|  |  | 32 | 16 | 49,988.0 | 49,637.8 | −0.7% | 193.9 | 172.8 |
-|  |  | 64 | 8 | 49,878.6 | 49,443.3 | −0.9% | 193.1 | 353.4 |
-|  | 512 x 512-token chunks | 8 | 64 | 48,920.9 | 47,493.2 | −2.9% | 92.8 | 89.4 |
-|  |  | 32 | 16 | 49,090.2 | 47,838.0 | −2.6% | 93.4 | 361.8 |
-|  |  | 64 | 8 | 48,650.8 | 48,100.9 | −1.1% | 93.9 | 711.5 |
-| Qwen3-Embedding 4B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 6,591.1 | 6,628.2 | +0.6% | 25.9 | 323.0 |
-|  |  | 32 | 16 | 6,463.0 | 6,590.4 | +2.0% | 25.7 | 1,304.6 |
-|  |  | 64 | 8 | 6,471.9 | 6,579.4 | +1.7% | 25.7 | 2,610.8 |
-|  | 512 x 512-token chunks | 8 | 64 | 6,416.5 | 6,429.8 | +0.2% | 12.6 | 656.3 |
-|  |  | 32 | 16 | 6,138.0 | 6,265.9 | +2.1% | 12.2 | 2,645.7 |
-|  |  | 64 | 8 | 6,307.6 | 6,322.1 | +0.2% | 12.3 | 5,275.2 |
-| Qwen3-Embedding 8B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 3,379.7 | 3,519.1 | +4.1% | 13.7 | 593.7 |
-|  |  | 32 | 16 | 3,266.7 | 3,466.5 | +6.1% | 13.5 | 2,426.8 |
-|  |  | 64 | 8 | 3,359.3 | 3,487.8 | +3.8% | 13.6 | 4,842.5 |
-|  | 512 x 512-token chunks | 8 | 64 | 3,327.1 | 3,442.9 | +3.5% | 6.7 | 1,213.4 |
-|  |  | 32 | 16 | 3,260.3 | 3,376.7 | +3.6% | 6.6 | 4,900.6 |
-|  |  | 64 | 8 | 3,333.9 | 3,393.6 | +1.8% | 6.6 | 9,785.6 |
+| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 48,901.2 | 48,769.6 | −0.3% | 190.5 | 41.2 |
+|  |  | 32 | 16 | 49,988.0 | 49,985.3 | −0.0% | 195.3 | 180.7 |
+|  |  | 64 | 8 | 49,878.6 | 48,477.7 | −2.8% | 189.4 | 416.7 |
+|  | 512 x 512-token chunks | 8 | 64 | 48,920.9 | 47,276.2 | −3.4% | 92.3 | 88.2 |
+|  |  | 32 | 16 | 49,090.2 | 47,396.2 | −3.5% | 92.6 | 405.1 |
+|  |  | 64 | 8 | 48,650.8 | 46,886.7 | −3.6% | 91.6 | 826.7 |
+| Qwen3-Embedding 4B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 6,591.1 | 6,688.3 | +1.5% | 26.1 | 319.8 |
+|  |  | 32 | 16 | 6,463.0 | 6,594.0 | +2.0% | 25.8 | 1,294.3 |
+|  |  | 64 | 8 | 6,471.9 | 6,533.4 | +0.9% | 25.5 | 2,601.1 |
+|  | 512 x 512-token chunks | 8 | 64 | 6,416.5 | 6,408.7 | −0.1% | 12.5 | 657.2 |
+|  |  | 32 | 16 | 6,138.0 | 6,299.7 | +2.6% | 12.3 | 2,684.0 |
+|  |  | 64 | 8 | 6,307.6 | 6,294.1 | −0.2% | 12.3 | 5,349.6 |
+| Qwen3-Embedding 8B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 3,379.7 | 3,589.5 | +6.2% | 14.0 | 595.0 |
+|  |  | 32 | 16 | 3,266.7 | 3,442.5 | +5.4% | 13.4 | 2,464.1 |
+|  |  | 64 | 8 | 3,359.3 | 3,445.1 | +2.6% | 13.5 | 4,910.0 |
+|  | 512 x 512-token chunks | 8 | 64 | 3,327.1 | 3,407.4 | +2.4% | 6.7 | 1,222.9 |
+|  |  | 32 | 16 | 3,260.3 | 3,368.7 | +3.3% | 6.6 | 4,959.9 |
+|  |  | 64 | 8 | 3,333.9 | 3,368.6 | +1.0% | 6.6 | 9,883.8 |
 
 #### EmbeddingGemma ingest scale
 
-The current-main EmbeddingGemma AX-only refresh (2026-07-17) is compared with
-the retained 2026-07-02 `mlx-embeddings` medians. It is a cross-run directional
-view, not a paired delta. The fresh AX artifact passes the `ax_absolute_trend`
-publication gate; do not interpret the percentages as an exact engine-to-engine
-claim because retained reference and fresh AX data are separate runs.
+The current-main EmbeddingGemma AX-only refresh (2026-07-27, `v6.11.1`) is
+compared with the retained 2026-07-02 `mlx-embeddings` medians. It is a
+cross-run directional view, not a paired delta. The fresh AX artifact passes
+the `ax_absolute_trend` publication gate; do not interpret the percentages as
+an exact engine-to-engine claim because retained reference and fresh AX data
+are separate runs.
 
 EmbeddingGemma uses `mlx-embeddings` as the sustained reference because its
 full sentence-transformers route includes mean pooling, the Dense projection
@@ -874,22 +875,22 @@ cross-run directional overlays.
 
 | Model | Workload | Batch | Batches/trial | Retained `mlx-embeddings` tok/s | Fresh AX-only tok/s | Directional vs retained | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| EmbeddingGemma 300M 8-bit | 512 x 256-token chunks | 8 | 64 | 129,909.0 | 140,125.7 | +7.9% | 547.4 | 14.6 |
-|  |  | 32 | 16 | 148,284.8 | 158,028.9 | +6.6% | 617.3 | 58.5 |
-|  |  | 64 | 8 | 149,976.1 | 157,849.4 | +5.2% | 616.6 | 123.8 |
-|  | 512 x 512-token chunks | 8 | 64 | 127,604.8 | 141,940.9 | +11.2% | 277.2 | 28.5 |
-|  |  | 32 | 16 | 140,105.8 | 149,365.5 | +6.6% | 291.7 | 118.2 |
-|  |  | 64 | 8 | 132,121.8 | 140,102.5 | +6.0% | 273.6 | 260.2 |
+| EmbeddingGemma 300M 8-bit | 512 x 256-token chunks | 8 | 64 | 129,909.0 | 129,495.3 | −0.3% | 505.8 | 18.9 |
+|  |  | 32 | 16 | 148,284.8 | 155,860.1 | +5.1% | 608.8 | 65.0 |
+|  |  | 64 | 8 | 149,976.1 | 151,373.5 | +0.9% | 591.3 | 163.6 |
+|  | 512 x 512-token chunks | 8 | 64 | 127,604.8 | 137,355.6 | +7.6% | 268.3 | 28.1 |
+|  |  | 32 | 16 | 140,105.8 | 147,308.6 | +5.1% | 287.7 | 132.0 |
+|  |  | 64 | 8 | 132,121.8 | 133,318.4 | +0.9% | 260.4 | 346.9 |
 
 Sources:
 Qwen3 0.6B / 4B / 8B reference rows come from the retained paired artifact
 `benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/2026-07-12-145710/`;
 fresh AX-only rows come from
-`benchmarks/results/embedding/embedding-scale/2026-07-17-ax-only-length-affinity-refresh-qwen/2026-07-17-013116/`.
+`benchmarks/results/embedding/embedding-scale/2026-07-27-e13cb731-m5max-ax-only-qwen/2026-07-27-004454/`.
 EmbeddingGemma reference rows come from
 `benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`
 and fresh AX-only rows from
-`benchmarks/results/embedding/embedding-scale/2026-07-17-ax-only-length-affinity-refresh-embeddinggemma/2026-07-17-025900/`.
+`benchmarks/results/embedding/embedding-scale/2026-07-27-e13cb731-m5max-ax-only-embeddinggemma/2026-07-27-021706/`.
 Both fresh AX artifacts pass `ax_absolute_trend`; retained-reference
 differences remain directional because the references are separate runs, not a
 paired matrix. All scale runs use Hugging Face snapshot paths, median tok/s,

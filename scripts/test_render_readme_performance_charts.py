@@ -92,16 +92,17 @@ class ReadmePerformanceChartTests(unittest.TestCase):
     def test_ax_direct_snapshot_charts_are_complete_and_ax_only(self) -> None:
         snapshot_path = (
             charts.REPO_ROOT
-            / "benchmarks/results/inference/ax-direct/2026-07-14-v6.9.0-ax-direct-only/sweep_results.json"
+            / "benchmarks/results/inference/ax-direct/"
+            "2026-07-26-e13cb731-m5max-ax-direct-only/sweep_results.json"
         )
         snapshot = charts.load_ax_direct_snapshot(snapshot_path)
 
-        self.assertEqual(snapshot["engine_version"], "6.9.0")
+        self.assertEqual(snapshot["engine_version"], "6.11.1")
         self.assertEqual(len(snapshot["rows"]), 12)
         chart_rows = charts.ax_direct_snapshot_chart_rows(snapshot, "decode")
         self.assertEqual(len(chart_rows), 36)
-        self.assertEqual(
-            chart_rows[0]["decode_tok_s"]["median"], 231.821482969271
+        self.assertAlmostEqual(
+            chart_rows[0]["decode_tok_s"]["median"], 254.7, places=1
         )
         self.assertTrue(
             all(row["engine"] == "ax_engine_mlx" for row in chart_rows)
@@ -128,7 +129,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             ),
             ax_engine_version=str(snapshot["engine_version"]),
         )
-        self.assertIn("AX Engine v6.9.0", boxplot)
+        self.assertIn("AX Engine v6.11.1", boxplot)
         self.assertIn("retained mlx-lm 0.31.3", boxplot)
         self.assertIn("cross-run distribution", boxplot)
 
@@ -374,13 +375,13 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             charts.embedding_artifact_engine_version(
                 charts.REPO_ROOT, charts.EMBEDDING_SCALE_AX_ARTIFACT
             ),
-            "6.9.0",
+            "6.11.1",
         )
         self.assertEqual(
             charts.embedding_artifact_engine_version(
                 charts.REPO_ROOT, charts.EMBEDDINGGEMMA_SCALE_AX_ARTIFACT
             ),
-            "6.9.0",
+            "6.11.1",
         )
 
 

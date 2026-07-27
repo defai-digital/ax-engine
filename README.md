@@ -220,8 +220,9 @@ or either with embeddings.
 | **Direct generation** | AX Engine · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | Decode / prefill / TTFT |
 | Embeddings | AX · mlx-lm / mlx-embeddings | Ingest tok/s — Qwen3 chart below; see [full results](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings) |
 
-**Host:** Apple M5 Max · 128 GB · macOS 26.x · AX Engine **v6.9.0** ·
-`mlx-lm` **0.31.3** · `llama.cpp` **b9910** / ggml **0.15.3** · MTPLX **2.0.1**.
+**Host:** Apple M5 Max · 128 GB · macOS 26.x · AX Engine **v6.11.1**
+(2026-07-26/27 AX-only refresh) · retained peers: `mlx-lm` **0.31.3** ·
+`llama.cpp` **b9910** / ggml **0.15.3** · MTPLX **2.0.1**.
 
 Methodology and artifacts:
 [Performance Results](docs/PERFORMANCE-RESULTS.md) ·
@@ -258,9 +259,10 @@ the same 6-bit package, with 100% MTP step coverage.
 
 ### Direct: AX Engine vs mlx-lm vs llama.cpp
 
-Non-speculative generation. Charts: **v6.9.0 AX-only snapshot** overlaid with
-**retained** historical `mlx-lm` and `llama.cpp` Metal rows (cross-run
-distribution view, not a same-session peer matrix). Exact AX numbers:
+Non-speculative generation. Charts: **v6.11.1 AX-only snapshot (2026-07-26)**
+overlaid with **retained** historical `mlx-lm` and `llama.cpp` Metal rows
+(cross-run distribution view, not a same-session peer matrix). Peer engines
+were not re-run in this refresh. Exact AX numbers:
 [Performance Results: Direct](docs/PERFORMANCE-RESULTS.md#session-mode-direct-generation).
 
 **Gemma 4** — decode / prefill / TTFT:
@@ -281,20 +283,22 @@ distribution view, not a same-session peer matrix). Exact AX numbers:
 
 ### Embeddings: Qwen3-Embedding ingest scale
 
-Fresh AX-only Qwen3-Embedding 0.6B / 4B / 8B results (2026-07-17 current-main
-refresh) are overlaid with retained 2026-07-12 `mlx-lm` medians. This is a
-cross-run directional view, not a paired engine-to-engine delta. The uniform
-ingest corpus does not isolate the default-on mixed-length batching path. Full
-rows and methodology: [Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
+Fresh AX-only Qwen3-Embedding 0.6B / 4B / 8B results (2026-07-27 current-main
+refresh, v6.11.1) are overlaid with retained 2026-07-12 `mlx-lm` medians. This
+is a cross-run directional view, not a paired engine-to-engine delta. Peer
+`mlx-lm` was not re-run. The uniform ingest corpus does not isolate the
+default-on mixed-length batching path. Full rows and methodology:
+[Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
 
 <img width="100%" src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Qwen3-Embedding batched ingest scale: retained mlx-lm reference and fresh AX Engine throughput across 0.6B, 4B, and 8B models">
 
 ### Embeddings: EmbeddingGemma ingest scale
 
-Fresh AX-only EmbeddingGemma 300M results (2026-07-17 current-main refresh)
-are overlaid with retained 2026-07-02 `mlx-embeddings` medians. This is a
-cross-run directional view, not a paired engine-to-engine delta. Full rows and
-methodology: [Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
+Fresh AX-only EmbeddingGemma 300M results (2026-07-27 current-main refresh,
+v6.11.1) are overlaid with retained 2026-07-02 `mlx-embeddings` medians. This
+is a cross-run directional view, not a paired engine-to-engine delta. Peer
+`mlx-embeddings` was not re-run. Full rows and methodology:
+[Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
 
 <img width="100%" src="docs/assets/perf-embeddinggemma-ingest-scale-ax-vs-mlx-embeddings.svg" alt="EmbeddingGemma 300M batched ingest scale: retained mlx-embeddings reference and fresh AX Engine throughput">
 
