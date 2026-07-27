@@ -88,7 +88,7 @@ ax-engine-bench generate-manifest /path/to/dest
 ## Install
 
 For the **CLI / server** on macOS Apple Silicon, prefer Homebrew
-(`brew install defai-digital/ax-engine/ax-engine`) — see
+(`brew install defai-digital/tap/ax-engine`) — see
 [Getting Started](../GETTING-STARTED.md#installation). Use pip when you need
 this Python package in a venv or for library embedding.
 

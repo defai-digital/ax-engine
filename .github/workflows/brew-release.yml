@@ -18,7 +18,7 @@ permissions:
 
 env:
   MAIN_REPO: defai-digital/ax-engine
-  TAP_REPO: defai-digital/homebrew-ax-engine
+  TAP_REPO: defai-digital/homebrew-tap
   TAP_FORMULA: Formula/ax-engine.rb
   RELEASE_PAYLOADS: ax-engine ax-engine-server ax-engine-bench ax-engine-download-model.py ax-engine-prepare-mtp-sidecar.py ax-engine-prepare-gemma4-assistant-mtp.py ax-engine-prepare-glm-mtp-sidecar.py ax-engine-prepare-qwen36-mtp-sidecar.py ax-engine-check-mtp-sidecar-provenance.py
   RELEASE_RUNTIME_PAYLOADS: libmlx.dylib libjaccl.dylib mlx.metallib
@@ -260,11 +260,16 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/contents/scripts/update_homebrew_bin_install.py?ref=${TOOLING_SHA}" \
             | python3 - "$FORMULA_PATH" "${release_payloads[@]}"
 
-          EXPECTED_BIN_LINE="bin.install $(printf '"%s", ' "${release_payloads[@]}" | sed 's/, $//')"
-          if ! grep -qF "$EXPECTED_BIN_LINE" "$FORMULA_PATH"; then
-            echo "error: formula does not contain canonical line: $EXPECTED_BIN_LINE" >&2
+          if [[ "$(grep -c '^[[:space:]]*bin\.install\b' "$FORMULA_PATH" || true)" -ne 1 ]]; then
+            echo "error: formula must contain exactly one bin.install statement" >&2
             exit 1
           fi
+          for payload in "${release_payloads[@]}"; do
+            if ! grep -qF "\"${payload}\"" "$FORMULA_PATH"; then
+              echo "error: formula is missing release payload: ${payload}" >&2
+              exit 1
+            fi
+          done
 
           # Fail closed on the self-contained bin/libexec install contract. Homebrew
           # must preserve the signed binaries instead of rewriting them.
@@ -301,7 +306,17 @@ jobs:
           git diff --cached "$TAP_FORMULA"
 
           git commit -m "chore: update ax-engine to ${TAG}"
-          git push origin main
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin main
+            if git push origin HEAD:main; then
+              break
+            fi
+            if [[ "$attempt" -eq 5 ]]; then
+              echo "error: shared tap changed repeatedly; push failed" >&2
+              exit 1
+            fi
+            sleep $((attempt * 2))
+          done
           echo "Tap updated: ${TAP_REPO}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -337,7 +352,6 @@ jobs:
             echo "| Tap | \`${TAP_FORMULA}\` in \`${TAP_REPO}\` |"
             echo
             echo "\`\`\`"
-            echo "brew tap defai-digital/ax-engine"
-            echo "brew install defai-digital/ax-engine/ax-engine"
+            echo "brew install defai-digital/tap/ax-engine"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"

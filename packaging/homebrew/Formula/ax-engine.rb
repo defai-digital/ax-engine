@@ -1,22 +1,18 @@
 class AxEngine < Formula
   desc "Mac-first LLM inference engine targeting Apple M4+ Silicon"
   homepage "https://github.com/defai-digital/ax-engine"
+  url "https://github.com/defai-digital/ax-engine/releases/download/v6.9.0/ax-engine-v6.9.0-macos-arm64.tar.gz"
   version "6.9.0"
+  sha256 "4909c3aa7436413720472182d2887e66efa7cc98aec1cdca5825f3b3ab7e5757"
+  license "Apache-2.0"
 
   depends_on arch: :arm64
   depends_on :macos
 
-  on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/defai-digital/ax-engine/releases/download/v6.9.0/ax-engine-v6.9.0-macos-arm64.tar.gz"
-      sha256 "4909c3aa7436413720472182d2887e66efa7cc98aec1cdca5825f3b3ab7e5757"
-    else
-      odie "ax-engine requires Apple Silicon (arm64)."
-    end
-  end
-
   def install
-    bin.install "ax-engine", "ax-engine-server", "ax-engine-bench",
+    bin.install "ax-engine",
+                "ax-engine-server",
+                "ax-engine-bench",
                 "ax-engine-download-model.py",
                 "ax-engine-prepare-mtp-sidecar.py",
                 "ax-engine-prepare-gemma4-assistant-mtp.py",

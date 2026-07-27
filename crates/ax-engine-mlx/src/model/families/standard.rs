@@ -1378,6 +1378,127 @@ pub fn layer_forward_batched(
 /// `moe_experts_forward_impl`). Expert selection therefore stays per-row; only
 /// the shared quantized reductions carry the usual batched-kernel bf16 drift,
 /// which decode certification bounds to greedy-token parity.
+/// Padded batched-prefill layer: the `[B, L, hidden]` sibling of
+/// [`layer_forward_batched`]'s `[B, 1, hidden]` decode step. Every row is
+/// cold (RoPE position 0), so one scalar-offset rope covers the batch, and
+/// attention runs over the in-chunk K/V only — no cache is involved — under
+/// the caller's causal+padding mask
+/// ([`crate::attention_mask::batched_prefill_causal_mask`]). Returns the
+/// layer output plus this layer's K/V (`[B, kv_heads, L, head_dim]`) so the
+/// caller can extract each row's `[0..len)` region into its per-request
+/// cache.
+pub fn layer_forward_batched_prefill(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    layer_idx: usize,
+    padded_len: usize,
+    mask: &Option<MlxArray>,
+) -> (MlxArray, MlxArray, MlxArray) {
+    let (
+        head_dim,
+        rope_theta,
+        rope_dims,
+        layer_rope_freqs,
+        sliding_window,
+        kv_source,
+        v_norm_no_scale,
+    ) = layer_params(cfg, layer_idx);
+    // `supports_batched_prefill` refuses these shapes; the asserts keep the
+    // invariant local if a new caller skips the gate.
+    assert!(
+        sliding_window.is_none(),
+        "batched prefill: sliding-window layers unsupported"
+    );
+    assert!(
+        kv_source.is_none(),
+        "batched prefill: KV-shared layers unsupported"
+    );
+    assert!(
+        w.per_layer_gate.is_none(),
+        "batched prefill: per-layer-input gating unsupported"
+    );
+    assert!(
+        w.router_proj.is_none(),
+        "batched prefill: MoE layers unsupported"
+    );
+
+    let seq = padded_len;
+    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+    let (q_raw, k_raw, v_raw, attn_gate) = qkv_project_batched(cfg, w, &normed, head_dim);
+    let kv_heads = (k_raw.shape()[2] as usize)
+        .checked_div(head_dim)
+        .expect("k projection output must divide by head_dim");
+    let v = prepare_value_bhsd_from_proj(
+        &v_raw,
+        v_norm_no_scale,
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+
+    let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+    let (rope_base, rope_freqs_ref) = rope_freqs
+        .map(|f| (None, Some(f)))
+        .unwrap_or((Some(rope_theta), None));
+    let q = qk_norm_bhsd_from_proj(
+        &q_raw,
+        w.q_norm.as_ref(),
+        cfg.n_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+    let k = qk_norm_bhsd_from_proj(
+        &k_raw,
+        w.k_norm.as_ref(),
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+    let rope_zero = |x: &MlxArray| -> MlxArray {
+        mlx_sys::rope(
+            x,
+            rope_dims as i32,
+            false,
+            rope_base,
+            1.0,
+            0,
+            rope_freqs_ref,
+            None,
+        )
+    };
+    let q_rope = rope_zero(&q);
+    let k_rope = rope_zero(&k);
+
+    let attn_sdpa = full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale, seq, mask);
+    let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
+    let attn_proj = attention_output_projection_batched(
+        &attn_flat,
+        attn_gate.as_ref(),
+        w.o_proj
+            .as_ref()
+            .expect("full-attention layer must have o_proj"),
+    );
+    let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
+        rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
+    } else {
+        attn_proj
+    };
+    let hidden = add(hidden, &attn_proj, None);
+
+    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    let ffn_out = ffn_batched(cfg, w, &normed2, layer_idx);
+    let out = if let Some(scalar) = &w.layer_scalar {
+        add_then_multiply_scalar(&hidden, &ffn_out, scalar)
+    } else {
+        add(&hidden, &ffn_out, None)
+    };
+    (out, k_rope, v)
+}
+
 fn ffn_batched(
     cfg: &ModelConfig,
     w: &LayerWeights,

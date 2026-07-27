@@ -87,7 +87,7 @@ before following the examples:
 
 ```bash
 brew update
-brew info defai-digital/ax-engine/ax-engine
+brew info defai-digital/tap/ax-engine
 python3 -m pip index versions ax-engine   # optional: Python SDK channel
 ```
 
@@ -100,9 +100,7 @@ older package: it may not provide the command surface documented here.
 Install the signed macOS arm64 CLI, server, and bench binaries:
 
 ```bash
-brew tap defai-digital/ax-engine
-brew trust --formula defai-digital/ax-engine/ax-engine
-brew install defai-digital/ax-engine/ax-engine
+brew install defai-digital/tap/ax-engine
 ax-engine doctor
 ```
 
@@ -123,8 +121,8 @@ Python MLX, or the Metal Toolchain. Verify the installed layout and executable
 startup with:
 
 ```bash
-brew reinstall defai-digital/ax-engine/ax-engine
-brew test defai-digital/ax-engine/ax-engine
+brew reinstall defai-digital/tap/ax-engine
+brew test defai-digital/tap/ax-engine
 ls "$(brew --prefix ax-engine)/libexec/libmlx.dylib"
 ls "$(brew --prefix ax-engine)/libexec/mlx.metallib"
 ```
@@ -150,8 +148,8 @@ self-contained runtime contract. Update the tap and reinstall:
 
 ```bash
 brew update
-brew reinstall defai-digital/ax-engine/ax-engine
-brew test defai-digital/ax-engine/ax-engine
+brew reinstall defai-digital/tap/ax-engine
+brew test defai-digital/tap/ax-engine
 ```
 
 #### Gatekeeper warning on older releases

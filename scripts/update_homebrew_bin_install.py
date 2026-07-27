@@ -32,8 +32,15 @@ def rewrite_bin_install(text: str, payloads: list[str]) -> str:
             continue
 
         if not found:
-            payload_list = ", ".join(f'"{payload}"' for payload in payloads)
-            output.append(f'{match.group("indent")}bin.install {payload_list}{newline}')
+            indent = match.group("indent")
+            if len(payloads) == 1:
+                output.append(f'{indent}bin.install "{payloads[0]}"{newline}')
+            else:
+                continuation = indent + " " * len("bin.install ")
+                output.append(f'{indent}bin.install "{payloads[0]}",{newline}')
+                for payload in payloads[1:-1]:
+                    output.append(f'{continuation}"{payload}",{newline}')
+                output.append(f'{continuation}"{payloads[-1]}"{newline}')
             found = True
 
         # Ruby continues an argument list when the preceding line ends in a

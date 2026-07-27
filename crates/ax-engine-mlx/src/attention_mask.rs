@@ -132,6 +132,62 @@ pub fn batched_decode_validity_mask_with_window(
     mask
 }
 
+/// Boolean causal + padding mask for **padded batched prefill** attention.
+///
+/// Queries and keys are both `[B, heads, padded_len, head_dim]`, where row
+/// `r` holds only `prompt_lens[r]` real positions; the rest is padding.
+/// Entry `[r, 0, i, j]` is `true` (attend) iff `j <= i` (causal) AND
+/// `j < prompt_lens[r]` (padding exclusion). Query rows `i >=
+/// prompt_lens[r]` are garbage whose outputs the caller discards; they
+/// still attend at least key 0, so no softmax row is fully masked (NaN).
+///
+/// Shape `[B, 1, padded_len, padded_len]`, broadcasting over heads —
+/// `true` = attend, matching [`create_causal_mask`]. Materialized before
+/// return so the mask owns its data.
+///
+/// # Panics
+/// If `prompt_lens` is empty, `padded_len == 0`, or any row length is 0 or
+/// exceeds `padded_len`.
+pub fn batched_prefill_causal_mask(prompt_lens: &[usize], padded_len: usize) -> MlxArray {
+    assert!(
+        !prompt_lens.is_empty(),
+        "batched prefill mask requires at least one row"
+    );
+    assert!(
+        padded_len > 0,
+        "batched prefill mask requires padded_len > 0"
+    );
+    let batch = prompt_lens.len() as i32;
+    let lens_i32: Vec<i32> = prompt_lens
+        .iter()
+        .map(|&len| {
+            assert!(
+                len > 0 && len <= padded_len,
+                "row prompt length {len} out of range 1..={padded_len}"
+            );
+            len as i32
+        })
+        .collect();
+
+    // Causal triangle `[1, 1, L, L]`, shared by every row.
+    let causal = create_causal_mask(padded_len, 0, None);
+    let causal = reshape(&causal, &[1, 1, padded_len as i32, padded_len as i32], None);
+    // Key positions `[1, 1, 1, L]` vs per-row lengths `[B, 1, 1, 1]`.
+    let positions = arange(0.0, padded_len as f64, 1.0, MlxDtype::Int32, None);
+    let positions = reshape(&positions, &[1, 1, 1, padded_len as i32], None);
+    let lengths = MlxArray::from_raw_data(
+        lens_i32.as_ptr().cast(),
+        std::mem::size_of_val(lens_i32.as_slice()),
+        &[batch, 1, 1, 1],
+        MlxDtype::Int32,
+    );
+    let key_valid = less(&positions, &lengths, None);
+    let mask = logical_and(&causal, &key_valid, None);
+    // Materialize while `lens_i32` is alive so the mask owns its data.
+    eval(&[&mask]);
+    mask
+}
+
 /// Boolean SDPA validity mask for a **bounded-rollback rotating ring**
 /// ([`crate::kv_cache::SlidingRingLayout`]).
 ///
@@ -453,6 +509,33 @@ mod tests {
                     (got - want).abs() < 1e-5,
                     "row {row} dim {dim}: masked {got} vs reference {want}"
                 );
+            }
+        }
+    }
+
+    /// Padded batched prefill mask: causal within each row AND key positions
+    /// beyond the row's real prompt length excluded, with no fully-masked
+    /// softmax row even in padded query positions.
+    #[test]
+    fn batched_prefill_mask_combines_causal_and_padding_exclusion() {
+        let lens = [2usize, 4];
+        let padded = 4usize;
+        let mask = batched_prefill_causal_mask(&lens, padded);
+        assert_eq!(mask.shape(), vec![2, 1, 4, 4]);
+        let data = mask_data(&mask);
+        for (row, &len) in lens.iter().enumerate() {
+            for query in 0..padded {
+                let mut any_attend = false;
+                for key in 0..padded {
+                    let expected = key <= query && key < len;
+                    let actual = data[row * padded * padded + query * padded + key] != 0;
+                    assert_eq!(
+                        actual, expected,
+                        "row {row} query {query} key {key} (len {len})"
+                    );
+                    any_attend |= actual;
+                }
+                assert!(any_attend, "row {row} query {query} fully masked");
             }
         }
     }

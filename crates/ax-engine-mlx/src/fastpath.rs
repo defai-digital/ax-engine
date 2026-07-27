@@ -119,6 +119,42 @@ env_flag_default_on!(
     "AX_MLX_DECODE_SAMPLING_GPU_TOPK"
 );
 
+env_flag!(
+    /// `AX_MLX_BATCHED_PREFILL` — route eligible cold text prefill items
+    /// through one padded batched forward per planned cohort
+    /// (`ax_engine_core::prefill_cohort` drives the grouping; the model must
+    /// pass `model::supports_batched_prefill`). **Default: OFF** —
+    /// experimental: parity with the sequential path is tolerance-verified,
+    /// not byte-exact certified (padded batching changes reduction shapes).
+    batched_prefill_enabled,
+    "AX_MLX_BATCHED_PREFILL"
+);
+
+/// `AX_MLX_BATCHED_PREFILL_TOKENS` — override the padded-token admission
+/// budget (`rows * max_len` cap) for one batched prefill cohort. Unset uses
+/// `ax_engine_core::prefill_cohort::default_padded_token_budget` over the
+/// session prefill chunk and the rows cap. `0` disables the cap.
+pub fn batched_prefill_token_budget_override() -> Option<u32> {
+    static CACHED: OnceLock<Option<u32>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_BATCHED_PREFILL_TOKENS")
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+    })
+}
+
+/// `AX_MLX_BATCHED_PREFILL_ROWS` — cap on rows per batched prefill cohort.
+/// Default 8; `0` disables the cap.
+pub fn batched_prefill_max_rows() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_BATCHED_PREFILL_ROWS")
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+            .unwrap_or(8)
+    })
+}
+
 env_flag_default_on!(
     /// `AX_MLX_LOAD_KERNEL_WARMUP` — at model load, compile the custom
     /// Metal kernel specializations the decode path will hit (currently
@@ -801,10 +837,7 @@ pub fn parse_pipeline_eval_tail_layers(raw: &str) -> usize {
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("off") {
         return 0;
     }
-    match trimmed.parse::<usize>() {
-        Ok(n) => n,
-        Err(_) => 0,
-    }
+    trimmed.parse::<usize>().unwrap_or_default()
 }
 
 /// Process-cached tail-layer count. Default 0 (overlay off).
@@ -822,11 +855,7 @@ pub fn pipeline_eval_tail_layers() -> usize {
 /// Eligible layers are `0..total_layers-2` (final always exempt). Tail of size
 /// `N` is `[total-1-N, total-2]` clamped to zero. Used by the dual-stream
 /// concurrent residual so thr stacks can monopolize early layers then yield.
-pub fn pipeline_eval_layer_in_tail(
-    layer_idx: usize,
-    total_layers: usize,
-    tail_n: usize,
-) -> bool {
+pub fn pipeline_eval_layer_in_tail(layer_idx: usize, total_layers: usize, tail_n: usize) -> bool {
     if tail_n == 0 || total_layers < 2 || layer_idx + 1 >= total_layers {
         return false;
     }
@@ -859,11 +888,7 @@ pub fn pipeline_eval_should_fire(seq_len: usize, layer_idx: usize, total_layers:
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0);
             let last_raw = LAST_FIRE_NS.load(Ordering::Relaxed);
-            let last = if last_raw == 0 {
-                None
-            } else {
-                Some(last_raw)
-            };
+            let last = if last_raw == 0 { None } else { Some(last_raw) };
             if pipeline_eval_yield_should_fire(
                 last,
                 now_ns,

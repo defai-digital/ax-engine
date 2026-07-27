@@ -1130,6 +1130,63 @@ pub fn decode_step(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Sample one token from already-computed, already-evaluated last-position
+/// logits (`[vocab]` f32), following exactly the sampler ladder of
+/// [`decode_step_with_sampling_buffers`] so a staged batched-prefill row
+/// consumes the same single RNG draw the sequential path would have made.
+/// The deterministic branch differs only in skipping `forward_argmax`'s
+/// softcap-free logits: the softcap is monotonic, so the argmax winner is
+/// identical.
+pub fn sample_token_from_prefill_logits(
+    logits: &MlxArray,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> u32 {
+    let sampling = sampling_request.params;
+    if sampling.temperature > 0.0
+        && !sampling.uses_logits_processors()
+        && sampling.top_k == 0
+        && sampling.top_p >= 1.0
+    {
+        sample_categorical_gpu(logits, sampling.temperature)
+    } else if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
+        if let Some(tok) = sample_categorical_with_topk_gpu(
+            logits,
+            sampling,
+            sampling_request.repetition_tokens,
+            rng,
+        )
+        .or_else(|| {
+            sample_categorical_with_topp_gpu(
+                logits,
+                sampling,
+                sampling_request.repetition_tokens,
+                rng,
+            )
+        }) {
+            tok
+        } else {
+            let logits_data = logits.data_f32();
+            sample_categorical_into(
+                logits_data,
+                sampling,
+                sampling_request.repetition_tokens,
+                rng,
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
+            )
+        }
+    } else {
+        let token_arr = argmax(logits, None);
+        eval(&[&token_arr]);
+        token_arr.first_u32_unchecked()
+    }
+}
+
 pub fn decode_step_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1261,5 +1318,70 @@ mod tests {
     fn e_series_prefill_defers_cache_cleanup() {
         assert!(!clear_cache_after_split_prefill(256));
         assert!(clear_cache_after_split_prefill(0));
+    }
+
+    /// Seed determinism of the staged batched-prefill sampler (audit §5.6
+    /// methodology): a fixed logits row with a fixed per-request seed draws
+    /// the same token across runs; across seeds the draws differ (positive
+    /// control against a vacuous assertion), and greedy sampling ignores the
+    /// RNG entirely.
+    #[test]
+    fn sample_token_from_prefill_logits_is_seed_deterministic() {
+        let mut logits_data = vec![0.0f32; 32];
+        logits_data[7] = 0.25; // unique argmax for the greedy check
+        let logits = MlxArray::from_f32_slice(&logits_data);
+        let sampling = MlxSamplingParams::new(0.9, 1.0, 8);
+        let draw = |seed: u64| {
+            let mut rng = Xorshift64::new(seed);
+            let mut probs = Vec::new();
+            let mut logits_buf = Vec::new();
+            let mut candidates = Vec::new();
+            sample_token_from_prefill_logits(
+                &logits,
+                MlxSamplingRequest::new(sampling, &[]),
+                &mut rng,
+                &mut probs,
+                &mut logits_buf,
+                &mut candidates,
+            )
+        };
+
+        for seed in [1u64, 42, 987] {
+            assert_eq!(draw(seed), draw(seed), "seed {seed} must be reproducible");
+        }
+        // Xorshift's first draw mixes close seeds poorly, so the positive
+        // control uses widely-spaced seeds — the per-request seeds the
+        // engine derives are similarly well-spread.
+        let distinct: std::collections::BTreeSet<u32> = [
+            0x1234_5678_9abc_def0_u64,
+            0xdead_beef_1357_2468,
+            0x0f0f_0f0f_f0f0_f0f0,
+            0x7777_1111_9999_3333,
+            0xaaaa_bbbb_cccc_dddd,
+            0x0246_8ace_1357_9bdf,
+            0xfeed_face_cafe_beef,
+            0x0101_0202_0404_0808,
+        ]
+        .into_iter()
+        .map(draw)
+        .collect();
+        assert!(
+            distinct.len() >= 2,
+            "positive control: near-uniform logits across 8 seeds drew only {distinct:?}"
+        );
+
+        let mut greedy_rng = Xorshift64::new(5);
+        let mut probs = Vec::new();
+        let mut logits_buf = Vec::new();
+        let mut candidates = Vec::new();
+        let greedy_tok = sample_token_from_prefill_logits(
+            &logits,
+            MlxSamplingRequest::new(MlxSamplingParams::greedy(), &[]),
+            &mut greedy_rng,
+            &mut probs,
+            &mut logits_buf,
+            &mut candidates,
+        );
+        assert_eq!(greedy_tok, 7);
     }
 }

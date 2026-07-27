@@ -60,7 +60,7 @@ use crate::generate::{
     chunked_prefill_unlimited_ocr_with_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
     decode_step, direct_pipeline_barrier_enabled, prepare_direct_pipeline_advance,
-    start_direct_pipeline,
+    sample_token_from_prefill_logits, start_direct_pipeline,
 };
 use crate::kv_block_pool::{
     FaBlockPoolConfig, FaBlockPoolError, SharedFaBlockPool, default_fa_block_pool_config,
@@ -76,6 +76,7 @@ use crate::model::{
     take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
     take_moe_profile_snapshot, take_prefill_profile_snapshot,
 };
+use crate::model::{prefill_batched_forward, supports_batched_prefill};
 use crate::mtp::{
     glm_mtp_draft_tokens_after_forced_prefix, glm_mtp_draft_tokens_gated,
     mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens_gated,
@@ -2758,6 +2759,19 @@ impl MlxRunner {
     }
 }
 
+/// One request's padded-batched-prefill result, staged by
+/// `MlxRunner::stage_batched_prefill` and consumed inside `run_item`'s plain
+/// prefill branch when its preconditions still hold there (cold cache, same
+/// prompt tokens); otherwise dropped in favor of sequential prefill.
+struct StagedBatchedPrefill {
+    prompt_tokens: Vec<u32>,
+    /// `[vocab]` f32 last-prompt-position logits, already evaluated.
+    logits: MlxArray,
+    /// Per-layer `[1, kv_heads, len, head_dim]` K/V, already evaluated.
+    layer_kv: Vec<(MlxArray, MlxArray)>,
+    seq_len: usize,
+}
+
 impl ExecutionRunner for MlxRunner {
     fn run(&self, input: RunnerInput) -> RunnerOutput {
         let step_id = input.execution_batch.step_id;
@@ -3115,6 +3129,11 @@ impl ExecutionRunner for MlxRunner {
             ]);
         }
 
+        // ── Padded batched prefill (AX_MLX_BATCHED_PREFILL, default off).
+        // Eligible cold text prefill cohorts run one shared padded forward
+        // here; each row's result is consumed inside its own run_item call
+        // below, so per-request bookkeeping and ordering are unchanged.
+        let mut staged_prefill = self.stage_batched_prefill(&input, &mut route_metadata);
         for (item_idx, item) in input.execution_batch.items.iter().enumerate() {
             if batched_idx.contains(&item_idx) {
                 continue;
@@ -3130,6 +3149,7 @@ impl ExecutionRunner for MlxRunner {
                 &input.execution_batch.model_id,
                 input.block_size_tokens,
                 input.request_multimodal_inputs(item.request_id),
+                staged_prefill.remove(&item.request_id.0),
             );
             ngram_acceleration.merge_from(result.ngram_acceleration);
             mtp_telemetry.merge_from(result.mtp_telemetry);
@@ -4040,6 +4060,167 @@ impl MlxRunner {
         outputs.into_iter().next()
     }
 
+    /// Plan and execute padded batched prefill for this step's eligible cold
+    /// text prefill items (`AX_MLX_BATCHED_PREFILL`, default off). Returns
+    /// per-request staged results that `run_item` consumes at its plain
+    /// prefill call site — bookkeeping (prefix-cache probe/store, telemetry,
+    /// generation-state init) stays entirely on the per-item path, and a
+    /// staged row whose preconditions no longer hold there (e.g. a runner
+    /// prefix probe restored KV first) is simply dropped in favor of the
+    /// sequential path.
+    fn stage_batched_prefill(
+        &self,
+        input: &RunnerInput,
+        route_metadata: &mut ax_engine_core::RouteMetadata,
+    ) -> std::collections::HashMap<u64, StagedBatchedPrefill> {
+        use ax_engine_core::prefill_cohort::{
+            BatchedPrefillCapability, PaddedCostLimits, PrefillCohortKind, PrefillRowClass,
+            default_padded_token_budget, plan_prefill_cohorts,
+        };
+
+        let mut staged = std::collections::HashMap::new();
+        // The prefill window, in item (scheduler plan) order.
+        let window: Vec<&ax_engine_core::ExecutionItem> = input
+            .execution_batch
+            .items
+            .iter()
+            .filter(|item| matches!(item.mode, ExecutionMode::Prefill))
+            .collect();
+        if window.len() < 2 {
+            return staged;
+        }
+        if !crate::fastpath::batched_prefill_enabled() {
+            upsert_route_decision(
+                &mut route_metadata.crossover_decisions,
+                "ax_mlx_batched_prefill_rejected_flag_disabled",
+                window.len() as u32,
+            );
+            return staged;
+        }
+        if !supports_batched_prefill(&self.cfg, &self.weights) {
+            upsert_route_decision(
+                &mut route_metadata.crossover_decisions,
+                "ax_mlx_batched_prefill_rejected_model_capability",
+                window.len() as u32,
+            );
+            return staged;
+        }
+
+        let eligible = |item: &ax_engine_core::ExecutionItem| -> bool {
+            let ctx = input
+                .request_contexts
+                .iter()
+                .find(|ctx| ctx.request_id == item.request_id);
+            item.position_range.start == 0
+                && item.prefix_tokens_reused == 0
+                && item.reused_prefix_token_slice.is_empty()
+                && !item.input_token_slice.is_empty()
+                && prefill_item_completes_prompt(item, ctx)
+                && input.request_multimodal_inputs(item.request_id).is_none()
+        };
+        let rows: Vec<PrefillRowClass> = window
+            .iter()
+            .map(|item| {
+                if eligible(item) {
+                    PrefillRowClass {
+                        kv_offset_tokens: 0,
+                        multimodal: false,
+                        prompt_len: item.input_token_slice.len() as u32,
+                    }
+                } else {
+                    // Runner-level ineligibility (adopted prefix, partial
+                    // prompt item, multimodal inputs, …) is expressed as a
+                    // non-zero KV offset: the planner only needs to know the
+                    // row cannot take a padded slot.
+                    PrefillRowClass {
+                        kv_offset_tokens: 1,
+                        multimodal: false,
+                        prompt_len: item.input_token_slice.len() as u32,
+                    }
+                }
+            })
+            .collect();
+        let max_rows = crate::fastpath::batched_prefill_max_rows();
+        let limits = PaddedCostLimits {
+            max_padded_tokens: crate::fastpath::batched_prefill_token_budget_override()
+                .unwrap_or_else(|| {
+                    default_padded_token_budget(self.prefill_chunk as u32, max_rows.max(1))
+                }),
+            max_rows,
+        };
+        let cohorts = plan_prefill_cohorts(
+            &rows,
+            BatchedPrefillCapability {
+                supports_batched: true,
+                supports_padding: true,
+            },
+            limits,
+        );
+
+        let mut staged_rows = 0u32;
+        let mut staged_cohorts = 0u32;
+        let mut forward_errors = 0u32;
+        for cohort in &cohorts {
+            if cohort.kind != PrefillCohortKind::BatchedCold {
+                continue;
+            }
+            let members: Vec<&ax_engine_core::ExecutionItem> =
+                cohort.members.iter().map(|&index| window[index]).collect();
+            let prompts: Vec<&[u32]> = members
+                .iter()
+                .map(|item| item.input_token_slice.as_slice())
+                .collect();
+            match prefill_batched_forward(&self.cfg, &self.weights, &prompts) {
+                Ok(batch) => {
+                    staged_cohorts += 1;
+                    for ((item, logits), layer_kv) in
+                        members.iter().zip(batch.row_logits).zip(batch.row_layer_kv)
+                    {
+                        staged_rows += 1;
+                        staged.insert(
+                            item.request_id.0,
+                            StagedBatchedPrefill {
+                                prompt_tokens: item.input_token_slice.clone(),
+                                logits,
+                                layer_kv,
+                                seq_len: item.input_token_slice.len(),
+                            },
+                        );
+                    }
+                }
+                Err(error) => {
+                    forward_errors += 1;
+                    tracing::warn!(
+                        target: "ax_engine_mlx::batched_prefill",
+                        %error,
+                        rows = members.len(),
+                        "padded batched prefill forward failed; cohort falls back to sequential prefill",
+                    );
+                }
+            }
+        }
+        if staged_rows > 0 {
+            upsert_route_decision(
+                &mut route_metadata.crossover_decisions,
+                "ax_mlx_batched_prefill_rows",
+                staged_rows,
+            );
+            upsert_route_decision(
+                &mut route_metadata.crossover_decisions,
+                "ax_mlx_batched_prefill_cohorts",
+                staged_cohorts,
+            );
+        }
+        if forward_errors > 0 {
+            upsert_route_decision(
+                &mut route_metadata.crossover_decisions,
+                "ax_mlx_batched_prefill_forward_errors",
+                forward_errors,
+            );
+        }
+        staged
+    }
+
     fn run_item(
         &self,
         item: &ax_engine_core::ExecutionItem,
@@ -4047,6 +4228,7 @@ impl MlxRunner {
         model_id: &str,
         block_size_tokens: u32,
         multimodal_inputs: Option<&RequestMultimodalInputs>,
+        mut staged_batched_prefill: Option<StagedBatchedPrefill>,
     ) -> MlxItemRun {
         let token_ids = &item.input_token_slice;
         if token_ids.is_empty() {
@@ -4825,6 +5007,29 @@ impl MlxRunner {
                         state.mtp_prefill_hidden = Some(hidden);
                         state.mtp_prefill_history_tokens = history_tokens;
                         tok
+                    } else if let Some(staged) = staged_batched_prefill.take().filter(|staged| {
+                        state.cache.seq_len() == 0
+                            && staged.prompt_tokens.as_slice() == prefill_tokens
+                    }) {
+                        // Consume the padded-batched-prefill result computed
+                        // for this exact item: install the row's per-layer
+                        // K/V (trimmed to the real prompt length) and sample
+                        // from the staged last-token logits with this
+                        // request's own RNG — the same single draw the
+                        // sequential path below would have made.
+                        for (layer, (k, v)) in staged.layer_kv.into_iter().enumerate() {
+                            state
+                                .cache
+                                .set_layer_kv_logical(layer, k, v, staged.seq_len);
+                        }
+                        sample_token_from_prefill_logits(
+                            &staged.logits,
+                            MlxSamplingRequest::new(sampling, &repetition_history),
+                            &mut state.rng,
+                            &mut state.sampling_probs_buf,
+                            &mut state.sampling_logits_buf,
+                            &mut state.sampling_candidates_buf,
+                        )
                     } else {
                         chunked_prefill_with_sampling_buffers(
                             &self.cfg,

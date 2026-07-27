@@ -578,6 +578,187 @@ pub fn decode_batched_forward(
     finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::Full)
 }
 
+/// Whether this model can run [`prefill_batched_forward`] (padded batched
+/// prefill, v1 scope): standard autoregressive generation over uniformly
+/// full-attention dense layers. Excluded — and asserted again inside the
+/// layer forward — are diffusion models, linear-attention/MLA hybrids,
+/// sliding-window or KV-shared layers, MoE layers, per-layer-input gating
+/// (Gemma 2B/4B), and models with an MTP head (whose prefill must capture
+/// MTP history on a different path).
+pub fn supports_batched_prefill(cfg: &ModelConfig, weights: &ModelWeights) -> bool {
+    if cfg.is_block_diffusion()
+        || cfg.linear_attention.is_some()
+        || weights.mtp.is_some()
+        || weights.glm_mtp.is_some()
+        || weights.per_layer_embed.is_some()
+    {
+        return false;
+    }
+    weights.layers.iter().enumerate().all(|(layer_idx, w)| {
+        let (_, _, _, _, sliding_window, kv_source, _) = config::layer_params(cfg, layer_idx);
+        sliding_window.is_none()
+            && kv_source.is_none()
+            && w.linear_attn.is_none()
+            && w.glm_mla_attn.is_none()
+            && w.per_layer_gate.is_none()
+            && w.router_proj.is_none()
+            && w.o_proj.is_some()
+    })
+}
+
+/// Per-row results of one padded batched prefill forward, already evaluated:
+/// each row's last-real-position logits and its per-layer K/V trimmed to the
+/// row's true prompt length (`[1, kv_heads, len, head_dim]`), ready for
+/// [`crate::kv_cache::MlxKVCache::set_layer_kv_logical`].
+pub struct BatchedPrefillRows {
+    /// Per row: `[vocab]` f32 logits at the row's last real prompt position.
+    pub row_logits: Vec<MlxArray>,
+    /// `row_layer_kv[row][layer] == (k, v)`.
+    pub row_layer_kv: Vec<Vec<(MlxArray, MlxArray)>>,
+}
+
+/// Padded batched prefill: embed `B` cold prompts padded to the longest
+/// length, run one `[B, L, hidden]` pass over the dense layer stack under a
+/// causal+padding mask, and return per-row last-token logits plus per-row
+/// trimmed K/V. Rows must all be cold (KV offset zero) — the cohort planner's
+/// offset-isolation invariant — so a single position-zero RoPE covers the
+/// batch. The caller is responsible for gating on
+/// [`supports_batched_prefill`] and for the `rows * max_len` admission cap
+/// that bounds the `[B, L, L]` mask transient.
+pub fn prefill_batched_forward(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompts: &[&[u32]],
+) -> Result<BatchedPrefillRows, String> {
+    let batch = prompts.len();
+    if batch < 2 {
+        return Err("batched prefill requires at least two rows".to_string());
+    }
+    let lens: Vec<usize> = prompts.iter().map(|prompt| prompt.len()).collect();
+    if lens.iter().any(|&len| len == 0) {
+        return Err("batched prefill rows must have non-empty prompts".to_string());
+    }
+    let padded_len = *lens.iter().max().expect("batch checked non-empty");
+
+    // Pad with token id 0; padded positions are excluded by the mask and
+    // their K/V is trimmed away below, so the pad value never leaks.
+    let mut padded_ids = vec![0u32; batch * padded_len];
+    for (row, prompt) in prompts.iter().enumerate() {
+        padded_ids[row * padded_len..row * padded_len + prompt.len()].copy_from_slice(prompt);
+    }
+    let flat_ids = MlxArray::from_raw_data(
+        padded_ids.as_ptr().cast(),
+        std::mem::size_of_val(padded_ids.as_slice()),
+        &[(batch * padded_len) as i32],
+        MlxDtype::Uint32,
+    );
+    let embedded = embed_tokens_arr(&flat_ids, &weights.token_embedding, cfg.hidden_size);
+    let mut hidden = reshape(
+        &embedded,
+        &[batch as i32, padded_len as i32, cfg.hidden_size as i32],
+        None,
+    );
+    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if let Some(scale) = cfg.hidden_states_scale {
+        hidden = scale_hidden(&hidden, scale);
+    }
+
+    let mask = Some(crate::attention_mask::batched_prefill_causal_mask(
+        &lens, padded_len,
+    ));
+    let mut layer_kv: Vec<(MlxArray, MlxArray)> = Vec::with_capacity(weights.layers.len());
+    for (layer_idx, layer_w) in weights.layers.iter().enumerate() {
+        let (out, k_rope, v) = families::standard::layer_forward_batched_prefill(
+            cfg, layer_w, &hidden, layer_idx, padded_len, &mask,
+        );
+        hidden = out;
+        layer_kv.push((k_rope, v));
+    }
+
+    // Gather each row's last real position BEFORE final norm + lm_head, so
+    // the vocab projection runs on [B, 1, hidden] rather than every padded
+    // position.
+    let flat_hidden = reshape(
+        &hidden,
+        &[(batch * padded_len) as i32, cfg.hidden_size as i32],
+        None,
+    );
+    let last_indices: Vec<u32> = lens
+        .iter()
+        .enumerate()
+        .map(|(row, &len)| (row * padded_len + len - 1) as u32)
+        .collect();
+    let index_arr = MlxArray::from_raw_data(
+        last_indices.as_ptr().cast(),
+        std::mem::size_of_val(last_indices.as_slice()),
+        &[batch as i32],
+        MlxDtype::Uint32,
+    );
+    let last_hidden = take(&flat_hidden, &index_arr, 0, None);
+    let last_hidden = reshape(
+        &last_hidden,
+        &[batch as i32, 1, cfg.hidden_size as i32],
+        None,
+    );
+    let normed = rms_norm(
+        &last_hidden,
+        Some(&weights.final_norm),
+        cfg.rms_norm_eps,
+        None,
+    );
+    let lm_head_policy = if crate::fastpath::batched_shared_projections_enabled() {
+        ProjectionBatchPolicy::Shared
+    } else {
+        ProjectionBatchPolicy::RowExact
+    };
+    let logits = qw_with_policy(&normed, &weights.lm_head, lm_head_policy);
+    let logits = finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::Full);
+
+    // Split per row and trim K/V to each row's real length. `contiguous`
+    // copies out of the padded batch buffer so a request's cache does not
+    // retain the whole [B, L] allocation, and everything is evaluated in one
+    // barrier before handing rows to per-request caches.
+    let vocab = cfg.vocab_size as i32;
+    let mut row_logits = Vec::with_capacity(batch);
+    let mut row_layer_kv: Vec<Vec<(MlxArray, MlxArray)>> = Vec::with_capacity(batch);
+    for (row, &len) in lens.iter().enumerate() {
+        let r = row as i32;
+        let one_row_logits = slice(&logits, &[r, 0, 0], &[r + 1, 1, vocab], &[1, 1, 1], None);
+        row_logits.push(reshape(&one_row_logits, &[vocab], None));
+        let mut per_layer = Vec::with_capacity(layer_kv.len());
+        for (k, v) in &layer_kv {
+            let shape = k.shape();
+            let (kv_heads, head_dim) = (shape[1], shape[3]);
+            let trim = |arr: &MlxArray| -> MlxArray {
+                let row_view = slice(
+                    arr,
+                    &[r, 0, 0, 0],
+                    &[r + 1, kv_heads, len as i32, head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                mlx_sys::contiguous(&row_view, None)
+            };
+            per_layer.push((trim(k), trim(v)));
+        }
+        row_layer_kv.push(per_layer);
+    }
+    let mut eval_refs: Vec<&MlxArray> = Vec::new();
+    eval_refs.extend(row_logits.iter());
+    for per_layer in &row_layer_kv {
+        for (k, v) in per_layer {
+            eval_refs.push(k);
+            eval_refs.push(v);
+        }
+    }
+    mlx_sys::eval(&eval_refs);
+
+    Ok(BatchedPrefillRows {
+        row_logits,
+        row_layer_kv,
+    })
+}
+
 /// Full forward pass: returns logits for the LAST token only — `[vocab_size]` f32.
 pub fn forward(
     cfg: &ModelConfig,
@@ -7066,6 +7247,189 @@ mod tests {
             last_row,
             "u32::MAX must clamp to the last valid row"
         );
+    }
+
+    // ── Padded batched prefill: cohort-parity + capability tests ─────────
+    //
+    // Methodology (audit v2 §5.6): parity against the sequential path is
+    // tolerance-based, never byte-identical — padded batching legitimately
+    // changes reduction shapes at bf16 precision.
+
+    fn patterned_signal(n: usize, seed: u32) -> Vec<f32> {
+        let mut state = seed.wrapping_mul(2_654_435_761).max(1);
+        (0..n)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state as f32 / u32::MAX as f32) - 0.5
+            })
+            .collect()
+    }
+
+    fn ones_norm(n: i32) -> MlxArray {
+        array_f32(&vec![1.0; n as usize], &[n])
+    }
+
+    fn dense_full_attention_layer(cfg: &ModelConfig, seed: u32) -> LayerWeights {
+        let hidden = cfg.hidden_size as i32;
+        let q_out = (cfg.n_heads * cfg.head_dim) as i32;
+        let kv_out = (cfg.n_kv_heads * cfg.head_dim) as i32;
+        let inter = cfg.intermediate_size as i32;
+        let weight = |rows: i32, cols: i32, salt: u32| {
+            dense_weight_from_data(
+                &patterned_signal((rows * cols) as usize, seed.wrapping_add(salt)),
+                &[rows, cols],
+            )
+        };
+        let mut layer = empty_layer_weights(cfg.hidden_size);
+        layer.attn_norm = ones_norm(hidden);
+        layer.ffn_norm = ones_norm(hidden);
+        layer.q_proj = Some(weight(q_out, hidden, 1));
+        layer.k_proj = Some(weight(kv_out, hidden, 2));
+        layer.v_proj = Some(weight(kv_out, hidden, 3));
+        layer.o_proj = Some(weight(hidden, q_out, 4));
+        layer.gate_proj = Some(weight(inter, hidden, 5));
+        layer.up_proj = Some(weight(inter, hidden, 6));
+        layer.down_proj = Some(weight(hidden, inter, 7));
+        layer
+    }
+
+    fn dense_prefill_test_model() -> (ModelConfig, ModelWeights) {
+        let mut model_cfg = cfg(false);
+        model_cfg.layer_count = 2;
+        model_cfg.query_scale = 1.0 / (model_cfg.head_dim as f32).sqrt();
+        let layers = (0..model_cfg.layer_count)
+            .map(|layer| dense_full_attention_layer(&model_cfg, 100 + layer as u32 * 17))
+            .collect();
+        let vocab = model_cfg.vocab_size as i32;
+        let hidden = model_cfg.hidden_size as i32;
+        let weights = ModelWeights {
+            token_embedding: dense_weight_from_data(
+                &patterned_signal((vocab * hidden) as usize, 31),
+                &[vocab, hidden],
+            ),
+            final_norm: ones_norm(hidden),
+            lm_head: dense_weight_from_data(
+                &patterned_signal((vocab * hidden) as usize, 37),
+                &[vocab, hidden],
+            ),
+            layers,
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
+            diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
+        };
+        (model_cfg, weights)
+    }
+
+    fn assert_close_rel(actual: &[f32], expected: &[f32], rel: f32, context: &str) {
+        assert_eq!(actual.len(), expected.len(), "{context}: length");
+        for (idx, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            let bound = rel * e.abs().max(1.0);
+            assert!(
+                (a - e).abs() <= bound,
+                "{context} index {idx}: batched {a}, sequential {e}, bound {bound}"
+            );
+        }
+    }
+
+    #[test]
+    fn supports_batched_prefill_accepts_dense_and_rejects_excluded_shapes() {
+        let (model_cfg, mut weights) = dense_prefill_test_model();
+        assert!(supports_batched_prefill(&model_cfg, &weights));
+
+        let mut sliding_cfg = model_cfg.clone();
+        sliding_cfg.global_sliding_window = Some(8);
+        assert!(!supports_batched_prefill(&sliding_cfg, &weights));
+
+        weights.layers[0].router_proj = Some(dense_weight(&[4, model_cfg.hidden_size as i32]));
+        assert!(!supports_batched_prefill(&model_cfg, &weights));
+    }
+
+    /// Cohort parity: each row of one padded batched prefill must match the
+    /// sequential single-row prefill within tolerance — both the
+    /// last-position logits and, via a decode continuation on the seeded
+    /// per-request cache, the KV contents themselves.
+    #[test]
+    fn batched_prefill_rows_match_sequential_prefill_within_tolerance() {
+        with_gpu_numeric_lock(|| {
+            let (model_cfg, weights) = dense_prefill_test_model();
+            let prompts: Vec<Vec<u32>> = vec![
+                vec![1, 2, 3, 4, 5],
+                vec![7, 8, 9],
+                vec![11, 3, 6, 2, 9, 1, 4],
+            ];
+            let prompt_refs: Vec<&[u32]> = prompts.iter().map(Vec::as_slice).collect();
+            let batch = prefill_batched_forward(&model_cfg, &weights, &prompt_refs)
+                .expect("batched prefill should run on the dense fixture");
+
+            for (row, prompt) in prompts.iter().enumerate() {
+                // Sequential reference: one full single-row forward.
+                let mut cache_seq = MlxKVCache::new(model_cfg.layer_count);
+                let logits_seq = forward(&model_cfg, &weights, prompt, &mut cache_seq, 0);
+                eval(&[&logits_seq]);
+                assert_close_rel(
+                    &batch.row_logits[row].data_f32(),
+                    &logits_seq.data_f32(),
+                    3e-2,
+                    &format!("prefill logits row {row}"),
+                );
+
+                // KV parity end-to-end: seed a fresh per-request cache from
+                // the batched rows and decode one token on both caches.
+                cache_seq.advance(prompt.len());
+                let mut cache_batched = MlxKVCache::new(model_cfg.layer_count);
+                for (layer, (k, v)) in batch.row_layer_kv[row].iter().enumerate() {
+                    cache_batched.set_layer_kv_logical(layer, k.clone(), v.clone(), prompt.len());
+                }
+                let next_token = 5u32;
+                let decode_seq = forward(
+                    &model_cfg,
+                    &weights,
+                    &[next_token],
+                    &mut cache_seq,
+                    prompt.len(),
+                );
+                let decode_batched = forward(
+                    &model_cfg,
+                    &weights,
+                    &[next_token],
+                    &mut cache_batched,
+                    prompt.len(),
+                );
+                eval(&[&decode_seq, &decode_batched]);
+                assert_close_rel(
+                    &decode_batched.data_f32(),
+                    &decode_seq.data_f32(),
+                    3e-2,
+                    &format!("decode continuation row {row}"),
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn batched_prefill_rejects_degenerate_inputs() {
+        let (model_cfg, weights) = dense_prefill_test_model();
+        let single: Vec<&[u32]> = vec![&[1, 2, 3]];
+        assert!(prefill_batched_forward(&model_cfg, &weights, &single).is_err());
+        let with_empty: Vec<&[u32]> = vec![&[1, 2, 3], &[]];
+        assert!(prefill_batched_forward(&model_cfg, &weights, &with_empty).is_err());
     }
 }
 

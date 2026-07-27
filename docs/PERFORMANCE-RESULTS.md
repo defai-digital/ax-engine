@@ -89,7 +89,7 @@ Install via Homebrew (primary), prepare a target, then run the serve command
 printed by the CLI.
 
 ```bash
-brew install defai-digital/ax-engine/ax-engine
+brew install defai-digital/tap/ax-engine
 ax-engine download-mtp gemma-4-12b-4bit
 ```
 

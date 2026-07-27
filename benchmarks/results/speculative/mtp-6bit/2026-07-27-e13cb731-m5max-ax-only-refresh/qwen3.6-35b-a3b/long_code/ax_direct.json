@@ -1,0 +1,83 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-35B-A3B-6bit-MTP/snapshots/v1",
+  "model_repo_id": "ax-local/mlx-community--Qwen3.6-35B-A3B-6bit-MTP",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-35B-A3B-6bit-MTP/snapshots/v1",
+  "output_path": "/Users/akiralam/code/ax-engine-readme-bench-20260726/benchmarks/results/speculative/mtp-6bit/2026-07-27-e13cb731-m5max-ax-only-refresh/qwen3.6-35b-a3b/long_code/ax_direct.json",
+  "benchmark_window": {
+    "started_at": "2026-07-27T00:39:58-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.185,
+        "five_minutes": 1.339,
+        "fifteen_minutes": 1.305
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=23396451)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 510,
+          "state": "Rs",
+          "cpu_percent": 32.2,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 87605,
+          "state": "SN",
+          "cpu_percent": 15.1,
+          "command": "Python"
+        },
+        {
+          "pid": 419,
+          "state": "Ss",
+          "cpu_percent": 0.9,
+          "command": "cfprefsd"
+        },
+        {
+          "pid": 624,
+          "state": "Ss",
+          "cpu_percent": 0.4,
+          "command": "searchpartyd"
+        },
+        {
+          "pid": 85575,
+          "state": "SN",
+          "cpu_percent": 0.3,
+          "command": "Python"
+        },
+        {
+          "pid": 410,
+          "state": "Ss",
+          "cpu_percent": 0.3,
+          "command": "notifyd"
+        },
+        {
+          "pid": 384,
+          "state": "Ss",
+          "cpu_percent": 0.3,
+          "command": "opendirectoryd"
+        },
+        {
+          "pid": 420,
+          "state": "Ss",
+          "cpu_percent": 0.3,
+          "command": "analyticsd"
+        }
+      ]
+    }
+  }
+}

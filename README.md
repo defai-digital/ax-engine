@@ -50,9 +50,7 @@ memory).**
 ### Homebrew (primary)
 
 ```bash
-brew tap defai-digital/ax-engine
-brew trust --formula defai-digital/ax-engine/ax-engine
-brew install defai-digital/ax-engine/ax-engine
+brew install defai-digital/tap/ax-engine
 ax-engine doctor
 ```
 

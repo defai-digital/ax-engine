@@ -5,7 +5,7 @@ server, and bench tools on macOS Apple Silicon. The Python wheel remains the
 SDK / library channel (`import ax_engine`).
 
 The live formula lives in
-[`defai-digital/homebrew-ax-engine`](https://github.com/defai-digital/homebrew-ax-engine).
+[`defai-digital/homebrew-tap`](https://github.com/defai-digital/homebrew-tap).
 `Formula/ax-engine.rb` here is the canonical copy used for review and as a
 reference when updating the tap.
 

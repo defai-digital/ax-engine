@@ -22,7 +22,7 @@ end
 
         updated = rewrite_bin_install(formula, ["ax-engine", "new-helper.py"])
 
-        self.assertIn('    bin.install "ax-engine", "new-helper.py"\n', updated)
+        self.assertIn('    bin.install "ax-engine",\n                "new-helper.py"\n', updated)
         self.assertNotIn("old-helper.py", updated)
         self.assertNotIn("old-check.py", updated)
         self.assertIn('    libexec.install "libmlx.dylib", "mlx.metallib"', updated)
@@ -39,7 +39,14 @@ end
         updated = rewrite_bin_install(formula, ["ax-engine", "ax-engine-server"])
 
         self.assertEqual(updated.count("bin.install"), 1)
-        self.assertIn('bin.install "ax-engine", "ax-engine-server"', updated)
+        self.assertIn('bin.install "ax-engine",\n                "ax-engine-server"', updated)
+
+    def test_keeps_a_single_payload_on_one_line(self) -> None:
+        formula = '  bin.install "old"\n'
+
+        updated = rewrite_bin_install(formula, ["ax-engine"])
+
+        self.assertEqual(updated, '  bin.install "ax-engine"\n')
 
     def test_rejects_missing_install_statement(self) -> None:
         with self.assertRaisesRegex(ValueError, "no bin.install"):
