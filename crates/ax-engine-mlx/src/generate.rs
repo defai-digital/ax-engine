@@ -1187,6 +1187,9 @@ pub fn sample_token_from_prefill_logits(
     }
 }
 
+// Hot-path decode reuses three scratch buffers to avoid per-token allocs; the
+// arity is intentional and shared with the non-buffered wrapper above.
+#[allow(clippy::too_many_arguments)]
 pub fn decode_step_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,

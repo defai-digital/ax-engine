@@ -2327,6 +2327,149 @@ async fn openai_chat_request_rejects_video_even_with_supported_media() {
 }
 
 #[tokio::test]
+async fn openai_chat_request_rejects_empty_base64_image_with_clear_error() {
+    let artifact_dir = gemma4_unified_artifact("native-openai-chat-empty-image");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}}
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("empty-image chat request should deserialize");
+
+    let error = build_openai_chat_request(&live, request)
+        .err()
+        .expect("empty base64 image payload must be rejected");
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error.1.0.error.message.contains("empty media payload"),
+        "unexpected message: {}",
+        error.1.0.error.message
+    );
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_request_caps_inline_images_per_request() {
+    use base64::Engine as _;
+
+    let artifact_dir = gemma4_unified_artifact("native-openai-chat-image-cap");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+
+    let png = include_bytes!("fixtures/gemma4_golden/image_noresize.png");
+    let data_uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    let mut content = vec![json!({"type": "text", "text": "describe"})];
+    for _ in 0..41 {
+        content.push(json!({"type": "image_url", "image_url": {"url": data_uri}}));
+    }
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 8
+    }))
+    .expect("41-image chat request should deserialize");
+
+    let error = build_openai_chat_request(&live, request)
+        .err()
+        .expect("requests above the inline image budget must be rejected");
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error
+            .1
+            .0
+            .error
+            .message
+            .contains("more than 40 inline images"),
+        "unexpected message: {}",
+        error.1.0.error.message
+    );
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_image_against_text_only_checkpoint_reports_missing_vision_support() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-text-only-image");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("text-only image chat request should deserialize");
+
+    let error = build_openai_chat_request(&live, request)
+        .err()
+        .expect("image against a checkpoint without processor configs must be rejected");
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    let message = &error.1.0.error.message;
+    assert!(
+        message.contains("cannot accept inline images"),
+        "error should say the checkpoint is text-only: {message}"
+    );
+    assert!(
+        !message.contains(&artifact_dir.display().to_string()),
+        "error must not leak filesystem paths: {message}"
+    );
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_rejects_enable_thinking_on_non_reasoning_model() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-thinking-gate");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{"role": "user", "content": "hello"}],
+        "chat_template_kwargs": {"enable_thinking": true},
+        "max_tokens": 8
+    }))
+    .expect("thinking chat request should deserialize");
+
+    let error = build_openai_chat_request(&live, request)
+        .err()
+        .expect("enable_thinking on a non-reasoning model must be rejected");
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("unsupported_parameter")
+    );
+    assert!(
+        error
+            .1
+            .0
+            .error
+            .message
+            .contains("does not advertise native reasoning support"),
+        "unexpected message: {}",
+        error.1.0.error.message
+    );
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_chat_request_decodes_mp3_input_audio() {
     use base64::Engine as _;
 

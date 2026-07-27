@@ -635,7 +635,7 @@ pub fn prefill_batched_forward(
         return Err("batched prefill requires at least two rows".to_string());
     }
     let lens: Vec<usize> = prompts.iter().map(|prompt| prompt.len()).collect();
-    if lens.iter().any(|&len| len == 0) {
+    if lens.contains(&0) {
         return Err("batched prefill rows must have non-empty prompts".to_string());
     }
     let padded_len = *lens.iter().max().expect("batch checked non-empty");
@@ -7384,8 +7384,8 @@ mod tests {
                 let logits_seq = forward(&model_cfg, &weights, prompt, &mut cache_seq, 0);
                 eval(&[&logits_seq]);
                 assert_close_rel(
-                    &batch.row_logits[row].data_f32(),
-                    &logits_seq.data_f32(),
+                    batch.row_logits[row].data_f32(),
+                    logits_seq.data_f32(),
                     3e-2,
                     &format!("prefill logits row {row}"),
                 );
@@ -7414,8 +7414,8 @@ mod tests {
                 );
                 eval(&[&decode_seq, &decode_batched]);
                 assert_close_rel(
-                    &decode_batched.data_f32(),
-                    &decode_seq.data_f32(),
+                    decode_batched.data_f32(),
+                    decode_seq.data_f32(),
                     3e-2,
                     &format!("decode continuation row {row}"),
                 );

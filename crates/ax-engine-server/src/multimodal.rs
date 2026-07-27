@@ -164,8 +164,20 @@ pub(crate) struct PreprocessedAudio {
 /// `preprocessor_config.json`).
 pub(crate) fn load_processor_config(model_dir: &Path) -> Result<MediaProcessors, MediaError> {
     let model_cfg = read_json(&model_dir.join("config.json"))?;
-    let processor_cfg = read_json(&model_dir.join("preprocessor_config.json"))
-        .or_else(|_| read_json(&model_dir.join("processor_config.json")))?;
+    let preprocessor_path = model_dir.join("preprocessor_config.json");
+    let processor_path = model_dir.join("processor_config.json");
+    if !preprocessor_path.exists() && !processor_path.exists() {
+        // Missing processor config is how a text-only conversion of a
+        // multimodal family presents; answer with what the client can act on
+        // instead of a raw filesystem error.
+        return Err(MediaError::Unsupported(
+            "the loaded checkpoint has no preprocessor_config.json/processor_config.json, so it \
+cannot accept inline images or audio; serve a vision-capable checkpoint (and regenerate its \
+manifest with `ax-engine-bench generate-manifest --force` if vision was expected)"
+                .to_string(),
+        ));
+    }
+    let processor_cfg = read_json(&preprocessor_path).or_else(|_| read_json(&processor_path))?;
     let mut config =
         Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model_cfg, &processor_cfg)
             .map_err(|error| MediaError::Config(error.to_string()))?;
