@@ -31,7 +31,7 @@ static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 use crate::openai::chat_requests::{
     ChatPromptRenderOptions, is_minicpm_v46_model_id, is_nemotron_omni_model_dir,
     is_nemotron_omni_model_id, is_qwen3_vl_model_id, messages_contain_inline_media,
-    openai_tool_choice_disables_tools, reject_image_chat_content, reject_video_chat_content,
+    openai_tool_choice_disables_tools, reject_video_chat_content,
     render_gemma4_unified_chat_with_media, render_minicpm_v46_chat_with_media,
     render_nemotron_omni_chat_with_media, render_openai_chat_prompt_with_options,
     render_qwen3_vl_chat_with_media,
@@ -449,10 +449,6 @@ pub(crate) async fn build_openai_chat_request_offloading_media(
         &request.messages,
         crate::metadata::model_supports_video(live),
     )?;
-    reject_image_chat_content(
-        &request.messages,
-        crate::metadata::model_supports_image(live),
-    )?;
     if !messages_contain_inline_media(&request.messages) {
         return build_openai_chat_request(live, request);
     }
@@ -467,10 +463,6 @@ pub(crate) fn build_openai_chat_request(
     reject_video_chat_content(
         &request.messages,
         crate::metadata::model_supports_video(live),
-    )?;
-    reject_image_chat_content(
-        &request.messages,
-        crate::metadata::model_supports_image(live),
     )?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);

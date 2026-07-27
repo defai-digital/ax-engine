@@ -72,7 +72,8 @@ if report["status"] == "compiled":
     assert len(report["outputs"]["air_sha256"]) == 64
     assert len(report["outputs"]["metalar_sha256"]) == 64
     assert len(report["outputs"]["metallib_sha256"]) == 64
-    assert len(report["compile_commands"]) == 3
+    # air compile + metal-ar + metallib, plus the AST signature gate dump
+    assert len(report["compile_commands"]) == 4
 else:
     assert report["status"] in {
         "skipped_toolchain_unavailable",
