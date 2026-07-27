@@ -70,7 +70,7 @@ environment:
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install --upgrade "ax-engine[download]>=6.11.1,<7"
+python3 -m pip install --upgrade "ax-engine[download]>=6.12.0,<7"
 ax-engine doctor
 ```
 
@@ -220,7 +220,7 @@ or either with embeddings.
 | **Direct generation** | AX Engine · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | Decode / prefill / TTFT |
 | Embeddings | AX · mlx-lm / mlx-embeddings | Ingest tok/s — Qwen3 chart below; see [full results](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings) |
 
-**Host:** Apple M5 Max · 128 GB · macOS 26.x · AX Engine **v6.11.1**
+**Host:** Apple M5 Max · 128 GB · macOS 26.x · AX Engine **v6.12.0**
 (2026-07-26/27 AX-only refresh) · retained peers: `mlx-lm` **0.31.3** ·
 `llama.cpp` **b9910** / ggml **0.15.3** · MTPLX **2.0.1**.
 
@@ -259,7 +259,7 @@ the same 6-bit package, with 100% MTP step coverage.
 
 ### Direct: AX Engine vs mlx-lm vs llama.cpp
 
-Non-speculative generation. Charts: **v6.11.1 AX-only snapshot (2026-07-27)**
+Non-speculative generation. Charts: **v6.12.0 AX-only snapshot (2026-07-27)**
 overlaid with **retained** historical `mlx-lm` and `llama.cpp` Metal rows
 (cross-run distribution view, not a same-session peer matrix). Peer engines
 were not re-run in this refresh. Exact AX numbers:

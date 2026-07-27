@@ -239,16 +239,30 @@ pub(crate) fn decode_data_uri(uri: &str) -> Result<(String, Vec<u8>), MediaError
 
 /// Decode a raw (non-URI) standard base64 payload, e.g. OpenAI `input_audio.data`.
 pub(crate) fn decode_base64(data: &str) -> Result<Vec<u8>, MediaError> {
+    let trimmed = data.trim();
+    if trimmed.is_empty() {
+        return Err(MediaError::Decode(
+            "empty media payload (no base64 data)".to_string(),
+        ));
+    }
     base64::engine::general_purpose::STANDARD
-        .decode(data.trim())
+        .decode(trimmed)
         .map_err(|error| MediaError::Decode(format!("invalid base64 media payload: {error}")))
 }
 
+/// Client-facing label for a processor-config file. Only the file name is
+/// surfaced — error bodies must not disclose the server's filesystem layout.
+fn media_config_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "processor config".to_string())
+}
+
 fn read_json(path: &Path) -> Result<Value, MediaError> {
+    let label = media_config_label(path);
     let text = std::fs::read_to_string(path)
-        .map_err(|error| MediaError::Config(format!("{}: {error}", path.display())))?;
-    serde_json::from_str(&text)
-        .map_err(|error| MediaError::Config(format!("{}: {error}", path.display())))
+        .map_err(|error| MediaError::Config(format!("{label}: {error}")))?;
+    serde_json::from_str(&text).map_err(|error| MediaError::Config(format!("{label}: {error}")))
 }
 
 fn image_normalization_from(processor_cfg: &Value) -> Result<ImageNormalization, MediaError> {

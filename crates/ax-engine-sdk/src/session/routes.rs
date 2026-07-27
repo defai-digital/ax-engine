@@ -52,8 +52,7 @@ pub(super) fn route_has_decode_path_work(route: &GenerateRouteReport) -> bool {
         "ax_mlx_ngram_decode_steps",
         "ax_mlx_decode_steps",
     ];
-    KEYS.iter()
-        .any(|key| route.decision(key).unwrap_or(0) > 0)
+    KEYS.iter().any(|key| route.decision(key).unwrap_or(0) > 0)
 }
 
 /// Decide whether this native step must materialise full route metadata.
@@ -272,7 +271,9 @@ mod tests {
         };
         merge_native_route_into(&mut stored, terminal);
         assert_eq!(
-            stored.crossover_decisions.get("ax_mlx_direct_pipeline_steps"),
+            stored
+                .crossover_decisions
+                .get("ax_mlx_direct_pipeline_steps"),
             Some(&127)
         );
         assert_eq!(

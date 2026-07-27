@@ -175,9 +175,7 @@ pub(super) const fn should_bootstrap_direct_pipeline(
     // When the session still allows speculation, only bootstrap when MTP is
     // explicitly on the direct-fallback route, or when no MTP is attached and
     // the request itself disabled n-gram.
-    session_direct
-        || mtp_uses_direct_pipeline
-        || (request_ngram_disabled && !has_mtp)
+    session_direct || mtp_uses_direct_pipeline || (request_ngram_disabled && !has_mtp)
 }
 
 pub(super) const fn should_use_session_direct_pipeline(

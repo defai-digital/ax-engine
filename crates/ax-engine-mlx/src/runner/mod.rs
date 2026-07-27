@@ -7111,9 +7111,7 @@ impl MlxRunner {
         // regress to single-decode. Non-greedy (temp>0) direct still uses
         // single-decode because the pipeline is argmax-only.
         if self.disable_ngram_acceleration {
-            if !sampling.uses_logits_processors()
-                && (is_greedy || sampling.temperature <= 0.0)
-            {
+            if !sampling.uses_logits_processors() && (is_greedy || sampling.temperature <= 0.0) {
                 return Some(vec![self.run_direct_pipeline_decode(
                     state,
                     last_token,

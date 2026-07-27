@@ -53,12 +53,53 @@ class Target:
     assistant_mtp: bool = False
 
 
+def _resolve_mtp_model_dir(*candidates: str) -> Path:
+    """Prefer Ext4T publication paths; fall back to local HF hub cache.
+
+    mbp-m5 hosts often keep the same `models--ax-local--*` packages under
+    ``~/.cache/huggingface/hub`` without mounting Ext4T.
+    """
+    home_hub = Path.home() / ".cache" / "huggingface" / "hub"
+    expanded: list[Path] = []
+    for raw in candidates:
+        path = Path(raw).expanduser()
+        expanded.append(path)
+        # Also try HF hub cache sibling when given an Ext4T hub path.
+        name = path.name
+        # If path looks like .../models--X/snapshots/v1, try hub/models--X/snapshots/*
+        parts = path.parts
+        if "models--" in str(path):
+            for part in parts:
+                if part.startswith("models--"):
+                    hub_base = home_hub / part / "snapshots"
+                    if hub_base.is_dir():
+                        # Prefer exact snapshot name, else newest
+                        exact = hub_base / path.name
+                        if exact.is_dir():
+                            expanded.append(exact)
+                        else:
+                            snaps = sorted(
+                                [p for p in hub_base.iterdir() if p.is_dir()],
+                                key=lambda p: p.stat().st_mtime,
+                                reverse=True,
+                            )
+                            expanded.extend(snaps)
+                    break
+    for path in expanded:
+        if path.is_dir() and (path / "config.json").is_file() and (
+            path / "model-manifest.json"
+        ).is_file():
+            return path
+    # Return first candidate for error messages in validate_model_dir
+    return Path(candidates[0]).expanduser()
+
+
 SUPPORTED_TARGETS = (
     Target(
         key="qwen3.6-27b-6bit",
         label="Qwen3.6 27B",
         mode="Qwen fused sidecar",
-        model_dir=Path(
+        model_dir=_resolve_mtp_model_dir(
             "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1"
         ),
         mtp_depth=3,
@@ -67,7 +108,7 @@ SUPPORTED_TARGETS = (
         key="qwen3.6-35b-a3b",
         label="Qwen3.6 35B-A3B",
         mode="Qwen fused sidecar",
-        model_dir=Path(
+        model_dir=_resolve_mtp_model_dir(
             "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-35B-A3B-6bit-MTP/snapshots/v1"
         ),
         mtp_depth=1,
@@ -76,7 +117,7 @@ SUPPORTED_TARGETS = (
         key="gemma-4-12b",
         label="Gemma 4 12B",
         mode="Gemma assistant-MTP",
-        model_dir=Path(
+        model_dir=_resolve_mtp_model_dir(
             "/Volumes/Ext4T/models/hub/models--ax-local--gemma-4-12b-it-assistant-mtp/snapshots/v1"
         ),
         mtp_depth=2,
@@ -86,7 +127,7 @@ SUPPORTED_TARGETS = (
         key="gemma-4-26b",
         label="Gemma 4 26B",
         mode="Gemma assistant-MTP",
-        model_dir=Path(
+        model_dir=_resolve_mtp_model_dir(
             "/Volumes/Ext4T/models/hub/models--ax-local--gemma-4-26b-a4b-it-assistant-mtp/snapshots/v1"
         ),
         mtp_depth=2,
@@ -96,7 +137,7 @@ SUPPORTED_TARGETS = (
         key="gemma-4-31b",
         label="Gemma 4 31B",
         mode="Gemma assistant-MTP",
-        model_dir=Path(
+        model_dir=_resolve_mtp_model_dir(
             "/Volumes/Ext4T/models/hub/models--ax-local--gemma-4-31b-it-assistant-mtp/snapshots/v1"
         ),
         mtp_depth=2,

@@ -100,6 +100,12 @@ pub(crate) fn is_nemotron_omni_model_dir(model_dir: &Path) -> bool {
         })
 }
 
+/// Per-request cap on inline images across all messages on the native path,
+/// aligned with the delegated OpenAI backends' 40-image budget. Each image
+/// costs a full decode (up to 8192x8192) before the token budget is checked,
+/// so an explicit early bound keeps a single request from monopolizing CPU.
+const MAX_INLINE_IMAGES_PER_REQUEST: usize = 40;
+
 /// Fail-safe defaults for unified Qwen vision checkpoints. The renderer reads
 /// the actual processor/config files before preprocessing.
 const QWEN3_VL_DEFAULT_PATCH_SIZE: u32 = 16;
@@ -2103,6 +2109,18 @@ requires gemma4_unified vision capability (data URI only, no remote URLs)"
     )
 }
 
+fn unsupported_image_error(part_type: &str) -> HttpErrorResponse {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_modality",
+        format!(
+            "OpenAI chat content part type {part_type} carries an image, but the loaded model \
+does not advertise image input (/v1/models capabilities.input.image=false); serve an \
+image-capable checkpoint or send text-only content"
+        ),
+    )
+}
+
 pub(crate) fn reject_video_chat_content(
     messages: &[OpenAiChatMessage],
     video_supported: bool,
@@ -2121,6 +2139,35 @@ pub(crate) fn reject_video_chat_content(
         ) && !video_supported
         {
             return Err(unsupported_video_error(&part.part_type));
+        }
+    }
+    Ok(())
+}
+
+/// Fail image content closed against the advertised capability, mirroring the
+/// video gate: a text-only checkpoint must return one deterministic
+/// `unsupported_modality` error instead of whichever downstream artifact error
+/// (missing processor config, template mismatch) it happens to hit first.
+pub(crate) fn reject_image_chat_content(
+    messages: &[OpenAiChatMessage],
+    image_supported: bool,
+) -> Result<(), HttpErrorResponse> {
+    if image_supported {
+        return Ok(());
+    }
+    for part in messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            Some(OpenAiChatContent::Parts(parts)) => Some(parts.as_slice()),
+            Some(OpenAiChatContent::Text(_)) | None => None,
+        })
+        .flatten()
+    {
+        if matches!(
+            chat_content_part_kind(part),
+            OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Image)
+        ) {
+            return Err(unsupported_image_error(&part.part_type));
         }
     }
     Ok(())
@@ -4003,6 +4050,16 @@ fn render_content_collecting_media(
                         rendered.push_str(text);
                     }
                     OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Image) => {
+                        if collected.images.len() >= MAX_INLINE_IMAGES_PER_REQUEST {
+                            return Err(error_response(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_request",
+                                format!(
+                                    "request carries more than {MAX_INLINE_IMAGES_PER_REQUEST} \
+inline images; split the conversation or drop older images"
+                                ),
+                            ));
+                        }
                         collected.images.push(image_part_bytes(part)?);
                         rendered.push_str(image_placeholder);
                     }

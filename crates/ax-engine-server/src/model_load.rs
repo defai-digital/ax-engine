@@ -959,6 +959,10 @@ fn combined_metal_budget(device_budget: u64, floor: Option<u64>) -> u64 {
 
 /// Apple's default IOGPU wired-limit policy when `iogpu.wired_limit_mb` is
 /// unset: two thirds of system RAM up to 36 GiB, three quarters above.
+///
+/// Only consulted from the macOS IOGPU floor path; keep the helper available
+/// under `test` so Linux delegated builds can still unit-test the policy.
+#[cfg(any(test, target_os = "macos"))]
 fn default_iogpu_floor_mb(total_ram_mb: u64) -> u64 {
     if total_ram_mb <= 36 * 1024 {
         total_ram_mb * 2 / 3

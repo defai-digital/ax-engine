@@ -722,11 +722,15 @@ fn render_prompt_internal(
 }
 
 fn qwen_assistant_generation_prompt(model_id: &str, thinking_enabled: bool) -> &'static str {
-    if thinking_enabled {
-        return QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING;
-    }
+    // Non-thinking-only checkpoints (qwen3 base, Qwen3-Coder) never close a
+    // `<think>` block, so an open thinking prefill would corrupt every
+    // response. The request layer rejects explicit thinking requests against
+    // these models; keep the render layer safe regardless of caller.
     if is_qwen_non_thinking_only_model(model_id) {
         return QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK;
+    }
+    if thinking_enabled {
+        return QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING;
     }
     QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
 }

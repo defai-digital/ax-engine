@@ -711,16 +711,15 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
     }
 "#;
 
-/// Multi-token dual gate/up affine GEMM + GEGLU for Gemma pure prefill (v4).
+/// Multi-token dual gate/up affine GEMM + GEGLU for Gemma pure prefill (v3).
 ///
 /// v1: one OutDim row per TG, re-read X from global → ~8.5× pure regression.
 /// v2: BM=4 / TOKEN_TILE=8 / K=64 / TG=256 but K-loop strided by TG left most
 ///     threads idle → ~25× regression.
-/// v3: BM=8 / BN=16 / BK=128 / TG=128 classical tile → ~8.5× pure regression.
-/// v4: steel-matched tile sizes from MLX `steel_gemm_*` (BM=16, BN=16, BK=64
-///     = GroupSize) so TG=256. Still host-authored dual-output GEMM — Path A
-///     residual: can a steel-shaped dual beat sequential MLX qmm on multi-token
-///     bits=8? Default OFF; pure A/B bar ≤0.96 under cache_eval.
+/// v3: classical tiled GEMM over (BM×BN) output tiles with full-TG cooperative
+///     loads of X and dequantized W. BM*BN == TG so each thread owns one
+///     output element of the tile (no cross-TG reduction). Streams gate+up
+///     weights once per tile K-step and fuses gelu_approx * up at writeback.
 ///
 /// Template ints: Leading, OutDim, PackedCols, InputDim, GroupSize, GroupCount,
 /// Bits, PackFactor, QuantMask. OutT is the activation dtype.
@@ -728,11 +727,10 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
 const GEMMA_DUAL_GATE_UP_GEGLU_KERNEL_SOURCE: &str = r#"
     // Tiled dual-qmm GEMM: each TG owns BM output rows × BN tokens.
     // BM*BN must equal TG so one thread maps to one (row, token) of the tile.
-    // v4 steel-matched: BM=16 BN=16 BK=64 (matches GroupSize for bits=8 gs64).
-    const uint BM = 16u;
+    const uint BM = 8u;
     const uint BN = 16u;
-    const uint BK = 64u; // == GroupSize; multiple of PackFactor(4)
-    const uint TG = 256u; // BM * BN
+    const uint BK = 128u; // multiple of GroupSize(64) and PackFactor(4)
+    const uint TG = 128u; // BM * BN
 
     uint flat = thread_position_in_grid.x;
     uint block = flat / TG;
@@ -1492,7 +1490,7 @@ fn gemma_dense_ffn_dual_gate_up_geglu_metal(
     let quant_mask = (1_i32 << gate.bits) - 1;
     let kernel = GEMMA_DUAL_GATE_UP_GEGLU_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_gemma_dense_ffn_dual_gate_up_geglu_v4",
+            "ax_gemma_dense_ffn_dual_gate_up_geglu_v3",
             &[
                 "x",
                 "gate_weight",
@@ -1508,10 +1506,10 @@ fn gemma_dense_ffn_dual_gate_up_geglu_metal(
             true,
         )
     });
-    // v4 steel-matched tiled GEMM: BM=16 rows × BN=16 tokens per TG of 256.
-    const BM: i32 = 16;
+    // v3 tiled GEMM: BM=8 rows × BN=16 tokens per TG of 128 threads.
+    const BM: i32 = 8;
     const BN: i32 = 16;
-    const TG: i32 = 256; // BM * BN
+    const TG: i32 = 128; // BM * BN
     let num_row_blocks = (out_dim + BM - 1) / BM;
     let num_token_blocks = (leading + BN - 1) / BN;
     let num_blocks = num_row_blocks.saturating_mul(num_token_blocks.max(1));
@@ -2611,10 +2609,17 @@ fn ffn_swiglu_with_policy(
         }
         // Fallback when the matvec kernel is off or rejects the shape: compile
         // the full split FFN graph so host encoding is not rebuilt every token.
+        // Dense (unquantized) projections must not enter this path: the per-layer
+        // compile cache keys only (model, layer_idx), so a prior quantized main
+        // layer can reuse a quantized_matmul graph against bf16 weights (MTP
+        // sidecar heads). Skip compile when any of gate/up/down lack scales.
         if !cfg.uses_geglu
             && seq == 1
             && leading_elements == 1
             && fastpath::dense_ffn_compile_enabled()
+            && gate_w.scales.is_some()
+            && up_w.scales.is_some()
+            && w.down_proj.as_ref().is_some_and(|d| d.scales.is_some())
             && let Some(down_w) = w.down_proj.as_ref()
             && let Some((inputs, schema)) =
                 flatten_split_dense_ffn_inputs(x, gate_w, up_w, down_w, post_norm)
@@ -2888,65 +2893,29 @@ fn prefer_split_dense_ffn_gate_up(
     leading_elements: i64,
     has_split_gate_up: bool,
 ) -> bool {
-    prefer_split_dense_ffn_gate_up_for(
-        model_family,
-        qwen_dense_ffn,
-        seq,
-        leading_elements,
-        has_split_gate_up,
-        gemma4_split_prefill_ffn_enabled(),
-    )
-}
-
-/// Pure gate-up routing predicate (unit-tested).
-///
-/// When `gemma4_split_prefill` is true, Gemma4 multi-token prefill keeps the
-/// historical split dual-qmm path even if `gate_up_packed` is loaded. Path A
-/// residual kill-switch `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN=0` sets that flag
-/// false so packed steel dual-output + prefill compile engage under keep_base.
-pub fn prefer_split_dense_ffn_gate_up_for(
-    model_family: &str,
-    qwen_dense_ffn: bool,
-    seq: i32,
-    leading_elements: i64,
-    has_split_gate_up: bool,
-    gemma4_split_prefill: bool,
-) -> bool {
+    // Gemma4 long-prefill historically preferred split gate/up (two qmatmuls)
+    // over packed fixed-shape. Kill-switch `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN=0`
+    // forces packed + prefill-compile for pure thr A/B on M5 (S1 residual).
     let gemma4_split_prefill = model_family == "gemma4"
         && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
         && leading_elements >= i64::from(GEMMA4_SPLIT_PREFILL_MIN_SEQ)
-        && gemma4_split_prefill;
+        && gemma4_split_prefill_ffn_enabled();
     has_split_gate_up
         && ((qwen_dense_ffn && seq == 1 && leading_elements == 1) || gemma4_split_prefill)
-}
-
-/// Parse `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN` without caching.
-///
-/// Default **true** (split prefill — historical keep_base). Only explicit
-/// `0` / `false` / `off` select the packed-prefill residual. Empty and
-/// unrecognized values fail closed to the default (split), so a typo cannot
-/// silently force packed routing.
-pub fn parse_gemma4_split_prefill_ffn(raw: Option<&str>) -> bool {
-    match raw {
-        None => true,
-        Some(s) => {
-            let v = s.trim();
-            if v.is_empty() {
-                return true;
-            }
-            !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
-        }
-    }
 }
 
 fn gemma4_split_prefill_ffn_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
-        parse_gemma4_split_prefill_ffn(
-            std::env::var("AX_MLX_GEMMA4_SPLIT_PREFILL_FFN")
-                .ok()
-                .as_deref(),
-        )
+        match std::env::var("AX_MLX_GEMMA4_SPLIT_PREFILL_FFN") {
+            Ok(raw) => {
+                let v = raw.trim();
+                !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
+            }
+            // Default ON: prior 128/512/2048 A/B preferred split gate/up for
+            // Gemma4 publication-shape prefill.
+            Err(_) => true,
+        }
     })
 }
 
@@ -5868,41 +5837,5 @@ mod tests {
             max_diff > 1.0e-3,
             "shapeless compiled linear closure unexpectedly became shape-polymorphic; re-evaluate the Tier 3A guardrail before enabling it"
         );
-    }
-
-    #[test]
-    fn parse_gemma4_split_prefill_ffn_defaults_on_and_fail_closed() {
-        assert!(parse_gemma4_split_prefill_ffn(None));
-        assert!(parse_gemma4_split_prefill_ffn(Some("")));
-        assert!(parse_gemma4_split_prefill_ffn(Some("1")));
-        assert!(parse_gemma4_split_prefill_ffn(Some("true")));
-        assert!(parse_gemma4_split_prefill_ffn(Some("garbage")));
-        assert!(!parse_gemma4_split_prefill_ffn(Some("0")));
-        assert!(!parse_gemma4_split_prefill_ffn(Some(" false ")));
-        assert!(!parse_gemma4_split_prefill_ffn(Some("OFF")));
-    }
-
-    #[test]
-    fn prefer_split_dense_ffn_gate_up_respects_gemma4_packed_prefill_residual() {
-        // Long Gemma4 prefill with split available + residual flag on → split.
-        assert!(prefer_split_dense_ffn_gate_up_for(
-            "gemma4", false, 512, 512, true, true
-        ));
-        // Same but residual kill-switch off → packed path eligible.
-        assert!(!prefer_split_dense_ffn_gate_up_for(
-            "gemma4", false, 512, 512, true, false
-        ));
-        // Short prefill under min seq never forces split via gemma4 policy.
-        assert!(!prefer_split_dense_ffn_gate_up_for(
-            "gemma4", false, 64, 64, true, true
-        ));
-        // Decode-only Qwen dense still prefers split for matvec fast path.
-        assert!(prefer_split_dense_ffn_gate_up_for(
-            "qwen3_5", true, 1, 1, true, true
-        ));
-        // No split weights → never prefer split.
-        assert!(!prefer_split_dense_ffn_gate_up_for(
-            "gemma4", false, 512, 512, false, true
-        ));
     }
 }
