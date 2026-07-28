@@ -399,11 +399,21 @@ const BUFFER_CAP_TARGET_OPS: u32 = 1000;
 /// setting both 1024 MB and 1000 ops regresses its end-to-end generation by
 /// roughly 26%, so retain MLX's defaults for this family. Explicitly supplied
 /// `MLX_MAX_*_PER_BUFFER` variables remain untouched and still take precedence.
+///
+/// Gemma is excluded for the same reason with direct A/B evidence: the caps
+/// were promoted on Qwen3-Coder-Next decode (70.19 vs 54.88 tok/s), but on
+/// MLX 0.32.0 / M5 Max the adjacent-commit pair around 6cf02b11 (the commit
+/// that made the raise effective on the server path) measures Gemma 4
+/// 26B-A4B 4-bit at p2048 prefill 4164 -> 2829 tok/s (-32%) and decode
+/// 141.8 -> 128.5 tok/s (-9%): giant command buffers stop `async_eval` from
+/// overlapping host graph build with GPU execution on the dual-path
+/// dense+MoE layer shape. A pure loss both ways, so Gemma keeps MLX's
+/// defaults.
 fn auto_buffer_caps_supported_for_family(model_family: &str) -> bool {
     !matches!(
         model_family,
         "unlimited_ocr" | "unlimited-ocr" | "deepseekocr"
-    )
+    ) && !model_family.contains("gemma")
 }
 
 /// Auto-raise MLX's Metal command-buffer caps so `async_eval` keeps overlapping
