@@ -806,6 +806,10 @@ fn layer_forward_internal(
             // weights: identical op on identical input matches the portable
             // `v_raw = k_raw` reuse bit-for-bit.
             let v_proj = w.v_proj.as_ref().unwrap_or(k_proj);
+            // Head counts derive from the projection out-features like the
+            // portable path (Gemma 4 global layers: wider heads, MQA KV).
+            let n_heads_layer = q_proj.weight.shape()[0] as usize / head_dim;
+            let kv_heads_layer = k_proj.weight.shape()[0] as usize / head_dim;
             if !affine_matching(q_proj) || !affine_matching(k_proj) || !affine_matching(v_proj)
             {
                 break 'fused None;
@@ -833,8 +837,8 @@ fn layer_forward_internal(
                 w.k_norm.as_ref(),
                 cfg.rms_norm_eps,
                 v_norm_no_scale,
-                cfg.n_heads as i32,
-                kv_heads as i32,
+                n_heads_layer as i32,
+                kv_heads_layer as i32,
                 head_dim as i32,
                 rope_dims as i32,
                 rope_theta,
@@ -895,7 +899,7 @@ fn layer_forward_internal(
                         &mask,
                     );
                     let attn_flat =
-                        flatten_attention_output_bhsd(&attn, seq, cfg.n_heads, head_dim);
+                        flatten_attention_output_bhsd(&attn, seq, n_heads_layer, head_dim);
                     attention_output_projection_with_post_norm(
                         &attn_flat,
                         None,
@@ -943,6 +947,10 @@ fn layer_forward_internal(
             if !affine_matching(q_proj) || !affine_matching(k_proj) || !affine_matching(v_proj) {
                 break 'fused None;
             }
+            // Head counts derive from the projection out-features like the
+            // portable path (Gemma 4 global layers: wider heads, MQA KV).
+            let n_heads_layer = q_proj.weight.shape()[0] as usize / head_dim;
+            let kv_heads_layer = k_proj.weight.shape()[0] as usize / head_dim;
             mlx_sys::ops::fused_causal_prefill_attention_split(
                 hidden,
                 &w.attn_norm,
@@ -966,8 +974,8 @@ fn layer_forward_internal(
                 w.k_norm.as_ref(),
                 cfg.rms_norm_eps,
                 v_norm_no_scale,
-                cfg.n_heads as i32,
-                kv_heads as i32,
+                n_heads_layer as i32,
+                kv_heads_layer as i32,
                 head_dim as i32,
                 rope_dims as i32,
                 rope_theta,
