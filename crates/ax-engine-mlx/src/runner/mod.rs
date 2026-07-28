@@ -5792,6 +5792,15 @@ impl MlxRunner {
         } else {
             &item.reused_prefix_token_slice
         };
+        Self::pfx_dbg(
+            "restore-entry",
+            &format!(
+                "core_claim={} probed={} cache_seq={}",
+                item.reused_prefix_token_slice.len(),
+                probed_tokens.len(),
+                state.cache.seq_len()
+            ),
+        );
         if reused_tokens.is_empty() || state.cache.seq_len() != 0 {
             return telemetry;
         }
@@ -5848,6 +5857,15 @@ impl MlxRunner {
             telemetry.record_stats(cache.stats());
             hit
         };
+        Self::pfx_dbg(
+            "restore-get",
+            &format!(
+                "reused={} l1_hit={} native_hit={}",
+                reused_tokens.len(),
+                hit.is_some(),
+                native_hit.is_some()
+            ),
+        );
 
         // Historical context: MLA + Prefill used to refuse a snapshot restore
         // because the post-restore chunked_prefill drifted fp-wise from a
