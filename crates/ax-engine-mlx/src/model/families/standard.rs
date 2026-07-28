@@ -738,9 +738,95 @@ fn layer_forward_internal(
     let profile_prefill_layer = seq > 1 && prefill_profile_enabled();
     let profile_forward_layer = profile_decode_layer || profile_prefill_layer;
 
+    // Opt-in one-call fused offset-0 prefill attention (mlxcel residual; see
+    // `AX_MLX_FUSED_PREFILL_ATTENTION` in fastpath). Strict Phase-1 gate: the
+    // fused C++ path implements exactly rms_norm → packed affine QKV →
+    // per-head QK rms_norm → rope(theta, offset 0) → maskless-causal SDPA →
+    // o-proj, so every feature outside that contract falls through to the
+    // portable path below.
+    let fused_prefill = 'fused: {
+        if !fastpath::fused_prefill_attention_enabled()
+            || seq <= 1
+            || token_offset != 0
+            || cache.seq_len() != 0
+            || kv_source.is_some()
+            || mrope.is_some()
+            || ring_layout.is_some()
+            || protected_prefix_window.is_some()
+            || !matches!(cfg.model_family.as_str(), "gemma4" | "gemma3")
+            || v_norm_no_scale
+            || layer_rope_freqs.is_some()
+            || cfg.rope_freqs.is_some()
+            || sliding_window.is_some_and(|window| seq > window)
+        {
+            break 'fused None;
+        }
+        let Some(packed) = w.qkv_packed.as_ref() else {
+            break 'fused None;
+        };
+        let Some(o_proj) = w.o_proj.as_ref() else {
+            break 'fused None;
+        };
+        if packed.mode != "affine"
+            || o_proj.mode != "affine"
+            || packed.group_size != o_proj.group_size
+            || packed.bits != o_proj.bits
+            || packed.scales.is_none()
+            || o_proj.scales.is_none()
+        {
+            break 'fused None;
+        }
+        let kv_heads = cfg.n_kv_heads;
+        let Some((out, k_rope, v)) = mlx_sys::ops::fused_causal_prefill_attention(
+            hidden,
+            &w.attn_norm,
+            cfg.rms_norm_eps,
+            &packed.weight,
+            packed.scales.as_ref().expect("checked above"),
+            packed.biases.as_ref(),
+            w.q_norm.as_ref(),
+            w.k_norm.as_ref(),
+            cfg.rms_norm_eps,
+            cfg.n_heads as i32,
+            kv_heads as i32,
+            head_dim as i32,
+            rope_dims as i32,
+            rope_theta,
+            cfg.query_scale,
+            &o_proj.weight,
+            o_proj.scales.as_ref().expect("checked above"),
+            o_proj.biases.as_ref(),
+            packed.group_size,
+            packed.bits,
+            None,
+        ) else {
+            break 'fused None;
+        };
+        let retained_window =
+            if sliding_window.is_some() && fastpath::multi_token_window_views_enabled() {
+                match shared_mask {
+                    Some(Some(mask)) => mask.shape().last().map(|&len| len as usize),
+                    _ => sliding_window.map(|window| window + seq - 1),
+                }
+            } else {
+                None
+            };
+        let _ =
+            cache.append_with_retained_window_for_attention(layer_idx, k_rope, v, retained_window);
+        let out = if let Some(post_norm) = w.attn_post_norm.as_ref() {
+            rms_norm(&out, Some(post_norm), cfg.rms_norm_eps, None)
+        } else {
+            out
+        };
+        Some(out)
+    };
+
     // 2-7. QKV projections + RoPE + KV cache append + SDPA.
     let post_attn_started;
-    let attn_proj = {
+    let attn_proj = if let Some(fused) = fused_prefill {
+        post_attn_started = None;
+        fused
+    } else {
         let pre_sdpa_started = profile_forward_layer.then(Instant::now);
         let (q_rope, attention_kv, attn_gate) = if let Some(src_layer) = kv_source {
             // KV-shared layer (Gemma4 layers 24-41): compute Q only.

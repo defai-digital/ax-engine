@@ -342,6 +342,25 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_FUSED_PREFILL_ATTENTION` — collapse the offset-0 multi-token
+    /// prefill attention chain (attn RMSNorm → packed-QKV qmm → per-head QK
+    /// norm → RoPE → maskless "causal" SDPA → o-proj qmm) into one C++ shim
+    /// call per layer (mlxcel `fused_causal_prefill_attention` residual,
+    /// mlx_cxx_bridge.cpp ~4028).
+    ///
+    /// **Default: OFF** (opt-in A/B). Phase-1 eligibility is strict: first
+    /// chunk only (`token_offset == 0`, empty cache), packed affine QKV,
+    /// Gemma-family text layers without KV sharing, mrope, value norm, rope
+    /// freq tables, rings, or protected prefixes; sliding-window layers only
+    /// when `seq <= window` (causal ≡ windowed there). SDPA runs in the
+    /// model dtype via MLX fast SDPA rather than the portable
+    /// full-precision route, so outputs are close-but-not-bit-identical —
+    /// keep opt-in until a greedy token-exactness pass is recorded.
+    fused_prefill_attention_enabled,
+    "AX_MLX_FUSED_PREFILL_ATTENTION"
+);
+
+env_flag!(
     /// `AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK` — after each *intermediate*
     /// prefill chunk is evaluated, call MLX `clear_cache()` (return freelist
     /// to the OS / pool) before building the next chunk's graph.

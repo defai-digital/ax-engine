@@ -193,6 +193,33 @@ unsafe extern "C" {
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
+    fn ax_mlx_fused_causal_prefill_attention(
+        out: *mut ffi::mlx_array,
+        k_out: *mut ffi::mlx_array,
+        v_out: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        attn_norm: ffi::mlx_array,
+        eps: libc::c_float,
+        qkv_weight: ffi::mlx_array,
+        qkv_scales: ffi::mlx_array,
+        qkv_biases: ffi::mlx_array,
+        q_norm: ffi::mlx_array,
+        k_norm: ffi::mlx_array,
+        qk_eps: libc::c_float,
+        num_heads: libc::c_int,
+        num_kv_heads: libc::c_int,
+        head_dim: libc::c_int,
+        rope_dims: libc::c_int,
+        rope_base: libc::c_float,
+        scale: libc::c_float,
+        o_weight: ffi::mlx_array,
+        o_scales: ffi::mlx_array,
+        o_biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_qwen_linear_attention_inputs_packed(
         qkv_res: *mut ffi::mlx_array,
         z_res: *mut ffi::mlx_array,
@@ -1282,6 +1309,76 @@ pub fn rms_norm_quantized_matmul(
         Some(bits),
         s,
     )
+}
+
+/// One-call fused offset-0 prefill attention (mlxcel
+/// `fused_causal_prefill_attention` residual): rms_norm -> packed-QKV qmm ->
+/// split/BHSD -> optional per-head QK rms_norm -> rope(offset 0) -> maskless
+/// "causal" SDPA -> o-proj qmm. Returns `(attn_out, k, v)` with K/V roped in
+/// BHSD for the caller's cache append. Returns `None` when the shim call
+/// fails so callers keep their portable per-op path as fallback.
+#[allow(clippy::too_many_arguments)]
+pub fn fused_causal_prefill_attention(
+    x: &MlxArray,
+    attn_norm: &MlxArray,
+    eps: f32,
+    qkv_weight: &MlxArray,
+    qkv_scales: &MlxArray,
+    qkv_biases: Option<&MlxArray>,
+    q_norm: Option<&MlxArray>,
+    k_norm: Option<&MlxArray>,
+    qk_eps: f32,
+    num_heads: i32,
+    num_kv_heads: i32,
+    head_dim: i32,
+    rope_dims: i32,
+    rope_base: f32,
+    scale: f32,
+    o_weight: &MlxArray,
+    o_scales: &MlxArray,
+    o_biases: Option<&MlxArray>,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<(MlxArray, MlxArray, MlxArray)> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut out = MlxArray::empty();
+        let mut k_out = MlxArray::empty();
+        let mut v_out = MlxArray::empty();
+        let rc = ax_mlx_fused_causal_prefill_attention(
+            &mut out.inner,
+            &mut k_out.inner,
+            &mut v_out.inner,
+            x.inner,
+            attn_norm.inner,
+            eps,
+            qkv_weight.inner,
+            qkv_scales.inner,
+            qkv_biases.map(|b| b.inner).unwrap_or_else(null_ffi_array),
+            q_norm.map(|b| b.inner).unwrap_or_else(null_ffi_array),
+            k_norm.map(|b| b.inner).unwrap_or_else(null_ffi_array),
+            qk_eps,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            rope_dims,
+            rope_base,
+            scale,
+            o_weight.inner,
+            o_scales.inner,
+            o_biases.map(|b| b.inner).unwrap_or_else(null_ffi_array),
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some((out, k_out, v_out));
+        }
+    }
+    crate::error::clear_stale_error();
+    None
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
