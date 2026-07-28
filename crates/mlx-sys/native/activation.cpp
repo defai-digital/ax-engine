@@ -1710,3 +1710,95 @@ extern "C" int ax_mlx_fused_causal_prefill_attention(
     return 0;
   } AX_CATCH
 }
+
+// Split-projection variant: identical pipeline but with separate Q/K/V
+// quantized weights (mlx-community Gemma checkpoints ship split q/k/v, so
+// the packed entry above never engages for them).
+extern "C" int ax_mlx_fused_causal_prefill_attention_split(
+    mlx_array* out,
+    mlx_array* k_out,
+    mlx_array* v_out,
+    const mlx_array x,
+    const mlx_array attn_norm,
+    float eps,
+    const mlx_array q_weight,
+    const mlx_array q_scales,
+    const mlx_array q_biases,
+    const mlx_array k_weight,
+    const mlx_array k_scales,
+    const mlx_array k_biases,
+    const mlx_array v_weight,
+    const mlx_array v_scales,
+    const mlx_array v_biases,
+    const mlx_array q_norm,
+    const mlx_array k_norm,
+    float qk_eps,
+    int num_heads,
+    int num_kv_heads,
+    int head_dim,
+    int rope_dims,
+    float rope_base,
+    float scale,
+    const mlx_array o_weight,
+    const mlx_array o_scales,
+    const mlx_array o_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    auto s = sd(stream);
+    auto& xr = aref(x);
+    auto batch = xr.shape(0);
+    auto seq = xr.shape(1);
+
+    auto normed = mx::fast::rms_norm(xr, aref(attn_norm), eps, s);
+    auto q = quantized_matmul_affine_impl(
+        normed, aref(q_weight), aref(q_scales), opt_arr(q_biases), group_size,
+        bits, s);
+    auto k = quantized_matmul_affine_impl(
+        normed, aref(k_weight), aref(k_scales), opt_arr(k_biases), group_size,
+        bits, s);
+    auto v = quantized_matmul_affine_impl(
+        normed, aref(v_weight), aref(v_scales), opt_arr(v_biases), group_size,
+        bits, s);
+
+    q = mx::transpose(
+        mx::reshape(q, {batch, seq, num_heads, head_dim}, s), {0, 2, 1, 3}, s);
+    k = mx::transpose(
+        mx::reshape(k, {batch, seq, num_kv_heads, head_dim}, s), {0, 2, 1, 3},
+        s);
+    v = mx::transpose(
+        mx::reshape(v, {batch, seq, num_kv_heads, head_dim}, s), {0, 2, 1, 3},
+        s);
+
+    auto q_norm_opt = opt_arr(q_norm);
+    auto k_norm_opt = opt_arr(k_norm);
+    if (q_norm_opt.has_value()) {
+      q = mx::fast::rms_norm(q, *q_norm_opt, qk_eps, s);
+    }
+    if (k_norm_opt.has_value()) {
+      k = mx::fast::rms_norm(k, *k_norm_opt, qk_eps, s);
+    }
+
+    q = mx::fast::rope(
+        q, rope_dims, false, std::make_optional(rope_base), 1.0f, 0,
+        std::nullopt, s);
+    k = mx::fast::rope(
+        k, rope_dims, false, std::make_optional(rope_base), 1.0f, 0,
+        std::nullopt, s);
+
+    auto attn = mx::fast::scaled_dot_product_attention(
+        q, k, v, scale, "causal", std::nullopt, std::nullopt, s);
+    attn = mx::reshape(
+        mx::transpose(attn, {0, 2, 1, 3}, s),
+        {batch, seq, num_heads * head_dim}, s);
+    auto result = quantized_matmul_affine_impl(
+        attn, aref(o_weight), aref(o_scales), opt_arr(o_biases), group_size,
+        bits, s);
+
+    aset(out, std::move(result));
+    aset(k_out, std::move(k));
+    aset(v_out, std::move(v));
+    return 0;
+  } AX_CATCH
+}

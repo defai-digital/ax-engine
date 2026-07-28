@@ -761,47 +761,96 @@ fn layer_forward_internal(
         {
             break 'fused None;
         }
-        let Some(packed) = w.qkv_packed.as_ref() else {
-            break 'fused None;
-        };
         let Some(o_proj) = w.o_proj.as_ref() else {
             break 'fused None;
         };
-        if packed.mode != "affine"
-            || o_proj.mode != "affine"
-            || packed.group_size != o_proj.group_size
-            || packed.bits != o_proj.bits
-            || packed.scales.is_none()
-            || o_proj.scales.is_none()
-        {
+        if o_proj.mode != "affine" || o_proj.scales.is_none() {
             break 'fused None;
         }
+        let affine_matching = |qw: &crate::weights::QuantizedWeight| {
+            qw.mode == "affine"
+                && qw.group_size == o_proj.group_size
+                && qw.bits == o_proj.bits
+                && qw.scales.is_some()
+        };
         let kv_heads = cfg.n_kv_heads;
-        let Some((out, k_rope, v)) = mlx_sys::ops::fused_causal_prefill_attention(
-            hidden,
-            &w.attn_norm,
-            cfg.rms_norm_eps,
-            &packed.weight,
-            packed.scales.as_ref().expect("checked above"),
-            packed.biases.as_ref(),
-            w.q_norm.as_ref(),
-            w.k_norm.as_ref(),
-            cfg.rms_norm_eps,
-            cfg.n_heads as i32,
-            kv_heads as i32,
-            head_dim as i32,
-            rope_dims as i32,
-            rope_theta,
-            cfg.query_scale,
-            &o_proj.weight,
-            o_proj.scales.as_ref().expect("checked above"),
-            o_proj.biases.as_ref(),
-            packed.group_size,
-            packed.bits,
-            None,
-        ) else {
+        let fused_result = if let Some(packed) = w.qkv_packed.as_ref() {
+            if !affine_matching(packed) {
+                break 'fused None;
+            }
+            mlx_sys::ops::fused_causal_prefill_attention(
+                hidden,
+                &w.attn_norm,
+                cfg.rms_norm_eps,
+                &packed.weight,
+                packed.scales.as_ref().expect("checked above"),
+                packed.biases.as_ref(),
+                w.q_norm.as_ref(),
+                w.k_norm.as_ref(),
+                cfg.rms_norm_eps,
+                cfg.n_heads as i32,
+                kv_heads as i32,
+                head_dim as i32,
+                rope_dims as i32,
+                rope_theta,
+                cfg.query_scale,
+                &o_proj.weight,
+                o_proj.scales.as_ref().expect("checked above"),
+                o_proj.biases.as_ref(),
+                packed.group_size,
+                packed.bits,
+                None,
+            )
+        } else if let (Some(q_proj), Some(k_proj), Some(v_proj)) =
+            (w.q_proj.as_ref(), w.k_proj.as_ref(), w.v_proj.as_ref())
+        {
+            if !affine_matching(q_proj) || !affine_matching(k_proj) || !affine_matching(v_proj) {
+                break 'fused None;
+            }
+            mlx_sys::ops::fused_causal_prefill_attention_split(
+                hidden,
+                &w.attn_norm,
+                cfg.rms_norm_eps,
+                (
+                    &q_proj.weight,
+                    q_proj.scales.as_ref().expect("checked above"),
+                    q_proj.biases.as_ref(),
+                ),
+                (
+                    &k_proj.weight,
+                    k_proj.scales.as_ref().expect("checked above"),
+                    k_proj.biases.as_ref(),
+                ),
+                (
+                    &v_proj.weight,
+                    v_proj.scales.as_ref().expect("checked above"),
+                    v_proj.biases.as_ref(),
+                ),
+                w.q_norm.as_ref(),
+                w.k_norm.as_ref(),
+                cfg.rms_norm_eps,
+                cfg.n_heads as i32,
+                kv_heads as i32,
+                head_dim as i32,
+                rope_dims as i32,
+                rope_theta,
+                cfg.query_scale,
+                &o_proj.weight,
+                o_proj.scales.as_ref().expect("checked above"),
+                o_proj.biases.as_ref(),
+                q_proj.group_size,
+                q_proj.bits,
+                None,
+            )
+        } else {
             break 'fused None;
         };
+        let Some((out, k_rope, v)) = fused_result else {
+            break 'fused None;
+        };
+        if fastpath::prefill_time_debug_env() {
+            eprintln!("AX_PREFILL_TIME_DEBUG fused_prefill_attention engaged layer={layer_idx}");
+        }
         let retained_window =
             if sliding_window.is_some() && fastpath::multi_token_window_views_enabled() {
                 match shared_mask {

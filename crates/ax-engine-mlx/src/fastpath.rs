@@ -373,6 +373,14 @@ env_flag!(
     "AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK"
 );
 
+/// `AX_MLX_PREFILL_TIME_DEBUG=1` — shared gate for prefill timing/engagement
+/// diagnostics printed to stderr (see also the per-chunk build/eval split in
+/// `generate.rs`). Diagnostic only.
+pub fn prefill_time_debug_env() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("AX_MLX_PREFILL_TIME_DEBUG").as_deref() == Ok("1"))
+}
+
 /// Multi-model (sibling-resident) prefill-rotation hint.
 ///
 /// Set by the server when more than one model is resident. Ring-rotated
