@@ -745,20 +745,39 @@ fn layer_forward_internal(
     // o-proj, so every feature outside that contract falls through to the
     // portable path below.
     let fused_prefill = 'fused: {
-        if !fastpath::fused_prefill_attention_enabled()
-            || seq <= 1
-            || token_offset != 0
-            || cache.seq_len() != 0
-            || kv_source.is_some()
-            || mrope.is_some()
-            || ring_layout.is_some()
-            || protected_prefix_window.is_some()
-            || !matches!(cfg.model_family.as_str(), "gemma4" | "gemma3")
-            || v_norm_no_scale
-            || layer_rope_freqs.is_some()
-            || cfg.rope_freqs.is_some()
-            || sliding_window.is_some_and(|window| seq > window)
-        {
+        let dbg = fastpath::prefill_time_debug_env();
+        if !fastpath::fused_prefill_attention_enabled() || seq <= 1 {
+            break 'fused None;
+        }
+        let gate_reason = if token_offset != 0 {
+            Some("token_offset")
+        } else if cache.seq_len() != 0 {
+            Some("cache_nonempty")
+        } else if kv_source.is_some() {
+            Some("kv_source")
+        } else if mrope.is_some() {
+            Some("mrope")
+        } else if ring_layout.is_some() {
+            Some("ring_layout")
+        } else if protected_prefix_window.is_some() {
+            Some("protected_prefix")
+        } else if !matches!(cfg.model_family.as_str(), "gemma4" | "gemma3") {
+            Some("family")
+        } else if v_norm_no_scale {
+            Some("v_norm")
+        } else if layer_rope_freqs.is_some() || cfg.rope_freqs.is_some() {
+            Some("rope_freqs")
+        } else if sliding_window.is_some_and(|window| seq > window) {
+            Some("sliding_gt_window")
+        } else {
+            None
+        };
+        if let Some(reason) = gate_reason {
+            if dbg {
+                eprintln!(
+                    "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: {reason}"
+                );
+            }
             break 'fused None;
         }
         let Some(o_proj) = w.o_proj.as_ref() else {
@@ -843,9 +862,19 @@ fn layer_forward_internal(
                 None,
             )
         } else {
+            if dbg {
+                eprintln!(
+                    "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: no_projections"
+                );
+            }
             break 'fused None;
         };
         let Some((out, k_rope, v)) = fused_result else {
+            if dbg {
+                eprintln!(
+                    "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: shim_error"
+                );
+            }
             break 'fused None;
         };
         if fastpath::prefill_time_debug_env() {
