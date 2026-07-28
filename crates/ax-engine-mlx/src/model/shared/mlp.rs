@@ -1745,28 +1745,33 @@ const MOE_FUSED_ACTIVATION_UNSORT_KERNEL_SOURCE: &str = r#"
         // fast-math tanh(inf) = NaN, and round through T at every step in
         // range to stay bit-identical with mlx-lm's imperative
         // gelu_approx(gate) * up chain (see GELU_MUL_KERNEL_SOURCE above).
+        // Branchless saturation, mirroring GELU_MUL_KERNEL_SOURCE: the
+        // divergent early-return form serializes the vectorized loads
+        // (measured ~40% of Gemma prefill throughput there). Compute the
+        // bit-exact in-range chain on a clamped gate and select the
+        // saturation endpoints with uniform ternaries.
         float gate_f = static_cast<float>(gate_v);
-        if (gate_f > 10.0f) {
-            activated = gate_f * static_cast<float>(up_v);
-        } else if (gate_f < -10.0f) {
-            activated = 0.0f;
-        } else {
-            T half_v = static_cast<T>(0.5f);
-            T one_v = static_cast<T>(1.0f);
-            T sqrt_2_over_pi_v = static_cast<T>(0.7978846f);
-            T coeff_v = static_cast<T>(0.044715f);
+        float gate_cf = clamp(gate_f, -10.0f, 10.0f);
+        T gate_c = static_cast<T>(gate_cf);
+        T half_v = static_cast<T>(0.5f);
+        T one_v = static_cast<T>(1.0f);
+        T sqrt_2_over_pi_v = static_cast<T>(0.7978846f);
+        T coeff_v = static_cast<T>(0.044715f);
 
-            T gate2 = static_cast<T>(static_cast<float>(gate_v) * static_cast<float>(gate_v));
-            T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_v));
-            T cubic = static_cast<T>(static_cast<float>(coeff_v) * static_cast<float>(gate3));
-            T inner = static_cast<T>(static_cast<float>(gate_v) + static_cast<float>(cubic));
-            T scaled = static_cast<T>(static_cast<float>(sqrt_2_over_pi_v) * static_cast<float>(inner));
-            T t = static_cast<T>(tanh(static_cast<float>(scaled)));
-            T one_plus_t = static_cast<T>(static_cast<float>(one_v) + static_cast<float>(t));
-            T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_v));
-            T activated_t = static_cast<T>(static_cast<float>(half_gate) * static_cast<float>(one_plus_t));
-            activated = static_cast<float>(static_cast<T>(static_cast<float>(activated_t) * static_cast<float>(up_v)));
-        }
+        T gate2 = static_cast<T>(static_cast<float>(gate_c) * static_cast<float>(gate_c));
+        T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_c));
+        T cubic = static_cast<T>(static_cast<float>(coeff_v) * static_cast<float>(gate3));
+        T inner = static_cast<T>(static_cast<float>(gate_c) + static_cast<float>(cubic));
+        T scaled = static_cast<T>(static_cast<float>(sqrt_2_over_pi_v) * static_cast<float>(inner));
+        T t = static_cast<T>(tanh(static_cast<float>(scaled)));
+        T one_plus_t = static_cast<T>(static_cast<float>(one_v) + static_cast<float>(t));
+        T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_c));
+        T activated_t = static_cast<T>(static_cast<float>(half_gate) * static_cast<float>(one_plus_t));
+        float in_range =
+            static_cast<float>(static_cast<T>(static_cast<float>(activated_t) * static_cast<float>(up_v)));
+        activated = gate_f > 10.0f
+            ? gate_f * static_cast<float>(up_v)
+            : (gate_f < -10.0f ? 0.0f : in_range);
     } else {
         // SwiGLU: silu(gate) * up.
         float gate_v_f = static_cast<float>(gate_v);
@@ -1810,7 +1815,7 @@ fn moe_fused_activation_unsort_metal(
 
     let kernel = MOE_FUSED_ACTIVATION_UNSORT_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_moe_fused_activation_unsort_v4",
+            "ax_moe_fused_activation_unsort_v5",
             &["gate_up", "inv_order"],
             &["out"],
             MOE_FUSED_ACTIVATION_UNSORT_KERNEL_SOURCE,
