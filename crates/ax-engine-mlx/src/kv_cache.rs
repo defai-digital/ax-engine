@@ -2066,10 +2066,13 @@ impl MlxKVCache {
                     lkv.rotating_window.is_none(),
                     "ordered KV append on rotated ring layer {layer} (window {:?}, capacity {}): \
                      forward of {new_tokens} tokens is not ring-eligible \
-                     (rotating_slack {}) and would corrupt slot-ordered state",
+                     (rotating_slack {}, cache seq_len {}, rotating_decode {}) \
+                     and would corrupt slot-ordered state",
                     lkv.rotating_window,
                     lkv.capacity,
                     self.rotating_slack,
+                    self.seq_len,
+                    self.use_rotating_sliding_decode,
                 );
                 assert!(
                     lkv.protected_prefix_ring.is_none(),
