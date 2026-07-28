@@ -5719,6 +5719,10 @@ impl MlxRunner {
         let Some(media_key) = media_identity else {
             telemetry.record_blocked_media_identity();
             let reused_tokens: &[u32] = &item.reused_prefix_token_slice;
+            Self::pfx_dbg(
+                "restore",
+                &format!("reused_tokens={} cache_seq={}", reused_tokens.len(), state.cache.seq_len()),
+            );
             if !reused_tokens.is_empty() && state.cache.seq_len() == 0 {
                 let capture_prefill_output = item.mode == ExecutionMode::Decode
                     && ctx.is_some_and(|ctx| ctx.generated_len == 0);
@@ -6364,6 +6368,12 @@ impl MlxRunner {
         telemetry
     }
 
+    fn pfx_dbg(stage: &str, detail: &str) {
+        if crate::fastpath::prefill_time_debug_env() {
+            eprintln!("AX_PREFIX_DEBUG {stage} {detail}");
+        }
+    }
+
     fn store_prompt_prefix_snapshots(
         &self,
         model_id: &str,
@@ -6380,6 +6390,7 @@ impl MlxRunner {
         } = options;
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         if block_size_tokens == 0 || state.prompt_prefix_tokens.is_empty() {
+            Self::pfx_dbg("store-skip", "empty_prompt_or_block");
             return telemetry;
         }
         // Media present without a digest: storing under a text-only key
@@ -6387,18 +6398,22 @@ impl MlxRunner {
         // media adopt this KV. Fail closed.
         let Some(media_key) = media_key else {
             telemetry.record_blocked_media_identity();
+            Self::pfx_dbg("store-skip", "media_identity");
             return telemetry;
         };
         if !self.prefix_cache_supported() {
             telemetry.record_blocked_unsupported_layout();
+            Self::pfx_dbg("store-skip", "unsupported_layout");
             return telemetry;
         }
         if !self.prefix_cache.lock().enabled() {
             telemetry.record_blocked_policy_disabled();
+            Self::pfx_dbg("store-skip", "policy_disabled");
             return telemetry;
         }
         let native_store_enabled = self.native_fa_prefix_sharing_enabled();
         if !portable_prefix_store_allowed(prefill_completes_prompt, native_store_enabled) {
+            Self::pfx_dbg("store-skip", "portable_store_not_allowed_partial");
             // A scheduler-split prefill can yield hundreds of execution
             // items. Portable snapshots serialize the complete live KV
             // state, so doing that after every partial item turns an O(N)
@@ -6410,6 +6425,7 @@ impl MlxRunner {
             return telemetry;
         }
         if state.cache.has_rotated_sliding_layers() {
+            Self::pfx_dbg("store-skip", "rotated_sliding_layers");
             // Slot order is a decode-local physical representation, not a
             // prompt-prefix representation. A no-op trim would otherwise
             // serialize it and a later warm extension could issue a
@@ -6479,6 +6495,7 @@ impl MlxRunner {
                 return telemetry;
             }
             telemetry.record_blocked_trim_failure();
+            Self::pfx_dbg("store-skip", "trim_failure_unaligned");
             return telemetry;
         }
         let snapshot_start_tokens = prefix_snapshot_start_tokens(
@@ -6488,6 +6505,15 @@ impl MlxRunner {
             native_store_enabled,
         );
 
+        Self::pfx_dbg(
+            "store-attempt",
+            &format!(
+                "prompt={} full_block={} start={}",
+                state.prompt_prefix_tokens.len(),
+                full_block_tokens,
+                snapshot_start_tokens
+            ),
+        );
         for prefix_len in (snapshot_start_tokens..=full_block_tokens).step_by(block_size) {
             let tokens = &state.prompt_prefix_tokens[..prefix_len];
             let key =
