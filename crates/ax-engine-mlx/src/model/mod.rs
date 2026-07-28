@@ -867,17 +867,23 @@ fn forward_and_logits_mode(
         );
     }
     // Last-layer prefill optimizations (matches mlx-lm's implicit lazy-eval
-    // prune). For `seq > 1`, the final transformer layer either:
+    // prune). For multi-token prefill, the final transformer layer either:
     // - **Skip FFN** (`FinalLogitsMode::Skip` / cache-only): return after the
     //   attention residual; residual is discarded and only KV/linear state
     //   writes matter. Avoids even the last-only 1-token FFN + final_norm.
     // - **Last-position-only FFN**: slice residual to the last position before
     //   FFN / gate / scalar. Saves ~50% of the last layer on long prompts.
-    // Decode path (seq == 1) never triggers either. See
+    // Explicit cache-only single-token continuations may also skip the final
+    // FFN; ordinary logits-producing decode never does. See
     // `layer_forward_last_only` for the contract.
     let last_layer_idx = weights.layers.len().saturating_sub(1);
-    let use_last_layer_optimization = seq > 1;
     let skip_last_layer_ffn = matches!(logits_mode, FinalLogitsMode::Skip);
+    // Cache-only scheduler continuations may intentionally preserve the
+    // established n-1 + single-token boundary for greedy numerical parity.
+    // The final residual is discarded in that single-token call too, so its
+    // last-layer FFN remains pure waste even though ordinary decode (which
+    // requests logits) must keep the full layer.
+    let use_last_layer_optimization = seq > 1 || skip_last_layer_ffn;
     let total_layers = weights.layers.len();
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
@@ -7335,6 +7341,50 @@ mod tests {
             nemotron_omni: None,
         };
         (model_cfg, weights)
+    }
+
+    #[test]
+    fn cache_only_forward_preserves_full_forward_kv() {
+        with_gpu_numeric_lock(|| {
+            let (model_cfg, weights) = dense_prefill_test_model();
+            for tokens in [vec![7u32], vec![1, 3, 5, 7]] {
+                let mut full_cache = MlxKVCache::new(model_cfg.layer_count);
+                let mut cache_only = MlxKVCache::new(model_cfg.layer_count);
+
+                let logits = forward(&model_cfg, &weights, &tokens, &mut full_cache, 0);
+                let cache_only_hidden =
+                    forward_cache_only(&model_cfg, &weights, &tokens, &mut cache_only, 0);
+                full_cache.advance(tokens.len());
+                cache_only.advance(tokens.len());
+
+                let mut eval_refs = vec![&logits, &cache_only_hidden];
+                eval_refs.extend(full_cache.collect_eval_refs());
+                eval_refs.extend(cache_only.collect_eval_refs());
+                eval(&eval_refs);
+
+                for layer in 0..model_cfg.layer_count {
+                    let (full_k, full_v) = full_cache
+                        .logical_layer_kv(layer)
+                        .expect("full forward must populate KV");
+                    let (cache_only_k, cache_only_v) = cache_only
+                        .logical_layer_kv(layer)
+                        .expect("cache-only forward must populate KV");
+                    eval(&[&full_k, &full_v, &cache_only_k, &cache_only_v]);
+                    assert_eq!(
+                        cache_only_k.data_f32(),
+                        full_k.data_f32(),
+                        "seq {} layer {layer} K differs after skipping discarded last-layer work",
+                        tokens.len()
+                    );
+                    assert_eq!(
+                        cache_only_v.data_f32(),
+                        full_v.data_f32(),
+                        "seq {} layer {layer} V differs after skipping discarded last-layer work",
+                        tokens.len()
+                    );
+                }
+            }
+        });
     }
 
     fn assert_close_rel(actual: &[f32], expected: &[f32], rel: f32, context: &str) {

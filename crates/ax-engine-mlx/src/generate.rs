@@ -262,6 +262,100 @@ pub fn chunked_prefill(
     )
 }
 
+/// Physical graph shape used for a cache-only scheduler continuation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheOnlyPrefillLayout {
+    /// Process every continuation token in the largest available prefill
+    /// chunk. This preserves the historical sampled-item transformer/KV shape
+    /// while pruning its discarded final-layer and logits work.
+    Batched,
+    /// Leave the continuation's last token for a separate single-token
+    /// cache-only forward. This mirrors the established greedy prefill
+    /// boundary (`n-1` cache-only + one token) so fair scheduling does not
+    /// silently change the request's KV arithmetic shape.
+    PreserveFinalTokenStep,
+}
+
+/// Advance a prompt continuation without producing logits or sampling.
+///
+/// Scheduler-level fair prefill can split one logical prompt across several
+/// execution items. Every non-terminal item must update only model state:
+/// sampling is a property of the completed prompt, not of a scheduling
+/// quantum. Keeping this API free of sampling parameters and RNG state makes
+/// that invariant structural and prevents continuation count from advancing a
+/// seeded request's sampler.
+///
+/// The final transformer layer uses [`forward_cache_only`], which skips its
+/// discarded FFN output plus final norm and lm-head projection. KV and linear
+/// attention state are materialised before returning, so the next execution
+/// item can safely continue from `cache.seq_len()`.
+pub fn chunked_prefill_cache_only(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    chunk_size: usize,
+    layout: CacheOnlyPrefillLayout,
+) {
+    let chunk_size = chunk_size.max(1);
+    let total = prompt_tokens.len();
+    if total == 0 {
+        return;
+    }
+
+    let prefix_len = match layout {
+        CacheOnlyPrefillLayout::Batched => total,
+        CacheOnlyPrefillLayout::PreserveFinalTokenStep => total.saturating_sub(1),
+    };
+    if prefix_len > 0 {
+        cache_only_forward_chunks(
+            cfg,
+            weights,
+            &prompt_tokens[..prefix_len],
+            cache,
+            chunk_size,
+        );
+    }
+    if prefix_len < total {
+        cache_only_forward_chunks(cfg, weights, &prompt_tokens[prefix_len..], cache, 1);
+    }
+
+    if clear_cache_after_split_prefill(cfg.hidden_size_per_layer_input) {
+        clear_cache();
+    }
+}
+
+fn cache_only_forward_chunks(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    chunk_size: usize,
+) {
+    let mut offset = 0usize;
+    while offset < prompt_tokens.len() {
+        let end = offset
+            .saturating_add(chunk_size.max(1))
+            .min(prompt_tokens.len());
+        let chunk = &prompt_tokens[offset..end];
+        let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
+        cache.advance(chunk.len());
+
+        // Match the established cache-only prefix policy: by default one
+        // blocking materialisation at this API boundary; optional intermediate
+        // async submits remain available for very long internal chunk chains.
+        if end == prompt_tokens.len() || crate::fastpath::cache_only_chunk_eval_enabled() {
+            let is_final = end == prompt_tokens.len();
+            if crate::fastpath::cache_only_chunk_should_async_eval(is_final) {
+                async_eval_kv_refs(cache);
+            } else {
+                eval_kv_refs(cache);
+            }
+        }
+        offset = end;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn chunked_prefill_with_sampling_buffers(
     cfg: &ModelConfig,

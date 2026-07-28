@@ -52,7 +52,8 @@ use crate::gemma4_assistant_mtp::{
     resolve_gemma4_assistant_mtp_deep_gate, resolve_gemma4_assistant_mtp_first_gate,
 };
 use crate::generate::{
-    DirectPipelineTimings, advance_direct_pipeline_with_timings,
+    CacheOnlyPrefillLayout, DirectPipelineTimings, advance_direct_pipeline_with_timings,
+    chunked_prefill_cache_only,
     chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers,
     chunked_prefill_minicpm_v46_with_sampling_buffers,
     chunked_prefill_nemotron_omni_with_sampling_buffers,
@@ -4912,13 +4913,12 @@ impl MlxRunner {
                     // get a prefix snapshot if the cache is captured
                     // mid-prefill exactly at the largest block-aligned
                     // boundary. Split the prefill there: run the aligned head
-                    // with a throwaway greedy sampler (greedy consumes no RNG
-                    // state, so downstream sampling is unchanged; the head's
-                    // sampled token is discarded), stash a lazy cache clone
-                    // for `store_prompt_prefix_snapshots`, and let the normal
-                    // path below prefill the remainder. The clone is
-                    // handle-only; its one real cost is a single non-donated
-                    // full-attention K/V append on the following chunk.
+                    // through the no-logits/no-sampling continuation API,
+                    // stash a lazy cache clone for
+                    // `store_prompt_prefix_snapshots`, and let the normal path
+                    // below prefill the remainder. The clone is handle-only;
+                    // its one real cost is a single non-donated full-attention
+                    // K/V append on the following chunk.
                     let prefill_tokens = if self.cfg.linear_attention.is_some()
                         && self.prefix_cache.lock().enabled()
                         && let Some(head) = Self::linear_boundary_capture_head_len(
@@ -4927,18 +4927,13 @@ impl MlxRunner {
                             prefill_tokens.len(),
                         ) {
                         let head_tokens = &prefill_tokens[..head];
-                        let mut head_rng = Xorshift64::new(0);
-                        let _ = chunked_prefill_with_sampling_buffers(
+                        chunked_prefill_cache_only(
                             &self.cfg,
                             &self.weights,
                             head_tokens,
                             &mut state.cache,
                             prefill_chunk_for_request,
-                            MlxSamplingRequest::new(MlxSamplingParams::greedy(), head_tokens),
-                            &mut head_rng,
-                            &mut state.sampling_probs_buf,
-                            &mut state.sampling_logits_buf,
-                            &mut state.sampling_candidates_buf,
+                            CacheOnlyPrefillLayout::PreserveFinalTokenStep,
                         );
                         state.prefill_boundary_snapshot =
                             Some((state.cache.seq_len(), state.cache.clone()));
@@ -4946,9 +4941,11 @@ impl MlxRunner {
                     } else {
                         prefill_tokens
                     };
-                    let tok = if prefill_tokens.is_empty() {
-                        if let Some(tok) = state.cached_prefill_output_token.take() {
-                            tok
+                    let prefill_output_token = if prefill_tokens.is_empty() {
+                        if !prefill_completes_prompt {
+                            None
+                        } else if let Some(tok) = state.cached_prefill_output_token.take() {
+                            Some(tok)
                         } else {
                             // Defensive: if a full-prefix disk entry does
                             // not carry a prefill output token, do not run
@@ -4980,7 +4977,7 @@ impl MlxRunner {
                                 ),
                             );
                             let recompute_history = state.repetition_history(token_ids, sampling);
-                            if self.weights.mtp.is_some() && prefill_completes_prompt {
+                            let tok = if self.weights.mtp.is_some() {
                                 let (tok, hidden, history_tokens) =
                                     chunked_prefill_with_mtp_history_and_sampling_buffers(
                                         &self.cfg,
@@ -5010,9 +5007,27 @@ impl MlxRunner {
                                     &mut state.sampling_logits_buf,
                                     &mut state.sampling_candidates_buf,
                                 )
-                            }
+                            };
+                            Some(tok)
                         }
-                    } else if self.weights.mtp.is_some() && prefill_completes_prompt {
+                    } else if !prefill_completes_prompt {
+                        chunked_prefill_cache_only(
+                            &self.cfg,
+                            &self.weights,
+                            prefill_tokens,
+                            &mut state.cache,
+                            prefill_chunk_for_request,
+                            if is_greedy {
+                                CacheOnlyPrefillLayout::PreserveFinalTokenStep
+                            } else {
+                                CacheOnlyPrefillLayout::Batched
+                            },
+                        );
+                        state
+                            .decode_telemetry
+                            .record_prefill_cache_only_continuation();
+                        None
+                    } else if self.weights.mtp.is_some() {
                         let (tok, hidden, history_tokens) =
                             chunked_prefill_with_mtp_history_and_sampling_buffers(
                                 &self.cfg,
@@ -5028,7 +5043,7 @@ impl MlxRunner {
                             );
                         state.mtp_prefill_hidden = Some(hidden);
                         state.mtp_prefill_history_tokens = history_tokens;
-                        tok
+                        Some(tok)
                     } else if let Some(staged) = staged_batched_prefill.take().filter(|staged| {
                         state.cache.seq_len() == 0
                             && staged.prompt_tokens.as_slice() == prefill_tokens
@@ -5044,16 +5059,16 @@ impl MlxRunner {
                                 .cache
                                 .set_layer_kv_logical(layer, k, v, staged.seq_len);
                         }
-                        sample_token_from_prefill_logits(
+                        Some(sample_token_from_prefill_logits(
                             &staged.logits,
                             MlxSamplingRequest::new(sampling, &repetition_history),
                             &mut state.rng,
                             &mut state.sampling_probs_buf,
                             &mut state.sampling_logits_buf,
                             &mut state.sampling_candidates_buf,
-                        )
+                        ))
                     } else {
-                        chunked_prefill_with_sampling_buffers(
+                        Some(chunked_prefill_with_sampling_buffers(
                             &self.cfg,
                             &self.weights,
                             prefill_tokens,
@@ -5064,7 +5079,7 @@ impl MlxRunner {
                             &mut state.sampling_probs_buf,
                             &mut state.sampling_logits_buf,
                             &mut state.sampling_candidates_buf,
-                        )
+                        ))
                     };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
                     let prefill_token_count = effective_prefill_token_count;
@@ -5102,8 +5117,7 @@ impl MlxRunner {
                             PromptPrefixSnapshotStoreOptions {
                                 linear_boundary_snapshot: linear_boundary_snapshot.as_ref(),
                                 prefill_completes_prompt,
-                                greedy_prefill_output_token: prefill_completes_prompt
-                                    .then_some(tok)
+                                greedy_prefill_output_token: prefill_output_token
                                     .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
                                 cold_prefill_us: u64::from(cold_prefill_us),
                                 media_key: media_key.as_deref(),
@@ -5119,7 +5133,8 @@ impl MlxRunner {
                         .decode_telemetry
                         .record_prefill(elapsed_us(prefill_started));
                     let mut prefill_generation_state_wall_us = 0;
-                    if prefill_completes_prompt {
+                    if let Some(tok) = prefill_output_token {
+                        debug_assert!(prefill_completes_prompt);
                         let generation_state_started = Instant::now();
                         self.initialize_generation_state(
                             &mut state,
@@ -5151,7 +5166,7 @@ impl MlxRunner {
                     if self.cfg.diffusion.is_some() {
                         None
                     } else {
-                        prefill_completes_prompt.then_some(tok)
+                        prefill_output_token
                     }
                 };
                 sampled_token.into_iter().collect()
@@ -9985,11 +10000,12 @@ fn portable_prefix_store_allowed(
 /// Resolve the physical sliding-KV mode for one runner item.
 ///
 /// Scheduler-level fair prefill can split one prompt across many execution
-/// items. Each item internally ends with a one-token logits forward; allowing
-/// the session's decode-default rotation there would convert the cache to slot
-/// order before the next multi-token prefill item arrives. Keep every prefill
-/// item ordered and let `initialize_generation_state` latch rotation only after
-/// the complete prompt has finished.
+/// items. Non-terminal items are cache-only, while the completing item ends in
+/// a one-token logits forward. Allowing the session's decode-default rotation
+/// during either kind would convert the cache to slot order before a later
+/// multi-token prefill item arrives. Keep every prefill item ordered and let
+/// `initialize_generation_state` latch rotation only after the complete prompt
+/// has finished.
 fn cache_rotation_for_execution(
     mode: ExecutionMode,
     request_latch: Option<(bool, usize)>,
@@ -15432,6 +15448,7 @@ mod tests {
         telemetry.record_prefill_breakdown(70, 20, 5);
         telemetry.record_prefill_eval_barrier();
         telemetry.record_prefill_drain_async_evals(2);
+        telemetry.record_prefill_cache_only_continuation();
         telemetry.record_decode(40);
         telemetry.record_direct_bootstrap(7);
         telemetry.record_direct_pipeline(11);
@@ -15478,6 +15495,10 @@ mod tests {
         );
         assert_eq!(decisions.get("ax_mlx_prefill_eval_barriers"), Some(&1));
         assert_eq!(decisions.get("ax_mlx_prefill_drain_async_evals"), Some(&2));
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_cache_only_continuations"),
+            Some(&1)
+        );
         assert_eq!(decisions.get("ax_mlx_decode_steps"), Some(&1));
         assert_eq!(decisions.get("ax_mlx_decode_wall_us"), Some(&40));
         assert_eq!(decisions.get("ax_mlx_direct_bootstrap_steps"), Some(&1));

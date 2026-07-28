@@ -1061,6 +1061,9 @@ pub(super) struct DecodeTelemetry {
     pub(super) production_decode_evals: u32,
     pub(super) prefill_eval_barriers: u32,
     pub(super) prefill_drain_async_evals: u32,
+    /// Scheduler-split prefill items that advanced only cache/model state and
+    /// deliberately skipped logits plus sampling.
+    pub(super) prefill_cache_only_continuations: u32,
     // DiffusionGemma block generation counters.
     pub(super) diffusion_blocks: u32,
     pub(super) diffusion_denoise_steps: u32,
@@ -1119,6 +1122,7 @@ impl Default for DecodeTelemetry {
             production_decode_evals: 0,
             prefill_eval_barriers: 0,
             prefill_drain_async_evals: 0,
+            prefill_cache_only_continuations: 0,
             diffusion_blocks: 0,
             diffusion_denoise_steps: 0,
             diffusion_converged_blocks: 0,
@@ -1247,6 +1251,11 @@ impl DecodeTelemetry {
 
     pub(super) fn record_prefill_drain_async_evals(&mut self, count: u32) {
         self.prefill_drain_async_evals = self.prefill_drain_async_evals.saturating_add(count);
+    }
+
+    pub(super) fn record_prefill_cache_only_continuation(&mut self) {
+        self.prefill_cache_only_continuations =
+            self.prefill_cache_only_continuations.saturating_add(1);
     }
 
     pub(super) fn record_diffusion_block(
@@ -1384,6 +1393,9 @@ impl DecodeTelemetry {
         self.prefill_drain_async_evals = self
             .prefill_drain_async_evals
             .saturating_add(other.prefill_drain_async_evals);
+        self.prefill_cache_only_continuations = self
+            .prefill_cache_only_continuations
+            .saturating_add(other.prefill_cache_only_continuations);
         self.diffusion_blocks = self.diffusion_blocks.saturating_add(other.diffusion_blocks);
         self.diffusion_denoise_steps = self
             .diffusion_denoise_steps
@@ -1528,6 +1540,10 @@ impl DecodeTelemetry {
             (
                 "ax_mlx_prefill_drain_async_evals",
                 self.prefill_drain_async_evals,
+            ),
+            (
+                "ax_mlx_prefill_cache_only_continuations",
+                self.prefill_cache_only_continuations,
             ),
             ("ax_mlx_diffusion_blocks", self.diffusion_blocks),
             (

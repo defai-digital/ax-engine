@@ -1,0 +1,103 @@
+{
+  "schema_version": "ax.fair_prefill_continuation_ab.v1",
+  "date": "2026-07-27",
+  "claim_scope": "engineering_diagnostic",
+  "host": {
+    "ssh": "mbp-m5",
+    "chip": "Apple M5 Max",
+    "macos": "26.5.2"
+  },
+  "build": {
+    "baseline_commit": "40743ada4a466c075e0c5db6feb5ec535e9c4ce9",
+    "baseline_binary_sha256": "a05e7fedd90d246bcf905d4b92a2b11491201f70f05ec83b8631531b07ff0c91",
+    "candidate_binary_sha256": "11252957ea8cc9549ff377f38a10a640e7388addecb35a133cc9f225f1fece98",
+    "candidate_state": "baseline_commit_plus_worktree_patch"
+  },
+  "runtime": {
+    "mlx_version": "0.32.0",
+    "mlx_source": "repository_pypi_wheel",
+    "prefix_cache_max_entries": 0,
+    "mtp_requested": false
+  },
+  "methodology": {
+    "surface": "production_mlx_runner",
+    "prompt_tokens": 2048,
+    "warmups": 1,
+    "repetitions": 5,
+    "cooldown_seconds": 15,
+    "prompt_seed": 7,
+    "sampling_seed": 4242
+  },
+  "results": [
+    {
+      "id": "qwen3_5_9b_greedy_q64",
+      "model_snapshot": "mlx-community/Qwen3.5-9B-MLX-4bit@938d8919941c6e7efd3c7150eff7fe9d12afa631",
+      "quantum": 64,
+      "sampling": "greedy",
+      "baseline_ttft_ms": 2306.529541,
+      "candidate_ttft_ms": 2249.163333,
+      "ttft_delta_percent": -2.487122188564239,
+      "baseline_prefill_tokens_per_s": 887.9140559856371,
+      "candidate_prefill_tokens_per_s": 910.5608160828043,
+      "prefill_delta_percent": 2.550557674416809,
+      "candidate_cache_only_continuations": 31,
+      "output_tokens_exact": true
+    },
+    {
+      "id": "qwen3_5_9b_greedy_q256",
+      "model_snapshot": "mlx-community/Qwen3.5-9B-MLX-4bit@938d8919941c6e7efd3c7150eff7fe9d12afa631",
+      "quantum": 256,
+      "sampling": "greedy",
+      "baseline_ttft_ms": 992.924375,
+      "candidate_ttft_ms": 986.514,
+      "ttft_delta_percent": -0.6456055628607182,
+      "baseline_prefill_tokens_per_s": 2062.594142680806,
+      "candidate_prefill_tokens_per_s": 2075.996894114022,
+      "prefill_delta_percent": 0.6498007124075444,
+      "candidate_cache_only_continuations": 7,
+      "output_tokens_exact": true
+    },
+    {
+      "id": "qwen3_5_9b_topk20_q64",
+      "model_snapshot": "mlx-community/Qwen3.5-9B-MLX-4bit@938d8919941c6e7efd3c7150eff7fe9d12afa631",
+      "quantum": 64,
+      "sampling": "temperature=0.8,top_p=0.95,top_k=20",
+      "baseline_ttft_ms": 1730.188875,
+      "candidate_ttft_ms": 1666.359833,
+      "ttft_delta_percent": -3.6891372336445127,
+      "baseline_prefill_tokens_per_s": 1183.6857984652108,
+      "candidate_prefill_tokens_per_s": 1229.0262639810041,
+      "prefill_delta_percent": 3.830447706188811,
+      "candidate_cache_only_continuations": 31,
+      "candidate_repeat_tokens_exact": true
+    },
+    {
+      "id": "gemma4_12b_greedy_q64",
+      "model_snapshot": "mlx-community/gemma-4-12B-it-4bit@73bcf09092aa277861d5a191b989b666f7f32e8f",
+      "quantum": 64,
+      "sampling": "greedy",
+      "baseline_ttft_ms": 2790.018959,
+      "candidate_ttft_ms": 2749.32875,
+      "ttft_delta_percent": -1.4584205196434996,
+      "baseline_prefill_tokens_per_s": 734.0451911244521,
+      "candidate_prefill_tokens_per_s": 744.9090982662586,
+      "prefill_delta_percent": 1.4800052194558377,
+      "candidate_cache_only_continuations": 31,
+      "output_tokens_exact": true
+    },
+    {
+      "id": "qwen3_5_9b_greedy_unsplit_control",
+      "model_snapshot": "mlx-community/Qwen3.5-9B-MLX-4bit@938d8919941c6e7efd3c7150eff7fe9d12afa631",
+      "quantum": 0,
+      "sampling": "greedy",
+      "baseline_ttft_ms": 695.131541,
+      "candidate_ttft_ms": 695.007125,
+      "ttft_delta_percent": -0.01789819518490665,
+      "baseline_prefill_tokens_per_s": 2946.2049687082176,
+      "candidate_prefill_tokens_per_s": 2946.732380621278,
+      "prefill_delta_percent": 0.017901399212272295,
+      "candidate_cache_only_continuations": 0,
+      "output_tokens_exact": true
+    }
+  ]
+}
