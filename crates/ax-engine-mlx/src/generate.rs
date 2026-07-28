@@ -382,11 +382,12 @@ fn cache_only_forward_chunks(
         }
         if time_debug {
             eprintln!(
-                "AX_PREFILL_TIME_DEBUG chunk_tokens={} build_us={} eval_us={} t_ms={}",
+                "AX_PREFILL_TIME_DEBUG chunk_tokens={} build_us={} eval_us={} t_ms={} ops={}",
                 chunk.len(),
                 build_us,
                 eval_started.elapsed().as_micros(),
-                loop_started.elapsed().as_millis()
+                loop_started.elapsed().as_millis(),
+                mlx_sys::op_count::op_count_snapshot()
             );
         }
         offset = end;
@@ -453,10 +454,11 @@ pub fn chunked_prefill_with_sampling_buffers(
             }
             if prefill_time_debug_enabled() {
                 eprintln!(
-                    "AX_PREFILL_TIME_DEBUG greedy_cache_only chunk_tokens={} build_us={} eval_us={}",
+                    "AX_PREFILL_TIME_DEBUG greedy_cache_only chunk_tokens={} build_us={} eval_us={} ops={}",
                     chunk.len(),
                     dbg_build_us,
-                    dbg_eval_started.elapsed().as_micros()
+                    dbg_eval_started.elapsed().as_micros(),
+                    mlx_sys::op_count::op_count_snapshot()
                 );
             }
             offset = end;
