@@ -4364,42 +4364,17 @@ impl MlxRunner {
         // Concurrency contract: the scheduler must not route the same request_id
         // to two concurrent run() calls — otherwise one call would create a fresh
         // empty state from None while the other holds the extracted state.
-        let (mut state, cold_start_without_siblings) = {
+        let mut state = {
             let mut states = self.states.lock();
-            let existing = states.remove(&item.request_id);
-            let cold_start_without_siblings = existing.is_none() && states.is_empty();
-            let state = existing.unwrap_or_else(|| {
+            states.remove(&item.request_id).unwrap_or_else(|| {
                 RequestState::new_with_shared_fa_pool(
                     self.cfg.layer_count,
                     ctx.map(|c| c.seed).unwrap_or(item.request_id.0),
                     self.fa_block_pool_config,
                     self.shared_fa_block_pool.clone(),
                 )
-            });
-            (state, cold_start_without_siblings)
+            })
         };
-        // A prior request's decode leaves the MLX buffer freelist full of
-        // small step-shaped buffers that a fresh multi-token prefill cannot
-        // reuse, roughly doubling its forward wall (see
-        // `AX_MLX_COLD_PREFILL_CLEAR_CACHE`). Flush it once at the request
-        // boundary — never mid-request, and never while a sibling request
-        // could still recycle those buffers.
-        if cold_start_without_siblings
-            && matches!(item.mode, ExecutionMode::Prefill)
-            && crate::fastpath::cold_prefill_clear_cache_enabled()
-        {
-            if std::env::var("AX_MLX_PREFILL_TIME_DEBUG").as_deref() == Ok("1") {
-                eprintln!("AX_PREFILL_TIME_DEBUG cold_prefill_clear_cache fired");
-            }
-            mlx_sys::transforms::clear_cache();
-        } else if std::env::var("AX_MLX_PREFILL_TIME_DEBUG").as_deref() == Ok("1")
-            && matches!(item.mode, ExecutionMode::Prefill)
-        {
-            eprintln!(
-                "AX_PREFILL_TIME_DEBUG cold_prefill_clear_cache skipped cold_start={}",
-                cold_start_without_siblings
-            );
-        }
         // WS-M3: when multimodal prefix reuse is enabled, restore like text
         // (media identity is folded into the prefix key via media_key).
         // `None` = media present without a digest; restore and store both

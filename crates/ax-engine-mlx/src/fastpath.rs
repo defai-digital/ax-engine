@@ -355,26 +355,6 @@ env_flag!(
 );
 
 env_flag_default_on!(
-    /// `AX_MLX_COLD_PREFILL_CLEAR_CACHE` — call MLX `clear_cache()` once when
-    /// a new request begins its cold prefill and no sibling request is
-    /// resident on the runner.
-    ///
-    /// **Default: ON** (kill-switch via `AX_MLX_COLD_PREFILL_CLEAR_CACHE=0`).
-    ///
-    /// High-allocation MoE decode fills the MLX buffer freelist with
-    /// thousands of small expert-shaped buffers; the next request's
-    /// multi-token prefill allocates large activations that miss that
-    /// freelist, and its forward wall measured ~2x slower than a
-    /// fresh-process prefill (M5 Max Gemma 4 26B-A4B 4-bit p128: rep1
-    /// 126 ms vs rep2+ 247 ms with prefix caches disabled; gen=1 A/B pins
-    /// the pollution to the intervening decode). Unlike the rejected
-    /// per-chunk clear above, this clears once per request boundary, and
-    /// only when no other request could reuse the cached buffers.
-    cold_prefill_clear_cache_enabled,
-    "AX_MLX_COLD_PREFILL_CLEAR_CACHE"
-);
-
-env_flag_default_on!(
     /// `AX_MLX_ROTATING_SLIDING_DECODE` — use a rotating backing store for
     /// sliding-window KV layers on rollback-free direct greedy decode.
     ///
