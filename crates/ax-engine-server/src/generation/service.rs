@@ -235,6 +235,20 @@ impl ModelExecutionArbiter {
         }
     }
 
+    /// True when the arbiter has ever served (or is serving) more than one
+    /// model — the ground-truth multi-model signal used to back up the
+    /// per-service adaptive-isolation flag, whose /load wiring can race
+    /// publish/attach ordering.
+    fn tracks_multiple_models(&self, model_id: &str) -> bool {
+        let state = self.state.lock();
+        state
+            .last_activity
+            .keys()
+            .chain(state.waiters.keys())
+            .chain(state.held_models.iter())
+            .any(|other| other.as_str() != model_id)
+    }
+
     fn has_recent_sibling_activity(&self, model_id: &str, recent_for: Duration) -> bool {
         let now = Instant::now();
         let state = self.state.lock();
@@ -1390,15 +1404,47 @@ fn advance_shared_engine(
     // quanta alone are not enough; the worker-level burst must also stay
     // under the stream-gap SLO so Qwen decode kernels keep getting airtime.
     let mut sibling_active_for_burst = false;
-    if let Some(target) = execution_target.as_ref().filter(|_| {
+    if std::env::var_os("AX_SERVER_SCHED_DEBUG").is_some() {
+        let gate = execution_target.as_ref().map(|target| {
+            service_state
+                .adaptive_prefill_isolation
+                .load(Ordering::Acquire)
+                || target
+                    .arbiter
+                    .tracks_multiple_models(target.model_id.as_ref())
+        });
+        eprintln!("AX_SCHED_DEBUG tick gate={gate:?}");
+    }
+    // Gate on the explicit per-service flag OR the arbiter's own view of
+    // multi-model reality. The /load wiring that sets the flag on the
+    // published service has a publish/attach ordering race (see the
+    // comment in model_load.rs) and S1 arbiter metrics proved the flag
+    // dark on the added model: one 9.18 s engine_step turn = 32 fair
+    // quanta bursted together while the sibling starved. The arbiter's
+    // activity map cannot go stale the same way: two models in it means
+    // multi-model load, full stop.
+    if let Some(target) = execution_target.as_ref().filter(|target| {
         service_state
             .adaptive_prefill_isolation
             .load(Ordering::Acquire)
+            || target
+                .arbiter
+                .tracks_multiple_models(target.model_id.as_ref())
     }) {
         let sibling_active = target.arbiter.has_recent_sibling_activity(
             target.model_id.as_ref(),
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
+        if std::env::var_os("AX_SERVER_SCHED_DEBUG").is_some() {
+            let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
+            eprintln!(
+                "AX_SCHED_DEBUG model={} sibling_active={sibling_active} fair_enabled={enabled} fair_tokens={current_tokens} inflight={inflight} adaptive_tokens={}",
+                target.model_id,
+                service_state
+                    .adaptive_prefill_tokens
+                    .load(Ordering::Acquire),
+            );
+        }
         // Cap burst whenever a sibling is active (exclusive or concurrent).
         sibling_active_for_burst = sibling_active;
         let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
@@ -1424,6 +1470,29 @@ fn advance_shared_engine(
             } else {
                 current
             };
+            // Never exceed the operator's --prefill-chunk: larger forwards
+            // can become ring-ineligible once a sliding-window ring rotates
+            // (ordered-append invariant panics at kv_cache.rs:2065).
+            let adjusted = match session.mlx_prefill_chunk_limit() {
+                Some(limit) => adjusted.min(limit as u32),
+                None => adjusted,
+            };
+            // Under exclusive long-prefill isolation the sibling cannot
+            // interleave mid-prefill anyway, so a sub-chunk quantum has no
+            // fairness value and only multiplies the per-chunk
+            // cache-materialization evals whose cost grows with cache
+            // length (S1 teardown: 55 x 255-token chunks = 10.1 s of eval
+            // vs 0.63 ms/token at 512). Pin the quantum to the operator
+            // chunk in that mode; dual-hold keeps the adaptive size.
+            let adjusted = if long_prefill_exclusive_enabled() {
+                session
+                    .mlx_prefill_chunk_limit()
+                    .and_then(|limit| u32::try_from(limit).ok())
+                    .filter(|&limit| limit > 0)
+                    .unwrap_or(adjusted)
+            } else {
+                adjusted
+            };
             service_state
                 .adaptive_prefill_tokens
                 .store(adjusted, Ordering::Release);
@@ -1432,15 +1501,25 @@ fn advance_shared_engine(
             // Default off so dual-hold can hide interactive decode under long
             // Gemma prefill (S1 thr). Adaptive quantum sizes the turn for gap.
             target.arbiter.mark_long_prefill_quantum();
+            // Sibling active: ring-rotated multi-token prefill keeps SWA
+            // layers at O(window + chunk) storage so the sibling stream and a
+            // long prefill contend less (S1 dual-model A/B: Qwen 19.65 vs
+            // 17.74 tok/s, Gemma leg 8096 vs 9141 ms).
+            EngineSession::set_native_sibling_prefill_rotation(true);
             if !enabled || current_tokens != adjusted {
                 session.set_multi_prefill_fair(true, adjusted, inflight);
             }
         } else {
             // Sibling idle: restore single-model prefill throughput.
             let start = adaptive_prefill_latency_tokens_per_step();
+            let start = match session.mlx_prefill_chunk_limit() {
+                Some(limit) => start.min(limit as u32),
+                None => start,
+            };
             service_state
                 .adaptive_prefill_tokens
                 .store(start, Ordering::Release);
+            EngineSession::set_native_sibling_prefill_rotation(false);
             if enabled {
                 session.set_multi_prefill_fair(false, 0, inflight);
             }
@@ -1474,7 +1553,20 @@ fn advance_shared_engine(
             } else {
                 STREAM_ENGINE_STEP_BURST
             };
-            if active_streams.len() == 1 && request_ids.len() == 1 && engine_burst > 1 {
+            // A multi-token step is a prefill quantum, not interactive
+            // decode. Under sibling load the arbiter turn must stay
+            // per-quantum so the waiting sibling interleaves — bursting
+            // across quanta re-monolithizes the long prefill inside one
+            // turn (S1 measured: one 9.18 s engine_step turn = 32 adaptive
+            // quanta, sibling decode starved for the entire window).
+            let step_is_prefill_quantum = |state: &ServiceState| {
+                state.last_step_scheduled_tokens.load(Ordering::Acquire) >= 2
+            };
+            if active_streams.len() == 1
+                && request_ids.len() == 1
+                && engine_burst > 1
+                && !(sibling_active_for_burst && step_is_prefill_quantum(service_state))
+            {
                 let request_id = request_ids[0];
                 for _ in 1..engine_burst {
                     if !should_continue_single_stream_burst(
@@ -1493,6 +1585,9 @@ fn advance_shared_engine(
                                 &report,
                                 service_state,
                             );
+                            if sibling_active_for_burst && step_is_prefill_quantum(service_state) {
+                                break;
+                            }
                         }
                         Err(_) => break,
                     }

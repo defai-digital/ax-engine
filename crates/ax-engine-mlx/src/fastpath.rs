@@ -342,6 +342,25 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_FUSED_PREFILL_ATTENTION` — collapse the offset-0 multi-token
+    /// prefill attention chain (attn RMSNorm → packed-QKV qmm → per-head QK
+    /// norm → RoPE → maskless "causal" SDPA → o-proj qmm) into one C++ shim
+    /// call per layer (mlxcel `fused_causal_prefill_attention` residual,
+    /// mlx_cxx_bridge.cpp ~4028).
+    ///
+    /// **Default: OFF** (opt-in A/B). Phase-1 eligibility is strict: first
+    /// chunk only (`token_offset == 0`, empty cache), packed affine QKV,
+    /// Gemma-family text layers without KV sharing, mrope, value norm, rope
+    /// freq tables, rings, or protected prefixes; sliding-window layers only
+    /// when `seq <= window` (causal ≡ windowed there). SDPA runs in the
+    /// model dtype via MLX fast SDPA rather than the portable
+    /// full-precision route, so outputs are close-but-not-bit-identical —
+    /// keep opt-in until a greedy token-exactness pass is recorded.
+    fused_prefill_attention_enabled,
+    "AX_MLX_FUSED_PREFILL_ATTENTION"
+);
+
+env_flag!(
     /// `AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK` — after each *intermediate*
     /// prefill chunk is evaluated, call MLX `clear_cache()` (return freelist
     /// to the OS / pool) before building the next chunk's graph.
@@ -353,6 +372,58 @@ env_flag!(
     prefill_clear_cache_per_chunk_enabled,
     "AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK"
 );
+
+/// `AX_MLX_PREFILL_TIME_DEBUG=1` — shared gate for prefill timing/engagement
+/// diagnostics printed to stderr (see also the per-chunk build/eval split in
+/// `generate.rs`). Diagnostic only.
+pub fn prefill_time_debug_env() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("AX_MLX_PREFILL_TIME_DEBUG").as_deref() == Ok("1"))
+}
+
+/// Multi-model (sibling-resident) prefill-rotation hint.
+///
+/// Set by the server when more than one model is resident. Ring-rotated
+/// multi-token prefill keeps SWA layers at O(window + chunk) storage, which
+/// the S1 dual-model contract (Qwen3.5-9B stream + Gemma 4 12B long prefill,
+/// M5 Max) measured as a decisive win over ordered prefill: Qwen stream
+/// 19.65 vs 17.74 tok/s and Gemma prefill leg 8096 vs 9141 ms. Exclusive
+/// single-model sessions keep ordered prefill (the
+/// `AX_MLX_ROTATING_SLIDING_PREFILL` doc records the long-decode ring-carry
+/// cost that motivated the default), so this hint scopes the rotation to
+/// exactly the topology where it wins. `AX_MLX_ROTATING_SLIDING_PREFILL=1`
+/// still forces rotation everywhere; `=0` only clears the env opt-in, not
+/// this hint.
+static SIBLING_PREFILL_ROTATION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Server hook: flag whether sibling models are resident (see
+/// [`sibling_prefill_rotation`]).
+pub fn set_sibling_prefill_rotation(enabled: bool) {
+    SIBLING_PREFILL_ROTATION.store(enabled, std::sync::atomic::Ordering::Release);
+}
+
+/// Whether sibling-resident prefill rotation is currently requested.
+///
+/// `AX_MLX_SIBLING_PREFILL_ROTATION=0|off|false` hard-forces the hint off
+/// (and `=1|on|true` forces it on) regardless of the server hook, so
+/// A/B teardowns can isolate ring-rotated prefill storage. Unset keeps
+/// the hint-driven behavior unchanged.
+pub fn sibling_prefill_rotation() -> bool {
+    static OVERRIDE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    match OVERRIDE.get_or_init(|| {
+        std::env::var("AX_MLX_SIBLING_PREFILL_ROTATION")
+            .ok()
+            .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+                "0" | "off" | "false" => Some(false),
+                "1" | "on" | "true" => Some(true),
+                _ => None,
+            })
+    }) {
+        Some(forced) => *forced,
+        None => SIBLING_PREFILL_ROTATION.load(std::sync::atomic::Ordering::Acquire),
+    }
+}
 
 env_flag_default_on!(
     /// `AX_MLX_ROTATING_SLIDING_DECODE` — use a rotating backing store for

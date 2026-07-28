@@ -738,9 +738,341 @@ fn layer_forward_internal(
     let profile_prefill_layer = seq > 1 && prefill_profile_enabled();
     let profile_forward_layer = profile_decode_layer || profile_prefill_layer;
 
+    // Opt-in one-call fused offset-0 prefill attention (mlxcel residual; see
+    // `AX_MLX_FUSED_PREFILL_ATTENTION` in fastpath). Strict Phase-1 gate: the
+    // fused C++ path implements exactly rms_norm → packed affine QKV →
+    // per-head QK rms_norm → rope(theta, offset 0) → maskless-causal SDPA →
+    // o-proj, so every feature outside that contract falls through to the
+    // portable path below.
+    let fused_prefill = 'fused: {
+        let dbg = fastpath::prefill_time_debug_env();
+        if !fastpath::fused_prefill_attention_enabled() || seq <= 1 {
+            break 'fused None;
+        }
+        // Offset chunks (chunked prefill continuation) fuse via the two-stage
+        // qkv_rope -> cache append -> sdpa_oproj pair; that pair is only
+        // exact for full-attention layers, where bottom-right "causal"
+        // matches the portable mask over the whole cached history.
+        let offset_chunk = token_offset != 0 || cache.seq_len() != 0;
+        let gate_reason = if kv_source.is_some() {
+            Some("kv_source")
+        } else if mrope.is_some() {
+            Some("mrope")
+        } else if !offset_chunk && ring_layout.is_some() {
+            Some("ring_layout")
+        } else if protected_prefix_window.is_some() {
+            Some("protected_prefix")
+        } else if !matches!(cfg.model_family.as_str(), "gemma4" | "gemma3") {
+            Some("family")
+        } else if !matches!(head_dim, 64 | 80 | 128 | 256) {
+            // Mirrors mlxcel's NAX gate: fast SDPA only has steel kernels
+            // for these head dims; anything else (Gemma 4 global layers at
+            // 512) hits MLX's slow reference path and loses to the portable
+            // route (measured +0.4ms offset-0, +8ms offset chunks on 12B).
+            Some("head_dim")
+        } else if offset_chunk && token_offset == 0 {
+            Some("cache_ahead_of_offset")
+        } else if !offset_chunk && sliding_window.is_some_and(|window| seq > window) {
+            Some("sliding_gt_window")
+        } else {
+            None
+        };
+        if let Some(reason) = gate_reason {
+            if dbg {
+                eprintln!("AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: {reason}");
+            }
+            break 'fused None;
+        }
+        let Some(o_proj) = w.o_proj.as_ref() else {
+            break 'fused None;
+        };
+        if o_proj.mode != "affine" || o_proj.scales.is_none() {
+            break 'fused None;
+        }
+        let affine_matching = |qw: &crate::weights::QuantizedWeight| {
+            qw.mode == "affine"
+                && qw.group_size == o_proj.group_size
+                && qw.bits == o_proj.bits
+                && qw.scales.is_some()
+        };
+        let kv_heads = cfg.n_kv_heads;
+        let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+        if offset_chunk {
+            let (Some(q_proj), Some(k_proj)) = (w.q_proj.as_ref(), w.k_proj.as_ref()) else {
+                if dbg {
+                    eprintln!(
+                        "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: offset_packed"
+                    );
+                }
+                break 'fused None;
+            };
+            // Value-from-key layers (v_proj absent) reuse the K projection
+            // weights: identical op on identical input matches the portable
+            // `v_raw = k_raw` reuse bit-for-bit.
+            let v_proj = w.v_proj.as_ref().unwrap_or(k_proj);
+            // Head counts derive from the projection out-features like the
+            // portable path (Gemma 4 global layers: wider heads, MQA KV).
+            let n_heads_layer = q_proj.weight.shape()[0] as usize / head_dim;
+            let kv_heads_layer = k_proj.weight.shape()[0] as usize / head_dim;
+            if !affine_matching(q_proj) || !affine_matching(k_proj) || !affine_matching(v_proj) {
+                break 'fused None;
+            }
+            let Some((q_rope, k_rope, v)) = mlx_sys::ops::fused_qkv_rope_split(
+                hidden,
+                &w.attn_norm,
+                cfg.rms_norm_eps,
+                (
+                    &q_proj.weight,
+                    q_proj.scales.as_ref().expect("checked above"),
+                    q_proj.biases.as_ref(),
+                ),
+                (
+                    &k_proj.weight,
+                    k_proj.scales.as_ref().expect("checked above"),
+                    k_proj.biases.as_ref(),
+                ),
+                (
+                    &v_proj.weight,
+                    v_proj.scales.as_ref().expect("checked above"),
+                    v_proj.biases.as_ref(),
+                ),
+                w.q_norm.as_ref(),
+                w.k_norm.as_ref(),
+                cfg.rms_norm_eps,
+                v_norm_no_scale,
+                w.v_proj.is_none(),
+                n_heads_layer as i32,
+                kv_heads_layer as i32,
+                head_dim as i32,
+                rope_dims as i32,
+                rope_theta,
+                rope_freqs,
+                token_offset as i32,
+                q_proj.group_size,
+                q_proj.bits,
+                None,
+            ) else {
+                if dbg {
+                    eprintln!(
+                        "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: shim_error"
+                    );
+                }
+                break 'fused None;
+            };
+            // Mirror the portable retained-window policy so sliding-window
+            // and rotated-ring layers keep their exact cache geometry.
+            let retained_window = if ring_layout.is_some() {
+                sliding_window
+            } else if sliding_window.is_some() && fastpath::multi_token_window_views_enabled() {
+                match shared_mask {
+                    Some(Some(mask)) => mask.shape().last().map(|&len| len as usize),
+                    _ => sliding_window.map(|window| window + seq - 1),
+                }
+            } else {
+                None
+            };
+            let attention_kv = cache.append_with_retained_window_for_attention(
+                layer_idx,
+                k_rope,
+                v,
+                retained_window,
+            );
+            let key_len = attention_kv.key_len();
+            let (k_full, v_full) = attention_kv.into_dense();
+            // Mirror the portable mask selection: hoisted shared mask when
+            // its key length matches, ring mask when rotated, plain
+            // windowed-causal otherwise. `None` means maskless bottom-right
+            // causal inside the shim.
+            let shared_usable = shared_mask.is_some_and(|m| match m.as_ref() {
+                Some(mask) => mask.shape().last().is_some_and(|&k| k as usize == key_len),
+                None => true,
+            });
+            let local_mask: Option<MlxArray> = if shared_usable {
+                None
+            } else {
+                match ring_layout {
+                    Some(ring) if ring.needs_mask(seq) && key_len == ring.capacity => Some(
+                        create_ring_sliding_mask(seq, ring.window, ring.capacity, ring.write_start),
+                    ),
+                    _ => attention_mask_array(seq, key_len, sliding_window),
+                }
+            };
+            let sdpa_mask: Option<&MlxArray> = if shared_usable {
+                shared_mask.and_then(|m| m.as_ref())
+            } else {
+                local_mask.as_ref()
+            };
+            let out = match mlx_sys::ops::fused_sdpa_oproj(
+                &q_rope,
+                &k_full,
+                &v_full,
+                cfg.query_scale,
+                sdpa_mask,
+                &o_proj.weight,
+                o_proj.scales.as_ref().expect("checked above"),
+                o_proj.biases.as_ref(),
+                o_proj.group_size,
+                o_proj.bits,
+                None,
+            ) {
+                Some(out) => {
+                    if dbg {
+                        eprintln!(
+                            "AX_PREFILL_TIME_DEBUG fused_prefill_attention engaged layer={layer_idx} offset={token_offset}"
+                        );
+                    }
+                    if let Some(post_norm) = w.attn_post_norm.as_ref() {
+                        rms_norm(&out, Some(post_norm), cfg.rms_norm_eps, None)
+                    } else {
+                        out
+                    }
+                }
+                None => {
+                    // K/V are already appended, so the portable block below
+                    // must not run; finish with the portable SDPA + o-proj
+                    // helpers over the same appended views and mask.
+                    let fallback_mask: Option<MlxArray> = sdpa_mask.cloned();
+                    let attn = full_precision_attention(
+                        &q_rope,
+                        &k_full,
+                        &v_full,
+                        cfg.query_scale,
+                        seq,
+                        &fallback_mask,
+                    );
+                    let attn_flat =
+                        flatten_attention_output_bhsd(&attn, seq, n_heads_layer, head_dim);
+                    attention_output_projection_with_post_norm(
+                        &attn_flat,
+                        None,
+                        o_proj,
+                        w.attn_post_norm.as_ref(),
+                        cfg.rms_norm_eps,
+                    )
+                }
+            };
+            break 'fused Some(out);
+        }
+        let fused_result = if let Some(packed) = w.qkv_packed.as_ref() {
+            if !affine_matching(packed) {
+                break 'fused None;
+            }
+            mlx_sys::ops::fused_causal_prefill_attention(
+                hidden,
+                &w.attn_norm,
+                cfg.rms_norm_eps,
+                &packed.weight,
+                packed.scales.as_ref().expect("checked above"),
+                packed.biases.as_ref(),
+                w.q_norm.as_ref(),
+                w.k_norm.as_ref(),
+                cfg.rms_norm_eps,
+                v_norm_no_scale,
+                cfg.n_heads as i32,
+                kv_heads as i32,
+                head_dim as i32,
+                rope_dims as i32,
+                rope_theta,
+                rope_freqs,
+                cfg.query_scale,
+                &o_proj.weight,
+                o_proj.scales.as_ref().expect("checked above"),
+                o_proj.biases.as_ref(),
+                packed.group_size,
+                packed.bits,
+                None,
+            )
+        } else if let (Some(q_proj), Some(k_proj)) = (w.q_proj.as_ref(), w.k_proj.as_ref()) {
+            // Value-from-key layers (v_proj absent) reuse the K projection
+            // weights, matching the portable `v_raw = k_raw` reuse.
+            let v_proj = w.v_proj.as_ref().unwrap_or(k_proj);
+            if !affine_matching(q_proj) || !affine_matching(k_proj) || !affine_matching(v_proj) {
+                break 'fused None;
+            }
+            // Head counts derive from the projection out-features like the
+            // portable path (Gemma 4 global layers: wider heads, MQA KV).
+            let n_heads_layer = q_proj.weight.shape()[0] as usize / head_dim;
+            let kv_heads_layer = k_proj.weight.shape()[0] as usize / head_dim;
+            mlx_sys::ops::fused_causal_prefill_attention_split(
+                hidden,
+                &w.attn_norm,
+                cfg.rms_norm_eps,
+                (
+                    &q_proj.weight,
+                    q_proj.scales.as_ref().expect("checked above"),
+                    q_proj.biases.as_ref(),
+                ),
+                (
+                    &k_proj.weight,
+                    k_proj.scales.as_ref().expect("checked above"),
+                    k_proj.biases.as_ref(),
+                ),
+                (
+                    &v_proj.weight,
+                    v_proj.scales.as_ref().expect("checked above"),
+                    v_proj.biases.as_ref(),
+                ),
+                w.q_norm.as_ref(),
+                w.k_norm.as_ref(),
+                cfg.rms_norm_eps,
+                v_norm_no_scale,
+                w.v_proj.is_none(),
+                n_heads_layer as i32,
+                kv_heads_layer as i32,
+                head_dim as i32,
+                rope_dims as i32,
+                rope_theta,
+                rope_freqs,
+                cfg.query_scale,
+                &o_proj.weight,
+                o_proj.scales.as_ref().expect("checked above"),
+                o_proj.biases.as_ref(),
+                q_proj.group_size,
+                q_proj.bits,
+                None,
+            )
+        } else {
+            if dbg {
+                eprintln!(
+                    "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: no_projections"
+                );
+            }
+            break 'fused None;
+        };
+        let Some((out, k_rope, v)) = fused_result else {
+            if dbg {
+                eprintln!("AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: shim_error");
+            }
+            break 'fused None;
+        };
+        if fastpath::prefill_time_debug_env() {
+            eprintln!("AX_PREFILL_TIME_DEBUG fused_prefill_attention engaged layer={layer_idx}");
+        }
+        let retained_window =
+            if sliding_window.is_some() && fastpath::multi_token_window_views_enabled() {
+                match shared_mask {
+                    Some(Some(mask)) => mask.shape().last().map(|&len| len as usize),
+                    _ => sliding_window.map(|window| window + seq - 1),
+                }
+            } else {
+                None
+            };
+        let _ =
+            cache.append_with_retained_window_for_attention(layer_idx, k_rope, v, retained_window);
+        let out = if let Some(post_norm) = w.attn_post_norm.as_ref() {
+            rms_norm(&out, Some(post_norm), cfg.rms_norm_eps, None)
+        } else {
+            out
+        };
+        Some(out)
+    };
+
     // 2-7. QKV projections + RoPE + KV cache append + SDPA.
     let post_attn_started;
-    let attn_proj = {
+    let attn_proj = if let Some(fused) = fused_prefill {
+        post_attn_started = None;
+        fused
+    } else {
         let pre_sdpa_started = profile_forward_layer.then(Instant::now);
         let (q_rope, attention_kv, attn_gate) = if let Some(src_layer) = kv_source {
             // KV-shared layer (Gemma4 layers 24-41): compute Q only.

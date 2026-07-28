@@ -84,6 +84,22 @@ const MULTI_MODEL_PREFILL_ISOLATION_ENV: &str = "AX_SERVER_MULTI_MODEL_PREFILL_I
 // inactivity grace. Operators can opt out through the environment switch.
 const MULTI_MODEL_PREFILL_TOKENS_PER_STEP: u32 = ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP;
 
+/// Static multi-model fair quantum: prefer the operator's --prefill-chunk
+/// when configured. The 256-token throughput default halves the runner's
+/// internal chunk on long prefills, DOUBLING the number of per-chunk
+/// cache-materialization evals whose cost grows with cache length (the
+/// S1 teardown measured 55 x 255-token chunks summing 10.1 s of eval on
+/// the gemma leg vs 0.63 ms/token at 512-token chunks in the bare
+/// runner). Fairness is unaffected where it matters: the adaptive
+/// sibling-active resize still shrinks the quantum under live contention.
+fn multi_model_prefill_quantum(config: &EngineSessionConfig) -> u32 {
+    config
+        .mlx_prefill_chunk
+        .and_then(|chunk| u32::try_from(chunk).ok())
+        .filter(|&chunk| chunk > 0)
+        .unwrap_or(MULTI_MODEL_PREFILL_TOKENS_PER_STEP)
+}
+
 impl MultiModelTarget {
     const fn as_str(self) -> &'static str {
         match self {
@@ -305,7 +321,8 @@ pub(crate) async fn load_model(
         let mut new_config = Arc::unwrap_or_clone(Arc::clone(&live.session_config))
             .with_mlx_model_artifacts_dir(model_path);
         if enforce_prefill_isolation && !new_config.multi_prefill_fair {
-            new_config = new_config.with_multi_prefill_fair(MULTI_MODEL_PREFILL_TOKENS_PER_STEP, 0);
+            let quantum = multi_model_prefill_quantum(&new_config);
+            new_config = new_config.with_multi_prefill_fair(quantum, 0);
         }
         // A memory-constrained replacement must free the outgoing weights
         // before the incoming build. Drain only that model generation; sibling
@@ -1228,9 +1245,10 @@ async fn enable_resident_prefill_isolation(state: &AppState) -> Result<(), HttpE
             continue;
         }
         if !live.session_config.multi_prefill_fair {
+            let quantum = multi_model_prefill_quantum(&live.session_config);
             live.generation_service
-                .execute(|session| {
-                    session.set_multi_prefill_fair(true, MULTI_MODEL_PREFILL_TOKENS_PER_STEP, 0);
+                .execute(move |session| {
+                    session.set_multi_prefill_fair(true, quantum, 0);
                     Ok(())
                 })
                 .await
@@ -1238,7 +1256,7 @@ async fn enable_resident_prefill_isolation(state: &AppState) -> Result<(), HttpE
             if !state.record_multi_prefill_policy(
                 live.model_id.as_ref(),
                 live.generation,
-                MULTI_MODEL_PREFILL_TOKENS_PER_STEP,
+                quantum,
                 0,
             ) {
                 return Err(error_response(

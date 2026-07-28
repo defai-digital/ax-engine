@@ -294,6 +294,18 @@ impl EngineSession {
         ax_engine_mlx::clear_process_caches();
     }
 
+    /// Flag whether a sibling model's work is active in this process so
+    /// multi-token prefill can use ring-rotated sliding KV (S1 dual-model
+    /// contract win) while exclusive single-model sessions keep ordered
+    /// prefill (see `AX_MLX_ROTATING_SLIDING_PREFILL` in ax-engine-mlx
+    /// fastpath docs for the trade).
+    pub fn set_native_sibling_prefill_rotation(enabled: bool) {
+        #[cfg(feature = "mlx-native")]
+        ax_engine_mlx::fastpath::set_sibling_prefill_rotation(enabled);
+        #[cfg(not(feature = "mlx-native"))]
+        let _ = enabled;
+    }
+
     /// Update bounded fair-prefill scheduling for this live session.
     ///
     /// Servers use this when a second model becomes resident: a long prefill
@@ -313,6 +325,12 @@ impl EngineSession {
         self.config.multi_prefill_fair = enabled;
         self.config.max_prefill_tokens_per_request_per_step = max_tokens_per_request_per_step;
         self.config.max_inflight_prefill_requests = max_inflight_prefill_requests;
+    }
+
+    /// The operator-declared MLX prefill chunk (`--prefill-chunk`), the
+    /// ring-safe upper bound for a single multi-token forward.
+    pub fn mlx_prefill_chunk_limit(&self) -> Option<usize> {
+        self.config.mlx_prefill_chunk
     }
 
     /// Return the live fair-prefill policy.

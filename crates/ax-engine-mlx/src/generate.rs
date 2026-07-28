@@ -289,6 +289,24 @@ pub enum CacheOnlyPrefillLayout {
 /// discarded FFN output plus final norm and lm-head projection. KV and linear
 /// attention state are materialised before returning, so the next execution
 /// item can safely continue from `cache.seq_len()`.
+/// Barrier policy at the end of a cache-only prefill invocation.
+///
+/// `Blocking` keeps the historical semantics: the last chunk of the
+/// invocation materialises KV with a blocking `eval`. `AsyncSubmit` is for
+/// INTERMEDIATE scheduler quanta of a longer prompt: the runner already
+/// knows more prefill items follow, so the invocation ends with
+/// `async_eval` instead — the S1 teardown measured 16 blocking
+/// full-cache barriers (291 -> 365 ms each, growing with cache length)
+/// serializing the gemma 8k leg to ~2x the bare-runner rate. Stream
+/// ordering keeps correctness: the next quantum's work serialises behind
+/// the submitted graph, and the request's FINAL quantum still takes the
+/// blocking path before sampling/decode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheOnlyBarrier {
+    Blocking,
+    AsyncSubmit,
+}
+
 pub fn chunked_prefill_cache_only(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -296,6 +314,7 @@ pub fn chunked_prefill_cache_only(
     cache: &mut MlxKVCache,
     chunk_size: usize,
     layout: CacheOnlyPrefillLayout,
+    barrier: CacheOnlyBarrier,
 ) {
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
@@ -314,10 +333,18 @@ pub fn chunked_prefill_cache_only(
             &prompt_tokens[..prefix_len],
             cache,
             chunk_size,
+            barrier,
         );
     }
     if prefix_len < total {
-        cache_only_forward_chunks(cfg, weights, &prompt_tokens[prefix_len..], cache, 1);
+        cache_only_forward_chunks(
+            cfg,
+            weights,
+            &prompt_tokens[prefix_len..],
+            cache,
+            1,
+            barrier,
+        );
     }
 
     if clear_cache_after_split_prefill(cfg.hidden_size_per_layer_input) {
@@ -331,8 +358,10 @@ fn cache_only_forward_chunks(
     prompt_tokens: &[u32],
     cache: &mut MlxKVCache,
     chunk_size: usize,
+    barrier: CacheOnlyBarrier,
 ) {
     let time_debug = prefill_time_debug_enabled();
+    let loop_started = std::time::Instant::now();
     let mut offset = 0usize;
     while offset < prompt_tokens.len() {
         let end = offset
@@ -350,7 +379,9 @@ fn cache_only_forward_chunks(
         let eval_started = std::time::Instant::now();
         if end == prompt_tokens.len() || crate::fastpath::cache_only_chunk_eval_enabled() {
             let is_final = end == prompt_tokens.len();
-            if crate::fastpath::cache_only_chunk_should_async_eval(is_final) {
+            let async_submit = crate::fastpath::cache_only_chunk_should_async_eval(is_final)
+                || (barrier == CacheOnlyBarrier::AsyncSubmit && is_final);
+            if async_submit {
                 async_eval_kv_refs(cache);
             } else {
                 eval_kv_refs(cache);
@@ -358,10 +389,12 @@ fn cache_only_forward_chunks(
         }
         if time_debug {
             eprintln!(
-                "AX_PREFILL_TIME_DEBUG chunk_tokens={} build_us={} eval_us={}",
+                "AX_PREFILL_TIME_DEBUG chunk_tokens={} build_us={} eval_us={} t_ms={} ops={}",
                 chunk.len(),
                 build_us,
-                eval_started.elapsed().as_micros()
+                eval_started.elapsed().as_micros(),
+                loop_started.elapsed().as_millis(),
+                mlx_sys::op_count::op_count_snapshot()
             );
         }
         offset = end;
@@ -428,10 +461,11 @@ pub fn chunked_prefill_with_sampling_buffers(
             }
             if prefill_time_debug_enabled() {
                 eprintln!(
-                    "AX_PREFILL_TIME_DEBUG greedy_cache_only chunk_tokens={} build_us={} eval_us={}",
+                    "AX_PREFILL_TIME_DEBUG greedy_cache_only chunk_tokens={} build_us={} eval_us={} ops={}",
                     chunk.len(),
                     dbg_build_us,
-                    dbg_eval_started.elapsed().as_micros()
+                    dbg_eval_started.elapsed().as_micros(),
+                    mlx_sys::op_count::op_count_snapshot()
                 );
             }
             offset = end;
