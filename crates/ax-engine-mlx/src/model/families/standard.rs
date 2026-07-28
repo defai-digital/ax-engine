@@ -794,9 +794,7 @@ fn layer_forward_internal(
         let kv_heads = cfg.n_kv_heads;
         let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
         if offset_chunk {
-            let (Some(q_proj), Some(k_proj), Some(v_proj)) =
-                (w.q_proj.as_ref(), w.k_proj.as_ref(), w.v_proj.as_ref())
-            else {
+            let (Some(q_proj), Some(k_proj)) = (w.q_proj.as_ref(), w.k_proj.as_ref()) else {
                 if dbg {
                     eprintln!(
                         "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: offset_packed"
@@ -804,6 +802,10 @@ fn layer_forward_internal(
                 }
                 break 'fused None;
             };
+            // Value-from-key layers (v_proj absent) reuse the K projection
+            // weights: identical op on identical input matches the portable
+            // `v_raw = k_raw` reuse bit-for-bit.
+            let v_proj = w.v_proj.as_ref().unwrap_or(k_proj);
             if !affine_matching(q_proj) || !affine_matching(k_proj) || !affine_matching(v_proj)
             {
                 break 'fused None;
@@ -934,9 +936,10 @@ fn layer_forward_internal(
                 packed.bits,
                 None,
             )
-        } else if let (Some(q_proj), Some(k_proj), Some(v_proj)) =
-            (w.q_proj.as_ref(), w.k_proj.as_ref(), w.v_proj.as_ref())
-        {
+        } else if let (Some(q_proj), Some(k_proj)) = (w.q_proj.as_ref(), w.k_proj.as_ref()) {
+            // Value-from-key layers (v_proj absent) reuse the K projection
+            // weights, matching the portable `v_raw = k_raw` reuse.
+            let v_proj = w.v_proj.as_ref().unwrap_or(k_proj);
             if !affine_matching(q_proj) || !affine_matching(k_proj) || !affine_matching(v_proj) {
                 break 'fused None;
             }
