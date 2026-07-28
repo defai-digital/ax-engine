@@ -1,4 +1,4 @@
-use ax_engine_sdk::RequestMultimodalInputs;
+use ax_engine_sdk::{RequestMultimodalInputs, VllmXargs};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -91,13 +91,12 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     pub(crate) repetition_penalty: Option<f32>,
     #[serde(default)]
     pub(crate) repetition_context_size: Option<u32>,
-    /// Former delegated-runtime extension, retained only for an explicit
-    /// migration error directing NVIDIA traffic to AX Serving.
+    /// vLLM extension. Rejected unless the selected backend is vLLM.
     #[serde(default)]
     pub(crate) skip_special_tokens: Option<bool>,
-    /// Former vLLM extension, retained only for an explicit migration error.
+    /// Typed vLLM-only n-gram extension. Unknown keys fail deserialization.
     #[serde(default)]
-    pub(crate) vllm_xargs: Option<Value>,
+    pub(crate) vllm_xargs: Option<VllmXargs>,
     #[serde(default)]
     pub(crate) stop: Option<OpenAiStopInput>,
     #[serde(default)]
@@ -156,13 +155,12 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) repetition_penalty: Option<f32>,
     #[serde(default)]
     pub(crate) repetition_context_size: Option<u32>,
-    /// Former delegated-runtime extension, retained only for an explicit
-    /// migration error directing NVIDIA traffic to AX Serving.
+    /// vLLM extension. Rejected unless the selected backend is vLLM.
     #[serde(default)]
     pub(crate) skip_special_tokens: Option<bool>,
-    /// Former vLLM extension, retained only for an explicit migration error.
+    /// Typed vLLM-only n-gram extension. Unknown keys fail deserialization.
     #[serde(default)]
-    pub(crate) vllm_xargs: Option<Value>,
+    pub(crate) vllm_xargs: Option<VllmXargs>,
     #[serde(default)]
     pub(crate) stop: Option<OpenAiStopInput>,
     #[serde(default)]

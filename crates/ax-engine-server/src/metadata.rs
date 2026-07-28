@@ -1,4 +1,7 @@
-use ax_engine_sdk::{RuntimeReport, SelectedBackend};
+use ax_engine_sdk::{
+    RuntimeReport, SelectedBackend, UNLIMITED_OCR_DEFAULT_CONTEXT_LENGTH,
+    UNLIMITED_OCR_DEFAULT_MAX_OUTPUT_TOKENS, VllmModelProfile,
+};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -194,6 +197,12 @@ fn model_card(live: &LiveState) -> ModelCard {
     let openai_text = openai_text_supported_live(live);
     let whisper = whisper_supported_live(live);
     let native_multimodal = native_processed_multimodal_support_live(live);
+    let delegated_multimodal = delegated_multimodal_support_live(live);
+    let advertised_multimodal = NativeProcessedMultimodalSupport {
+        image: native_multimodal.image || delegated_multimodal.image,
+        audio: native_multimodal.audio || delegated_multimodal.audio,
+        video: native_multimodal.video || delegated_multimodal.video,
+    };
     let openai_tool_calling = openai_tool_calling_supported_live(live, openai_text);
     let openai_reasoning = openai_reasoning_supported_live(live, openai_text);
     ModelCard {
@@ -202,7 +211,7 @@ fn model_card(live: &LiveState) -> ModelCard {
         owned_by: MODEL_OWNER,
         capabilities: model_capabilities(
             openai_text,
-            native_multimodal,
+            advertised_multimodal,
             openai_tool_calling,
             openai_reasoning,
             whisper,
@@ -319,6 +328,7 @@ pub(crate) fn model_supports_reasoning(live: &LiveState) -> bool {
 
 pub(crate) fn model_supports_image(live: &LiveState) -> bool {
     native_processed_multimodal_support_live(live).image
+        || delegated_multimodal_support_live(live).image
 }
 
 /// Single source of truth for tool-call capability, shared by `/v1/models`
@@ -426,6 +436,21 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
     }
 }
 
+fn delegated_multimodal_support_live(live: &LiveState) -> NativeProcessedMultimodalSupport {
+    if live.runtime_report.selected_backend != SelectedBackend::Vllm {
+        return NativeProcessedMultimodalSupport::default();
+    }
+    let unlimited_ocr = live
+        .session_config
+        .vllm_backend
+        .as_ref()
+        .is_some_and(|config| config.server().model_profile == VllmModelProfile::UnlimitedOcr);
+    NativeProcessedMultimodalSupport {
+        image: unlimited_ocr,
+        ..NativeProcessedMultimodalSupport::default()
+    }
+}
+
 fn family_from_manifest(manifest: &Value) -> Option<String> {
     manifest
         .get("model_family")
@@ -487,7 +512,12 @@ fn openai_text_supported_live(live: &LiveState) -> bool {
     !whisper_supported_live(live)
         && matches!(
             live.runtime_report.selected_backend,
-            SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated | SelectedBackend::Mlx
+            SelectedBackend::LlamaCpp
+                | SelectedBackend::MlxLmDelegated
+                | SelectedBackend::TensorRtEdgeLlm
+                | SelectedBackend::TensorRtLlm
+                | SelectedBackend::Vllm
+                | SelectedBackend::Mlx
         )
 }
 
@@ -500,6 +530,24 @@ fn whisper_supported_live(live: &LiveState) -> bool {
 /// must pass the snapshot they are already serving the request from, never a
 /// fresh one, so all fields in a response come from the same model.
 pub(crate) fn context_length(live: &LiveState) -> u32 {
+    if live.runtime_report.selected_backend == SelectedBackend::Vllm {
+        if let Some(max_model_len) = live
+            .session_config
+            .vllm_readiness
+            .as_ref()
+            .and_then(|readiness| readiness.max_model_len)
+        {
+            return max_model_len;
+        }
+        if live
+            .session_config
+            .vllm_backend
+            .as_ref()
+            .is_some_and(|config| config.server().model_profile == VllmModelProfile::UnlimitedOcr)
+        {
+            return UNLIMITED_OCR_DEFAULT_CONTEXT_LENGTH;
+        }
+    }
     live.session_config
         .kv_config
         .block_size_tokens
@@ -507,6 +555,15 @@ pub(crate) fn context_length(live: &LiveState) -> u32 {
 }
 
 pub(crate) fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u32 {
+    if live.runtime_report.selected_backend == SelectedBackend::Vllm
+        && live
+            .session_config
+            .vllm_backend
+            .as_ref()
+            .is_some_and(|config| config.server().model_profile == VllmModelProfile::UnlimitedOcr)
+    {
+        return UNLIMITED_OCR_DEFAULT_MAX_OUTPUT_TOKENS.min(context_length);
+    }
     // Advertise the per-request output budget bounded by the scheduler batch
     // width and the model context window. A previous fixed `512` ceiling
     // under-reported the real capacity (the model can generate up to its full

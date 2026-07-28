@@ -51,7 +51,12 @@ pub(crate) fn validate_openai_text_backend(
     }
     if !matches!(
         live.runtime_report.selected_backend,
-        SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated | SelectedBackend::Mlx
+        SelectedBackend::LlamaCpp
+            | SelectedBackend::MlxLmDelegated
+            | SelectedBackend::TensorRtEdgeLlm
+            | SelectedBackend::TensorRtLlm
+            | SelectedBackend::Vllm
+            | SelectedBackend::Mlx
     ) {
         return Err(error_response(
             StatusCode::BAD_REQUEST,

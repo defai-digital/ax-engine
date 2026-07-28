@@ -5,9 +5,10 @@ use crate::openai::chat_requests::{
 };
 use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
-    build_openai_chat_request_offloading_media, build_openai_llama_cpp_chat_request,
-    build_openai_mlx_lm_chat_request, chat_template_kwargs_for_model_id,
-    openai_chat_prompt_render_options, openai_chat_stop_sequences,
+    build_openai_chat_request_offloading_media, build_openai_edge_llm_chat_request,
+    build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
+    chat_template_kwargs_for_model_id, openai_chat_prompt_render_options,
+    openai_chat_stop_sequences,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::openai::validation::validate_openai_request;
@@ -24,7 +25,8 @@ use super::fixtures::{
     llama_cpp_server_state, minimal_tokenizer_artifact, mlx_lm_delegated_state,
     native_mlx_openai_builder_state, openai_first_choice, sample_gemma4_multimodal_inputs,
     sample_openai_chat_request, sample_openai_chat_request_with_role,
-    spawn_llama_cpp_completion_server, test_app_state,
+    spawn_llama_cpp_completion_server, tensor_rt_edge_llm_state, tensor_rt_llm_state,
+    test_app_state,
 };
 
 #[test]
@@ -2613,6 +2615,150 @@ async fn delegated_openai_chat_rejects_input_tokens_extension() {
     );
 }
 
+fn delegated_png_data_uri() -> (String, &'static [u8]) {
+    use base64::Engine as _;
+
+    let png = include_bytes!("fixtures/gemma4_golden/image_noresize.png").as_slice();
+    let data_uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    (data_uri, png)
+}
+
+#[tokio::test]
+async fn tensor_rt_llm_chat_preserves_inline_image_url_content() {
+    let state = tensor_rt_llm_state("http://127.0.0.1:8000".to_string());
+    let live = state.snapshot();
+    let (data_uri, _) = delegated_png_data_uri();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen2.5-VL-3B-Instruct",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "transcribe"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": data_uri, "detail": "high"}
+                }
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("multimodal TensorRT-LLM request should deserialize");
+
+    let built = build_openai_edge_llm_chat_request(&live, request)
+        .expect("TensorRT-LLM image request should build");
+    let message = serde_json::to_value(&built.chat_request.messages[0])
+        .expect("delegated message should serialize");
+
+    assert_eq!(message["content"][0]["type"], "text");
+    assert_eq!(message["content"][1]["type"], "image_url");
+    assert_eq!(
+        message["content"][1]["image_url"]["url"],
+        delegated_png_data_uri().0
+    );
+    assert_eq!(message["content"][1]["image_url"]["detail"], "high");
+}
+
+#[tokio::test]
+async fn edge_llm_chat_stages_inline_image_for_loopback_server() {
+    let state = tensor_rt_edge_llm_state("http://127.0.0.1:8090".to_string());
+    let live = state.snapshot();
+    let (data_uri, png) = delegated_png_data_uri();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen2.5-VL-3B-Instruct",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": data_uri}},
+                {"type": "text", "text": "transcribe"}
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("multimodal Edge-LLM request should deserialize");
+
+    let built = build_openai_edge_llm_chat_request(&live, request)
+        .expect("co-located Edge-LLM image request should build");
+    let message = serde_json::to_value(&built.chat_request.messages[0])
+        .expect("delegated message should serialize");
+    let path = std::path::PathBuf::from(
+        message["content"][0]["image"]
+            .as_str()
+            .expect("Edge-LLM image part should contain a staged path"),
+    );
+
+    assert_eq!(message["content"][0]["type"], "image");
+    assert_eq!(
+        fs::read(&path).expect("staged Edge-LLM image should be readable"),
+        png
+    );
+    drop(built);
+    assert!(
+        !path.exists(),
+        "request-scoped Edge-LLM image should be removed after request drop"
+    );
+}
+
+#[tokio::test]
+async fn edge_llm_chat_rejects_inline_image_for_remote_server() {
+    let state = tensor_rt_edge_llm_state("http://192.0.2.10:8090".to_string());
+    let live = state.snapshot();
+    let (data_uri, _) = delegated_png_data_uri();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen2.5-VL-3B-Instruct",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "transcribe"},
+                {"type": "image_url", "image_url": {"url": data_uri}}
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("multimodal Edge-LLM request should deserialize");
+
+    let error = match build_openai_edge_llm_chat_request(&live, request) {
+        Ok(_) => panic!("remote Edge-LLM cannot consume AX-local staged paths"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(error.1.error.code.as_deref(), Some("unsupported_modality"));
+    assert!(
+        error.1.error.message.contains("co-located loopback"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
+}
+
+#[tokio::test]
+async fn tensor_rt_l2_chat_rejects_non_image_modalities() {
+    let state = tensor_rt_llm_state("http://127.0.0.1:8000".to_string());
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen2.5-VL-3B-Instruct",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "audio_url",
+                "audio_url": {"url": "data:audio/wav;base64,AAAA"}
+            }]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("audio request should deserialize");
+
+    let error = match build_openai_edge_llm_chat_request(&live, request) {
+        Ok(_) => panic!("TensorRT L2 image scope must not silently forward audio"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(error.1.error.code.as_deref(), Some("unsupported_modality"));
+}
+
 #[tokio::test]
 async fn delegated_openai_chat_rejects_gemma4_multimodal_inputs() {
     let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
@@ -3026,47 +3172,6 @@ async fn openai_chat_completions_endpoint_rejects_injected_role() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_invalid_request_response(&json, "unsupported chat role");
-}
-
-#[tokio::test]
-async fn openai_chat_endpoint_redirects_removed_cuda_extensions_to_ax_serving() {
-    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
-
-    for (field, value) in [
-        ("skip_special_tokens", json!(true)),
-        ("vllm_xargs", json!({"priority": 7})),
-    ] {
-        let mut body = json!({
-            "messages": [{"role": "user", "content": "hello"}],
-            "max_tokens": 2
-        });
-        body.as_object_mut()
-            .expect("chat body is an object")
-            .insert(field.to_string(), value);
-        let (status, response) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("content-type", "application/json")
-                .body(Body::from(json_request_body(&body)))
-                .expect("request should build"),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{field}");
-        assert_eq!(
-            response["error"]["code"],
-            json!("unsupported_parameter"),
-            "{field}"
-        );
-        assert!(
-            response["error"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("moved to AX Serving")),
-            "{field}: {response}"
-        );
-    }
 }
 
 #[tokio::test]
