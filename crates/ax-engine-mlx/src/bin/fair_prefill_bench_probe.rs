@@ -124,6 +124,71 @@ fn request_context(
     }
 }
 
+/// Run `decode_tokens` single-token decode steps after a completed prefill so
+/// repeated-request probes exercise the same decode-then-prefill sequence the
+/// serving path produces (`AX_DECODE_TOKENS`). Returns the last sampled token.
+fn run_decode_steps(
+    runner: &MlxRunner,
+    prompt_len: usize,
+    first_token: u32,
+    decode_tokens: usize,
+    request_id: RequestId,
+    sampling: SamplingConfig,
+    next_step_id: &mut u64,
+) -> Result<u32, String> {
+    let mut token = first_token;
+    for step in 0..decode_tokens {
+        let position = prompt_len + step;
+        let mut ctx = request_context(request_id, prompt_len, prompt_len, sampling);
+        ctx.generated_len = (step + 1) as u32;
+        ctx.max_output_tokens = (decode_tokens + 2) as u32;
+        let input = RunnerInput {
+            block_size_tokens: 16,
+            memory_pressure: None,
+            execution_batch: ExecutionBatch {
+                step_id: StepId(*next_step_id),
+                model_id: "fair-prefill-bench-probe".into(),
+                execution_plan_ref: None,
+                items: vec![ExecutionItem {
+                    request_id,
+                    mode: ExecutionMode::Decode,
+                    planned_work_unit: ax_engine_core::WorkUnitKind::TokenDecode,
+                    input_token_slice: vec![token],
+                    reused_prefix_token_slice: Vec::new(),
+                    position_range: PositionRange {
+                        start: position as u32,
+                        end_exclusive: position as u32 + 1,
+                    },
+                    scheduled_token_count: 1,
+                    block_table_ref: request_id,
+                    prefix_tokens_reused: 0,
+                    prefix_blocks_reused: 0,
+                }],
+                total_scheduled_tokens: 1,
+                route_metadata: RouteMetadata::empty(),
+            },
+            block_tables: Vec::new(),
+            request_contexts: vec![ctx],
+            request_multimodal_inputs: Vec::new(),
+        };
+        *next_step_id = next_step_id.saturating_add(1);
+        let output = runner.run(input);
+        let update = output
+            .request_updates
+            .iter()
+            .find(|update| update.request_id == request_id)
+            .ok_or_else(|| format!("decode step for request {} lost", request_id.0))?;
+        if let Some(error) = &update.error {
+            return Err(format!("decode step for request {} failed: {error}", request_id.0));
+        }
+        token = update
+            .output_token
+            .or_else(|| update.output_tokens.first().copied())
+            .unwrap_or(token);
+    }
+    Ok(token)
+}
+
 fn prefill_input(
     step_id: u64,
     request_id: RequestId,
@@ -281,6 +346,8 @@ fn run() -> Result<ExitCode, String> {
     let repetitions = env_usize("AX_REPETITIONS", 5)?;
     let prompt_seed = env_u64("AX_PROMPT_SEED", 0)?;
     let sampling_seed = env_u64("AX_SAMPLING_SEED", 42)?;
+    let decode_tokens = env_usize("AX_DECODE_TOKENS", 0)?;
+    let release_state = env_usize("AX_RELEASE_REQUEST_STATE", 1)? != 0;
     let sampling = SamplingConfig {
         temperature: env_f32("AX_TEMPERATURE", 0.8)?,
         top_p: env_f32("AX_TOP_P", 0.95)?,
@@ -316,16 +383,31 @@ fn run() -> Result<ExitCode, String> {
         let prompt: Vec<u32> = (0..prompt_len)
             .map(|index| ((run_prompt_seed as u128 + index as u128 * 7 + 3) % modulus + 1) as u32)
             .collect();
+        let request_id = RequestId(run_index as u64 + 1);
         let result = run_prefill(
             &runner,
             &prompt,
             quantum,
-            RequestId(run_index as u64 + 1),
+            request_id,
             sampling,
             &mut next_step_id,
         )?;
         execution_items = result.execution_items;
         cache_only_continuations = result.cache_only_continuations;
+        if decode_tokens > 0 {
+            run_decode_steps(
+                &runner,
+                prompt_len,
+                result.output_token,
+                decode_tokens,
+                request_id,
+                sampling,
+                &mut next_step_id,
+            )?;
+        }
+        if release_state {
+            runner.release_request_state(request_id);
+        }
         if run_index >= warmups {
             measured_ms.push(result.wall_ms);
             output_tokens.push(result.output_token);
