@@ -749,11 +749,12 @@ fn layer_forward_internal(
         if !fastpath::fused_prefill_attention_enabled() || seq <= 1 {
             break 'fused None;
         }
-        let gate_reason = if token_offset != 0 {
-            Some("token_offset")
-        } else if cache.seq_len() != 0 {
-            Some("cache_nonempty")
-        } else if kv_source.is_some() {
+        // Offset chunks (chunked prefill continuation) fuse via the two-stage
+        // qkv_rope -> cache append -> sdpa_oproj pair; that pair is only
+        // exact for full-attention layers, where bottom-right "causal"
+        // matches the portable mask over the whole cached history.
+        let offset_chunk = token_offset != 0 || cache.seq_len() != 0;
+        let gate_reason = if kv_source.is_some() {
             Some("kv_source")
         } else if mrope.is_some() {
             Some("mrope")
@@ -763,9 +764,11 @@ fn layer_forward_internal(
             Some("protected_prefix")
         } else if !matches!(cfg.model_family.as_str(), "gemma4" | "gemma3") {
             Some("family")
-        } else if layer_rope_freqs.is_some() || cfg.rope_freqs.is_some() {
-            Some("rope_freqs")
-        } else if sliding_window.is_some_and(|window| seq > window) {
+        } else if offset_chunk && sliding_window.is_some() {
+            Some("offset_sliding")
+        } else if offset_chunk && token_offset == 0 {
+            Some("cache_ahead_of_offset")
+        } else if !offset_chunk && sliding_window.is_some_and(|window| seq > window) {
             Some("sliding_gt_window")
         } else {
             None
@@ -789,6 +792,119 @@ fn layer_forward_internal(
                 && qw.scales.is_some()
         };
         let kv_heads = cfg.n_kv_heads;
+        let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+        if offset_chunk {
+            let (Some(q_proj), Some(k_proj), Some(v_proj)) =
+                (w.q_proj.as_ref(), w.k_proj.as_ref(), w.v_proj.as_ref())
+            else {
+                if dbg {
+                    eprintln!(
+                        "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: offset_packed"
+                    );
+                }
+                break 'fused None;
+            };
+            if !affine_matching(q_proj) || !affine_matching(k_proj) || !affine_matching(v_proj)
+            {
+                break 'fused None;
+            }
+            let Some((q_rope, k_rope, v)) = mlx_sys::ops::fused_qkv_rope_split(
+                hidden,
+                &w.attn_norm,
+                cfg.rms_norm_eps,
+                (
+                    &q_proj.weight,
+                    q_proj.scales.as_ref().expect("checked above"),
+                    q_proj.biases.as_ref(),
+                ),
+                (
+                    &k_proj.weight,
+                    k_proj.scales.as_ref().expect("checked above"),
+                    k_proj.biases.as_ref(),
+                ),
+                (
+                    &v_proj.weight,
+                    v_proj.scales.as_ref().expect("checked above"),
+                    v_proj.biases.as_ref(),
+                ),
+                w.q_norm.as_ref(),
+                w.k_norm.as_ref(),
+                cfg.rms_norm_eps,
+                v_norm_no_scale,
+                cfg.n_heads as i32,
+                kv_heads as i32,
+                head_dim as i32,
+                rope_dims as i32,
+                rope_theta,
+                rope_freqs,
+                token_offset as i32,
+                q_proj.group_size,
+                q_proj.bits,
+                None,
+            ) else {
+                if dbg {
+                    eprintln!(
+                        "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: shim_error"
+                    );
+                }
+                break 'fused None;
+            };
+            // Full-attention layer (offset_sliding gate above): no retained
+            // window applies.
+            let attention_kv =
+                cache.append_with_retained_window_for_attention(layer_idx, k_rope, v, None);
+            let key_len = attention_kv.key_len();
+            let (k_full, v_full) = attention_kv.into_dense();
+            let out = match mlx_sys::ops::fused_sdpa_oproj(
+                &q_rope,
+                &k_full,
+                &v_full,
+                cfg.query_scale,
+                &o_proj.weight,
+                o_proj.scales.as_ref().expect("checked above"),
+                o_proj.biases.as_ref(),
+                o_proj.group_size,
+                o_proj.bits,
+                None,
+            ) {
+                Some(out) => {
+                    if dbg {
+                        eprintln!(
+                            "AX_PREFILL_TIME_DEBUG fused_prefill_attention engaged layer={layer_idx} offset={token_offset}"
+                        );
+                    }
+                    if let Some(post_norm) = w.attn_post_norm.as_ref() {
+                        rms_norm(&out, Some(post_norm), cfg.rms_norm_eps, None)
+                    } else {
+                        out
+                    }
+                }
+                None => {
+                    // K/V are already appended, so the portable block below
+                    // must not run; finish with the portable SDPA + o-proj
+                    // helpers over the same appended views.
+                    let mask = attention_mask_array(seq, key_len, None);
+                    let attn = full_precision_attention(
+                        &q_rope,
+                        &k_full,
+                        &v_full,
+                        cfg.query_scale,
+                        seq,
+                        &mask,
+                    );
+                    let attn_flat =
+                        flatten_attention_output_bhsd(&attn, seq, cfg.n_heads, head_dim);
+                    attention_output_projection_with_post_norm(
+                        &attn_flat,
+                        None,
+                        o_proj,
+                        w.attn_post_norm.as_ref(),
+                        cfg.rms_norm_eps,
+                    )
+                }
+            };
+            break 'fused Some(out);
+        }
         let fused_result = if let Some(packed) = w.qkv_packed.as_ref() {
             if !affine_matching(packed) {
                 break 'fused None;
@@ -809,6 +925,7 @@ fn layer_forward_internal(
                 head_dim as i32,
                 rope_dims as i32,
                 rope_theta,
+                rope_freqs,
                 cfg.query_scale,
                 &o_proj.weight,
                 o_proj.scales.as_ref().expect("checked above"),
@@ -851,6 +968,7 @@ fn layer_forward_internal(
                 head_dim as i32,
                 rope_dims as i32,
                 rope_theta,
+                rope_freqs,
                 cfg.query_scale,
                 &o_proj.weight,
                 o_proj.scales.as_ref().expect("checked above"),
