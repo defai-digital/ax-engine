@@ -332,18 +332,22 @@ fn cache_only_forward_chunks(
     cache: &mut MlxKVCache,
     chunk_size: usize,
 ) {
+    let time_debug = prefill_time_debug_enabled();
     let mut offset = 0usize;
     while offset < prompt_tokens.len() {
         let end = offset
             .saturating_add(chunk_size.max(1))
             .min(prompt_tokens.len());
         let chunk = &prompt_tokens[offset..end];
+        let build_started = std::time::Instant::now();
         let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
         cache.advance(chunk.len());
+        let build_us = build_started.elapsed().as_micros();
 
         // Match the established cache-only prefix policy: by default one
         // blocking materialisation at this API boundary; optional intermediate
         // async submits remain available for very long internal chunk chains.
+        let eval_started = std::time::Instant::now();
         if end == prompt_tokens.len() || crate::fastpath::cache_only_chunk_eval_enabled() {
             let is_final = end == prompt_tokens.len();
             if crate::fastpath::cache_only_chunk_should_async_eval(is_final) {
@@ -352,8 +356,23 @@ fn cache_only_forward_chunks(
                 eval_kv_refs(cache);
             }
         }
+        if time_debug {
+            eprintln!(
+                "AX_PREFILL_TIME_DEBUG chunk_tokens={} build_us={} eval_us={}",
+                chunk.len(),
+                build_us,
+                eval_started.elapsed().as_micros()
+            );
+        }
         offset = end;
     }
+}
+
+/// `AX_MLX_PREFILL_TIME_DEBUG=1` — print per-chunk graph-build vs eval wall
+/// splits for the cache-only prefill path to stderr. Diagnostic only.
+fn prefill_time_debug_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("AX_MLX_PREFILL_TIME_DEBUG").as_deref() == Ok("1"))
 }
 
 #[allow(clippy::too_many_arguments)]
