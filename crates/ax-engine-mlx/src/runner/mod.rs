@@ -6911,19 +6911,46 @@ impl MlxRunner {
     }
 
     fn run_direct_pipeline_bootstrap(&self, state: &mut RequestState, last_token: u32) -> u32 {
-        // Always establish the double-buffer on bootstrap (start + advance),
-        // matching the 2026-07-14 sustained decode path that recorded
-        // `direct_pipeline_steps` ≈ generation_tokens and overlapped async_eval
-        // with the next graph build. Prefill already primes `pending_direct`
-        // when possible so the common path is ContinuePending rather than
-        // Bootstrap; when Bootstrap does run, keep the pipeline live instead
-        // of finishing a single lazy token and dropping the pending slot.
+        // First generated token: single forward + eval only (TTFT path), then
+        // re-enter Bootstrap once to establish the double-buffer
+        // (start + advance) for the rest of the stream.
+        //
+        // The 60e46624 variant established the double-buffer immediately and
+        // held the pending slot live across engine turns. Interleaved 3x3 A/B
+        // on the S1 dual-model contract (M5 Max, Qwen3.5-9B stream + Gemma 4
+        // 12B long prefill) convicted that behavior of a 10% Qwen stream
+        // throughput loss (17.08 vs 18.98 tok/s median) and a 13% Gemma
+        // prefill-leg slowdown (9552 vs 8427 ms): the held async forward from
+        // one model's stream contends with the sibling model's prefill GPU
+        // work, and every re-entry after preemption pays two full forwards.
+        // Exclusive single-model decode measured neutral either way (~146
+        // tok/s p128), so first-token-single-forward is strictly better.
         let bootstrap_started = Instant::now();
         let first_lazy =
             start_direct_pipeline(&self.cfg, &self.weights, last_token, &mut state.cache);
         state
             .decode_telemetry
             .record_direct_bootstrap(elapsed_us(bootstrap_started));
+        if state.direct_pipeline_emitted_tokens == 0 {
+            let branch_started = Instant::now();
+            let (tok, pending_eval_wall_us, pending_read_wall_us) =
+                finish_pending_token(&first_lazy);
+            state
+                .decode_telemetry
+                .record_direct_pipeline(elapsed_us(branch_started));
+            state
+                .decode_telemetry
+                .record_direct_pipeline_timings(DirectPipelineTimings {
+                    pending_eval_wall_us,
+                    pending_read_wall_us,
+                    ..DirectPipelineTimings::default()
+                });
+            state.decode_telemetry.record_production_decode_eval();
+            state.pending_direct = None;
+            state.direct_pipeline_emitted_tokens = 1;
+            return tok;
+        }
+        // Second entry: catch up to double-buffer for the rest of the stream.
         self.run_direct_pipeline_once(state, first_lazy)
     }
 
