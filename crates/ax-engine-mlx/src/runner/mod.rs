@@ -6627,9 +6627,11 @@ impl MlxRunner {
                 drop(native_outcome.retired);
             }
             if !portable_store_phase && native_snapshot_ready {
+                Self::pfx_dbg("store-loop-skip", &format!("native_ready prefix={prefix_len}"));
                 continue;
             }
             if l1_superseding && !disk_store_needed {
+                Self::pfx_dbg("store-loop-skip", &format!("l1_superseding prefix={prefix_len}"));
                 continue;
             }
             // F3 M2 — for the disk layer we want the largest valid
@@ -6665,6 +6667,7 @@ impl MlxRunner {
             // configuration the original `key` moves cleanly into
             // `cache.insert`, no extra allocation.
             let key_for_disk = disk_payload.as_ref().map(|_| key.clone());
+            let payload_len = payload.len();
             let outcome = {
                 let mut cache = self.prefix_cache.lock();
                 let outcome = cache.insert(
@@ -6674,6 +6677,12 @@ impl MlxRunner {
                         tokens.to_vec(),
                         prefix_len,
                         snapshot_prefill_output_token,
+                    ),
+                );
+                Self::pfx_dbg(
+                    "store-insert",
+                    &format!(
+                        "prefix={prefix_len} payload_bytes={payload_len} serialize_us={serialize_us}"
                     ),
                 );
                 telemetry.record_stats(cache.stats());
