@@ -4934,6 +4934,7 @@ impl MlxRunner {
                             &mut state.cache,
                             prefill_chunk_for_request,
                             CacheOnlyPrefillLayout::PreserveFinalTokenStep,
+                            crate::generate::CacheOnlyBarrier::Blocking,
                         );
                         state.prefill_boundary_snapshot =
                             Some((state.cache.seq_len(), state.cache.clone()));
@@ -5022,6 +5023,10 @@ impl MlxRunner {
                             } else {
                                 CacheOnlyPrefillLayout::Batched
                             },
+                            // This quantum does not complete the prompt: more
+                            // prefill items follow, so submit instead of
+                            // blocking on a growing full-cache barrier.
+                            crate::generate::CacheOnlyBarrier::AsyncSubmit,
                         );
                         state
                             .decode_telemetry
