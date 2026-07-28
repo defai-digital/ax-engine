@@ -763,8 +763,6 @@ fn layer_forward_internal(
             Some("protected_prefix")
         } else if !matches!(cfg.model_family.as_str(), "gemma4" | "gemma3") {
             Some("family")
-        } else if v_norm_no_scale {
-            Some("v_norm")
         } else if layer_rope_freqs.is_some() || cfg.rope_freqs.is_some() {
             Some("rope_freqs")
         } else if sliding_window.is_some_and(|window| seq > window) {
@@ -774,9 +772,7 @@ fn layer_forward_internal(
         };
         if let Some(reason) = gate_reason {
             if dbg {
-                eprintln!(
-                    "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: {reason}"
-                );
+                eprintln!("AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: {reason}");
             }
             break 'fused None;
         }
@@ -807,6 +803,7 @@ fn layer_forward_internal(
                 w.q_norm.as_ref(),
                 w.k_norm.as_ref(),
                 cfg.rms_norm_eps,
+                v_norm_no_scale,
                 cfg.n_heads as i32,
                 kv_heads as i32,
                 head_dim as i32,
@@ -848,6 +845,7 @@ fn layer_forward_internal(
                 w.q_norm.as_ref(),
                 w.k_norm.as_ref(),
                 cfg.rms_norm_eps,
+                v_norm_no_scale,
                 cfg.n_heads as i32,
                 kv_heads as i32,
                 head_dim as i32,
@@ -871,9 +869,7 @@ fn layer_forward_internal(
         };
         let Some((out, k_rope, v)) = fused_result else {
             if dbg {
-                eprintln!(
-                    "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: shim_error"
-                );
+                eprintln!("AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: shim_error");
             }
             break 'fused None;
         };

@@ -1591,6 +1591,7 @@ FusedCausalPrefillOut fused_causal_prefill_attention_impl(
     std::optional<mx::array> q_norm,
     std::optional<mx::array> k_norm,
     float qk_eps,
+    bool v_norm_no_scale,
     int num_heads,
     int num_kv_heads,
     int head_dim,
@@ -1635,6 +1636,9 @@ FusedCausalPrefillOut fused_causal_prefill_attention_impl(
   if (k_norm.has_value()) {
     k = mx::fast::rms_norm(k, *k_norm, qk_eps, stream);
   }
+  if (v_norm_no_scale) {
+    v = mx::fast::rms_norm(v, std::nullopt, qk_eps, stream);
+  }
 
   q = mx::fast::rope(
       q, rope_dims, false, std::make_optional(rope_base), 1.0f, 0,
@@ -1669,6 +1673,7 @@ extern "C" int ax_mlx_fused_causal_prefill_attention(
     const mlx_array q_norm,
     const mlx_array k_norm,
     float qk_eps,
+    bool v_norm_no_scale,
     int num_heads,
     int num_kv_heads,
     int head_dim,
@@ -1692,6 +1697,7 @@ extern "C" int ax_mlx_fused_causal_prefill_attention(
         opt_arr(q_norm),
         opt_arr(k_norm),
         qk_eps,
+        v_norm_no_scale,
         num_heads,
         num_kv_heads,
         head_dim,
@@ -1733,6 +1739,7 @@ extern "C" int ax_mlx_fused_causal_prefill_attention_split(
     const mlx_array q_norm,
     const mlx_array k_norm,
     float qk_eps,
+    bool v_norm_no_scale,
     int num_heads,
     int num_kv_heads,
     int head_dim,
@@ -1778,6 +1785,9 @@ extern "C" int ax_mlx_fused_causal_prefill_attention_split(
     }
     if (k_norm_opt.has_value()) {
       k = mx::fast::rms_norm(k, *k_norm_opt, qk_eps, s);
+    }
+    if (v_norm_no_scale) {
+      v = mx::fast::rms_norm(v, std::nullopt, qk_eps, s);
     }
 
     q = mx::fast::rope(
