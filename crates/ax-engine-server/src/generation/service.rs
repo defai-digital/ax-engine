@@ -235,6 +235,17 @@ impl ModelExecutionArbiter {
         }
     }
 
+    /// True when the arbiter has ever served (or is serving) more than one
+    /// model — the ground-truth multi-model signal used to back up the
+    /// per-service adaptive-isolation flag, whose /load wiring can race
+    /// publish/attach ordering.
+    fn tracks_multiple_models(&self) -> bool {
+        let state = self.state.lock();
+        state.last_activity.len() >= 2
+            || state.waiters.len() >= 2
+            || state.held_models.len() >= 2
+    }
+
     fn has_recent_sibling_activity(&self, model_id: &str, recent_for: Duration) -> bool {
         let now = Instant::now();
         let state = self.state.lock();
@@ -1390,10 +1401,19 @@ fn advance_shared_engine(
     // quanta alone are not enough; the worker-level burst must also stay
     // under the stream-gap SLO so Qwen decode kernels keep getting airtime.
     let mut sibling_active_for_burst = false;
-    if let Some(target) = execution_target.as_ref().filter(|_| {
+    // Gate on the explicit per-service flag OR the arbiter's own view of
+    // multi-model reality. The /load wiring that sets the flag on the
+    // published service has a publish/attach ordering race (see the
+    // comment in model_load.rs) and S1 arbiter metrics proved the flag
+    // dark on the added model: one 9.18 s engine_step turn = 32 fair
+    // quanta bursted together while the sibling starved. The arbiter's
+    // activity map cannot go stale the same way: two models in it means
+    // multi-model load, full stop.
+    if let Some(target) = execution_target.as_ref().filter(|target| {
         service_state
             .adaptive_prefill_isolation
             .load(Ordering::Acquire)
+            || target.arbiter.tracks_multiple_models()
     }) {
         let sibling_active = target.arbiter.has_recent_sibling_activity(
             target.model_id.as_ref(),
