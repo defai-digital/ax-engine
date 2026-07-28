@@ -555,6 +555,8 @@ pub fn chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
     use crate::model::forward_with_initial_hidden_media_post_norm_last_lm_head;
 
     let sampling = sampling_request.params;
+    let time_debug = prefill_time_debug_enabled();
+    let build_started = std::time::Instant::now();
     // Standard Gemma 4 checkpoints carry a full ViT even though their text
     // family remains `gemma4`; legacy `gemma4_vl` packages use the older
     // connector compatibility route.
@@ -581,6 +583,8 @@ pub fn chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
         0,
     );
     cache.advance(prompt_tokens.len());
+    let build_us = build_started.elapsed().as_micros();
+    let eval_started = std::time::Instant::now();
 
     let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
         sample_prefill_token_gpu_first(
@@ -598,6 +602,14 @@ pub fn chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
         eval_with_kv_refs(&token_arr, cache);
         token_arr.first_u32_unchecked()
     };
+    if time_debug {
+        eprintln!(
+            "AX_PREFILL_TIME_DEBUG gemma4_unified tokens={} build_us={} eval_us={}",
+            prompt_tokens.len(),
+            build_us,
+            eval_started.elapsed().as_micros()
+        );
+    }
 
     let mut history_tokens = Vec::new();
     let mtp_hidden = if capture_mtp_history && weights.mtp.is_some() {
