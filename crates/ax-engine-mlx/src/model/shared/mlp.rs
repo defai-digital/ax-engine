@@ -46,17 +46,19 @@ const GELU_MUL_KERNEL_SOURCE: &str = r#"
     T gate_v = gate[idx];
     T x_v = x[idx];
     float gate_f = static_cast<float>(gate_v);
+    float x_f = static_cast<float>(x_v);
     // gelu_approx(gate) saturates to identity (gate > 10) or zero (gate < -10)
-    // out here; skip tanh in that range because the cubic inner term overflows
+    // out there; skip tanh in that range because the cubic inner term overflows
     // half/bfloat16 intermediates and fast-math tanh(inf) returns NaN.
-    if (gate_f > 10.0f) {
-        out[idx] = static_cast<T>(gate_f * static_cast<float>(x_v));
-        return;
-    }
-    if (gate_f < -10.0f) {
-        out[idx] = static_cast<T>(0.0f);
-        return;
-    }
+    //
+    // The saturation must stay branchless: the v3/v4 early-return guards made
+    // control flow divergent, which serializes the vectorized bf16 loads and
+    // stores and cost ~40% of Gemma prefill throughput at the model level.
+    // Compute the bit-exact in-range chain on a clamped gate (identical to
+    // the unclamped value for every in-range input) and pick the saturation
+    // endpoints with ternaries that compile to uniform `select`.
+    float gate_cf = clamp(gate_f, -10.0f, 10.0f);
+    T gate_c = static_cast<T>(gate_cf);
     // In-range math rounds through T after every step to stay bit-identical
     // with mlx-lm's imperative op-by-op gelu_approx(gate) * x chain.
     T half_v = static_cast<T>(0.5f);
@@ -64,16 +66,19 @@ const GELU_MUL_KERNEL_SOURCE: &str = r#"
     T sqrt_2_over_pi_v = static_cast<T>(0.7978846f);
     T coeff_v = static_cast<T>(0.044715f);
 
-    T gate2 = static_cast<T>(static_cast<float>(gate_v) * static_cast<float>(gate_v));
-    T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_v));
+    T gate2 = static_cast<T>(static_cast<float>(gate_c) * static_cast<float>(gate_c));
+    T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_c));
     T cubic = static_cast<T>(static_cast<float>(coeff_v) * static_cast<float>(gate3));
-    T inner = static_cast<T>(static_cast<float>(gate_v) + static_cast<float>(cubic));
+    T inner = static_cast<T>(static_cast<float>(gate_c) + static_cast<float>(cubic));
     T scaled = static_cast<T>(static_cast<float>(sqrt_2_over_pi_v) * static_cast<float>(inner));
     T t = static_cast<T>(tanh(static_cast<float>(scaled)));
     T one_plus_t = static_cast<T>(static_cast<float>(one_v) + static_cast<float>(t));
-    T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_v));
+    T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_c));
     T activated = static_cast<T>(static_cast<float>(half_gate) * static_cast<float>(one_plus_t));
-    out[idx] = static_cast<T>(static_cast<float>(activated) * static_cast<float>(x_v));
+    float prod = static_cast<float>(activated) * x_f;
+    prod = (gate_f > 10.0f) ? gate_f * x_f : prod;
+    prod = (gate_f < -10.0f) ? 0.0f : prod;
+    out[idx] = static_cast<T>(prod);
 "#;
 
 pub(crate) fn qkv_project(
@@ -442,7 +447,7 @@ fn gelu_approx_mul_metal(gate: &MlxArray, x: &MlxArray, enabled: bool) -> Option
     let element_count = i32::try_from(element_count).ok()?;
     let kernel = GELU_MUL_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_gemma_gelu_mul_v4",
+            "ax_gemma_gelu_mul_v5",
             &["gate", "x"],
             &["out"],
             GELU_MUL_KERNEL_SOURCE,
@@ -601,33 +606,32 @@ const PACKED_GEGLU_KERNEL_SOURCE: &str = r#"
     T gate_v = gate_up[gate_idx];
     T up_v = gate_up[up_idx];
     float gate_f = static_cast<float>(gate_v);
+    float up_f = static_cast<float>(up_v);
     // See GELU_MUL_KERNEL_SOURCE above: saturate to identity/zero outside
-    // [-10, 10] to avoid fast-math tanh(inf) = NaN, and round through T at
+    // [-10, 10] to avoid fast-math tanh(inf) = NaN, round through T at
     // every step in range to stay bit-identical with mlx-lm's imperative
-    // gelu_approx(gate) * up chain.
-    if (gate_f > 10.0f) {
-        out[idx] = static_cast<T>(gate_f * static_cast<float>(up_v));
-        return;
-    }
-    if (gate_f < -10.0f) {
-        out[idx] = static_cast<T>(0.0f);
-        return;
-    }
+    // gelu_approx(gate) * up chain, and keep the saturation branchless
+    // (divergent early returns serialize vectorized bf16 memory traffic).
+    float gate_cf = clamp(gate_f, -10.0f, 10.0f);
+    T gate_c = static_cast<T>(gate_cf);
     T half_v = static_cast<T>(0.5f);
     T one_v = static_cast<T>(1.0f);
     T sqrt_2_over_pi_v = static_cast<T>(0.7978846f);
     T coeff_v = static_cast<T>(0.044715f);
 
-    T gate2 = static_cast<T>(static_cast<float>(gate_v) * static_cast<float>(gate_v));
-    T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_v));
+    T gate2 = static_cast<T>(static_cast<float>(gate_c) * static_cast<float>(gate_c));
+    T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_c));
     T cubic = static_cast<T>(static_cast<float>(coeff_v) * static_cast<float>(gate3));
-    T inner = static_cast<T>(static_cast<float>(gate_v) + static_cast<float>(cubic));
+    T inner = static_cast<T>(static_cast<float>(gate_c) + static_cast<float>(cubic));
     T scaled = static_cast<T>(static_cast<float>(sqrt_2_over_pi_v) * static_cast<float>(inner));
     T t = static_cast<T>(tanh(static_cast<float>(scaled)));
     T one_plus_t = static_cast<T>(static_cast<float>(one_v) + static_cast<float>(t));
-    T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_v));
+    T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_c));
     T activated = static_cast<T>(static_cast<float>(half_gate) * static_cast<float>(one_plus_t));
-    out[idx] = static_cast<T>(static_cast<float>(activated) * static_cast<float>(up_v));
+    float prod = static_cast<float>(activated) * up_f;
+    prod = (gate_f > 10.0f) ? gate_f * up_f : prod;
+    prod = (gate_f < -10.0f) ? 0.0f : prod;
+    out[idx] = static_cast<T>(prod);
 "#;
 
 const PACKED_SWIGLU_KERNEL_SOURCE: &str = r#"
@@ -1151,7 +1155,7 @@ fn packed_geglu_metal_impl(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArr
         gate_up,
         hidden_dim,
         &PACKED_GEGLU_KERNEL,
-        "ax_gemma_packed_geglu_v4",
+        "ax_gemma_packed_geglu_v5",
         PACKED_GEGLU_KERNEL_SOURCE,
     )
 }
