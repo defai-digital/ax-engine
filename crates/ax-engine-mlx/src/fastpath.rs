@@ -354,6 +354,33 @@ env_flag!(
     "AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK"
 );
 
+/// Multi-model (sibling-resident) prefill-rotation hint.
+///
+/// Set by the server when more than one model is resident. Ring-rotated
+/// multi-token prefill keeps SWA layers at O(window + chunk) storage, which
+/// the S1 dual-model contract (Qwen3.5-9B stream + Gemma 4 12B long prefill,
+/// M5 Max) measured as a decisive win over ordered prefill: Qwen stream
+/// 19.65 vs 17.74 tok/s and Gemma prefill leg 8096 vs 9141 ms. Exclusive
+/// single-model sessions keep ordered prefill (the
+/// `AX_MLX_ROTATING_SLIDING_PREFILL` doc records the long-decode ring-carry
+/// cost that motivated the default), so this hint scopes the rotation to
+/// exactly the topology where it wins. `AX_MLX_ROTATING_SLIDING_PREFILL=1`
+/// still forces rotation everywhere; `=0` only clears the env opt-in, not
+/// this hint.
+static SIBLING_PREFILL_ROTATION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Server hook: flag whether sibling models are resident (see
+/// [`sibling_prefill_rotation`]).
+pub fn set_sibling_prefill_rotation(enabled: bool) {
+    SIBLING_PREFILL_ROTATION.store(enabled, std::sync::atomic::Ordering::Release);
+}
+
+/// Whether sibling-resident prefill rotation is currently requested.
+pub fn sibling_prefill_rotation() -> bool {
+    SIBLING_PREFILL_ROTATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
 env_flag_default_on!(
     /// `AX_MLX_ROTATING_SLIDING_DECODE` — use a rotating backing store for
     /// sliding-window KV layers on rollback-free direct greedy decode.

@@ -10046,7 +10046,8 @@ fn cache_rotation_for_execution(
         session_rotating_decode,
         is_greedy,
         prefill_chunk,
-        crate::fastpath::rotating_sliding_prefill_enabled(),
+        crate::fastpath::rotating_sliding_prefill_enabled()
+            || crate::fastpath::sibling_prefill_rotation(),
     )
 }
 

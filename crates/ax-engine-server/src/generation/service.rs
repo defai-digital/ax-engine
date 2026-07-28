@@ -1432,6 +1432,11 @@ fn advance_shared_engine(
             // Default off so dual-hold can hide interactive decode under long
             // Gemma prefill (S1 thr). Adaptive quantum sizes the turn for gap.
             target.arbiter.mark_long_prefill_quantum();
+            // Sibling active: ring-rotated multi-token prefill keeps SWA
+            // layers at O(window + chunk) storage so the sibling stream and a
+            // long prefill contend less (S1 dual-model A/B: Qwen 19.65 vs
+            // 17.74 tok/s, Gemma leg 8096 vs 9141 ms).
+            EngineSession::set_native_sibling_prefill_rotation(true);
             if !enabled || current_tokens != adjusted {
                 session.set_multi_prefill_fair(true, adjusted, inflight);
             }
@@ -1441,6 +1446,7 @@ fn advance_shared_engine(
             service_state
                 .adaptive_prefill_tokens
                 .store(start, Ordering::Release);
+            EngineSession::set_native_sibling_prefill_rotation(false);
             if enabled {
                 session.set_multi_prefill_fair(false, 0, inflight);
             }
