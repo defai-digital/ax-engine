@@ -1759,6 +1759,7 @@ extern "C" int ax_mlx_fused_causal_prefill_attention_split(
     const mlx_array k_norm,
     float qk_eps,
     bool v_norm_no_scale,
+    bool value_from_key,
     int num_heads,
     int num_kv_heads,
     int head_dim,
@@ -1785,9 +1786,11 @@ extern "C" int ax_mlx_fused_causal_prefill_attention_split(
     auto k = quantized_matmul_affine_impl(
         normed, aref(k_weight), aref(k_scales), opt_arr(k_biases), group_size,
         bits, s);
-    auto v = quantized_matmul_affine_impl(
-        normed, aref(v_weight), aref(v_scales), opt_arr(v_biases), group_size,
-        bits, s);
+    auto v = value_from_key
+        ? k
+        : quantized_matmul_affine_impl(
+              normed, aref(v_weight), aref(v_scales), opt_arr(v_biases),
+              group_size, bits, s);
 
     q = mx::transpose(
         mx::reshape(q, {batch, seq, num_heads, head_dim}, s), {0, 2, 1, 3}, s);
@@ -1857,6 +1860,7 @@ extern "C" int ax_mlx_fused_qkv_rope_split(
     const mlx_array k_norm,
     float qk_eps,
     bool v_norm_no_scale,
+    bool value_from_key,
     int num_heads,
     int num_kv_heads,
     int head_dim,
@@ -1880,9 +1884,11 @@ extern "C" int ax_mlx_fused_qkv_rope_split(
     auto k = quantized_matmul_affine_impl(
         normed, aref(k_weight), aref(k_scales), opt_arr(k_biases), group_size,
         bits, s);
-    auto v = quantized_matmul_affine_impl(
-        normed, aref(v_weight), aref(v_scales), opt_arr(v_biases), group_size,
-        bits, s);
+    auto v = value_from_key
+        ? k
+        : quantized_matmul_affine_impl(
+              normed, aref(v_weight), aref(v_scales), opt_arr(v_biases),
+              group_size, bits, s);
 
     q = mx::transpose(
         mx::reshape(q, {batch, seq, num_heads, head_dim}, s), {0, 2, 1, 3}, s);
