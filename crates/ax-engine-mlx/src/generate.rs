@@ -333,6 +333,7 @@ fn cache_only_forward_chunks(
     chunk_size: usize,
 ) {
     let time_debug = prefill_time_debug_enabled();
+    let loop_started = std::time::Instant::now();
     let mut offset = 0usize;
     while offset < prompt_tokens.len() {
         let end = offset
@@ -358,10 +359,11 @@ fn cache_only_forward_chunks(
         }
         if time_debug {
             eprintln!(
-                "AX_PREFILL_TIME_DEBUG chunk_tokens={} build_us={} eval_us={}",
+                "AX_PREFILL_TIME_DEBUG chunk_tokens={} build_us={} eval_us={} t_ms={}",
                 chunk.len(),
                 build_us,
-                eval_started.elapsed().as_micros()
+                eval_started.elapsed().as_micros(),
+                loop_started.elapsed().as_millis()
             );
         }
         offset = end;
