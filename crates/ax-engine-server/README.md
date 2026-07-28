@@ -1,8 +1,8 @@
 # ax-engine-server
 
 `ax-engine-server` is the SDK-backed thin access layer for AX Engine. See
-[AX Serving](../../docs/AX-SERVING.md) for the heterogeneous/NVIDIA repository
-boundary and migration guide.
+[CUDA Backends](../../docs/CUDA-BACKENDS.md) for the Mac/CUDA platform
+boundary, provider ownership, and release gates.
 
 Current scope:
 
@@ -10,10 +10,11 @@ Current scope:
 - built entirely on `ax-engine-sdk`
 - native MLX builds fail closed outside the supported M2 Max-or-newer,
   macOS 26+, 32 GB contract
-- portable `delegated-server` builds omit MLX linkage and retain local
-  `mlx_lm.server` and llama.cpp compatibility paths
+- portable Linux `delegated-server` builds omit MLX linkage and front
+  explicitly selected vLLM or TensorRT workers
 - explicit runtime metadata reporting, including `selected_backend`,
-  `support_tier`, and `resolution_policy`
+  `support_tier`, `resolution_policy`, and fail-closed TensorRT upstream
+  version/execution-path identity
 - preview generation API for bring-up and integration testing
 - stepwise request lifecycle endpoints over a shared preview session for
   repo-owned MLX runtime paths plus server-backed llama.cpp adapters
@@ -107,6 +108,17 @@ curl http://127.0.0.1:31418/v1/generate \
     "max_output_tokens": 32
   }'
 
+cargo run -p ax-engine-server \
+  --no-default-features \
+  --features delegated-server \
+  -- \
+  --model-id ax-ocr \
+  --support-tier vllm \
+  --vllm-server-url http://127.0.0.1:8000/v1 \
+  --vllm-upstream-model-id baidu/Unlimited-OCR \
+  --vllm-model-profile unlimited-ocr \
+  --vllm-runtime-profile cuda-linux-aarch64-thor-sm110 \
+  --port 31418
 ```
 
 This server is intentionally narrow.
@@ -126,9 +138,18 @@ requests while `/v1/step` aggregates one delegated step across them.
 `llama-cli` and direct `mlx-lm` remain blocking text-prompt fallbacks for local
 bring-up.
 
-Delegated JSON and SSE traffic use separate keep-alive pools, and the HTTP listener enables
+Linux x86_64 and Thor use the same `Vllm` provider contract; only the
+fail-closed runtime profile changes. The Python/PyTorch worker stays in the
+independent `ax-engine-vllm-runtime` package/OCI process. TensorRT-LLM and
+TensorRT Edge-LLM retain separate backend identities, and AX does not silently
+fall back or retry a generation POST across providers. Delegated JSON and SSE
+traffic use separate keep-alive pools, and the HTTP listener enables
 `TCP_NODELAY` so a first small SSE event is not delayed by Nagle/delayed-ACK
 interaction.
 
-NVIDIA worker routing, compatibility identity, and release qualification live
-in AX Serving. Former AX Engine CUDA flags are intentionally unavailable.
+Both TensorRT providers require their matching `--*-upstream-version` and
+`--*-execution-backend` flags. Optional `--*-upstream-model-id` and
+`--*-runtime-profile` values complete the machine-readable
+`delegated_runtime` report. The report is an operator-supplied configured
+identity; release automation must compare it with the exact worker
+package/image manifest.
