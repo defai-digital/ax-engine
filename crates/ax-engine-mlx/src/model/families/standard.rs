@@ -764,6 +764,12 @@ fn layer_forward_internal(
             Some("protected_prefix")
         } else if !matches!(cfg.model_family.as_str(), "gemma4" | "gemma3") {
             Some("family")
+        } else if !matches!(head_dim, 64 | 80 | 128 | 256) {
+            // Mirrors mlxcel's NAX gate: fast SDPA only has steel kernels
+            // for these head dims; anything else (Gemma 4 global layers at
+            // 512) hits MLX's slow reference path and loses to the portable
+            // route (measured +0.4ms offset-0, +8ms offset chunks on 12B).
+            Some("head_dim")
         } else if offset_chunk && sliding_window.is_some() {
             Some("offset_sliding")
         } else if offset_chunk && token_offset == 0 {
