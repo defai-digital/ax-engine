@@ -6,9 +6,8 @@ publish = false
 version.workspace = true
 
 [features]
-# Preserve the historical Mac shipping build while allowing Linux control-plane
-# artifacts to compile without linking MLX. Delegated-only builds must opt in
-# explicitly with `--no-default-features --features delegated-server`.
+# Preserve the historical Mac shipping build while allowing compatibility-only
+# artifacts to compile without linking MLX.
 default = ["mlx-native-server"]
 mlx-native-server = ["ax-engine-sdk/mlx-native", "dep:mlx-sys"]
 delegated-server = []

@@ -21,13 +21,7 @@ async fn delegated_startup_does_not_issue_generation_warmup_requests() {
         }
     }));
 
-    for selected_backend in [
-        SelectedBackend::MlxLmDelegated,
-        SelectedBackend::LlamaCpp,
-        SelectedBackend::TensorRtEdgeLlm,
-        SelectedBackend::TensorRtLlm,
-        SelectedBackend::Vllm,
-    ] {
+    for selected_backend in [SelectedBackend::MlxLmDelegated, SelectedBackend::LlamaCpp] {
         let mut live = state.snapshot();
         live.runtime_report.selected_backend = selected_backend;
         state.swap_live(live);

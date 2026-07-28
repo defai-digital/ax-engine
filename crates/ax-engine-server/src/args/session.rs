@@ -1,10 +1,8 @@
 use ax_engine_sdk::{
-    DelegatedBearerCredential, DelegatedHttpTimeouts, DelegatedRuntimeIdentity, DelegatedTlsPolicy,
-    EngineSessionConfig, MlxMtpPolicy, PreviewBackendRequest, PreviewSessionConfigRequest,
-    SupportTier, VllmConfig, VllmModelProfile, VllmServerCompletionConfig,
+    DelegatedHttpTimeouts, EngineSessionConfig, MlxMtpPolicy, PreviewBackendRequest,
+    PreviewSessionConfigRequest, SupportTier,
 };
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 
 use super::artifacts::{
@@ -13,7 +11,7 @@ use super::artifacts::{
 use super::presets::PresetDefinition;
 use super::{
     DEFAULT_MODEL_ID, MODEL_ARTIFACTS_ENV, ModelArtifactResolution, PreviewSupportTier, ServerArgs,
-    ServerPreset, VLLM_API_KEY_FILE_ENV, VllmModelProfileArg,
+    ServerPreset,
 };
 
 impl PreviewSupportTier {
@@ -23,18 +21,6 @@ impl PreviewSupportTier {
             Self::MlxPreview => SupportTier::MlxPreview,
             Self::MlxLmDelegated => SupportTier::MlxLmDelegated,
             Self::LlamaCpp => SupportTier::LlamaCpp,
-            Self::TensorRtEdgeLlm => SupportTier::TensorRtEdgeLlm,
-            Self::TensorRtLlm => SupportTier::TensorRtLlm,
-            Self::Vllm => SupportTier::Vllm,
-        }
-    }
-}
-
-impl VllmModelProfileArg {
-    fn as_sdk_profile(self) -> VllmModelProfile {
-        match self {
-            Self::OpenAiCompatible => VllmModelProfile::OpenAiCompatible,
-            Self::UnlimitedOcr => VllmModelProfile::UnlimitedOcr,
         }
     }
 }
@@ -93,10 +79,6 @@ impl ServerArgs {
             .map(|definition| definition.max_batch_tokens)
             .unwrap_or(self.max_batch_tokens);
         let delegated_http_timeouts = self.delegated_http_timeouts()?;
-        let (edge_llm_runtime_identity, tensor_rt_llm_runtime_identity) =
-            self.tensor_rt_runtime_identities(effective_support_tier)?;
-        let vllm_backend =
-            self.vllm_backend_config(effective_support_tier, delegated_http_timeouts)?;
         let mlx_model_artifacts_dir =
             self.resolve_mlx_model_artifacts_dir(preset.as_ref(), effective_mlx)?;
 
@@ -116,11 +98,6 @@ impl ServerArgs {
                 llama_model_path: self.llama_model_path.clone(),
                 llama_server_url: self.llama_server_url.clone(),
                 mlx_lm_server_url: self.mlx_lm_server_url.clone(),
-                edge_llm_server_url: self.edge_llm_server_url.clone(),
-                edge_llm_runtime_identity,
-                tensor_rt_llm_server_url: self.tensor_rt_llm_server_url.clone(),
-                tensor_rt_llm_runtime_identity,
-                vllm_backend,
                 delegated_http_timeouts,
                 ..PreviewBackendRequest::default()
             }
@@ -164,229 +141,6 @@ impl ServerArgs {
             self.delegated_http_read_timeout_secs,
             self.delegated_http_write_timeout_secs,
         ))
-    }
-
-    fn tensor_rt_runtime_identities(
-        &self,
-        effective_support_tier: PreviewSupportTier,
-    ) -> Result<
-        (
-            Option<DelegatedRuntimeIdentity>,
-            Option<DelegatedRuntimeIdentity>,
-        ),
-        String,
-    > {
-        let has_edge_identity_option = self.edge_llm_upstream_model_id.is_some()
-            || self.edge_llm_runtime_profile.is_some()
-            || self.edge_llm_upstream_version.is_some()
-            || self.edge_llm_execution_backend.is_some();
-        if effective_support_tier != PreviewSupportTier::TensorRtEdgeLlm && has_edge_identity_option
-        {
-            return Err(
-                "Edge-LLM identity options require --support-tier tensor-rt-edge-llm; AX does not silently switch providers"
-                    .to_string(),
-            );
-        }
-
-        let has_tensor_rt_llm_identity_option = self.tensor_rt_llm_upstream_model_id.is_some()
-            || self.tensor_rt_llm_runtime_profile.is_some()
-            || self.tensor_rt_llm_upstream_version.is_some()
-            || self.tensor_rt_llm_execution_backend.is_some();
-        if effective_support_tier != PreviewSupportTier::TensorRtLlm
-            && has_tensor_rt_llm_identity_option
-        {
-            return Err(
-                "TensorRT-LLM identity options require --support-tier tensor-rt-llm; AX does not silently switch providers"
-                    .to_string(),
-            );
-        }
-
-        let edge_llm_runtime_identity =
-            if effective_support_tier == PreviewSupportTier::TensorRtEdgeLlm {
-                Some(self.edge_llm_runtime_identity()?)
-            } else {
-                None
-            };
-        let tensor_rt_llm_runtime_identity =
-            if effective_support_tier == PreviewSupportTier::TensorRtLlm {
-                Some(self.tensor_rt_llm_runtime_identity()?)
-            } else {
-                None
-            };
-        Ok((edge_llm_runtime_identity, tensor_rt_llm_runtime_identity))
-    }
-
-    fn edge_llm_runtime_identity(&self) -> Result<DelegatedRuntimeIdentity, String> {
-        let upstream_version = self.edge_llm_upstream_version.as_deref().ok_or_else(|| {
-            "--support-tier tensor-rt-edge-llm requires machine-readable runtime identity: pass --edge-llm-upstream-version"
-                .to_string()
-        })?;
-        let execution_backend =
-            self.edge_llm_execution_backend.as_deref().ok_or_else(|| {
-                "--support-tier tensor-rt-edge-llm requires machine-readable runtime identity: pass --edge-llm-execution-backend"
-                    .to_string()
-            })?;
-        let upstream_model_id = match self.edge_llm_upstream_model_id.as_ref() {
-            Some(model_id) => model_id.clone(),
-            None => self.effective_model_id()?,
-        };
-        DelegatedRuntimeIdentity::new(upstream_model_id, upstream_version, execution_backend)
-            .and_then(|identity| {
-                identity.with_runtime_profile(self.edge_llm_runtime_profile.clone())
-            })
-            .map_err(|error| format!("invalid Edge-LLM runtime identity: {error}"))
-    }
-
-    fn tensor_rt_llm_runtime_identity(&self) -> Result<DelegatedRuntimeIdentity, String> {
-        let upstream_version = self
-            .tensor_rt_llm_upstream_version
-            .as_deref()
-            .ok_or_else(|| {
-                "--support-tier tensor-rt-llm requires machine-readable runtime identity: pass --tensorrt-llm-upstream-version"
-                    .to_string()
-            })?;
-        let execution_backend = self
-            .tensor_rt_llm_execution_backend
-            .as_deref()
-            .ok_or_else(|| {
-                "--support-tier tensor-rt-llm requires machine-readable runtime identity: pass --tensorrt-llm-execution-backend"
-                    .to_string()
-            })?;
-        let upstream_model_id = match self.tensor_rt_llm_upstream_model_id.as_ref() {
-            Some(model_id) => model_id.clone(),
-            None => self.effective_model_id()?,
-        };
-        DelegatedRuntimeIdentity::new(upstream_model_id, upstream_version, execution_backend)
-            .and_then(|identity| {
-                identity.with_runtime_profile(self.tensor_rt_llm_runtime_profile.clone())
-            })
-            .map_err(|error| format!("invalid TensorRT-LLM runtime identity: {error}"))
-    }
-
-    fn vllm_backend_config(
-        &self,
-        effective_support_tier: PreviewSupportTier,
-        timeouts: DelegatedHttpTimeouts,
-    ) -> Result<Option<VllmConfig>, String> {
-        if effective_support_tier != PreviewSupportTier::Vllm {
-            if self.vllm_server_url.is_some()
-                || self.vllm_upstream_model_id.is_some()
-                || self.vllm_api_key_file.is_some()
-                || self.vllm_allow_remote
-                || self.vllm_ca_cert.is_some()
-                || self.vllm_max_in_flight.is_some()
-                || self.vllm_model_profile != VllmModelProfileArg::OpenAiCompatible
-                || self.vllm_runtime_profile.is_some()
-            {
-                return Err(
-                    "vLLM-specific options require --support-tier vllm; AX does not silently switch providers"
-                        .to_string(),
-                );
-            }
-            return Ok(None);
-        }
-
-        let base_url = self
-            .vllm_server_url
-            .as_deref()
-            .ok_or_else(|| "--support-tier vllm requires --vllm-server-url".to_string())?;
-        let upstream_model_id = self
-            .vllm_upstream_model_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or(self.effective_model_id()?);
-        let auth = self.resolve_vllm_credential()?;
-        let tls = match self.vllm_ca_cert.as_ref() {
-            Some(path) => DelegatedTlsPolicy::system_roots_with_ca_file(path)
-                .map_err(|error| error.to_string())?,
-            None => DelegatedTlsPolicy::SystemRoots,
-        };
-        let config = VllmServerCompletionConfig::new_with_remote_policy(
-            base_url,
-            upstream_model_id,
-            self.vllm_allow_remote,
-        )
-        .map_err(|error| error.to_string())?
-        .with_timeouts(timeouts)
-        .with_auth(auth)
-        .with_tls(tls)
-        .with_max_in_flight(self.vllm_max_in_flight)
-        .map_err(|error| error.to_string())?
-        .with_model_profile(self.vllm_model_profile.as_sdk_profile())
-        .with_runtime_profile(self.vllm_runtime_profile.clone())
-        .map_err(|error| error.to_string())?;
-        Ok(Some(VllmConfig::ServerCompletion(config)))
-    }
-
-    fn resolve_vllm_credential(&self) -> Result<Option<DelegatedBearerCredential>, String> {
-        let env_name = self.vllm_api_key_env.trim();
-        if env_name.is_empty()
-            || !env_name.bytes().enumerate().all(|(index, byte)| {
-                byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
-            })
-        {
-            return Err("--vllm-api-key-env must be a valid environment variable name".to_string());
-        }
-        let env_secret = env::var(env_name)
-            .ok()
-            .filter(|value| !value.trim().is_empty());
-        let file_from_env = env::var_os(VLLM_API_KEY_FILE_ENV)
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from);
-        if self.vllm_api_key_file.is_some() && file_from_env.is_some() {
-            return Err(format!(
-                "--vllm-api-key-file conflicts with {VLLM_API_KEY_FILE_ENV}"
-            ));
-        }
-        let file = self.vllm_api_key_file.as_ref().or(file_from_env.as_ref());
-        if env_secret.is_some() && file.is_some() {
-            return Err(format!(
-                "vLLM credential sources conflict: populated {env_name} and API key file are both configured"
-            ));
-        }
-        if let Some(secret) = env_secret {
-            return DelegatedBearerCredential::new(secret)
-                .map(Some)
-                .map_err(|error| error.to_string());
-        }
-        let Some(path) = file else {
-            return Ok(None);
-        };
-        let metadata = fs::symlink_metadata(path).map_err(|error| {
-            format!(
-                "failed to inspect vLLM API key file {}: {error}",
-                path.display()
-            )
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "vLLM API key path {} must not be a symbolic link",
-                path.display()
-            ));
-        }
-        if !metadata.is_file() {
-            return Err(format!(
-                "vLLM API key path {} is not a regular file",
-                path.display()
-            ));
-        }
-        if metadata.len() > 16 * 1024 {
-            return Err(format!(
-                "vLLM API key file {} exceeds 16384 bytes",
-                path.display()
-            ));
-        }
-        let secret = fs::read_to_string(path).map_err(|error| {
-            format!(
-                "failed to read vLLM API key file {}: {error}",
-                path.display()
-            )
-        })?;
-        DelegatedBearerCredential::new(secret)
-            .map(Some)
-            .map_err(|error| error.to_string())
     }
 
     fn resolve_mlx_model_artifacts_dir(

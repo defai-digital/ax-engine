@@ -824,10 +824,9 @@ pub(crate) fn build_replacement_live_state(
 
 fn build_live_state_inner(
     model_id: String,
-    mut session_config: EngineSessionConfig,
+    session_config: EngineSessionConfig,
     replacement: bool,
 ) -> Result<LiveState, GenerationServiceStartError> {
-    session_config.probe_vllm_readiness()?;
     // Parse tokenizer.json before the first HTTP request. The file is ~20 MB for
     // Qwen-class models and the first uncached load costs tens to hundreds of
     // milliseconds of TTFT under the fresh-process flip contract.
