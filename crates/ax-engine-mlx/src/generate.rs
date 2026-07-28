@@ -1079,6 +1079,18 @@ fn clear_cache_after_split_prefill(hidden_size_per_layer_input: usize) -> bool {
 
 fn eval_kv_refs(cache: &MlxKVCache) {
     let kv_refs = cache.collect_eval_refs();
+    if prefill_time_debug_enabled() {
+        let total_elems: usize = kv_refs
+            .iter()
+            .map(|a| a.shape().iter().map(|&d| d as usize).product::<usize>())
+            .sum();
+        eprintln!(
+            "AX_PREFILL_TIME_DEBUG eval_kv_refs arrays={} total_elems={} cache_seq={}",
+            kv_refs.len(),
+            total_elems,
+            cache.seq_len()
+        );
+    }
     if !kv_refs.is_empty() {
         eval(&kv_refs);
     }
