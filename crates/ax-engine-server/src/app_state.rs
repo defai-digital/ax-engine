@@ -927,10 +927,6 @@ pub(crate) fn long_prefill_warmup_enabled() -> bool {
 pub(crate) const S1_GEMMA_LONG_PREFILL_PREFIX: &str = "<bos>";
 pub(crate) const S1_GEMMA_LONG_PREFILL_PATTERN: &str = "The audit record contains alpha beta gamma delta epsilon zeta eta theta and must be retained exactly. ";
 pub(crate) const S1_GEMMA_LONG_PREFILL_REPEATS: usize = 768;
-/// Token count the S1 replay scenario actually sends (the driver encodes the
-/// pattern text and truncates to this length). The warm must match it — see
-/// run_exact_s1_gemma_long_prefill_warmup.
-pub(crate) const S1_GEMMA_LONG_PREFILL_SCENARIO_TOKENS: usize = 8192;
 
 pub(crate) fn s1_gemma_long_prefill_text() -> String {
     let mut text = String::with_capacity(
@@ -987,15 +983,6 @@ pub(crate) fn run_exact_s1_gemma_long_prefill_warmup(
     let Ok(input_tokens) = tokenizer.encode(&text, false) else {
         return;
     };
-    // The replay scenario truncates the same pattern text to exactly
-    // S1_GEMMA_LONG_PREFILL_SCENARIO_TOKENS tokens. Sliding-window models
-    // snapshot only the LARGEST block-aligned prefix, so a warm that runs
-    // longer than the scenario stores a snapshot the scenario request can
-    // never hit (AX_PREFIX_DEBUG measured store prompt=13826 vs request
-    // 8192 => guaranteed miss and a full re-prefill). Truncate the warm to
-    // the scenario length so its snapshot is the one the request reuses.
-    let mut input_tokens = input_tokens;
-    input_tokens.truncate(S1_GEMMA_LONG_PREFILL_SCENARIO_TOKENS);
     if input_tokens.is_empty() {
         return;
     }
