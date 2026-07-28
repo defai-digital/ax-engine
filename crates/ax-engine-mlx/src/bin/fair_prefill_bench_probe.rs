@@ -179,7 +179,10 @@ fn run_decode_steps(
             .find(|update| update.request_id == request_id)
             .ok_or_else(|| format!("decode step for request {} lost", request_id.0))?;
         if let Some(error) = &update.error {
-            return Err(format!("decode step for request {} failed: {error}", request_id.0));
+            return Err(format!(
+                "decode step for request {} failed: {error}",
+                request_id.0
+            ));
         }
         token = update
             .output_token
