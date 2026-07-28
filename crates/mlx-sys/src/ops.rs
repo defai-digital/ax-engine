@@ -1394,6 +1394,17 @@ pub fn rms_norm_quantized_matmul(
     )
 }
 
+
+fn fused_debug_error(entry: &str) {
+    if std::env::var_os("AX_MLX_PREFILL_TIME_DEBUG").is_some()
+        && let Some(msg) = crate::error::take_last_error()
+    {
+        eprintln!("AX_PREFILL_TIME_DEBUG fused shim error [{entry}]: {msg}");
+        return;
+    }
+    crate::error::clear_stale_error();
+}
+
 /// One-call fused offset-0 prefill attention (mlxcel
 /// `fused_causal_prefill_attention` residual): rms_norm -> packed-QKV qmm ->
 /// split/BHSD -> optional per-head QK rms_norm -> rope(offset 0) -> maskless
@@ -1464,7 +1475,7 @@ pub fn fused_causal_prefill_attention(
             return Some((out, k_out, v_out));
         }
     }
-    crate::error::clear_stale_error();
+    fused_debug_error("fused_causal_prefill_attention");
     None
 }
 
@@ -1540,7 +1551,7 @@ pub fn fused_causal_prefill_attention_split(
             return Some((out, k_out, v_out));
         }
     }
-    crate::error::clear_stale_error();
+    fused_debug_error("fused_causal_prefill_attention_split");
     None
 }
 
@@ -1612,7 +1623,7 @@ pub fn fused_qkv_rope_split(
             return Some((q_out, k_out, v_out));
         }
     }
-    crate::error::clear_stale_error();
+    fused_debug_error("fused_qkv_rope_split");
     None
 }
 
@@ -1654,7 +1665,7 @@ pub fn fused_sdpa_oproj(
             return Some(out);
         }
     }
-    crate::error::clear_stale_error();
+    fused_debug_error("fused_sdpa_oproj");
     None
 }
 
