@@ -1404,6 +1404,17 @@ fn advance_shared_engine(
     // quanta alone are not enough; the worker-level burst must also stay
     // under the stream-gap SLO so Qwen decode kernels keep getting airtime.
     let mut sibling_active_for_burst = false;
+    if std::env::var_os("AX_SERVER_SCHED_DEBUG").is_some() {
+        let gate = execution_target.as_ref().map(|target| {
+            service_state
+                .adaptive_prefill_isolation
+                .load(Ordering::Acquire)
+                || target
+                    .arbiter
+                    .tracks_multiple_models(target.model_id.as_ref())
+        });
+        eprintln!("AX_SCHED_DEBUG tick gate={gate:?}");
+    }
     // Gate on the explicit per-service flag OR the arbiter's own view of
     // multi-model reality. The /load wiring that sets the flag on the
     // published service has a publish/attach ordering race (see the
@@ -1424,6 +1435,14 @@ fn advance_shared_engine(
             target.model_id.as_ref(),
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
+        if std::env::var_os("AX_SERVER_SCHED_DEBUG").is_some() {
+            let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
+            eprintln!(
+                "AX_SCHED_DEBUG model={} sibling_active={sibling_active} fair_enabled={enabled} fair_tokens={current_tokens} inflight={inflight} adaptive_tokens={}",
+                target.model_id,
+                service_state.adaptive_prefill_tokens.load(Ordering::Acquire),
+            );
+        }
         // Cap burst whenever a sibling is active (exclusive or concurrent).
         sibling_active_for_burst = sibling_active;
         let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
