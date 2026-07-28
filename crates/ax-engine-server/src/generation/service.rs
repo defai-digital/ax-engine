@@ -1475,6 +1475,22 @@ fn advance_shared_engine(
                 Some(limit) => adjusted.min(limit as u32),
                 None => adjusted,
             };
+            // Under exclusive long-prefill isolation the sibling cannot
+            // interleave mid-prefill anyway, so a sub-chunk quantum has no
+            // fairness value and only multiplies the per-chunk
+            // cache-materialization evals whose cost grows with cache
+            // length (S1 teardown: 55 x 255-token chunks = 10.1 s of eval
+            // vs 0.63 ms/token at 512). Pin the quantum to the operator
+            // chunk in that mode; dual-hold keeps the adaptive size.
+            let adjusted = if long_prefill_exclusive_enabled() {
+                session
+                    .mlx_prefill_chunk_limit()
+                    .and_then(|limit| u32::try_from(limit).ok())
+                    .filter(|&limit| limit > 0)
+                    .unwrap_or(adjusted)
+            } else {
+                adjusted
+            };
             service_state
                 .adaptive_prefill_tokens
                 .store(adjusted, Ordering::Release);
