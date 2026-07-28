@@ -239,11 +239,14 @@ impl ModelExecutionArbiter {
     /// model — the ground-truth multi-model signal used to back up the
     /// per-service adaptive-isolation flag, whose /load wiring can race
     /// publish/attach ordering.
-    fn tracks_multiple_models(&self) -> bool {
+    fn tracks_multiple_models(&self, model_id: &str) -> bool {
         let state = self.state.lock();
-        state.last_activity.len() >= 2
-            || state.waiters.len() >= 2
-            || state.held_models.len() >= 2
+        state
+            .last_activity
+            .keys()
+            .chain(state.waiters.keys())
+            .chain(state.held_models.iter())
+            .any(|other| other.as_str() != model_id)
     }
 
     fn has_recent_sibling_activity(&self, model_id: &str, recent_for: Duration) -> bool {
@@ -1413,7 +1416,9 @@ fn advance_shared_engine(
         service_state
             .adaptive_prefill_isolation
             .load(Ordering::Acquire)
-            || target.arbiter.tracks_multiple_models()
+            || target
+                .arbiter
+                .tracks_multiple_models(target.model_id.as_ref())
     }) {
         let sibling_active = target.arbiter.has_recent_sibling_activity(
             target.model_id.as_ref(),
