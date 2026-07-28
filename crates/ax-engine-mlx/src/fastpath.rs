@@ -404,8 +404,25 @@ pub fn set_sibling_prefill_rotation(enabled: bool) {
 }
 
 /// Whether sibling-resident prefill rotation is currently requested.
+///
+/// `AX_MLX_SIBLING_PREFILL_ROTATION=0|off|false` hard-forces the hint off
+/// (and `=1|on|true` forces it on) regardless of the server hook, so
+/// A/B teardowns can isolate ring-rotated prefill storage. Unset keeps
+/// the hint-driven behavior unchanged.
 pub fn sibling_prefill_rotation() -> bool {
-    SIBLING_PREFILL_ROTATION.load(std::sync::atomic::Ordering::Acquire)
+    static OVERRIDE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    match OVERRIDE.get_or_init(|| {
+        std::env::var("AX_MLX_SIBLING_PREFILL_ROTATION")
+            .ok()
+            .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+                "0" | "off" | "false" => Some(false),
+                "1" | "on" | "true" => Some(true),
+                _ => None,
+            })
+    }) {
+        Some(forced) => *forced,
+        None => SIBLING_PREFILL_ROTATION.load(std::sync::atomic::Ordering::Acquire),
+    }
 }
 
 env_flag_default_on!(
