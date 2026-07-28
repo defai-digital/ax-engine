@@ -398,9 +398,12 @@ pub fn chunked_prefill_with_sampling_buffers(
         while offset < cache_only_prefix_len {
             let end = (offset + chunk_size).min(cache_only_prefix_len);
             let chunk = &prompt_tokens[offset..end];
+            let dbg_build_started = std::time::Instant::now();
             // Cache-only: skip lm_head projection (hidden×vocab_size).
             let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
             cache.advance(chunk.len());
+            let dbg_build_us = dbg_build_started.elapsed().as_micros();
+            let dbg_eval_started = std::time::Instant::now();
             // Default: materialise KV only after the *last* cache-only chunk.
             // Intermediate barriers force a full layer-stack eval for every
             // sub-chunk (Qwen linear-attention clamps to 1024, so p=2048 paid
@@ -423,9 +426,18 @@ pub fn chunked_prefill_with_sampling_buffers(
                     eval_kv_refs(cache);
                 }
             }
+            if prefill_time_debug_enabled() {
+                eprintln!(
+                    "AX_PREFILL_TIME_DEBUG greedy_cache_only chunk_tokens={} build_us={} eval_us={}",
+                    chunk.len(),
+                    dbg_build_us,
+                    dbg_eval_started.elapsed().as_micros()
+                );
+            }
             offset = end;
         }
 
+        let dbg_final_started = std::time::Instant::now();
         let tok = decode_step_with_sampling_buffers(
             cfg,
             weights,
@@ -437,6 +449,12 @@ pub fn chunked_prefill_with_sampling_buffers(
             sampling_logits_buf,
             sampling_candidates_buf,
         );
+        if prefill_time_debug_enabled() {
+            eprintln!(
+                "AX_PREFILL_TIME_DEBUG greedy_final_step us={}",
+                dbg_final_started.elapsed().as_micros()
+            );
+        }
         // E2B/E4B defer cleanup past the first-token boundary; request
         // completion and the decode cadence still bound cache growth.
         if clear_cache_after_split_prefill(cfg.hidden_size_per_layer_input) {
