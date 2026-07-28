@@ -2241,6 +2241,9 @@ impl MlxRunner {
                 );
                 state.cache.set_rotating_sliding_decode(rotate_sliding);
                 state.cache.set_rotating_sliding_slack(rotate_slack);
+                if item.mode == ExecutionMode::Prefill && state.rotating_sliding_latch.is_none() {
+                    state.rotating_sliding_latch = Some((rotate_sliding, rotate_slack));
+                }
 
                 let last_token = state
                     .next_model_last_token
@@ -4414,6 +4417,9 @@ impl MlxRunner {
         );
         state.cache.set_rotating_sliding_decode(rotate_sliding);
         state.cache.set_rotating_sliding_slack(rotate_slack);
+        if item.mode == ExecutionMode::Prefill && state.rotating_sliding_latch.is_none() {
+            state.rotating_sliding_latch = Some((rotate_sliding, rotate_slack));
+        }
 
         // GPU work — mutex is NOT held during prefill, decode, or n-gram acceleration steps.
         let sampled_tokens = match item.mode {
@@ -10095,6 +10101,16 @@ fn cache_rotation_for_execution_with_prefill_flag(
     prefill_rotation_enabled: bool,
 ) -> (bool, usize) {
     if mode == ExecutionMode::Prefill {
+        // A request that already latched its rotation decision keeps it for
+        // every later prefill item. The sibling-rotation hint is a process
+        // atomic that can flip mid-prompt (the sibling going idle clears
+        // it); re-evaluating per item then hands (false, 0) to a cache whose
+        // rings already rotated, and the next multi-token append panics on
+        // the slot-order invariant (measured: dummy 13.8k warm dying at
+        // seq_len 11776 with rotating_slack 0 once the qwen stream ended).
+        if let Some(latched) = request_latch {
+            return latched;
+        }
         // Ordered prefill is the production default (portable prefix snapshots
         // + pure window decode). When prefill rotation is opted in, size slack
         // so multi-token chunks fit the ring eligibility gate in
