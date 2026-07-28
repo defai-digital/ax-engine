@@ -218,6 +218,43 @@ async fn openai_completion_request_rejects_unsupported_sampling_params() {
 }
 
 #[tokio::test]
+async fn openai_completion_request_redirects_removed_cuda_extensions_to_ax_serving() {
+    let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+
+    for (field, value) in [
+        ("skip_special_tokens", json!(true)),
+        ("vllm_xargs", json!({"priority": 7})),
+    ] {
+        let mut body = json!({
+            "prompt": "hello",
+            "max_tokens": 2
+        });
+        body.as_object_mut()
+            .expect("completion body is an object")
+            .insert(field.to_string(), value);
+        let request: OpenAiCompletionHttpRequest =
+            serde_json::from_value(body).expect("legacy CUDA extension should deserialize");
+        let error = match build_openai_completion_request(&live, request) {
+            Ok(_) => panic!("{field} should redirect callers to AX Serving"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST, "{field}");
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("unsupported_parameter"),
+            "{field}"
+        );
+        assert!(
+            error.1.0.error.message.contains("moved to AX Serving"),
+            "{field}: {}",
+            error.1.0.error.message
+        );
+    }
+}
+
+#[tokio::test]
 async fn openai_completion_request_carries_client_stop_for_native_enforcement() {
     // The native MLX backend enforces client stops server-side over decoded
     // text (ADR-040 D2): the raw client list rides response options into the
