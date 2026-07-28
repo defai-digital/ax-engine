@@ -4388,7 +4388,17 @@ impl MlxRunner {
             && matches!(item.mode, ExecutionMode::Prefill)
             && crate::fastpath::cold_prefill_clear_cache_enabled()
         {
+            if std::env::var("AX_MLX_PREFILL_TIME_DEBUG").as_deref() == Ok("1") {
+                eprintln!("AX_PREFILL_TIME_DEBUG cold_prefill_clear_cache fired");
+            }
             mlx_sys::transforms::clear_cache();
+        } else if std::env::var("AX_MLX_PREFILL_TIME_DEBUG").as_deref() == Ok("1")
+            && matches!(item.mode, ExecutionMode::Prefill)
+        {
+            eprintln!(
+                "AX_PREFILL_TIME_DEBUG cold_prefill_clear_cache skipped cold_start={}",
+                cold_start_without_siblings
+            );
         }
         // WS-M3: when multimodal prefix reuse is enabled, restore like text
         // (media identity is folded into the prefix key via media_key).
