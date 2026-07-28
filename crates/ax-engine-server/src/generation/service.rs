@@ -1480,7 +1480,20 @@ fn advance_shared_engine(
             } else {
                 STREAM_ENGINE_STEP_BURST
             };
-            if active_streams.len() == 1 && request_ids.len() == 1 && engine_burst > 1 {
+            // A multi-token step is a prefill quantum, not interactive
+            // decode. Under sibling load the arbiter turn must stay
+            // per-quantum so the waiting sibling interleaves — bursting
+            // across quanta re-monolithizes the long prefill inside one
+            // turn (S1 measured: one 9.18 s engine_step turn = 32 adaptive
+            // quanta, sibling decode starved for the entire window).
+            let step_is_prefill_quantum = |state: &ServiceState| {
+                state.last_step_scheduled_tokens.load(Ordering::Acquire) >= 2
+            };
+            if active_streams.len() == 1
+                && request_ids.len() == 1
+                && engine_burst > 1
+                && !(sibling_active_for_burst && step_is_prefill_quantum(service_state))
+            {
                 let request_id = request_ids[0];
                 for _ in 1..engine_burst {
                     if !should_continue_single_stream_burst(
@@ -1499,6 +1512,10 @@ fn advance_shared_engine(
                                 &report,
                                 service_state,
                             );
+                            if sibling_active_for_burst && step_is_prefill_quantum(service_state)
+                            {
+                                break;
+                            }
                         }
                         Err(_) => break,
                     }
