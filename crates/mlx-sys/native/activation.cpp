@@ -1928,6 +1928,7 @@ extern "C" int ax_mlx_fused_sdpa_oproj(
     const mlx_array k,
     const mlx_array v,
     float scale,
+    const mlx_array mask,
     const mlx_array o_weight,
     const mlx_array o_scales,
     const mlx_array o_biases,
@@ -1942,8 +1943,17 @@ extern "C" int ax_mlx_fused_sdpa_oproj(
     auto seq = qr.shape(2);
     auto head_dim = qr.shape(3);
 
-    auto attn = mx::fast::scaled_dot_product_attention(
-        qr, aref(k), aref(v), scale, "causal", std::nullopt, std::nullopt, s);
+    // An explicit additive mask (sliding-window / rotated-ring geometry)
+    // replaces the maskless bottom-right "causal" mode used for plain
+    // full-attention chunks.
+    auto mask_opt = opt_arr(mask);
+    auto attn = mask_opt.has_value()
+        ? mx::fast::scaled_dot_product_attention(
+              qr, aref(k), aref(v), scale, "", std::make_optional(*mask_opt),
+              std::nullopt, s)
+        : mx::fast::scaled_dot_product_attention(
+              qr, aref(k), aref(v), scale, "causal", std::nullopt,
+              std::nullopt, s);
     attn = mx::reshape(
         mx::transpose(attn, {0, 2, 1, 3}, s),
         {batch, seq, num_heads * head_dim}, s);

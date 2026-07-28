@@ -758,7 +758,7 @@ fn layer_forward_internal(
             Some("kv_source")
         } else if mrope.is_some() {
             Some("mrope")
-        } else if ring_layout.is_some() {
+        } else if !offset_chunk && ring_layout.is_some() {
             Some("ring_layout")
         } else if protected_prefix_window.is_some() {
             Some("protected_prefix")
@@ -770,8 +770,6 @@ fn layer_forward_internal(
             // 512) hits MLX's slow reference path and loses to the portable
             // route (measured +0.4ms offset-0, +8ms offset chunks on 12B).
             Some("head_dim")
-        } else if offset_chunk && sliding_window.is_some() {
-            Some("offset_sliding")
         } else if offset_chunk && token_offset == 0 {
             Some("cache_ahead_of_offset")
         } else if !offset_chunk && sliding_window.is_some_and(|window| seq > window) {
@@ -862,17 +860,60 @@ fn layer_forward_internal(
                 }
                 break 'fused None;
             };
-            // Full-attention layer (offset_sliding gate above): no retained
-            // window applies.
-            let attention_kv =
-                cache.append_with_retained_window_for_attention(layer_idx, k_rope, v, None);
+            // Mirror the portable retained-window policy so sliding-window
+            // and rotated-ring layers keep their exact cache geometry.
+            let retained_window = if ring_layout.is_some() {
+                sliding_window
+            } else if sliding_window.is_some() && fastpath::multi_token_window_views_enabled() {
+                match shared_mask {
+                    Some(Some(mask)) => mask.shape().last().map(|&len| len as usize),
+                    _ => sliding_window.map(|window| window + seq - 1),
+                }
+            } else {
+                None
+            };
+            let attention_kv = cache.append_with_retained_window_for_attention(
+                layer_idx,
+                k_rope,
+                v,
+                retained_window,
+            );
             let key_len = attention_kv.key_len();
             let (k_full, v_full) = attention_kv.into_dense();
+            // Mirror the portable mask selection: hoisted shared mask when
+            // its key length matches, ring mask when rotated, plain
+            // windowed-causal otherwise. `None` means maskless bottom-right
+            // causal inside the shim.
+            let shared_usable = shared_mask.is_some_and(|m| match m.as_ref() {
+                Some(mask) => mask.shape().last().is_some_and(|&k| k as usize == key_len),
+                None => true,
+            });
+            let local_mask: Option<MlxArray> = if shared_usable {
+                None
+            } else {
+                match ring_layout {
+                    Some(ring) if ring.needs_mask(seq) && key_len == ring.capacity => {
+                        Some(create_ring_sliding_mask(
+                            seq,
+                            ring.window,
+                            ring.capacity,
+                            ring.write_start,
+                        ))
+                    }
+                    _ => attention_mask_array(seq, key_len, sliding_window),
+                }
+            };
+            let sdpa_mask: Option<&MlxArray> = if shared_usable {
+                shared_mask.and_then(|m| m.as_ref())
+            } else {
+                local_mask.as_ref()
+            };
             let out = match mlx_sys::ops::fused_sdpa_oproj(
                 &q_rope,
                 &k_full,
                 &v_full,
                 cfg.query_scale,
+                sdpa_mask,
                 &o_proj.weight,
                 o_proj.scales.as_ref().expect("checked above"),
                 o_proj.biases.as_ref(),
@@ -895,15 +936,15 @@ fn layer_forward_internal(
                 None => {
                     // K/V are already appended, so the portable block below
                     // must not run; finish with the portable SDPA + o-proj
-                    // helpers over the same appended views.
-                    let mask = attention_mask_array(seq, key_len, None);
+                    // helpers over the same appended views and mask.
+                    let fallback_mask: Option<MlxArray> = sdpa_mask.cloned();
                     let attn = full_precision_attention(
                         &q_rope,
                         &k_full,
                         &v_full,
                         cfg.query_scale,
                         seq,
-                        &mask,
+                        &fallback_mask,
                     );
                     let attn_flat =
                         flatten_attention_output_bhsd(&attn, seq, n_heads_layer, head_dim);
