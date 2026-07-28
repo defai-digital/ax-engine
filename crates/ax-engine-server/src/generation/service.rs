@@ -1468,6 +1468,13 @@ fn advance_shared_engine(
             } else {
                 current
             };
+            // Never exceed the operator's --prefill-chunk: larger forwards
+            // can become ring-ineligible once a sliding-window ring rotates
+            // (ordered-append invariant panics at kv_cache.rs:2065).
+            let adjusted = match session.mlx_prefill_chunk_limit() {
+                Some(limit) => adjusted.min(limit as u32),
+                None => adjusted,
+            };
             service_state
                 .adaptive_prefill_tokens
                 .store(adjusted, Ordering::Release);
@@ -1487,6 +1494,10 @@ fn advance_shared_engine(
         } else {
             // Sibling idle: restore single-model prefill throughput.
             let start = adaptive_prefill_latency_tokens_per_step();
+            let start = match session.mlx_prefill_chunk_limit() {
+                Some(limit) => start.min(limit as u32),
+                None => start,
+            };
             service_state
                 .adaptive_prefill_tokens
                 .store(start, Ordering::Release);

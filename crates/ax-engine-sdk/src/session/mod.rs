@@ -327,6 +327,12 @@ impl EngineSession {
         self.config.max_inflight_prefill_requests = max_inflight_prefill_requests;
     }
 
+    /// The operator-declared MLX prefill chunk (`--prefill-chunk`), the
+    /// ring-safe upper bound for a single multi-token forward.
+    pub fn mlx_prefill_chunk_limit(&self) -> Option<usize> {
+        self.config.mlx_prefill_chunk
+    }
+
     /// Return the live fair-prefill policy.
     ///
     /// The server uses this to change only the token quantum that actually
