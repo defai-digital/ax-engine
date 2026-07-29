@@ -3,6 +3,11 @@
 
 set -euo pipefail
 
+# macOS bsdtar emits AppleDouble ._* members for files carrying extended
+# attributes (e.g. com.apple.provenance), which breaks the signed-manifest
+# archive-member verification. Disable them for every tar in this script.
+export COPYFILE_DISABLE=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MLX_PIN="$(tr -d '[:space:]' < "$ROOT_DIR/mlx.version")"
