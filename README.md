@@ -1,20 +1,26 @@
 # AX Engine
 
-AX Engine is a Mac-first LLM inference runtime for Apple Silicon. Install with
-Homebrew, download a model, and serve OpenAI-compatible endpoints locally —
-with a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP, and
-peer-backed benchmarks against `mlx-lm`, llama.cpp, MTPLX, and lightning-mlx.
-Its portable Linux control plane can also front explicitly selected vLLM,
+AX Engine is a **Mac-first** LLM inference runtime for Apple Silicon. Install
+with Homebrew, download a curated model, and serve OpenAI-compatible endpoints
+locally — with a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP,
+multi-model serving with exact-prompt prefix reuse, and peer-backed benchmarks
+against `mlx-lm`, llama.cpp, MTPLX, and lightning-mlx.
+
+A portable Linux control plane can also front **explicitly selected** vLLM,
 TensorRT-LLM, or TensorRT Edge-LLM workers without adding CUDA dependencies to
-the Mac installation.
+the Mac installation. CUDA profiles stay candidate-only until their documented
+gates pass; they are not the default Mac product path.
 
-For AX OCR deployments, Apple Silicon Mac and NVIDIA Thor are the co-primary
-target platforms; certified Linux x86_64 CUDA PCs are the secondary support
-platform. This product priority does not promote a CUDA candidate to GA before
-its hardware-specific release gates pass.
+For AX OCR deployments, Apple Silicon Mac and NVIDIA Thor are co-primary target
+platforms; certified Linux x86_64 CUDA PCs are secondary. That OCR priority does
+**not** promote any CUDA candidate to GA before hardware-specific release gates
+pass.
 
-Browse all serve-ready snapshots in the
+Browse AutomatosX serve-ready chat / coding / embedding snapshots in the
 [AutomatosX model collection on Hugging Face](https://huggingface.co/AutomatosX/models).
+Additional native families (GLM 4.7 Flash, Nemotron Omni, Unlimited-OCR, Whisper,
+MiniCPM-V, and others) are documented under
+[Supported Models](docs/SUPPORTED-MODELS.md).
 
 **Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 Max or newer, 32 GB+ unified
 memory).**
@@ -27,21 +33,26 @@ memory).**
   and lightning-mlx on Qwen3.6
 - **Strong direct decode on Apple Silicon** — Gemma and Qwen paths compete with
   `mlx-lm` and llama.cpp Metal on published decode charts
+- **Multi-model on one process** — keep a scoped set of Qwen 3.5/3.6,
+  Qwen3-Coder-Next, Gemma 4, and embedding models resident (`load_mode=add`),
+  route by request `model` (chat + embeddings together), with fair Metal turn
+  arbitration, memory preflight, and optional idle eviction. Exact-prompt
+  **prefix reuse** is the S1 differentiator: official dual-model campaign
+  (Qwen stream + Gemma 13.8k prefill) clears **4/4 locked gates** at ~**5×**
+  throughput vs a multi-process peer MLX server — see
+  [Performance](#performance) and
+  [Server: Multi-model](docs/SERVER.md#multi-model-serving)
 - **You own the stack you serve** — AX runs the MLX graph, KV/runtime, and
-  OpenAI-compatible server for Gemma / Qwen / GLM; `mlx-lm` and `llama.cpp` stay
-  optional compatibility adapters
+  OpenAI-compatible server for supported Gemma / Qwen / GLM (and other direct
+  families); `mlx-lm` and `llama.cpp` stay optional compatibility adapters
 - **Native media and speech** — image/video chat, mixed image+audio reasoning,
   OCR, and Whisper transcription/translation run through repo-owned MLX graphs
-  with capability-gated OpenAI endpoints
-- **One CUDA control plane** — one AX-owned vLLM provider serves Linux x86_64
-  and Thor through separately certified runtime profiles; TensorRT-LLM and
-  TensorRT Edge-LLM remain explicit per-model optimization lanes and fail
+  with capability-gated OpenAI endpoints (checkpoint-authoritative; see media
+  table below)
+- **Optional CUDA control plane** — one AX-owned vLLM provider can serve Linux
+  x86_64 and Thor through separately certified runtime profiles; TensorRT-LLM
+  and TensorRT Edge-LLM remain explicit per-model optimization lanes and fail
   closed without machine-readable upstream-version/execution-path identity
-- **Multi-model serving** — keep a scoped set of Qwen 3.5/3.6, Qwen3-Coder-Next,
-  Gemma 4, and embedding models resident (`load_mode=add`), route with request
-  `model` — including chat + embeddings from one process — with optional idle
-  eviction and memory preflight; see
-  [Server: Multi-model](docs/SERVER.md#multi-model-serving)
 - **Claims you can audit** — public rows ship with checked-in artifacts (route,
   model snapshot, sampler, accept rate, provenance)
 
@@ -119,11 +130,17 @@ Python wheel, source builds, and troubleshooting:
 
 ## Models
 
-The managed download catalog is the complete public
-[AutomatosX model collection](https://huggingface.co/AutomatosX/models?sort=alphabetical).
-The TUI and `ax-engine download --list` expose these reviewed snapshots only.
-Qwen 3.5, Qwen 3.6, and Gemma 4 are supported across every variant currently
-published there: plain 4-bit/6-bit, QAT, and OptiQ where available.
+### Managed AutomatosX catalog (download / TUI)
+
+`ax-engine download --list` and the TUI expose the curated public
+[AutomatosX model collection](https://huggingface.co/AutomatosX/models?sort=alphabetical)
+only — not every community MLX weight. Qwen 3.5, Qwen 3.6, and Gemma 4 variants
+published there (plain 4-bit/6-bit, QAT, OptiQ where available) are first-class
+serve targets. Other native families (for example **GLM 4.7 Flash**, Nemotron
+Omni, Unlimited-OCR, Whisper, MiniCPM-V) use the repo-owned runtime via serve
+aliases, presets, or manual model directories; they are not all AutomatosX-managed
+packages. Full matrix:
+[Supported Models](docs/SUPPORTED-MODELS.md).
 
 Repositories ending in `-MTP` or `-Assistant-MTP` already contain the prepared
 sidecar or assistant artifacts and `model-manifest.json`. Download them with
@@ -210,20 +227,22 @@ Full contract (load/unload, memory preflight, idle eviction, metrics labels):
 
 ## Performance
 
-Why people try AX Engine: **faster local decode** against engines they already
-know. Results are **session-separated** — do not mix MTP rows with direct rows,
-or either with embeddings.
+Why people try AX Engine: **faster local decode** and **multi-model serving**
+against engines they already know. Results are **session-separated** — do not
+mix multi-model (S1), MTP, direct, or embedding rows across sessions.
 
 | Session | Peers | Headline metric |
 | --- | --- | --- |
+| **Multi-model serving (S1)** | AX single-process · multi-process peer MLX server | **4/4** locked gates; thr ratio **~5.0×** (2026-07-28) — [S1 results](docs/PERFORMANCE-RESULTS.md#session-mode-multi-model-serving-s1-single-process-vs-multi-process-peer) |
 | **MTP generation** | AX Engine · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | MTP decode tok/s |
 | **Direct generation** | AX Engine · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | Decode / prefill / TTFT |
 | Embeddings | AX · mlx-lm / mlx-embeddings | Ingest tok/s — Qwen3 chart below; see [full results](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings) |
-| **Multi-model serving (S1)** | AX single-process · [mlxcel](https://github.com/lablup/mlxcel) multi-process | 4/4 locked gates; thr ratio **5.0x** — see [S1 results](docs/PERFORMANCE-RESULTS.md#session-mode-multi-model-serving-s1-single-process-vs-multi-process-peer) |
 
-**Host:** Apple M5 Max · 128 GB · macOS 26.x · AX Engine **v6.12.0**
-(2026-07-26/27 AX-only refresh) · retained peers: `mlx-lm` **0.31.3** ·
-`llama.cpp` **b9910** / ggml **0.15.3** · MTPLX **2.0.1**.
+**Host:** Apple M5 Max · 128 GB · macOS 26.x · AX Engine **v6.12.0**.
+Generation charts: 2026-07-26/27 AX-only refresh (peer engines retained, not
+re-run). S1 multi-model: 2026-07-28 official 3-rep with prefix reuse. Retained
+peers: `mlx-lm` **0.31.3** · `llama.cpp` **b9910** / ggml **0.15.3** · MTPLX
+**2.0.1**.
 
 Methodology and artifacts:
 [Performance Results](docs/PERFORMANCE-RESULTS.md) ·
@@ -284,20 +303,20 @@ were not re-run in this refresh. Exact AX numbers:
 
 ### Embeddings: Qwen3-Embedding ingest scale
 
-Fresh AX-only Qwen3-Embedding 0.6B / 4B / 8B results (2026-07-27 current-main
-refresh, v6.11.1) are overlaid with retained 2026-07-12 `mlx-lm` medians. This
-is a cross-run directional view, not a paired engine-to-engine delta. Peer
-`mlx-lm` was not re-run. The uniform ingest corpus does not isolate the
-default-on mixed-length batching path. Full rows and methodology:
+Fresh AX-only Qwen3-Embedding 0.6B / 4B / 8B results (2026-07-27 AX-only
+refresh on the v6.12.0 line) are overlaid with retained 2026-07-12 `mlx-lm`
+medians. This is a cross-run directional view, not a paired engine-to-engine
+delta. Peer `mlx-lm` was not re-run. The uniform ingest corpus does not isolate
+the default-on mixed-length batching path. Full rows and methodology:
 [Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
 
 <img width="100%" src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Qwen3-Embedding batched ingest scale: retained mlx-lm reference and fresh AX Engine throughput across 0.6B, 4B, and 8B models">
 
 ### Embeddings: EmbeddingGemma ingest scale
 
-Fresh AX-only EmbeddingGemma 300M results (2026-07-27 current-main refresh,
-v6.11.1) are overlaid with retained 2026-07-02 `mlx-embeddings` medians. This
-is a cross-run directional view, not a paired engine-to-engine delta. Peer
+Fresh AX-only EmbeddingGemma 300M results (2026-07-27 AX-only refresh on the
+v6.12.0 line) are overlaid with retained 2026-07-02 `mlx-embeddings` medians.
+This is a cross-run directional view, not a paired engine-to-engine delta. Peer
 `mlx-embeddings` was not re-run. Full rows and methodology:
 [Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
 
