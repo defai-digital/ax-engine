@@ -38,6 +38,13 @@ class StandaloneReleaseTests(unittest.TestCase):
             env=env,
         )
 
+    def dylib_linkage(self, path: Path) -> tuple[str, tuple[str, ...]]:
+        install_name_lines = self.run_command("otool", "-D", path).stdout.splitlines()
+        linked_lines = self.run_command("otool", "-L", path).stdout.splitlines()
+        install_name = install_name_lines[1].strip()
+        linked = tuple(line.strip().split()[0] for line in linked_lines[1:] if line.strip())
+        return install_name, linked
+
     def build_fixture(self, root: Path) -> tuple[Path, Path, Path]:
         for tool in ("clang", "codesign", "install_name_tool", "lipo", "otool", "vtool"):
             if shutil.which(tool) is None:
@@ -83,7 +90,6 @@ class StandaloneReleaseTests(unittest.TestCase):
             f"-L{mlx_lib}",
             "-ljaccl",
             "-Wl,-install_name,@rpath/libmlx.dylib",
-            f"-Wl,-rpath,{mlx_lib}",
             "-o",
             mlx_lib / "libmlx.dylib",
         )
@@ -115,9 +121,22 @@ class StandaloneReleaseTests(unittest.TestCase):
         runtime = root / "runtime"
         payload = root / "payload"
         self.run_command("bash", STAGE_RUNTIME, mlx_lib, runtime)
+        for name in ("libmlx.dylib", "libjaccl.dylib", "mlx.metallib"):
+            self.assertEqual((mlx_lib / name).read_bytes(), (runtime / name).read_bytes())
         self.run_command("bash", PREPARE_STANDALONE, binaries, runtime, payload)
+        for name in ("libmlx.dylib", "libjaccl.dylib", "mlx.metallib"):
+            self.assertEqual((runtime / name).read_bytes(), (payload / name).read_bytes())
         for name in MACHO_NAMES:
             self.run_command("codesign", "--force", "--sign", "-", payload / name)
+        for name in ("libmlx.dylib", "libjaccl.dylib"):
+            self.assertEqual(
+                self.dylib_linkage(runtime / name),
+                self.dylib_linkage(payload / name),
+            )
+        self.assertEqual(
+            (runtime / "mlx.metallib").read_bytes(),
+            (payload / "mlx.metallib").read_bytes(),
+        )
         return payload
 
     def test_payload_runs_in_archive_and_homebrew_layouts(self) -> None:
@@ -129,7 +148,7 @@ class StandaloneReleaseTests(unittest.TestCase):
             mlx_loads = self.run_command("otool", "-L", payload / "libmlx.dylib").stdout
             server_commands = self.run_command("otool", "-l", payload / "ax-engine-server").stdout
             self.assertIn("@rpath/libmlx.dylib", server_loads)
-            self.assertIn("@loader_path/libjaccl.dylib", mlx_loads)
+            self.assertIn("@rpath/libjaccl.dylib", mlx_loads)
             self.assertIn("@loader_path", server_commands)
             self.assertIn("@loader_path/../libexec", server_commands)
             self.assertNotIn(str(root / "site-packages"), server_commands)

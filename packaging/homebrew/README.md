@@ -14,16 +14,20 @@ reference when updating the tap.
 | Consumer | `libmlx` source | How it resolves |
 |----------|-----------------|-----------------|
 | Source / pip wheel builds | pip / venv MLX | `mlx-sys` embeds absolute LC_RPATH to that dylib (NAX-correct) |
-| GitHub release tarball | pinned pip MLX from the release candidate | bundles `libmlx.dylib`, `libjaccl.dylib`, and colocated `mlx.metallib`; binaries use `@loader_path` |
-| Homebrew install | same signed runtime from the release tarball | installs binaries to `bin/` and the private runtime to `libexec/`; binaries also carry `@loader_path/../libexec` |
+| GitHub release tarball | pinned pip MLX from the release candidate | preserves the upstream dylib load commands, Developer ID re-signs private copies, and bundles them with the byte-identical `mlx.metallib`; binaries use `@loader_path` |
+| Homebrew install | same private signed runtime from the release tarball | installs binaries to `bin/` and the private runtime to `libexec/`; binaries also carry `@loader_path/../libexec` |
 
 Do **not** bake build-host, Python, or `/opt/homebrew` paths into a release.
-Release builds intentionally track the pinned pip MLX bytes for performance
-parity with `mlx-lm`; the immutable candidate carries those exact runtime
-files into the final archive. Homebrew must not rewrite the signed Mach-O
-files. It places the bundled runtime in the formula-private `libexec/`
-directory so a separately installed `mlx` formula cannot collide with AX
-Engine's pinned dylibs.
+Release builds intentionally track the pinned pip MLX runtime for performance
+parity with `mlx-lm`. Standalone preparation carries those exact candidate
+bytes into staging without changing either dylib's load commands. Production
+signing then replaces the dylibs' upstream ad-hoc signatures with the AX
+Developer ID signature required by hardened-runtime library validation. The
+release manifest records the before-signing upstream digests and final packaged
+digests separately. Homebrew must not rewrite the signed Mach-O files. It
+places the bundled runtime in the formula-private `libexec/` directory so a
+separately installed `mlx` formula cannot collide with AX Engine's pinned
+dylibs.
 
 The standalone archive keeps binaries and runtime files colocated for
 backward-compatible direct extraction. Its two relative rpaths support both

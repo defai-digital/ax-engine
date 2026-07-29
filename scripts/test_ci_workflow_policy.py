@@ -106,8 +106,10 @@ class CiWorkflowPolicyTests(unittest.TestCase):
             "mlx.metallib",
             "MLX-LICENSE.txt",
             "@loader_path/../libexec",
-            "ax.github_release_manifest.v2",
+            "ax.github_release_manifest.v3",
             "disable_library_validation",
+            "pinned-pypi-wheel",
+            "dylib_load_commands_preserved",
         ):
             self.assertIn(
                 marker,

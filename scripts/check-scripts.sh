@@ -224,6 +224,8 @@ bash scripts/check-qa.sh
   scripts/bench_diffusion_gemma_direct.py \
   scripts/check_version_sync.py \
   scripts/test_check_version_sync.py \
+  scripts/check_github_release_parity.py \
+  scripts/test_check_github_release_parity.py \
   scripts/test_ci_workflow_policy.py \
   scripts/release_candidate.py \
   scripts/test_release_candidate.py \
@@ -293,6 +295,7 @@ bash scripts/check-qa.sh
   scripts/test_bench_direct_telemetry_pass.py \
   scripts/test_render_readme_performance_charts.py \
   scripts/test_check_version_sync.py \
+  scripts/test_check_github_release_parity.py \
   scripts/test_ci_workflow_policy.py \
   scripts/test_release_candidate.py \
   scripts/test_release_signing.py \
