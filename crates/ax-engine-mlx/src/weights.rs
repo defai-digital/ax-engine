@@ -89,7 +89,7 @@ impl PipelineStageWeights {
     pub fn global_layer_index(&self, local_index: usize) -> Option<usize> {
         let local = u32::try_from(local_index).ok()?;
         let global = self.assignment.layers.start.checked_add(local)?;
-        (global < self.assignment.layers.end).then(|| global as usize)
+        (global < self.assignment.layers.end).then_some(global as usize)
     }
 }
 
