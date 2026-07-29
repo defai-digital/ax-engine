@@ -15,7 +15,7 @@ and this project adheres to Semantic Versioning.
   13.8k-token leg from ~8.2 s to ~0.4 s TTFT and the official
   single-process-vs-mlxcel campaign to 4/4 locked gates at a 5.0x
   throughput ratio (artifacts under
-  `benchmarks/results/serving/s1-mlxcel-flip/`).
+  `benchmarks/results/serving/s1-peer-flip/`).
 - `AX_MLX_FUSED_PREFILL_ATTENTION=1` (default off): fused offset-0 prefill
   attention for Gemma-family layers (rms_norm -> QKV qmm -> QK/V norms ->
   rope -> causal fast SDPA -> o-proj in one shim call), measured -9.7%

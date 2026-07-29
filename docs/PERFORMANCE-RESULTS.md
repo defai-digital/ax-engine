@@ -302,18 +302,18 @@ Depth-2 remains the default assistant configuration; set
 Raw direct and MTP artifacts, route telemetry, and parity checks are in the
 [2026-07-16 Gemma 4 12B 4-bit refresh](benchmarks/results/speculative/gemma4-assistant-mtp/2026-07-16-gemma4-12b-4bit-ax-only-refresh/summary.json).
 
-### Session Mode: Multi-Model Serving (S1, single-process vs mlxcel)
+### Session Mode: Multi-Model Serving (S1, single process vs multi-process peer)
 
 The S1 contract serves **two models from one AX process** (Qwen3.5-9B
 interactive stream + Gemma 4 12B 13.8k-token long prefill, OpenAI SSE,
-greedy) against **mlxcel v0.4.2 running one process per model**, on the
+greedy) against **a peer MLX serving engine (v0.4.2) running one process per model**, on the
 same host, same models, fresh processes per trial, alternating order.
 Locked gates: throughput ratio >= 1.15x, TTFT p95 ratio <= 0.90,
 interactive stream-gap p95 ratio <= 0.90, zero candidate errors.
 
 #### Official 3-rep result (2026-07-28, Apple M5 Max 128 GB)
 
-Artifacts: [benchmarks/results/serving/s1-mlxcel-flip/2026-07-28-prefix-reuse-official](../benchmarks/results/serving/s1-mlxcel-flip/2026-07-28-prefix-reuse-official/README.md)
+Artifacts: [benchmarks/results/serving/s1-peer-flip/2026-07-28-prefix-reuse-official](../benchmarks/results/serving/s1-peer-flip/2026-07-28-prefix-reuse-official/README.md)
 (run ledger, six raw trial artifacts, per-rep gate evaluations, and the
 token-equivalence audit set).
 
@@ -361,7 +361,7 @@ reinforcing that the snapshot restore is the deterministic path).
 **Claim boundary.** Single host (M5 Max 128 GB), one scenario family,
 prefix-cache-favorable workload (identical replayed prompt — the
 scenario S1 defines). Ratios compare a single AX process against two
-mlxcel processes as the contract specifies.
+peer-engine processes as the contract specifies.
 
 ### Session Mode: Direct Generation
 

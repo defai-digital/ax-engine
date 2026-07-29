@@ -219,7 +219,7 @@ or either with embeddings.
 | **MTP generation** | AX Engine · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | MTP decode tok/s |
 | **Direct generation** | AX Engine · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | Decode / prefill / TTFT |
 | Embeddings | AX · mlx-lm / mlx-embeddings | Ingest tok/s — Qwen3 chart below; see [full results](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings) |
-| **Multi-model serving (S1)** | AX single-process · [mlxcel](https://github.com/lablup/mlxcel) multi-process | 4/4 locked gates; thr ratio **5.0x** — see [S1 results](docs/PERFORMANCE-RESULTS.md#session-mode-multi-model-serving-s1-single-process-vs-mlxcel) |
+| **Multi-model serving (S1)** | AX single-process · [mlxcel](https://github.com/lablup/mlxcel) multi-process | 4/4 locked gates; thr ratio **5.0x** — see [S1 results](docs/PERFORMANCE-RESULTS.md#session-mode-multi-model-serving-s1-single-process-vs-multi-process-peer) |
 
 **Host:** Apple M5 Max · 128 GB · macOS 26.x · AX Engine **v6.12.0**
 (2026-07-26/27 AX-only refresh) · retained peers: `mlx-lm` **0.31.3** ·
