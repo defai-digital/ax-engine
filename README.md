@@ -353,16 +353,20 @@ in-process session API.
 
 ## Server
 
-`ax-engine serve` is the normal entrypoint (see Quick Start). Inspect the route:
+`ax-engine serve` is the normal entrypoint (see Quick Start). Default listen is
+**`127.0.0.1:31418`** (not AX Serving’s `18080`). Port map, LAN bind, and
+Serving vs Engine:
+
+**[Network ports and settings](docs/PORTS.md)**
 
 ```bash
 curl http://127.0.0.1:31418/v1/runtime
 ```
 
-Auth, streaming, embeddings, Ollama-shaped routes, and delegated backends:
-[Server](docs/SERVER.md) · [CUDA Backends](docs/CUDA-BACKENDS.md) ·
-[API Compatibility](docs/API-COMPATIBILITY.md) ·
-[OpenClaw](docs/OPENCLAW.md).
+Auth, streaming, embeddings, Ollama-shaped routes:
+[Server](docs/SERVER.md) · [API Compatibility](docs/API-COMPATIBILITY.md) ·
+[OpenClaw](docs/OPENCLAW.md). Fleet / CUDA control plane:
+[AX Serving](docs/AX-SERVING.md).
 
 ## Documentation
 
@@ -370,12 +374,13 @@ Auth, streaming, embeddings, Ollama-shaped routes, and delegated backends:
 | --- | --- |
 | Docs hub | [docs/README.md](docs/README.md) |
 | Install and first request | [Getting Started](docs/GETTING-STARTED.md) |
+| **Ports, bind host, Engine vs Serving** | **[Ports](docs/PORTS.md)** |
 | Models and MTP packages | [Supported Models](docs/SUPPORTED-MODELS.md) · [MTP Docs](docs/mtp/README.md) |
 | Hardware / FAQ | [FAQ](docs/FAQ.md) |
 | Full performance tables | [Performance Results](docs/PERFORMANCE-RESULTS.md) |
 | Reproduce benchmarks | [Benchmarks](docs/BENCHMARKS.md) |
 | Server / API / SDKs | [Server](docs/SERVER.md) · [API](docs/API-COMPATIBILITY.md) · [OpenClaw](docs/OPENCLAW.md) · [SDKs](docs/sdk/README.md) |
-| Linux CUDA / Thor routing | [CUDA Backends](docs/CUDA-BACKENDS.md) · [TensorRT multimodal](docs/TENSORRT-L2-MULTIMODAL.md) |
+| Fleet / NVIDIA (AX Serving) | [AX Serving](docs/AX-SERVING.md) |
 | Architecture | [Architecture](docs/ARCHITECTURE.md) |
 
 ## Development

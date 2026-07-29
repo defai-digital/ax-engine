@@ -103,6 +103,13 @@ Model references: [Gemma 4](https://deepmind.google/models/gemma/gemma-4/),
 [Qwen3-Coder-Next](https://unsloth.ai/docs/models/qwen3-coder-next), and
 [SUPPORTED-MODELS](SUPPORTED-MODELS.md).
 
+## What host and port does the server use?
+
+By default **`ax-engine serve` / `ax-engine-server` listen on `127.0.0.1:31418`**.
+Change with `--host` and `--port`. That is **not** AX Serving’s public gateway
+port (`18080`). Full map (Engine, AX Serving, delegated peers):
+[Ports](PORTS.md).
+
 ## Where is the serving roadmap?
 
 AX Engine v6 is the current serving-oriented runtime line. The active serving

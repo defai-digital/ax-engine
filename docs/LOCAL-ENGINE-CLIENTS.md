@@ -118,8 +118,10 @@ otherwise a managed-to-attach transition can stop the newly attached server.
 
 For multi-process and multi-Mac fleets, prefer:
 
-1. `ax-engine-server` as the runtime (HTTP OpenAI `/v1/*`)
+1. `ax-engine-server` as the runtime (HTTP OpenAI `/v1/*`, default
+   **`127.0.0.1:31418`** — [Ports](PORTS.md))
 2. `ax-runtime-agent` as the thin proxy that registers with AX Serving
+   (Serving public API is typically **`:18080`**, not Engine’s port)
 3. Optional LAN mDNS advertise (`--advertise-lan`) so agents can resolve the
    runtime URL without hard-coding IPs — see [LAN-DISCOVERY.md](./LAN-DISCOVERY.md)
 

@@ -321,6 +321,7 @@ ax-engine tui                          # interactive: pick, download, serve, cha
 ax-engine download --list              # list managed aliases
 ax-engine download ax-qwen3.6-35b      # MTP-ready AutomatosX snapshot
 ax-engine serve ax-qwen3.6-35b --download --port 31418
+# Default is already 127.0.0.1:31418 if you omit --host/--port; see docs/PORTS.md
 ax-engine download ax-embeddinggemma-300m   # embedding sibling for /v1/embeddings
 ```
 

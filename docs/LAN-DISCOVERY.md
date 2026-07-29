@@ -3,7 +3,7 @@
 Status: Active  
 Scope: opt-in advertise so AX Serving agents and operators can find local
 `ax-engine-server` instances without hard-coding IPs  
-Related: AX Serving design
+Related: [Ports](PORTS.md) · AX Serving design
 `docs/designs/ax-engine-integration-and-lan-discovery-2026-07-14.md`
 
 ## Why

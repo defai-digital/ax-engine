@@ -34,9 +34,10 @@ the path explicit when reading or claiming:
 | Use MTP or compare 4-bit vs 6-bit rows | [MTP Docs](mtp/README.md) | [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Benchmarks: MTP](BENCHMARKS.md#mtp-matrix) |
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md) |
 | Reproduce or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
-| Serve OpenAI / Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md), [Multi-model](SERVER.md#multi-model-serving) |
+| Serve OpenAI / Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md), [Multi-model](SERVER.md#multi-model-serving), [Ports](PORTS.md) |
+| Bind host, default port, Engine vs Serving | [Ports](PORTS.md) | [Server](SERVER.md), [AX Serving](AX-SERVING.md), [LAN Discovery](LAN-DISCOVERY.md) |
 | Run OpenClaw on local Qwen | [OpenClaw](OPENCLAW.md) | [Server](SERVER.md), [Supported Models](SUPPORTED-MODELS.md) |
-| Deploy on Linux CUDA or Thor | [CUDA Backends](CUDA-BACKENDS.md) | [Server](SERVER.md), [TensorRT L2 Image Forwarding](TENSORRT-L2-MULTIMODAL.md) |
+| Fleet / NVIDIA CUDA (AX Serving) | [AX Serving](AX-SERVING.md) | [Ports](PORTS.md), [ax-serving](https://github.com/defai-digital/ax-serving) |
 | Integrate from an app or agent | [SDK Docs](sdk/README.md) | [Server](SERVER.md), [Local Engine Clients](LOCAL-ENGINE-CLIENTS.md) |
 | Debug long context, prefix reuse, or KV | [Long Context](LONG-CONTEXT.md) | [KV Cache](KV-CACHE.md), [Scheduler](SCHEDULER.md) |
 | Change code safely | [Architecture](ARCHITECTURE.md) | [Scheduler](SCHEDULER.md), [KV Cache](KV-CACHE.md) |
@@ -91,7 +92,8 @@ history, or out of scope for a claim.
 ### Serving and SDKs
 
 - [Server](SERVER.md) — HTTP routes, multi-model load/unload, streaming, auth, embeddings, backends
-- [CUDA Backends](CUDA-BACKENDS.md) — Mac/CUDA boundary, shared vLLM provider, runtime profiles, TensorRT lanes, release gates
+- [Ports](PORTS.md) — default host/port `127.0.0.1:31418`, LAN bind, Engine vs AX Serving ports
+- [AX Serving](AX-SERVING.md) — fleet / NVIDIA ownership moved to the ax-serving product
 - [API Compatibility](API-COMPATIBILITY.md) — OpenAI-compatible contract and boundaries
 - [OpenClaw](OPENCLAW.md) — local Qwen tools, thinking, vision, provider config, and verification
 - [SDK Docs](sdk/README.md) — Rust, Python, JS/TS, Go, Ruby, Swift, Mojo
@@ -119,7 +121,8 @@ history, or out of scope for a claim.
 ### Runtime architecture
 
 - [Architecture](ARCHITECTURE.md) — crate boundaries and dependency rules
-- [CUDA Backends](CUDA-BACKENDS.md) — portable control plane and NVIDIA worker ownership
+- [Ports](PORTS.md) — listen defaults and multi-product port map
+- [AX Serving](AX-SERVING.md) — portable fleet / NVIDIA control plane ownership
 - [Scheduler](SCHEDULER.md) — batching, routing, execution planning
 - [KV Cache](KV-CACHE.md) — logical ledger, MLX snapshots, disk prefix cache
 - [MLX Backend](MLX-BACKEND.md) — MLX runner and acceleration notes

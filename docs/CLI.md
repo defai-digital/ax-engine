@@ -13,7 +13,7 @@ AX Engine currently exposes four command surfaces:
 
 **Related:** [Getting Started](GETTING-STARTED.md) ·
 [Supported Models](SUPPORTED-MODELS.md) · [Server](SERVER.md) ·
-[Benchmarks](BENCHMARKS.md)
+[Ports](PORTS.md) · [Benchmarks](BENCHMARKS.md)
 
 ## `ax-engine`
 
@@ -23,7 +23,8 @@ components but does not replace them: `serve` launches `ax-engine-server`,
 when that model family has an AX MTP packager, and `convert-mtplx` wraps the
 lower-level sidecar packaging/provenance tools.
 
-Use `serve` as the normal local-server entrypoint:
+Use `serve` as the normal local-server entrypoint. Default listen is
+**`127.0.0.1:31418`** (see [Ports](PORTS.md)):
 
 ```text
 ax-engine serve /path/to/mlx-model --port 31418

@@ -4,6 +4,10 @@ AX Engine owns local Apple Silicon inference. NVIDIA/CUDA worker integration,
 heterogeneous routing, runtime qualification, and Dynamo connectivity now live
 in [AX Serving](https://github.com/defai-digital/ax-serving).
 
+**Ports:** Engine defaults to **`127.0.0.1:31418`**. AX Serving’s public
+gateway defaults to **`127.0.0.1:18080`**. Do not mix them. Full map:
+[Ports](PORTS.md).
+
 AX Engine no longer exposes the former `vllm`, `tensor_rt_llm`, or
 `tensor_rt_edge_llm` support tiers, their provider-specific CLI flags, the
 `ax-engine-vllm-runtime` package, or NVIDIA container and qualification

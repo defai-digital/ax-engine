@@ -4,9 +4,12 @@
 For normal end-user serving, prefer `ax-engine serve …`; use
 `ax-engine-server` when you need explicit runtime flags.
 
+**Default listen:** `127.0.0.1:31418`. Full port map (Engine vs AX Serving vs
+delegated peers): **[Ports](PORTS.md)**.
+
 **Related:** [Getting Started](GETTING-STARTED.md) · [CLI](CLI.md) ·
 [API Compatibility](API-COMPATIBILITY.md) · [SDK Docs](sdk/README.md) ·
-[CUDA Backends](CUDA-BACKENDS.md) · [LAN Discovery](LAN-DISCOVERY.md)
+[Ports](PORTS.md) · [AX Serving](AX-SERVING.md) · [LAN Discovery](LAN-DISCOVERY.md)
 
 ## Current Scope
 
