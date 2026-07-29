@@ -1,9 +1,13 @@
 //! Online adaptive MTP draft confidence gate (default OFF).
 //!
-//! Design: `docs/designs/mtp-embed-perf-sprint-2026-07-16.md`.
+//! Design: `docs/designs/mtp-embed-perf-sprint-2026-07-16.md` (amended
+//! 2026-07-29: the design's high-T chatbot 0.99 pin for the Qwen gate was
+//! removed after the 6-bit refresh measured it at −6..−26% MTP decode; the
+//! exact rejection-sampling path needs no diversity protection, so high-T
+//! `auto` now resolves to the shipped default).
 //! Enable with `AX_MLX_MTP_ADAPTIVE_GATE=1`. Adaptive applies only under
-//! low-temperature `auto` speculation profile; coding/agentic/chatbot pins
-//! and high-T diversity remain hard pins.
+//! low-temperature `auto` speculation profile; coding/agentic remain hard
+//! pins.
 
 use std::sync::OnceLock;
 
@@ -307,18 +311,20 @@ pub fn resolve_mtp_gate(
     if let Some(g) = explicit_env {
         return (g, ResolutionSource::Explicit);
     }
-    // Non-auto profiles are hard pins (ADR-022).
+    // Non-auto profiles are hard pins (ADR-022) when they prescribe a gate;
+    // `chatbot` defers (the exact Qwen path has no diversity rationale).
     if !matches!(profile, SpeculationProfile::Auto)
         && let Some(g) = profile.qwen_gate(temperature)
     {
         return (g, ResolutionSource::Profile);
     }
-    // High-T auto diversity pin BEFORE adaptive.
+    // High-T auto: the diversity regime prescribes no Qwen gate (rejection
+    // sampling is distribution-exact at any gate), and adaptive stays
+    // low-T-only — resolve straight to the shipped default.
     if matches!(profile, SpeculationProfile::Auto)
         && SpeculationProfile::is_diversity_temperature(temperature)
-        && let Some(g) = profile.qwen_gate(temperature)
     {
-        return (g, ResolutionSource::Profile);
+        return (DEFAULT_MTP_DRAFT_MIN_CONFIDENCE, ResolutionSource::Default);
     }
     // Low-T auto + adaptive: always use st.gate when present (including frozen).
     if adaptive_enabled && let Some(st) = adaptive {
@@ -436,7 +442,11 @@ mod tests {
     }
 
     #[test]
-    fn high_t_auto_pins_chatbot_before_adaptive() {
+    fn high_t_auto_resolves_to_default_not_adaptive() {
+        // The diversity regime no longer pins the Qwen gate (the exact path
+        // needs no diversity protection; the 0.99 pin cost −6..−26% MTP decode
+        // in the 2026-07-28 6-bit refresh), and adaptive stays low-T-only even
+        // when state is present.
         let st = MtpAdaptiveGateState::new(0.80);
         let (g, src) = resolve_mtp_gate(
             SpeculationProfile::Auto,
@@ -446,8 +456,8 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(src, ResolutionSource::Profile);
-        assert!((g - 0.99).abs() < 1e-5);
+        assert_eq!(src, ResolutionSource::Default);
+        assert!((g - DEFAULT_MTP_DRAFT_MIN_CONFIDENCE).abs() < 1e-5);
     }
 
     #[test]

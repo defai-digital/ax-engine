@@ -104,10 +104,11 @@ fn mtp_draft_min_confidence_explicit() -> Option<f32> {
 ///
 /// The Qwen MTP path accepts via rejection sampling (it carries draft log-probs),
 /// so it preserves the sampling distribution exactly — it has no greedy-bias
-/// concern. Accordingly `coding`/`agentic`/`auto` defer to the validated `0.90`
-/// default; only `chatbot` raises the gate, and that is a throughput choice (cut
-/// rejection waste at high temperature), not a correctness one. `temperature`
-/// drives `auto`.
+/// concern. Accordingly no profile raises the gate above the validated `0.90`
+/// default: `coding`/`agentic` lower it for their suites, and `chatbot`/high-T
+/// `auto` defer (the former 0.99 diversity pin was a throughput regression —
+/// −6..−26% MTP decode in the 2026-07-28 6-bit refresh — with nothing to
+/// protect on an exact path). `temperature` drives `auto`.
 pub fn resolve_mtp_draft_min_confidence(
     profile: crate::speculation_profile::SpeculationProfile,
     temperature: Option<f32>,

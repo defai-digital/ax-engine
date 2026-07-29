@@ -398,11 +398,14 @@ cargo run -p ax-engine-server -- \
 `--speculation-profile {auto,coding,agentic,chatbot}` (short `-s`, alias
 `--spec`; env `AX_MLX_SPECULATION_PROFILE`) bundles the MTP and n-gram
 speculative-decode configuration into one posture (ADR-022). `auto` is the
-default and is temperature-driven: it keeps the shipped gate at low temperature
-and raises it for higher-temperature sampled chat to protect reply diversity.
-`coding`/`agentic` defer to the shipped gate defaults (the Gemma ablation found
-lowering the gate does not add code throughput); `chatbot` raises the gate and
-prefers the n-gram utility gate. Explicit per-knob env vars still override the
+default and is temperature-driven: at higher-temperature sampled chat it raises
+the Gemma assistant gate to protect reply diversity (Gemma drafts greedily) and
+prefers the n-gram utility gate; the Qwen fused-MTP gate keeps its shipped
+default at any temperature, because rejection sampling already preserves the
+sampling distribution exactly. On Gemma, `coding`/`agentic` defer to the shipped
+gate defaults (the ablation found lowering the gate does not add code
+throughput); on Qwen they lower the gate to the measured per-workload optima.
+`chatbot` applies the diversity posture explicitly. Explicit per-knob env vars still override the
 profile, and the resolved posture is reported in route metadata as
 `ax_mlx_speculation_profile`.
 
