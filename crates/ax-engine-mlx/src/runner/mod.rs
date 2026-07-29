@@ -5813,11 +5813,7 @@ impl MlxRunner {
         // under one chunk is cheaper than any drift risk. Restores that
         // need no multi-token extension (warm_repeat tails of <=1 token)
         // keep their full length.
-        let extension_tokens = item
-            .input_token_slice
-            .len()
-            .saturating_sub(reused_tokens.len());
-        let reused_tokens: &[u32] = if extension_tokens > 1 {
+        let reused_tokens: &[u32] = {
             let chunk = self.prefill_chunk.max(1);
             let grid_len = (reused_tokens.len() / chunk) * chunk;
             if grid_len != reused_tokens.len() {
@@ -5831,8 +5827,6 @@ impl MlxRunner {
                 );
             }
             &reused_tokens[..grid_len]
-        } else {
-            reused_tokens
         };
         if reused_tokens.is_empty() || state.cache.seq_len() != 0 {
             return telemetry;
