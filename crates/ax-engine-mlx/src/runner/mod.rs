@@ -5801,6 +5801,39 @@ impl MlxRunner {
                 state.cache.seq_len()
             ),
         );
+        // Shape-exact warm extension: a multi-token extension chunk whose
+        // (offset, len) is off the cold chunk grid dispatches different
+        // SDPA kernels than the cold baseline at the same absolute
+        // positions and can drift fp-wise (default-corpus warm_extend
+        // measured p2 idx=14 / p3 idx=18 / p5 idx=0 on Gemma 4 12B —
+        // same class as the MLA R2 note below). Snap the restore point
+        // down to the cold prefill-chunk grid so every extension chunk
+        // replays the cold trail shape-for-shape; a claim that sits
+        // entirely inside the first cold chunk skips reuse — recomputing
+        // under one chunk is cheaper than any drift risk. Restores that
+        // need no multi-token extension (warm_repeat tails of <=1 token)
+        // keep their full length.
+        let extension_tokens = item
+            .input_token_slice
+            .len()
+            .saturating_sub(reused_tokens.len());
+        let reused_tokens: &[u32] = if extension_tokens > 1 {
+            let chunk = self.prefill_chunk.max(1);
+            let grid_len = (reused_tokens.len() / chunk) * chunk;
+            if grid_len != reused_tokens.len() {
+                Self::pfx_dbg(
+                    "restore-grid-trim",
+                    &format!(
+                        "claim={} grid={} chunk={chunk}",
+                        reused_tokens.len(),
+                        grid_len
+                    ),
+                );
+            }
+            &reused_tokens[..grid_len]
+        } else {
+            reused_tokens
+        };
         if reused_tokens.is_empty() || state.cache.seq_len() != 0 {
             return telemetry;
         }
