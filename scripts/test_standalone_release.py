@@ -188,7 +188,11 @@ class StandaloneReleaseTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("does not match repository pin", result.stderr)
 
-    def test_runtime_staging_rejects_dylib_minos_mismatch(self) -> None:
+    def test_runtime_staging_accepts_newer_dylib_minos_with_warning(self) -> None:
+        # Upstream wheels can under-claim: dylib minos NEWER than the wheel
+        # tag (mlx 0.32.0 shipped minos 26.2 under a macosx_26_0 tag). The
+        # digest checks pin the exact bytes, so staging accepts this and
+        # surfaces the real runtime floor instead of failing the release.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _, mlx_lib, site_packages = self.build_fixture(root)
@@ -203,8 +207,26 @@ class StandaloneReleaseTests(unittest.TestCase):
                 root / "runtime",
                 check=False,
             )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("effective runtime floor is 15.0", result.stderr)
+
+    def test_runtime_staging_rejects_dylib_minos_below_wheel_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, mlx_lib, site_packages = self.build_fixture(root)
+            for distribution in ("mlx-0.32.0", "mlx_metal-0.32.0"):
+                wheel = site_packages / f"{distribution}.dist-info" / "WHEEL"
+                wheel.write_text(wheel.read_text().replace("macosx_15_0", "macosx_16_0"))
+
+            result = self.run_command(
+                "bash",
+                STAGE_RUNTIME,
+                mlx_lib,
+                root / "runtime",
+                check=False,
+            )
             self.assertNotEqual(0, result.returncode)
-            self.assertIn("targets macOS 15.0; wheel requires 14.0", result.stderr)
+            self.assertIn("targets macOS 15.0; wheel requires 16.0", result.stderr)
 
 
 if __name__ == "__main__":
