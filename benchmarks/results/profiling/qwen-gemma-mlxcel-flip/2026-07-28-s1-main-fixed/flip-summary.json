@@ -1,0 +1,73 @@
+{
+  "baseline_label": "mlxcel",
+  "campaign": "/Users/akiralam/code/ax-engine-mlxcel-flip-work/benchmarks/results/profiling/qwen-gemma-mlxcel-flip/2026-07-28-s1-main-fixed/campaign.json",
+  "candidate_label": "ax-engine",
+  "decision": "not_yet",
+  "gates": null,
+  "passed": false,
+  "repetitions": 3,
+  "scenarios": [
+    {
+      "baseline": {
+        "stream_gap_p95_median_ms": 35.77227098867297,
+        "throughput_median_tok_s": 18.308567136397944,
+        "ttft_p95_median_ms": 9774.630639905808
+      },
+      "candidate": {
+        "stream_gap_p95_median_ms": 8.948520990088582,
+        "throughput_median_tok_s": 19.513498817828978,
+        "ttft_p95_median_ms": 7798.443766054697
+      },
+      "failed_required_gates": [
+        "median_throughput_ratio"
+      ],
+      "gates": [
+        {
+          "detail": "all paired trials matched",
+          "name": "comparison_contract",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "1.0658 >= 1.1500",
+          "name": "median_throughput_ratio",
+          "passed": false,
+          "required": true
+        },
+        {
+          "detail": "0.7978 <= 0.9000",
+          "name": "median_ttft_p95_ratio",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "0.2502 <= 0.9000",
+          "name": "median_stream_gap_p95_ratio",
+          "passed": true,
+          "required": true
+        },
+        {
+          "detail": "max_error_rate=0.0000, max_http_503=0, max_lifecycle_errors=0",
+          "name": "candidate_availability",
+          "passed": true,
+          "required": true
+        }
+      ],
+      "passed": false,
+      "ratios": {
+        "stream_gap_p95": 0.2501524432967106,
+        "throughput": 1.065812451212285,
+        "ttft_p95": 0.7978249054462323
+      },
+      "repetitions": 3,
+      "scenario": "s1"
+    }
+  ],
+  "schema_version": "ax.qwen_gemma_flip_campaign_summary.v1",
+  "thresholds": {
+    "max_stream_gap_p95_ms": null,
+    "max_stream_gap_p95_ratio": 0.9,
+    "max_ttft_p95_ratio": 0.9,
+    "min_throughput_ratio": 1.15
+  }
+}
