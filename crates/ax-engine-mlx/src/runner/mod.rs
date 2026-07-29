@@ -6660,11 +6660,17 @@ impl MlxRunner {
                 drop(native_outcome.retired);
             }
             if !portable_store_phase && native_snapshot_ready {
-                Self::pfx_dbg("store-loop-skip", &format!("native_ready prefix={prefix_len}"));
+                Self::pfx_dbg(
+                    "store-loop-skip",
+                    &format!("native_ready prefix={prefix_len}"),
+                );
                 continue;
             }
             if l1_superseding && !disk_store_needed {
-                Self::pfx_dbg("store-loop-skip", &format!("l1_superseding prefix={prefix_len}"));
+                Self::pfx_dbg(
+                    "store-loop-skip",
+                    &format!("l1_superseding prefix={prefix_len}"),
+                );
                 continue;
             }
             // F3 M2 — for the disk layer we want the largest valid
