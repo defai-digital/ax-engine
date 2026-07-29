@@ -1021,6 +1021,9 @@ fn run_worker_loop(
     let mut disconnected = false;
     let recycle_after = worker_recycle_after_ticks();
     let mut ticks_since_recycle: u64 = 0;
+    // Permanent factory failure (OOM, bad config) must not retry every
+    // `recycle_after` ticks — the log promised disable, so honor it.
+    let mut recycle_disabled = false;
     loop {
         let mut engine_advanced = false;
         if active_streams.is_empty()
@@ -1028,7 +1031,7 @@ fn run_worker_loop(
             && bulk_commands.is_empty()
             && !disconnected
         {
-            if recycle_after > 0 && ticks_since_recycle >= recycle_after {
+            if recycle_after > 0 && !recycle_disabled && ticks_since_recycle >= recycle_after {
                 match factory() {
                     Ok(new_session) => {
                         session = new_session;
@@ -1040,12 +1043,12 @@ fn run_worker_loop(
                         );
                     }
                     Err(error) => {
+                        recycle_disabled = true;
                         tracing::warn!(
                             %error,
                             "session recycle failed; keeping the live session \
                              and disabling further recycle attempts"
                         );
-                        ticks_since_recycle = 0;
                     }
                 }
             }
@@ -2236,6 +2239,13 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(service.is_ready());
+        // Execute resolves the oneshot before complete_job decrements
+        // pending_jobs, so is_busy can briefly remain true after await.
+        // Poll the same way as worker_command_queue_rejects_unbounded_growth.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while service.is_busy() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
         assert!(!service.is_busy());
     }
 

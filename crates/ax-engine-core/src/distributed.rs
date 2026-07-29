@@ -4,7 +4,7 @@
 //! contracts, transformer partitioning, activation transfer, KV state, and
 //! generation fencing.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -338,14 +338,24 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     output
 }
 
+/// Cap on closed request IDs retained for same-generation resurrection fencing.
+///
+/// Request IDs are process-unique and monotonically increasing on the gateway,
+/// so a ring of the most recent closes still rejects practical replays while
+/// keeping ledger memory O(1) over multi-day rank uptime.
+pub const PIPELINE_CLOSED_REQUEST_CAP: usize = 65_536;
+
 /// Per-rank replay, ordering, cancellation, and token-offset fence.
 ///
 /// Every rank keeps its own ledger for the active immutable generation. A
-/// request ID may never be resurrected after cancellation or completion.
+/// request ID may not be resurrected after cancellation or completion while it
+/// remains in the bounded closed set (see [`PIPELINE_CLOSED_REQUEST_CAP`]).
 #[derive(Debug, Default)]
 pub struct PipelineRequestLedger {
     active: BTreeMap<u64, RequestCursor>,
     closed: BTreeSet<u64>,
+    /// Insertion order for the closed set so the oldest IDs can be GC'd.
+    closed_order: VecDeque<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -418,14 +428,28 @@ impl PipelineRequestLedger {
         Ok(())
     }
 
-    /// Cancel or complete a request and permanently reject same-generation replay.
+    /// Cancel or complete a request and reject same-generation replay while the
+    /// ID remains in the bounded closed set.
     pub fn close(&mut self, request_id: u64) {
         self.active.remove(&request_id);
-        self.closed.insert(request_id);
+        if self.closed.insert(request_id) {
+            self.closed_order.push_back(request_id);
+            while self.closed_order.len() > PIPELINE_CLOSED_REQUEST_CAP {
+                if let Some(evicted) = self.closed_order.pop_front() {
+                    self.closed.remove(&evicted);
+                }
+            }
+        }
     }
 
     pub fn is_active(&self, request_id: u64) -> bool {
         self.active.contains_key(&request_id)
+    }
+
+    /// Number of closed request IDs currently retained for resurrection fencing.
+    #[cfg(test)]
+    pub(crate) fn closed_len(&self) -> usize {
+        self.closed.len()
     }
 }
 
@@ -640,6 +664,24 @@ mod tests {
             ledger.begin_step(7, 2, 4),
             Err(PipelineContractError::ClosedRequest(7))
         );
+    }
+
+    #[test]
+    fn request_ledger_bounds_closed_set_memory() {
+        let mut ledger = PipelineRequestLedger::default();
+        // Close more IDs than the cap; the set must stay bounded and the most
+        // recent closes must still fence resurrection.
+        let total = (PIPELINE_CLOSED_REQUEST_CAP as u64) + 128;
+        for request_id in 1..=total {
+            ledger.close(request_id);
+        }
+        assert_eq!(ledger.closed_len(), PIPELINE_CLOSED_REQUEST_CAP);
+        assert_eq!(
+            ledger.begin_step(total, 1, 0),
+            Err(PipelineContractError::ClosedRequest(total))
+        );
+        // Evicted early IDs may be re-admitted (bounded fencing tradeoff).
+        assert_eq!(ledger.begin_step(1, 1, 0), Ok(()));
     }
 
     #[test]

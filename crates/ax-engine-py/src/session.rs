@@ -304,6 +304,9 @@ impl Session {
             .inner
             .lock()
             .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
+        // Only Ready → Streaming is a valid transition. replace-before-match
+        // used to leave Closed sessions stuck in Streaming (and could resurrect
+        // a closed session when a concurrent iterator restored Ready over it).
         let mut session = match std::mem::replace(&mut *slot, SessionSlot::Streaming) {
             SessionSlot::Ready(session) => *session,
             SessionSlot::Streaming => {
@@ -312,6 +315,7 @@ impl Session {
                 ));
             }
             SessionSlot::Closed => {
+                *slot = SessionSlot::Closed;
                 return Err(py_engine_state_error("session is closed"));
             }
         };
@@ -576,6 +580,78 @@ mod tests {
     use std::sync::Once;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Regression: `mem::replace(..., Streaming)` before matching used to leave
+    /// a Closed session stuck as Streaming after stream_generate rejected it.
+    #[test]
+    fn stream_generate_on_closed_session_restores_closed_slot() {
+        init_python();
+        let mut session = llama_cpp_session();
+        session.close().expect("close should succeed");
+        assert!(session.closed());
+
+        Python::attach(|py| {
+            let error = session
+                .stream_generate(
+                    py,
+                    Some(vec![1, 2, 3]),
+                    None,
+                    None,
+                    4,
+                    0.0,
+                    1.0,
+                    0,
+                    None,
+                    1.0,
+                    None,
+                    0,
+                    128,
+                    0,
+                    None,
+                    false,
+                    None,
+                    None,
+                )
+                .expect_err("closed session must reject stream_generate");
+            assert!(
+                error.to_string().contains("closed"),
+                "unexpected error: {error}"
+            );
+        });
+        assert!(
+            session.closed(),
+            "closed session must remain Closed after a rejected stream_generate"
+        );
+        // Follow-up generate must still report closed, not "active stream".
+        Python::attach(|py| {
+            let error = session
+                .generate(
+                    py,
+                    Some(vec![1, 2, 3]),
+                    None,
+                    None,
+                    4,
+                    0.0,
+                    1.0,
+                    0,
+                    None,
+                    1.0,
+                    None,
+                    0,
+                    128,
+                    0,
+                    None,
+                    false,
+                    None,
+                    None,
+                )
+                .expect_err("closed session must reject generate");
+            assert!(
+                error.to_string().contains("closed"),
+                "unexpected error after stuck Streaming bug: {error}"
+            );
+        });
+    }
 
     fn init_python() {
         static PYTHON_INIT: Once = Once::new();

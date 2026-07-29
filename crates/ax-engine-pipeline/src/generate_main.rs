@@ -47,7 +47,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let request_id = request_id();
     let mut generated = Vec::<u32>::new();
-    let mut rendered = String::new();
+    // Codepoint-complete text already printed. Incomplete multi-byte tails
+    // (decoded as U+FFFD) are held back — never printed as � and never fully
+    // re-emitted with a carriage return after a prefix mismatch.
+    let mut emitted = String::new();
     let mut sequence = 1_u64;
     let mut token_offset = 0_u64;
     let mut input = prompt_tokens.clone();
@@ -64,14 +67,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .token_id;
             generated.push(token);
             let next_rendered = tokenizer.decode(&generated, true)?;
-            if let Some(delta) = next_rendered.strip_prefix(&rendered) {
-                print!("{delta}");
-                io::stdout().flush()?;
-            } else {
-                print!("\r{next_rendered}");
-                io::stdout().flush()?;
+            let complete = next_rendered
+                .strip_suffix('\u{FFFD}')
+                .unwrap_or(next_rendered.as_str());
+            if complete.len() > emitted.len()
+                && complete.starts_with(emitted.as_str())
+                && complete.is_char_boundary(emitted.len())
+            {
+                let delta = &complete[emitted.len()..];
+                if !delta.is_empty() {
+                    print!("{delta}");
+                    io::stdout().flush()?;
+                }
+                emitted = complete.to_string();
             }
-            rendered = next_rendered;
             if args.stop_token_ids.contains(&token)
                 || tokenizer.eos_token_id().is_some_and(|eos| eos == token)
             {
@@ -96,7 +105,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let close_result = client.close_request(request_id).await;
     println!();
     generation_result?;
-    close_result?;
+    // Successful generation already printed tokens; close failures are logged
+    // but must not discard the exit status of a completed run.
+    if let Err(error) = close_result {
+        eprintln!("warning: pipeline close_request failed after generation: {error}");
+    }
     Ok(())
 }
 

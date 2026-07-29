@@ -180,7 +180,7 @@ async fn completions(
             )
             .await;
             match result {
-                Ok(_) => {
+                Ok(outcome) => {
                     let final_chunk = CompletionChunk {
                         id: completion_id,
                         object: "text_completion",
@@ -189,7 +189,7 @@ async fn completions(
                         choices: vec![CompletionChunkChoice {
                             text: String::new(),
                             index: 0,
-                            finish_reason: Some("stop"),
+                            finish_reason: Some(outcome.finish_reason),
                         }],
                     };
                     if let Ok(data) = serde_json::to_string(&final_chunk) {
@@ -221,8 +221,8 @@ async fn completions(
     )
     .await;
     match result {
-        Ok(generated) => {
-            let text = match state.tokenizer.decode(&generated, true) {
+        Ok(outcome) => {
+            let text = match state.tokenizer.decode(&outcome.tokens, true) {
                 Ok(text) => text,
                 Err(error) => {
                     return api_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
@@ -236,12 +236,12 @@ async fn completions(
                 choices: vec![CompletionChoice {
                     text,
                     index: 0,
-                    finish_reason: "stop",
+                    finish_reason: outcome.finish_reason,
                 }],
                 usage: Usage {
                     prompt_tokens: prompt_tokens.len(),
-                    completion_tokens: generated.len(),
-                    total_tokens: prompt_tokens.len() + generated.len(),
+                    completion_tokens: outcome.tokens.len(),
+                    total_tokens: prompt_tokens.len() + outcome.tokens.len(),
                 },
             })
             .into_response()
@@ -359,7 +359,7 @@ async fn chat_completions(
             )
             .await;
             match result {
-                Ok(_) => {
+                Ok(outcome) => {
                     let final_chunk = ChatCompletionChunk {
                         id: completion_id,
                         object: "chat.completion.chunk",
@@ -371,7 +371,7 @@ async fn chat_completions(
                                 role: None,
                                 content: None,
                             },
-                            finish_reason: Some("stop"),
+                            finish_reason: Some(outcome.finish_reason),
                         }],
                     };
                     if let Ok(data) = serde_json::to_string(&final_chunk) {
@@ -403,8 +403,8 @@ async fn chat_completions(
     )
     .await
     {
-        Ok(generated) => {
-            let content = match state.tokenizer.decode(&generated, true) {
+        Ok(outcome) => {
+            let content = match state.tokenizer.decode(&outcome.tokens, true) {
                 Ok(content) => content,
                 Err(error) => {
                     return api_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
@@ -421,12 +421,12 @@ async fn chat_completions(
                         role: "assistant",
                         content,
                     },
-                    finish_reason: "stop",
+                    finish_reason: outcome.finish_reason,
                 }],
                 usage: Usage {
                     prompt_tokens: prompt_tokens.len(),
-                    completion_tokens: generated.len(),
-                    total_tokens: prompt_tokens.len() + generated.len(),
+                    completion_tokens: outcome.tokens.len(),
+                    total_tokens: prompt_tokens.len() + outcome.tokens.len(),
                 },
             })
             .into_response()
@@ -451,22 +451,34 @@ fn format_llama3_chat(messages: &[ChatMessage]) -> Result<String, &'static str> 
     Ok(prompt)
 }
 
+struct GenerateOutcome {
+    tokens: Vec<u32>,
+    /// OpenAI finish reason: `"stop"` on EOS/disconnect, `"length"` when the
+    /// max_tokens budget is exhausted without EOS.
+    finish_reason: &'static str,
+}
+
 async fn generate<F, Fut>(
     state: &GatewayState,
     request_id: u64,
     prompt_tokens: &[u32],
     maximum_tokens: usize,
     mut on_delta: F,
-) -> Result<Vec<u32>, PipelineClientError>
+) -> Result<GenerateOutcome, PipelineClientError>
 where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = bool>,
 {
     let mut generated = Vec::with_capacity(maximum_tokens);
-    let mut rendered = String::new();
+    // Codepoint-complete text already emitted to the client. Incomplete
+    // multi-byte tails (decoded as U+FFFD) are held back until later tokens
+    // finish them — never streamed as � and never re-emitted wholesale.
+    let mut emitted = String::new();
     let mut sequence = 1_u64;
     let mut token_offset = 0_u64;
     let mut input = prompt_tokens.to_vec();
+    // Default: budget exhausted. EOS or client disconnect overrides to stop.
+    let mut finish_reason = "length";
     let deadline = tokio::time::Instant::now() + state.request_timeout;
     let generation_result = async {
         while generated.len() < maximum_tokens {
@@ -484,13 +496,15 @@ where
             .token_id;
             generated.push(token);
             if let Ok(next_rendered) = state.tokenizer.decode(&generated, true) {
-                let delta = next_rendered
-                    .strip_prefix(&rendered)
-                    .unwrap_or(&next_rendered)
-                    .to_string();
-                rendered = next_rendered;
-                if !delta.is_empty() && !on_delta(delta).await {
-                    break;
+                if let Some(delta) = stream_delta(&emitted, &next_rendered) {
+                    // Advance the emitted cursor only over complete text so a
+                    // later completed codepoint still prefixes cleanly.
+                    emitted = complete_decode_prefix(&next_rendered).to_string();
+                    if !on_delta(delta).await {
+                        // Consumer gone: treat as a clean client stop.
+                        finish_reason = "stop";
+                        break;
+                    }
                 }
             }
             if state
@@ -498,6 +512,7 @@ where
                 .eos_token_id()
                 .is_some_and(|eos| eos == token)
             {
+                finish_reason = "stop";
                 break;
             }
             token_offset = token_offset
@@ -513,7 +528,10 @@ where
             input.clear();
             input.push(token);
         }
-        Ok(generated)
+        Ok(GenerateOutcome {
+            tokens: generated,
+            finish_reason,
+        })
     }
     .await;
     let close_result = match tokio::time::timeout(
@@ -526,14 +544,57 @@ where
         Err(_) => Err(PipelineClientError::CloseDeadlineExceeded),
     };
     match generation_result {
-        Ok(tokens) => {
-            close_result?;
-            Ok(tokens)
+        Ok(outcome) => {
+            // Generation already produced tokens (and may have streamed deltas).
+            // A rank close/timeout must not discard a successful model result —
+            // log and return the outcome; ops can reclaim stranded KV.
+            if let Err(error) = close_result {
+                tracing::warn!(
+                    request_id,
+                    %error,
+                    "pipeline close_request failed after successful generation"
+                );
+            }
+            Ok(outcome)
         }
         Err(error) => {
             let _ = close_result;
             Err(error)
         }
+    }
+}
+
+/// Decode text with a trailing incomplete multi-byte codepoint stripped.
+///
+/// Byte-level BPE (Qwen/Gemma/etc.) can leave a partial UTF-8 sequence at the
+/// end of a token window; HuggingFace-style decode renders that as U+FFFD.
+fn complete_decode_prefix(decoded: &str) -> &str {
+    decoded.strip_suffix('\u{FFFD}').unwrap_or(decoded)
+}
+
+/// Diff consecutive full-sequence decodes for streaming SSE deltas.
+///
+/// Holds back a trailing U+FFFD (incomplete multi-byte codepoint) and never
+/// falls back to re-emitting the entire string when prefix strip fails — that
+/// fallback was the source of CJK/emoji corruption and full-text re-sends.
+fn stream_delta(already_emitted: &str, next_full_decode: &str) -> Option<String> {
+    let complete = complete_decode_prefix(next_full_decode);
+    if complete.len() <= already_emitted.len() {
+        return None;
+    }
+    if !complete.starts_with(already_emitted) {
+        // Tokenizer non-monotonic decode or corrupted cursor: skip rather than
+        // re-emit the whole string. The final non-stream decode remains correct.
+        return None;
+    }
+    if !complete.is_char_boundary(already_emitted.len()) {
+        return None;
+    }
+    let delta = &complete[already_emitted.len()..];
+    if delta.is_empty() {
+        None
+    } else {
+        Some(delta.to_string())
     }
 }
 
@@ -776,5 +837,43 @@ mod tests {
             }])
             .is_err()
         );
+    }
+
+    #[test]
+    fn stream_delta_emits_ascii_suffix_only() {
+        assert_eq!(stream_delta("", "hello"), Some("hello".to_string()));
+        assert_eq!(stream_delta("hel", "hello"), Some("lo".to_string()));
+        assert_eq!(stream_delta("hello", "hello"), None);
+    }
+
+    #[test]
+    fn stream_delta_holds_back_incomplete_multibyte_tail() {
+        // Partial UTF-8 from byte-level BPE decodes as trailing U+FFFD.
+        // Complete leading text is emitted; only the incomplete tail is held.
+        assert_eq!(stream_delta("", "ab\u{FFFD}"), Some("ab".to_string()));
+        assert_eq!(stream_delta("ab", "ab\u{FFFD}"), None);
+        // Completing the codepoint emits only the new character.
+        assert_eq!(stream_delta("ab", "ab你"), Some("你".to_string()));
+        assert_eq!(stream_delta("", "🚀"), Some("🚀".to_string()));
+        // Mixed complete CJK + incomplete tail: emit the complete codepoints.
+        assert_eq!(stream_delta("你", "你好\u{FFFD}"), Some("好".to_string()));
+        assert_eq!(stream_delta("你好", "你好世"), Some("世".to_string()));
+    }
+
+    #[test]
+    fn stream_delta_never_reemits_full_string_on_prefix_mismatch() {
+        // Historical bug: strip_prefix failure fell back to the whole decode,
+        // re-sending prior content after a corrupted � prefix.
+        assert_eq!(stream_delta("ab\u{FFFD}", "ab你"), None);
+        assert_eq!(stream_delta("xy", "hello"), None);
+    }
+
+    #[test]
+    fn complete_decode_prefix_strips_only_trailing_replacement() {
+        assert_eq!(complete_decode_prefix("hello"), "hello");
+        assert_eq!(complete_decode_prefix("hello\u{FFFD}"), "hello");
+        assert_eq!(complete_decode_prefix("\u{FFFD}"), "");
+        // Mid-string replacement (corrupt data) is left alone.
+        assert_eq!(complete_decode_prefix("a\u{FFFD}b"), "a\u{FFFD}b");
     }
 }
