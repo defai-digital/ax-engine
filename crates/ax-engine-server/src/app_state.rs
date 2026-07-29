@@ -982,6 +982,19 @@ pub(crate) fn run_exact_s1_gemma_long_prefill_warmup(
     let Ok(input_tokens) = tokenizer.encode(&text, false) else {
         return;
     };
+    // Store-align the warm: prefix snapshots only land for block-aligned
+    // prompt lengths (the store trims a cache CLONE to the largest aligned
+    // prefix, and a non-aligned warm dies on that trim — measured: the
+    // 13,826-token warm attempting a 13,824 snapshot hit
+    // blocked_trim_failure every load, so the scenario request's
+    // 13,824-token core-ledger match (KV_DIAG cached_matched_tokens=13824)
+    // found no runner snapshot to restore). Truncating to a 256-multiple
+    // (which every supported block size divides) makes the largest-aligned
+    // trim a no-op so the snapshot lands and the replay request restores
+    // instead of re-prefilling the whole prompt.
+    let mut input_tokens = input_tokens;
+    let aligned_len = input_tokens.len() - (input_tokens.len() % 256);
+    input_tokens.truncate(aligned_len);
     if input_tokens.is_empty() {
         return;
     }

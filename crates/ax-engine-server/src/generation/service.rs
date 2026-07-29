@@ -15,7 +15,7 @@ use crate::admission::AdmissionPermit;
 
 type SessionJob = Box<dyn FnOnce(&mut EngineSession) + Send + 'static>;
 type SessionFactory =
-    Box<dyn FnOnce() -> Result<EngineSession, EngineSessionError> + Send + 'static>;
+    Box<dyn FnMut() -> Result<EngineSession, EngineSessionError> + Send + 'static>;
 type NativeEvent = Result<GenerateStreamEvent, EngineSessionError>;
 type SessionResult<T> = Result<T, EngineSessionError>;
 type StepObserver = Arc<dyn Fn(&EngineStepReport) + Send + Sync + 'static>;
@@ -553,7 +553,7 @@ impl NativeGenerationService {
     pub(crate) fn spawn(
         config: EngineSessionConfig,
     ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError> {
-        Self::spawn_with_factory(move || EngineSession::new(config))
+        Self::spawn_with_factory(move || EngineSession::new(config.clone()))
     }
 
     pub(crate) fn spawn_replacement(
@@ -561,7 +561,7 @@ impl NativeGenerationService {
     ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError> {
         Self::spawn_with_factory(move || {
             EngineSession::clear_native_model_compile_caches();
-            EngineSession::new(config)
+            EngineSession::new(config.clone())
         })
     }
 
@@ -569,7 +569,7 @@ impl NativeGenerationService {
         factory: F,
     ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError>
     where
-        F: FnOnce() -> Result<EngineSession, EngineSessionError> + Send + 'static,
+        F: FnMut() -> Result<EngineSession, EngineSessionError> + Send + 'static,
     {
         let (sender, receiver) = std::sync::mpsc::channel::<ServiceCommand>();
         let (startup_sender, startup_receiver) = std::sync::mpsc::sync_channel(1);
@@ -939,6 +939,7 @@ fn run_worker(
     state: &ServiceState,
 ) {
     let _exit_guard = WorkerExitGuard(state);
+    let mut factory = factory;
     let session = match factory() {
         Ok(session) => session,
         Err(error) => {
@@ -965,7 +966,7 @@ fn run_worker(
     // recovery path (same contract as a stopped worker). Under
     // `panic = "abort"` builds this is a no-op by construction.
     let loop_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_worker_loop(session, receiver, state);
+        run_worker_loop(session, receiver, state, &mut factory);
     }));
     if let Err(payload) = loop_outcome {
         tracing::error!(
@@ -987,16 +988,39 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
     }
 }
 
+/// `AX_SERVER_WORKER_RECYCLE_AFTER_TICKS` — rebuild the engine session
+/// after this many worker engine ticks, at the next fully idle moment
+/// (no active streams, no queued commands). `0`/unset = off.
+///
+/// ADR-RUNTIME-TOOLCHAIN-PINNING decision C1: the eval-wall steady-state
+/// degradation accumulates one-way per process on the admitted MLX wheel
+/// (upstream residency work not yet released), so long-lived deployments
+/// can bound it by periodically rebuilding the session. The rebuild is a
+/// FULL model reload and only fires while idle; size the threshold for
+/// hours of traffic, not minutes.
+fn worker_recycle_after_ticks() -> u64 {
+    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_SERVER_WORKER_RECYCLE_AFTER_TICKS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+    })
+}
+
 fn run_worker_loop(
     mut session: EngineSession,
     receiver: std::sync::mpsc::Receiver<ServiceCommand>,
     state: &ServiceState,
+    factory: &mut SessionFactory,
 ) {
     let mut active_streams: BTreeMap<u64, ActiveStream> = BTreeMap::new();
     let mut stepwise_permits: BTreeMap<u64, AdmissionPermit> = BTreeMap::new();
     let mut latency_commands = VecDeque::new();
     let mut bulk_commands = VecDeque::new();
     let mut disconnected = false;
+    let recycle_after = worker_recycle_after_ticks();
+    let mut ticks_since_recycle: u64 = 0;
     loop {
         let mut engine_advanced = false;
         if active_streams.is_empty()
@@ -1004,6 +1028,27 @@ fn run_worker_loop(
             && bulk_commands.is_empty()
             && !disconnected
         {
+            if recycle_after > 0 && ticks_since_recycle >= recycle_after {
+                match factory() {
+                    Ok(new_session) => {
+                        session = new_session;
+                        ticks_since_recycle = 0;
+                        tracing::info!(
+                            recycle_after,
+                            "recycled the native generation session at idle \
+                             (AX_SERVER_WORKER_RECYCLE_AFTER_TICKS)"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "session recycle failed; keeping the live session \
+                             and disabling further recycle attempts"
+                        );
+                        ticks_since_recycle = 0;
+                    }
+                }
+            }
             match receiver.recv() {
                 Ok(command) => {
                     queue_worker_command(command, &mut latency_commands, &mut bulk_commands)
@@ -1067,6 +1112,7 @@ fn run_worker_loop(
         }
         if engine_advanced {
             // Engine already advanced via command handling.
+            ticks_since_recycle = ticks_since_recycle.saturating_add(1);
         } else if !active_streams.is_empty() {
             let _ = advance_shared_engine(
                 &mut session,
@@ -1074,6 +1120,7 @@ fn run_worker_loop(
                 &mut stepwise_permits,
                 state,
             );
+            ticks_since_recycle = ticks_since_recycle.saturating_add(1);
         } else {
             maintain_streams(&mut session, &mut active_streams, state);
         }

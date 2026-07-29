@@ -9,6 +9,46 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- S1 multi-model prefix reuse: the exact-prompt warmup's KV snapshot now
+  restores on the replayed request (block-aligned warm, right-sized
+  prefix-cache budget in the tracked S1 target), taking the Gemma 4 12B
+  13.8k-token leg from ~8.2 s to ~0.4 s TTFT and the official
+  single-process-vs-mlxcel campaign to 4/4 locked gates at a 5.0x
+  throughput ratio (artifacts under
+  `benchmarks/results/serving/s1-mlxcel-flip/`).
+- `AX_MLX_FUSED_PREFILL_ATTENTION=1` (default off): fused offset-0 prefill
+  attention for Gemma-family layers (rms_norm -> QKV qmm -> QK/V norms ->
+  rope -> causal fast SDPA -> o-proj in one shim call), measured -9.7%
+  TTFT at p128 on Gemma 4 12B and +6-8% cold prefill on 26B, plus a
+  two-stage fused pair for offset/sliding/ring chunks.
+- `mlx.version` accepts `git:<sha>@<version>` for admitted MLX source
+  builds alongside wheel semvers; provenance enforcement and release
+  packaging documentation updated accordingly.
+- `AX_SERVER_WORKER_RECYCLE_AFTER_TICKS`: opt-in idle-time engine-session
+  rebuild for long-lived deployments, bounding the per-process Metal
+  steady-state accumulation until the upstream MLX residency fix ships.
+- `AX_MLX_SIBLING_PREFILL_ROTATION=0|1` hard override for the sibling
+  prefill-rotation hint (A/B isolation), and richer prefix-cache /
+  prefill diagnostics under `AX_MLX_PREFILL_TIME_DEBUG`.
+
+### Fixed
+
+- Rotated-ring KV corruption panics: the prefill rotation decision now
+  latches per request (the process-wide sibling hint could flip
+  mid-prompt and hand a rotated ring an ordered append), and the
+  adaptive prefill quantum clamps to the operator `--prefill-chunk`
+  (quanta larger than the ring capacity panicked at kv_cache.rs:2065).
+- Multi-model fair prefill quantum now honors `--prefill-chunk` instead
+  of the pinned 256-token default, and the single-stream engine burst
+  releases the arbiter turn per prefill quantum under sibling load.
+- The third GEGLU JIT kernel (`ax_moe_fused_activation_unsort`) now uses
+  the branchless saturation form like its siblings (divergent guards
+  serialize vectorized loads).
+- Warm-extend prefix restores snap to the cold prefill-chunk grid so
+  extension chunks replay the cold trail shape-for-shape; the remaining
+  short-prompt warm_extend variance is root-caused as in-session
+  recompute non-determinism and documented in PERFORMANCE-RESULTS.
+
 - Native direct-mode support for **Nemotron-H** (`nemotron_h`, Nemotron 3 Nano):
   hybrid Mamba-2 / GQA attention / ReLU² MoE residual mixers driven by
   `hybrid_override_pattern`, convert mapping under `backbone.layers.*.mixer.*`,

@@ -225,16 +225,76 @@ fn mlx_root_from_python(python: &std::ffi::OsStr) -> Option<PathBuf> {
     root.is_dir().then_some(root)
 }
 
-/// The admitted MLX version, pinned in `mlx.version` at the repo root.
-/// Bumping it is a deliberate act: rerun the qmm microbench parity gate and
-/// the bit-exactness suites first (see docs/GETTING-STARTED.md).
-fn pinned_mlx_version() -> Option<String> {
+/// The admitted MLX runtime, pinned in `mlx.version` at the repo root.
+///
+/// Two formats are accepted:
+///   - `0.32.0`               — a published wheel (install via pip);
+///   - `git:<sha>@<version>`  — an admitted source build of upstream MLX at
+///     `<sha>` whose `mlx/version.h` reports `<version>` (build recipe and
+///     admission evidence: docs/performance/mlx-main-admission-2026-07-28.md).
+///
+/// Bumping either form is a deliberate act: rerun the qmm microbench parity
+/// gate and the bit-exactness suites first (see docs/GETTING-STARTED.md).
+enum MlxPin {
+    Wheel(String),
+    Source { commit: String, version: String },
+}
+
+impl MlxPin {
+    fn expected_header_version(&self) -> &str {
+        match self {
+            Self::Wheel(version) => version,
+            Self::Source { version, .. } => version,
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Wheel(version) => version.clone(),
+            Self::Source { commit, version } => format!("source build {commit} ({version})"),
+        }
+    }
+
+    fn install_hint(&self) -> String {
+        match self {
+            Self::Wheel(version) => format!("python3 -m pip install mlx=={version}"),
+            Self::Source { commit, .. } => format!(
+                "build upstream MLX at {commit} per \
+                 docs/performance/mlx-main-admission-2026-07-28.md and point \
+                 MLX_LIB_DIR/MLX_INCLUDE_DIR at its install prefix"
+            ),
+        }
+    }
+}
+
+fn parse_mlx_pin(raw: &str) -> Option<MlxPin> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(rest) = raw.strip_prefix("git:") {
+        let (commit, version) = rest.split_once('@')?;
+        let (commit, version) = (commit.trim(), version.trim());
+        if commit.is_empty() || version.is_empty() {
+            return None;
+        }
+        return Some(MlxPin::Source {
+            commit: commit.to_string(),
+            version: version.to_string(),
+        });
+    }
+    Some(MlxPin::Wheel(raw.to_string()))
+}
+
+fn pinned_mlx() -> Option<MlxPin> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
     let pin_path = PathBuf::from(manifest_dir).join("../../mlx.version");
-    std::fs::read_to_string(pin_path)
-        .ok()
-        .map(|raw| raw.trim().to_string())
-        .filter(|pin| !pin.is_empty())
+    let raw = std::fs::read_to_string(pin_path).ok()?;
+    parse_mlx_pin(&raw)
+}
+
+fn pinned_mlx_version() -> Option<String> {
+    pinned_mlx().map(|pin| pin.expected_header_version().to_string())
 }
 
 /// Parse `MLX_VERSION_MAJOR/MINOR/PATCH` out of `mlx/version.h`.
@@ -295,22 +355,24 @@ fn enforce_mlx_provenance_and_version(dirs: &MlxDirs, provenance: MlxProvenance)
         }
     }
 
-    if let (Some(version), Some(pin)) = (version.as_deref(), pin.as_deref())
-        && version != pin
+    if let (Some(version), Some(pin)) = (version.as_deref(), pinned_mlx())
+        && version != pin.expected_header_version()
     {
+        let expected = pin.describe();
+        let hint = pin.install_hint();
         if env_flag("AX_MLX_VERSION_OVERRIDE") {
             println!(
                 "cargo:warning=mlx-sys: AX_MLX_VERSION_OVERRIDE=1 — MLX {version} does not \
-                 match the admitted pin {pin}; benchmarks and bit-exactness gates were \
+                 match the admitted pin {expected}; benchmarks and bit-exactness gates were \
                  certified against the pin"
             );
         } else {
             panic!(
-                "mlx-sys resolved MLX {version} from {} but the repo pins {pin} \
-                 (mlx.version). Install the pinned wheel (`python3 -m pip install \
-                 mlx=={pin}`), or — to deliberately test a different MLX — set \
-                 AX_MLX_VERSION_OVERRIDE=1 and rerun the qmm microbench parity gate and \
-                 bit-exactness suites before trusting any results.",
+                "mlx-sys resolved MLX {version} from {} but the repo pins {expected} \
+                 (mlx.version). Use the admitted runtime ({hint}), or — to deliberately \
+                 test a different MLX — set AX_MLX_VERSION_OVERRIDE=1 and rerun the qmm \
+                 microbench parity gate and bit-exactness suites before trusting any \
+                 results.",
                 dirs.mlx_lib_dir
             );
         }

@@ -5792,6 +5792,48 @@ impl MlxRunner {
         } else {
             &item.reused_prefix_token_slice
         };
+        Self::pfx_dbg(
+            "restore-entry",
+            &format!(
+                "core_claim={} probed={} cache_seq={}",
+                item.reused_prefix_token_slice.len(),
+                probed_tokens.len(),
+                state.cache.seq_len()
+            ),
+        );
+        // Shape-exact warm extension: a multi-token extension chunk whose
+        // (offset, len) is off the cold chunk grid dispatches different
+        // SDPA kernels than the cold baseline at the same absolute
+        // positions and can drift fp-wise (default-corpus warm_extend
+        // measured p2 idx=14 / p3 idx=18 / p5 idx=0 on Gemma 4 12B —
+        // same class as the MLA R2 note below). Snap the restore point
+        // down to the cold prefill-chunk grid so every extension chunk
+        // replays the cold trail shape-for-shape; a claim that sits
+        // entirely inside the first cold chunk skips reuse — recomputing
+        // under one chunk is cheaper than any drift risk. Restores that
+        // need no multi-token extension (warm_repeat tails of <=1 token)
+        // keep their full length.
+        let extension_tokens = item
+            .input_token_slice
+            .len()
+            .saturating_sub(reused_tokens.len());
+        let reused_tokens: &[u32] = if extension_tokens > 1 {
+            let chunk = self.prefill_chunk.max(1);
+            let grid_len = (reused_tokens.len() / chunk) * chunk;
+            if grid_len != reused_tokens.len() {
+                Self::pfx_dbg(
+                    "restore-grid-trim",
+                    &format!(
+                        "claim={} grid={} chunk={chunk}",
+                        reused_tokens.len(),
+                        grid_len
+                    ),
+                );
+            }
+            &reused_tokens[..grid_len]
+        } else {
+            reused_tokens
+        };
         if reused_tokens.is_empty() || state.cache.seq_len() != 0 {
             return telemetry;
         }
@@ -5848,6 +5890,15 @@ impl MlxRunner {
             telemetry.record_stats(cache.stats());
             hit
         };
+        Self::pfx_dbg(
+            "restore-get",
+            &format!(
+                "reused={} l1_hit={} native_hit={}",
+                reused_tokens.len(),
+                hit.is_some(),
+                native_hit.is_some()
+            ),
+        );
 
         // Historical context: MLA + Prefill used to refuse a snapshot restore
         // because the post-restore chunked_prefill drifted fp-wise from a
@@ -6609,9 +6660,11 @@ impl MlxRunner {
                 drop(native_outcome.retired);
             }
             if !portable_store_phase && native_snapshot_ready {
+                Self::pfx_dbg("store-loop-skip", &format!("native_ready prefix={prefix_len}"));
                 continue;
             }
             if l1_superseding && !disk_store_needed {
+                Self::pfx_dbg("store-loop-skip", &format!("l1_superseding prefix={prefix_len}"));
                 continue;
             }
             // F3 M2 — for the disk layer we want the largest valid
@@ -6647,6 +6700,7 @@ impl MlxRunner {
             // configuration the original `key` moves cleanly into
             // `cache.insert`, no extra allocation.
             let key_for_disk = disk_payload.as_ref().map(|_| key.clone());
+            let payload_len = payload.len();
             let outcome = {
                 let mut cache = self.prefix_cache.lock();
                 let outcome = cache.insert(
@@ -6656,6 +6710,12 @@ impl MlxRunner {
                         tokens.to_vec(),
                         prefix_len,
                         snapshot_prefill_output_token,
+                    ),
+                );
+                Self::pfx_dbg(
+                    "store-insert",
+                    &format!(
+                        "prefix={prefix_len} payload_bytes={payload_len} serialize_us={serialize_us}"
                     ),
                 );
                 telemetry.record_stats(cache.stats());
