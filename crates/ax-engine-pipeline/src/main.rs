@@ -21,6 +21,19 @@ struct Args {
     model_dir: PathBuf,
     #[arg(long, env = "AX_ENGINE_PIPELINE_BOOTSTRAP_PLAN")]
     bootstrap_plan: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "AX_ENGINE_PIPELINE_ARTIFACT_BASE_URL",
+        requires = "bootstrap_plan"
+    )]
+    artifact_base_url: Option<String>,
+    #[arg(
+        long,
+        env = "AX_ENGINE_PIPELINE_ARTIFACT_TOKEN",
+        hide_env_values = true,
+        requires = "artifact_base_url"
+    )]
+    artifact_token: Option<String>,
     #[arg(long, env = "AX_ENGINE_PIPELINE_RANK")]
     rank: u16,
     #[arg(long, env = "AX_ENGINE_PIPELINE_WORKER_TOKEN", hide_env_values = true)]
@@ -60,12 +73,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| format!("rank {} is absent from topology", args.rank))?
         .clone();
     let bootstrap_plan = match &args.bootstrap_plan {
-        Some(path) => Some(RankBootstrapPlan::load_and_verify(
-            path,
-            &args.model_dir,
-            &topology,
-            args.rank,
-        )?),
+        Some(path) => {
+            let plan = RankBootstrapPlan::load(path)?;
+            if let Some(base_url) = &args.artifact_base_url {
+                let prepared = plan
+                    .prepare_from_base_url(
+                        &args.model_dir,
+                        &topology,
+                        args.rank,
+                        base_url,
+                        args.artifact_token.as_deref(),
+                    )
+                    .await?;
+                tracing::info!(
+                    rank = args.rank,
+                    downloaded_files = prepared.downloaded_files,
+                    downloaded_bytes = prepared.downloaded_bytes,
+                    reused_files = prepared.reused_files,
+                    "rank artifacts prepared"
+                );
+            } else {
+                plan.verify(&args.model_dir, &topology, args.rank)?;
+            }
+            Some(plan)
+        }
         None if args.coordinator_url.is_some() => {
             return Err(
                 "--bootstrap-plan is required when coordinator integration is enabled".into(),

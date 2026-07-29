@@ -355,6 +355,7 @@ mod tests {
             manifest_digest: "manifest-a".into(),
             model_artifact_digest: "model-a".into(),
             total_layers: 4,
+            micro_batch_limit: 2,
             ranks: vec![
                 PipelineRankAssignment {
                     rank: 0,

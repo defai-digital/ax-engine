@@ -1,10 +1,12 @@
 //! Rank-0 chain client for ordered greedy pipeline generation.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use ax_engine_core::{ActivationFrame, PipelineTopology};
 use reqwest::header::CONTENT_TYPE;
 use thiserror::Error;
+use tokio::sync::Semaphore;
 
 use crate::{CLUSTER_WORKER_TOKEN_HEADER, RankHealth, TokenStepRequest, TokenStepResponse};
 
@@ -17,6 +19,7 @@ pub struct PipelineChainClient {
     endpoints: Vec<String>,
     worker_token: String,
     maximum_activation_bytes: u64,
+    in_flight_steps: Arc<Semaphore>,
     client: reqwest::Client,
 }
 
@@ -51,11 +54,13 @@ impl PipelineChainClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(PipelineClientError::BuildClient)?;
+        let in_flight_steps = Arc::new(Semaphore::new(usize::from(topology.micro_batch_limit)));
         Ok(Self {
             topology,
             endpoints,
             worker_token,
             maximum_activation_bytes,
+            in_flight_steps,
             client,
         })
     }
@@ -109,6 +114,16 @@ impl PipelineChainClient {
         if request.token_ids.is_empty() {
             return Err(PipelineClientError::EmptyTokenStep);
         }
+        // Independent `(request_id, request_sequence)` units may overlap at
+        // different stages, but the immutable topology bounds their count.
+        // Each request's caller awaits one step before issuing its successor,
+        // and every rank ledger enforces ordered commit and cancellation
+        // tombstones.
+        let _in_flight = self
+            .in_flight_steps
+            .acquire()
+            .await
+            .map_err(|_| PipelineClientError::SchedulerClosed)?;
         let response = self
             .client
             .post(format!("{}/internal/pipeline/tokens", self.endpoints[0]))
@@ -337,6 +352,8 @@ pub enum PipelineClientError {
     WeakWorkerToken,
     #[error("pipeline token step must contain at least one token")]
     EmptyTokenStep,
+    #[error("pipeline micro-batch scheduler is closed")]
+    SchedulerClosed,
     #[error("failed to construct pipeline HTTP client: {0}")]
     BuildClient(reqwest::Error),
     #[error("pipeline HTTP request failed: {0}")]
@@ -407,6 +424,7 @@ mod tests {
             manifest_digest: "manifest-a".into(),
             model_artifact_digest: "model-a".into(),
             total_layers: 2,
+            micro_batch_limit: 2,
             ranks: vec![
                 PipelineRankAssignment {
                     rank: 0,
@@ -589,6 +607,157 @@ mod tests {
         client.close_request(5).await.expect("chain close");
         assert_eq!(rank0.closes.load(Ordering::Relaxed), 1);
         assert_eq!(rank1.closes.load(Ordering::Relaxed), 1);
+        server0.abort();
+        server1.abort();
+    }
+
+    struct BoundedProcessor {
+        topology: PipelineTopology,
+        rank: u16,
+        active_rank_zero: Arc<AtomicUsize>,
+        maximum_rank_zero: Arc<AtomicUsize>,
+    }
+
+    impl BoundedProcessor {
+        fn observe_rank_zero_concurrency(&self) {
+            let active = self.active_rank_zero.fetch_add(1, Ordering::SeqCst) + 1;
+            self.maximum_rank_zero.fetch_max(active, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+            self.active_rank_zero.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    impl RankProcessor for BoundedProcessor {
+        fn health(&self) -> RankHealth {
+            RankHealth {
+                ready: true,
+                rank: self.rank,
+                generation: self.topology.generation,
+                cluster_id: self.topology.cluster_id.clone(),
+                manifest_digest: self.topology.manifest_digest.clone(),
+                model_artifact_digest: self.topology.model_artifact_digest.clone(),
+            }
+        }
+
+        fn process_tokens(
+            &self,
+            request: TokenStepRequest,
+        ) -> Result<RankStepOutput, RankServiceError> {
+            assert_eq!(self.rank, 0);
+            self.observe_rank_zero_concurrency();
+            let payload = vec![0_u8; request.token_ids.len() * 4];
+            let frame = ActivationFrame {
+                header: ax_engine_core::ActivationFrameHeader {
+                    wire_version: ax_engine_core::PIPELINE_WIRE_VERSION,
+                    cluster_id: self.topology.cluster_id.clone(),
+                    generation: self.topology.generation,
+                    manifest_digest: self.topology.manifest_digest.clone(),
+                    model_artifact_digest: self.topology.model_artifact_digest.clone(),
+                    request_id: request.request_id,
+                    request_sequence: request.request_sequence,
+                    source_rank: 0,
+                    destination_rank: 1,
+                    layer_boundary: 1,
+                    token_offset: request.token_offset,
+                    token_count: request.token_ids.len() as u32,
+                    dtype: ax_engine_core::ActivationDtype::Float32,
+                    shape: vec![1, request.token_ids.len() as u32, 1],
+                    payload_bytes: payload.len() as u64,
+                    payload_sha256: ax_engine_core::sha256_hex(&payload),
+                },
+                payload,
+            };
+            Ok(RankStepOutput::Activation(frame.encode(&self.topology)?))
+        }
+
+        fn process_activation(&self, bytes: &[u8]) -> Result<RankStepOutput, RankServiceError> {
+            assert_eq!(self.rank, 1);
+            let frame = ActivationFrame::decode(bytes, &self.topology, 1024)?;
+            Ok(RankStepOutput::Token(TokenStepResponse {
+                request_id: frame.header.request_id,
+                request_sequence: frame.header.request_sequence,
+                token_id: 88,
+            }))
+        }
+
+        fn close_request(&self, _request_id: u64) -> Result<(), RankServiceError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn topology_micro_batch_limit_bounds_overlapping_chain_steps() {
+        let mut topology = topology();
+        topology.micro_batch_limit = 2;
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let rank0 = Arc::new(BoundedProcessor {
+            topology: topology.clone(),
+            rank: 0,
+            active_rank_zero: Arc::clone(&active),
+            maximum_rank_zero: Arc::clone(&maximum),
+        });
+        let rank1 = Arc::new(BoundedProcessor {
+            topology: topology.clone(),
+            rank: 1,
+            active_rank_zero: Arc::clone(&active),
+            maximum_rank_zero: Arc::clone(&maximum),
+        });
+        let listener0 = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("rank 0 listener");
+        let listener1 = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("rank 1 listener");
+        let endpoint0 = format!("http://{}", listener0.local_addr().expect("rank 0 address"));
+        let endpoint1 = format!("http://{}", listener1.local_addr().expect("rank 1 address"));
+        let server0 = tokio::spawn(async move {
+            axum::serve(
+                listener0,
+                router(rank0, "0123456789abcdef".into(), 4096).expect("rank 0 router"),
+            )
+            .await
+            .expect("rank 0 server");
+        });
+        let server1 = tokio::spawn(async move {
+            axum::serve(
+                listener1,
+                router(rank1, "0123456789abcdef".into(), 4096).expect("rank 1 router"),
+            )
+            .await
+            .expect("rank 1 server");
+        });
+        let client = Arc::new(
+            PipelineChainClient::new(
+                topology,
+                vec![endpoint0, endpoint1],
+                "0123456789abcdef".into(),
+                1024,
+            )
+            .expect("chain client"),
+        );
+        let tasks = (1_u64..=6)
+            .map(|request_id| {
+                let client = Arc::clone(&client);
+                tokio::spawn(async move {
+                    client
+                        .step(TokenStepRequest {
+                            request_id,
+                            request_sequence: 1,
+                            token_offset: 0,
+                            token_ids: vec![1],
+                        })
+                        .await
+                })
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            assert_eq!(
+                task.await.expect("step task").expect("chain step").token_id,
+                88
+            );
+        }
+        assert_eq!(maximum.load(Ordering::SeqCst), 2);
         server0.abort();
         server1.abort();
     }

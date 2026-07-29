@@ -7552,6 +7552,7 @@ mod tests {
                 manifest_digest: "manifest-a".into(),
                 model_artifact_digest: "model-a".into(),
                 total_layers: 2,
+                micro_batch_limit: 2,
                 ranks: vec![rank0.assignment.clone(), rank1.assignment.clone()],
             };
             let mut rank0_executor = crate::pipeline::PipelineRankExecutor::new(

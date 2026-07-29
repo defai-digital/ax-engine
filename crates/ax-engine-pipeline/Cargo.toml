@@ -18,7 +18,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "net", "signal", "sync"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
