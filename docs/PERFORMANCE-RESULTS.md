@@ -313,6 +313,10 @@ interactive stream-gap p95 ratio <= 0.90, zero candidate errors.
 
 #### Official 3-rep result (2026-07-28, Apple M5 Max 128 GB)
 
+Artifacts: [benchmarks/results/serving/s1-mlxcel-flip/2026-07-28-prefix-reuse-official](../benchmarks/results/serving/s1-mlxcel-flip/2026-07-28-prefix-reuse-official/README.md)
+(run ledger, six raw trial artifacts, per-rep gate evaluations, and the
+token-equivalence audit set).
+
 | rep | thr ratio (>=1.15) | ttft p95 (<=0.90) | gap p95 (<=0.90) | errors |
 | --- | --- | --- | --- | --- |
 | 1 | **5.031** | 0.040 | 0.259 | 0 |
