@@ -337,15 +337,18 @@ and a prefix-cache budget sized for the snapshot
 **Correctness.** The canonical prefix-reuse equivalence gate
 (`scripts/check-prefix-reuse-equivalence.sh`, warm_repeat, 5-prompt
 corpus) passes 5/5, and a dedicated audit on the exact 13.8k S1 text
-passes both warm_repeat and warm_extend token-exactly. Known issue,
-narrowed: warm-extend restores are now snapped to the cold
-prefill-chunk grid so extension chunks replay the cold trail
-shape-for-shape (this fixed the p2 corpus divergence and preserves the
-S1 restore intact — both S1 modes re-audited PASS after the change).
-Two default-corpus prompts (p3, p5) still drift under warm_extend via
-a distinct in-session mechanism outside the snapshot-restore path;
-tracked as a follow-up. It does not affect the S1 shape, which is
-audited directly.
+passes both warm_repeat and warm_extend token-exactly. Known issue
+kept open: the default-corpus warm_extend audit still drifts on short
+prompts in this model family, and the drift is flaky across runs.
+Warm-extend restores are snapped to the cold prefill-chunk grid
+(which rules out extension chunk-shape divergence by construction and
+leaves the S1 restore intact — both S1 modes re-audited PASS after
+the change), but the corpus drift persists through a distinct
+in-session mechanism: small shared-prefix restores on the decode path
+and cross-request session interactions are the instrumented suspects.
+Tracked as a follow-up with reproduction tooling in place. It does
+not affect the S1 shape, which is audited directly and token-exact in
+both modes.
 
 **Claim boundary.** Single host (M5 Max 128 GB), one scenario family,
 prefix-cache-favorable workload (identical replayed prompt — the
