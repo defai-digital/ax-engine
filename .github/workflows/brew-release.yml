@@ -151,11 +151,14 @@ jobs:
           code_signing = manifest.get("code_signing") or {}
           runtime = manifest.get("mlx_runtime") or {}
           runtime_assets = runtime.get("assets") or {}
+          runtime_source = runtime.get("source") or {}
+          runtime_source_assets = runtime_source.get("assets") or {}
+          runtime_derivation = runtime.get("derivation") or {}
           licenses = manifest.get("third_party_licenses") or {}
           apple_signed = bool(code_signing.get("apple_developer_id"))
           apple_notarized = bool(code_signing.get("notarized"))
-          if manifest.get("schema_version") != "ax.github_release_manifest.v2":
-              raise SystemExit("Homebrew requires the standalone v2 release manifest")
+          if manifest.get("schema_version") != "ax.github_release_manifest.v3":
+              raise SystemExit("Homebrew requires the standalone v3 release manifest")
           if archive.get("name") != expected_archive or archive.get("sha256") != expected_sha256:
               raise SystemExit("release manifest archive identity does not match verified bytes")
           if not apple_signed or not apple_notarized:
@@ -170,6 +173,29 @@ jobs:
               raise SystemExit("release does not support both archive and Homebrew rpaths")
           if set(runtime_assets) != expected_runtime:
               raise SystemExit("release MLX runtime file set is incomplete")
+          if runtime_source.get("kind") != "pinned-pypi-wheel":
+              raise SystemExit("release MLX source is not the pinned pip wheel")
+          if set(runtime_source_assets) != expected_runtime:
+              raise SystemExit("release upstream MLX runtime file set is incomplete")
+          for name, record in runtime_source_assets.items():
+              source_sha256 = record.get("sha256") if isinstance(record, dict) else None
+              if (
+                  not isinstance(record, dict)
+                  or record.get("path") != name
+                  or not isinstance(record.get("size"), int)
+                  or record.get("size", -1) < 0
+                  or not isinstance(source_sha256, str)
+                  or len(source_sha256) != 64
+                  or any(character not in "0123456789abcdef" for character in source_sha256)
+              ):
+                  raise SystemExit(f"release upstream MLX record is invalid for {name}")
+          if runtime_derivation != {
+              "private_copy": True,
+              "dylib_load_commands_preserved": True,
+              "metallib_byte_identical": True,
+              "library_signature": "developer-id",
+          }:
+              raise SystemExit("release MLX derivation contract is incorrect")
           if set(licenses) != {"MLX-LICENSE.txt"}:
               raise SystemExit("release MLX license is missing")
 

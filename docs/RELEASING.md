@@ -26,11 +26,17 @@ The publisher performs this sequence:
    `mlx-metal` arm64 wheel tags and verifies each dylib's `minos` against that
    wheel platform tag; this is an artifact-integrity check, not a NAX feature
    proxy.
-4. Assemble a relocatable payload, remove builder-host rpaths, install
-   `@loader_path` plus `@loader_path/../libexec`, then sign the bundled dylibs
-   before the binaries. A clean-environment `ax-engine doctor` must report
-   ready on the release host. Real publishes notarize the complete payload;
-   dry-runs use ad-hoc signatures and skip notarization.
+4. Assemble a relocatable payload, rewriting only the AX binaries to remove
+   builder-host rpaths and install `@loader_path` plus
+   `@loader_path/../libexec`. The pinned-wheel MLX dylibs and metallib must
+   remain byte-for-byte identical through this relocation step. The publisher
+   then Developer ID re-signs the private dylib copies before the binaries so
+   hardened-runtime library validation retains the same-Team-ID boundary. It
+   verifies that signing preserved both dylibs' install names, dependencies,
+   and rpaths, and that `mlx.metallib` remains byte-identical. A
+   clean-environment `ax-engine doctor` must report ready on the release host.
+   Real publishes notarize the complete payload; dry-runs use ad-hoc signatures
+   and skip notarization.
 5. Push the tag, create the GitHub release as a **draft**, upload assets, then
    independently re-download and verify checksum / minisign / runtime digests /
    rpaths / clean-environment startup / codesign / notarization on the uploaded
@@ -58,7 +64,10 @@ The archive keeps binaries, `libmlx.dylib`, `libjaccl.dylib`, and
 accepts two forms: a wheel semver (`0.32.0`, installed via pip) or an admitted
 source build (`git:<sha>@<version>`, whose build recipe and qmm-admission
 evidence live in `docs/performance/mlx-main-admission-2026-07-28.md`); either
-way the shipped dylibs must come from exactly that runtime.
+way the shipped dylibs must come from exactly that runtime. For the current
+wheel pin, the release manifest records both the upstream pinned-wheel digests
+and the final packaged digests. The dylibs are therefore private signed
+derivations of the upstream files, not byte-for-byte claims after signing.
 
 ## Operator options
 
@@ -74,6 +83,69 @@ way the shipped dylibs must come from exactly that runtime.
 
 `--skip-checks` skips local gates only. It never bypasses the exact-SHA GitHub
 CI requirement for a real publish.
+
+## Tag vs release parity
+
+Git tags and GitHub Releases are separate objects. The publisher **pushes the
+tag first**, creates a **draft** release, uploads assets, verifies the uploaded
+bytes, then flips draft → published. If that sequence stops mid-flight you can
+end up with:
+
+- an **orphan tag** (visible on `/tags`, missing from `/releases`), or
+- a **stuck draft** (assets uploaded but never published; drafts are hidden
+  from most visitors on the public Releases page).
+
+After every publish — and whenever the tags page and Releases page disagree —
+run:
+
+```bash
+python3 scripts/check_github_release_parity.py
+python3 scripts/check_github_release_parity.py --strict   # also fail on drafts
+```
+
+### Recover orphan tags
+
+**Notes-only backfill** (when re-building notarized macOS assets is not
+worthwhile; state that clearly in the body):
+
+```bash
+gh release create vX.Y.Z --title "vX.Y.Z" --notes-file path/to/notes.md --verify-tag
+```
+
+Prefer notes from `CHANGELOG.md` and link
+`https://github.com/defai-digital/ax-engine/compare/vPREV...vX.Y.Z`.
+
+**Full asset publish** for a tag that already exists at the intended commit:
+
+```bash
+scripts/publish-github-release.sh vX.Y.Z --skip-tag-push
+```
+
+That path still requires a green exact-SHA `CI` run, signed/notarized payload
+verification, and will refuse to replace an already-published release.
+
+### Recover stuck drafts
+
+Finish after verification, or delete and re-run the publisher with
+`--clobber-assets` if the draft assets are wrong:
+
+```bash
+gh release edit vX.Y.Z --draft=false          # only after assets verify
+# or
+gh release delete vX.Y.Z                      # then re-publish
+```
+
+Publishing an **older** draft (or creating a backfilled release) can steal
+GitHub's **Latest** badge away from the current public release. After any
+historical publish, re-pin Latest explicitly:
+
+```bash
+gh release edit v6.11.1 --latest   # replace with the real current release tag
+gh api repos/defai-digital/ax-engine/releases/latest --jq .tag_name
+```
+
+Do not push version tags outside `scripts/publish-github-release.sh` unless you
+immediately create the matching GitHub release.
 
 ## Build-cache policy
 

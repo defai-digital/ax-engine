@@ -293,6 +293,43 @@ binary_rpaths() {
     '
 }
 
+dylib_linkage_fingerprint() {
+    local image="$1"
+    {
+        otool -D "$image" | sed -n '2p'
+        otool -L "$image" | sed -n '2,$s/^[[:space:]]*\([^[:space:]]*\).*$/\1/p'
+        binary_rpaths "$image"
+    }
+}
+
+verify_pristine_mlx_runtime() {
+    local name
+    for name in "${MLX_RUNTIME_FILES[@]}"; do
+        cmp "$MLX_RUNTIME_DIR/$name" "$STAGING_DIR/$name" >/dev/null || {
+            die "standalone preparation modified upstream MLX runtime bytes: $name"
+        }
+    done
+    echo "Verified pristine pinned MLX runtime before code signing"
+}
+
+verify_packaged_mlx_runtime_derivation() {
+    local name
+    local source_fingerprint
+    local packaged_fingerprint
+
+    for name in libmlx.dylib libjaccl.dylib; do
+        source_fingerprint="$(dylib_linkage_fingerprint "$MLX_RUNTIME_DIR/$name")"
+        packaged_fingerprint="$(dylib_linkage_fingerprint "$STAGING_DIR/$name")"
+        [[ "$source_fingerprint" == "$packaged_fingerprint" ]] || {
+            die "code signing changed upstream MLX load commands: $name"
+        }
+    done
+    cmp "$MLX_RUNTIME_DIR/mlx.metallib" "$STAGING_DIR/mlx.metallib" >/dev/null || {
+        die "packaging modified upstream mlx.metallib"
+    }
+    echo "Verified packaged MLX derivation: load commands preserved; metallib byte-identical"
+}
+
 resolve_local_mlx_lib_dir() {
     local bin
     local candidate
@@ -495,11 +532,14 @@ archive = manifest.get("archive") or {}
 signing = manifest.get("code_signing") or {}
 runtime = manifest.get("mlx_runtime") or {}
 runtime_assets = runtime.get("assets") or {}
+runtime_source = runtime.get("source") or {}
+runtime_source_assets = runtime_source.get("assets") or {}
+runtime_derivation = runtime.get("derivation") or {}
 license_assets = manifest.get("third_party_licenses") or {}
 expected_runtime = {"libmlx.dylib", "libjaccl.dylib", "mlx.metallib"}
 
-if manifest.get("schema_version") != "ax.github_release_manifest.v2":
-    raise SystemExit("release manifest schema is not the standalone v2 contract")
+if manifest.get("schema_version") != "ax.github_release_manifest.v3":
+    raise SystemExit("release manifest schema is not the standalone v3 contract")
 if archive.get("sha256") != expected_sha256:
     raise SystemExit("release manifest SHA256 does not match the verified archive")
 if manifest.get("payload") != expected_payload:
@@ -520,6 +560,30 @@ if runtime.get("layout") != "colocated":
     raise SystemExit("release manifest MLX runtime layout is not colocated")
 if set(runtime_assets) != expected_runtime:
     raise SystemExit("release manifest MLX runtime set is incomplete")
+if runtime_source.get("kind") != "pinned-pypi-wheel":
+    raise SystemExit("release manifest MLX source is not the pinned pip wheel")
+if set(runtime_source_assets) != expected_runtime:
+    raise SystemExit("release manifest upstream MLX runtime set is incomplete")
+for name, record in runtime_source_assets.items():
+    source_sha256 = record.get("sha256") if isinstance(record, dict) else None
+    if (
+        not isinstance(record, dict)
+        or record.get("path") != name
+        or not isinstance(record.get("size"), int)
+        or record.get("size", -1) < 0
+        or not isinstance(source_sha256, str)
+        or len(source_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in source_sha256)
+    ):
+        raise SystemExit(f"release manifest upstream MLX record is invalid for {name}")
+expected_library_signature = "developer-id" if expect_signed else "ad-hoc"
+if runtime_derivation != {
+    "private_copy": True,
+    "dylib_load_commands_preserved": True,
+    "metallib_byte_identical": True,
+    "library_signature": expected_library_signature,
+}:
+    raise SystemExit("release manifest MLX derivation contract is incorrect")
 if set(license_assets) != {"MLX-LICENSE.txt"}:
     raise SystemExit("release manifest MLX license record is incomplete")
 if runtime.get("rpaths") != ["@loader_path", "@loader_path/../libexec"]:
@@ -836,7 +900,9 @@ for name in "${MLX_RUNTIME_FILES[@]}" "${MLX_LICENSE_FILES[@]}"; do
     release_payload+=("$name")
 done
 
+verify_pristine_mlx_runtime
 codesign_release_payload
+verify_packaged_mlx_runtime_derivation
 run bash "$SCRIPT_DIR/validate-standalone.sh" --doctor "$STAGING_DIR"
 notarize_release_payload
 
@@ -862,6 +928,7 @@ python3 - \
     "$DOWNLOAD_URL" \
     "$MANIFEST_PATH" \
     "$STAGING_DIR" \
+    "$MLX_RUNTIME_DIR" \
     "$MLX_PIN" \
     "--binaries" \
     "${RELEASE_BINS[@]}" \
@@ -918,18 +985,20 @@ def asset_record(staging: pathlib.Path, name: str) -> dict[str, object]:
     download_url,
     manifest_path,
     staging_dir,
+    mlx_source_dir,
     mlx_version,
-) = sys.argv[1:11]
-args = sys.argv[11:]
+) = sys.argv[1:12]
+args = sys.argv[12:]
 bins = values_between(args, "--binaries", "--helpers")
 helpers = values_between(args, "--helpers", "--runtime")
 runtime_files = values_between(args, "--runtime", "--licenses")
 license_files = values_between(args, "--licenses", "--payload")
 payload = values_between(args, "--payload", None)
 staging = pathlib.Path(staging_dir)
+mlx_source = pathlib.Path(mlx_source_dir)
 
 manifest = {
-    "schema_version": "ax.github_release_manifest.v2",
+    "schema_version": "ax.github_release_manifest.v3",
     "project": "ax-engine",
     "repository": repo,
     "tag": tag,
@@ -949,9 +1018,26 @@ manifest = {
         "version": mlx_version,
         "layout": "colocated",
         "rpaths": ["@loader_path", "@loader_path/../libexec"],
+        "source": {
+            "kind": "pinned-pypi-wheel",
+            "assets": {
+                name: asset_record(mlx_source, name)
+                for name in runtime_files
+            },
+        },
         "assets": {
             name: asset_record(staging, name)
             for name in runtime_files
+        },
+        "derivation": {
+            "private_copy": True,
+            "dylib_load_commands_preserved": True,
+            "metallib_byte_identical": True,
+            "library_signature": (
+                "developer-id"
+                if os.environ.get("AX_RELEASE_CODESIGN_IDENTITY")
+                else "ad-hoc"
+            ),
         },
     },
     "third_party_licenses": {

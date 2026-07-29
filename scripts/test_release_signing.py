@@ -20,6 +20,11 @@ class ReleaseSigningTests(unittest.TestCase):
         self.assertNotIn('--entitlements "$', text)
         self.assertIn("unexpectedly disables hardened-runtime library validation", text)
         self.assertIn('"disable_library_validation": False', text)
+        self.assertIn("verify_pristine_mlx_runtime", text)
+        self.assertIn("verify_packaged_mlx_runtime_derivation", text)
+        self.assertIn('"dylib_load_commands_preserved": True', text)
+        self.assertIn('"metallib_byte_identical": True', text)
+        self.assertIn('"kind": "pinned-pypi-wheel"', text)
 
     def test_publisher_fails_closed_and_verifies_uploaded_release(self):
         with open(PUBLISH_SCRIPT, encoding="utf-8") as fh:
@@ -47,7 +52,7 @@ class ReleaseSigningTests(unittest.TestCase):
         self.assertIn("prepare-standalone-release.sh", text)
         self.assertIn("validate-standalone.sh", text)
         self.assertIn('validate-standalone.sh" --doctor', text)
-        self.assertIn("ax.github_release_manifest.v2", text)
+        self.assertIn("ax.github_release_manifest.v3", text)
         self.assertIn("@loader_path/../libexec", text)
         self.assertLess(
             text.rindex("verify_uploaded_release"), text.index('gh release edit "$TAG"')

@@ -97,7 +97,8 @@ validate_system_or_bundled_dependency() {
                     die "$image_name has non-relocatable bundled dependency: $dependency"
                 }
             else
-                [[ "$dependency" == "@loader_path/$basename" ]] || {
+                [[ "$dependency" == "@rpath/$basename" \
+                    || "$dependency" == "@loader_path/$basename" ]] || {
                     die "$image_name has non-colocated bundled dependency: $dependency"
                 }
             fi
@@ -152,6 +153,12 @@ for name in "${BUNDLED_DYLIBS[@]}"; do
     image="$PAYLOAD_DIR/$name"
     image_id="$(otool -D "$image" | sed -n '2p')"
     [[ "$image_id" == "@rpath/$name" ]] || die "$name has unexpected install id: $image_id"
+    while IFS= read -r image_rpath; do
+        [[ -n "$image_rpath" ]] || continue
+        [[ "$image_rpath" == "@loader_path" ]] || {
+            die "$name contains an unsupported upstream rpath: $image_rpath"
+        }
+    done < <(rpaths "$image")
     while IFS= read -r dependency; do
         [[ -n "$dependency" && "$dependency" != "$image_id" ]] || continue
         validate_system_or_bundled_dependency "$name" "$dependency" dylib
