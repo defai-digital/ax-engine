@@ -350,8 +350,9 @@ its recomputed tail; the cold-grid snap (which stays landed) removes
 the chunk-shape component, and the residual is the environment-level
 recompute variance, tracked upstream-adjacent rather than as an AX
 prefix-cache bug. The S1 shape is unaffected: audited token-exact in
-both modes with the restore intact, and its 13.8k recompute was also
-token-exact in the controlled run.
+both modes with the restore intact (the controlled run further showed
+the 13.8k repeat-recompute exact while extend-recompute drifted —
+reinforcing that the snapshot restore is the deterministic path).
 
 **Claim boundary.** Single host (M5 Max 128 GB), one scenario family,
 prefix-cache-favorable workload (identical replayed prompt — the
