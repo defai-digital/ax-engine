@@ -122,9 +122,23 @@ fn detect_soc() -> SocDetection {
     if env::consts::OS != "macos" {
         return SocDetection::default();
     }
+    // PATH lookup first (historical behavior), then the absolute install
+    // locations: `sysctl` lives in /usr/sbin, which launchd services,
+    // Homebrew service wrappers, and other minimal-PATH environments
+    // commonly omit — issue #73 hit exactly this on an M3 Pro, where
+    // `ax-engine doctor` (user shell) detected the SoC but the server
+    // process reported "unknown Apple Silicon" and refused to start.
     let (soc, error) = command_stdout_with_reason("sysctl", &["-n", "machdep.cpu.brand_string"]);
     if soc.is_some() {
         return SocDetection { soc, error: None };
+    }
+    let (abs_soc, _) =
+        command_stdout_with_reason("/usr/sbin/sysctl", &["-n", "machdep.cpu.brand_string"]);
+    if abs_soc.is_some() {
+        return SocDetection {
+            soc: abs_soc,
+            error: None,
+        };
     }
     let profiler_soc = detect_soc_from_system_profiler();
     if profiler_soc.is_some() {
@@ -149,6 +163,7 @@ fn detect_soc() -> SocDetection {
 
 fn detect_soc_from_system_profiler() -> Option<String> {
     command_stdout("system_profiler", &["SPDisplaysDataType"])
+        .or_else(|| command_stdout("/usr/sbin/system_profiler", &["SPDisplaysDataType"]))
         .and_then(|text| parse_system_profiler_chipset_model(&text))
 }
 
@@ -302,6 +317,20 @@ mod tests {
     fn parses_apple_m_series_generation() {
         assert_eq!(parse_apple_m_series_generation("Apple M4"), Some(4));
         assert_eq!(parse_apple_m_series_generation("Apple M5 Max"), Some(5));
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn absolute_path_sysctl_detects_apple_silicon() {
+        // The PATH-independent fallback must resolve the SoC even when
+        // /usr/sbin is not on PATH (issue #73).
+        let (soc, _) =
+            command_stdout_with_reason("/usr/sbin/sysctl", &["-n", "machdep.cpu.brand_string"]);
+        let soc = soc.expect("/usr/sbin/sysctl must report the brand string");
+        assert!(
+            parse_apple_m_series_generation(&soc).is_some(),
+            "unexpected brand string: {soc}"
+        );
         assert_eq!(parse_apple_m_series_generation("Apple M10 Ultra"), Some(10));
         assert_eq!(parse_apple_m_series_generation("Apple M3 Pro"), Some(3));
         assert_eq!(parse_apple_m_series_generation("Intel Core i9"), None);

@@ -33,6 +33,12 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- Host SoC detection no longer reports `unknown Apple Silicon` (refusing
+  to start MLX backends) in minimal-`PATH` environments: detection now
+  falls back to the absolute `/usr/sbin/sysctl` and
+  `/usr/sbin/system_profiler` locations, fixing `ax-engine serve` on
+  hosts where `ax-engine doctor` already recognized the chip
+  (issue #73, Apple M3 Pro / `Mac15,6`).
 - Rotated-ring KV corruption panics: the prefill rotation decision now
   latches per request (the process-wide sibling hint could flip
   mid-prompt and hand a rotated ring an ordered append), and the
