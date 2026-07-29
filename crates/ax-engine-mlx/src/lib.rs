@@ -37,6 +37,7 @@ pub mod mtp_adaptive_gate;
 pub mod ngram_accel;
 pub(crate) mod paged_attention;
 pub mod per_layer_compile;
+pub mod pipeline;
 pub mod runner;
 pub mod sampling;
 pub mod speculation_profile;

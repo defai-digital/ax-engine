@@ -4,6 +4,7 @@ members = [
     "crates/ax-engine-core",
     "crates/ax-engine-microbench",
     "crates/ax-engine-mlx",
+    "crates/ax-engine-pipeline",
     "crates/ax-engine-py",
     "crates/ax-engine-sdk",
     "crates/ax-engine-server",

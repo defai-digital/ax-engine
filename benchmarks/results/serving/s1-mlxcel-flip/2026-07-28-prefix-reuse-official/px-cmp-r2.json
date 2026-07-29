@@ -1,0 +1,98 @@
+{
+  "baseline_path": "/tmp/campaign-prefix/artifacts/mlxcel-s1-r2.json",
+  "baseline_scenario": {
+    "events": 2,
+    "path": "/Users/akiralam/code/ax-engine-mlxcel-flip-work/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+    "sha256": "e17d3b74ef553779038b3cf4e0a2798b3cf024612c70effb46bd755407134826"
+  },
+  "candidate_path": "/tmp/campaign-prefix/artifacts/ax-engine-s1-r2.json",
+  "candidate_scenario": {
+    "events": 2,
+    "path": "/Users/akiralam/code/ax-engine-mlxcel-flip-work/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+    "sha256": "e17d3b74ef553779038b3cf4e0a2798b3cf024612c70effb46bd755407134826"
+  },
+  "comparison_contract": {
+    "baseline_process_count": 2,
+    "baseline_runtime": "mlxcel",
+    "candidate_process_count": 1,
+    "candidate_runtime": "ax-engine",
+    "mismatches": [],
+    "passed": true
+  },
+  "failed_required_gates": [],
+  "focus_families_present": [
+    "gemma4",
+    "qwen3"
+  ],
+  "gates": [
+    {
+      "detail": "matched",
+      "name": "comparison_contract",
+      "passed": true,
+      "required": true
+    },
+    {
+      "detail": "present_families=['gemma4', 'qwen3']",
+      "name": "focus_family_qwen3",
+      "passed": true,
+      "required": true
+    },
+    {
+      "detail": "present_families=['gemma4', 'qwen3']",
+      "name": "focus_family_gemma4",
+      "passed": true,
+      "required": true
+    },
+    {
+      "detail": "candidate/baseline=4.9886 (need >= 1.1500); cand=92.8377 base=18.6101",
+      "name": "throughput_ratio",
+      "passed": true,
+      "required": true
+    },
+    {
+      "detail": "candidate/baseline=0.0405 (need <= 0.9000); cand_p95=389.082ms base_p95=9608.147ms",
+      "name": "ttft_p95_ratio",
+      "passed": true,
+      "required": true
+    },
+    {
+      "detail": "candidate/baseline=0.2608 (need <= 0.9000); cand_p95=8.936ms base_p95=34.258ms",
+      "name": "interactive_stream_gap_p95_ratio",
+      "passed": true,
+      "required": true
+    },
+    {
+      "detail": "error_rate=0.0000 (need <= 0.0000)",
+      "name": "candidate_error_rate",
+      "passed": true,
+      "required": true
+    }
+  ],
+  "metrics": {
+    "baseline_interactive_stream_gap_p95_ms": 34.25802099991415,
+    "baseline_output_token_throughput_tok_s": 18.610145256198148,
+    "baseline_ttft_p95_ms": 9608.147093150592,
+    "candidate_error_rate": 0.0,
+    "candidate_http_503": 0,
+    "candidate_interactive_stream_gap_p95_ms": 8.936020999954053,
+    "candidate_output_token_throughput_tok_s": 92.8376643847648,
+    "candidate_ttft_p95_ms": 389.0819357496184,
+    "interactive_stream_gap_p95_ratio": 0.26084463547898595,
+    "throughput_ratio": 4.988551303963897,
+    "ttft_p95_ratio": 0.04049500199960357
+  },
+  "passed": true,
+  "schema_version": "ax.qwen_gemma_flip_compare.v1",
+  "thresholds": {
+    "max_candidate_error_rate": 0.0,
+    "max_candidate_http_503": null,
+    "max_stream_gap_p95_ratio": 0.9,
+    "max_ttft_p95_ratio": 0.9,
+    "min_throughput_ratio": 1.15,
+    "require_contract_match": true,
+    "require_focus_families": [
+      "qwen3",
+      "gemma4"
+    ]
+  }
+}

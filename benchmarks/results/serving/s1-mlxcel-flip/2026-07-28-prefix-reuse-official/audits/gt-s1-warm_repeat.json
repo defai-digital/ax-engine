@@ -1,0 +1,85 @@
+{
+  "aggregate": {
+    "prompts_matching_exactly": 1,
+    "prompts_total": 1,
+    "verdict": "PASS"
+  },
+  "config": {
+    "corpus_source": "/tmp/s1-corpus.json",
+    "extend_suffix": null,
+    "max_output_tokens": 8,
+    "mode": "warm_repeat",
+    "pad_to_block_size": null,
+    "prompt_count": 1,
+    "seed": 1234
+  },
+  "environment_flags": {
+    "AX_ALLOW_MLA_PREFIX_RESTORE": {
+      "set": false,
+      "truthy": false,
+      "value": null
+    },
+    "AX_DISABLE_MLA_PREFIX_RESTORE": {
+      "set": false,
+      "truthy": false,
+      "value": null
+    },
+    "AX_MLX_MLA_PREFILL_CHUNK": {
+      "set": false,
+      "truthy": null,
+      "value": null
+    },
+    "AX_NO_SPEC": {
+      "set": false,
+      "truthy": false,
+      "value": null
+    }
+  },
+  "generated_at_utc": "2026-07-29T00:20:05Z",
+  "host": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "model": {
+    "artifacts_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-12B-it-4bit/snapshots/8de8ab4d40f6b95a76ffa491e23dd430e1f725b5",
+    "model_id": "gemma-4-12b-it"
+  },
+  "per_prompt": [
+    {
+      "cold_output_token_count": 8,
+      "cold_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 1,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "prefix_reused_blocks": 0,
+        "prefix_reused_tokens": 0,
+        "retained_cache_hits": 0
+      },
+      "first_divergence_index": null,
+      "id": "s1_gemma_exact",
+      "prompt_preview": "<bos>The audit record contains alpha beta gamma delta epsilon zeta eta theta and must be retained ex",
+      "prompt_token_count": 13826,
+      "shared_prefix_len": 8,
+      "tokens_match": true,
+      "warm_output_token_count": 8,
+      "warm_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 1,
+        "ax_mlx_prefix_cache_hits": 1,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 13824,
+        "ax_mlx_prefix_cache_stores": 0,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "prefix_reused_blocks": 864,
+        "prefix_reused_tokens": 13824,
+        "retained_cache_hits": 1
+      }
+    }
+  ],
+  "schema_version": "ax.prefix_reuse_equivalence.v1"
+}

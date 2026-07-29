@@ -3,6 +3,7 @@
 pub mod architecture;
 pub mod architecture_registry;
 pub mod convert;
+pub mod distributed;
 pub mod engine;
 pub mod execution_plan;
 pub mod gemma4_unified;
@@ -34,6 +35,11 @@ pub use architecture::{
 pub use architecture_registry::{
     ARCHITECTURE_REGISTRY, ArchitectureRegistration, LayerForwardRoute,
     default_generation_for_family, lookup_architecture, resolve_layer_forward_route,
+};
+pub use distributed::{
+    ActivationDtype, ActivationFrame, ActivationFrameHeader, PIPELINE_WIRE_VERSION,
+    PipelineContractError, PipelineLayerRange, PipelineRankAssignment, PipelineRequestLedger,
+    PipelineTopology, sha256_hex,
 };
 pub use engine::{EngineCore, EngineCoreError, EngineEvent, EngineStepOutcome, StepMetrics};
 pub use execution_plan::{

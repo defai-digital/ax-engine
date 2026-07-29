@@ -1,0 +1,42 @@
+[package]
+name = "ax-engine-pipeline"
+edition.workspace = true
+license.workspace = true
+publish = false
+version.workspace = true
+
+[dependencies]
+ax-engine-core = { path = "../ax-engine-core" }
+ax-engine-mlx = { path = "../ax-engine-mlx" }
+ax-engine-sdk = { path = "../ax-engine-sdk", features = ["tokenizer"] }
+mlx-sys = { path = "../mlx-sys" }
+axum = "0.7"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time = { version = "0.3", features = ["formatting"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "ax-engine-pipeline-rank"
+path = "src/main.rs"
+
+[[bin]]
+name = "ax-engine-pipeline-generate"
+path = "src/generate_main.rs"
+
+[[bin]]
+name = "ax-engine-pipeline-gateway"
+path = "src/gateway_main.rs"
