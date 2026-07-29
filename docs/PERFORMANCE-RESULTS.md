@@ -337,18 +337,21 @@ and a prefix-cache budget sized for the snapshot
 **Correctness.** The canonical prefix-reuse equivalence gate
 (`scripts/check-prefix-reuse-equivalence.sh`, warm_repeat, 5-prompt
 corpus) passes 5/5, and a dedicated audit on the exact 13.8k S1 text
-passes both warm_repeat and warm_extend token-exactly. Known issue
-kept open: the default-corpus warm_extend audit still drifts on short
-prompts in this model family, and the drift is flaky across runs.
-Warm-extend restores are snapped to the cold prefill-chunk grid
-(which rules out extension chunk-shape divergence by construction and
-leaves the S1 restore intact — both S1 modes re-audited PASS after
-the change), but the corpus drift persists through a distinct
-in-session mechanism: small shared-prefix restores on the decode path
-and cross-request session interactions are the instrumented suspects.
-Tracked as a follow-up with reproduction tooling in place. It does
-not affect the S1 shape, which is audited directly and token-exact in
-both modes.
+passes both warm_repeat and warm_extend token-exactly. Known limitation,
+root-caused: the default-corpus warm_extend drift on short prompts is
+NOT a prefix-reuse defect. A controlled experiment that disabled every
+sub-chunk restore made even warm_repeat fail 0/5 — i.e., re-running
+the identical greedy request in one session drifts BY ITSELF on this
+model family (in-session recompute non-determinism at the Metal/fp
+level). Snapshot restores are bit-exact copies and therefore MORE
+deterministic than recompute, which is why warm_repeat passes 5/5
+with reuse enabled. Warm-extend inherits recompute non-determinism on
+its recomputed tail; the cold-grid snap (which stays landed) removes
+the chunk-shape component, and the residual is the environment-level
+recompute variance, tracked upstream-adjacent rather than as an AX
+prefix-cache bug. The S1 shape is unaffected: audited token-exact in
+both modes with the restore intact, and its 13.8k recompute was also
+token-exact in the controlled run.
 
 **Claim boundary.** Single host (M5 Max 128 GB), one scenario family,
 prefix-cache-favorable workload (identical replayed prompt — the
