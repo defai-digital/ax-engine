@@ -7,6 +7,13 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Release publisher: export `COPYFILE_DISABLE=1` so macOS bsdtar does not
+  embed AppleDouble `._*` members (extended attributes such as
+  `com.apple.provenance`) in the release archive, which failed the signed
+  manifest's archive-member verification during upload re-verification.
+
 ## [6.12.0] - 2026-07-29
 
 ### Added
