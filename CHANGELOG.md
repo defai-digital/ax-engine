@@ -7,6 +7,8 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [6.12.0] - 2026-07-29
+
 ### Added
 
 - S1 multi-model prefix reuse: the exact-prompt warmup's KV snapshot now
