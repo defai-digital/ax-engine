@@ -96,6 +96,45 @@ def _setup_bundled_metal() -> None:
 
 _setup_bundled_metal()
 
+
+def _import_native_module() -> None:
+    """Import the native extension, recovering from a stale MLX rpath.
+
+    `maturin develop` links `_ax_engine.abi3.so` against MLX resolved from the
+    active venv and embeds that absolute path as an rpath. In editable installs
+    the extension lives in the source tree, so a build run inside an ephemeral
+    venv (e.g. scripts/check-python-preview.sh) leaves an rpath that dangles
+    once that venv is deleted, and dlopen fails with
+    "Library not loaded: @rpath/libmlx.dylib".
+
+    libmlx's install name is `@rpath/libmlx.dylib`, so pre-loading the pip
+    wheel's copy lets dyld satisfy the dependency by install name instead of
+    the rpath search. Release wheels vendor a delocated libmlx and never take
+    this path.
+    """
+    import importlib
+
+    try:
+        importlib.import_module("._ax_engine", __package__)
+        return
+    except ImportError as exc:
+        if "libmlx" not in str(exc):
+            raise
+
+    import ctypes
+    import importlib.util
+
+    spec = importlib.util.find_spec("mlx")
+    for base in list(spec.submodule_search_locations or []) if spec else []:
+        libmlx = Path(base) / "lib" / "libmlx.dylib"
+        if libmlx.is_file():
+            ctypes.CDLL(str(libmlx))
+            break
+    importlib.import_module("._ax_engine", __package__)
+
+
+_import_native_module()
+
 from ._ax_engine import (
     EngineBackendError,
     EngineError,
@@ -1375,6 +1414,7 @@ def _manifest_needs_media_rebuild(model_dir: Path) -> bool:
     if not isinstance(model_type, str) or not isinstance(config.get("vision_config"), dict):
         return False
 
+    required_prefix_groups: tuple[tuple[str, ...], ...]
     if model_type in {
         "qwen3_5",
         "qwen3_5_moe",

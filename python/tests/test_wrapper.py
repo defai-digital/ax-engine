@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ctypes
 import importlib
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -681,6 +683,40 @@ class WrapperContractTests(unittest.TestCase):
                 del sys.modules[name]
         if str(SOURCE_ROOT) in sys.path:
             sys.path.remove(str(SOURCE_ROOT))
+
+    def test_native_import_recovers_from_stale_mlx_rpath(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mlx_root = Path(temp_dir) / "mlx"
+            mlx_lib = mlx_root / "lib" / "libmlx.dylib"
+            mlx_lib.parent.mkdir(parents=True)
+            mlx_lib.touch()
+            mlx_spec = types.SimpleNamespace(submodule_search_locations=[str(mlx_root)])
+            stale_rpath = ImportError("Library not loaded: @rpath/libmlx.dylib")
+
+            with (
+                patch.object(importlib.util, "find_spec", return_value=mlx_spec),
+                patch.object(ctypes, "CDLL") as load_library,
+                patch.object(
+                    importlib,
+                    "import_module",
+                    side_effect=[stale_rpath, types.ModuleType("ax_engine._ax_engine")],
+                ) as import_module,
+            ):
+                self.ax_engine._import_native_module()
+
+        self.assertEqual(import_module.call_count, 2)
+        load_library.assert_called_once_with(str(mlx_lib))
+
+    def test_native_import_preserves_unrelated_import_errors(self) -> None:
+        unrelated = ImportError("missing unrelated dependency")
+        with (
+            patch.object(ctypes, "CDLL") as load_library,
+            patch.object(importlib, "import_module", side_effect=unrelated),
+            self.assertRaisesRegex(ImportError, "unrelated dependency"),
+        ):
+            self.ax_engine._import_native_module()
+
+        load_library.assert_not_called()
 
     def test_generate_converts_mlx_payload_to_dataclass(self) -> None:
         with self.ax_engine.Session(

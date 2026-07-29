@@ -250,6 +250,7 @@ name = "ax-engine-py"
 version = "6.12.0"
 dependencies = [
  "ax-engine-sdk",
+ "mlx-sys",
  "pyo3",
  "pyo3-build-config",
  "serde",
