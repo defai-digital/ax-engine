@@ -1397,7 +1397,6 @@ pub fn rms_norm_quantized_matmul(
     )
 }
 
-
 fn fused_debug_error(entry: &str) {
     if std::env::var_os("AX_MLX_PREFILL_TIME_DEBUG").is_some()
         && let Some(msg) = crate::error::take_last_error()

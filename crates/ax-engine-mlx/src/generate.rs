@@ -337,7 +337,14 @@ pub fn chunked_prefill_cache_only(
         );
     }
     if prefix_len < total {
-        cache_only_forward_chunks(cfg, weights, &prompt_tokens[prefix_len..], cache, 1, barrier);
+        cache_only_forward_chunks(
+            cfg,
+            weights,
+            &prompt_tokens[prefix_len..],
+            cache,
+            1,
+            barrier,
+        );
     }
 
     if clear_cache_after_split_prefill(cfg.hidden_size_per_layer_input) {

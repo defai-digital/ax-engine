@@ -84,7 +84,6 @@ const MULTI_MODEL_PREFILL_ISOLATION_ENV: &str = "AX_SERVER_MULTI_MODEL_PREFILL_I
 // inactivity grace. Operators can opt out through the environment switch.
 const MULTI_MODEL_PREFILL_TOKENS_PER_STEP: u32 = ADAPTIVE_PREFILL_THROUGHPUT_TOKENS_PER_STEP;
 
-
 /// Static multi-model fair quantum: prefer the operator's --prefill-chunk
 /// when configured. The 256-token throughput default halves the runner's
 /// internal chunk on long prefills, DOUBLING the number of per-chunk

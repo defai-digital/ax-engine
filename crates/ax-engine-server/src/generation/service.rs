@@ -1440,7 +1440,9 @@ fn advance_shared_engine(
             eprintln!(
                 "AX_SCHED_DEBUG model={} sibling_active={sibling_active} fair_enabled={enabled} fair_tokens={current_tokens} inflight={inflight} adaptive_tokens={}",
                 target.model_id,
-                service_state.adaptive_prefill_tokens.load(Ordering::Acquire),
+                service_state
+                    .adaptive_prefill_tokens
+                    .load(Ordering::Acquire),
             );
         }
         // Cap burst whenever a sibling is active (exclusive or concurrent).
@@ -1583,8 +1585,7 @@ fn advance_shared_engine(
                                 &report,
                                 service_state,
                             );
-                            if sibling_active_for_burst && step_is_prefill_quantum(service_state)
-                            {
+                            if sibling_active_for_burst && step_is_prefill_quantum(service_state) {
                                 break;
                             }
                         }

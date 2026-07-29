@@ -814,8 +814,7 @@ fn layer_forward_internal(
             // portable path (Gemma 4 global layers: wider heads, MQA KV).
             let n_heads_layer = q_proj.weight.shape()[0] as usize / head_dim;
             let kv_heads_layer = k_proj.weight.shape()[0] as usize / head_dim;
-            if !affine_matching(q_proj) || !affine_matching(k_proj) || !affine_matching(v_proj)
-            {
+            if !affine_matching(q_proj) || !affine_matching(k_proj) || !affine_matching(v_proj) {
                 break 'fused None;
             }
             let Some((q_rope, k_rope, v)) = mlx_sys::ops::fused_qkv_rope_split(
@@ -892,14 +891,9 @@ fn layer_forward_internal(
                 None
             } else {
                 match ring_layout {
-                    Some(ring) if ring.needs_mask(seq) && key_len == ring.capacity => {
-                        Some(create_ring_sliding_mask(
-                            seq,
-                            ring.window,
-                            ring.capacity,
-                            ring.write_start,
-                        ))
-                    }
+                    Some(ring) if ring.needs_mask(seq) && key_len == ring.capacity => Some(
+                        create_ring_sliding_mask(seq, ring.window, ring.capacity, ring.write_start),
+                    ),
                     _ => attention_mask_array(seq, key_len, sliding_window),
                 }
             };

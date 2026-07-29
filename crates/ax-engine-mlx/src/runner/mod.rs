@@ -2241,9 +2241,7 @@ impl MlxRunner {
                 );
                 state.cache.set_rotating_sliding_decode(rotate_sliding);
                 state.cache.set_rotating_sliding_slack(rotate_slack);
-                if item.mode == ExecutionMode::Prefill
-                    && state.rotating_sliding_latch.is_none()
-                {
+                if item.mode == ExecutionMode::Prefill && state.rotating_sliding_latch.is_none() {
                     state.rotating_sliding_latch = Some((rotate_sliding, rotate_slack));
                 }
 
@@ -5729,7 +5727,11 @@ impl MlxRunner {
             let reused_tokens: &[u32] = &item.reused_prefix_token_slice;
             Self::pfx_dbg(
                 "restore",
-                &format!("reused_tokens={} cache_seq={}", reused_tokens.len(), state.cache.seq_len()),
+                &format!(
+                    "reused_tokens={} cache_seq={}",
+                    reused_tokens.len(),
+                    state.cache.seq_len()
+                ),
             );
             if !reused_tokens.is_empty() && state.cache.seq_len() == 0 {
                 let capture_prefill_output = item.mode == ExecutionMode::Decode
