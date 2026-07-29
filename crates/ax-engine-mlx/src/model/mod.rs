@@ -10,7 +10,7 @@ use std::time::Instant;
 use thiserror::Error;
 
 use crate::kv_cache::{MlxKVCache, SlidingRingLayout};
-use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
+use crate::weights::{LayerWeights, ModelWeights, PipelineStageWeights, QuantizedWeight};
 
 /// Typed error for Gemma4 assistant MTP forward-path failures.
 #[derive(Debug, Error)]
@@ -817,6 +817,162 @@ pub fn forward_cache_only(
         token_offset,
         FinalLogitsMode::Skip,
     )
+}
+
+/// Input accepted by one static pipeline stage.
+pub enum PipelineStageInput<'a> {
+    /// Token IDs are valid only for the embedding-owning first rank.
+    Tokens(&'a [u32]),
+    /// Hidden states `[1, sequence, hidden_size]` from the preceding rank.
+    Hidden(&'a MlxArray),
+}
+
+/// Execute exactly one dense Llama 3 pipeline stage.
+///
+/// Non-final ranks return hidden states. The output-head rank returns
+/// last-position logits `[vocab_size]`. KV entries retain global layer indexes,
+/// so each rank may allocate a cache sized to the complete model while only
+/// materializing its assigned entries.
+pub fn forward_pipeline_stage(
+    cfg: &ModelConfig,
+    weights: &PipelineStageWeights,
+    input: PipelineStageInput<'_>,
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> Result<MlxArray, PipelineStageForwardError> {
+    if cfg.model_family != "llama3" {
+        return Err(PipelineStageForwardError::UnsupportedFamily(
+            cfg.model_family.clone(),
+        ));
+    }
+    let assignment = &weights.assignment;
+    let expected_layers = assignment.layers.len() as usize;
+    if weights.layers.len() != expected_layers {
+        return Err(PipelineStageForwardError::LayerCount {
+            expected: expected_layers,
+            actual: weights.layers.len(),
+        });
+    }
+    if assignment.layers.end as usize > cfg.layer_count {
+        return Err(PipelineStageForwardError::LayerRangeExceedsModel);
+    }
+
+    let mut hidden = match input {
+        PipelineStageInput::Tokens(token_ids) => {
+            if !assignment.owns_embeddings {
+                return Err(PipelineStageForwardError::TokensOnNonEmbeddingRank);
+            }
+            if token_ids.is_empty() {
+                return Err(PipelineStageForwardError::EmptySequence);
+            }
+            let embedding = weights
+                .token_embedding
+                .as_ref()
+                .ok_or(PipelineStageForwardError::MissingEmbedding)?;
+            let ids_1d = MlxArray::from_raw_data(
+                token_ids.as_ptr().cast(),
+                std::mem::size_of_val(token_ids),
+                &[token_ids.len() as i32],
+                MlxDtype::Uint32,
+            );
+            let embedded = embed_tokens_arr(&ids_1d, embedding, cfg.hidden_size);
+            let embedded = astype(&embedded, MlxDtype::Bfloat16, None);
+            match cfg.hidden_states_scale {
+                Some(scale) => scale_hidden(&embedded, scale),
+                None => embedded,
+            }
+        }
+        PipelineStageInput::Hidden(hidden) => {
+            if assignment.owns_embeddings {
+                return Err(PipelineStageForwardError::HiddenOnEmbeddingRank);
+            }
+            hidden.clone()
+        }
+    };
+    let shape = hidden.shape();
+    if shape.len() != 3 || shape[0] != 1 || shape[1] <= 0 || shape[2] != cfg.hidden_size as i32 {
+        return Err(PipelineStageForwardError::InvalidHiddenShape(shape));
+    }
+    let sequence = shape[1] as usize;
+    let decode_mask: Option<MlxArray> = None;
+    let masks = (sequence > 1 || cache.rotating_sliding_slack() > 0).then(|| {
+        build_layer_masks_for_forward(
+            cfg,
+            cfg.layer_count,
+            sequence,
+            token_offset + sequence,
+            cache,
+        )
+    });
+
+    for (local_index, layer_weights) in weights.layers.iter().enumerate() {
+        let global_index = weights
+            .global_layer_index(local_index)
+            .ok_or(PipelineStageForwardError::LayerRangeExceedsModel)?;
+        let shared_mask = masks
+            .as_ref()
+            .map(|masks| &masks[global_index])
+            .unwrap_or(&decode_mask);
+        hidden = layer_forward(
+            cfg,
+            layer_weights,
+            &hidden,
+            cache,
+            global_index,
+            token_offset,
+            None,
+            Some(shared_mask),
+        );
+    }
+
+    if !assignment.owns_output_head {
+        return Ok(hidden);
+    }
+    let final_norm = weights
+        .final_norm
+        .as_ref()
+        .ok_or(PipelineStageForwardError::MissingOutputHead)?;
+    let lm_head = weights
+        .lm_head
+        .as_ref()
+        .ok_or(PipelineStageForwardError::MissingOutputHead)?;
+    let last_hidden = if sequence > 1 {
+        let last = (sequence - 1) as i32;
+        slice(
+            &hidden,
+            &[0, last, 0],
+            &[1, last + 1, cfg.hidden_size as i32],
+            &[1, 1, 1],
+            None,
+        )
+    } else {
+        hidden
+    };
+    let normed = rms_norm(&last_hidden, Some(final_norm), cfg.rms_norm_eps, None);
+    let logits = qw(&normed, lm_head);
+    Ok(reshape(&logits, &[cfg.vocab_size as i32], None))
+}
+
+#[derive(Debug, Error)]
+pub enum PipelineStageForwardError {
+    #[error("pipeline forward supports dense llama3 only, got {0}")]
+    UnsupportedFamily(String),
+    #[error("stage layer count mismatch: expected {expected}, got {actual}")]
+    LayerCount { expected: usize, actual: usize },
+    #[error("stage layer range exceeds model configuration")]
+    LayerRangeExceedsModel,
+    #[error("token IDs may only be sent to the embedding-owning rank")]
+    TokensOnNonEmbeddingRank,
+    #[error("hidden states may not be sent directly to the embedding-owning rank")]
+    HiddenOnEmbeddingRank,
+    #[error("pipeline stage received an empty token sequence")]
+    EmptySequence,
+    #[error("embedding-owning rank did not load token embeddings")]
+    MissingEmbedding,
+    #[error("output-head rank did not load final norm and LM head")]
+    MissingOutputHead,
+    #[error("pipeline hidden state must have shape [1, sequence, hidden_size], got {0:?}")]
+    InvalidHiddenShape(Vec<i32>),
 }
 
 fn forward_and_logits_mode(
@@ -7341,6 +7497,116 @@ mod tests {
             nemotron_omni: None,
         };
         (model_cfg, weights)
+    }
+
+    #[test]
+    fn two_rank_pipeline_matches_monolithic_llama3_forward() {
+        with_gpu_numeric_lock(|| {
+            let (mut model_cfg, reference_weights) = dense_prefill_test_model();
+            model_cfg.model_family = "llama3".into();
+
+            let (_, mut rank0_source) = dense_prefill_test_model();
+            let rank0_layer = rank0_source.layers.remove(0);
+            let rank0 = PipelineStageWeights {
+                assignment: ax_engine_core::PipelineRankAssignment {
+                    rank: 0,
+                    node_identity_digest: "node-a".into(),
+                    layers: ax_engine_core::PipelineLayerRange { start: 0, end: 1 },
+                    owns_embeddings: true,
+                    owns_output_head: false,
+                },
+                token_embedding: Some(rank0_source.token_embedding),
+                final_norm: None,
+                lm_head: None,
+                layers: vec![rank0_layer],
+            };
+
+            let (_, mut rank1_source) = dense_prefill_test_model();
+            let rank1_layer = rank1_source.layers.remove(1);
+            let rank1 = PipelineStageWeights {
+                assignment: ax_engine_core::PipelineRankAssignment {
+                    rank: 1,
+                    node_identity_digest: "node-b".into(),
+                    layers: ax_engine_core::PipelineLayerRange { start: 1, end: 2 },
+                    owns_embeddings: false,
+                    owns_output_head: true,
+                },
+                token_embedding: None,
+                final_norm: Some(rank1_source.final_norm),
+                lm_head: Some(rank1_source.lm_head),
+                layers: vec![rank1_layer],
+            };
+
+            let tokens = [1_u32, 3, 5, 7];
+            let mut reference_cache = MlxKVCache::new(model_cfg.layer_count);
+            let reference = forward(
+                &model_cfg,
+                &reference_weights,
+                &tokens,
+                &mut reference_cache,
+                0,
+            );
+            let topology = ax_engine_core::PipelineTopology {
+                cluster_id: "cluster-a".into(),
+                generation: 1,
+                manifest_digest: "manifest-a".into(),
+                model_artifact_digest: "model-a".into(),
+                total_layers: 2,
+                ranks: vec![rank0.assignment.clone(), rank1.assignment.clone()],
+            };
+            let mut rank0_executor = crate::pipeline::PipelineRankExecutor::new(
+                topology.clone(),
+                0,
+                model_cfg.clone(),
+                rank0,
+            )
+            .expect("rank 0 executor should initialize");
+            let packet = match rank0_executor
+                .execute_tokens(1, 1, 0, &tokens)
+                .expect("rank 0 should execute")
+            {
+                crate::pipeline::PipelineRankOutput::Activation(packet) => packet,
+                crate::pipeline::PipelineRankOutput::Logits(_) => {
+                    panic!("non-final rank must emit an activation")
+                }
+            };
+            let mut rank1_executor =
+                crate::pipeline::PipelineRankExecutor::new(topology, 1, model_cfg.clone(), rank1)
+                    .expect("rank 1 executor should initialize");
+            let distributed = match rank1_executor
+                .execute_activation(&packet)
+                .expect("rank 1 should execute")
+            {
+                crate::pipeline::PipelineRankOutput::Logits(logits) => logits,
+                crate::pipeline::PipelineRankOutput::Activation(_) => {
+                    panic!("final rank must emit logits")
+                }
+            };
+            eval(&[&reference, &distributed]);
+            assert_close_rel(
+                distributed.data_f32(),
+                reference.data_f32(),
+                3e-2,
+                "two-rank pipeline logits",
+            );
+
+            assert!(
+                rank0_executor.request_cache_has_layer(1, 0),
+                "rank 0 must own global layer 0 KV"
+            );
+            assert!(
+                !rank0_executor.request_cache_has_layer(1, 1),
+                "rank 0 must not materialize rank 1 KV"
+            );
+            assert!(
+                !rank1_executor.request_cache_has_layer(1, 0),
+                "rank 1 must not materialize rank 0 KV"
+            );
+            assert!(
+                rank1_executor.request_cache_has_layer(1, 1),
+                "rank 1 must own global layer 1 KV"
+            );
+        });
     }
 
     #[test]

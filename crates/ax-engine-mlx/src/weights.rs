@@ -11,7 +11,8 @@ use mlx_sys::{
 
 use ax_engine_core::{
     NativeLinearAttentionConfig, NativeMlaAttentionConfig, NativeModelArtifacts,
-    NativeTensorQuantization, NativeTensorRole, NativeTensorSpec, WeightSanitize,
+    NativeTensorQuantization, NativeTensorRole, NativeTensorSpec, PipelineRankAssignment,
+    WeightSanitize,
 };
 
 use crate::fastpath::{
@@ -68,6 +69,28 @@ pub struct ModelWeights {
     pub minicpm_v46_vision: Option<crate::minicpm_v::MiniCpmV46VisionWeights>,
     /// Nemotron H Nano Omni RADIO vision and Parakeet media towers.
     pub nemotron_omni: Option<crate::nemotron_omni::NemotronOmniWeights>,
+}
+
+/// The exact weights owned by one static pipeline rank.
+///
+/// The initial distributed runtime deliberately supports the dense Llama 3
+/// family only. Endpoint tensors are optional because only rank 0 embeds
+/// tokens and only the final rank applies normalization and the LM head.
+pub struct PipelineStageWeights {
+    pub assignment: PipelineRankAssignment,
+    pub token_embedding: Option<QuantizedWeight>,
+    pub final_norm: Option<MlxArray>,
+    pub lm_head: Option<QuantizedWeight>,
+    /// Layer weights ordered by global layer index in `assignment.layers`.
+    pub layers: Vec<LayerWeights>,
+}
+
+impl PipelineStageWeights {
+    pub fn global_layer_index(&self, local_index: usize) -> Option<usize> {
+        let local = u32::try_from(local_index).ok()?;
+        let global = self.assignment.layers.start.checked_add(local)?;
+        (global < self.assignment.layers.end).then(|| global as usize)
+    }
 }
 
 /// Gemma4 Unified vision path, matching vLLM's
@@ -1203,6 +1226,260 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     apply_rotated_checkpoint(&mut model, artifacts)?;
 
     Ok(model)
+}
+
+/// Load only the safetensor files and tensors required by one dense Llama 3
+/// pipeline stage.
+///
+/// Selection happens before `load_safetensors`, avoiding whole-model peak
+/// memory. Safetensor files remain the smallest independently loadable unit:
+/// if a checkpoint file contains tensors for adjacent stages, both ranks may
+/// map that boundary file, but neither rank opens unrelated files.
+pub fn load_pipeline_stage_weights(
+    artifacts: &NativeModelArtifacts,
+    assignment: PipelineRankAssignment,
+) -> Result<PipelineStageWeights, WeightLoadError> {
+    let manifest = artifacts.manifest();
+    if manifest.model_family != "llama3" {
+        return Err(WeightLoadError::UnsupportedPipelineFamily(
+            manifest.model_family.clone(),
+        ));
+    }
+    let range = assignment.layers;
+    if range.start >= range.end || range.end > manifest.layer_count {
+        return Err(WeightLoadError::InvalidPipelineAssignment(format!(
+            "rank {} layer range [{}, {}) is outside model layer_count {}",
+            assignment.rank, range.start, range.end, manifest.layer_count
+        )));
+    }
+    if assignment.owns_embeddings != (range.start == 0)
+        || assignment.owns_output_head != (range.end == manifest.layer_count)
+    {
+        return Err(WeightLoadError::InvalidPipelineAssignment(format!(
+            "rank {} endpoint ownership does not match layer range [{}, {})",
+            assignment.rank, range.start, range.end
+        )));
+    }
+    if manifest.moe.is_enabled()
+        || manifest.linear_attention.is_enabled()
+        || manifest.mla_attention.is_enabled()
+    {
+        return Err(WeightLoadError::UnsupportedPipelineFamily(
+            "llama3 pipeline requires dense full-attention weights".into(),
+        ));
+    }
+
+    maybe_raise_metal_buffer_caps(artifacts);
+    let specs = artifacts.tensor_specs();
+    let tied_output_embedding = assignment.owns_output_head && manifest.tie_word_embeddings;
+    let selected_files = pipeline_stage_required_files(artifacts, &assignment);
+    if selected_files.is_empty() {
+        return Err(WeightLoadError::InvalidPipelineAssignment(
+            "stage selected no weight files".into(),
+        ));
+    }
+
+    let root = artifacts.root_dir();
+    let use_mmap = mmap_weights_enabled();
+    let mut name_map = HashMap::<String, MlxArray>::new();
+    for relative in selected_files {
+        let path = root.join(&relative);
+        let tensors = if use_mmap {
+            mlx_sys::load_safetensors_mmap(&path).map_err(WeightLoadError::FileMissing)?
+        } else {
+            load_safetensors(&path, None).map_err(WeightLoadError::FileMissing)?
+        };
+        if tensors.is_empty() {
+            return Err(WeightLoadError::FileMissing(path.display().to_string()));
+        }
+        let refs = tensors.values().collect::<Vec<_>>();
+        eval(&refs);
+        name_map.extend(tensors);
+    }
+
+    let effective_sanitize = match manifest.weight_sanitize {
+        WeightSanitize::None => auto_detect_linear_attention_sanitize(specs, &name_map),
+        explicit => explicit,
+    };
+    match effective_sanitize {
+        WeightSanitize::HfToMlx => apply_hf_sanitize_transforms(specs, &mut name_map, true),
+        WeightSanitize::HfNormOnly => apply_hf_sanitize_transforms(specs, &mut name_map, false),
+        WeightSanitize::None => {}
+    }
+
+    let token_embedding = (assignment.owns_embeddings || tied_output_embedding)
+        .then(|| {
+            take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::TokenEmbedding,
+                None,
+                "token_embedding",
+            )
+        })
+        .transpose()?;
+    let final_norm = assignment
+        .owns_output_head
+        .then(|| {
+            take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FinalNorm,
+                None,
+                "final_norm",
+            )
+            .map(|weight| weight.weight)
+        })
+        .transpose()?;
+    let lm_head = if assignment.owns_output_head {
+        if manifest.tie_word_embeddings {
+            let embedding = token_embedding.as_ref().ok_or_else(|| {
+                WeightLoadError::InvalidPipelineAssignment(
+                    "tied output head requires token embedding".into(),
+                )
+            })?;
+            let mut tied = QuantizedWeight::new(
+                embedding.weight.clone(),
+                embedding.scales.clone(),
+                embedding.biases.clone(),
+            );
+            tied.group_size = embedding.group_size;
+            tied.bits = embedding.bits;
+            tied.mode.clone_from(&embedding.mode);
+            Some(tied)
+        } else {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::LmHead,
+                None,
+                "lm_head",
+            )?)
+        }
+    } else {
+        None
+    };
+
+    let mut layers = Vec::with_capacity(range.len() as usize);
+    for layer_index in range.start..range.end {
+        layers.push(load_dense_llama3_layer(specs, &mut name_map, layer_index)?);
+    }
+
+    let stage_token_embedding = assignment
+        .owns_embeddings
+        .then_some(token_embedding)
+        .flatten();
+    Ok(PipelineStageWeights {
+        assignment,
+        token_embedding: stage_token_embedding,
+        final_norm,
+        lm_head,
+        layers,
+    })
+}
+
+/// Return the smallest set of checkpoint files that the assigned stage will
+/// open. Callers can use this before loading to enforce an artifact allowlist.
+pub fn pipeline_stage_required_files(
+    artifacts: &NativeModelArtifacts,
+    assignment: &PipelineRankAssignment,
+) -> std::collections::BTreeSet<PathBuf> {
+    let tied_output_embedding =
+        assignment.owns_output_head && artifacts.manifest().tie_word_embeddings;
+    pipeline_stage_files(artifacts.tensor_specs(), assignment, tied_output_embedding)
+}
+
+fn pipeline_stage_files(
+    specs: &[NativeTensorSpec],
+    assignment: &PipelineRankAssignment,
+    tied_output_embedding: bool,
+) -> std::collections::BTreeSet<PathBuf> {
+    specs
+        .iter()
+        .filter(|spec| {
+            spec.layer_index
+                .is_some_and(|layer| assignment.layers.contains(layer))
+                || (assignment.owns_embeddings && spec.role == NativeTensorRole::TokenEmbedding)
+                || (assignment.owns_output_head
+                    && matches!(
+                        spec.role,
+                        NativeTensorRole::FinalNorm | NativeTensorRole::LmHead
+                    ))
+                || (tied_output_embedding && spec.role == NativeTensorRole::TokenEmbedding)
+        })
+        .map(|spec| spec.file.clone())
+        .collect()
+}
+
+fn load_dense_llama3_layer(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    layer_index: u32,
+) -> Result<LayerWeights, WeightLoadError> {
+    let idx = Some(layer_index);
+    let attn_norm = take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::AttentionNorm,
+        idx,
+        "attn_norm",
+    )?
+    .weight;
+    let (attn_post_norm, ffn_norm) = take_layer_norms(specs, name_map, idx)?;
+    let q_norm = try_take_plain(specs, name_map, NativeTensorRole::AttentionQNorm, idx)?;
+    let k_norm = try_take_plain(specs, name_map, NativeTensorRole::AttentionKNorm, idx)?;
+    let q_proj = take_weight(specs, name_map, NativeTensorRole::AttentionQ, idx, "q_proj")?;
+    let k_proj = take_weight(specs, name_map, NativeTensorRole::AttentionK, idx, "k_proj")?;
+    let v_proj = take_weight(specs, name_map, NativeTensorRole::AttentionV, idx, "v_proj")?;
+    let o_proj = take_weight(specs, name_map, NativeTensorRole::AttentionO, idx, "o_proj")?;
+    let gate_proj = take_weight(specs, name_map, NativeTensorRole::FfnGate, idx, "gate_proj")?;
+    let up_proj = take_weight(specs, name_map, NativeTensorRole::FfnUp, idx, "up_proj")?;
+    let down_proj = take_weight(specs, name_map, NativeTensorRole::FfnDown, idx, "down_proj")?;
+
+    Ok(LayerWeights {
+        attn_norm,
+        attn_post_norm,
+        q_norm,
+        k_norm,
+        q_proj: Some(q_proj),
+        k_proj: Some(k_proj),
+        v_proj: Some(v_proj),
+        qkv_packed: None,
+        o_proj: Some(o_proj),
+        linear_attn: None,
+        glm_mla_attn: None,
+        ffn_norm,
+        ffn_post_norm: None,
+        gate_proj: Some(gate_proj),
+        up_proj: Some(up_proj),
+        gate_up_packed: None,
+        down_proj: Some(down_proj),
+        ffn_norm2: None,
+        ffn_post_norm1: None,
+        ffn_post_norm2: None,
+        router_proj: None,
+        router_correction_bias: None,
+        router_scale: None,
+        router_combined_scale: None,
+        router_expert_scale: None,
+        layer_scalar: None,
+        per_layer_gate: None,
+        per_layer_proj_w: None,
+        per_layer_post_norm: None,
+        shared_expert_gate: None,
+        shared_gate_up_proj: None,
+        shared_gate_proj: None,
+        shared_up_proj: None,
+        shared_down_proj: None,
+        gate_up_exps_packed: None,
+        gate_exps: None,
+        up_exps: None,
+        down_exps: None,
+        mxfp4_gate_up_exps: None,
+        mxfp4_down_exps: None,
+        attn_sink: None,
+        rotation_smoothing_inverse: None,
+    })
 }
 
 fn load_diffusion_self_conditioning_weights(
@@ -3970,6 +4247,10 @@ pub enum WeightLoadError {
     UnsanitizedWeights(String),
     #[error("rotated checkpoint required but invalid: {0}")]
     RotatedCheckpointInvalid(String),
+    #[error("pipeline weight loading does not support model family: {0}")]
+    UnsupportedPipelineFamily(String),
+    #[error("invalid pipeline rank assignment: {0}")]
+    InvalidPipelineAssignment(String),
 }
 
 #[cfg(test)]
@@ -4023,6 +4304,60 @@ mod tests {
             offset_bytes: 0,
             length_bytes: 2,
         }
+    }
+
+    #[test]
+    fn pipeline_file_selection_excludes_other_layers_and_endpoint_tensors() {
+        let mut embedding = spec(NativeTensorRole::TokenEmbedding);
+        embedding.layer_index = None;
+        embedding.file = PathBuf::from("embedding.safetensors");
+        let mut layer0 = spec(NativeTensorRole::AttentionQ);
+        layer0.layer_index = Some(0);
+        layer0.file = PathBuf::from("layer-0.safetensors");
+        let mut layer1 = spec(NativeTensorRole::AttentionQ);
+        layer1.layer_index = Some(1);
+        layer1.file = PathBuf::from("layer-1.safetensors");
+        let mut final_norm = spec(NativeTensorRole::FinalNorm);
+        final_norm.layer_index = None;
+        final_norm.file = PathBuf::from("head.safetensors");
+        let mut lm_head = spec(NativeTensorRole::LmHead);
+        lm_head.layer_index = None;
+        lm_head.file = PathBuf::from("head.safetensors");
+        let specs = vec![embedding, layer0, layer1, final_norm, lm_head];
+
+        let first = PipelineRankAssignment {
+            rank: 0,
+            node_identity_digest: "node-a".into(),
+            layers: ax_engine_core::PipelineLayerRange { start: 0, end: 1 },
+            owns_embeddings: true,
+            owns_output_head: false,
+        };
+        assert_eq!(
+            pipeline_stage_files(&specs, &first, false),
+            [
+                PathBuf::from("embedding.safetensors"),
+                PathBuf::from("layer-0.safetensors")
+            ]
+            .into_iter()
+            .collect()
+        );
+
+        let last = PipelineRankAssignment {
+            rank: 1,
+            node_identity_digest: "node-b".into(),
+            layers: ax_engine_core::PipelineLayerRange { start: 1, end: 2 },
+            owns_embeddings: false,
+            owns_output_head: true,
+        };
+        assert_eq!(
+            pipeline_stage_files(&specs, &last, false),
+            [
+                PathBuf::from("head.safetensors"),
+                PathBuf::from("layer-1.safetensors")
+            ]
+            .into_iter()
+            .collect()
+        );
     }
 
     #[test]
