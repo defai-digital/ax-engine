@@ -43,7 +43,7 @@ manifest and fails closed when required tower tensors are absent.
 | P0 | MiniCPM-V 4.6 (`minicpmv4_6`) | Image, multi-image | OpenAI chat and `/v1/generate` | Dynamic SigLIP grid, 27-layer tower, layer-6 `VitMerger`, final pixel-shuffle merger, and version-specific placeholder expansion; OCR smoke-tested on Apple M3 |
 | P1 | Standard Gemma 4 E2B/E4B/26B/31B (`gemma4` with `vision_tower.*` + `embed_vision.*`) | Image, multi-image, video | OpenAI chat and `/v1/generate` | Full bidirectional ViT, clipped linears where configured, 2-D RoPE, 3×3 spatial pooling, checkpoint `std_bias`/`std_scale`, and pre-projection RMSNorm; E2B image and video paths smoke-tested with the real 4-bit checkpoint on Apple M3 Max; E-series Conformer audio remains unsupported |
 | P1 | NVIDIA Nemotron 3 Nano Omni 30B-A3B (`nemotron_h` with media tensors) | Image, audio, ordered image+audio | OpenAI chat and `/v1/generate` | RADIO vision, connector MLP, Parakeet/Conformer audio, exact STFT framing, and mixed-media spans; image, JFK audio, and combined prompts smoke-tested on Apple M3 |
-| P1 | Unlimited-OCR (`unlimited_ocr`) | Image | Processed native runtime input; OpenAI inline-image compatibility through the explicit vLLM Unlimited-OCR profile | SAM+CLIP dual vision and DeepSeek MoE language graph. Protected-prefix R-SWA keeps the entire image/text prefill and rotates only generated-token KV |
+| P1 | Unlimited-OCR (`unlimited_ocr`) | Image | Processed native runtime input through the Python image-request helper | SAM+CLIP dual vision and DeepSeek MoE language graph. Protected-prefix R-SWA keeps the entire image/text prefill and rotates only generated-token KV |
 | P2 | Gemma 4 unified 12B (`gemma4` manifest with unified media roles) | Image, audio, video | OpenAI chat and `/v1/generate` | Encoder-free image/audio connector and sampled video frames; capability discovery requires the unified media roles |
 | P2 | Whisper large-v3-turbo (`whisper`) | Audio | `/v1/audio/transcriptions`, `/v1/audio/translations`, `EngineSession::transcribe_audio` | Dedicated encoder-decoder ASR runtime, canonical multilingual vocabulary, log-mel frontend, KV-cached greedy decoding, transcribe/translate, WAV/MP3 decode; JFK transcription smoke-tested through both native and HTTP paths on Apple M3 |
 
@@ -438,37 +438,11 @@ Boundaries:
 `mlx-swift-lm` remains a benchmark/reference adapter where admitted by the
 benchmark harness. It is not the default delegated backend.
 
-## `vllm` delegated CUDA candidate
+## NVIDIA/CUDA serving
 
-The `vllm` tier preserves AX server, SDK, admission, error, and OpenAI wire
-contracts while a separately supervised vLLM process owns CUDA execution. One
-provider implementation serves both Linux CPU architectures; platform
-differences are exact runtime profiles:
-
-| Profile | CPU/GPU target | Current evidence |
-| --- | --- | --- |
-| `cuda-linux-aarch64-thor-sm110` | NVIDIA Thor, `aarch64`, SM110 | Candidate: exact preflight plus real Unlimited-OCR non-stream, stream, parity, and admission tests |
-| `cuda-linux-x86_64-a6000-sm86` | RTX A6000, `x86_64`, SM86 | Candidate: exact preflight plus real text-generation provider smoke; Unlimited-OCR and soak gates remain required |
-
-Supported candidate surfaces:
-
-- blocking and SSE OpenAI chat/completions
-- exact `/v1/models` readiness and public/upstream model identity separation
-- ordered text plus inline PNG/JPEG data-URI content for the
-  `unlimited-ocr` model profile
-- usage-only final stream chunks and `[DONE]`
-- explicit bounded admission with typed 429 responses
-
-Boundaries:
-
-- no generation POST retry
-- no worker lifecycle ownership and no silent backend fallback
-- remote media URLs, audio, video, tools, and unknown provider extensions fail
-  closed on the Unlimited-OCR route
-- performance and GA claims are restricted to a named model, profile, artifact,
-  and hardware receipt
-- TensorRT-LLM and TensorRT Edge-LLM remain separate optimized providers; they
-  are not aliases or automatic fallbacks for `vllm`
+NVIDIA model execution is not an AX Engine runtime path. Use
+[AX Serving](AX-SERVING.md) for vLLM and other CUDA workers, including
+provider routing, runtime profiles, containers, and hardware qualification.
 
 ## `llama_cpp`
 
@@ -511,7 +485,6 @@ into AX-owned support claims.
 | --- | --- | --- |
 | You want AX-owned performance and token/KV behavior for a listed family | Direct support | AX owns the MLX graph and runtime policy |
 | You have an MLX text model that `mlx-lm` already serves but AX does not own | `mlx_lm_delegated` | Keeps AX API surfaces while upstream runs the model |
-| You need CUDA OCR/VLM compatibility on a certified Thor or CUDA PC | `vllm` | Keeps one AX API/provider contract while the independent runtime profile owns CUDA details |
 | You have GGUF weights or a non-MLX local model | `llama_cpp` | llama.cpp is the delegated local inference route |
 | You have Gemma4 unified image/audio/video inputs already preprocessed into AX's validated `multimodal_inputs.gemma4_unified` tensor contract | Direct support | Native MLX can consume processed media tensors without raw media decoding in the hot path; manual OpenAI-shaped extension payloads require pre-tokenized prompt tokens for span alignment |
 | You need client-side preprocessing for image URLs/data URIs, WAV audio URLs/data URIs, or OpenAI-style `input_audio` WAV base64 | Direct support through the Python helper | The helper prepares the processed tensor contract before the request reaches the optimized runtime |
@@ -521,7 +494,6 @@ into AX-owned support claims.
 | You need MiniCPM-V 4.6 OCR or multi-image chat | Direct support | The version-specific SigLIP/merger and placeholder path is selected from the manifest |
 | You need Nemotron Omni image, audio, or mixed-media chat | Direct support | Both media towers are discovered from the loaded manifest; video is unsupported |
 | You need local Whisper large-v3-turbo transcription or translation | Direct support | Use the dedicated OpenAI audio endpoints or Rust SDK; text generation fails closed |
-| You need inline PNG/JPEG OCR through the certified vLLM profile | `vllm` | The Unlimited-OCR profile preserves ordered text/image parts and validates data URIs before forwarding |
 | You need remote media URL fetching or video on delegated routes | Unsupported | Remote fetching and video are intentionally disabled |
 
 ## Evidence Rules
@@ -534,7 +506,6 @@ table.
 | MLX inference-stack artifacts from `scripts/bench_mlx_inference_stack.py` | Direct-support AX-vs-reference performance claims with matching `mlx_lm.benchmark` rows | Broad serving, concurrency, or unsupported-model claims |
 | `ax-engine-bench` scenario/replay/matrix artifacts | Route, correctness, determinism, replay, regression, and delegated contract evidence | Raw model-inference throughput unless explicitly designed for that metric |
 | `mlx_lm_delegated` checks | AX API compatibility with upstream `mlx_lm.server` | AX-owned token IDs, KV state, or MLX throughput |
-| vLLM delegated artifacts | AX API/wire compatibility on the named CUDA profile and model | AX-owned kernels or claims for an untested CUDA SKU |
 | llama.cpp delegated artifacts | Non-MLX route-contract and backend prompt-cache behavior | AX-owned MLX throughput |
 
 For benchmark methodology and artifact contracts, see

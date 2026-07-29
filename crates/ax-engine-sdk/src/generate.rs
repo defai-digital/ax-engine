@@ -646,14 +646,6 @@ mod tests {
                 ResolutionPolicy::AllowMlxLmDelegated,
             ),
             SelectedBackend::LlamaCpp => (SupportTier::LlamaCpp, ResolutionPolicy::AllowLlamaCpp),
-            SelectedBackend::TensorRtEdgeLlm => (
-                SupportTier::TensorRtEdgeLlm,
-                ResolutionPolicy::AllowTensorRtEdgeLlm,
-            ),
-            SelectedBackend::TensorRtLlm => {
-                (SupportTier::TensorRtLlm, ResolutionPolicy::AllowTensorRtLlm)
-            }
-            SelectedBackend::Vllm => (SupportTier::Vllm, ResolutionPolicy::AllowVllm),
         };
 
         RuntimeReport {

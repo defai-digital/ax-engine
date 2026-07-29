@@ -5,16 +5,13 @@ use ax_engine_core::{CacheGroupId, KvManagerConfig, KvManagerError};
 use thiserror::Error;
 
 use crate::backend::{
-    BackendPolicy, CapabilityReport, DelegatedReadiness, DelegatedRuntimeReport,
-    NativeModelArtifactsSource, NativeRuntimeArtifactsSource, NativeRuntimeReport,
-    PreviewBackendRequest, PreviewBackendResolutionError, RedactedEndpoint, ResolvedBackend,
+    BackendPolicy, CapabilityReport, NativeModelArtifactsSource, NativeRuntimeArtifactsSource,
+    NativeRuntimeReport, PreviewBackendRequest, PreviewBackendResolutionError, ResolvedBackend,
     RuntimeReport, SelectedBackend, SupportTier, resolve_preview_backend,
 };
-use crate::edge_llm::EdgeLlmConfig;
 use crate::host;
 use crate::llama_cpp::LlamaCppConfig;
 use crate::mlx_lm::MlxLmConfig;
-use crate::vllm::{VllmConfig, VllmReadiness, VllmReadinessReport, check_readiness};
 
 use super::artifacts::{
     MlxModelArtifactsSelection, MlxRuntimeArtifactsSelection,
@@ -52,11 +49,6 @@ pub struct EngineSessionConfig {
     pub resolved_backend: ResolvedBackend,
     pub llama_backend: Option<LlamaCppConfig>,
     pub mlx_lm_backend: Option<MlxLmConfig>,
-    pub edge_llm_backend: Option<EdgeLlmConfig>,
-    /// TensorRT-LLM OpenAI L2 server (desktop/datacenter). Wire shape matches Edge-LLM.
-    pub tensor_rt_llm_backend: Option<EdgeLlmConfig>,
-    pub vllm_backend: Option<VllmConfig>,
-    pub vllm_readiness: Option<VllmReadinessReport>,
     pub mlx_runtime_artifacts_dir: Option<PathBuf>,
     pub mlx_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
@@ -160,9 +152,6 @@ pub struct ResolvedSessionConfigRequest {
     pub resolved_backend: ResolvedBackend,
     pub llama_backend: Option<LlamaCppConfig>,
     pub mlx_lm_backend: Option<MlxLmConfig>,
-    pub edge_llm_backend: Option<EdgeLlmConfig>,
-    pub tensor_rt_llm_backend: Option<EdgeLlmConfig>,
-    pub vllm_backend: Option<VllmConfig>,
     pub mlx_runtime_artifacts_dir: Option<PathBuf>,
     pub mlx_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
@@ -190,9 +179,6 @@ impl Default for ResolvedSessionConfigRequest {
             resolved_backend: default.resolved_backend,
             llama_backend: default.llama_backend,
             mlx_lm_backend: default.mlx_lm_backend,
-            edge_llm_backend: default.edge_llm_backend,
-            tensor_rt_llm_backend: default.tensor_rt_llm_backend,
-            vllm_backend: default.vllm_backend,
             mlx_runtime_artifacts_dir: default.mlx_runtime_artifacts_dir,
             mlx_runtime_artifacts_source: default.mlx_runtime_artifacts_source,
             mlx_model_artifacts_dir: default.mlx_model_artifacts_dir,
@@ -230,10 +216,6 @@ impl Default for EngineSessionConfig {
             resolved_backend: ResolvedBackend::mlx_preview(),
             llama_backend: None,
             mlx_lm_backend: None,
-            edge_llm_backend: None,
-            tensor_rt_llm_backend: None,
-            vllm_backend: None,
-            vllm_readiness: None,
             mlx_runtime_artifacts_dir: mlx_runtime_artifacts
                 .as_ref()
                 .map(|selection| selection.dir.clone()),
@@ -350,10 +332,6 @@ impl EngineSessionConfig {
             resolved_backend: resolution.resolved_backend,
             llama_backend: resolution.llama_backend,
             mlx_lm_backend: resolution.mlx_lm_backend,
-            edge_llm_backend: resolution.edge_llm_backend,
-            tensor_rt_llm_backend: resolution.tensor_rt_llm_backend,
-            vllm_backend: resolution.vllm_backend,
-            vllm_readiness: None,
             mlx_runtime_artifacts_dir: mlx_runtime_artifacts
                 .as_ref()
                 .map(|selection| selection.dir.clone())
@@ -412,10 +390,6 @@ impl EngineSessionConfig {
             resolved_backend: request.resolved_backend,
             llama_backend: request.llama_backend,
             mlx_lm_backend: request.mlx_lm_backend,
-            edge_llm_backend: request.edge_llm_backend,
-            tensor_rt_llm_backend: request.tensor_rt_llm_backend,
-            vllm_backend: request.vllm_backend,
-            vllm_readiness: None,
             mlx_runtime_artifacts_dir: request.mlx_runtime_artifacts_dir,
             mlx_runtime_artifacts_source: request.mlx_runtime_artifacts_source,
             mlx_model_artifacts_dir: request.mlx_model_artifacts_dir,
@@ -459,8 +433,8 @@ impl EngineSessionConfig {
             return Err(EngineSessionError::UnsupportedSupportTier);
         }
 
-        // Native MLX requires Apple Silicon. Delegated backends (llama.cpp,
-        // mlx-lm, TensorRT Edge-LLM, TensorRT-LLM) may run on Linux CUDA hosts.
+        // Native MLX requires Apple Silicon. Delegated compatibility backends
+        // may run on other hosts without loading the native runtime.
         if self.resolved_backend.selected_backend.is_mlx() {
             if let Err(detected_host) = host::validate_local_host() {
                 return Err(EngineSessionError::UnsupportedHostHardware { detected_host });
@@ -481,21 +455,6 @@ impl EngineSessionConfig {
                     .as_ref()
                     .ok_or(EngineSessionError::MissingMlxLmConfig)?;
             }
-            SelectedBackend::TensorRtEdgeLlm => {
-                self.edge_llm_backend
-                    .as_ref()
-                    .ok_or(EngineSessionError::MissingEdgeLlmConfig)?;
-            }
-            SelectedBackend::TensorRtLlm => {
-                self.tensor_rt_llm_backend
-                    .as_ref()
-                    .ok_or(EngineSessionError::MissingTensorRtLlmConfig)?;
-            }
-            SelectedBackend::Vllm => {
-                self.vllm_backend
-                    .as_ref()
-                    .ok_or(EngineSessionError::MissingVllmConfig)?;
-            }
         }
 
         Ok(())
@@ -511,75 +470,7 @@ impl EngineSessionConfig {
         if let Some(mlx_lm_backend) = self.mlx_lm_backend.as_ref() {
             runtime.capabilities = CapabilityReport::for_mlx_lm_backend(mlx_lm_backend);
         }
-        if let Some(edge_llm_backend) = self.edge_llm_backend.as_ref() {
-            runtime.capabilities = CapabilityReport::for_edge_llm_backend(edge_llm_backend);
-            let config = edge_llm_backend.server();
-            let identity = &config.runtime_identity;
-            runtime = runtime.with_delegated_runtime(Some(DelegatedRuntimeReport {
-                provider: "tensor_rt_edge_llm".to_string(),
-                upstream_model_id: identity.upstream_model_id.clone(),
-                runtime_profile: identity.runtime_profile.clone(),
-                readiness: DelegatedReadiness::Configured,
-                endpoint: RedactedEndpoint {
-                    authority: config.redacted_authority(),
-                },
-                upstream_version: Some(identity.upstream_version.clone()),
-                execution_backend: Some(identity.execution_backend.clone()),
-            }));
-        }
-        if let Some(tensor_rt_llm_backend) = self.tensor_rt_llm_backend.as_ref() {
-            runtime.capabilities =
-                CapabilityReport::for_tensor_rt_llm_backend(tensor_rt_llm_backend);
-            let config = tensor_rt_llm_backend.server();
-            let identity = &config.runtime_identity;
-            runtime = runtime.with_delegated_runtime(Some(DelegatedRuntimeReport {
-                provider: "tensor_rt_llm".to_string(),
-                upstream_model_id: identity.upstream_model_id.clone(),
-                runtime_profile: identity.runtime_profile.clone(),
-                readiness: DelegatedReadiness::Configured,
-                endpoint: RedactedEndpoint {
-                    authority: config.redacted_authority(),
-                },
-                upstream_version: Some(identity.upstream_version.clone()),
-                execution_backend: Some(identity.execution_backend.clone()),
-            }));
-        }
-        if let Some(vllm_backend) = self.vllm_backend.as_ref() {
-            runtime.capabilities = CapabilityReport::for_vllm_backend(vllm_backend);
-            let config = vllm_backend.server();
-            runtime = runtime.with_delegated_runtime(Some(DelegatedRuntimeReport {
-                provider: "vllm".to_string(),
-                upstream_model_id: config.upstream_model_id.clone(),
-                runtime_profile: config.runtime_profile.clone(),
-                readiness: match self.vllm_readiness.as_ref().map(|report| &report.readiness) {
-                    Some(VllmReadiness::Ready) => DelegatedReadiness::Ready,
-                    Some(VllmReadiness::Degraded) => DelegatedReadiness::Degraded,
-                    None => DelegatedReadiness::Configured,
-                },
-                endpoint: RedactedEndpoint {
-                    authority: config.base_url.redacted_authority(),
-                },
-                upstream_version: None,
-                execution_backend: None,
-            }));
-        }
         runtime
-    }
-
-    /// Probe the configured vLLM worker once during control-plane startup.
-    ///
-    /// The result is retained only as non-secret runtime metadata. Generation
-    /// requests still fail explicitly if the worker later becomes unavailable.
-    pub fn probe_vllm_readiness(&mut self) -> Result<(), EngineSessionError> {
-        if self.resolved_backend.selected_backend != SelectedBackend::Vllm {
-            return Ok(());
-        }
-        let backend = self
-            .vllm_backend
-            .as_ref()
-            .ok_or(EngineSessionError::MissingVllmConfig)?;
-        self.vllm_readiness = Some(check_readiness(backend)?);
-        Ok(())
     }
 
     pub fn mlx_runtime_artifacts_dir(&self) -> Option<&Path> {

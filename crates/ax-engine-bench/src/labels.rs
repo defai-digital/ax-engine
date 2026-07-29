@@ -8,9 +8,6 @@ pub(crate) fn selected_backend_label(backend: SelectedBackend) -> &'static str {
         SelectedBackend::Mlx => "mlx",
         SelectedBackend::MlxLmDelegated => "mlx_lm_delegated",
         SelectedBackend::LlamaCpp => "llama_cpp",
-        SelectedBackend::TensorRtEdgeLlm => "tensor_rt_edge_llm",
-        SelectedBackend::TensorRtLlm => "tensor_rt_llm",
-        SelectedBackend::Vllm => "vllm",
     }
 }
 
@@ -20,9 +17,6 @@ pub(crate) fn support_tier_label(support_tier: SupportTier) -> &'static str {
         SupportTier::MlxPreview => "mlx_preview",
         SupportTier::MlxLmDelegated => "mlx_lm_delegated",
         SupportTier::LlamaCpp => "llama_cpp",
-        SupportTier::TensorRtEdgeLlm => "tensor_rt_edge_llm",
-        SupportTier::TensorRtLlm => "tensor_rt_llm",
-        SupportTier::Vllm => "vllm",
         SupportTier::Unsupported => "unsupported",
     }
 }

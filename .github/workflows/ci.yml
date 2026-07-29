@@ -121,48 +121,6 @@ jobs:
             exit 1
           fi
 
-  vllm-runtime-package:
-    name: vLLM Runtime Package (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install package test dependencies
-        run: |
-          python -m pip install build packaging pytest ruff
-          python -m pip install --no-deps -e packages/ax-engine-vllm-runtime
-
-      - name: Lint and test runtime package
-        working-directory: packages/ax-engine-vllm-runtime
-        run: |
-          ruff check .
-          ruff format --check .
-          pytest -q
-
-      - name: Build and inspect runtime wheel
-        working-directory: packages/ax-engine-vllm-runtime
-        run: |
-          python -m build --wheel
-          python -m zipfile --list dist/ax_engine_vllm_runtime-0.1.0-py3-none-any.whl
-          python -m zipfile --test dist/ax_engine_vllm_runtime-0.1.0-py3-none-any.whl
-
   supply-chain:
     name: Supply Chain
     runs-on: ubuntu-latest
@@ -453,7 +411,6 @@ jobs:
     needs:
       - rust
       - linux-delegated
-      - vllm-runtime-package
       - supply-chain
       - scripts
       - python-package
@@ -478,7 +435,6 @@ jobs:
             echo "|-----|--------|"
             echo "| Rust | ${{ needs.rust.result }} |"
             echo "| Linux Delegated | ${{ needs.linux-delegated.result }} |"
-            echo "| vLLM Runtime Package | ${{ needs.vllm-runtime-package.result }} |"
             echo "| Supply Chain | ${{ needs.supply-chain.result }} |"
             echo "| Scripts & Bench Smoke | ${{ needs.scripts.result }} |"
             echo "| Python Package | ${{ needs.python-package.result }} |"

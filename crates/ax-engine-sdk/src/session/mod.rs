@@ -236,19 +236,6 @@ impl StatelessGenerateContext {
                     stream,
                 ))
             }
-            SelectedBackend::TensorRtEdgeLlm => {
-                Err(EngineSessionError::EdgeLlmDoesNotSupportLifecycle {
-                    operation: "stateless_stream_generate",
-                })
-            }
-            SelectedBackend::TensorRtLlm => {
-                Err(EngineSessionError::TensorRtLlmDoesNotSupportLifecycle {
-                    operation: "stateless_stream_generate",
-                })
-            }
-            SelectedBackend::Vllm => Err(EngineSessionError::VllmDoesNotSupportLifecycle {
-                operation: "stateless_stream_generate",
-            }),
             SelectedBackend::Mlx => unreachable!("is_mlx() was already checked"),
         }
     }
@@ -942,19 +929,6 @@ impl EngineSession {
                         operation: "submit_generate",
                     })
                 }
-                SelectedBackend::TensorRtEdgeLlm => {
-                    Err(EngineSessionError::EdgeLlmDoesNotSupportLifecycle {
-                        operation: "submit_generate",
-                    })
-                }
-                SelectedBackend::TensorRtLlm => {
-                    Err(EngineSessionError::TensorRtLlmDoesNotSupportLifecycle {
-                        operation: "submit_generate",
-                    })
-                }
-                SelectedBackend::Vllm => Err(EngineSessionError::VllmDoesNotSupportLifecycle {
-                    operation: "submit_generate",
-                }),
                 SelectedBackend::Mlx => unreachable!("uses_mlx_runtime was already checked"),
             };
         }
@@ -1180,19 +1154,6 @@ impl EngineSession {
                         request_id, request, runtime, stream,
                     ))
                 }
-                SelectedBackend::TensorRtEdgeLlm => {
-                    Err(EngineSessionError::EdgeLlmDoesNotSupportLifecycle {
-                        operation: "stream_generate",
-                    })
-                }
-                SelectedBackend::TensorRtLlm => {
-                    Err(EngineSessionError::TensorRtLlmDoesNotSupportLifecycle {
-                        operation: "stream_generate",
-                    })
-                }
-                SelectedBackend::Vllm => Err(EngineSessionError::VllmDoesNotSupportLifecycle {
-                    operation: "stream_generate",
-                }),
                 SelectedBackend::Mlx => unreachable!("uses_mlx_runtime was already checked"),
             };
         }

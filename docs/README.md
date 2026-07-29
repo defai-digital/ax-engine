@@ -13,16 +13,15 @@ extend the Mac-first Apple Silicon inference runtime.
 | [Performance](PERFORMANCE.md) | Interpretation and claim context | What a row does *and does not* prove |
 | [Benchmarks](BENCHMARKS.md) | How to run and classify evidence | Reproduction commands and artifact contracts |
 
-AX Engine is **Mac direct-first** and **CUDA explicit-delegation only**. Keep
-the path explicit when reading or claiming:
+AX Engine owns local Apple Silicon inference. Keep the runtime path explicit
+when reading or claiming:
 
 - **Repo-owned MLX runtime** — supported Apple Silicon model families AX owns
 - **Delegated `mlx_lm.server`** — explicit migration / validation only
 - **Delegated `llama.cpp`** — GGUF / non-MLX checks and external reference rows
-- **Delegated vLLM** — one AX-owned provider contract with separately certified
-  Linux x86_64 and Thor runtime profiles
-- **Delegated TensorRT** — explicit TensorRT-LLM (x86) and TensorRT Edge-LLM
-  (Thor) optimization lanes; never silent vLLM fallbacks
+
+Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
+[AX Serving](AX-SERVING.md) product.
 
 ## Start By Task
 

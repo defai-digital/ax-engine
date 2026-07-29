@@ -102,7 +102,7 @@ a single MLX eval failure aborts the whole server process.
 
 ### Portable delegated-only build
 
-Linux CUDA control planes exclude MLX linkage:
+Portable compatibility builds can exclude MLX linkage:
 
 ```text
 cargo build -p ax-engine-server \
@@ -112,11 +112,10 @@ cargo build -p ax-engine-server \
 ```
 
 This is the same HTTP/SSE control plane, compiled with only delegated backend
-capabilities. It supports the explicit vLLM, TensorRT-LLM, and TensorRT
-Edge-LLM routes; it must reject native MLX selection and omit unavailable
-MLX-only process metrics. The vLLM worker remains an independently supervised
-Python/OCI process. Full topology, flags, runtime profiles, and release gates:
-[CUDA Backends](CUDA-BACKENDS.md).
+capabilities. It supports the explicit `mlx_lm.server` and llama.cpp
+compatibility routes; it must reject native MLX selection and omit unavailable
+MLX-only process metrics. NVIDIA/CUDA fleet serving uses
+[AX Serving](AX-SERVING.md).
 
 ## Authentication
 
@@ -470,69 +469,11 @@ cargo run -p ax-engine-server -- \
   --port 31418
 ```
 
-The candidate `vLLM` provider is a first-class delegated backend. The same AX
-wire implementation is used on Linux `x86_64` and `aarch64`; hardware-specific
-behavior belongs to the separately supervised
-`ax-engine-vllm-runtime` profile:
-
-```text
-cargo run -p ax-engine-server \
-  --no-default-features --features delegated-server -- \
-  --model-id ax-ocr \
-  --support-tier vllm \
-  --vllm-server-url http://127.0.0.1:18000 \
-  --vllm-upstream-model-id baidu/Unlimited-OCR \
-  --vllm-model-profile unlimited-ocr \
-  --vllm-runtime-profile cuda-linux-aarch64-thor-sm110 \
-  --vllm-max-in-flight 2 \
-  --port 31418
-```
-
-Use `cuda-linux-x86_64-a6000-sm86` on the certified RTX A6000 target. Startup
-probes `/v1/models` and requires the exact upstream model identity. Readiness
-GETs use bounded retry; generation POSTs are never retried. AX does not start,
-restart, or silently replace the worker, and it never falls back to MLX or a
-TensorRT provider.
-
-Bearer credentials are read from `AX_VLLM_API_KEY` or a regular, non-symlink
-file passed with `--vllm-api-key-file`. Remote non-loopback endpoints require
-`--vllm-allow-remote`; plaintext HTTP remains loopback-only. Use
-`--vllm-ca-cert` for a reviewed private CA.
-
-TensorRT-LLM and TensorRT Edge-LLM remain separate explicit optimization
-providers. Both require a machine-readable upstream version and execution
-backend in addition to their server URL:
-
-```text
-# x86_64 CUDA
-ax-engine-server \
-  --model-id public-model \
-  --support-tier tensor-rt-llm \
-  --tensorrt-llm-server-url http://127.0.0.1:8000 \
-  --tensorrt-llm-upstream-model-id upstream/model \
-  --tensorrt-llm-upstream-version <exact-version> \
-  --tensorrt-llm-execution-backend pytorch \
-  --tensorrt-llm-runtime-profile cuda-linux-x86_64-a6000-sm86
-
-# NVIDIA Thor
-ax-engine-server \
-  --model-id public-model \
-  --support-tier tensor-rt-edge-llm \
-  --edge-llm-server-url http://127.0.0.1:8090 \
-  --edge-llm-upstream-model-id upstream/model \
-  --edge-llm-upstream-version <exact-version> \
-  --edge-llm-execution-backend cpp \
-  --edge-llm-runtime-profile cuda-linux-aarch64-thor-sm110
-```
-
-The upstream model id defaults to `--model-id`; the runtime profile remains
-optional at construction time but is required by the CUDA release process.
-`GET /v1/runtime` reports these configured values as
-`delegated_runtime.upstream_model_id`, `runtime_profile`, `upstream_version`,
-and `execution_backend`, with only a redacted endpoint authority. Provider
-identity flags used with any other support tier fail closed. Release evidence
-must independently verify the worker package/image because this report is not
-a binary-attestation probe.
+NVIDIA/CUDA workers are served through
+[AX Serving](https://github.com/defai-digital/ax-serving). AX Engine no longer
+accepts the former vLLM or TensorRT support tiers and provider-specific flags.
+See [NVIDIA Serving Moved To AX Serving](AX-SERVING.md) for the ownership
+boundary and migration guide.
 
 The `llama.cpp` server route remains available for GGUF/non-MLX server-backed
 inference:
@@ -1239,7 +1180,5 @@ This server should remain a thin transport adapter.
 It must not become the place where backend resolution, scheduler behavior, KV
 ownership, or runtime semantics are redefined.
 
-That rule also applies to CUDA: the server owns the public AX contract and
-provider identity, but vLLM/TensorRT workers own GPU execution. CPU
-architecture differences belong in runtime profiles, not duplicated server
-providers.
+NVIDIA/CUDA provider behavior belongs in AX Serving rather than this local
+server adapter.

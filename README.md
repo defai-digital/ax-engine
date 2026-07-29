@@ -6,15 +6,10 @@ locally — with a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP
 multi-model serving with exact-prompt prefix reuse, and peer-backed benchmarks
 against `mlx-lm`, llama.cpp, MTPLX, and lightning-mlx.
 
-A portable Linux control plane can also front **explicitly selected** vLLM,
-TensorRT-LLM, or TensorRT Edge-LLM workers without adding CUDA dependencies to
-the Mac installation. CUDA profiles stay candidate-only until their documented
-gates pass; they are not the default Mac product path.
-
-For AX OCR deployments, Apple Silicon Mac and NVIDIA Thor are co-primary target
-platforms; certified Linux x86_64 CUDA PCs are secondary. That OCR priority does
-**not** promote any CUDA candidate to GA before hardware-specific release gates
-pass.
+NVIDIA/CUDA fleet serving lives in
+[AX Serving](https://github.com/defai-digital/ax-serving). AX Engine remains the
+local Apple Silicon runtime and no longer ships the former vLLM or TensorRT
+provider bridges, runtime package, container, or CUDA qualification scripts.
 
 Browse AutomatosX serve-ready chat / coding / embedding snapshots in the
 [AutomatosX model collection on Hugging Face](https://huggingface.co/AutomatosX/models).
@@ -49,10 +44,9 @@ memory).**
   OCR, and Whisper transcription/translation run through repo-owned MLX graphs
   with capability-gated OpenAI endpoints (checkpoint-authoritative; see media
   table below)
-- **Optional CUDA control plane** — one AX-owned vLLM provider can serve Linux
-  x86_64 and Thor through separately certified runtime profiles; TensorRT-LLM
-  and TensorRT Edge-LLM remain explicit per-model optimization lanes and fail
-  closed without machine-readable upstream-version/execution-path identity
+- **Clear fleet boundary** — AX Engine owns local Apple Silicon inference;
+  [AX Serving](docs/AX-SERVING.md) owns fleet orchestration and NVIDIA/CUDA
+  workers
 - **Claims you can audit** — public rows ship with checked-in artifacts (route,
   model snapshot, sampler, accept rate, provenance)
 
@@ -365,7 +359,7 @@ curl http://127.0.0.1:31418/v1/runtime
 
 Auth, streaming, embeddings, Ollama-shaped routes:
 [Server](docs/SERVER.md) · [API Compatibility](docs/API-COMPATIBILITY.md) ·
-[OpenClaw](docs/OPENCLAW.md). Fleet / CUDA control plane:
+[OpenClaw](docs/OPENCLAW.md). Fleet / NVIDIA serving:
 [AX Serving](docs/AX-SERVING.md).
 
 ## Documentation
@@ -402,10 +396,7 @@ Crate layout and conventions: [AGENTS.md](AGENTS.md) ·
 - Qwen3.5 long-prompt prefill can trail upstream MLX references on longer prompts
 - Use pre-sanitized MLX community weights (or convert with `mlx_lm.convert` first)
 - N-gram acceleration is workload-dependent, not a raw kernel speedup
-- CUDA runtime profiles remain candidate-only until their documented native
-  OCI, quality, performance, soak, and rollback gates pass
-- TensorRT runtime identity in `/v1/runtime` is configured metadata, not binary
-  attestation; release evidence must cross-check the exact worker package/image
+- NVIDIA/CUDA serving requires the separate AX Serving product
 
 Details: [FAQ limitations](docs/FAQ.md#what-are-the-current-limitations).
 

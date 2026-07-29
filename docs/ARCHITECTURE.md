@@ -9,7 +9,7 @@ serialization concerns at the edges, and make observability and error handling
 consistent across the workspace.
 
 **Related:** [Scheduler](SCHEDULER.md) · [KV Cache](KV-CACHE.md) ·
-[MLX Backend](MLX-BACKEND.md) · [CUDA Backends](CUDA-BACKENDS.md) ·
+[MLX Backend](MLX-BACKEND.md) · [AX Serving](AX-SERVING.md) ·
 [Server](SERVER.md) · [Roadmap](ROADMAP.md)
 
 ## Current Crate Layers
@@ -22,10 +22,9 @@ consistent across the workspace.
 - `mlx-sys`: bindgen FFI over `ax_shim.h` to MLX C++; safe `MlxArray` RAII
   wrappers and type-tagged handle system
 - `ax-engine-sdk`: backend resolution, session management, request lifecycle
-  contract, and delegated backend bridges for `mlx_lm.server`, llama.cpp,
-  vLLM, TensorRT-LLM, and TensorRT Edge-LLM
+  contract, and delegated backend bridges for `mlx_lm.server` and llama.cpp
 - `ax-engine-server`: HTTP/SSE adapter over the SDK; default Mac builds include
-  native MLX, while the Linux `delegated-server` feature omits MLX linkage
+  native MLX, while portable `delegated-server` builds omit MLX linkage
 - `ax-engine-py`: Python binding surface over the SDK contract
 - `ax-engine-bench`: workload-contract CLI, replay harness, reporting,
   bounded autotune, readiness, and bring-up checks
@@ -80,8 +79,8 @@ The SDK is the runtime-facing contract layer. It is a good place for:
 
 - `serde` and `serde_json`
 - typed error boundaries
-- backend metadata plus delegated `mlx_lm.server`, llama.cpp, vLLM, and
-  TensorRT payload translation
+- backend metadata plus delegated `mlx_lm.server` and llama.cpp payload
+  translation
 - session-level request and response types
 
 If future work introduces a more explicit "runtime" naming convention, the
@@ -105,33 +104,18 @@ into the execution core.
 
 ## Platform And Provider Ownership
 
-AX Engine is Mac-first, not Mac-only. Platform support is split by ownership:
+AX Engine owns local macOS 26+ Apple Silicon inference through its repo-owned
+MLX/Metal execution path. Its delegated compatibility adapters remain limited
+to `mlx_lm.server` and llama.cpp.
 
-- macOS 26+ Apple Silicon uses the repo-owned MLX/Metal execution path;
-- AX OCR treats Mac and NVIDIA Thor as co-primary deployment targets, with
-  certified Linux x86_64 CUDA PCs as the secondary support platform; target
-  priority does not bypass profile-specific release gates;
-- Linux CUDA uses a portable AX Engine control plane and an external GPU
-  worker;
-- vLLM is one logical provider shared by x86_64 and Thor through distinct,
-  fail-closed runtime profiles;
-- TensorRT-LLM and TensorRT Edge-LLM are independent optimized providers, not
-  aliases or automatic fallbacks for vLLM.
-
-The Rust process owns backend selection, wire contracts, security,
-observability, and public identity. The worker owns model loading, GPU
-scheduling, KV/cache implementation, kernels, and engine-specific tuning.
-Python/PyTorch/vLLM are packaged independently and never become transitive Mac
-dependencies or in-process server imports.
+Fleet orchestration and NVIDIA/CUDA worker integration belong to
+[AX Serving](AX-SERVING.md), including GPU provider selection, worker identity,
+runtime packaging, containers, and hardware qualification. CUDA frameworks do
+not become transitive AX Engine dependencies or in-process server imports.
 
 Delegated transport also stays provider-neutral. HTTP agents are cached by
 policy and `Accept` contract so JSON responses and SSE streams cannot evict
-each other's keep-alive connection. Accepted AX HTTP sockets use
-`TCP_NODELAY`; this avoids delayed delivery of small first-stream events while
-leaving scheduling and model execution entirely with the selected worker.
-
-See [CUDA Backends](CUDA-BACKENDS.md) for the deployment topology, runtime
-profiles, product ownership boundary, and hardware release gates.
+each other's keep-alive connection.
 
 ## Runtime Ownership And Capability Gates
 
@@ -237,7 +221,7 @@ default to managed sidecar HTTP and can explicitly attach to an existing local
 server without taking over its lifecycle. In-process SDK embedding remains
 available to hosts that deliberately own a native `EngineSession`.
 
-AX OCR consumes the sidecar HTTP surface when using CUDA. Its document
-workflow, accuracy corpus, model artifact policy, and release acceptance stay
-in AX OCR; generic provider transport and worker launch/runtime profiles stay
-in AX Engine.
+AX OCR uses AX Serving when CUDA execution is required. Its document workflow,
+accuracy corpus, model artifact policy, and release acceptance stay in AX OCR;
+NVIDIA provider transport and worker launch/runtime profiles stay in AX
+Serving.

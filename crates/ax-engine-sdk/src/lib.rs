@@ -46,8 +46,6 @@ pub use ax_engine_mlx::MlxPrefixCacheStore;
 
 pub mod backend;
 mod delegated_http;
-pub mod delegated_openai;
-pub mod edge_llm;
 pub mod generate;
 mod host;
 pub mod llama_cpp;
@@ -56,44 +54,22 @@ pub mod request;
 pub mod session;
 #[cfg(feature = "tokenizer")]
 pub mod tokenizer;
-pub mod vllm;
 #[cfg(feature = "tokenizer")]
 pub use tokenizer::{EngineTokenizer, EngineTokenizerError};
 
 pub use backend::{
     BackendContractError, BackendPolicy, CapabilityLevel, CapabilityReport, DelegatedReadiness,
-    DelegatedRuntimeIdentity, DelegatedRuntimeIdentityError, DelegatedRuntimeReport, HostReport,
-    MetalToolchainReport, NativeModelArtifactsSource, NativeModelReport, NativeRunnerKind,
-    NativeRuntimeArtifactsSource, NativeRuntimeReport, NativeRuntimeStatus,
-    NativeSourceQuantization, PreviewBackendMode, PreviewBackendRequest, PreviewBackendResolution,
-    PreviewBackendResolutionError, RedactedEndpoint, ResolutionPolicy, ResolvedBackend,
-    RuntimeReport, SelectedBackend, SupportTier, ToolStatusReport, current_host_report,
-    current_metal_toolchain_report, preview_support_tier_from_label, resolve_preview_backend,
+    DelegatedRuntimeReport, HostReport, MetalToolchainReport, NativeModelArtifactsSource,
+    NativeModelReport, NativeRunnerKind, NativeRuntimeArtifactsSource, NativeRuntimeReport,
+    NativeRuntimeStatus, NativeSourceQuantization, PreviewBackendMode, PreviewBackendRequest,
+    PreviewBackendResolution, PreviewBackendResolutionError, RedactedEndpoint, ResolutionPolicy,
+    ResolvedBackend, RuntimeReport, SelectedBackend, SupportTier, ToolStatusReport,
+    current_host_report, current_metal_toolchain_report, preview_support_tier_from_label,
+    resolve_preview_backend,
 };
 pub use delegated_http::{
     DEFAULT_DELEGATED_HTTP_CONNECT_TIMEOUT_SECS, DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS,
-    DEFAULT_DELEGATED_HTTP_MAX_ERROR_BODY_BYTES, DelegatedBearerCredential,
-    DelegatedHttpConfigError, DelegatedHttpHeaders, DelegatedHttpRequestOptions,
-    DelegatedHttpRetryPolicy, DelegatedHttpTimeouts, DelegatedProxyPolicy, DelegatedRedirectPolicy,
-    DelegatedTlsPolicy,
-};
-pub use delegated_openai::{
-    DEFAULT_MAX_DELEGATED_DATA_URI_ENCODED_BYTES, DEFAULT_MAX_DELEGATED_IMAGE_BYTES,
-    DEFAULT_MAX_DELEGATED_IMAGE_PIXELS, DEFAULT_MAX_DELEGATED_IMAGES,
-    DEFAULT_MAX_DELEGATED_SSE_FRAME_BYTES, DEFAULT_MAX_DELEGATED_TOTAL_PIXELS,
-    DelegatedChatContent, DelegatedChatContentPart, DelegatedChatMessage, DelegatedChatRole,
-    DelegatedImageLimits, DelegatedImageUrl, DelegatedOpenAiSseError, DelegatedOpenAiStreamChunk,
-    DelegatedOpenAiStreamHandle, DelegatedOpenAiValidationError, ValidatedDataUri,
-    validate_delegated_image_budget,
-};
-pub use edge_llm::{
-    EdgeLlmBackendError, EdgeLlmChatContent, EdgeLlmChatContentPart, EdgeLlmChatGenerateRequest,
-    EdgeLlmChatMessage, EdgeLlmConfig, EdgeLlmImageUrl, EdgeLlmServerCompletionConfig,
-    EdgeLlmStagedImage, EdgeLlmStreamChunkResult, EdgeLlmStreamHandle, finish_reason_from_edge_llm,
-    run_blocking_chat_generate as run_blocking_edge_llm_chat_generate,
-    run_blocking_generate as run_blocking_edge_llm_generate,
-    start_streaming_chat_generate as start_streaming_edge_llm_chat_generate,
-    start_streaming_generate as start_streaming_edge_llm_generate,
+    DelegatedHttpTimeouts,
 };
 pub use generate::{
     GenerateFinishReason, GenerateMtpReport, GeneratePerformanceReport, GenerateRequest,
@@ -120,15 +96,4 @@ pub use session::{
     EngineSession, EngineSessionConfig, EngineSessionError, GenerateStream, GenerateStreamState,
     MlxMtpPolicy, PreviewSessionConfigError, PreviewSessionConfigRequest,
     ResolvedSessionConfigRequest, SpeechTranscription, StatelessGenerateContext,
-};
-pub use vllm::{
-    NormalizedDelegatedBaseUrl, OrderedFloat, UNLIMITED_OCR_DEFAULT_CONTEXT_LENGTH,
-    UNLIMITED_OCR_DEFAULT_MAX_OUTPUT_TOKENS, VllmBackendError, VllmChatGenerateRequest, VllmConfig,
-    VllmConfigError, VllmModelProfile, VllmReadiness, VllmReadinessReport, VllmRequestExtensions,
-    VllmRequestValidationError, VllmServerCompletionConfig, VllmStreamChunkResult,
-    VllmStreamHandle, VllmXargs, check_readiness as check_vllm_readiness, finish_reason_from_vllm,
-    run_blocking_chat_generate as run_blocking_vllm_chat_generate,
-    run_blocking_generate as run_blocking_vllm_generate,
-    start_streaming_chat_generate as start_streaming_vllm_chat_generate,
-    start_streaming_generate as start_streaming_vllm_generate,
 };

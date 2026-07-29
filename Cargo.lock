@@ -263,10 +263,7 @@ version = "6.12.0"
 dependencies = [
  "ax-engine-core",
  "ax-engine-mlx",
- "base64 0.22.1",
- "image",
  "mlx-sys",
- "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -274,9 +271,7 @@ dependencies = [
  "tokenizers",
  "tracing",
  "ureq",
- "url",
  "wait-timeout",
- "webpki-roots 0.26.11",
 ]
 
 [[package]]

@@ -6,10 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::delegated_http::DelegatedHttpTimeouts;
-use crate::edge_llm::{EdgeLlmConfig, EdgeLlmServerCompletionConfig};
 use crate::llama_cpp::{LlamaCppConfig, LlamaCppServerCompletionConfig};
 use crate::mlx_lm::{MlxLmConfig, MlxLmServerCompletionConfig};
-use crate::vllm::VllmConfig;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,11 +17,6 @@ pub enum ResolutionPolicy {
     PreferMlx,
     AllowMlxLmDelegated,
     AllowLlamaCpp,
-    AllowTensorRtEdgeLlm,
-    /// Desktop / datacenter TensorRT-LLM (`trtllm-serve`) L2 path.
-    AllowTensorRtLlm,
-    /// Portable OpenAI-compatible vLLM sidecar on certified CUDA hosts.
-    AllowVllm,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -32,12 +25,6 @@ pub enum SelectedBackend {
     Mlx,
     MlxLmDelegated,
     LlamaCpp,
-    /// Delegated TensorRT Edge-LLM OpenAI-compatible server (Thor / edge CUDA).
-    TensorRtEdgeLlm,
-    /// Delegated TensorRT-LLM OpenAI-compatible server (desktop/datacenter CUDA).
-    TensorRtLlm,
-    /// Delegated vLLM OpenAI-compatible sidecar.
-    Vllm,
 }
 
 impl SelectedBackend {
@@ -53,9 +40,6 @@ pub enum SupportTier {
     MlxPreview,
     MlxLmDelegated,
     LlamaCpp,
-    TensorRtEdgeLlm,
-    TensorRtLlm,
-    Vllm,
     Unsupported,
 }
 
@@ -90,18 +74,6 @@ impl BackendPolicy {
 
     pub const fn allow_mlx_lm_delegated() -> Self {
         Self::new(ResolutionPolicy::AllowMlxLmDelegated)
-    }
-
-    pub const fn allow_tensor_rt_edge_llm() -> Self {
-        Self::new(ResolutionPolicy::AllowTensorRtEdgeLlm)
-    }
-
-    pub const fn allow_tensor_rt_llm() -> Self {
-        Self::new(ResolutionPolicy::AllowTensorRtLlm)
-    }
-
-    pub const fn allow_vllm() -> Self {
-        Self::new(ResolutionPolicy::AllowVllm)
     }
 }
 
@@ -202,47 +174,6 @@ impl CapabilityReport {
         }
     }
 
-    pub const fn tensor_rt_edge_llm_text() -> Self {
-        Self {
-            text_generation: true,
-            token_streaming: true,
-            deterministic_mode: false,
-            prefix_reuse: false,
-            long_context_validation: CapabilityLevel::Preview,
-            benchmark_metrics: CapabilityLevel::Preview,
-            image_input: CapabilityLevel::Preview,
-            delegated_readiness: CapabilityLevel::Unsupported,
-            provider_extensions: CapabilityLevel::Unsupported,
-        }
-    }
-
-    pub const fn tensor_rt_llm_text() -> Self {
-        // Same L2 text surface as Edge-LLM; product path is desktop/datacenter.
-        Self::tensor_rt_edge_llm_text()
-    }
-
-    pub const fn vllm_openai_compatible() -> Self {
-        Self {
-            text_generation: true,
-            token_streaming: true,
-            deterministic_mode: false,
-            prefix_reuse: false,
-            long_context_validation: CapabilityLevel::Preview,
-            benchmark_metrics: CapabilityLevel::Preview,
-            image_input: CapabilityLevel::Preview,
-            delegated_readiness: CapabilityLevel::Supported,
-            provider_extensions: CapabilityLevel::Preview,
-        }
-    }
-
-    pub const fn vllm_unlimited_ocr() -> Self {
-        Self {
-            provider_extensions: CapabilityLevel::Supported,
-            image_input: CapabilityLevel::Supported,
-            ..Self::vllm_openai_compatible()
-        }
-    }
-
     pub const fn llama_cpp_cli_baseline() -> Self {
         Self {
             text_generation: true,
@@ -281,11 +212,6 @@ impl CapabilityReport {
             (SelectedBackend::MlxLmDelegated, SupportTier::MlxLmDelegated) => {
                 Self::mlx_lm_delegated_text()
             }
-            (SelectedBackend::TensorRtEdgeLlm, SupportTier::TensorRtEdgeLlm) => {
-                Self::tensor_rt_edge_llm_text()
-            }
-            (SelectedBackend::TensorRtLlm, SupportTier::TensorRtLlm) => Self::tensor_rt_llm_text(),
-            (SelectedBackend::Vllm, SupportTier::Vllm) => Self::vllm_openai_compatible(),
             (_, SupportTier::LlamaCpp) => Self::llama_cpp_baseline(),
             (_, SupportTier::Unsupported) => Self::unsupported(),
             _ => Self::unsupported(),
@@ -301,22 +227,6 @@ impl CapabilityReport {
 
     pub fn for_mlx_lm_backend(_config: &MlxLmConfig) -> Self {
         Self::mlx_lm_delegated_text()
-    }
-
-    pub fn for_edge_llm_backend(_config: &EdgeLlmConfig) -> Self {
-        Self::tensor_rt_edge_llm_text()
-    }
-
-    pub fn for_tensor_rt_llm_backend(_config: &EdgeLlmConfig) -> Self {
-        // Wire shape matches Edge-LLM OpenAI L2 config; capability label is TRT-LLM.
-        Self::tensor_rt_llm_text()
-    }
-
-    pub fn for_vllm_backend(config: &VllmConfig) -> Self {
-        match config.server().model_profile {
-            crate::vllm::VllmModelProfile::OpenAiCompatible => Self::vllm_openai_compatible(),
-            crate::vllm::VllmModelProfile::UnlimitedOcr => Self::vllm_unlimited_ocr(),
-        }
     }
 }
 
@@ -495,70 +405,6 @@ pub struct RedactedEndpoint {
     pub authority: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DelegatedRuntimeIdentity {
-    pub upstream_model_id: String,
-    pub runtime_profile: Option<String>,
-    pub upstream_version: String,
-    pub execution_backend: String,
-}
-
-impl DelegatedRuntimeIdentity {
-    pub fn new(
-        upstream_model_id: impl Into<String>,
-        upstream_version: impl Into<String>,
-        execution_backend: impl Into<String>,
-    ) -> Result<Self, DelegatedRuntimeIdentityError> {
-        Ok(Self {
-            upstream_model_id: normalize_runtime_identity_field(
-                "upstream_model_id",
-                upstream_model_id.into(),
-            )?,
-            runtime_profile: None,
-            upstream_version: normalize_runtime_identity_field(
-                "upstream_version",
-                upstream_version.into(),
-            )?,
-            execution_backend: normalize_runtime_identity_field(
-                "execution_backend",
-                execution_backend.into(),
-            )?,
-        })
-    }
-
-    pub fn with_runtime_profile(
-        mut self,
-        runtime_profile: Option<String>,
-    ) -> Result<Self, DelegatedRuntimeIdentityError> {
-        self.runtime_profile = runtime_profile
-            .map(|profile| normalize_runtime_identity_field("runtime_profile", profile))
-            .transpose()?;
-        Ok(self)
-    }
-}
-
-fn normalize_runtime_identity_field(
-    field: &'static str,
-    value: String,
-) -> Result<String, DelegatedRuntimeIdentityError> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err(DelegatedRuntimeIdentityError::EmptyField { field });
-    }
-    if value.chars().any(char::is_control) {
-        return Err(DelegatedRuntimeIdentityError::InvalidControlCharacter { field });
-    }
-    Ok(value.to_string())
-}
-
-#[derive(Clone, Debug, Error, Eq, PartialEq)]
-pub enum DelegatedRuntimeIdentityError {
-    #[error("delegated runtime identity field {field} must not be empty")]
-    EmptyField { field: &'static str },
-    #[error("delegated runtime identity field {field} must not contain control characters")]
-    InvalidControlCharacter { field: &'static str },
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DelegatedRuntimeReport {
     pub provider: String,
@@ -625,30 +471,6 @@ impl ResolvedBackend {
         )
     }
 
-    pub fn tensor_rt_edge_llm(reason: impl Into<String>) -> Self {
-        Self::new(
-            SelectedBackend::TensorRtEdgeLlm,
-            SupportTier::TensorRtEdgeLlm,
-            Some(reason.into()),
-        )
-    }
-
-    pub fn tensor_rt_llm(reason: impl Into<String>) -> Self {
-        Self::new(
-            SelectedBackend::TensorRtLlm,
-            SupportTier::TensorRtLlm,
-            Some(reason.into()),
-        )
-    }
-
-    pub fn vllm(reason: impl Into<String>) -> Self {
-        Self::new(
-            SelectedBackend::Vllm,
-            SupportTier::Vllm,
-            Some(reason.into()),
-        )
-    }
-
     pub fn validate_against(
         &self,
         backend_policy: &BackendPolicy,
@@ -684,67 +506,6 @@ impl ResolvedBackend {
                 .is_some_and(|reason| !reason.trim().is_empty());
             if !has_reason {
                 return Err(BackendContractError::MlxLmBackendRequiresDelegationReason);
-            }
-            return Ok(());
-        }
-
-        if self.selected_backend == SelectedBackend::TensorRtEdgeLlm {
-            if self.support_tier != SupportTier::TensorRtEdgeLlm {
-                return Err(BackendContractError::EdgeLlmBackendRequiresEdgeLlmTier {
-                    support_tier: self.support_tier,
-                });
-            }
-            if matches!(backend_policy.resolution_policy, ResolutionPolicy::MlxOnly) {
-                return Err(BackendContractError::MlxOnlyPolicyCannotResolveEdgeLlm);
-            }
-            let has_reason = self
-                .fallback_reason
-                .as_deref()
-                .is_some_and(|reason| !reason.trim().is_empty());
-            if !has_reason {
-                return Err(BackendContractError::EdgeLlmBackendRequiresDelegationReason);
-            }
-            return Ok(());
-        }
-
-        if self.selected_backend == SelectedBackend::TensorRtLlm {
-            if self.support_tier != SupportTier::TensorRtLlm {
-                return Err(
-                    BackendContractError::TensorRtLlmBackendRequiresTensorRtLlmTier {
-                        support_tier: self.support_tier,
-                    },
-                );
-            }
-            if matches!(backend_policy.resolution_policy, ResolutionPolicy::MlxOnly) {
-                return Err(BackendContractError::MlxOnlyPolicyCannotResolveTensorRtLlm);
-            }
-            let has_reason = self
-                .fallback_reason
-                .as_deref()
-                .is_some_and(|reason| !reason.trim().is_empty());
-            if !has_reason {
-                return Err(BackendContractError::TensorRtLlmBackendRequiresDelegationReason);
-            }
-            return Ok(());
-        }
-
-        if self.selected_backend == SelectedBackend::Vllm {
-            if self.support_tier != SupportTier::Vllm {
-                return Err(BackendContractError::VllmBackendRequiresVllmTier {
-                    support_tier: self.support_tier,
-                });
-            }
-            if backend_policy.resolution_policy != ResolutionPolicy::AllowVllm {
-                return Err(BackendContractError::VllmBackendRequiresVllmPolicy {
-                    resolution_policy: backend_policy.resolution_policy,
-                });
-            }
-            let has_reason = self
-                .fallback_reason
-                .as_deref()
-                .is_some_and(|reason| !reason.trim().is_empty());
-            if !has_reason {
-                return Err(BackendContractError::VllmBackendRequiresDelegationReason);
             }
             return Ok(());
         }
@@ -786,12 +547,6 @@ pub struct PreviewBackendRequest {
     pub llama_model_path: Option<PathBuf>,
     pub llama_server_url: Option<String>,
     pub mlx_lm_server_url: Option<String>,
-    pub edge_llm_server_url: Option<String>,
-    pub edge_llm_runtime_identity: Option<DelegatedRuntimeIdentity>,
-    /// Base URL for TensorRT-LLM OpenAI-compatible server (`trtllm-serve`).
-    pub tensor_rt_llm_server_url: Option<String>,
-    pub tensor_rt_llm_runtime_identity: Option<DelegatedRuntimeIdentity>,
-    pub vllm_backend: Option<VllmConfig>,
     pub delegated_http_timeouts: DelegatedHttpTimeouts,
 }
 
@@ -804,11 +559,6 @@ impl Default for PreviewBackendRequest {
             llama_model_path: None,
             llama_server_url: None,
             mlx_lm_server_url: None,
-            edge_llm_server_url: None,
-            edge_llm_runtime_identity: None,
-            tensor_rt_llm_server_url: None,
-            tensor_rt_llm_runtime_identity: None,
-            vllm_backend: None,
             delegated_http_timeouts: DelegatedHttpTimeouts::default(),
         }
     }
@@ -857,16 +607,12 @@ pub struct PreviewBackendResolution {
     pub resolved_backend: ResolvedBackend,
     pub llama_backend: Option<LlamaCppConfig>,
     pub mlx_lm_backend: Option<MlxLmConfig>,
-    pub edge_llm_backend: Option<EdgeLlmConfig>,
-    /// OpenAI-compatible TRT-LLM server config (same wire shape as Edge-LLM L2).
-    pub tensor_rt_llm_backend: Option<EdgeLlmConfig>,
-    pub vllm_backend: Option<VllmConfig>,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum PreviewBackendResolutionError {
     #[error(
-        "unsupported support_tier {value}; expected mlx_preview, mlx_certified, mlx_lm_delegated, llama_cpp, tensor_rt_edge_llm, tensor_rt_llm, or vllm"
+        "unsupported support_tier {value}; expected mlx_preview, mlx_certified, mlx_lm_delegated, or llama_cpp"
     )]
     UnsupportedSupportTierLabel { value: String },
     #[error("support_tier llama_cpp accepts either llama_server_url or llama_model_path, not both")]
@@ -875,16 +621,6 @@ pub enum PreviewBackendResolutionError {
     MissingLlamaCppTarget,
     #[error("support_tier mlx_lm_delegated requires mlx_lm_server_url")]
     MissingMlxLmServerUrl,
-    #[error("support_tier tensor_rt_edge_llm requires edge_llm_server_url")]
-    MissingEdgeLlmServerUrl,
-    #[error("support_tier tensor_rt_edge_llm requires a validated runtime identity")]
-    MissingEdgeLlmRuntimeIdentity,
-    #[error("support_tier tensor_rt_llm requires tensor_rt_llm_server_url")]
-    MissingTensorRtLlmServerUrl,
-    #[error("support_tier tensor_rt_llm requires a validated runtime identity")]
-    MissingTensorRtLlmRuntimeIdentity,
-    #[error("support_tier vllm requires a validated vllm_backend config")]
-    MissingVllmConfig,
 }
 
 pub fn preview_support_tier_from_label(
@@ -895,9 +631,6 @@ pub fn preview_support_tier_from_label(
         "mlx_certified" => Ok(SupportTier::MlxCertified),
         "mlx_lm_delegated" => Ok(SupportTier::MlxLmDelegated),
         "llama_cpp" => Ok(SupportTier::LlamaCpp),
-        "tensor_rt_edge_llm" => Ok(SupportTier::TensorRtEdgeLlm),
-        "tensor_rt_llm" => Ok(SupportTier::TensorRtLlm),
-        "vllm" => Ok(SupportTier::Vllm),
         other => Err(PreviewBackendResolutionError::UnsupportedSupportTierLabel {
             value: other.to_string(),
         }),
@@ -925,9 +658,6 @@ pub fn resolve_preview_backend(
                 ),
                 llama_backend: Some(llama_backend),
                 mlx_lm_backend: None,
-                edge_llm_backend: None,
-                tensor_rt_llm_backend: None,
-                vllm_backend: None,
             })
         }
         PreviewBackendMode::ShippingMlx => Ok(PreviewBackendResolution {
@@ -935,9 +665,6 @@ pub fn resolve_preview_backend(
             resolved_backend: ResolvedBackend::mlx_preview(),
             llama_backend: None,
             mlx_lm_backend: None,
-            edge_llm_backend: None,
-            tensor_rt_llm_backend: None,
-            vllm_backend: None,
         }),
     }
 }
@@ -951,9 +678,6 @@ fn resolve_explicit_preview_backend(
             resolved_backend: ResolvedBackend::mlx_preview(),
             llama_backend: None,
             mlx_lm_backend: None,
-            edge_llm_backend: None,
-            tensor_rt_llm_backend: None,
-            vllm_backend: None,
         }),
         SupportTier::MlxCertified => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::mlx_only(),
@@ -964,9 +688,6 @@ fn resolve_explicit_preview_backend(
             ),
             llama_backend: None,
             mlx_lm_backend: None,
-            edge_llm_backend: None,
-            tensor_rt_llm_backend: None,
-            vllm_backend: None,
         }),
         SupportTier::MlxLmDelegated => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::allow_mlx_lm_delegated(),
@@ -978,54 +699,6 @@ fn resolve_explicit_preview_backend(
                 request.mlx_lm_server_url,
                 request.delegated_http_timeouts,
             )?),
-            edge_llm_backend: None,
-            tensor_rt_llm_backend: None,
-            vllm_backend: None,
-        }),
-        SupportTier::TensorRtEdgeLlm => Ok(PreviewBackendResolution {
-            backend_policy: BackendPolicy::allow_tensor_rt_edge_llm(),
-            resolved_backend: ResolvedBackend::tensor_rt_edge_llm(
-                "tensorrt edge-llm delegated backend explicitly requested by preview session config",
-            ),
-            llama_backend: None,
-            mlx_lm_backend: None,
-            edge_llm_backend: Some(resolve_edge_llm_target(
-                request.edge_llm_server_url,
-                request.edge_llm_runtime_identity,
-                request.delegated_http_timeouts,
-            )?),
-            tensor_rt_llm_backend: None,
-            vllm_backend: None,
-        }),
-        SupportTier::TensorRtLlm => Ok(PreviewBackendResolution {
-            backend_policy: BackendPolicy::allow_tensor_rt_llm(),
-            resolved_backend: ResolvedBackend::tensor_rt_llm(
-                "tensorrt-llm delegated backend explicitly requested by preview session config",
-            ),
-            llama_backend: None,
-            mlx_lm_backend: None,
-            edge_llm_backend: None,
-            tensor_rt_llm_backend: Some(resolve_tensor_rt_llm_target(
-                request.tensor_rt_llm_server_url,
-                request.tensor_rt_llm_runtime_identity,
-                request.delegated_http_timeouts,
-            )?),
-            vllm_backend: None,
-        }),
-        SupportTier::Vllm => Ok(PreviewBackendResolution {
-            backend_policy: BackendPolicy::allow_vllm(),
-            resolved_backend: ResolvedBackend::vllm(
-                "vLLM delegated backend explicitly requested by preview session config",
-            ),
-            llama_backend: None,
-            mlx_lm_backend: None,
-            edge_llm_backend: None,
-            tensor_rt_llm_backend: None,
-            vllm_backend: Some(
-                request
-                    .vllm_backend
-                    .ok_or(PreviewBackendResolutionError::MissingVllmConfig)?,
-            ),
         }),
         SupportTier::LlamaCpp => {
             let llama_backend = resolve_llama_cpp_target(
@@ -1043,9 +716,6 @@ fn resolve_explicit_preview_backend(
                 ),
                 llama_backend: Some(llama_backend),
                 mlx_lm_backend: None,
-                edge_llm_backend: None,
-                tensor_rt_llm_backend: None,
-                vllm_backend: None,
             })
         }
         SupportTier::Unsupported => {
@@ -1064,35 +734,6 @@ fn resolve_mlx_lm_target(
         mlx_lm_server_url.ok_or(PreviewBackendResolutionError::MissingMlxLmServerUrl)?;
     Ok(MlxLmConfig::ServerCompletion(
         MlxLmServerCompletionConfig::new(server_url).with_timeouts(timeouts),
-    ))
-}
-
-fn resolve_edge_llm_target(
-    edge_llm_server_url: Option<String>,
-    runtime_identity: Option<DelegatedRuntimeIdentity>,
-    timeouts: DelegatedHttpTimeouts,
-) -> Result<EdgeLlmConfig, PreviewBackendResolutionError> {
-    let server_url =
-        edge_llm_server_url.ok_or(PreviewBackendResolutionError::MissingEdgeLlmServerUrl)?;
-    let runtime_identity =
-        runtime_identity.ok_or(PreviewBackendResolutionError::MissingEdgeLlmRuntimeIdentity)?;
-    Ok(EdgeLlmConfig::ServerCompletion(
-        EdgeLlmServerCompletionConfig::new(server_url, runtime_identity).with_timeouts(timeouts),
-    ))
-}
-
-fn resolve_tensor_rt_llm_target(
-    tensor_rt_llm_server_url: Option<String>,
-    runtime_identity: Option<DelegatedRuntimeIdentity>,
-    timeouts: DelegatedHttpTimeouts,
-) -> Result<EdgeLlmConfig, PreviewBackendResolutionError> {
-    let server_url = tensor_rt_llm_server_url
-        .ok_or(PreviewBackendResolutionError::MissingTensorRtLlmServerUrl)?;
-    let runtime_identity =
-        runtime_identity.ok_or(PreviewBackendResolutionError::MissingTensorRtLlmRuntimeIdentity)?;
-    // Same OpenAI chat/completions wire shape as Edge-LLM L2.
-    Ok(EdgeLlmConfig::ServerCompletion(
-        EdgeLlmServerCompletionConfig::new(server_url, runtime_identity).with_timeouts(timeouts),
     ))
 }
 
@@ -1190,9 +831,6 @@ fn support_tier_label(support_tier: SupportTier) -> &'static str {
         SupportTier::MlxPreview => "mlx_preview",
         SupportTier::MlxLmDelegated => "mlx_lm_delegated",
         SupportTier::LlamaCpp => "llama_cpp",
-        SupportTier::TensorRtEdgeLlm => "tensor_rt_edge_llm",
-        SupportTier::TensorRtLlm => "tensor_rt_llm",
-        SupportTier::Vllm => "vllm",
         SupportTier::Unsupported => "unsupported",
     }
 }
@@ -1222,26 +860,6 @@ pub enum BackendContractError {
     MlxLmBackendRequiresMlxLmTier { support_tier: SupportTier },
     #[error("mlx-lm delegated backend requires fallback_reason/delegation reason")]
     MlxLmBackendRequiresDelegationReason,
-    #[error("mlx_only policy cannot resolve to tensor_rt_edge_llm backend")]
-    MlxOnlyPolicyCannotResolveEdgeLlm,
-    #[error(
-        "tensor_rt_edge_llm backend requires tensor_rt_edge_llm support tier, got {support_tier:?}"
-    )]
-    EdgeLlmBackendRequiresEdgeLlmTier { support_tier: SupportTier },
-    #[error("tensor_rt_edge_llm backend requires fallback_reason/delegation reason")]
-    EdgeLlmBackendRequiresDelegationReason,
-    #[error("mlx_only policy cannot resolve to tensor_rt_llm backend")]
-    MlxOnlyPolicyCannotResolveTensorRtLlm,
-    #[error("tensor_rt_llm backend requires tensor_rt_llm support tier, got {support_tier:?}")]
-    TensorRtLlmBackendRequiresTensorRtLlmTier { support_tier: SupportTier },
-    #[error("tensor_rt_llm backend requires fallback_reason/delegation reason")]
-    TensorRtLlmBackendRequiresDelegationReason,
-    #[error("vLLM backend requires vllm support tier, got {support_tier:?}")]
-    VllmBackendRequiresVllmTier { support_tier: SupportTier },
-    #[error("vLLM backend requires allow_vllm policy, got {resolution_policy:?}")]
-    VllmBackendRequiresVllmPolicy { resolution_policy: ResolutionPolicy },
-    #[error("vLLM backend requires fallback_reason/delegation reason")]
-    VllmBackendRequiresDelegationReason,
     #[error("llama.cpp backend {selected_backend:?} requires fallback_reason")]
     LlamaCppBackendRequiresFallbackReason { selected_backend: SelectedBackend },
 }
@@ -1250,20 +868,6 @@ pub enum BackendContractError {
 #[allow(deprecated)]
 mod tests {
     use super::*;
-
-    fn edge_runtime_identity() -> DelegatedRuntimeIdentity {
-        DelegatedRuntimeIdentity::new("qwen3", "0.18.0", "cpp")
-            .expect("Edge-LLM test identity should be valid")
-            .with_runtime_profile(Some("cuda-linux-aarch64-thor-sm110".to_string()))
-            .expect("Edge-LLM test profile should be valid")
-    }
-
-    fn tensor_rt_llm_runtime_identity() -> DelegatedRuntimeIdentity {
-        DelegatedRuntimeIdentity::new("TinyLlama/TinyLlama-1.1B-Chat-v1.0", "1.2.1", "pytorch")
-            .expect("TensorRT-LLM test identity should be valid")
-            .with_runtime_profile(Some("cuda-linux-x86_64-a6000-sm86".to_string()))
-            .expect("TensorRT-LLM test profile should be valid")
-    }
 
     #[test]
     fn rejects_llama_backend_under_mlx_only_policy() {
@@ -1320,163 +924,12 @@ mod tests {
             preview_support_tier_from_label("llama_cpp"),
             Ok(SupportTier::LlamaCpp)
         );
-        assert_eq!(
-            preview_support_tier_from_label("tensor_rt_edge_llm"),
-            Ok(SupportTier::TensorRtEdgeLlm)
-        );
-        assert_eq!(
-            preview_support_tier_from_label("tensor_rt_llm"),
-            Ok(SupportTier::TensorRtLlm)
-        );
-    }
-
-    #[test]
-    fn preview_resolution_tensor_rt_edge_llm_server_url_uses_sdk_contract() {
-        let resolution = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::TensorRtEdgeLlm,
-            edge_llm_server_url: Some("http://127.0.0.1:8090".to_string()),
-            edge_llm_runtime_identity: Some(edge_runtime_identity()),
-            // Wrong-product URL must not be consumed for Edge-LLM resolution.
-            tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
-            ..PreviewBackendRequest::default()
-        })
-        .expect("tensorrt edge-llm resolution should succeed");
-
-        assert_eq!(
-            resolution.backend_policy,
-            BackendPolicy::allow_tensor_rt_edge_llm()
-        );
-        assert_eq!(
-            resolution.resolved_backend.selected_backend,
-            SelectedBackend::TensorRtEdgeLlm
-        );
-        assert_eq!(
-            resolution.edge_llm_backend,
-            Some(EdgeLlmConfig::server_completion(
-                "http://127.0.0.1:8090",
-                edge_runtime_identity()
-            ))
-        );
-        assert!(resolution.tensor_rt_llm_backend.is_none());
-    }
-
-    #[test]
-    fn preview_resolution_tensor_rt_edge_llm_requires_server_url() {
-        let error = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::TensorRtEdgeLlm,
-            tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
-            ..PreviewBackendRequest::default()
-        })
-        .expect_err("edge-llm must not accept tensor_rt_llm_server_url as a substitute");
-
-        assert_eq!(
-            error,
-            PreviewBackendResolutionError::MissingEdgeLlmServerUrl
-        );
-    }
-
-    #[test]
-    fn preview_resolution_tensor_rt_edge_llm_requires_runtime_identity() {
-        let error = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::TensorRtEdgeLlm,
-            edge_llm_server_url: Some("http://127.0.0.1:8090".to_string()),
-            ..PreviewBackendRequest::default()
-        })
-        .expect_err("edge-llm resolution must fail closed without runtime identity");
-
-        assert_eq!(
-            error,
-            PreviewBackendResolutionError::MissingEdgeLlmRuntimeIdentity
-        );
-    }
-
-    #[test]
-    fn preview_resolution_tensor_rt_llm_server_url_uses_sdk_contract() {
-        let resolution = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::TensorRtLlm,
-            tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
-            tensor_rt_llm_runtime_identity: Some(tensor_rt_llm_runtime_identity()),
-            ..PreviewBackendRequest::default()
-        })
-        .expect("tensorrt-llm resolution should succeed");
-
-        assert_eq!(
-            resolution.backend_policy,
-            BackendPolicy::allow_tensor_rt_llm()
-        );
-        assert_eq!(
-            resolution.resolved_backend,
-            ResolvedBackend::tensor_rt_llm(
-                "tensorrt-llm delegated backend explicitly requested by preview session config",
-            )
-        );
-        assert_eq!(
-            resolution.tensor_rt_llm_backend,
-            Some(EdgeLlmConfig::server_completion(
-                "http://127.0.0.1:8000",
-                tensor_rt_llm_runtime_identity()
-            ))
-        );
-        assert!(resolution.edge_llm_backend.is_none());
-        assert!(resolution.llama_backend.is_none());
-        assert!(resolution.mlx_lm_backend.is_none());
-        assert_eq!(
-            resolution.resolved_backend.selected_backend,
-            SelectedBackend::TensorRtLlm
-        );
-        assert_eq!(
-            resolution.resolved_backend.support_tier,
-            SupportTier::TensorRtLlm
-        );
-    }
-
-    #[test]
-    fn preview_resolution_tensor_rt_llm_requires_runtime_identity() {
-        let error = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::TensorRtLlm,
-            tensor_rt_llm_server_url: Some("http://127.0.0.1:8000".to_string()),
-            ..PreviewBackendRequest::default()
-        })
-        .expect_err("tensorrt-llm resolution must fail closed without runtime identity");
-
-        assert_eq!(
-            error,
-            PreviewBackendResolutionError::MissingTensorRtLlmRuntimeIdentity
-        );
-    }
-
-    #[test]
-    fn delegated_runtime_identity_trims_fields_and_rejects_unsafe_values() {
-        let identity = DelegatedRuntimeIdentity::new(" qwen3 ", " 1.2.1 ", " pytorch ")
-            .expect("trimmed identity should be valid")
-            .with_runtime_profile(Some(" cuda-linux-x86_64 ".to_string()))
-            .expect("trimmed profile should be valid");
-        assert_eq!(identity.upstream_model_id, "qwen3");
-        assert_eq!(identity.upstream_version, "1.2.1");
-        assert_eq!(identity.execution_backend, "pytorch");
-        assert_eq!(
-            identity.runtime_profile.as_deref(),
-            Some("cuda-linux-x86_64")
-        );
-
-        assert_eq!(
-            DelegatedRuntimeIdentity::new("qwen3", "", "pytorch"),
-            Err(DelegatedRuntimeIdentityError::EmptyField {
-                field: "upstream_version"
-            })
-        );
-        assert_eq!(
-            DelegatedRuntimeIdentity::new("qwen3", "1.2.1", "py\nTorch"),
-            Err(DelegatedRuntimeIdentityError::InvalidControlCharacter {
-                field: "execution_backend"
-            })
-        );
     }
 
     #[test]
     fn delegated_runtime_report_accepts_legacy_payload_without_execution_backend() {
         let report: DelegatedRuntimeReport = serde_json::from_value(serde_json::json!({
-            "provider": "vllm",
+            "provider": "legacy_provider",
             "upstream_model_id": "candidate",
             "readiness": "configured",
             "endpoint": {"authority": "loopback"}
@@ -1488,34 +941,6 @@ mod tests {
         assert!(
             payload.get("execution_backend").is_none(),
             "absent execution identity must remain omitted"
-        );
-    }
-
-    #[test]
-    fn preview_resolution_tensor_rt_llm_requires_server_url() {
-        let error = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::TensorRtLlm,
-            ..PreviewBackendRequest::default()
-        })
-        .expect_err("tensorrt-llm resolution should require a server URL");
-
-        assert_eq!(
-            error,
-            PreviewBackendResolutionError::MissingTensorRtLlmServerUrl
-        );
-    }
-
-    #[test]
-    fn rejects_tensor_rt_llm_under_mlx_only_policy() {
-        let resolved = ResolvedBackend::tensor_rt_llm("explicit desktop cuda route");
-
-        let error = resolved
-            .validate_against(&BackendPolicy::mlx_only())
-            .expect_err("MLX-only policy should reject tensorrt-llm");
-
-        assert_eq!(
-            error,
-            BackendContractError::MlxOnlyPolicyCannotResolveTensorRtLlm
         );
     }
 
