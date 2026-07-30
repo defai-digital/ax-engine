@@ -57,6 +57,9 @@ pub struct PipelineTopology {
     pub manifest_digest: String,
     pub model_artifact_digest: String,
     pub total_layers: u32,
+    /// Maximum number of independent request steps allowed to overlap across
+    /// pipeline stages. One request sequence is one stable micro-batch unit.
+    pub micro_batch_limit: u16,
     pub ranks: Vec<PipelineRankAssignment>,
 }
 
@@ -71,6 +74,9 @@ impl PipelineTopology {
         }
         if self.total_layers == 0 {
             return Err(PipelineContractError::ZeroLayers);
+        }
+        if self.micro_batch_limit == 0 {
+            return Err(PipelineContractError::ZeroMicroBatchLimit);
         }
         if self.ranks.len() < 2 || self.ranks.len() > usize::from(u16::MAX) {
             return Err(PipelineContractError::InvalidRankCount(self.ranks.len()));
@@ -479,6 +485,8 @@ pub enum PipelineContractError {
     ZeroGeneration,
     #[error("pipeline model must contain at least one transformer layer")]
     ZeroLayers,
+    #[error("pipeline micro_batch_limit must be greater than zero")]
+    ZeroMicroBatchLimit,
     #[error("static pipeline requires between 2 and 65535 ranks, got {0}")]
     InvalidRankCount(usize),
     #[error("ranks must be dense and ordered: expected {expected}, got {actual}")]
@@ -552,6 +560,7 @@ mod tests {
             manifest_digest: "manifest-sha256".into(),
             model_artifact_digest: "model-sha256".into(),
             total_layers: 4,
+            micro_batch_limit: 2,
             ranks: vec![
                 PipelineRankAssignment {
                     rank: 0,
@@ -612,6 +621,16 @@ mod tests {
                 expected_start: 2,
                 actual_start: 3,
             })
+        );
+    }
+
+    #[test]
+    fn topology_requires_a_bounded_pipeline_micro_batch() {
+        let mut topology = topology();
+        topology.micro_batch_limit = 0;
+        assert_eq!(
+            topology.validate(),
+            Err(PipelineContractError::ZeroMicroBatchLimit)
         );
     }
 
