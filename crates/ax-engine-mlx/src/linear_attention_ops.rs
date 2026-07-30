@@ -171,9 +171,10 @@ pub fn linear_attention_decode_post_input_metal(
     }
     let conv_state = cached_conv_state?;
     let qkv_shape = qkv.shape();
-    if qkv_shape.len() != 3 || qkv_shape[1] != 1 {
+    if qkv_shape.len() != 3 || !(1..=4).contains(&qkv_shape[1]) {
         return None;
     }
+    let seq = qkv_shape[1];
     if cfg.key_head_dim != cfg.value_head_dim {
         return None;
     }
@@ -198,7 +199,7 @@ pub fn linear_attention_decode_post_input_metal(
 
     let kernel = DECODE_POST_INPUT_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_qwen_linear_attention_decode_post_input_v1",
+            "ax_qwen_linear_attention_decode_post_input_v2",
             &[
                 "qkv",
                 "conv_weight",
@@ -229,15 +230,15 @@ pub fn linear_attention_decode_post_input_metal(
         ],
         &[
             KernelOutputSpec {
-                shape: vec![batch, 1, cfg.num_key_heads as i32, head_dim],
+                shape: vec![batch, seq, cfg.num_key_heads as i32, head_dim],
                 dtype: qkv.dtype(),
             },
             KernelOutputSpec {
-                shape: vec![batch, 1, cfg.num_key_heads as i32, head_dim],
+                shape: vec![batch, seq, cfg.num_key_heads as i32, head_dim],
                 dtype: qkv.dtype(),
             },
             KernelOutputSpec {
-                shape: vec![batch, 1, cfg.num_value_heads as i32, head_dim],
+                shape: vec![batch, seq, cfg.num_value_heads as i32, head_dim],
                 dtype: qkv.dtype(),
             },
             KernelOutputSpec {
@@ -265,6 +266,10 @@ pub fn linear_attention_decode_post_input_metal(
             KernelTemplateArg::Int {
                 name: "ConvKernelDim",
                 value: cfg.conv_kernel_dim as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "Seq",
+                value: seq,
             },
         ],
         (head_dim, 1, batch * groups),
@@ -379,6 +384,76 @@ pub fn gated_delta_kernel(
     b_raw: &MlxArray,
     state: &MlxArray,
 ) -> (MlxArray, MlxArray) {
+    gated_delta_kernel_impl(q, k, v, a_log, a_raw, dt_bias, b_raw, state)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gated_delta_kernel_with_prefix_checkpoint(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
+    state: &MlxArray,
+    checkpoint_after: usize,
+) -> (MlxArray, MlxArray, MlxArray) {
+    assert_eq!(
+        checkpoint_after, 1,
+        "lazy gated-delta checkpoint currently supports the first token only"
+    );
+    let q_shape = q.shape();
+    let v_shape = v.shape();
+    assert!(
+        q_shape[1] > 1,
+        "gated-delta prefix checkpoint requires a multi-token sequence"
+    );
+    let batch = q_shape[0];
+    let num_key_heads = q_shape[2];
+    let key_head_dim = q_shape[3];
+    let num_value_heads = v_shape[2];
+    let value_head_dim = v_shape[3];
+    assert_eq!(
+        batch, 1,
+        "lazy gated-delta checkpoint currently supports decode batch 1 only"
+    );
+    // The decode kernel's pointer arithmetic deliberately addresses the first
+    // sequence row and its output spec fixes T=1. The speculative verifier's
+    // q/k/v/a/b tensors are contiguous, so passing the full T>1 buffers avoids
+    // five slice+contiguous materialisations per linear-attention layer while
+    // preserving exactly the same row-0 arithmetic.
+    let (_, checkpoint) = gated_delta_decode_kernel(
+        q,
+        k,
+        v,
+        a_log,
+        a_raw,
+        dt_bias,
+        b_raw,
+        state,
+        batch,
+        num_key_heads,
+        key_head_dim,
+        num_value_heads,
+        value_head_dim,
+        state.shape(),
+    );
+    let (output, final_state) = gated_delta_kernel(q, k, v, a_log, a_raw, dt_bias, b_raw, state);
+    (output, final_state, checkpoint)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gated_delta_kernel_impl(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
+    state: &MlxArray,
+) -> (MlxArray, MlxArray) {
     let q_shape = q.shape();
     let v_shape = v.shape();
     let state_shape = state.shape();
@@ -472,7 +547,6 @@ pub fn gated_delta_kernel(
             true,
         )
     });
-
     let outputs = kernel.apply_with_template(
         &[q, k, v, a_log, a_raw, dt_bias, b_raw, state, &seq_i32],
         &[
@@ -983,48 +1057,64 @@ const DECODE_POST_INPUT_KERNEL_SOURCE: &str = r#"
       channel = 2 * KeyDim + (group_idx - 2 * Hk) * HeadDim + lane;
     }
 
-    auto qkv_b = qkv + batch_idx * ConvDim;
+    auto qkv_b = qkv + batch_idx * Seq * ConvDim;
     auto state_b = conv_state + batch_idx * TailLen * ConvDim;
     auto new_state_b = new_conv_state + batch_idx * TailLen * ConvDim;
 
-    float acc = static_cast<float>(qkv_b[channel]) *
-        static_cast<float>(conv_weight[channel * ConvKernelDim + TailLen]);
+    float tail[ConvKernelDim];
     for (int t = 0; t < TailLen; ++t) {
-      acc += static_cast<float>(state_b[t * ConvDim + channel]) *
-          static_cast<float>(conv_weight[channel * ConvKernelDim + t]);
-    }
-    float activated = acc / (1.0f + exp(-acc));
-
-    for (int t = 0; t < TailLen - 1; ++t) {
-      new_state_b[t * ConvDim + channel] = state_b[(t + 1) * ConvDim + channel];
-    }
-    if (TailLen > 0) {
-      new_state_b[(TailLen - 1) * ConvDim + channel] =
-          static_cast<T>(qkv_b[channel]);
+      tail[t] = static_cast<float>(state_b[t * ConvDim + channel]);
     }
 
-    if (is_q || is_k) {
-      squares[lane] = activated * activated;
-      threadgroup_barrier(mem_flags::mem_threadgroup);
-      for (int stride = HeadDim >> 1; stride > 0; stride >>= 1) {
-        if (lane < stride) {
-          squares[lane] += squares[lane + stride];
+    for (int token = 0; token < Seq; ++token) {
+      auto qkv_t = qkv_b + token * ConvDim;
+      float acc = static_cast<float>(qkv_t[channel]) *
+          static_cast<float>(conv_weight[channel * ConvKernelDim + TailLen]);
+      for (int t = 0; t < TailLen; ++t) {
+        acc += tail[t] *
+            static_cast<float>(conv_weight[channel * ConvKernelDim + t]);
+      }
+      float activated = acc / (1.0f + exp(-acc));
+
+      if (is_q || is_k) {
+        squares[lane] = activated * activated;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (int stride = HeadDim >> 1; stride > 0; stride >>= 1) {
+          if (lane < stride) {
+            squares[lane] += squares[lane + stride];
+          }
+          threadgroup_barrier(mem_flags::mem_threadgroup);
         }
+        float norm_scale =
+            rsqrt(squares[0] / static_cast<float>(HeadDim) + eps[0]);
+        if (is_q) {
+          int head = group_idx;
+          q[((batch_idx * Seq + token) * Hk + head) * HeadDim + lane] =
+              static_cast<T>(activated * norm_scale * q_scale[0]);
+        } else {
+          int head = group_idx - Hk;
+          k[((batch_idx * Seq + token) * Hk + head) * HeadDim + lane] =
+              static_cast<T>(activated * norm_scale * k_scale[0]);
+        }
+      } else {
+        int head = group_idx - 2 * Hk;
+        v[((batch_idx * Seq + token) * Hv + head) * HeadDim + lane] =
+            static_cast<T>(activated);
+      }
+
+      if ((is_q || is_k) && token + 1 < Seq) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
       }
-      float norm_scale = rsqrt(squares[0] / static_cast<float>(HeadDim) + eps[0]);
-      if (is_q) {
-        int head = group_idx;
-        q[(batch_idx * Hk + head) * HeadDim + lane] =
-            static_cast<T>(activated * norm_scale * q_scale[0]);
-      } else {
-        int head = group_idx - Hk;
-        k[(batch_idx * Hk + head) * HeadDim + lane] =
-            static_cast<T>(activated * norm_scale * k_scale[0]);
+      for (int t = 0; t < TailLen - 1; ++t) {
+        tail[t] = tail[t + 1];
       }
-    } else {
-      int head = group_idx - 2 * Hk;
-      v[(batch_idx * Hv + head) * HeadDim + lane] = static_cast<T>(activated);
+      if (TailLen > 0) {
+        tail[TailLen - 1] = static_cast<float>(qkv_t[channel]);
+      }
+    }
+
+    for (int t = 0; t < TailLen; ++t) {
+      new_state_b[t * ConvDim + channel] = static_cast<T>(tail[t]);
     }
 "#;
 
@@ -1698,6 +1788,63 @@ mod tests {
     }
 
     #[test]
+    fn gated_delta_prefix_checkpoint_matches_first_singleton_state() {
+        const SEQ: usize = 2;
+        const KEY_HEAD_DIM: usize = 32;
+        const VALUE_HEAD_DIM: usize = 4;
+        let q_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.03)
+            .collect();
+        let k_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 5) as f32 - 2.0) * 0.02)
+            .collect();
+        let v_data = vec![0.10, -0.05, 0.07, 0.03, -0.02, 0.04, 0.08, -0.06];
+        let a_log_data = vec![-0.2];
+        let a_raw_data = vec![0.1, -0.15];
+        let dt_bias_data = vec![0.05];
+        let b_raw_data = vec![0.25, -0.1];
+        let state_data: Vec<f32> = (0..VALUE_HEAD_DIM * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 11) as f32 - 5.0) * 0.005)
+            .collect();
+        let (_, expected_checkpoint) = gated_delta_cpu_reference(
+            &q_data[..KEY_HEAD_DIM],
+            &k_data[..KEY_HEAD_DIM],
+            &v_data[..VALUE_HEAD_DIM],
+            &a_log_data,
+            &a_raw_data[..1],
+            &dt_bias_data,
+            &b_raw_data[..1],
+            &state_data,
+            1,
+            KEY_HEAD_DIM,
+            VALUE_HEAD_DIM,
+        );
+        let q = f32_array(&q_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let k = f32_array(&k_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let v = f32_array(&v_data, &[1, SEQ as i32, 1, VALUE_HEAD_DIM as i32]);
+        let a_log = f32_array(&a_log_data, &[1]);
+        let a_raw = f32_array(&a_raw_data, &[1, SEQ as i32, 1]);
+        let dt_bias = f32_array(&dt_bias_data, &[1]);
+        let b_raw = f32_array(&b_raw_data, &[1, SEQ as i32, 1]);
+        let state = f32_array(
+            &state_data,
+            &[1, 1, VALUE_HEAD_DIM as i32, KEY_HEAD_DIM as i32],
+        );
+
+        let (output, final_state, checkpoint) = gated_delta_kernel_with_prefix_checkpoint(
+            &q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state, 1,
+        );
+        mlx_sys::eval(&[&output, &final_state, &checkpoint]);
+
+        assert_close(
+            "prefix_checkpoint",
+            checkpoint.data_f32(),
+            &expected_checkpoint,
+            1e-6,
+        );
+    }
+
+    #[test]
     fn normalize_linear_attention_qk_preserves_reference_shapes() {
         let (q_scale, k_scale) = linear_attention_qk_scale(32);
         let cfg = LinearAttentionConfig {
@@ -1722,7 +1869,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_post_input_metal_matches_portable_composition() {
+    fn decode_post_input_metal_matches_portable_composition_for_short_sequences() {
         let (q_scale, k_scale) = linear_attention_qk_scale(32);
         let cfg = LinearAttentionConfig {
             full_attention_interval: 4,
@@ -1735,71 +1882,83 @@ mod tests {
             k_scale,
         };
         let conv_dim = cfg.conv_dim();
-        let qkv_data: Vec<f32> = (0..conv_dim)
-            .map(|idx| ((idx % 17) as f32 - 8.0) * 0.01)
-            .collect();
         let state_data: Vec<f32> = (0..3 * conv_dim)
             .map(|idx| ((idx % 13) as f32 - 6.0) * 0.005)
             .collect();
         let weight_data: Vec<f32> = (0..conv_dim * cfg.conv_kernel_dim)
             .map(|idx| ((idx % 7) as f32 - 3.0) * 0.02)
             .collect();
-        let qkv = f32_array(&qkv_data, &[1, 1, conv_dim as i32]);
-        let state = f32_array(&state_data, &[1, 3, conv_dim as i32]);
         let weight = f32_array(
             &weight_data,
             &[conv_dim as i32, cfg.conv_kernel_dim as i32, 1],
         );
 
-        let (conv_out, portable_state) = linear_attention_conv1d(&cfg, &qkv, &weight, Some(&state));
-        let split = split_linear_attention_qkv(&cfg, &conv_out);
-        let (portable_q, portable_k) =
-            normalize_linear_attention_qk(&cfg, &split.q, &split.k, 1e-6);
-        let (metal_q, metal_k, metal_v, metal_state) = linear_attention_decode_post_input_metal(
-            &cfg,
-            &qkv,
-            &weight,
-            Some(&state),
-            q_scale,
-            k_scale,
-            1e-6,
-        )
-        .expect("decode post-input Metal path should accept Qwen-like shape");
-        mlx_sys::eval(&[
-            &portable_q,
-            &portable_k,
-            &split.v,
-            &portable_state,
-            &metal_q,
-            &metal_k,
-            &metal_v,
-            &metal_state,
-        ]);
+        for seq in 1..=4 {
+            let qkv_data: Vec<f32> = (0..seq * conv_dim)
+                .map(|idx| ((idx % 17) as f32 - 8.0) * 0.01)
+                .collect();
+            let qkv = f32_array(&qkv_data, &[1, seq as i32, conv_dim as i32]);
+            let state = f32_array(&state_data, &[1, 3, conv_dim as i32]);
+            let (conv_out, portable_state) =
+                linear_attention_conv1d(&cfg, &qkv, &weight, Some(&state));
+            let split = split_linear_attention_qkv(&cfg, &conv_out);
+            let (portable_q, portable_k) =
+                normalize_linear_attention_qk(&cfg, &split.q, &split.k, 1e-6);
+            let (metal_q, metal_k, metal_v, metal_state) =
+                linear_attention_decode_post_input_metal(
+                    &cfg,
+                    &qkv,
+                    &weight,
+                    Some(&state),
+                    q_scale,
+                    k_scale,
+                    1e-6,
+                )
+                .expect("decode post-input Metal path should accept Qwen-like shape");
+            let portable_q = mlx_sys::contiguous(&portable_q, None);
+            let portable_k = mlx_sys::contiguous(&portable_k, None);
+            let portable_v = mlx_sys::contiguous(&split.v, None);
+            let portable_state = mlx_sys::contiguous(&portable_state, None);
+            let metal_q = mlx_sys::contiguous(&metal_q, None);
+            let metal_k = mlx_sys::contiguous(&metal_k, None);
+            let metal_v = mlx_sys::contiguous(&metal_v, None);
+            let metal_state = mlx_sys::contiguous(&metal_state, None);
+            mlx_sys::eval(&[
+                &portable_q,
+                &portable_k,
+                &portable_v,
+                &portable_state,
+                &metal_q,
+                &metal_k,
+                &metal_v,
+                &metal_state,
+            ]);
 
-        assert_close(
-            "decode_post_input_q",
-            metal_q.data_f32(),
-            portable_q.data_f32(),
-            1e-5,
-        );
-        assert_close(
-            "decode_post_input_k",
-            metal_k.data_f32(),
-            portable_k.data_f32(),
-            1e-5,
-        );
-        assert_close(
-            "decode_post_input_v",
-            metal_v.data_f32(),
-            split.v.data_f32(),
-            1e-5,
-        );
-        assert_close(
-            "decode_post_input_state",
-            metal_state.data_f32(),
-            portable_state.data_f32(),
-            1e-6,
-        );
+            assert_close(
+                &format!("decode_post_input_q_seq{seq}"),
+                metal_q.data_f32(),
+                portable_q.data_f32(),
+                1e-5,
+            );
+            assert_close(
+                &format!("decode_post_input_k_seq{seq}"),
+                metal_k.data_f32(),
+                portable_k.data_f32(),
+                1e-5,
+            );
+            assert_close(
+                &format!("decode_post_input_v_seq{seq}"),
+                metal_v.data_f32(),
+                portable_v.data_f32(),
+                1e-5,
+            );
+            assert_close(
+                &format!("decode_post_input_state_seq{seq}"),
+                metal_state.data_f32(),
+                portable_state.data_f32(),
+                1e-6,
+            );
+        }
     }
 
     #[test]

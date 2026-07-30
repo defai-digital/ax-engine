@@ -657,6 +657,10 @@ struct LinearLayerState {
     conv_state: Option<MlxArray>,
     /// Qwen3.5 gated-delta recurrent state: `[1, value_heads, value_dim, key_dim]`.
     recurrent_state: Option<MlxArray>,
+    /// Transient verifier checkpoint after a committed prefix.
+    prefix_conv_state: Option<MlxArray>,
+    /// Transient verifier checkpoint after a committed prefix.
+    prefix_recurrent_state: Option<MlxArray>,
 }
 
 /// Destructor compatible with [`MlxArray::from_managed_data`]. Recovers
@@ -810,6 +814,10 @@ pub struct MlxKVCache {
     layers: Vec<Option<FaLayerStorage>>,
     glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
     linear_layers: Vec<LinearLayerState>,
+    /// Number of tokens after which a speculative verifier should capture each
+    /// linear-attention layer's transient state. Checkpoints are intentionally
+    /// excluded from durable snapshots and ordinary cache clones.
+    linear_prefix_capture_after: Option<usize>,
     /// Current logical sequence length (token count cached). Private so
     /// every mutation goes through [`Self::advance`] / [`Self::set_seq_len`]
     /// — the historical footgun was call sites bumping this field out of
@@ -901,10 +909,16 @@ impl Clone for MlxKVCache {
             pool.retain(&ids)
                 .expect("paged cache clone must retain valid physical block IDs");
         }
+        let mut linear_layers = self.linear_layers.clone();
+        for state in &mut linear_layers {
+            state.prefix_conv_state = None;
+            state.prefix_recurrent_state = None;
+        }
         Self {
             layers: self.layers.clone(),
             glm_mla_layers: self.glm_mla_layers.clone(),
-            linear_layers: self.linear_layers.clone(),
+            linear_layers,
+            linear_prefix_capture_after: None,
             seq_len: self.seq_len,
             rope_offset: self.rope_offset,
             mrope_position_delta: self.mrope_position_delta,
@@ -985,6 +999,7 @@ impl MlxKVCache {
             linear_layers: (0..num_layers)
                 .map(|_| LinearLayerState::default())
                 .collect(),
+            linear_prefix_capture_after: None,
             seq_len: 0,
             rope_offset: 0,
             mrope_position_delta: 0,
@@ -1017,6 +1032,7 @@ impl MlxKVCache {
             linear_layers: (0..num_layers)
                 .map(|_| LinearLayerState::default())
                 .collect(),
+            linear_prefix_capture_after: None,
             seq_len: 0,
             rope_offset: 0,
             mrope_position_delta: 0,
@@ -1850,6 +1866,8 @@ impl MlxKVCache {
                     cache.linear_layers[idx] = LinearLayerState {
                         conv_state,
                         recurrent_state,
+                        prefix_conv_state: None,
+                        prefix_recurrent_state: None,
                     };
                 }
                 other => return Err(MlxKVCacheSerializeError::UnknownLayerKind(other)),
@@ -3121,6 +3139,78 @@ impl MlxKVCache {
         let state = &mut self.linear_layers[layer];
         state.conv_state = Some(conv_state);
         state.recurrent_state = Some(recurrent_state);
+        if self.linear_prefix_capture_after.is_none() {
+            state.prefix_conv_state = None;
+            state.prefix_recurrent_state = None;
+        }
+    }
+
+    /// Begin one transient speculative-verifier checkpoint across every
+    /// linear-attention layer. The capture is not part of clone or wire state.
+    pub fn begin_linear_prefix_capture(&mut self, after_tokens: usize) {
+        assert!(
+            after_tokens > 0,
+            "linear prefix capture must follow a token"
+        );
+        for state in &mut self.linear_layers {
+            state.prefix_conv_state = None;
+            state.prefix_recurrent_state = None;
+        }
+        self.linear_prefix_capture_after = Some(after_tokens);
+    }
+
+    pub(crate) fn linear_prefix_capture_after(&self) -> Option<usize> {
+        self.linear_prefix_capture_after
+    }
+
+    /// Store the transient state requested by [`Self::begin_linear_prefix_capture`].
+    pub(crate) fn set_linear_prefix_checkpoint(
+        &mut self,
+        layer: usize,
+        conv_state: MlxArray,
+        recurrent_state: MlxArray,
+    ) {
+        assert!(
+            self.linear_prefix_capture_after.is_some(),
+            "linear prefix checkpoint requires an active capture"
+        );
+        let state = &mut self.linear_layers[layer];
+        state.prefix_conv_state = Some(conv_state);
+        state.prefix_recurrent_state = Some(recurrent_state);
+    }
+
+    /// Replace final verifier states with the captured committed-prefix states.
+    ///
+    /// Returns false without mutating any layer when the capture is incomplete.
+    #[must_use]
+    pub fn restore_linear_prefix_checkpoint(&mut self) -> bool {
+        if self.linear_prefix_capture_after.is_none() {
+            return false;
+        }
+        let complete = self.linear_layers.iter().all(|state| {
+            let active = state.conv_state.is_some() || state.recurrent_state.is_some();
+            !active || (state.prefix_conv_state.is_some() && state.prefix_recurrent_state.is_some())
+        });
+        if !complete {
+            return false;
+        }
+        for state in &mut self.linear_layers {
+            if state.conv_state.is_some() || state.recurrent_state.is_some() {
+                state.conv_state = state.prefix_conv_state.take();
+                state.recurrent_state = state.prefix_recurrent_state.take();
+            }
+        }
+        self.linear_prefix_capture_after = None;
+        true
+    }
+
+    /// Drop a transient verifier checkpoint after the final state is committed.
+    pub fn clear_linear_prefix_checkpoint(&mut self) {
+        for state in &mut self.linear_layers {
+            state.prefix_conv_state = None;
+            state.prefix_recurrent_state = None;
+        }
+        self.linear_prefix_capture_after = None;
     }
 
     /// Read K/V already written by `source_layer` during the current forward pass.
@@ -3390,6 +3480,7 @@ impl MlxKVCache {
         for state in &mut self.linear_layers {
             *state = LinearLayerState::default();
         }
+        self.linear_prefix_capture_after = None;
         self.seq_len = 0;
         self.rope_offset = 0;
         self.mrope_position_delta = 0;
@@ -3479,6 +3570,50 @@ mod tests {
         let (conv_state, recurrent_state) = branch.linear_state(0);
         assert!(conv_state.is_some());
         assert!(recurrent_state.is_some());
+    }
+
+    #[test]
+    fn linear_prefix_checkpoint_restores_complete_transient_state() {
+        let shaped = |value: f32, shape: &[i32]| {
+            let count = shape.iter().map(|dim| *dim as usize).product();
+            mlx_sys::reshape(&MlxArray::from_f32_slice(&vec![value; count]), shape, None)
+        };
+        let mut cache = MlxKVCache::new(1);
+        cache.set_linear_state(0, shaped(1.0, &[1, 2, 3]), shaped(2.0, &[1, 2, 2, 2]));
+        cache.begin_linear_prefix_capture(1);
+        cache.set_linear_prefix_checkpoint(0, shaped(3.0, &[1, 2, 3]), shaped(4.0, &[1, 2, 2, 2]));
+        cache.set_linear_state(0, shaped(5.0, &[1, 2, 3]), shaped(6.0, &[1, 2, 2, 2]));
+
+        assert!(cache.restore_linear_prefix_checkpoint());
+        assert_eq!(cache.linear_prefix_capture_after(), None);
+        let (conv, recurrent) = cache.linear_state(0);
+        let conv = conv.expect("restored conv state");
+        let recurrent = recurrent.expect("restored recurrent state");
+        eval(&[conv, recurrent]);
+        assert!(conv.data_f32().iter().all(|value| *value == 3.0));
+        assert!(recurrent.data_f32().iter().all(|value| *value == 4.0));
+    }
+
+    #[test]
+    fn clone_drops_transient_linear_prefix_checkpoint() {
+        let mut cache = MlxKVCache::new(1);
+        cache.set_linear_state(
+            0,
+            zeros(&[1, 2, 3], MlxDtype::Float32, None),
+            zeros(&[1, 2, 2, 2], MlxDtype::Float32, None),
+        );
+        cache.begin_linear_prefix_capture(1);
+        cache.set_linear_prefix_checkpoint(
+            0,
+            zeros(&[1, 2, 3], MlxDtype::Float32, None),
+            zeros(&[1, 2, 2, 2], MlxDtype::Float32, None),
+        );
+
+        let mut branch = cache.clone();
+        assert_eq!(branch.linear_prefix_capture_after(), None);
+        assert!(!branch.restore_linear_prefix_checkpoint());
+        let (conv, recurrent) = branch.linear_state(0);
+        assert!(conv.is_some() && recurrent.is_some());
     }
 
     #[test]

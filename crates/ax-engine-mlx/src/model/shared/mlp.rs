@@ -1235,6 +1235,7 @@ fn qwen_dense_ffn_gate_up_swiglu_metal(
     up: &QuantizedWeight,
 ) -> Option<MlxArray> {
     if !fastpath::qwen_dense_ffn_gate_up_matvec_metal_enabled()
+        || fastpath::qwen_linear_mtp_exact_enabled()
         || cfg.uses_geglu
         || !cfg.model_family.starts_with("qwen")
     {
@@ -2902,6 +2903,10 @@ fn prefer_split_dense_ffn_gate_up(
     leading_elements: i64,
     has_split_gate_up: bool,
 ) -> bool {
+    let qwen_speculative_row_exact = fastpath::qwen_linear_mtp_exact_enabled()
+        && qwen_dense_ffn
+        && leading_elements > 1
+        && leading_elements <= 4;
     // Gemma4 long-prefill historically preferred split gate/up (two qmatmuls)
     // over packed fixed-shape. Kill-switch `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN=0`
     // forces packed + prefill-compile for pure thr A/B on M5 (S1 residual).
@@ -2910,7 +2915,9 @@ fn prefer_split_dense_ffn_gate_up(
         && leading_elements >= i64::from(GEMMA4_SPLIT_PREFILL_MIN_SEQ)
         && gemma4_split_prefill_ffn_enabled();
     has_split_gate_up
-        && ((qwen_dense_ffn && seq == 1 && leading_elements == 1) || gemma4_split_prefill)
+        && ((qwen_dense_ffn && seq == 1 && leading_elements == 1)
+            || qwen_speculative_row_exact
+            || gemma4_split_prefill)
 }
 
 fn gemma4_split_prefill_ffn_enabled() -> bool {

@@ -172,14 +172,30 @@ impl MtpTelemetry {
             .saturating_add(saturating_u32(accepted));
         self.decode_steps = self.decode_steps.saturating_add(1);
         const ALPHA: f32 = 0.05;
+        const CUMULATIVE_WARMUP_SAMPLES: u32 = 20;
+        let update_rate = |current: f32, samples: u32, observation: f32| {
+            if samples == 0 {
+                observation
+            } else if samples < CUMULATIVE_WARMUP_SAMPLES {
+                // An EWMA initialized from the first observation is strongly
+                // order-biased: one cold miss followed by seven accepts is
+                // still only 0.30 with alpha=0.05 and trips the eight-sample
+                // bypass despite 87.5% observed acceptance. Use an exact
+                // cumulative mean for the short admission window, then switch
+                // to EWMA once it has a representative prior.
+                (current * samples as f32 + observation) / (samples + 1) as f32
+            } else {
+                (1.0 - ALPHA) * current + ALPHA * observation
+            }
+        };
         if drafted > 0 {
             let ewma_ac = ewma_accepted.unwrap_or(accepted);
             let step_rate = ewma_ac as f32 / drafted as f32;
-            if self.accept_rate_ewma_samples == 0 {
-                self.accept_rate_ewma = step_rate;
-            } else {
-                self.accept_rate_ewma = (1.0 - ALPHA) * self.accept_rate_ewma + ALPHA * step_rate;
-            }
+            self.accept_rate_ewma = update_rate(
+                self.accept_rate_ewma,
+                self.accept_rate_ewma_samples,
+                step_rate,
+            );
             self.accept_rate_ewma_samples = self.accept_rate_ewma_samples.saturating_add(1);
         }
         // Cascade-correct MTP-only EWMA: in sequential spec decoding, an n-gram
@@ -210,12 +226,11 @@ impl MtpTelemetry {
         let mtp_only_drafted = mtp_only_accepted_count + usize::from(first_rejection_is_mtp);
         if mtp_only_drafted > 0 {
             let mtp_step_rate = mtp_ewma_numerator as f32 / mtp_only_drafted as f32;
-            if self.mtp_only_accept_rate_ewma_samples == 0 {
-                self.mtp_only_accept_rate_ewma = mtp_step_rate;
-            } else {
-                self.mtp_only_accept_rate_ewma =
-                    (1.0 - ALPHA) * self.mtp_only_accept_rate_ewma + ALPHA * mtp_step_rate;
-            }
+            self.mtp_only_accept_rate_ewma = update_rate(
+                self.mtp_only_accept_rate_ewma,
+                self.mtp_only_accept_rate_ewma_samples,
+                mtp_step_rate,
+            );
             self.mtp_only_accept_rate_ewma_samples =
                 self.mtp_only_accept_rate_ewma_samples.saturating_add(1);
         }

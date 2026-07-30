@@ -9,7 +9,7 @@ use crate::sampling::{
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
-    ModelConfig, forward, forward_all_positions, forward_all_positions_update_cache,
+    ModelConfig, forward, forward_all_positions, forward_all_positions_update_cache, forward_argmax,
 };
 use crate::weights::ModelWeights;
 
@@ -1388,6 +1388,38 @@ pub(crate) fn recompute_committed_prefix(
     cache.advance(commit_input.len());
     let kv_refs = cache.collect_eval_refs();
     eval(&kv_refs);
+}
+
+/// Replay a committed linear-attention prefix and return the production-route next-token argmax.
+///
+/// A multi-token speculative verifier can choose a different argmax than the
+/// single-token production route because recurrent linear-attention reductions
+/// use a different graph shape. Replay each committed token through the same
+/// singleton `forward_argmax` route used by the direct decode pipeline, then
+/// materialize its final argmax in the same eval batch as the cache. This both
+/// restores recurrent state and prevents a stale batched-verifier argmax from
+/// becoming the correction token after rejection.
+pub(crate) fn recompute_committed_prefix_with_argmax(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    last_token: u32,
+    accepted_draft: &[u32],
+    token_offset: usize,
+) -> u32 {
+    let mut last_logits = forward_argmax(cfg, weights, &[last_token], cache, token_offset);
+    cache.advance(1);
+    for (index, &token) in accepted_draft.iter().enumerate() {
+        last_logits = forward_argmax(cfg, weights, &[token], cache, token_offset + index + 1);
+        cache.advance(1);
+    }
+    let direct_argmax = argmax(&last_logits, None);
+    let kv_refs = cache.collect_eval_refs();
+    let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+    targets.push(&direct_argmax);
+    targets.extend(kv_refs);
+    eval(&targets);
+    direct_argmax.data_u32().first().copied().unwrap_or(0)
 }
 
 /// Sample token at `pos` in the flattened `[verify_len, vocab]` logit buffer.

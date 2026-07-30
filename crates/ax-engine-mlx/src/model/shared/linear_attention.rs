@@ -1,6 +1,6 @@
 use mlx_sys::{
     MlxArray, MlxDtype, concatenate, qwen_linear_attention_inputs_packed,
-    qwen_linear_attention_post_input, reshape, slice_last_dim, zeros,
+    qwen_linear_attention_post_input, reshape, slice, slice_last_dim, zeros,
 };
 use std::time::Instant;
 
@@ -26,9 +26,9 @@ use crate::batched_linear_state::BatchedLinearState;
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::{
-    gated_delta_kernel, linear_attention_conv1d, linear_attention_decode_post_input_metal,
-    normalize_linear_attention_qk, rms_norm_gated_with_full_gate_policy,
-    split_linear_attention_qkv,
+    gated_delta_kernel, gated_delta_kernel_with_prefix_checkpoint, linear_attention_conv1d,
+    linear_attention_decode_post_input_metal, normalize_linear_attention_qk,
+    rms_norm_gated_with_full_gate_policy, split_linear_attention_qkv,
 };
 use crate::weights::{LayerWeights, LinearAttentionWeights};
 
@@ -74,6 +74,11 @@ pub(crate) fn linear_attention_forward(
     );
 
     let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
+    let prefix_capture_after = cache
+        .linear_prefix_capture_after()
+        .filter(|after| *after < seq as usize);
+    let prefix_conv_state = prefix_capture_after
+        .and_then(|after| linear_attention_conv_prefix_state(linear_cfg, &qkv, conv_state, after));
     let (q, k, v, new_conv_state) =
         linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, conv_state, profile_enabled);
     // `a_log` and `dt_bias` are pre-cast to f32 at weight-load time (see
@@ -99,8 +104,25 @@ pub(crate) fn linear_attention_forward(
     });
     // g and beta are computed inside the Metal kernel (fused) instead of as separate
     // lazy MLX ops, eliminating ~8 kernel dispatches per layer.
-    let (out, new_recurrent_state) =
-        gated_delta_kernel(&q, &k, &v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
+    let (out, new_recurrent_state, prefix_recurrent_state) =
+        if let Some(after) = prefix_capture_after {
+            let (out, new_state, prefix_state) = gated_delta_kernel_with_prefix_checkpoint(
+                &q,
+                &k,
+                &v,
+                &a_log_f32,
+                &a,
+                &dt_bias_f32,
+                &b,
+                &state,
+                after,
+            );
+            (out, new_state, Some(prefix_state))
+        } else {
+            let (out, new_state) =
+                gated_delta_kernel(&q, &k, &v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
+            (out, new_state, None)
+        };
     linear_attention_profile_eval_elapsed(
         profile_enabled,
         LinearAttentionProfileStage::Recurrent,
@@ -108,6 +130,9 @@ pub(crate) fn linear_attention_forward(
         &[&out, &new_recurrent_state],
     );
     cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
+    if let (Some(conv_state), Some(recurrent_state)) = (prefix_conv_state, prefix_recurrent_state) {
+        cache.set_linear_prefix_checkpoint(layer_idx, conv_state, recurrent_state);
+    }
 
     let profile_started = Instant::now();
     let out = rms_norm_gated_with_full_gate_policy(
@@ -126,6 +151,39 @@ pub(crate) fn linear_attention_forward(
         &[&out],
     );
     out
+}
+
+fn linear_attention_conv_prefix_state(
+    cfg: &LinearAttentionConfig,
+    qkv: &MlxArray,
+    cached_conv_state: Option<&MlxArray>,
+    after_tokens: usize,
+) -> Option<MlxArray> {
+    let cached = cached_conv_state?;
+    let shape = qkv.shape();
+    if shape.len() != 3 || after_tokens == 0 || after_tokens >= shape[1] as usize {
+        return None;
+    }
+    let batch = shape[0];
+    let conv_dim = cfg.conv_dim() as i32;
+    let tail_len = cfg.conv_kernel_dim as i32 - 1;
+    if shape[2] != conv_dim || cached.shape() != vec![batch, tail_len, conv_dim] {
+        return None;
+    }
+    if tail_len == 0 {
+        return Some(zeros(&[batch, 0, conv_dim], qkv.dtype(), None));
+    }
+    let after = after_tokens as i32;
+    let prefix = slice(qkv, &[0, 0, 0], &[batch, after, conv_dim], &[1, 1, 1], None);
+    let combined = concatenate(&[cached, &prefix], 1, None);
+    let total = tail_len + after;
+    Some(slice(
+        &combined,
+        &[0, total - tail_len, 0],
+        &[batch, total, conv_dim],
+        &[1, 1, 1],
+        None,
+    ))
 }
 
 /// Batched (leading dim `B`) linear-attention decode forward — Phase 3.7.
@@ -369,7 +427,11 @@ fn linear_attention_post_input(
     let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(cfg)
         && fastpath::qwen_direct_cpp_linear_attention_post_input_enabled();
     let seq = qkv.shape().get(1).copied().unwrap_or_default();
-    if seq == 1 && fastpath::qwen_linear_attention_decode_post_input_metal_enabled() {
+    let speculative_multi_token =
+        (2..=4).contains(&seq) && fastpath::qwen_linear_mtp_exact_enabled();
+    if (seq == 1 || speculative_multi_token)
+        && fastpath::qwen_linear_attention_decode_post_input_metal_enabled()
+    {
         record_linear_attention_decode_post_input_metal_attempt();
         if profile_enabled {
             record_linear_attention_decode_post_input_metal_profile_blocked();
@@ -448,8 +510,11 @@ pub(crate) fn linear_attention_inputs(
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
     if let (Some(qkvz_w), Some(ba_w)) = (&w.in_proj_qkvz, &w.in_proj_ba) {
         let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(model_cfg)
-            && fastpath::qwen_direct_cpp_linear_attention_inputs_enabled();
-        if fastpath::direct_cpp_linear_attention_inputs_enabled() || qwen_default_enabled {
+            && fastpath::qwen_direct_cpp_linear_attention_inputs_enabled()
+            && !fastpath::qwen_linear_mtp_exact_enabled();
+        if !fastpath::qwen_linear_mtp_exact_enabled()
+            && (fastpath::direct_cpp_linear_attention_inputs_enabled() || qwen_default_enabled)
+        {
             record_linear_attention_direct_cpp_inputs_attempt();
             if profile_enabled {
                 record_linear_attention_direct_cpp_inputs_profile_blocked();

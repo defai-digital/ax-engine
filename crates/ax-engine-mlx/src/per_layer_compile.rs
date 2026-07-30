@@ -329,7 +329,16 @@ pub fn apply_layer_dense_ffn_decode(
             closure.compile(true)
         };
         if let Ok(compiled) = compiled {
-            let result = try_apply_with_abort_safety(&compiled, inputs);
+            // First apply forces lazy shape inference for custom Metal
+            // primitives in the traced graph. A supported custom kernel can
+            // still make MLX emit an expected `cannot infer output shapes`
+            // diagnostic while the fixed output spec keeps the closure valid;
+            // keep that handled probe quiet and rely on the result/error-slot
+            // check plus the structured fallback warning below.
+            let result = {
+                let _quiet = mlx_sys::QuietErrorCapture::new();
+                try_apply_with_abort_safety(&compiled, inputs)
+            };
             if result.is_none() {
                 tracing::warn!(
                     target = "ax_engine_mlx",

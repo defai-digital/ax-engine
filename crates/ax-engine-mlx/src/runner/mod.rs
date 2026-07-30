@@ -90,7 +90,7 @@ use crate::mtp_adaptive_gate::{
 use crate::ngram_accel::{
     NgramDraftOutcome, NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
     classify_prompt_class, ngram_accel_decode_step_with_sampling_buffers, ngram_feedback_policy,
-    recompute_committed_prefix, single_decode_with_sampling_buffers,
+    recompute_committed_prefix_with_argmax, single_decode_with_sampling_buffers,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64, sample_categorical_into,
@@ -7839,8 +7839,25 @@ impl MlxRunner {
                 // rejected speculative token. Verify on a clone; adopt it only
                 // when the full draft is accepted, otherwise recompute the
                 // committed prefix on the original cache.
+                // The explicit Qwen exact profile gives depth one an exact,
+                // lazy recurrent-state checkpoint. Outside that profile, and
+                // for deeper drafts, retain the established singleton replay
+                // until each graph has equally strong validation. Setting the
+                // replay env flag to a nonzero value is the profile's rollback
+                // kill switch.
+                let replay_kill_switch = std::env::var("AX_MLX_MTP_LINEAR_EXACT_REPLAY")
+                    .map(|value| value != "0")
+                    .unwrap_or(false);
+                let exact_linear_replay = linear_mtp_requires_singleton_replay(
+                    pending.len(),
+                    crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                    replay_kill_switch,
+                );
                 let clone_started = Instant::now();
                 let mut verify_cache = state.cache.clone();
+                if !exact_linear_replay && pending.len() == 1 {
+                    verify_cache.begin_linear_prefix_capture(1);
+                }
                 mtp_timings.cache_clone_wall_us = elapsed_us(clone_started);
                 let verify_forward_started = Instant::now();
                 let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
@@ -7936,38 +7953,71 @@ impl MlxRunner {
                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
                 let rollback_started = Instant::now();
-                if all_accepted && verify_cache.trim_to(token_offset + 1 + ac) {
-                    state.cache = verify_cache;
-                } else {
-                    if all_accepted {
-                        // The rotated ring refused the trim: adopting
-                        // `verify_cache` would leave the extra verify position
-                        // attendable. Rebuild the committed prefix on the
-                        // untouched pre-verify cache instead.
-                        tracing::warn!(
-                            "speculative verify-cache trim refused; recomputing committed prefix"
-                        );
-                    }
-                    recompute_committed_prefix(
+                // Without the exact profile, the batched verifier's recurrent
+                // linear-attention state can differ from singleton production
+                // decode even when every draft token is accepted, so replay
+                // remains the fail-closed fallback. The exact depth-one path
+                // can instead adopt a full-accept state or restore its lazy
+                // committed-prefix checkpoint after rejection.
+                let recomputed_correction_argmax = if exact_linear_replay {
+                    Some(recompute_committed_prefix_with_argmax(
                         &self.cfg,
                         &self.weights,
                         &mut state.cache,
                         verify_input[0],
                         &pending[..ac],
                         token_offset,
-                    );
-                }
+                    ))
+                } else if all_accepted && verify_cache.trim_to(token_offset + 1 + ac) {
+                    verify_cache.clear_linear_prefix_checkpoint();
+                    state.cache = verify_cache;
+                    None
+                } else if pending.len() == 1 && ac == 0 {
+                    if verify_cache.restore_linear_prefix_checkpoint()
+                        && verify_cache.trim_to(token_offset + 1)
+                    {
+                        // Keep the restored checkpoint lazy. The next target
+                        // forward consumes these recurrent states and its
+                        // normal eval barrier materialises them in dependency
+                        // order, avoiding a rejection-only GPU/CPU round trip.
+                        state.cache = verify_cache;
+                        None
+                    } else {
+                        Some(recompute_committed_prefix_with_argmax(
+                            &self.cfg,
+                            &self.weights,
+                            &mut state.cache,
+                            verify_input[0],
+                            &pending[..ac],
+                            token_offset,
+                        ))
+                    }
+                } else {
+                    Some(recompute_committed_prefix_with_argmax(
+                        &self.cfg,
+                        &self.weights,
+                        &mut state.cache,
+                        verify_input[0],
+                        &pending[..ac],
+                        token_offset,
+                    ))
+                };
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                let verifier_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                let correction_token = select_linear_mtp_correction_token(
+                    sampling.temperature,
+                    recomputed_correction_argmax,
+                    exact_rejection_correction,
+                    accept.rejection_correction,
+                    verifier_argmax_tok,
+                );
                 (
                     logits_all,
                     draft_hidden,
                     ac,
                     all_accepted,
-                    exact_rejection_correction
-                        .or(accept.rejection_correction)
-                        .unwrap_or(correction_argmax_tok),
+                    correction_token,
                     exact_residual_correction_applied,
                     predicted,
                 )
@@ -9673,6 +9723,38 @@ fn sample_exact_mtp_delta_rejection_correction(
     sample_residual_token_distribution(&target, &draft, rng)
 }
 
+fn select_linear_mtp_correction_token(
+    target_temperature: f32,
+    recomputed_argmax: Option<u32>,
+    exact_residual_correction: Option<u32>,
+    verifier_rejection_correction: Option<u32>,
+    verifier_argmax: u32,
+) -> u32 {
+    if target_temperature <= 0.0 {
+        // Greedy linear-attention decode must follow the replayed singleton
+        // production graph. The verifier correction was derived from the
+        // rejected multi-token graph and is precisely the value being replaced.
+        recomputed_argmax
+            .or(exact_residual_correction)
+            .or(verifier_rejection_correction)
+            .unwrap_or(verifier_argmax)
+    } else {
+        // Preserve distribution-correct residual sampling when available.
+        exact_residual_correction
+            .or(verifier_rejection_correction)
+            .or(recomputed_argmax)
+            .unwrap_or(verifier_argmax)
+    }
+}
+
+fn linear_mtp_requires_singleton_replay(
+    pending_len: usize,
+    exact_profile_enabled: bool,
+    replay_kill_switch: bool,
+) -> bool {
+    pending_len != 1 || !exact_profile_enabled || replay_kill_switch
+}
+
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.
 ///
 /// `target_probs_cpu`: pre-computed p_target(draft_token_i) for each position, already
@@ -11150,6 +11232,30 @@ mod tests {
     }
 
     #[test]
+    fn greedy_linear_mtp_rejection_prefers_recomputed_production_argmax() {
+        assert_eq!(
+            select_linear_mtp_correction_token(0.0, Some(440), None, Some(13_661), 13_661),
+            440
+        );
+    }
+
+    #[test]
+    fn sampled_linear_mtp_rejection_preserves_exact_residual_correction() {
+        assert_eq!(
+            select_linear_mtp_correction_token(0.7, Some(440), Some(271), Some(13_661), 13_661,),
+            271
+        );
+    }
+
+    #[test]
+    fn linear_mtp_checkpoint_requires_explicit_exact_depth_one_profile() {
+        assert!(!linear_mtp_requires_singleton_replay(1, true, false));
+        assert!(linear_mtp_requires_singleton_replay(1, false, false));
+        assert!(linear_mtp_requires_singleton_replay(2, true, false));
+        assert!(linear_mtp_requires_singleton_replay(1, true, true));
+    }
+
+    #[test]
     fn direct_pipeline_bootstrap_does_not_overlap_strict_mtp() {
         // Session-direct always primes the double-buffer, even when MTP weights
         // are attached (pure direct clears mtp_requested at construction).
@@ -11427,6 +11533,22 @@ mod tests {
             (tel2.mtp_only_accept_rate_ewma - expected_rate).abs() < 1e-5,
             "pure-MTP partial rejection: rate should be accepted/meaningful = 1/2"
         );
+    }
+
+    #[test]
+    fn mtp_acceptance_warmup_is_not_biased_by_a_first_cycle_miss() {
+        let mut telemetry = MtpTelemetry::default();
+        telemetry.record_step(1, 0, &[MtpDraftSource::Mtp], None, 0);
+        for _ in 0..7 {
+            telemetry.record_step(1, 1, &[MtpDraftSource::Mtp], None, 1);
+        }
+
+        assert_eq!(telemetry.mtp_only_accept_rate_ewma_samples, 8);
+        assert!(
+            (telemetry.mtp_only_accept_rate_ewma - 0.875).abs() < 1e-6,
+            "warm-up estimator must reflect the observed 7/8 acceptance"
+        );
+        assert!(telemetry.mtp_only_accept_rate_ewma > mtp_bypass_threshold());
     }
 
     #[test]

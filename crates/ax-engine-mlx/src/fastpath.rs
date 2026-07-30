@@ -297,6 +297,20 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_QWEN_LINEAR_MTP_EXACT` — select the Qwen3.6 linear-attention
+    /// speculative-verifier arithmetic contract validated against singleton
+    /// production decode.
+    ///
+    /// This profile keeps per-row projection/reduction order invariant for a
+    /// 1–4 token verifier, uses the matching multi-token post-input kernel and
+    /// split FFN layout, and disables singleton-only staging fast paths whose
+    /// arithmetic differs by graph shape. It does not enable optimistic
+    /// acceptance or otherwise weaken verification.
+    qwen_linear_mtp_exact_enabled,
+    "AX_MLX_QWEN_LINEAR_MTP_EXACT"
+);
+
+env_flag!(
     /// `AX_MLX_GEMMA_DUAL_GATE_UP_METAL` — multi-token Gemma dense FFN dual
     /// gate/up affine-quantized Metal kernel with fused GEGLU product.
     ///
@@ -2544,6 +2558,18 @@ mod tests {
             "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENABLED",
             "1"
         ));
+    }
+
+    #[test]
+    fn qwen_linear_mtp_exact_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_MTP_EXACT_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_MTP_EXACT_DISABLED",
+            "0"
+        ));
+        assert!(probe("AX_FASTPATH_TEST_QWEN_LINEAR_MTP_EXACT_ENABLED", "1"));
     }
 
     #[test]

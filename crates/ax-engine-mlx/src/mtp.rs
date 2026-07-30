@@ -836,8 +836,13 @@ fn run_compiled_mtp_draft(
     vocab: i32,
     sample_temperature: f32,
     logprob_temperature: f32,
+    compute_log_probs: bool,
 ) -> Option<DraftTokens> {
-    if !fastpath::mtp_compiled_head_enabled() {
+    // A depth-one draft has no recurrent chain to fuse. Building/applying the
+    // compiled closure only adds transform bookkeeping over the same lazy
+    // graph and is measurably slower on Apple Silicon; keep the imperative
+    // single-eval path for this exact-depth production profile.
+    if max_depth <= 1 || !fastpath::mtp_compiled_head_enabled() {
         return None;
     }
     // Seed the closure with the existing logical KV as explicit inputs.  When
@@ -880,9 +885,15 @@ fn run_compiled_mtp_draft(
     for d in 0..max_depth {
         let logits = &outputs[d * 3 + 1];
         let lazy_tok = outputs[d * 3 + 2].clone();
-        let lazy_lp = gpu_draft_log_prob_lazy(logits, &lazy_tok, logprob_temperature, vocab);
+        if compute_log_probs {
+            lazy_log_probs.push(gpu_draft_log_prob_lazy(
+                logits,
+                &lazy_tok,
+                logprob_temperature,
+                vocab,
+            ));
+        }
         lazy_tokens.push(lazy_tok);
-        lazy_log_probs.push(lazy_lp);
     }
     let final_k = &outputs[max_depth * 3];
     let final_v = &outputs[max_depth * 3 + 1];
@@ -954,6 +965,14 @@ pub fn mtp_draft_tokens(
     )
 }
 
+fn greedy_draft_needs_temperature_log_probs(
+    draft_temperature: f32,
+    min_confidence: f32,
+    qwen_exact_profile: bool,
+) -> bool {
+    draft_temperature > 0.0 && !(qwen_exact_profile && min_confidence == 0.0)
+}
+
 /// Like [`mtp_draft_tokens`] but with an explicit draft-confidence gate instead
 /// of the process-global `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE` env value.
 ///
@@ -999,6 +1018,7 @@ pub fn mtp_draft_tokens_gated(
             cache,
             max_depth,
             vocab,
+            min_confidence > 0.0,
         )
     } else {
         match draft_mode {
@@ -1014,7 +1034,17 @@ pub fn mtp_draft_tokens_gated(
                 rng,
             ),
             MtpDraftMode::Greedy => {
-                let use_temperature = head.draft_sampling.temperature > 0.0;
+                // The exact Qwen depth-one profile uses a deterministic-delta
+                // proposal law. With the confidence gate disabled, the
+                // temperature-scaled draft log-prob is neither used for
+                // gating nor acceptance, so avoid building its full-vocabulary
+                // softmax. Preserve the established path for every other
+                // runtime profile.
+                let use_temperature = greedy_draft_needs_temperature_log_probs(
+                    head.draft_sampling.temperature,
+                    min_confidence,
+                    fastpath::qwen_linear_mtp_exact_enabled(),
+                );
                 if use_temperature {
                     mtp_draft_tokens_sampled(
                         head,
@@ -1037,6 +1067,7 @@ pub fn mtp_draft_tokens_gated(
                         cache,
                         max_depth,
                         vocab,
+                        min_confidence > 0.0,
                     )
                 }
             }
@@ -1188,6 +1219,7 @@ fn mtp_draft_tokens_greedy(
     cache: &mut MlxKVCache,
     max_depth: usize,
     vocab: i32,
+    compute_log_probs: bool,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     // ── Compiled path ───────────────────────────────────────────────
     if let Some(result) = run_compiled_mtp_draft(
@@ -1201,6 +1233,7 @@ fn mtp_draft_tokens_greedy(
         vocab,
         0.0,
         1.0,
+        compute_log_probs,
     ) {
         return result;
     }
@@ -1235,9 +1268,10 @@ fn mtp_draft_tokens_greedy(
         let lazy_tok = lazy_argmax_logits(&logits);
         // Compute draft log-prob at T=1.0 (model’s own confidence in its argmax
         // choice), staying in the lazy graph alongside the token selection.
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, 1.0, vocab);
+        if compute_log_probs {
+            lazy_log_probs.push(gpu_draft_log_prob_lazy(&logits, &lazy_tok, 1.0, vocab));
+        }
         lazy_tokens.push(lazy_tok.clone());
-        lazy_log_probs.push(lazy_lp);
 
         prev_hidden = post_norm_hidden;
         prev_token_arr = lazy_tok;
@@ -1306,6 +1340,7 @@ fn mtp_draft_tokens_sampled(
         vocab,
         0.0,
         temperature,
+        true,
     ) {
         return result;
     }
@@ -1406,6 +1441,7 @@ fn mtp_draft_tokens_stochastic(
         vocab,
         temperature,
         temperature.max(1.0),
+        true,
     ) {
         return result;
     }
@@ -1911,6 +1947,23 @@ mod confidence_gate_tests {
         let (toks, added) = gate(vec![1, 2, 3], vec![0.99, 0.10, 0.95], 0.0);
         assert_eq!(toks, vec![1, 2, 3]);
         assert_eq!(added, 3);
+    }
+
+    #[test]
+    fn disabled_gate_does_not_require_draft_log_probs() {
+        let (tokens, log_probs, _distributions, added, _accept3) =
+            apply_draft_confidence_gate((vec![1, 2], vec![], vec![], 0, [0.0; 3]), 0.0);
+        assert_eq!(tokens, vec![1, 2]);
+        assert!(log_probs.is_empty());
+        assert_eq!(added, 2);
+    }
+
+    #[test]
+    fn exact_profile_skips_unused_temperature_log_probs_only_with_gate_disabled() {
+        assert!(!greedy_draft_needs_temperature_log_probs(0.7, 0.0, true));
+        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.1, true));
+        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.0, false));
+        assert!(!greedy_draft_needs_temperature_log_probs(0.0, 0.0, false));
     }
 
     #[test]
