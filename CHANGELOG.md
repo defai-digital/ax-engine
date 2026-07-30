@@ -9,10 +9,27 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- Qwen fused-sidecar MTP: the draft gate no longer jumps to the chatbot
+  threshold for high-temperature sampling (the diversity regime now defers
+  to the 0.90 default, and the high-temperature Auto profile resolves to the
+  default gate directly). The pinned gate roughly doubled empty-draft MTP
+  steps and cost up to 26% MTP decode on Qwen3.6 27B 6-bit; the refreshed
+  2026-07-29 publication campaign confirms recovery to the published band
+  on every regressed row with Gemma assistant-MTP rows unchanged.
 - Release publisher: export `COPYFILE_DISABLE=1` so macOS bsdtar does not
   embed AppleDouble `._*` members (extended attributes such as
   `com.apple.provenance`) in the release archive, which failed the signed
   manifest's archive-member verification during upload re-verification.
+
+### Changed
+
+- Refreshed the published 6-bit MTP acceleration matrix (README and
+  Performance Results) from the 2026-07-29 campaign on the fixed runtime:
+  15/15 rows accelerate 1.28x-2.64x, artifacts under
+  `benchmarks/results/speculative/mtp-6bit/2026-07-29-v6.12.1-m5max-supported-mtp-ax-only/`.
+  The prior v6.9.0 matrix's higher Qwen3.6 35B-A3B bound benefited from the
+  since-removed incorrect MTP skip-state path (see the Performance Results
+  provenance note).
 
 ## [6.12.0] - 2026-07-29
 

@@ -163,7 +163,7 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current PERFORMANCE-RESULTS / PERFORMANCE MTP evidence.
 
-#### AX Engine v6.9.0 6-bit exact sampled-MTP acceleration (2026-07-16)
+#### AX Engine v6.12.1 6-bit exact sampled-MTP acceleration (2026-07-29)
 
 This AX Engine-only matrix compares each prepared 6-bit `download-mtp`
 package with MTP disabled and enabled. The enabled route uses
@@ -171,30 +171,30 @@ distribution-exact sampled MTP with deterministic-delta proposals and
 residual rejection correction; it is not an optimistic speed ceiling or a
 cross-engine leaderboard.
 
-All 15 target/suite rows accelerate decode by 1.40x-2.69x.
+All 15 target/suite rows accelerate decode by 1.28x-2.64x.
 Every row has 100% MTP step coverage, zero direct-fallback prompts or
 steps, and zero n-gram accepted, proposed, submitted, or hit-step
 telemetry.
 
-<img src="assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine v6.9.0 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">
+<img src="assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine v6.12.1 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">
 
 | Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |
 |---|---|---:|---:|---:|---:|---:|---:|
-| `qwen3.6-27b-6bit` | `flappy` | 22.7 tok/s | 61.2 tok/s | 2.69x | 546.0 tok/s | 589 ms | 99.3% |
-| `qwen3.6-27b-6bit` | `long_code` | 22.7 tok/s | 51.5 tok/s | 2.26x | 672.4 tok/s | 1067 ms | 98.6% |
-| `qwen3.6-27b-6bit` | `python_modules_long` | 22.8 tok/s | 42.7 tok/s | 1.88x | 564.7 tok/s | 615 ms | 96.3% |
-| `qwen3.6-35b-a3b` | `flappy` | 100.0 tok/s | 143.6 tok/s | 1.44x | 971.2 tok/s | 334 ms | 99.9% |
-| `qwen3.6-35b-a3b` | `long_code` | 99.5 tok/s | 139.6 tok/s | 1.40x | 1759.1 tok/s | 408 ms | 98.5% |
-| `qwen3.6-35b-a3b` | `python_modules_long` | 100.0 tok/s | 143.9 tok/s | 1.44x | 1054.9 tok/s | 327 ms | 98.4% |
-| `gemma-4-12b` | `flappy` | 38.0 tok/s | 96.8 tok/s | 2.55x | 1113.0 tok/s | 313 ms | 99.9% |
-| `gemma-4-12b` | `long_code` | 37.8 tok/s | 95.3 tok/s | 2.52x | 1465.8 tok/s | 558 ms | 100.0% |
-| `gemma-4-12b` | `python_modules_long` | 38.1 tok/s | 76.2 tok/s | 2.00x | 1123.0 tok/s | 329 ms | 97.8% |
-| `gemma-4-26b` | `flappy` | 88.5 tok/s | 146.9 tok/s | 1.66x | 1285.4 tok/s | 275 ms | 99.9% |
-| `gemma-4-26b` | `long_code` | 87.6 tok/s | 144.4 tok/s | 1.65x | 2279.6 tok/s | 359 ms | 100.0% |
-| `gemma-4-26b` | `python_modules_long` | 88.9 tok/s | 131.7 tok/s | 1.48x | 1358.5 tok/s | 273 ms | 98.4% |
-| `gemma-4-31b` | `flappy` | 17.7 tok/s | 45.5 tok/s | 2.58x | 441.6 tok/s | 788 ms | 99.9% |
-| `gemma-4-31b` | `long_code` | 18.0 tok/s | 45.4 tok/s | 2.53x | 572.0 tok/s | 1430 ms | 100.0% |
-| `gemma-4-31b` | `python_modules_long` | 18.3 tok/s | 40.2 tok/s | 2.20x | 436.7 tok/s | 822 ms | 98.1% |
+| `qwen3.6-27b-6bit` | `flappy` | 23.7 tok/s | 62.6 tok/s | 2.64x | 376.4 tok/s | 854 ms | 99.4% |
+| `qwen3.6-27b-6bit` | `long_code` | 23.6 tok/s | 52.3 tok/s | 2.21x | 503.0 tok/s | 1427 ms | 98.6% |
+| `qwen3.6-27b-6bit` | `python_modules_long` | 23.7 tok/s | 42.2 tok/s | 1.78x | 389.9 tok/s | 898 ms | 97.4% |
+| `qwen3.6-35b-a3b` | `flappy` | 104.1 tok/s | 144.6 tok/s | 1.39x | 516.9 tok/s | 626 ms | 99.8% |
+| `qwen3.6-35b-a3b` | `long_code` | 103.1 tok/s | 136.6 tok/s | 1.32x | 953.3 tok/s | 753 ms | 98.4% |
+| `qwen3.6-35b-a3b` | `python_modules_long` | 103.7 tok/s | 133.2 tok/s | 1.28x | 559.5 tok/s | 616 ms | 99.0% |
+| `gemma-4-12b` | `flappy` | 39.5 tok/s | 100.4 tok/s | 2.54x | 1032.0 tok/s | 337 ms | 99.9% |
+| `gemma-4-12b` | `long_code` | 39.2 tok/s | 99.1 tok/s | 2.53x | 1407.5 tok/s | 581 ms | 100.0% |
+| `gemma-4-12b` | `python_modules_long` | 39.6 tok/s | 79.8 tok/s | 2.01x | 1056.5 tok/s | 350 ms | 98.1% |
+| `gemma-4-26b` | `flappy` | 92.9 tok/s | 152.7 tok/s | 1.64x | 1027.4 tok/s | 339 ms | 99.9% |
+| `gemma-4-26b` | `long_code` | 91.9 tok/s | 150.1 tok/s | 1.63x | 1944.3 tok/s | 421 ms | 100.0% |
+| `gemma-4-26b` | `python_modules_long` | 92.1 tok/s | 133.6 tok/s | 1.45x | 868.3 tok/s | 426 ms | 98.0% |
+| `gemma-4-31b` | `flappy` | 18.7 tok/s | 47.8 tok/s | 2.55x | 379.5 tok/s | 918 ms | 100.0% |
+| `gemma-4-31b` | `long_code` | 18.4 tok/s | 46.8 tok/s | 2.55x | 527.1 tok/s | 1552 ms | 100.0% |
+| `gemma-4-31b` | `python_modules_long` | 18.9 tok/s | 42.0 tok/s | 2.22x | 388.5 tok/s | 942 ms | 98.2% |
 
 Methodology: sampled decode (`temperature=0.6`, `top_p=0.95`,
 `top_k=20`), 1,000 generated tokens, 2 warmups, 5 measured repetitions,
@@ -203,8 +203,20 @@ acceleration claims, because speculative decoding starts after prompt
 prefill. Direct and MTP rows use the same package and prompt suite.
 
 Exactness is checked with per-mode seed reproducibility. Summary artifacts:
-[`summary.md`](benchmarks/results/speculative/mtp-6bit/2026-07-16-v6.9.0-clean-provenance-exact-retry/summary.md) and
-[`summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-16-v6.9.0-clean-provenance-exact-retry/summary.json).
+[`summary.md`](benchmarks/results/speculative/mtp-6bit/2026-07-29-v6.12.1-m5max-supported-mtp-ax-only/summary.md) and
+[`summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-29-v6.12.1-m5max-supported-mtp-ax-only/summary.json).
+
+Provenance vs the prior v6.9.0 (2026-07-16) matrix: this refresh runs the
+same contract after two intentional runtime changes. A speculation-profile
+regression that pinned the Qwen draft gate to the chatbot threshold at the
+benchmark temperature (roughly doubling empty-draft steps) was fixed,
+restoring Qwen fused-sidecar MTP decode. Separately, the MTP skip-state
+fast path was removed as a correctness fix (it omitted emitted tail tokens
+from KV history); the v6.9.0 rows still benefited from that incorrect
+path, so the lower Qwen3.6 35B-A3B bound (1.28x vs 1.44x) reflects that
+removal rather than a speed regression in this refresh. Gemma
+assistant-MTP rows are unaffected by both changes and reproduce the prior
+matrix within run-to-run noise.
 
 #### Qwen3.6 MTP peer decode comparison (2026-07-09)
 
