@@ -7839,12 +7839,17 @@ impl MlxRunner {
                 // rejected speculative token. Verify on a clone; adopt it only
                 // when the full draft is accepted, otherwise recompute the
                 // committed prefix on the original cache.
-                // The explicit Qwen exact profile gives depth one an exact,
-                // lazy recurrent-state checkpoint. Outside that profile, and
-                // for deeper drafts, retain the established singleton replay
-                // until each graph has equally strong validation. Setting the
-                // replay env flag to a nonzero value is the profile's rollback
-                // kill switch.
+                // The explicit Qwen exact profile's invariant-projection
+                // contract is validated for a 1-4 token verifier, so drafts up
+                // to QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS use the exact, lazy
+                // recurrent-state checkpoint: full accept adopts the verify
+                // cache, a complete miss restores the committed-prefix
+                // checkpoint, and a partial accept recomputes only the short
+                // committed prefix. Outside that profile, and for deeper
+                // drafts, retain the established singleton replay until each
+                // graph has equally strong validation. Setting the replay env
+                // flag to a nonzero value is the profile's rollback kill
+                // switch.
                 let replay_kill_switch = std::env::var("AX_MLX_MTP_LINEAR_EXACT_REPLAY")
                     .map(|value| value != "0")
                     .unwrap_or(false);
@@ -7855,7 +7860,7 @@ impl MlxRunner {
                 );
                 let clone_started = Instant::now();
                 let mut verify_cache = state.cache.clone();
-                if !exact_linear_replay && pending.len() == 1 {
+                if !exact_linear_replay && !pending.is_empty() {
                     verify_cache.begin_linear_prefix_capture(1);
                 }
                 mtp_timings.cache_clone_wall_us = elapsed_us(clone_started);
@@ -7972,7 +7977,10 @@ impl MlxRunner {
                     verify_cache.clear_linear_prefix_checkpoint();
                     state.cache = verify_cache;
                     None
-                } else if pending.len() == 1 && ac == 0 {
+                } else if ac == 0 {
+                    // The capture point is the committed prefix (after the
+                    // last committed token), so a complete miss restores it
+                    // at any draft depth inside the exact contract.
                     if verify_cache.restore_linear_prefix_checkpoint()
                         && verify_cache.trim_to(token_offset + 1)
                     {
@@ -9747,12 +9755,23 @@ fn select_linear_mtp_correction_token(
     }
 }
 
+/// Maximum draft length served by the exact lazy-checkpoint path.
+///
+/// The invariant-projection arithmetic contract is validated for a 1-4 token
+/// verifier ([`crate::fastpath::qwen_linear_mtp_exact_enabled`]), i.e. up to
+/// three drafts plus the committed token. Longer drafts keep the fail-closed
+/// singleton replay.
+const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS: usize = 3;
+
 fn linear_mtp_requires_singleton_replay(
     pending_len: usize,
     exact_profile_enabled: bool,
     replay_kill_switch: bool,
 ) -> bool {
-    pending_len != 1 || !exact_profile_enabled || replay_kill_switch
+    pending_len == 0
+        || pending_len > QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS
+        || !exact_profile_enabled
+        || replay_kill_switch
 }
 
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.
@@ -11248,11 +11267,19 @@ mod tests {
     }
 
     #[test]
-    fn linear_mtp_checkpoint_requires_explicit_exact_depth_one_profile() {
+    fn linear_mtp_checkpoint_requires_explicit_exact_profile() {
         assert!(!linear_mtp_requires_singleton_replay(1, true, false));
         assert!(linear_mtp_requires_singleton_replay(1, false, false));
-        assert!(linear_mtp_requires_singleton_replay(2, true, false));
         assert!(linear_mtp_requires_singleton_replay(1, true, true));
+        // The invariant-projection contract covers a 1-4 token verifier, so
+        // drafts up to three ride the exact checkpoint path; anything longer
+        // (or empty) keeps the fail-closed singleton replay.
+        assert!(!linear_mtp_requires_singleton_replay(2, true, false));
+        assert!(!linear_mtp_requires_singleton_replay(3, true, false));
+        assert!(linear_mtp_requires_singleton_replay(4, true, false));
+        assert!(linear_mtp_requires_singleton_replay(0, true, false));
+        assert!(linear_mtp_requires_singleton_replay(2, false, false));
+        assert!(linear_mtp_requires_singleton_replay(2, true, true));
     }
 
     #[test]

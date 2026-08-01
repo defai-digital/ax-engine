@@ -9,6 +9,18 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- The Qwen linear-attention exact MTP profile now serves draft depths 2-3
+  through the lazy committed-prefix checkpoint instead of falling back to
+  per-cycle singleton replay. The invariant-projection contract was already
+  validated for a 1-4 token verifier; the runner's eligibility gate was the
+  only depth-one restriction. Full accepts adopt the verify cache, complete
+  misses restore the committed-prefix checkpoint at any depth, and partial
+  accepts recompute only the short committed prefix. Measured on Apple M5
+  Max (Qwen3.6 27B mixed-precision, greedy, exact profile): depth 2 repeats
+  exact output with zero divergence at 2.59 emitted tokens/cycle, but
+  verify-eval scales ~linearly with verifier length (35 ms/cycle at 2
+  tokens, 47 ms at 3), so depth 1 remains the fastest configuration until
+  the multi-token verify path approaches bandwidth-bound scaling.
 - `mtp_norm_layout` in `mtplx_runtime.json`: a fused MTP sidecar can now
   declare whether its 1-D RMSNorm tensors are raw HF zero-centred deltas
   (`"raw_hf_delta"`, loader applies the `+1.0` lift to every norm) or
