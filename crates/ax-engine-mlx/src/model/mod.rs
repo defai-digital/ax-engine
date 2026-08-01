@@ -1467,16 +1467,41 @@ pub fn forward_all_positions_with_post_norm(
         &[token_ids.len() as i32],
         MlxDtype::Uint32,
     );
-    let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
+    forward_all_positions_with_post_norm_ids(
+        cfg,
+        weights,
+        &ids_1d,
+        token_ids.len(),
+        cache,
+        token_offset,
+    )
+}
+
+/// [`forward_all_positions_with_post_norm`] taking the token ids as a lazy
+/// `[seq]` u32 array instead of host values.
+///
+/// Lets a speculative verifier chain directly on lazy draft-token arrays
+/// (`AX_MLX_MTP_ASYNC_DRAFT`): the whole verify graph builds before the draft
+/// head's GPU forward completes, so graph construction overlaps GPU execution
+/// instead of serializing behind a host extraction. The arithmetic is
+/// identical — the embedding gather consumes the same index values.
+pub fn forward_all_positions_with_post_norm_ids(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    ids_1d: &MlxArray,
+    seq: usize,
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> (MlxArray, MlxArray) {
+    let mut hidden = embed_tokens_arr(ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
 
-    let seq = token_ids.len();
     let masks =
         build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
-    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, ids_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward(

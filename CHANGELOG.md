@@ -9,6 +9,18 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- `AX_MLX_MTP_ASYNC_DRAFT` (default off): the greedy zero-gate MTP draft is
+  scheduled with `async_eval` and the speculative verifier chains directly
+  on the lazy draft-token arrays, so the verify graph builds while the
+  draft head's GPU forward is still running and one eval batch
+  materialises both. Exactness-preserving by construction (the identical
+  lazy graph is evaluated; only the synchronization point moves) and
+  verified on real Qwen3.6 27B artifacts: byte-identical greedy output on
+  M3 and M5, draft wall 4.2 -> 0.2 ms/cycle, and the formal-protocol
+  depth-1 MTP speedup on Apple M5 Max improving from 1.097x to 1.191x.
+  Engages only under the exact profile with the confidence gate disabled,
+  non-stochastic drafting, and skip-state off; every other flow
+  materialises the draft at the next cycle start unchanged.
 - The Qwen linear-attention exact MTP profile now serves draft depths 2-3
   through the lazy committed-prefix checkpoint instead of falling back to
   per-cycle singleton replay. The invariant-projection contract was already

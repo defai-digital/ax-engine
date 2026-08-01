@@ -1210,6 +1210,79 @@ pub fn mtp_draft_tokens_after_forced_prefix(
 /// arrays), so the entire multi-depth computation builds a single fused graph
 /// that MLX can execute in one GPU dispatch batch.
 #[allow(clippy::too_many_arguments)]
+/// Greedy MTP draft tokens scheduled with `async_eval` but not yet extracted.
+///
+/// The caller stores the arrays across the decode-cycle boundary and extracts
+/// host values at the start of the next cycle, overlapping the draft head's
+/// GPU forward with per-token host work (detokenization, stream emission).
+pub struct MtpLazyDraft {
+    /// One `[1]` u32 lazy argmax array per drafted depth level.
+    pub tokens: Vec<MlxArray>,
+}
+
+/// Build and asynchronously schedule the greedy zero-gate MTP draft graph.
+///
+/// This is the imperative lazy body of [`mtp_draft_tokens_greedy`] with the
+/// terminal `eval` replaced by `async_eval` and host extraction deferred to
+/// the caller. It is exactness-preserving — the identical lazy graph is
+/// evaluated, only the synchronization point moves — and is only legal in the
+/// regime where the synchronous greedy path computes no log-probs or
+/// distributions (confidence gate disabled, non-stochastic drafting).
+pub fn mtp_draft_tokens_greedy_async(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth_cap: Option<usize>,
+) -> Option<MtpLazyDraft> {
+    let head = weights.mtp.as_ref()?;
+    let max_depth = max_depth_cap.unwrap_or(head.max_depth).min(head.max_depth);
+    if max_depth == 0 {
+        return None;
+    }
+    let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+    for _ in 0..max_depth {
+        let new_hidden = mtp_head_forward(
+            head,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
+        let logits = mtp_post_norm_to_logits(&post_norm_hidden, head, weights, cfg);
+        let lazy_tok = lazy_argmax_logits(&logits);
+        lazy_tokens.push(lazy_tok.clone());
+        prev_hidden = post_norm_hidden;
+        prev_token_arr = lazy_tok;
+    }
+    let refs: Vec<&MlxArray> = lazy_tokens.iter().collect();
+    mlx_sys::async_eval(&refs);
+    Some(MtpLazyDraft {
+        tokens: lazy_tokens,
+    })
+}
+
+/// Extract host token values from an async-scheduled draft.
+///
+/// Blocks only if the scheduled GPU work has not yet completed.
+pub fn mtp_lazy_draft_extract(lazy: &MtpLazyDraft) -> Vec<u32> {
+    let refs: Vec<&MlxArray> = lazy.tokens.iter().collect();
+    eval(&refs);
+    lazy.tokens.iter().map(|a| a.data_u32()[0]).collect()
+}
+
 fn mtp_draft_tokens_greedy(
     head: &MtpWeights,
     weights: &ModelWeights,

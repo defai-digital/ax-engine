@@ -311,6 +311,23 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_MTP_ASYNC_DRAFT` — schedule the greedy zero-gate MTP draft
+    /// with `async_eval` and defer host token extraction to the start of the
+    /// next decode cycle, overlapping the draft head's GPU forward with
+    /// per-token host work (detokenization, stream emission).
+    ///
+    /// **Default: OFF** (opt-in via `AX_MLX_MTP_ASYNC_DRAFT=1`).
+    ///
+    /// Exactness-preserving: the identical lazy draft graph is evaluated;
+    /// only the synchronization point moves. Engages only under the exact
+    /// profile with the confidence gate disabled, non-stochastic drafting,
+    /// and skip-state off — the regime where the synchronous greedy path
+    /// computes no log-probs or distributions.
+    mtp_async_draft_enabled,
+    "AX_MLX_MTP_ASYNC_DRAFT"
+);
+
+env_flag!(
     /// `AX_MLX_GEMMA_DUAL_GATE_UP_METAL` — multi-token Gemma dense FFN dual
     /// gate/up affine-quantized Metal kernel with fused GEGLU product.
     ///
