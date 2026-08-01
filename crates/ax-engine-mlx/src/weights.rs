@@ -1185,8 +1185,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     crate::weight_rotation::shadow_log_rotation_candidates(specs);
 
     // Load MTP sidecar if present (e.g. `mtp.safetensors` alongside the main files).
-    let (mtp_max_depth, mtp_draft_sampling, mtp_sidecar_bits, mtp_draft_lm_head_spec) =
-        load_mtp_sidecar(&root, &mut name_map);
+    let (
+        mtp_max_depth,
+        mtp_draft_sampling,
+        mtp_sidecar_bits,
+        mtp_draft_lm_head_spec,
+        mtp_norm_layout,
+    ) = load_mtp_sidecar(&root, &mut name_map);
     let mtp = load_mtp(
         &mut name_map,
         &lm_head,
@@ -1194,6 +1199,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         mtp_draft_sampling,
         mtp_sidecar_bits,
         mtp_draft_lm_head_spec,
+        mtp_norm_layout,
     );
     let gemma4_assistant_mtp = load_gemma4_assistant_mtp_status(&root, artifacts.manifest());
     let glm_mtp = load_glm_mtp_sidecar(&root, &mut name_map, artifacts.manifest());
@@ -1808,6 +1814,8 @@ fn build_draft_lm_head(
 ///   (defaults: temperature=0.7, top_k=20, top_p=0.95).
 /// - `sidecar_bits`: `Some(8)` for INT8 sidecars, `Some(4)` for INT4, or
 ///   `None` (default 4).
+/// - `norm_layout`: from `mtplx_runtime.json` `mtp_norm_layout`
+///   (`"raw_hf_delta"` / `"mlx_multiplier"`, default auto-detection).
 fn load_mtp_sidecar(
     root: &std::path::Path,
     name_map: &mut HashMap<String, MlxArray>,
@@ -1816,6 +1824,7 @@ fn load_mtp_sidecar(
     MlxSamplingParams,
     Option<i32>,
     Option<DraftLmHeadSpec>,
+    MtpNormLayout,
 ) {
     // MTPLX default draft sampler: temperature slightly above target (0.6) to
     // ensure rejection-sampling acceptance rates ≥97%.
@@ -1826,11 +1835,11 @@ fn load_mtp_sidecar(
 
     let sidecar = root.join("mtp.safetensors");
     if !sidecar.exists() {
-        return (0, default_draft, None, None);
+        return (0, default_draft, None, None, MtpNormLayout::Auto);
     }
     let tensors = match load_safetensors(&sidecar, None) {
         Ok(t) => t,
-        Err(_) => return (0, default_draft, None, None),
+        Err(_) => return (0, default_draft, None, None, MtpNormLayout::Auto),
     };
     if !tensors.is_empty() {
         let refs: Vec<&MlxArray> = tensors.values().collect();
@@ -1866,6 +1875,7 @@ fn load_mtp_sidecar(
             } else {
                 draft_lm_head_spec_from_env()
             },
+            parse_mtp_norm_layout(&v),
         );
     }
     (
@@ -1873,6 +1883,7 @@ fn load_mtp_sidecar(
         apply_draft_temperature_override(default_draft),
         None,
         draft_lm_head_spec_from_env(),
+        MtpNormLayout::Auto,
     )
 }
 
@@ -2202,29 +2213,60 @@ fn parse_mtp_max_depth_cap(raw: &str) -> Option<usize> {
     raw.trim().parse::<usize>().ok()
 }
 
-/// Auto-correct a single MTP RMSNorm weight when it looks like a raw HF zero-centred
-/// delta rather than the shifted MLX multiplier form (mean_abs < 0.15).
+/// Declared representation of the MTP sidecar's 1-D RMSNorm tensors, from the
+/// optional `mtp_norm_layout` field of `mtplx_runtime.json`.
 ///
-/// The Qwen3.6 MTP head stores norms as delta-from-one values; `prepare_qwen36_mtp_sidecar.py`
-/// applies `+1.0` to convert them. Sidecars built without that transform produce
-/// near-zero activations that collapse all draft tokens to the same garbage token.
-/// This function detects and corrects that case at load time.
-fn sanitize_mtp_norm(w: MlxArray, key: &str, any_corrected: &mut bool) -> MlxArray {
-    let Some(mean_abs) = norm_mean_abs(&w) else {
-        return w;
-    };
-    if mean_abs >= SANITIZED_NORM_MIN_MEAN_ABS {
-        return w;
+/// Third-party converters (e.g. AXQuant byte-preserved sidecars) can declare
+/// the layout explicitly so the loader never has to guess from tensor
+/// statistics. Absent or unknown values fall back to auto-detection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MtpNormLayout {
+    /// Norms are raw HF zero-centred deltas; the loader applies `+1.0` to every norm.
+    RawHfDelta,
+    /// Norms are already shifted MLX multipliers; the loader leaves them unchanged.
+    MlxMultiplier,
+    /// No declaration; decide from whole-sidecar `mean_abs` statistics.
+    Auto,
+}
+
+fn parse_mtp_norm_layout(v: &serde_json::Value) -> MtpNormLayout {
+    match v.get("mtp_norm_layout").and_then(|x| x.as_str()) {
+        Some("raw_hf_delta") => MtpNormLayout::RawHfDelta,
+        Some("mlx_multiplier") => MtpNormLayout::MlxMultiplier,
+        Some(other) => {
+            tracing::warn!(
+                target: "ax_mlx::weights",
+                value = other,
+                "unknown mtp_norm_layout in mtplx_runtime.json; using auto-detection"
+            );
+            MtpNormLayout::Auto
+        }
+        None => MtpNormLayout::Auto,
     }
-    *any_corrected = true;
-    tracing::warn!(
-        target: "ax_mlx::weights",
-        key,
-        mean_abs,
-        "MTP norm weight appears to be a raw HF delta (mean_abs={mean_abs:.4} < {SANITIZED_NORM_MIN_MEAN_ABS}); \
-         applying +1.0 correction automatically. Regenerate the MTP sidecar with \
-         scripts/prepare_qwen36_mtp_sidecar.py to silence this warning."
-    );
+}
+
+/// Decide whether the sidecar's norm tensors need the `+1.0` raw-HF-delta lift.
+///
+/// The decision is per-sidecar, not per-tensor: all norms come from one export
+/// path, so either every norm is a raw delta or every norm is a shifted
+/// multiplier. Raw deltas are not uniformly small — Qwen 3.6's raw
+/// `q_norm`/`k_norm`/`mtp.norm` deltas have `mean_abs` between 0.21 and 1.27
+/// while its raw input-layernorm sits at 0.08 — so a single sub-threshold norm
+/// marks the entire sidecar raw. Deciding per tensor instead leaves the sidecar
+/// in a silently mixed state that collapses draft acceptance to zero.
+fn mtp_norms_need_shift(layout: MtpNormLayout, mean_abs_values: &[Option<f32>]) -> bool {
+    match layout {
+        MtpNormLayout::RawHfDelta => true,
+        MtpNormLayout::MlxMultiplier => false,
+        MtpNormLayout::Auto => mean_abs_values
+            .iter()
+            .flatten()
+            .any(|m| *m < SANITIZED_NORM_MIN_MEAN_ABS),
+    }
+}
+
+/// Apply the `+1.0` HF-delta → MLX-multiplier conversion, preserving dtype.
+fn shift_mtp_norm(w: MlxArray) -> MlxArray {
     let one = MlxArray::from_f32(1.0_f32);
     let corrected = add(&astype(&w, MlxDtype::Float32, None), &one, None);
     astype(&corrected, w.dtype(), None)
@@ -2241,6 +2283,7 @@ fn load_mtp(
     draft_sampling: MlxSamplingParams,
     sidecar_bits: Option<i32>,
     draft_lm_head_spec: Option<DraftLmHeadSpec>,
+    norm_layout: MtpNormLayout,
 ) -> Option<MtpWeights> {
     if max_depth == 0 {
         return None;
@@ -2299,55 +2342,64 @@ fn load_mtp(
         return None;
     }
 
-    // Detect and auto-correct unshifted MTP norm weights produced by sidecars that
-    // omitted the `+1.0` HF-delta → MLX-multiplier transform. Raw HF delta norms
-    // (mean_abs < 0.15) cause all MTP activations to collapse to near-zero, which
-    // makes every draft token the same garbage token (typically `!`). The corrected
-    // weights are identical to what `prepare_qwen36_mtp_sidecar.py` produces.
+    // Convert unshifted MTP norm weights produced by sidecars that omitted the
+    // `+1.0` HF-delta → MLX-multiplier transform. Raw HF delta norms cause all
+    // MTP activations to collapse to near-zero, which makes every draft token
+    // the same garbage token (typically `!`). The shift decision is made once
+    // for the whole sidecar — from the declared `mtp_norm_layout` when present,
+    // otherwise from the norms' combined mean_abs statistics — and then applied
+    // to every norm, matching what `prepare_mtp_sidecar.py` produces.
     // Must run before `ffn_layer` is built so that `attn_norm`/`ffn_norm` clones
     // inside `ffn_layer` also receive the corrected values.
-    let mut any_corrected = false;
-    let pre_fc_norm_embedding = sanitize_mtp_norm(
-        pre_fc_norm_embedding,
-        "mtp.pre_fc_norm_embedding.weight",
-        &mut any_corrected,
-    );
-    let pre_fc_norm_hidden = sanitize_mtp_norm(
-        pre_fc_norm_hidden,
-        "mtp.pre_fc_norm_hidden.weight",
-        &mut any_corrected,
-    );
-    let mtp_norm = sanitize_mtp_norm(mtp_norm, "mtp.norm.weight", &mut any_corrected);
-    let attn_norm = sanitize_mtp_norm(
-        attn_norm,
-        &format!("{p}.input_layernorm.weight"),
-        &mut any_corrected,
-    );
-    let ffn_norm = sanitize_mtp_norm(
-        ffn_norm,
-        &format!("{p}.post_attention_layernorm.weight"),
-        &mut any_corrected,
-    );
-    let q_norm = q_norm.map(|w| {
-        sanitize_mtp_norm(
-            w,
-            &format!("{p}.self_attn.q_norm.weight"),
-            &mut any_corrected,
-        )
-    });
-    let k_norm = k_norm.map(|w| {
-        sanitize_mtp_norm(
-            w,
-            &format!("{p}.self_attn.k_norm.weight"),
-            &mut any_corrected,
-        )
-    });
-    if any_corrected {
-        eprintln!(
-            "[ax_mlx::weights] MTP sidecar norm weights auto-corrected (+1.0 shift applied). \
-             Regenerate the sidecar with scripts/prepare_qwen36_mtp_sidecar.py to avoid this."
-        );
-    }
+    let mean_abs_values: Vec<Option<f32>> = [
+        Some(&pre_fc_norm_embedding),
+        Some(&pre_fc_norm_hidden),
+        Some(&mtp_norm),
+        Some(&attn_norm),
+        Some(&ffn_norm),
+        q_norm.as_ref(),
+        k_norm.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(norm_mean_abs)
+    .collect();
+    let shift_norms = mtp_norms_need_shift(norm_layout, &mean_abs_values);
+    let (pre_fc_norm_embedding, pre_fc_norm_hidden, mtp_norm, attn_norm, ffn_norm, q_norm, k_norm) =
+        if shift_norms {
+            if norm_layout == MtpNormLayout::Auto {
+                tracing::warn!(
+                    target: "ax_mlx::weights",
+                    "MTP sidecar norms detected as raw HF deltas; applying the +1.0 shift to all \
+                     norm tensors. Declare `mtp_norm_layout` in mtplx_runtime.json or regenerate \
+                     the sidecar with scripts/prepare_mtp_sidecar.py to make this explicit."
+                );
+                eprintln!(
+                    "[ax_mlx::weights] MTP sidecar norms auto-corrected (+1.0 shift applied to all \
+                 norm tensors). Declare `mtp_norm_layout` in mtplx_runtime.json or regenerate \
+                 the sidecar with scripts/prepare_mtp_sidecar.py to make this explicit."
+                );
+            }
+            (
+                shift_mtp_norm(pre_fc_norm_embedding),
+                shift_mtp_norm(pre_fc_norm_hidden),
+                shift_mtp_norm(mtp_norm),
+                shift_mtp_norm(attn_norm),
+                shift_mtp_norm(ffn_norm),
+                q_norm.map(shift_mtp_norm),
+                k_norm.map(shift_mtp_norm),
+            )
+        } else {
+            (
+                pre_fc_norm_embedding,
+                pre_fc_norm_hidden,
+                mtp_norm,
+                attn_norm,
+                ffn_norm,
+                q_norm,
+                k_norm,
+            )
+        };
 
     let ffn_layer = LayerWeights {
         attn_norm: attn_norm.clone(),
@@ -5748,6 +5800,69 @@ mod tests {
         assert_eq!(parse_mtp_max_depth_cap(" 3 "), Some(3));
         assert_eq!(parse_mtp_max_depth_cap(""), None);
         assert_eq!(parse_mtp_max_depth_cap("abc"), None);
+    }
+
+    #[test]
+    fn parse_mtp_norm_layout_recognizes_declared_values() {
+        assert_eq!(
+            parse_mtp_norm_layout(&serde_json::json!({"mtp_norm_layout": "raw_hf_delta"})),
+            MtpNormLayout::RawHfDelta
+        );
+        assert_eq!(
+            parse_mtp_norm_layout(&serde_json::json!({"mtp_norm_layout": "mlx_multiplier"})),
+            MtpNormLayout::MlxMultiplier
+        );
+        assert_eq!(
+            parse_mtp_norm_layout(&serde_json::json!({"mtp_norm_layout": "surprising"})),
+            MtpNormLayout::Auto
+        );
+        assert_eq!(
+            parse_mtp_norm_layout(&serde_json::json!({"mtp_depth_max": 1})),
+            MtpNormLayout::Auto
+        );
+    }
+
+    #[test]
+    fn mtp_norm_shift_decision_is_per_sidecar_not_per_tensor() {
+        // The measured raw Qwen 3.6 sidecar: only the input layernorm falls
+        // below the 0.15 threshold, but all seven norms are raw deltas. The
+        // old per-tensor decision shifted exactly one of them, producing a
+        // silently mixed sidecar with zero draft acceptance.
+        let raw_qwen36 = [
+            Some(0.0827),
+            Some(0.2110),
+            Some(0.7438),
+            Some(0.7610),
+            Some(1.2741),
+            Some(0.4400),
+            Some(0.1792),
+        ];
+        assert!(mtp_norms_need_shift(MtpNormLayout::Auto, &raw_qwen36));
+
+        // A sanitized sidecar clusters near 1.0 and must not be re-shifted.
+        let sanitized = [Some(1.08); 7];
+        assert!(!mtp_norms_need_shift(MtpNormLayout::Auto, &sanitized));
+
+        // Tensors too small for a mean_abs verdict do not force a shift.
+        let inconclusive = [None; 7];
+        assert!(!mtp_norms_need_shift(MtpNormLayout::Auto, &inconclusive));
+    }
+
+    #[test]
+    fn mtp_norm_shift_declared_layout_overrides_statistics() {
+        // A declared layout bypasses auto-detection entirely: raw_hf_delta
+        // shifts even when every norm looks sanitized, and mlx_multiplier
+        // never shifts even when the statistics look raw.
+        let looks_sanitized = [Some(1.0); 7];
+        assert!(mtp_norms_need_shift(
+            MtpNormLayout::RawHfDelta,
+            &looks_sanitized
+        ));
+        let looks_raw = [Some(0.05); 7];
+        assert!(!mtp_norms_need_shift(
+            MtpNormLayout::MlxMultiplier,
+            &looks_raw
+        ));
     }
 
     #[test]

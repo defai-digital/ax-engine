@@ -11552,6 +11552,33 @@ mod tests {
     }
 
     #[test]
+    fn mtp_acceptance_warmup_still_trips_bypass_on_genuinely_low_acceptance() {
+        // Negative direction of the warm-up fix: a model whose drafts really
+        // are rejected most of the time must still satisfy the bypass
+        // predicate (samples >= min && EWMA < threshold) both inside and
+        // beyond the cumulative warm-up window. One accept in four is 25%,
+        // well under the 50% bypass threshold.
+        let mut telemetry = MtpTelemetry::default();
+        for step in 0..24 {
+            let accepted = usize::from(step % 4 == 0);
+            telemetry.record_step(1, accepted, &[MtpDraftSource::Mtp], None, accepted);
+            if telemetry.mtp_only_accept_rate_ewma_samples >= mtp_bypass_min_samples() {
+                assert!(
+                    telemetry.mtp_only_accept_rate_ewma < mtp_bypass_threshold(),
+                    "25% acceptance must stay below the bypass threshold at sample {}",
+                    telemetry.mtp_only_accept_rate_ewma_samples
+                );
+            }
+        }
+        assert_eq!(telemetry.mtp_only_accept_rate_ewma_samples, 24);
+        assert!(
+            (telemetry.mtp_only_accept_rate_ewma - 0.25).abs() < 0.05,
+            "estimator must converge near the true 25% acceptance; got {}",
+            telemetry.mtp_only_accept_rate_ewma
+        );
+    }
+
+    #[test]
     fn mtp_ewma_numerator_uses_accepted_count_not_argmax_matches() {
         // In rejection-sampling mode, the EWMA numerator is the actual number of
         // accepted MTP tokens, not just those matching the target argmax.

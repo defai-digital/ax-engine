@@ -64,6 +64,9 @@ class PrepareQwen36MtpSidecarTests(unittest.TestCase):
         self.assertIn("exactness_baseline", contract)
         self.assertIn("verified_on", contract)
         self.assertEqual(contract["exactness_baseline"]["max_abs_diff"], 0.0)
+        # The shifted sidecar must declare its norm layout so the loader never
+        # falls back to statistical auto-detection.
+        self.assertEqual(contract["mtp_norm_layout"], "mlx_multiplier")
 
 
 if __name__ == "__main__":

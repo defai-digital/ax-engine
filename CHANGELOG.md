@@ -7,8 +7,28 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- `mtp_norm_layout` in `mtplx_runtime.json`: a fused MTP sidecar can now
+  declare whether its 1-D RMSNorm tensors are raw HF zero-centred deltas
+  (`"raw_hf_delta"`, loader applies the `+1.0` lift to every norm) or
+  already-shifted MLX multipliers (`"mlx_multiplier"`, loader leaves them
+  unchanged), so third-party byte-preserving converters (e.g. AXQuant) load
+  correctly without statistical guessing. Both prepare scripts declare
+  `mlx_multiplier` in the contracts they write; absent or unknown values keep
+  auto-detection.
+
 ### Fixed
 
+- MTP sidecar norm auto-correction now decides once per sidecar instead of
+  per tensor. Raw HF deltas are not uniformly small (Qwen 3.6's raw
+  `q_norm`/`k_norm`/`mtp.norm` deltas have mean-abs 0.21–1.27 while the raw
+  input layernorm sits at 0.08), so the old per-tensor `mean_abs < 0.15`
+  test lifted exactly one of the seven norms and left the sidecar in a
+  silently mixed state that collapsed draft acceptance to 0/40 — while the
+  load-time warning claimed the correction had been applied. A single
+  sub-threshold norm now marks the whole sidecar raw and every norm is
+  shifted together.
 - Qwen fused-sidecar MTP: the draft gate no longer jumps to the chatbot
   threshold for high-temperature sampling (the diversity regime now defers
   to the 0.90 default, and the high-temperature Auto profile resolves to the

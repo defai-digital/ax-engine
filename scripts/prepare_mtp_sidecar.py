@@ -365,6 +365,10 @@ def _runtime_contract(
         "sampler": TARGET_SAMPLER,
         "base_trunk": base_repo,
         "mtp_tensor_count": tensor_count,
+        # This script always applies the +1.0 HF-delta -> MLX-multiplier norm
+        # shift, so the loader must not shift again. Byte-preserving converters
+        # declare "raw_hf_delta" instead.
+        "mtp_norm_layout": "mlx_multiplier",
         "exactness_baseline": {
             "context": 2048,
             "max_abs_diff": 0.0,

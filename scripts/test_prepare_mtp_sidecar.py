@@ -219,6 +219,9 @@ class RuntimeContractTests(unittest.TestCase):
         for key in ("mtplx_version", "exactness_baseline", "verified_on"):
             self.assertIn(key, contract)
         self.assertNotIn("mtp_sidecar", contract)  # bf16 sidecar has no quant hint
+        # The shifted sidecar must declare its norm layout so the loader never
+        # falls back to statistical auto-detection.
+        self.assertEqual(contract["mtp_norm_layout"], "mlx_multiplier")
 
     def test_runtime_contract_quant_hint(self) -> None:
         contract = prepare._runtime_contract(

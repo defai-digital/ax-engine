@@ -180,7 +180,9 @@ throughput baselines.
   source shards hold the MTP head from `model.safetensors.index.json`, downloads
   only those, normalizes the tensor layout through a per-architecture registry
   (Qwen3.6 dense + packed-MoE today), and writes the sidecar contract the
-  runtime loads: `mtp.safetensors`, `mtplx_runtime.json`, a patched
+  runtime loads: `mtp.safetensors`, `mtplx_runtime.json` (including
+  `mtp_norm_layout: mlx_multiplier` — the shifted-norm declaration the loader
+  honors instead of statistical auto-detection), a patched
   `config.json`, and an `ax.mtp_sidecar_provenance.v1` manifest (validated by
   `check_mtp_sidecar_provenance.py`). Optional `--quantize {4,8}` produces a
   mixed sidecar (2-D projections quantized, experts/norms bf16). Output defaults
