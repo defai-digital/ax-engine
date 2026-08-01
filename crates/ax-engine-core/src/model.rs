@@ -14,6 +14,12 @@ const SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[4, 5, 6, 8];
 /// experimental benchmarking only and carries no quality or correctness guarantee.
 pub const AX_ENGINE_3BIT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_3BIT_EXPERIMENTAL";
 const EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[3];
+/// Set to `"1"` to allow loading affine-quantized MLX artifacts at 2-bit.
+/// Same contract as the 3-bit gate: experimental benchmarking only, no
+/// quality or correctness guarantee. MLX affine kernels execute 2-bit
+/// natively; production validation still rejects it by default.
+pub const AX_ENGINE_2BIT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_2BIT_EXPERIMENTAL";
+const EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[2];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1251,6 +1257,8 @@ fn validate_native_model_manifest(
 
     let allow_experimental_3bit =
         std::env::var(AX_ENGINE_3BIT_EXPERIMENTAL_ENV).as_deref() == Ok("1");
+    let allow_experimental_2bit =
+        std::env::var(AX_ENGINE_2BIT_EXPERIMENTAL_ENV).as_deref() == Ok("1");
 
     for tensor in &manifest.tensors {
         if tensor.name.trim().is_empty() {
@@ -1280,7 +1288,7 @@ fn validate_native_model_manifest(
         }
         validate_tensor_path(root_dir, tensor)?;
         validate_quantized_source_path(root_dir, tensor)?;
-        validate_tensor_quantization(tensor, allow_experimental_3bit)?;
+        validate_tensor_quantization(tensor, allow_experimental_3bit, allow_experimental_2bit)?;
 
         if tensor.role == NativeTensorRole::Other {
             // Extension/sidecar roles (e.g. MTP): skip layer_index validation entirely.
@@ -3735,6 +3743,7 @@ fn tensor_quantization_or_default(tensor: &NativeTensorSpec) -> NativeTensorQuan
 fn validate_tensor_quantization(
     tensor: &NativeTensorSpec,
     allow_experimental_3bit: bool,
+    allow_experimental_2bit: bool,
 ) -> Result<(), NativeModelError> {
     if tensor.dtype == NativeTensorDataType::U32 && !tensor.source_quantized {
         return Err(NativeModelError::InvalidManifest {
@@ -3777,6 +3786,17 @@ fn validate_tensor_quantization(
                             message: format!(
                                 "tensor {} quantization bits {} requires experimental gate (set {}=1)",
                                 tensor.name, quantization.bits, AX_ENGINE_3BIT_EXPERIMENTAL_ENV
+                            ),
+                        });
+                    }
+                } else if EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS
+                    .contains(&quantization.bits)
+                {
+                    if !allow_experimental_2bit {
+                        return Err(NativeModelError::InvalidManifest {
+                            message: format!(
+                                "tensor {} quantization bits {} requires experimental gate (set {}=1)",
+                                tensor.name, quantization.bits, AX_ENGINE_2BIT_EXPERIMENTAL_ENV
                             ),
                         });
                     }
@@ -5183,9 +5203,9 @@ mod tests {
             length_bytes: 192 * 8192 * 4,
         };
 
-        validate_tensor_quantization(&spec, true)
+        validate_tensor_quantization(&spec, true, false)
             .expect("3-bit should be accepted when experimental gate is enabled");
-        validate_tensor_quantization(&spec, false)
+        validate_tensor_quantization(&spec, false, false)
             .expect_err("3-bit should be rejected when experimental gate is disabled");
     }
 
@@ -5210,7 +5230,7 @@ mod tests {
             length_bytes: 128 * 2880 * 360 * 4,
         };
 
-        validate_tensor_quantization(&spec, false)
+        validate_tensor_quantization(&spec, false, false)
             .expect("MXFP4 weights should be accepted with their fixed layout");
     }
 
@@ -5233,17 +5253,20 @@ mod tests {
         let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
 
         let error = NativeModelArtifacts::from_dir(&dir)
-            .expect_err("2-bit should be rejected as unsupported (not even experimental)");
+            .expect_err("2-bit without the experimental gate should fail closed");
         let NativeModelError::InvalidManifest { message } = error else {
             panic!("expected invalid manifest error");
         };
-        // 2-bit is not in the experimental list, so it gets the "must be one of" message.
+        // 2-bit now mirrors the 3-bit contract: rejected by default, admitted
+        // only behind its own experimental env gate.
         assert!(
-            message.contains("quantization bits must be one of"),
-            "unexpected error: {message}"
+            message.contains("requires experimental gate"),
+            "error should reference gate: {message}"
         );
-
-        let _ = fs::remove_dir_all(dir);
+        assert!(
+            message.contains(AX_ENGINE_2BIT_EXPERIMENTAL_ENV),
+            "error should name the env var: {message}"
+        );
     }
 
     #[test]
@@ -5320,11 +5343,11 @@ mod tests {
             length_bytes: 256 * 4096 * 4,
         };
 
-        validate_tensor_quantization(&low_layer, true)
+        validate_tensor_quantization(&low_layer, true, false)
             .expect("3-bit low layer with gate should be accepted");
-        validate_tensor_quantization(&sensitive_layer, true)
+        validate_tensor_quantization(&sensitive_layer, true, false)
             .expect("4-bit sensitive layer should always be accepted");
-        validate_tensor_quantization(&sensitive_layer, false)
+        validate_tensor_quantization(&sensitive_layer, false, false)
             .expect("4-bit sensitive layer should always be accepted without gate");
     }
 

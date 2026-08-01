@@ -9,6 +9,12 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- `AX_ENGINE_2BIT_EXPERIMENTAL=1`: admits affine-quantized MLX artifacts at
+  2-bit under the same experimental contract as the existing 3-bit gate —
+  rejected by default, no quality or correctness guarantee, MLX affine
+  kernels execute the width natively. Manifest validation errors name the
+  gate. Verified end to end with an AXQuant mixed 2/4/8/BF16 MiniCPM5-1B
+  development artifact passing doctor and MLX-LM generation.
 - `AX_MLX_MTP_ASYNC_DRAFT` (default off): the greedy zero-gate MTP draft is
   scheduled with `async_eval` and the speculative verifier chains directly
   on the lazy draft-token arrays, so the verify graph builds while the
