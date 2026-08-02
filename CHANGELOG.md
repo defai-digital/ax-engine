@@ -7,6 +7,8 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [6.12.1] - 2026-08-02
+
 ### Added
 
 - `ax-engine-bench doctor` now recognizes AXQuant artifact metadata and reports
