@@ -277,10 +277,13 @@ blockers. AXQuant checkpoints additionally expose `model_artifacts.axquant`,
 including the measured total BPW, precision widths, evidence kind, source
 revision, quantized/failed/fallback module counts, and metadata-lineage status.
 Doctor fails closed when AXQuant metadata is malformed, its recorded SHA-256
-bindings do not match, plan and execution digests disagree, or conversion used
+bindings do not match, the canonical plan-content digest or embedded runtime
+metadata differs, execution records do not exactly cover the plan's quantized
+modules, BPW metadata is incomplete/inconsistent, or conversion used
 failed/fallback modules. Development evidence remains runnable but is reported
-as non-release-quality. Callers should use these fields directly instead of
-parsing performance-advice text.
+as non-release-quality. Readiness and performance advice come from the same
+artifact inspection snapshot. Callers should use these fields directly instead
+of parsing performance-advice text.
 
 Use `bash scripts/check-bench-doctor.sh`, `bash scripts/check-server-preview.sh`,
 and the relevant `check-bench-*.sh` gate before changing CLI workflow contracts.

@@ -5,7 +5,7 @@ use ax_engine_core::{
 use ax_engine_sdk::{HostReport, MetalToolchainReport, ToolStatusReport};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -248,6 +248,13 @@ impl DoctorAxquantReport {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AxquantModuleSpec {
+    bits: u32,
+    method: String,
+    group_size: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DoctorAdviceSeverity {
@@ -368,6 +375,8 @@ fn build_doctor_report_with_runtime_assets(
     } else {
         DoctorStatus::NotReady
     };
+    let model_artifacts = doctor_model_artifacts_report(mlx_model_artifacts_dir);
+    let performance_advice = doctor_performance_advice(&host, &model_artifacts);
 
     DoctorReport {
         schema_version: "ax.engine_bench.doctor.v1".to_string(),
@@ -377,12 +386,12 @@ fn build_doctor_report_with_runtime_assets(
         bringup_allowed,
         workflow: DoctorWorkflowReport::unknown(),
         runtime_assets: runtime_assets.clone(),
-        model_artifacts: doctor_model_artifacts_report(mlx_model_artifacts_dir),
+        model_artifacts,
         host: host.clone(),
         metal_toolchain: metal_toolchain.clone(),
         issues: doctor_issues(&host, &metal_toolchain, &runtime_assets),
         notes: doctor_notes(&host, &metal_toolchain, &runtime_assets),
-        performance_advice: doctor_performance_advice(&host, mlx_model_artifacts_dir),
+        performance_advice,
     }
 }
 
@@ -665,6 +674,17 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
             .issues
             .push("manifest is missing a positive measured_total_bpw".to_string());
     }
+    if report.measured_main_bpw.is_none() {
+        report
+            .issues
+            .push("manifest is missing a positive measured_main_bpw".to_string());
+    }
+    let manifest_effective_bpw = json_positive_f64(&manifest, "effective_bpw");
+    if manifest_effective_bpw.is_none() {
+        report
+            .issues
+            .push("manifest is missing a positive effective_bpw".to_string());
+    }
 
     report.source_model_id = manifest
         .get("source_model")
@@ -706,6 +726,8 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
         None
     };
 
+    let mut plan_digest_valid = false;
+    let mut planned_quantized_modules = BTreeMap::new();
     if let Some(plan) = &plan {
         if json_string(plan, "schema_version").as_deref() != Some("axquant.plan.v1") {
             report
@@ -735,25 +757,92 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                 .issues
                 .push("AXQuant plan is missing positive BPW values".to_string());
         }
+        if let (Some(manifest_bpw), Some(plan_bpw)) = (manifest_effective_bpw, report.effective_bpw)
+            && manifest_bpw != plan_bpw
+        {
+            report
+                .issues
+                .push("artifact and plan effective_bpw values differ".to_string());
+        }
+
+        match axquant_stable_sha256(plan) {
+            Some(actual_sha256) => {
+                plan_digest_valid = report.plan_sha256.as_deref() == Some(&actual_sha256);
+                if !plan_digest_valid {
+                    report.issues.push(format!(
+                        "AXQuant plan content digest {actual_sha256} does not match manifest plan_sha256 {}",
+                        report.plan_sha256.as_deref().unwrap_or("missing")
+                    ));
+                }
+            }
+            None => report
+                .issues
+                .push("AXQuant plan cannot be canonicalized for lineage validation".to_string()),
+        }
 
         let mut precision_bits = BTreeSet::new();
         if let Some(assignments) = plan.get("assignments").and_then(Value::as_array) {
             let mut invalid_assignments = 0_usize;
+            let mut duplicate_modules = 0_usize;
+            let mut seen_modules = BTreeSet::new();
             for assignment in assignments {
-                match assignment
+                let Some(bits) = assignment
                     .get("bits")
                     .and_then(Value::as_u64)
                     .and_then(|bits| u32::try_from(bits).ok())
+                    .filter(|bits| (2..=16).contains(bits))
+                else {
+                    invalid_assignments += 1;
+                    continue;
+                };
+                precision_bits.insert(bits);
+
+                let module_path = assignment
+                    .get("module_path")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty());
+                let method = assignment
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .filter(|value| matches!(*value, "affine" | "awq" | "dwq" | "gptq" | "bf16"));
+                let group_size = json_optional_positive_u64(assignment, "group_size");
+                let (Some(module_path), Some(method), Some(group_size)) =
+                    (module_path, method, group_size)
+                else {
+                    invalid_assignments += 1;
+                    continue;
+                };
+                if (bits < 16 && group_size.is_none())
+                    || (bits == 16 && group_size.is_some())
+                    || (bits < 16 && method == "bf16")
+                    || (bits == 16 && method != "bf16")
                 {
-                    Some(bits @ 2..=16) => {
-                        precision_bits.insert(bits);
-                    }
-                    _ => invalid_assignments += 1,
+                    invalid_assignments += 1;
+                    continue;
+                }
+                if !seen_modules.insert(module_path) {
+                    duplicate_modules += 1;
+                }
+
+                if bits < 16 {
+                    planned_quantized_modules.insert(
+                        module_path.to_string(),
+                        AxquantModuleSpec {
+                            bits,
+                            method: method.to_string(),
+                            group_size,
+                        },
+                    );
                 }
             }
             if invalid_assignments > 0 {
                 report.issues.push(format!(
-                    "AXQuant plan has {invalid_assignments} assignments without a valid 2-16 bit width"
+                    "AXQuant plan has {invalid_assignments} assignments with invalid module, method, group-size, or bit metadata"
+                ));
+            }
+            if duplicate_modules > 0 {
+                report.issues.push(format!(
+                    "AXQuant plan has {duplicate_modules} duplicate module assignments"
                 ));
             }
         } else {
@@ -767,6 +856,11 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
             report
                 .issues
                 .push("AXQuant plan has no precision assignments".to_string());
+        }
+        if planned_quantized_modules.is_empty() {
+            report
+                .issues
+                .push("AXQuant plan has no quantized module assignments".to_string());
         }
 
         let plan_source = plan.get("source_model");
@@ -800,7 +894,7 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                 let execution_plan_sha256 = json_string(&execution, "plan_sha256");
                 let execution_digest_matches =
                     execution_plan_sha256.is_some() && execution_plan_sha256 == report.plan_sha256;
-                report.lineage_valid = execution_digest_matches;
+                report.lineage_valid = plan_digest_valid && execution_digest_matches;
                 if !execution_digest_matches {
                     report.issues.push(
                         "artifact and quantizer execution bind different plan digests".to_string(),
@@ -837,6 +931,11 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                             report.fallback_module_count
                         ));
                     }
+                    validate_axquant_execution_coverage(
+                        records,
+                        &planned_quantized_modules,
+                        &mut report.issues,
+                    );
                 } else {
                     report
                         .issues
@@ -865,6 +964,11 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                         .issues
                         .push("unsupported or missing AXQuant runtime schema".to_string());
                 }
+                if manifest.get("runtime") != Some(&runtime) {
+                    report
+                        .issues
+                        .push("artifact and axquant_runtime.json metadata differ".to_string());
+                }
             }
             Err(error) => report.issues.push(format!(
                 "axquant_runtime.json is not readable JSON: {error}"
@@ -886,14 +990,18 @@ fn validate_axquant_metadata_file(
     manifest: &Value,
     issues: &mut Vec<String>,
 ) {
-    let entry = manifest
-        .get("files")
-        .and_then(Value::as_array)
-        .and_then(|files| {
-            files
-                .iter()
-                .find(|entry| entry.get("path").and_then(Value::as_str) == Some(file_name))
-        });
+    let Some(files) = manifest.get("files").and_then(Value::as_array) else {
+        issues.push("manifest is missing file bindings".to_string());
+        return;
+    };
+    let mut matching_entries = files
+        .iter()
+        .filter(|entry| entry.get("path").and_then(Value::as_str) == Some(file_name));
+    let entry = matching_entries.next();
+    if matching_entries.next().is_some() {
+        issues.push(format!("manifest binds {file_name} more than once"));
+        return;
+    }
     let recorded_sha256 = entry
         .and_then(|entry| entry.get("sha256"))
         .and_then(Value::as_str);
@@ -926,6 +1034,173 @@ fn validate_axquant_metadata_file(
     }
 }
 
+fn validate_axquant_execution_coverage(
+    records: &[Value],
+    planned: &BTreeMap<String, AxquantModuleSpec>,
+    issues: &mut Vec<String>,
+) {
+    let mut seen = BTreeSet::new();
+    let mut malformed = 0_usize;
+    let mut duplicates = 0_usize;
+    let mut unexpected = 0_usize;
+    let mut mismatched = 0_usize;
+
+    for record in records {
+        let module_path = record
+            .get("module_path")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty());
+        let bits = record
+            .get("bits")
+            .and_then(Value::as_u64)
+            .and_then(|bits| u32::try_from(bits).ok())
+            .filter(|bits| (2..=16).contains(bits));
+        let method = record
+            .get("method")
+            .and_then(Value::as_str)
+            .filter(|value| matches!(*value, "affine" | "awq" | "dwq" | "gptq" | "bf16"));
+        let group_size = json_optional_positive_u64(record, "group_size");
+        let success = record.get("success").and_then(Value::as_bool);
+        let fallback = record.get("fallback").and_then(Value::as_bool);
+        let (Some(module_path), Some(bits), Some(method), Some(group_size)) =
+            (module_path, bits, method, group_size)
+        else {
+            malformed += 1;
+            continue;
+        };
+        if success.is_none()
+            || fallback.is_none()
+            || (bits < 16 && group_size.is_none())
+            || (bits == 16 && group_size.is_some())
+        {
+            malformed += 1;
+            continue;
+        }
+
+        if !seen.insert(module_path.to_string()) {
+            duplicates += 1;
+            continue;
+        }
+        let Some(expected) = planned.get(module_path) else {
+            unexpected += 1;
+            continue;
+        };
+        if expected.bits != bits || expected.method != method || expected.group_size != group_size {
+            mismatched += 1;
+        }
+    }
+
+    let missing = planned
+        .keys()
+        .filter(|module| !seen.contains(*module))
+        .count();
+    if malformed > 0 {
+        issues.push(format!(
+            "quantizer execution has {malformed} malformed module records"
+        ));
+    }
+    if duplicates > 0 {
+        issues.push(format!(
+            "quantizer execution has {duplicates} duplicate module records"
+        ));
+    }
+    if unexpected > 0 {
+        issues.push(format!(
+            "quantizer execution has {unexpected} modules absent from the quantization plan"
+        ));
+    }
+    if mismatched > 0 {
+        issues.push(format!(
+            "quantizer execution has {mismatched} modules whose method, bits, or group size differ from the plan"
+        ));
+    }
+    if missing > 0 {
+        issues.push(format!(
+            "quantizer execution is missing {missing} planned quantized modules"
+        ));
+    }
+}
+
+fn json_optional_positive_u64(value: &Value, field: &str) -> Option<Option<u64>> {
+    match value.get(field) {
+        None | Some(Value::Null) => Some(None),
+        Some(value) => value.as_u64().filter(|number| *number > 0).map(Some),
+    }
+}
+
+pub(crate) fn axquant_stable_sha256(value: &Value) -> Option<String> {
+    let mut canonical = String::new();
+    write_axquant_canonical_json(value, &mut canonical)?;
+    Some(sha256_hex(canonical.as_bytes()))
+}
+
+fn write_axquant_canonical_json(value: &Value, output: &mut String) -> Option<()> {
+    match value {
+        Value::Null => output.push_str("null"),
+        Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+        Value::Number(value) => output.push_str(&python_json_number(value)?),
+        Value::String(value) => output.push_str(&serde_json::to_string(value).ok()?),
+        Value::Array(values) => {
+            output.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                write_axquant_canonical_json(value, output)?;
+            }
+            output.push(']');
+        }
+        Value::Object(values) => {
+            output.push('{');
+            let mut entries = values.iter().collect::<Vec<_>>();
+            entries.sort_unstable_by_key(|(key, _)| *key);
+            for (index, (key, value)) in entries.into_iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                output.push_str(&serde_json::to_string(key).ok()?);
+                output.push(':');
+                write_axquant_canonical_json(value, output)?;
+            }
+            output.push('}');
+        }
+    }
+    Some(())
+}
+
+fn python_json_number(number: &serde_json::Number) -> Option<String> {
+    let source = number.to_string();
+    if !source.contains(['.', 'e', 'E']) {
+        return Some(if source == "-0" {
+            "0".to_string()
+        } else {
+            source
+        });
+    }
+    if let Some(value) = number.as_i64() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = number.as_u64() {
+        return Some(value.to_string());
+    }
+
+    let value = number.as_f64()?;
+    if !value.is_finite() {
+        return None;
+    }
+    let magnitude = value.abs();
+    let rendered = if value != 0.0 && !(0.0001..1.0e16).contains(&magnitude) {
+        format!("{value:e}")
+    } else {
+        serde_json::Number::from_f64(value)?.to_string()
+    };
+    let Some((mantissa, exponent)) = rendered.split_once('e') else {
+        return Some(rendered);
+    };
+    let exponent = exponent.parse::<i32>().ok()?;
+    Some(format!("{mantissa}e{exponent:+03}"))
+}
+
 fn json_string(value: &Value, field: &str) -> Option<String> {
     value.get(field).and_then(Value::as_str).map(str::to_string)
 }
@@ -946,7 +1221,6 @@ struct DoctorModelArtifactsHint {
     model_type: Option<String>,
     quantization: Option<DoctorQuantizationHint>,
     axquant: Option<DoctorAxquantReport>,
-    path_label: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -959,7 +1233,7 @@ pub(crate) struct DoctorQuantizationHint {
 
 fn doctor_performance_advice(
     host: &HostReport,
-    mlx_model_artifacts_dir: Option<&Path>,
+    model_artifacts: &DoctorModelArtifactsReport,
 ) -> Vec<DoctorAdvice> {
     let mut advice = vec![
         DoctorAdvice::info(
@@ -992,16 +1266,16 @@ fn doctor_performance_advice(
         ));
     }
 
-    let Some(model_dir) = mlx_model_artifacts_dir else {
+    if !model_artifacts.selected {
         advice.push(DoctorAdvice::info(
             "model_artifacts_not_selected",
             "Pass --mlx-model-artifacts-dir for model-specific quantization advice.",
             "Without model artifacts doctor can only report runtime-level guidance, not whether this checkpoint should be compared against another quantization.",
         ));
         return advice;
-    };
+    }
 
-    match inspect_doctor_model_artifacts(model_dir) {
+    match inspect_doctor_model_artifacts(model_artifacts) {
         Ok(model_hint) => advice.extend(doctor_model_performance_advice(&model_hint)),
         Err(message) => advice.push(DoctorAdvice::warning(
             "model_artifacts_unreadable",
@@ -1013,47 +1287,33 @@ fn doctor_performance_advice(
     advice
 }
 
-fn inspect_doctor_model_artifacts(path: &Path) -> Result<DoctorModelArtifactsHint, String> {
-    if !path.exists() {
-        return Err(format!(
-            "model artifacts path does not exist: {}",
-            path.display()
-        ));
+fn inspect_doctor_model_artifacts(
+    report: &DoctorModelArtifactsReport,
+) -> Result<DoctorModelArtifactsHint, String> {
+    let path = report.path.as_deref().unwrap_or("unknown");
+    if !report.exists {
+        return Err(format!("model artifacts path does not exist: {path}"));
     }
-    if !path.is_dir() {
+    if !report.is_dir {
+        return Err(format!("model artifacts path is not a directory: {path}"));
+    }
+
+    if !report.config_present {
         return Err(format!(
-            "model artifacts path is not a directory: {}",
-            path.display()
+            "model artifacts path is missing config.json: {path}"
         ));
     }
 
-    let config_path = path.join("config.json");
-    if !config_path.is_file() {
+    if !report.manifest_present {
         return Err(format!(
-            "model artifacts path is missing config.json: {}",
-            path.display()
+            "model artifacts path is missing model-manifest.json: {path}; run `cargo run -p ax-engine-core --bin generate-manifest -- {path}` before using this snapshot as AX MLX artifacts"
         ));
     }
 
-    let manifest_path = path.join("model-manifest.json");
-    if !manifest_path.is_file() {
-        return Err(format!(
-            "model artifacts path is missing model-manifest.json: {}; run `cargo run -p ax-engine-core --bin generate-manifest -- {}` before using this snapshot as AX MLX artifacts",
-            path.display(),
-            path.display()
-        ));
-    }
-
-    let config = load_json_value(&config_path).map_err(|error| error.to_string())?;
     Ok(DoctorModelArtifactsHint {
-        model_type: doctor_config_string(&config, "model_type").map(str::to_string),
-        quantization: doctor_config_quantization(&config),
-        axquant: doctor_axquant_report(path),
-        path_label: path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase(),
+        model_type: report.model_type.clone(),
+        quantization: report.quantization.clone(),
+        axquant: report.axquant.clone(),
     })
 }
 

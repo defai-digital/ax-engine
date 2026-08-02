@@ -884,15 +884,38 @@ fn write_doctor_axquant_metadata(
         "target_bpw": 6.0,
         "effective_bpw": 5.9999,
         "assignments": [
-            {"tensor": "embed.weight", "bits": 8},
-            {"tensor": "layer.0.weight", "bits": 4},
-            {"tensor": "layer.1.weight", "bits": 6},
-            {"tensor": "norm.weight", "bits": 16}
+            {
+                "tensor": "embed.weight",
+                "module_path": "embed",
+                "bits": 8,
+                "method": "affine",
+                "group_size": 64
+            },
+            {
+                "tensor": "layer.0.weight",
+                "module_path": "layer.0",
+                "bits": 4,
+                "method": "affine",
+                "group_size": 64
+            },
+            {
+                "tensor": "layer.1.weight",
+                "module_path": "layer.1",
+                "bits": 6,
+                "method": "affine",
+                "group_size": 64
+            },
+            {
+                "tensor": "norm.weight",
+                "module_path": "norm",
+                "bits": 16,
+                "method": "bf16",
+                "group_size": null
+            }
         ]
     });
-    let plan_sha256 = ax_engine_core::sha256_hex(
-        &serde_json::to_vec(&plan).expect("canonical plan should serialize"),
-    );
+    let plan_sha256 =
+        crate::doctor::axquant_stable_sha256(&plan).expect("plan should canonicalize");
     let execution_plan_sha256 = if execution_lineage_matches {
         plan_sha256.clone()
     } else {
@@ -903,14 +926,26 @@ fn write_doctor_axquant_metadata(
         "plan_sha256": execution_plan_sha256,
         "records": [
             {
+                "module_path": "embed",
+                "method": "affine",
+                "bits": 8,
+                "group_size": 64,
+                "success": true,
+                "fallback": false
+            },
+            {
                 "module_path": "layer.0",
+                "method": "affine",
                 "bits": 4,
+                "group_size": 64,
                 "success": true,
                 "fallback": fallback
             },
             {
                 "module_path": "layer.1",
+                "method": "affine",
                 "bits": 6,
+                "group_size": 64,
                 "success": true,
                 "fallback": false
             }
@@ -939,8 +974,10 @@ fn write_doctor_axquant_metadata(
         "quantizer": "axquant",
         "source_model": source_model,
         "plan_sha256": plan_sha256,
+        "effective_bpw": 5.9999,
         "measured_total_bpw": 6.0001,
         "measured_main_bpw": 5.8448,
+        "runtime": runtime,
         "files": [
             {
                 "path": "axquant_plan.json",
@@ -964,6 +1001,41 @@ fn write_doctor_axquant_metadata(
         serde_json::to_vec_pretty(&artifact).expect("artifact should serialize"),
     )
     .expect("artifact should write");
+}
+
+fn rewrite_doctor_axquant_bound_json(model_dir: &Path, file_name: &str, value: &Value) {
+    let bytes = serde_json::to_vec_pretty(value).expect("bound metadata should serialize");
+    fs::write(model_dir.join(file_name), &bytes).expect("bound metadata should write");
+
+    let manifest_path = model_dir.join("axquant_manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("artifact manifest should read"))
+            .expect("artifact manifest should parse");
+    let entry = manifest
+        .get_mut("files")
+        .and_then(Value::as_array_mut)
+        .and_then(|files| {
+            files
+                .iter_mut()
+                .find(|entry| entry.get("path").and_then(Value::as_str) == Some(file_name))
+        })
+        .expect("artifact manifest should bind rewritten metadata");
+    entry["sha256"] = Value::String(ax_engine_core::sha256_hex(&bytes));
+    entry["size_bytes"] = json!(bytes.len());
+    fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("artifact manifest should serialize"),
+    )
+    .expect("artifact manifest should write");
+}
+
+fn write_doctor_axquant_model_fixture(model_dir: &Path) {
+    fs::create_dir_all(model_dir).expect("model dir should create");
+    fs::write(model_dir.join("config.json"), r#"{"model_type":"qwen3_5"}"#)
+        .expect("config should write");
+    write_doctor_model_manifest(model_dir);
+    write_doctor_safetensors(model_dir);
+    write_doctor_axquant_metadata(model_dir, "measured", true, false);
 }
 
 #[cfg(target_os = "macos")]
@@ -2795,6 +2867,19 @@ fn doctor_report_surfaces_ready_model_artifacts() {
 }
 
 #[test]
+fn axquant_stable_sha256_matches_python_canonical_json() {
+    let value: Value = serde_json::from_str(
+        r#"{"unicode":"量化","tiny":0.0000100,"threshold":0.0001000,"seed":18446744073709551616,"roundtrip":0.0030897113371060546,"nested":{"z":6.000,"a":-0.0},"huge":1E16}"#,
+    )
+    .expect("Python-compatible JSON fixture should parse");
+
+    assert_eq!(
+        crate::doctor::axquant_stable_sha256(&value).as_deref(),
+        Some("16d24a563e2b4bc36a1691f21e86cc655cc29cd0e738e512ea112d69516423ed")
+    );
+}
+
+#[test]
 fn doctor_report_validates_axquant_mixed_precision_metadata() {
     let root = unique_test_dir("doctor-axquant-ready");
     let model_dir = root.join("axquant-qwen36");
@@ -2830,7 +2915,7 @@ fn doctor_report_validates_axquant_mixed_precision_metadata() {
     assert!(!axquant.release_quality_evidence);
     assert!(axquant.mixed_precision);
     assert_eq!(axquant.precision_bits, vec![4, 6, 8, 16]);
-    assert_eq!(axquant.quantized_module_count, 2);
+    assert_eq!(axquant.quantized_module_count, 3);
     assert_eq!(axquant.failed_module_count, 0);
     assert_eq!(axquant.fallback_module_count, 0);
     assert_eq!(axquant.measured_total_bpw, Some(6.0001));
@@ -2848,7 +2933,7 @@ fn doctor_report_validates_axquant_mixed_precision_metadata() {
     let text = render_doctor_report(&report);
     assert!(text.contains("AXQuant metadata: yes"));
     assert!(text.contains("AXQuant precision bits: 4/6/8/16"));
-    assert!(text.contains("AXQuant quantized modules: 2 (failed 0, fallback 0)"));
+    assert!(text.contains("AXQuant quantized modules: 3 (failed 0, fallback 0)"));
 
     write_doctor_axquant_metadata(&model_dir, "imported", true, false);
     let imported_report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
@@ -2863,6 +2948,291 @@ fn doctor_report_validates_axquant_mixed_precision_metadata() {
             .performance_advice
             .iter()
             .any(|advice| advice.id == "axquant_development_evidence")
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_axquant_plan_content_digest_mismatch() {
+    let root = unique_test_dir("doctor-axquant-plan-content-mismatch");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    let plan_path = model_dir.join("axquant_plan.json");
+    let mut plan: Value =
+        serde_json::from_slice(&fs::read(&plan_path).expect("AXQuant plan should read"))
+            .expect("AXQuant plan should parse");
+    plan["target_bpw"] = json!(5.5);
+    rewrite_doctor_axquant_bound_json(&model_dir, "axquant_plan.json", &plan);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(!axquant.metadata_valid);
+    assert!(!axquant.lineage_valid);
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("plan content digest")
+                && issue.contains("does not match manifest plan_sha256"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_axquant_execution_coverage_drift() {
+    let root = unique_test_dir("doctor-axquant-execution-coverage-drift");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    let execution_path = model_dir.join("axquant_quantizer_execution.json");
+    let mut execution: Value = serde_json::from_slice(
+        &fs::read(&execution_path).expect("quantizer execution should read"),
+    )
+    .expect("quantizer execution should parse");
+    let records = execution
+        .get_mut("records")
+        .and_then(Value::as_array_mut)
+        .expect("quantizer execution should have records");
+    records[0]["bits"] = json!(4);
+    records.pop();
+    rewrite_doctor_axquant_bound_json(&model_dir, "axquant_quantizer_execution.json", &execution);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(!axquant.metadata_valid);
+    assert!(axquant.lineage_valid);
+    assert_eq!(axquant.quantized_module_count, 2);
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("1 modules whose method, bits, or group size differ"))
+    );
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("missing 1 planned quantized modules"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_malformed_duplicate_and_unexpected_axquant_execution_records() {
+    let root = unique_test_dir("doctor-axquant-execution-record-integrity");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    let execution_path = model_dir.join("axquant_quantizer_execution.json");
+    let mut execution: Value = serde_json::from_slice(
+        &fs::read(&execution_path).expect("quantizer execution should read"),
+    )
+    .expect("quantizer execution should parse");
+    let records = execution
+        .get_mut("records")
+        .and_then(Value::as_array_mut)
+        .expect("quantizer execution should have records");
+    records[0]
+        .as_object_mut()
+        .expect("execution record should be an object")
+        .remove("fallback");
+    records.push(records[1].clone());
+    let mut unexpected = records[2].clone();
+    unexpected["module_path"] = json!("unexpected.module");
+    records.push(unexpected);
+    rewrite_doctor_axquant_bound_json(&model_dir, "axquant_quantizer_execution.json", &execution);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let issues = &report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected")
+        .issues;
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("1 malformed module records"))
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("1 duplicate module records"))
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("1 modules absent from the quantization plan"))
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("missing 1 planned quantized modules"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_axquant_embedded_runtime_drift() {
+    let root = unique_test_dir("doctor-axquant-runtime-drift");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    let runtime_path = model_dir.join("axquant_runtime.json");
+    let mut runtime: Value =
+        serde_json::from_slice(&fs::read(&runtime_path).expect("AXQuant runtime should read"))
+            .expect("AXQuant runtime should parse");
+    runtime["primary_runtime"] = json!("another-runtime");
+    rewrite_doctor_axquant_bound_json(&model_dir, "axquant_runtime.json", &runtime);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(!axquant.metadata_valid);
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("artifact and axquant_runtime.json metadata differ"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_duplicate_axquant_file_bindings() {
+    let root = unique_test_dir("doctor-axquant-duplicate-binding");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    let manifest_path = model_dir.join("axquant_manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("artifact manifest should read"))
+            .expect("artifact manifest should parse");
+    let files = manifest
+        .get_mut("files")
+        .and_then(Value::as_array_mut)
+        .expect("artifact manifest should have file bindings");
+    let duplicate = files
+        .iter()
+        .find(|entry| entry.get("path").and_then(Value::as_str) == Some("axquant_runtime.json"))
+        .cloned()
+        .expect("runtime binding should exist");
+    files.push(duplicate);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("artifact manifest should serialize"),
+    )
+    .expect("artifact manifest should write");
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(!axquant.metadata_valid);
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("binds axquant_runtime.json more than once"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_axquant_bpw_metadata_drift() {
+    let root = unique_test_dir("doctor-axquant-bpw-drift");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    let manifest_path = model_dir.join("axquant_manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("artifact manifest should read"))
+            .expect("artifact manifest should parse");
+    manifest
+        .as_object_mut()
+        .expect("artifact manifest should be an object")
+        .remove("measured_main_bpw");
+    manifest["effective_bpw"] = json!(5.5);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("artifact manifest should serialize"),
+    )
+    .expect("artifact manifest should write");
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(!axquant.metadata_valid);
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("missing a positive measured_main_bpw"))
+    );
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("artifact and plan effective_bpw values differ"))
     );
 
     fs::remove_dir_all(root).expect("test dir should clean up");

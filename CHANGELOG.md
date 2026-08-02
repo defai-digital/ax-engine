@@ -56,6 +56,13 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- AXQuant doctor validation now recomputes the plan's Python-compatible
+  canonical JSON digest, requires exact plan-to-execution module coverage,
+  rejects malformed or duplicate execution records and manifest bindings,
+  verifies embedded runtime and BPW metadata, and reuses one artifact snapshot
+  for both readiness and performance advice. This closes cases where internally
+  inconsistent AXQuant metadata could previously pass readiness or produce
+  contradictory doctor output.
 - MTP sidecar norm auto-correction now decides once per sidecar instead of
   per tensor. Raw HF deltas are not uniformly small (Qwen 3.6's raw
   `q_norm`/`k_norm`/`mtp.norm` deltas have mean-abs 0.21–1.27 while the raw
