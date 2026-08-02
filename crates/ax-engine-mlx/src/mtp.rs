@@ -1209,7 +1209,6 @@ pub fn mtp_draft_tokens_after_forced_prefix(
 /// supports lazy `prev_token_arr` (embedding lookup works on unevaluated
 /// arrays), so the entire multi-depth computation builds a single fused graph
 /// that MLX can execute in one GPU dispatch batch.
-#[allow(clippy::too_many_arguments)]
 /// Greedy MTP draft tokens scheduled with `async_eval` but not yet extracted.
 ///
 /// The caller stores the arrays across the decode-cycle boundary and extracts
@@ -1283,6 +1282,7 @@ pub fn mtp_lazy_draft_extract(lazy: &MtpLazyDraft) -> Vec<u32> {
     lazy.tokens.iter().map(|a| a.data_u32()[0]).collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mtp_draft_tokens_greedy(
     head: &MtpWeights,
     weights: &ModelWeights,

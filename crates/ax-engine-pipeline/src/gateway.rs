@@ -495,16 +495,16 @@ where
             .map_err(|_| PipelineClientError::DeadlineExceeded)??
             .token_id;
             generated.push(token);
-            if let Ok(next_rendered) = state.tokenizer.decode(&generated, true) {
-                if let Some(delta) = stream_delta(&emitted, &next_rendered) {
-                    // Advance the emitted cursor only over complete text so a
-                    // later completed codepoint still prefixes cleanly.
-                    emitted = complete_decode_prefix(&next_rendered).to_string();
-                    if !on_delta(delta).await {
-                        // Consumer gone: treat as a clean client stop.
-                        finish_reason = "stop";
-                        break;
-                    }
+            if let Ok(next_rendered) = state.tokenizer.decode(&generated, true)
+                && let Some(delta) = stream_delta(&emitted, &next_rendered)
+            {
+                // Advance the emitted cursor only over complete text so a
+                // later completed codepoint still prefixes cleanly.
+                emitted = complete_decode_prefix(&next_rendered).to_string();
+                if !on_delta(delta).await {
+                    // Consumer gone: treat as a clean client stop.
+                    finish_reason = "stop";
+                    break;
                 }
             }
             if state

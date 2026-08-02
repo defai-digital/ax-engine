@@ -7780,12 +7780,12 @@ impl MlxRunner {
         // step resolved to any other verify flow (auto-optimistic activated
         // mid-request, kill switches), materialise the real token values now
         // so no placeholder can reach a verifier input.
-        if deferred_lazy_draft.is_some() && (optimistic || !has_linear_attention) {
-            if let Some(lazy) = deferred_lazy_draft.take() {
-                let tokens = crate::mtp::mtp_lazy_draft_extract(&lazy);
-                state.mtp_pending_draft = tokens.clone();
-                pending = tokens;
-            }
+        if (optimistic || !has_linear_attention)
+            && let Some(lazy) = deferred_lazy_draft.take()
+        {
+            let tokens = crate::mtp::mtp_lazy_draft_extract(&lazy);
+            state.mtp_pending_draft = tokens.clone();
+            pending = tokens;
         }
 
         // Build verify sequence: [primary_token] ++ pending_draft.

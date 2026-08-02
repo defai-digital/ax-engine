@@ -1014,7 +1014,7 @@ mod tests {
         let weight_data: Vec<f32> = (0..input_dim * output_dim)
             .map(|index| ((index % 113) as f32 - 56.0) * 0.01171875)
             .collect();
-        let weight = array_f32(&weight_data, &[output_dim as i32, input_dim as i32]);
+        let weight = array_f32(&weight_data, &[output_dim, input_dim]);
         let quantized = quantize(
             &weight,
             Some(32),
@@ -1036,7 +1036,7 @@ mod tests {
             .map(|index| ((index % 43) as f32 - 21.0) * 0.02734375)
             .collect();
         let input = astype(
-            &array_f32(&input_data, &[1, 2, input_dim as i32]),
+            &array_f32(&input_data, &[1, 2, input_dim]),
             MlxDtype::Bfloat16,
             None,
         );
@@ -1048,7 +1048,7 @@ mod tests {
                 &slice(
                     &input,
                     &[0, row, 0],
-                    &[1, row + 1, input_dim as i32],
+                    &[1, row + 1, input_dim],
                     &[1, 1, 1],
                     None,
                 ),
@@ -1060,7 +1060,7 @@ mod tests {
                 &slice(
                     &microbatch,
                     &[0, row, 0],
-                    &[1, row + 1, output_dim as i32],
+                    &[1, row + 1, output_dim],
                     &[1, 1, 1],
                     None,
                 ),
@@ -1080,12 +1080,12 @@ mod tests {
         let weight_data: Vec<f32> = (0..input_dim * output_dim)
             .map(|index| ((index % 251) as f32 - 125.0) * 0.00390625)
             .collect();
-        let source_weight = array_f32(&weight_data, &[output_dim as i32, input_dim as i32]);
+        let source_weight = array_f32(&weight_data, &[output_dim, input_dim]);
         let input_data: Vec<f32> = (0..2 * input_dim)
             .map(|index| ((index % 89) as f32 - 44.0) * 0.015625)
             .collect();
         let input = astype(
-            &array_f32(&input_data, &[1, 2, input_dim as i32]),
+            &array_f32(&input_data, &[1, 2, input_dim]),
             MlxDtype::Bfloat16,
             None,
         );
@@ -1116,7 +1116,7 @@ mod tests {
                     &slice(
                         &input,
                         &[0, row, 0],
-                        &[1, row + 1, input_dim as i32],
+                        &[1, row + 1, input_dim],
                         &[1, 1, 1],
                         None,
                     ),
@@ -1138,7 +1138,7 @@ mod tests {
                     &slice(
                         &microbatch,
                         &[0, row, 0],
-                        &[1, row + 1, output_dim as i32],
+                        &[1, row + 1, output_dim],
                         &[1, 1, 1],
                         None,
                     ),
@@ -1171,7 +1171,7 @@ mod tests {
             .collect();
         let weight = QuantizedWeight {
             weight: astype(
-                &array_f32(&weight_data, &[output_dim as i32, input_dim as i32]),
+                &array_f32(&weight_data, &[output_dim, input_dim]),
                 MlxDtype::Bfloat16,
                 None,
             ),
@@ -1186,7 +1186,7 @@ mod tests {
             .map(|index| ((index % 37) as f32 - 18.0) * 0.0234375)
             .collect();
         let input = astype(
-            &array_f32(&input_data, &[1, 2, input_dim as i32]),
+            &array_f32(&input_data, &[1, 2, input_dim]),
             MlxDtype::Bfloat16,
             None,
         );
@@ -1198,7 +1198,7 @@ mod tests {
                 &slice(
                     &input,
                     &[0, row, 0],
-                    &[1, row + 1, input_dim as i32],
+                    &[1, row + 1, input_dim],
                     &[1, 1, 1],
                     None,
                 ),
@@ -1210,7 +1210,7 @@ mod tests {
                 &slice(
                     &microbatch,
                     &[0, row, 0],
-                    &[1, row + 1, output_dim as i32],
+                    &[1, row + 1, output_dim],
                     &[1, 1, 1],
                     None,
                 ),
