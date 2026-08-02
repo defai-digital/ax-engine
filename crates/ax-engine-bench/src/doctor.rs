@@ -571,6 +571,8 @@ fn doctor_model_artifacts_report(
         }
         if !manifest_present {
             issues.push("missing model-manifest.json".to_string());
+        } else if let Err(error) = ax_engine_core::NativeModelArtifacts::from_dir(path) {
+            issues.push(format!("native model artifacts are invalid: {error}"));
         }
 
         match dir_contains_safetensors(path) {
@@ -1325,11 +1327,9 @@ fn dir_contains_safetensors(path: &Path) -> Result<bool, String> {
         )
     })?;
     Ok(entries.flatten().any(|entry| {
-        entry
-            .path()
-            .extension()
-            .and_then(|extension| extension.to_str())
-            == Some("safetensors")
+        let path = entry.path();
+        path.is_file()
+            && path.extension().and_then(|extension| extension.to_str()) == Some("safetensors")
     }))
 }
 

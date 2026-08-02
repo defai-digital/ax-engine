@@ -56,6 +56,10 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- `ax-engine-bench doctor` now validates the native model manifest and every
+  referenced tensor file before reporting model artifacts as ready. A malformed
+  manifest, a missing referenced shard, or a directory merely named with a
+  `.safetensors` suffix can no longer produce a false-ready result.
 - AXQuant doctor validation now recomputes the plan's Python-compatible
   canonical JSON digest, requires exact plan-to-execution module coverage,
   rejects malformed or duplicate execution records and manifest bindings,

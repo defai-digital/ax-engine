@@ -855,11 +855,16 @@ fn benchmark_artifact_text_keeps_legacy_result_dir_shape() {
 }
 
 fn write_doctor_model_manifest(model_dir: &Path) {
-    fs::write(model_dir.join("model-manifest.json"), "{}").expect("model manifest should write");
+    fs::write(
+        model_dir.join("model-manifest.json"),
+        serde_json::to_vec_pretty(&valid_native_model_manifest())
+            .expect("model manifest should serialize"),
+    )
+    .expect("model manifest should write");
 }
 
 fn write_doctor_safetensors(model_dir: &Path) {
-    fs::write(model_dir.join("model.safetensors"), b"placeholder")
+    fs::write(model_dir.join("model.safetensors"), vec![0_u8; 4096])
         .expect("safetensors marker should write");
 }
 
@@ -1068,13 +1073,8 @@ fn native_model_tensor(
     }
 }
 
-fn write_valid_native_model_fixture() -> PathBuf {
-    let root_dir = unique_test_dir("native-model-runtime-metadata");
-    fs::create_dir_all(&root_dir).expect("native model fixture directory should create");
-    fs::write(root_dir.join("model.safetensors"), vec![0_u8; 4096])
-        .expect("native model weights should write");
-
-    let manifest = ax_engine_core::NativeModelManifest {
+fn valid_native_model_manifest() -> ax_engine_core::NativeModelManifest {
+    ax_engine_core::NativeModelManifest {
         schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
         model_family: "qwen3".to_string(),
         tensor_format: ax_engine_core::NativeTensorFormat::Safetensors,
@@ -1180,7 +1180,16 @@ fn write_valid_native_model_fixture() -> PathBuf {
                 vec![2_048, 4_096],
             ),
         ],
-    };
+    }
+}
+
+fn write_valid_native_model_fixture() -> PathBuf {
+    let root_dir = unique_test_dir("native-model-runtime-metadata");
+    fs::create_dir_all(&root_dir).expect("native model fixture directory should create");
+    fs::write(root_dir.join("model.safetensors"), vec![0_u8; 4096])
+        .expect("native model weights should write");
+
+    let manifest = valid_native_model_manifest();
 
     fs::write(
         root_dir.join(ax_engine_core::AX_NATIVE_MODEL_MANIFEST_FILE),
@@ -2862,6 +2871,69 @@ fn doctor_report_surfaces_ready_model_artifacts() {
         Some(4)
     );
     assert!(report.model_artifacts.issues.is_empty());
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_malformed_manifest_and_safetensors_directory() {
+    let root = unique_test_dir("doctor-invalid-model-artifacts");
+    let model_dir = root.join("invalid-mlx-snapshot");
+    fs::create_dir_all(model_dir.join("model.safetensors"))
+        .expect("fake safetensors directory should create");
+    fs::write(model_dir.join("config.json"), r#"{"model_type":"qwen3"}"#)
+        .expect("config should write");
+    fs::write(model_dir.join("model-manifest.json"), "{}")
+        .expect("malformed native manifest should write");
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    assert!(!report.model_artifacts.safetensors_present);
+    assert!(
+        report
+            .model_artifacts
+            .issues
+            .iter()
+            .any(|issue| issue.contains("model-manifest.json"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_manifest_with_missing_tensor_file() {
+    let root = unique_test_dir("doctor-missing-manifest-tensor-file");
+    let model_dir = root.join("incomplete-mlx-snapshot");
+    fs::create_dir_all(&model_dir).expect("model dir should create");
+    fs::write(model_dir.join("config.json"), r#"{"model_type":"qwen3"}"#)
+        .expect("config should write");
+    write_doctor_model_manifest(&model_dir);
+    fs::write(model_dir.join("unrelated.safetensors"), vec![0_u8; 4096])
+        .expect("unrelated safetensors should write");
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    assert!(report.model_artifacts.safetensors_present);
+    assert!(
+        report
+            .model_artifacts
+            .issues
+            .iter()
+            .any(|issue| issue.contains("references missing file")
+                && issue.contains("model.safetensors"))
+    );
 
     fs::remove_dir_all(root).expect("test dir should clean up");
 }
