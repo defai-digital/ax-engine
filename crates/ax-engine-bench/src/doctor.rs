@@ -1,10 +1,11 @@
 use ax_engine_core::{
     MetalBuildDoctorReport, MetalBuildHostReport, MetalBuildToolStatus, MetalBuildToolchainReport,
-    MetalKernelAssets,
+    MetalKernelAssets, sha256_hex,
 };
 use ax_engine_sdk::{HostReport, MetalToolchainReport, ToolStatusReport};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -74,7 +75,7 @@ impl DoctorStatus {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct DoctorReport {
     pub(crate) schema_version: String,
     pub(crate) mlx_target: String,
@@ -153,7 +154,7 @@ impl DoctorModelArtifactsStatus {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct DoctorModelArtifactsReport {
     pub(crate) selected: bool,
     pub(crate) status: DoctorModelArtifactsStatus,
@@ -168,6 +169,8 @@ pub(crate) struct DoctorModelArtifactsReport {
     pub(crate) model_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) quantization: Option<DoctorQuantizationHint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) axquant: Option<DoctorAxquantReport>,
     pub(crate) issues: Vec<String>,
 }
 
@@ -184,6 +187,62 @@ impl DoctorModelArtifactsReport {
             safetensors_present: false,
             model_type: None,
             quantization: None,
+            axquant: None,
+            issues: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct DoctorAxquantReport {
+    pub(crate) metadata_valid: bool,
+    pub(crate) lineage_valid: bool,
+    pub(crate) release_quality_evidence: bool,
+    pub(crate) provenance_complete: bool,
+    pub(crate) manifest_schema_version: Option<String>,
+    pub(crate) evidence_kind: Option<String>,
+    pub(crate) source_model_id: Option<String>,
+    pub(crate) source_revision: Option<String>,
+    pub(crate) plan_sha256: Option<String>,
+    pub(crate) plan_present: bool,
+    pub(crate) quantizer_execution_present: bool,
+    pub(crate) runtime_metadata_present: bool,
+    pub(crate) target_bpw: Option<f64>,
+    pub(crate) effective_bpw: Option<f64>,
+    pub(crate) measured_total_bpw: Option<f64>,
+    pub(crate) measured_main_bpw: Option<f64>,
+    pub(crate) precision_bits: Vec<u32>,
+    pub(crate) mixed_precision: bool,
+    pub(crate) quantized_module_count: usize,
+    pub(crate) failed_module_count: usize,
+    pub(crate) fallback_module_count: usize,
+    pub(crate) issues: Vec<String>,
+}
+
+impl DoctorAxquantReport {
+    fn empty() -> Self {
+        Self {
+            metadata_valid: false,
+            lineage_valid: false,
+            release_quality_evidence: false,
+            provenance_complete: false,
+            manifest_schema_version: None,
+            evidence_kind: None,
+            source_model_id: None,
+            source_revision: None,
+            plan_sha256: None,
+            plan_present: false,
+            quantizer_execution_present: false,
+            runtime_metadata_present: false,
+            target_bpw: None,
+            effective_bpw: None,
+            measured_total_bpw: None,
+            measured_main_bpw: None,
+            precision_bits: Vec::new(),
+            mixed_precision: false,
+            quantized_module_count: 0,
+            failed_module_count: 0,
+            fallback_module_count: 0,
             issues: Vec::new(),
         }
     }
@@ -484,6 +543,7 @@ fn doctor_model_artifacts_report(
     let mut issues = Vec::new();
     let mut model_type = None;
     let mut quantization = None;
+    let mut axquant = None;
     let mut safetensors_present = false;
 
     if !exists {
@@ -526,6 +586,16 @@ fn doctor_model_artifacts_report(
                 Err(error) => issues.push(format!("config.json is not readable JSON: {error}")),
             }
         }
+
+        axquant = doctor_axquant_report(path);
+        if let Some(report) = &axquant {
+            issues.extend(
+                report
+                    .issues
+                    .iter()
+                    .map(|issue| format!("AXQuant metadata: {issue}")),
+            );
+        }
     }
 
     let status = if issues.is_empty() {
@@ -545,14 +615,337 @@ fn doctor_model_artifacts_report(
         safetensors_present,
         model_type,
         quantization,
+        axquant,
         issues,
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
+    let manifest_path = path.join("axquant_manifest.json");
+    if !manifest_path.is_file() {
+        return None;
+    }
+
+    let mut report = DoctorAxquantReport::empty();
+    let manifest = match load_json_value(&manifest_path) {
+        Ok(value) => value,
+        Err(error) => {
+            report.issues.push(format!(
+                "axquant_manifest.json is not readable JSON: {error}"
+            ));
+            return Some(report);
+        }
+    };
+
+    report.manifest_schema_version = json_string(&manifest, "schema_version");
+    if report.manifest_schema_version.as_deref() != Some("axquant.artifact.v2") {
+        report.issues.push(format!(
+            "unsupported artifact schema {}",
+            report
+                .manifest_schema_version
+                .as_deref()
+                .unwrap_or("missing")
+        ));
+    }
+    if json_string(&manifest, "format").as_deref() != Some("mlx") {
+        report
+            .issues
+            .push("AXQuant artifact format must be mlx".to_string());
+    }
+    if json_string(&manifest, "quantizer").as_deref() != Some("axquant") {
+        report
+            .issues
+            .push("AXQuant artifact quantizer must be axquant".to_string());
+    }
+
+    report.measured_total_bpw = json_positive_f64(&manifest, "measured_total_bpw");
+    report.measured_main_bpw = json_positive_f64(&manifest, "measured_main_bpw");
+    if report.measured_total_bpw.is_none() {
+        report
+            .issues
+            .push("manifest is missing a positive measured_total_bpw".to_string());
+    }
+
+    report.source_model_id = manifest
+        .get("source_model")
+        .and_then(|value| json_string(value, "model_id"));
+    report.source_revision = manifest
+        .get("source_model")
+        .and_then(|value| json_string(value, "revision"));
+    report.provenance_complete = report
+        .source_model_id
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+        && report
+            .source_revision
+            .as_deref()
+            .is_some_and(|value| !value.is_empty());
+
+    report.plan_sha256 = json_string(&manifest, "plan_sha256");
+    if !report.plan_sha256.as_deref().is_some_and(is_sha256_hex) {
+        report
+            .issues
+            .push("manifest plan_sha256 is missing or invalid".to_string());
+    }
+
+    let plan_path = path.join("axquant_plan.json");
+    report.plan_present = plan_path.is_file();
+    let plan = if report.plan_present {
+        validate_axquant_metadata_file(path, "axquant_plan.json", &manifest, &mut report.issues);
+        match load_json_value(&plan_path) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                report
+                    .issues
+                    .push(format!("axquant_plan.json is not readable JSON: {error}"));
+                None
+            }
+        }
+    } else {
+        report.issues.push("missing axquant_plan.json".to_string());
+        None
+    };
+
+    if let Some(plan) = &plan {
+        if json_string(plan, "schema_version").as_deref() != Some("axquant.plan.v1") {
+            report
+                .issues
+                .push("unsupported or missing AXQuant plan schema".to_string());
+        }
+        if json_string(plan, "quantizer").as_deref() != Some("axquant") {
+            report
+                .issues
+                .push("AXQuant plan quantizer must be axquant".to_string());
+        }
+        report.evidence_kind = json_string(plan, "evidence_kind");
+        match report.evidence_kind.as_deref() {
+            Some("measured" | "imported") => report.release_quality_evidence = true,
+            Some("measured_development" | "architecture_prior") => {}
+            Some(value) => report
+                .issues
+                .push(format!("unsupported AXQuant evidence_kind {value}")),
+            None => report
+                .issues
+                .push("AXQuant plan is missing evidence_kind".to_string()),
+        }
+        report.target_bpw = json_positive_f64(plan, "target_bpw");
+        report.effective_bpw = json_positive_f64(plan, "effective_bpw");
+        if report.target_bpw.is_none() || report.effective_bpw.is_none() {
+            report
+                .issues
+                .push("AXQuant plan is missing positive BPW values".to_string());
+        }
+
+        let mut precision_bits = BTreeSet::new();
+        if let Some(assignments) = plan.get("assignments").and_then(Value::as_array) {
+            let mut invalid_assignments = 0_usize;
+            for assignment in assignments {
+                match assignment
+                    .get("bits")
+                    .and_then(Value::as_u64)
+                    .and_then(|bits| u32::try_from(bits).ok())
+                {
+                    Some(bits @ 2..=16) => {
+                        precision_bits.insert(bits);
+                    }
+                    _ => invalid_assignments += 1,
+                }
+            }
+            if invalid_assignments > 0 {
+                report.issues.push(format!(
+                    "AXQuant plan has {invalid_assignments} assignments without a valid 2-16 bit width"
+                ));
+            }
+        } else {
+            report
+                .issues
+                .push("AXQuant plan is missing assignments".to_string());
+        }
+        report.precision_bits = precision_bits.into_iter().collect();
+        report.mixed_precision = report.precision_bits.len() > 1;
+        if report.precision_bits.is_empty() {
+            report
+                .issues
+                .push("AXQuant plan has no precision assignments".to_string());
+        }
+
+        let plan_source = plan.get("source_model");
+        let plan_model_id = plan_source.and_then(|value| json_string(value, "model_id"));
+        let plan_revision = plan_source.and_then(|value| json_string(value, "revision"));
+        if plan_model_id != report.source_model_id || plan_revision != report.source_revision {
+            report
+                .issues
+                .push("artifact and plan source-model provenance differ".to_string());
+        }
+    }
+
+    let execution_path = path.join("axquant_quantizer_execution.json");
+    report.quantizer_execution_present = execution_path.is_file();
+    if report.quantizer_execution_present {
+        validate_axquant_metadata_file(
+            path,
+            "axquant_quantizer_execution.json",
+            &manifest,
+            &mut report.issues,
+        );
+        match load_json_value(&execution_path) {
+            Ok(execution) => {
+                if json_string(&execution, "schema_version").as_deref()
+                    != Some("axquant.quantizer-execution.v1")
+                {
+                    report
+                        .issues
+                        .push("unsupported or missing quantizer-execution schema".to_string());
+                }
+                let execution_plan_sha256 = json_string(&execution, "plan_sha256");
+                let execution_digest_matches =
+                    execution_plan_sha256.is_some() && execution_plan_sha256 == report.plan_sha256;
+                report.lineage_valid = execution_digest_matches;
+                if !execution_digest_matches {
+                    report.issues.push(
+                        "artifact and quantizer execution bind different plan digests".to_string(),
+                    );
+                }
+                if let Some(records) = execution.get("records").and_then(Value::as_array) {
+                    report.quantized_module_count = records.len();
+                    report.failed_module_count = records
+                        .iter()
+                        .filter(|record| {
+                            record.get("success").and_then(Value::as_bool) != Some(true)
+                        })
+                        .count();
+                    report.fallback_module_count = records
+                        .iter()
+                        .filter(|record| {
+                            record.get("fallback").and_then(Value::as_bool) == Some(true)
+                        })
+                        .count();
+                    if records.is_empty() {
+                        report
+                            .issues
+                            .push("quantizer execution contains no module records".to_string());
+                    }
+                    if report.failed_module_count > 0 {
+                        report.issues.push(format!(
+                            "quantizer execution has {} failed module records",
+                            report.failed_module_count
+                        ));
+                    }
+                    if report.fallback_module_count > 0 {
+                        report.issues.push(format!(
+                            "quantizer execution has {} fallback module records",
+                            report.fallback_module_count
+                        ));
+                    }
+                } else {
+                    report
+                        .issues
+                        .push("quantizer execution is missing records".to_string());
+                }
+            }
+            Err(error) => report.issues.push(format!(
+                "axquant_quantizer_execution.json is not readable JSON: {error}"
+            )),
+        }
+    } else {
+        report
+            .issues
+            .push("missing axquant_quantizer_execution.json".to_string());
+    }
+
+    let runtime_path = path.join("axquant_runtime.json");
+    report.runtime_metadata_present = runtime_path.is_file();
+    if report.runtime_metadata_present {
+        validate_axquant_metadata_file(path, "axquant_runtime.json", &manifest, &mut report.issues);
+        match load_json_value(&runtime_path) {
+            Ok(runtime) => {
+                if json_string(&runtime, "schema_version").as_deref() != Some("axquant.runtime.v1")
+                {
+                    report
+                        .issues
+                        .push("unsupported or missing AXQuant runtime schema".to_string());
+                }
+            }
+            Err(error) => report.issues.push(format!(
+                "axquant_runtime.json is not readable JSON: {error}"
+            )),
+        }
+    } else {
+        report
+            .issues
+            .push("missing axquant_runtime.json".to_string());
+    }
+
+    report.metadata_valid = report.issues.is_empty();
+    Some(report)
+}
+
+fn validate_axquant_metadata_file(
+    root: &Path,
+    file_name: &str,
+    manifest: &Value,
+    issues: &mut Vec<String>,
+) {
+    let entry = manifest
+        .get("files")
+        .and_then(Value::as_array)
+        .and_then(|files| {
+            files
+                .iter()
+                .find(|entry| entry.get("path").and_then(Value::as_str) == Some(file_name))
+        });
+    let recorded_sha256 = entry
+        .and_then(|entry| entry.get("sha256"))
+        .and_then(Value::as_str);
+    let Some(recorded_sha256) = recorded_sha256 else {
+        issues.push(format!("manifest does not bind {file_name}"));
+        return;
+    };
+    if !is_sha256_hex(recorded_sha256) {
+        issues.push(format!("manifest has an invalid SHA-256 for {file_name}"));
+        return;
+    }
+
+    let recorded_size = entry
+        .and_then(|entry| entry.get("size_bytes"))
+        .and_then(Value::as_u64);
+    if recorded_size.is_none() {
+        issues.push(format!("manifest has no valid size for {file_name}"));
+    }
+
+    match fs::read(root.join(file_name)) {
+        Ok(bytes) => {
+            if recorded_size != u64::try_from(bytes.len()).ok() {
+                issues.push(format!("{file_name} size differs from the manifest"));
+            }
+            if sha256_hex(&bytes) != recorded_sha256 {
+                issues.push(format!("{file_name} SHA-256 differs from the manifest"));
+            }
+        }
+        Err(error) => issues.push(format!("failed to read {file_name}: {error}")),
+    }
+}
+
+fn json_string(value: &Value, field: &str) -> Option<String> {
+    value.get(field).and_then(Value::as_str).map(str::to_string)
+}
+
+fn json_positive_f64(value: &Value, field: &str) -> Option<f64> {
+    value
+        .get(field)
+        .and_then(Value::as_f64)
+        .filter(|number| number.is_finite() && *number > 0.0)
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct DoctorModelArtifactsHint {
     model_type: Option<String>,
     quantization: Option<DoctorQuantizationHint>,
+    axquant: Option<DoctorAxquantReport>,
     path_label: String,
 }
 
@@ -655,6 +1048,7 @@ fn inspect_doctor_model_artifacts(path: &Path) -> Result<DoctorModelArtifactsHin
     Ok(DoctorModelArtifactsHint {
         model_type: doctor_config_string(&config, "model_type").map(str::to_string),
         quantization: doctor_config_quantization(&config),
+        axquant: doctor_axquant_report(path),
         path_label: path
             .file_name()
             .and_then(|name| name.to_str())
@@ -744,6 +1138,50 @@ fn doctor_model_performance_advice(hint: &DoctorModelArtifactsHint) -> Vec<Docto
             "Quantization metadata did not include a bits field.",
             "Doctor will not infer 4-bit or 5-bit policy advice without explicit quantization bits.",
         ));
+    }
+
+    if let Some(axquant) = &hint.axquant {
+        if axquant.metadata_valid {
+            let precisions = axquant
+                .precision_bits
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join("/");
+            let measured_bpw = axquant
+                .measured_total_bpw
+                .map(|value| format!("{value:.4}"))
+                .unwrap_or_else(|| "unknown".to_string());
+            advice.push(DoctorAdvice::info(
+                "axquant_artifact_detected",
+                "AXQuant metadata and quantizer lineage are valid.",
+                &format!(
+                    "This is an AXQuant {}precision artifact at measured {measured_bpw} BPW with {precisions}-bit assignments and {} successful quantized modules; use these values instead of the config's global storage default.",
+                    if axquant.mixed_precision { "mixed-" } else { "single-" },
+                    axquant.quantized_module_count,
+                ),
+            ));
+        } else {
+            advice.push(DoctorAdvice::warning(
+                "axquant_metadata_invalid",
+                "AXQuant metadata is incomplete or inconsistent.",
+                "Resolve the model-artifact issues before treating this checkpoint as an AXQuant artifact or collecting benchmark evidence.",
+            ));
+        }
+        if !axquant.release_quality_evidence {
+            advice.push(DoctorAdvice::warning(
+                "axquant_development_evidence",
+                "This AXQuant plan is not release-quality measured evidence.",
+                "The runtime may execute the artifact, but certification and publication require an evidence_kind of measured plus the bound complete-candidate validation chain.",
+            ));
+        }
+        if !axquant.provenance_complete {
+            advice.push(DoctorAdvice::warning(
+                "axquant_provenance_incomplete",
+                "AXQuant source-model provenance is incomplete.",
+                "Record both the source model ID and pinned revision before using this artifact in reproducible benchmark or release evidence.",
+            ));
+        }
     }
 
     advice
@@ -927,6 +1365,58 @@ pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
                 .unwrap_or("unknown")
         ),
     ];
+
+    lines.push(format!(
+        "  - AXQuant metadata: {}",
+        yes_no(report.model_artifacts.axquant.is_some())
+    ));
+    if let Some(axquant) = &report.model_artifacts.axquant {
+        lines.extend([
+            format!(
+                "  - AXQuant metadata valid: {}",
+                yes_no(axquant.metadata_valid)
+            ),
+            format!(
+                "  - AXQuant lineage valid: {}",
+                yes_no(axquant.lineage_valid)
+            ),
+            format!(
+                "  - AXQuant evidence: {}",
+                axquant.evidence_kind.as_deref().unwrap_or("unknown")
+            ),
+            format!(
+                "  - AXQuant source: {}@{}",
+                axquant.source_model_id.as_deref().unwrap_or("unknown"),
+                axquant.source_revision.as_deref().unwrap_or("unknown")
+            ),
+            format!(
+                "  - AXQuant measured BPW: {}",
+                axquant
+                    .measured_total_bpw
+                    .map(|value| format!("{value:.4}"))
+                    .unwrap_or_else(|| "unknown".to_string())
+            ),
+            format!(
+                "  - AXQuant precision bits: {}",
+                if axquant.precision_bits.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    axquant
+                        .precision_bits
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join("/")
+                }
+            ),
+            format!(
+                "  - AXQuant quantized modules: {} (failed {}, fallback {})",
+                axquant.quantized_module_count,
+                axquant.failed_module_count,
+                axquant.fallback_module_count
+            ),
+        ]);
+    }
 
     if !report.model_artifacts.selected {
         lines.push(

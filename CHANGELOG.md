@@ -9,6 +9,12 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- `ax-engine-bench doctor` now recognizes AXQuant artifact metadata and reports
+  actual mixed-precision widths, measured BPW, evidence kind, source provenance,
+  and quantizer execution coverage. It validates the artifact's SHA-256 metadata
+  bindings and plan lineage, fails readiness for malformed metadata or any
+  failed/fallback module, and warns without blocking when evidence is marked for
+  development rather than release certification.
 - `AX_ENGINE_2BIT_EXPERIMENTAL=1`: admits affine-quantized MLX artifacts at
   2-bit under the same experimental contract as the existing 3-bit gate —
   rejected by default, no quality or correctness guarantee, MLX affine

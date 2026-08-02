@@ -863,6 +863,109 @@ fn write_doctor_safetensors(model_dir: &Path) {
         .expect("safetensors marker should write");
 }
 
+fn write_doctor_axquant_metadata(
+    model_dir: &Path,
+    evidence_kind: &str,
+    execution_lineage_matches: bool,
+    fallback: bool,
+) {
+    let source_model = json!({
+        "architecture": "Qwen3_5ForConditionalGeneration",
+        "format": "mlx",
+        "local_path": "/models/qwen36-bf16",
+        "model_id": "Qwen/Qwen3.6-27B",
+        "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+    });
+    let plan = json!({
+        "schema_version": "axquant.plan.v1",
+        "quantizer": "axquant",
+        "source_model": source_model,
+        "evidence_kind": evidence_kind,
+        "target_bpw": 6.0,
+        "effective_bpw": 5.9999,
+        "assignments": [
+            {"tensor": "embed.weight", "bits": 8},
+            {"tensor": "layer.0.weight", "bits": 4},
+            {"tensor": "layer.1.weight", "bits": 6},
+            {"tensor": "norm.weight", "bits": 16}
+        ]
+    });
+    let plan_sha256 = ax_engine_core::sha256_hex(
+        &serde_json::to_vec(&plan).expect("canonical plan should serialize"),
+    );
+    let execution_plan_sha256 = if execution_lineage_matches {
+        plan_sha256.clone()
+    } else {
+        "b".repeat(64)
+    };
+    let execution = json!({
+        "schema_version": "axquant.quantizer-execution.v1",
+        "plan_sha256": execution_plan_sha256,
+        "records": [
+            {
+                "module_path": "layer.0",
+                "bits": 4,
+                "success": true,
+                "fallback": fallback
+            },
+            {
+                "module_path": "layer.1",
+                "bits": 6,
+                "success": true,
+                "fallback": false
+            }
+        ]
+    });
+    let runtime = json!({
+        "schema_version": "axquant.runtime.v1",
+        "primary_runtime": "ax-engine"
+    });
+    let plan_bytes = serde_json::to_vec_pretty(&plan).expect("plan should serialize");
+    let execution_bytes =
+        serde_json::to_vec_pretty(&execution).expect("execution should serialize");
+    let runtime_bytes = serde_json::to_vec_pretty(&runtime).expect("runtime should serialize");
+    fs::write(model_dir.join("axquant_plan.json"), &plan_bytes).expect("plan should write");
+    fs::write(
+        model_dir.join("axquant_quantizer_execution.json"),
+        &execution_bytes,
+    )
+    .expect("execution should write");
+    fs::write(model_dir.join("axquant_runtime.json"), &runtime_bytes)
+        .expect("runtime should write");
+
+    let artifact = json!({
+        "schema_version": "axquant.artifact.v2",
+        "format": "mlx",
+        "quantizer": "axquant",
+        "source_model": source_model,
+        "plan_sha256": plan_sha256,
+        "measured_total_bpw": 6.0001,
+        "measured_main_bpw": 5.8448,
+        "files": [
+            {
+                "path": "axquant_plan.json",
+                "sha256": ax_engine_core::sha256_hex(&plan_bytes),
+                "size_bytes": plan_bytes.len()
+            },
+            {
+                "path": "axquant_quantizer_execution.json",
+                "sha256": ax_engine_core::sha256_hex(&execution_bytes),
+                "size_bytes": execution_bytes.len()
+            },
+            {
+                "path": "axquant_runtime.json",
+                "sha256": ax_engine_core::sha256_hex(&runtime_bytes),
+                "size_bytes": runtime_bytes.len()
+            }
+        ]
+    });
+    fs::write(
+        model_dir.join("axquant_manifest.json"),
+        serde_json::to_vec_pretty(&artifact).expect("artifact should serialize"),
+    )
+    .expect("artifact should write");
+}
+
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 fn compiled_repo_metal_build_dir() -> Option<PathBuf> {
@@ -2687,6 +2790,205 @@ fn doctor_report_surfaces_ready_model_artifacts() {
         Some(4)
     );
     assert!(report.model_artifacts.issues.is_empty());
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_validates_axquant_mixed_precision_metadata() {
+    let root = unique_test_dir("doctor-axquant-ready");
+    let model_dir = root.join("axquant-qwen36");
+    fs::create_dir_all(&model_dir).expect("model dir should create");
+    fs::write(
+        model_dir.join("config.json"),
+        r#"{
+            "model_type":"qwen3_5",
+            "quantization":{"mode":"affine","group_size":64,"bits":4}
+        }"#,
+    )
+    .expect("config should write");
+    write_doctor_model_manifest(&model_dir);
+    write_doctor_safetensors(&model_dir);
+    write_doctor_axquant_metadata(&model_dir, "measured_development", true, false);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host.clone(), toolchain.clone(), Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::Ready
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(axquant.metadata_valid);
+    assert!(axquant.lineage_valid);
+    assert!(axquant.provenance_complete);
+    assert!(!axquant.release_quality_evidence);
+    assert!(axquant.mixed_precision);
+    assert_eq!(axquant.precision_bits, vec![4, 6, 8, 16]);
+    assert_eq!(axquant.quantized_module_count, 2);
+    assert_eq!(axquant.failed_module_count, 0);
+    assert_eq!(axquant.fallback_module_count, 0);
+    assert_eq!(axquant.measured_total_bpw, Some(6.0001));
+    assert!(report.performance_advice.iter().any(|advice| {
+        advice.id == "axquant_artifact_detected"
+            && advice.detail.contains("measured 6.0001 BPW")
+            && advice.detail.contains("4/6/8/16-bit")
+    }));
+    assert!(
+        report
+            .performance_advice
+            .iter()
+            .any(|advice| advice.id == "axquant_development_evidence")
+    );
+    let text = render_doctor_report(&report);
+    assert!(text.contains("AXQuant metadata: yes"));
+    assert!(text.contains("AXQuant precision bits: 4/6/8/16"));
+    assert!(text.contains("AXQuant quantized modules: 2 (failed 0, fallback 0)"));
+
+    write_doctor_axquant_metadata(&model_dir, "imported", true, false);
+    let imported_report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+    let imported_axquant = imported_report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("imported AXQuant metadata should be detected");
+    assert!(imported_axquant.release_quality_evidence);
+    assert!(
+        !imported_report
+            .performance_advice
+            .iter()
+            .any(|advice| advice.id == "axquant_development_evidence")
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_axquant_lineage_mismatch_and_fallback() {
+    let root = unique_test_dir("doctor-axquant-lineage-mismatch");
+    let model_dir = root.join("axquant-qwen36");
+    fs::create_dir_all(&model_dir).expect("model dir should create");
+    fs::write(model_dir.join("config.json"), r#"{"model_type":"qwen3_5"}"#)
+        .expect("config should write");
+    write_doctor_model_manifest(&model_dir);
+    write_doctor_safetensors(&model_dir);
+    write_doctor_axquant_metadata(&model_dir, "measured", false, true);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(!axquant.metadata_valid);
+    assert!(!axquant.lineage_valid);
+    assert_eq!(axquant.fallback_module_count, 1);
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("different plan digests"))
+    );
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("fallback module"))
+    );
+    assert!(
+        report
+            .performance_advice
+            .iter()
+            .any(|advice| advice.id == "axquant_metadata_invalid")
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_malformed_axquant_manifest() {
+    let root = unique_test_dir("doctor-axquant-malformed");
+    let model_dir = root.join("axquant-qwen36");
+    fs::create_dir_all(&model_dir).expect("model dir should create");
+    fs::write(model_dir.join("config.json"), r#"{"model_type":"qwen3_5"}"#)
+        .expect("config should write");
+    fs::write(model_dir.join("axquant_manifest.json"), "{")
+        .expect("malformed manifest should write");
+    write_doctor_model_manifest(&model_dir);
+    write_doctor_safetensors(&model_dir);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(!axquant.metadata_valid);
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("not readable JSON"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_axquant_metadata_sha_mismatch() {
+    let root = unique_test_dir("doctor-axquant-sha-mismatch");
+    let model_dir = root.join("axquant-qwen36");
+    fs::create_dir_all(&model_dir).expect("model dir should create");
+    fs::write(model_dir.join("config.json"), r#"{"model_type":"qwen3_5"}"#)
+        .expect("config should write");
+    write_doctor_model_manifest(&model_dir);
+    write_doctor_safetensors(&model_dir);
+    write_doctor_axquant_metadata(&model_dir, "measured", true, false);
+    fs::write(
+        model_dir.join("axquant_runtime.json"),
+        r#"{"schema_version":"axquant.runtime.v1","tampered":true}"#,
+    )
+    .expect("tampered runtime metadata should write");
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(!axquant.metadata_valid);
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("axquant_runtime.json SHA-256 differs"))
+    );
 
     fs::remove_dir_all(root).expect("test dir should clean up");
 }
