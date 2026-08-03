@@ -218,7 +218,11 @@ layer from the upstream `zai-org/GLM-4.7-Flash` checkpoint, and writes a
 `convert-mtplx` is the lower-level path when the base is already cached or you
 need an explicit source repo. It writes `mtp.safetensors`, `mtplx_runtime.json`,
 patched `config.json`, and `ax_mtp_sidecar_manifest.json`, then runs the
-provenance checker before reporting success. Optional knobs use model-specific
+provenance checker before reporting success. The MLX weight loader infers the
+sidecar's quantization bits from a structured `mtp_sidecar_bits` integer field
+in `mtplx_runtime.json` when present, preferring it over the free-text
+`mtp_sidecar` description; malformed values warn and fall back to the
+heuristic. Optional knobs use model-specific
 defaults when omitted: Qwen3.6 27B uses MTP depth 3, and Qwen3.6 35B-A3B uses
 depth 1. The current `--mtp-source` contract is a Hugging Face repo id that
 ships `mtp.*` tensors; local MTP source directories must fail closed unless
@@ -283,7 +287,11 @@ modules, BPW metadata is incomplete/inconsistent, or conversion used
 failed/fallback modules. Development evidence remains runnable but is reported
 as non-release-quality. Readiness and performance advice come from the same
 artifact inspection snapshot. Callers should use these fields directly instead
-of parsing performance-advice text.
+of parsing performance-advice text. Separately from doctor, the MLX runtime
+verifies an AXQuant `vision.safetensors` sidecar against its
+`axquant_vision_sidecar_manifest.json` (failing closed on any mismatch) and
+consumes the checkpoint's per-layer KV-cache quantization table via the
+manifest's `kv_cache_quantization` field.
 
 Use `bash scripts/check-bench-doctor.sh`, `bash scripts/check-server-preview.sh`,
 and the relevant `check-bench-*.sh` gate before changing CLI workflow contracts.

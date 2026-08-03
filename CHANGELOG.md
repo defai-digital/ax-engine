@@ -7,6 +7,48 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Per-layer KV-cache quantization (AXQ-021): `NativeModelManifest` gains an
+  optional `kv_cache_quantization` table (`layer_bits` / `layer_group_sizes` /
+  `basis`, one entry per layer, bits from 4/6/8/16 with 16 meaning full
+  precision, group sizes 32/64/128, validated against `layer_count`).
+  `generate-manifest` lifts the table best-effort from a sibling
+  `axquant_runtime.json` (`kv_cache` block, schema `axquant.runtime.v1`),
+  skipping — never failing — on absent, malformed, or inconsistent input.
+  Layers named by the table store K/V as affine-packed buffers in `MlxKVCache`
+  (quantize-on-append for the new token slice, dequantize-on-read into the
+  same dense views every attention path already consumes), with
+  `usage_snapshot` reporting packed bytes (4-bit: 320 vs 1024 B/token dense).
+  Quantized layers never take native paged decode or repage,
+  rotating/protected-prefix rings demote the layer back to dense storage, and
+  cache serialization keeps the dense wire format with re-quantization on
+  first append. Only full-attention contiguous layers participate; MLA,
+  linear-attention, and GLM caches are unaffected. `AX_KV_QUANT=0` disables
+  the feature at injection; the default is on when a manifest table is
+  present.
+- AXQuant vision sidecars load with provenance verification at weight-load
+  time: `vision.safetensors` is merged into the weight map (main-file tensors
+  win over sidecar duplicates) only after its
+  `axquant_vision_sidecar_manifest.json` passes strict checks on schema
+  version, role, output path/size/SHA-256 binding, and tensor count. A missing
+  manifest, a tampered sidecar, a stale manifest without the sidecar, or a
+  wrong role fails closed with `WeightLoadError::VisionSidecarInvalid` instead
+  of silently serving a model without vision weights.
+- `ax-engine-bench doctor` now warns (advice-level, never readiness-failing)
+  when AXQuant plan assignments or execution records use affine bit widths the
+  runtime cannot load unconditionally: widths outside the supported set
+  (7, 9-15) name the supported affine bits (4/5/6/8), and 2-bit/3-bit widths
+  name the `AX_ENGINE_2BIT_EXPERIMENTAL=1` / `AX_ENGINE_3BIT_EXPERIMENTAL=1`
+  gates required to load them. Warnings reuse the shared core bit constants
+  and never affect `metadata_valid`.
+- MTP sidecar bit-width inference now prefers a structured
+  `mtp_sidecar_bits` field in the MTP runtime config over the free-text
+  `mtp_sidecar` heuristic. Malformed structured values (wrong type or outside
+  the supported set) log a warning and fall through to the heuristic;
+  heuristic guesses are debug-logged with a hint to declare
+  `mtp_sidecar_bits` explicitly.
+
 ## [6.12.1] - 2026-08-02
 
 ### Added

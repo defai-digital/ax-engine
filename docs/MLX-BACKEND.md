@@ -93,6 +93,34 @@ token (`mlx_eval([token, k0, v0, k1, v1, ...])`).  This materialises the
 `slice_update` chain into a flat buffer, preventing computation-graph depth
 from growing linearly with sequence length.  Mirrors mlx_lm's `mx.eval(y, cache)`.
 
+### KV-cache quantization
+
+Layers named by the manifest's `kv_cache_quantization` table
+(`layer_bits` / `layer_group_sizes` / `basis` in `model-manifest.json`) store
+K/V as affine-packed buffers instead of dense arrays: quantize-on-append for
+the new token slice, dequantize-on-read back into the same dense
+`[1, n_kv_heads, tokens, head_dim]` views every attention path already
+consumes.  Supported widths are 4/6/8-bit with group sizes 32/64/128 (a
+16-bit entry keeps that layer at full precision).  `generate-manifest` lifts
+the table best-effort from a converted AXQuant checkpoint's sibling
+`axquant_runtime.json` (`kv_cache` block, schema `axquant.runtime.v1`), so
+runtimes that only read `model-manifest.json` see it; absent, malformed, or
+inconsistent input is skipped, never fatal.  At 4-bit the packed store holds
+~320 B/token (packed integers plus per-group scales and biases) versus 1024
+B/token dense.  Grouping runs along `head_dim`, so appends quantize only the
+new token slice.
+
+Caveats: quantized layers never take the native paged decode route or repage;
+engaging a rotating/protected-prefix ring demotes the layer back to dense
+storage first; and cache serialization keeps the dense wire format, with
+re-quantization on the first append after a restore.  Only full-attention
+contiguous layers participate — MLA, linear-attention, and GLM caches are
+unaffected.
+
+`AX_KV_QUANT=0` disables the feature at injection (the single gate read in
+`MlxKVCache::set_kv_quant_table`); the default is on whenever a manifest
+table is present.
+
 ### N-gram acceleration
 
 Runtime acceleration with a bigram/trigram n-gram table (no second model
@@ -282,7 +310,8 @@ Interpretation rule:
 ### Phase 4 — future
 
 - Prompt-prefix reuse (LRU cache for shared prefixes across requests)
-- KV quantization and sliding-window cache layouts
+- Sliding-window cache layouts (per-layer KV-cache quantization is shipped;
+  see "KV-cache quantization" above)
 - Custom Metal kernel integration (after profiling confirms a hot-path target)
 - Multi-item batch execution with shared K/V primitives
 - Expand model coverage to additional dense and MoE architectures
