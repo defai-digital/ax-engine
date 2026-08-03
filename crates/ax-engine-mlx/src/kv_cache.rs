@@ -1,12 +1,17 @@
 use std::time::Instant;
 
-use mlx_sys::{MlxArray, MlxDtype, concatenate, contiguous, eval, slice, slice_update, zeros};
+use mlx_sys::{
+    MlxArray, MlxDtype, MlxQuantizationMode, concatenate, contiguous, dequantize_with_mode, eval,
+    quantize, slice, slice_update, zeros,
+};
 
 use crate::kv_block_pool::{
     FaBlockPoolConfig, FaBlockPoolError, FaBlockPoolSnapshot, PhysicalBlockId, SharedFaBlockPool,
     default_fa_block_pool_config, fa_kv_block_pool_enabled,
 };
 use crate::paged_attention::PagedAttentionView;
+
+use crate::model::KvQuantSpec;
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
 /// the logical sequence length exceeds capacity, so the number of grow operations
@@ -17,6 +22,13 @@ pub(crate) const KV_CHUNK_TOKENS: usize = 256;
 /// quantization even when the model manifest declares a `kv_cache_quantization`
 /// table. Read by the runtime quantization path (Phase 3b).
 pub const AX_KV_QUANT_ENV: &str = "AX_KV_QUANT";
+
+/// Env kill-switch check for KV-cache quantization (Phase 3b). Honored inside
+/// [`MlxKVCache::set_kv_quant_table`] — the single place the gate is read — so
+/// every injection site gets the same behavior.
+fn kv_quant_env_disabled() -> bool {
+    std::env::var(AX_KV_QUANT_ENV).is_ok_and(|value| value == "0")
+}
 
 fn chunk_ceiling(n: usize) -> usize {
     n.div_ceil(KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS
@@ -247,6 +259,302 @@ struct LayerKV {
     rotating_window: Option<usize>,
     protected_prefix_ring: Option<ProtectedPrefixRing>,
     dtype: MlxDtype,
+}
+
+/// Quantized backing store for one tensor (K or V) of a full-attention layer
+/// (Phase 3b per-layer KV-cache quantization).
+///
+/// Grouping runs along `head_dim` — the last axis — so each token's group
+/// boundaries are independent of its neighbors: an append quantizes only the
+/// new token slice and `slice_update`s the three buffers, and a read
+/// dequantizes exactly the requested token range back to the layer dtype.
+/// The buffers grow with the same `KV_CHUNK_TOKENS` chunked mechanics as
+/// [`LayerKV`].
+#[derive(Clone)]
+struct QuantizedTensorKV {
+    /// Packed integers: `[1, n_kv_heads, capacity, head_dim * bits / 32]` u32.
+    packed: MlxArray,
+    /// Per-group scales: `[1, n_kv_heads, capacity, head_dim / group_size]`.
+    scales: MlxArray,
+    /// Per-group biases: same shape as `scales`.
+    biases: MlxArray,
+}
+
+impl QuantizedTensorKV {
+    fn packed_dim(head_dim: i32, bits: u32) -> i32 {
+        head_dim * (bits as i32) / 32
+    }
+
+    fn group_dim(head_dim: i32, group_size: u32) -> i32 {
+        head_dim / (group_size as i32)
+    }
+
+    fn zero_buffers(
+        n_kv_heads: i32,
+        capacity: usize,
+        head_dim: i32,
+        dtype: MlxDtype,
+        spec: KvQuantSpec,
+    ) -> Self {
+        let packed_shape = [
+            1i32,
+            n_kv_heads,
+            capacity as i32,
+            Self::packed_dim(head_dim, spec.bits),
+        ];
+        let group_shape = [
+            1i32,
+            n_kv_heads,
+            capacity as i32,
+            Self::group_dim(head_dim, spec.group_size),
+        ];
+        Self {
+            packed: zeros(&packed_shape, MlxDtype::Uint32, None),
+            scales: zeros(&group_shape, dtype, None),
+            biases: zeros(&group_shape, dtype, None),
+        }
+    }
+
+    /// Quantize `new` (`[1, n_kv_heads, capacity, head_dim]`) and adopt the
+    /// outputs directly as the backing buffers (chunk-aligned fast path).
+    fn from_quantized(new: &MlxArray, spec: KvQuantSpec) -> Self {
+        let mut parts = quantize(
+            new,
+            Some(spec.group_size as i32),
+            Some(spec.bits as i32),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert!(
+            parts.len() == 3,
+            "affine quantize must return [packed, scales, biases]"
+        );
+        Self {
+            biases: parts.remove(2),
+            scales: parts.remove(1),
+            packed: parts.remove(0),
+        }
+    }
+
+    /// Quantize `new` (`[1, n_kv_heads, new_tokens, head_dim]`) and write it
+    /// into the `[write_start..write_end)` token slots of the three buffers.
+    fn write_tokens(
+        &mut self,
+        new: &MlxArray,
+        write_start: usize,
+        write_end: usize,
+        n_kv_heads: i32,
+        spec: KvQuantSpec,
+    ) {
+        let mut parts = quantize(
+            new,
+            Some(spec.group_size as i32),
+            Some(spec.bits as i32),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert!(
+            parts.len() == 3,
+            "affine quantize must return [packed, scales, biases]"
+        );
+        let biases = parts.remove(2);
+        let scales = parts.remove(1);
+        let packed = parts.remove(0);
+        let packed_dim = self.packed.shape()[3];
+        let group_dim = self.scales.shape()[3];
+        let start = [0i32, 0, write_start as i32, 0];
+        let packed_stop = [1i32, n_kv_heads, write_end as i32, packed_dim];
+        let group_stop = [1i32, n_kv_heads, write_end as i32, group_dim];
+        let strides = [1i32, 1, 1, 1];
+        self.packed = slice_update(&self.packed, &packed, &start, &packed_stop, &strides, None);
+        self.scales = slice_update(&self.scales, &scales, &start, &group_stop, &strides, None);
+        self.biases = slice_update(&self.biases, &biases, &start, &group_stop, &strides, None);
+    }
+
+    /// Dequantize the `[token_start..token_end)` token slice back to `dtype`.
+    fn dequantize_tokens(
+        &self,
+        token_start: usize,
+        token_end: usize,
+        n_kv_heads: i32,
+        head_dim: i32,
+        dtype: MlxDtype,
+        spec: KvQuantSpec,
+    ) -> MlxArray {
+        if token_end == token_start {
+            return zeros(&[1i32, n_kv_heads, 0, head_dim], dtype, None);
+        }
+        let packed_dim = self.packed.shape()[3];
+        let group_dim = self.scales.shape()[3];
+        let start = [0i32, 0, token_start as i32, 0];
+        let strides = [1i32, 1, 1, 1];
+        let packed = slice(
+            &self.packed,
+            &start,
+            &[1, n_kv_heads, token_end as i32, packed_dim],
+            &strides,
+            None,
+        );
+        let scales = slice(
+            &self.scales,
+            &start,
+            &[1, n_kv_heads, token_end as i32, group_dim],
+            &strides,
+            None,
+        );
+        let biases = slice(
+            &self.biases,
+            &start,
+            &[1, n_kv_heads, token_end as i32, group_dim],
+            &strides,
+            None,
+        );
+        dequantize_with_mode(
+            &packed,
+            &scales,
+            Some(&biases),
+            Some(spec.group_size as i32),
+            Some(spec.bits as i32),
+            MlxQuantizationMode::Affine,
+            None,
+            Some(dtype),
+            None,
+        )
+    }
+}
+
+/// Full-attention layer stored quantized (Phase 3b). Quantize-on-append,
+/// dequantize-on-read; attention consumers keep receiving the same owned
+/// dense `[1, n_kv_heads, tokens, head_dim]` views as the dense path.
+///
+/// Quantized layers never take the paged route and never become rotating /
+/// protected-prefix rings (a ring engagement demotes the layer back to dense
+/// storage first), so no ring geometry lives here.
+#[derive(Clone)]
+struct QuantizedLayerKV {
+    k: QuantizedTensorKV,
+    v: QuantizedTensorKV,
+    /// Cached dense views returned by the last append; same reuse contract as
+    /// [`LayerKV::last_k_view`] for KV-shared layers.
+    last_k_view: Option<MlxArray>,
+    last_v_view: Option<MlxArray>,
+    n_kv_heads: i32,
+    head_dim: i32,
+    capacity: usize,
+    dtype: MlxDtype,
+    spec: KvQuantSpec,
+}
+
+impl QuantizedLayerKV {
+    fn clear_views(&mut self) {
+        self.last_k_view = None;
+        self.last_v_view = None;
+    }
+
+    /// Grow all six buffers to `chunk_ceiling(write_end)` tokens, preserving
+    /// packed contents. Mirrors [`LayerKV`]'s chunked growth.
+    fn ensure_capacity(&mut self, write_end: usize, growth_count: &mut u64) {
+        if write_end <= self.capacity {
+            return;
+        }
+        let new_capacity = chunk_ceiling(write_end);
+        let start = [0i32, 0, 0, 0];
+        let old_token_stop = self.capacity as i32;
+        let strides = [1i32, 1, 1, 1];
+        let grow = |t: &mut QuantizedTensorKV| {
+            let fresh = QuantizedTensorKV::zero_buffers(
+                self.n_kv_heads,
+                new_capacity,
+                self.head_dim,
+                self.dtype,
+                self.spec,
+            );
+            let packed_dim = t.packed.shape()[3];
+            let group_dim = t.scales.shape()[3];
+            t.packed = slice_update(
+                &fresh.packed,
+                &t.packed,
+                &start,
+                &[1, self.n_kv_heads, old_token_stop, packed_dim],
+                &strides,
+                None,
+            );
+            t.scales = slice_update(
+                &fresh.scales,
+                &t.scales,
+                &start,
+                &[1, self.n_kv_heads, old_token_stop, group_dim],
+                &strides,
+                None,
+            );
+            t.biases = slice_update(
+                &fresh.biases,
+                &t.biases,
+                &start,
+                &[1, self.n_kv_heads, old_token_stop, group_dim],
+                &strides,
+                None,
+            );
+        };
+        grow(&mut self.k);
+        grow(&mut self.v);
+        self.capacity = new_capacity;
+        self.clear_views();
+        *growth_count = growth_count.saturating_add(1);
+    }
+
+    fn write_tokens(&mut self, write_start: usize, new_k: &MlxArray, new_v: &MlxArray) {
+        let write_end = write_start + new_k.shape()[2] as usize;
+        assert!(
+            write_end <= self.capacity,
+            "quantized KV write past capacity"
+        );
+        self.k
+            .write_tokens(new_k, write_start, write_end, self.n_kv_heads, self.spec);
+        self.v
+            .write_tokens(new_v, write_start, write_end, self.n_kv_heads, self.spec);
+        self.clear_views();
+    }
+
+    /// Owned dense K/V views over `[token_start..token_end)`, dequantized to
+    /// the layer dtype — the same contract dense layers return for SDPA.
+    fn dense_view(&self, token_start: usize, token_end: usize) -> (MlxArray, MlxArray) {
+        (
+            self.k.dequantize_tokens(
+                token_start,
+                token_end,
+                self.n_kv_heads,
+                self.head_dim,
+                self.dtype,
+                self.spec,
+            ),
+            self.v.dequantize_tokens(
+                token_start,
+                token_end,
+                self.n_kv_heads,
+                self.head_dim,
+                self.dtype,
+                self.spec,
+            ),
+        )
+    }
+
+    /// Physical bytes held per token across K and V (packed + scales + biases).
+    fn bytes_per_token(&self) -> u64 {
+        let dtype_bytes = self.dtype.size_bytes() as u64;
+        let per_tensor = (self.n_kv_heads as u64).saturating_mul(
+            (QuantizedTensorKV::packed_dim(self.head_dim, self.spec.bits) as u64)
+                .saturating_mul(4)
+                .saturating_add(
+                    (QuantizedTensorKV::group_dim(self.head_dim, self.spec.group_size) as u64)
+                        .saturating_mul(dtype_bytes)
+                        .saturating_mul(2),
+                ),
+        );
+        per_tensor.saturating_mul(2)
+    }
 }
 
 /// FA block list for one layer (private or runner-shared paged path).
@@ -576,18 +884,20 @@ impl PagedFaLayer {
     }
 }
 
-/// FA layer storage: contiguous production path or private paged blocks.
+/// FA layer storage: contiguous production path, private paged blocks, or
+/// quantized contiguous (Phase 3b).
 #[derive(Clone)]
 enum FaLayerStorage {
     Contiguous(LayerKV),
     Paged(PagedFaLayer),
+    Quantized(QuantizedLayerKV),
 }
 
 impl FaLayerStorage {
     fn rotating_window(&self) -> Option<usize> {
         match self {
             Self::Contiguous(lkv) => lkv.rotating_window,
-            Self::Paged(_) => None,
+            Self::Paged(_) | Self::Quantized(_) => None,
         }
     }
 
@@ -595,6 +905,7 @@ impl FaLayerStorage {
         match self {
             Self::Contiguous(lkv) => lkv.n_kv_heads,
             Self::Paged(p) => p.n_kv_heads,
+            Self::Quantized(q) => q.n_kv_heads,
         }
     }
 
@@ -602,6 +913,7 @@ impl FaLayerStorage {
         match self {
             Self::Contiguous(lkv) => lkv.head_dim,
             Self::Paged(p) => p.head_dim,
+            Self::Quantized(q) => q.head_dim,
         }
     }
 
@@ -609,6 +921,7 @@ impl FaLayerStorage {
         match self {
             Self::Contiguous(lkv) => lkv.dtype,
             Self::Paged(p) => p.dtype,
+            Self::Quantized(q) => q.dtype,
         }
     }
 
@@ -616,6 +929,23 @@ impl FaLayerStorage {
         match self {
             Self::Contiguous(lkv) => lkv.capacity,
             Self::Paged(p) => p.capacity_tokens(),
+            Self::Quantized(q) => q.capacity,
+        }
+    }
+
+    /// Physical bytes held per token (K + V). Dense storages report the
+    /// element-count-based dense size; quantized storage reports packed +
+    /// scales + biases bytes.
+    fn bytes_per_token(&self) -> u64 {
+        match self {
+            Self::Quantized(q) => q.bytes_per_token(),
+            Self::Contiguous(_) | Self::Paged(_) => {
+                let elements_per_token =
+                    (self.n_kv_heads() as u64).saturating_mul(self.head_dim() as u64);
+                elements_per_token
+                    .saturating_mul(self.dtype().size_bytes() as u64)
+                    .saturating_mul(2)
+            }
         }
     }
 
@@ -626,20 +956,35 @@ impl FaLayerStorage {
                 lkv.last_v_view = None;
             }
             Self::Paged(p) => p.clear_views(),
+            Self::Quantized(q) => q.clear_views(),
         }
     }
 
     fn as_contiguous_mut(&mut self) -> Option<&mut LayerKV> {
         match self {
             Self::Contiguous(lkv) => Some(lkv),
-            Self::Paged(_) => None,
+            Self::Paged(_) | Self::Quantized(_) => None,
         }
     }
 
     fn as_contiguous(&self) -> Option<&LayerKV> {
         match self {
             Self::Contiguous(lkv) => Some(lkv),
-            Self::Paged(_) => None,
+            Self::Paged(_) | Self::Quantized(_) => None,
+        }
+    }
+
+    fn as_quantized(&self) -> Option<&QuantizedLayerKV> {
+        match self {
+            Self::Quantized(q) => Some(q),
+            Self::Contiguous(_) | Self::Paged(_) => None,
+        }
+    }
+
+    fn as_quantized_mut(&mut self) -> Option<&mut QuantizedLayerKV> {
+        match self {
+            Self::Quantized(q) => Some(q),
+            Self::Contiguous(_) | Self::Paged(_) => None,
         }
     }
 }
@@ -862,6 +1207,12 @@ pub struct MlxKVCache {
     paged_cow_copies: u64,
     paged_attention_calls: u64,
     paged_attention_fallbacks: u64,
+    /// Per-layer KV quantization table from the model manifest (Phase 3b).
+    /// `None` = full precision for every layer. Layers whose spec is `Some`
+    /// store packed K/V and never take the paged route. Injected via
+    /// [`Self::set_kv_quant_table`]; the `AX_KV_QUANT=0` kill-switch is
+    /// honored there.
+    kv_quant: Option<Vec<Option<KvQuantSpec>>>,
     /// Sticky: set when a production `hard_cap` pool exhausted. The layer still
     /// demotes to contiguous (correct data — proven token-exact by
     /// `fa_paged_pool_exhaustion_demotion_matches_contiguous_oracle`), but
@@ -906,7 +1257,7 @@ impl Clone for MlxKVCache {
                 .filter_map(Option::as_ref)
                 .filter_map(|layer| match layer {
                     FaLayerStorage::Paged(paged) => Some(paged.block_ids.as_slice()),
-                    FaLayerStorage::Contiguous(_) => None,
+                    FaLayerStorage::Contiguous(_) | FaLayerStorage::Quantized(_) => None,
                 })
                 .flatten()
                 .copied()
@@ -939,6 +1290,7 @@ impl Clone for MlxKVCache {
             paged_attention_calls: 0,
             paged_attention_fallbacks: 0,
             hard_cap_exhausted: self.hard_cap_exhausted,
+            kv_quant: self.kv_quant.clone(),
         }
     }
 }
@@ -1018,6 +1370,7 @@ impl MlxKVCache {
             paged_attention_calls: 0,
             paged_attention_fallbacks: 0,
             hard_cap_exhausted: false,
+            kv_quant: None,
         }
     }
 
@@ -1051,12 +1404,131 @@ impl MlxKVCache {
             paged_attention_calls: 0,
             paged_attention_fallbacks: 0,
             hard_cap_exhausted: false,
+            kv_quant: None,
         }
     }
 
     /// Whether this cache has an FA block pool (private or runner-shared).
     pub fn fa_block_pool_enabled(&self) -> bool {
         self.fa_pool.is_some()
+    }
+
+    /// Inject the per-layer KV quantization table from the model manifest
+    /// (Phase 3b). Idempotent; safe to re-apply after a prefix-restore swaps
+    /// the cache (restored snapshots are dense and re-quantize on first
+    /// append).
+    ///
+    /// - `table.len() != num_layers` → warn and ignore.
+    /// - `AX_KV_QUANT=0` → behave as if every spec were `None` (info log once
+    ///   per process).
+    /// - Specs outside the validated set (bits 4/6/8, group sizes 32/64/128)
+    ///   or targeting a layer that has already become a rotating /
+    ///   protected-prefix ring are rejected per layer (warn + full precision).
+    pub fn set_kv_quant_table(&mut self, table: Vec<Option<KvQuantSpec>>) {
+        if table.len() != self.layers.len() {
+            tracing::warn!(
+                target: "ax_engine_mlx::kv_cache",
+                table_len = table.len(),
+                num_layers = self.layers.len(),
+                "KV quant table length does not match layer count; ignoring table",
+            );
+            return;
+        }
+        if kv_quant_env_disabled() {
+            static LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if table.iter().any(Option::is_some)
+                && !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                tracing::info!(
+                    target: "ax_engine_mlx::kv_cache",
+                    "AX_KV_QUANT=0: KV-cache quantization disabled; ignoring quant table",
+                );
+            }
+            self.kv_quant = None;
+            return;
+        }
+        let mut table = table;
+        for (idx, slot) in table.iter_mut().enumerate() {
+            let Some(spec) = *slot else {
+                continue;
+            };
+            let valid = matches!(spec.bits, 4 | 6 | 8) && matches!(spec.group_size, 32 | 64 | 128);
+            if !valid {
+                tracing::warn!(
+                    target: "ax_engine_mlx::kv_cache",
+                    layer = idx,
+                    bits = spec.bits,
+                    group_size = spec.group_size,
+                    "unsupported KV quant spec; storing layer at full precision",
+                );
+                *slot = None;
+                continue;
+            }
+            // Quantized rings are out of scope for this phase: a layer that
+            // has already converted to a rotating or protected-prefix ring
+            // keeps its dense slot-ordered storage.
+            let already_ring = self.layers[idx]
+                .as_ref()
+                .and_then(FaLayerStorage::as_contiguous)
+                .is_some_and(|lkv| {
+                    lkv.rotating_window.is_some() || lkv.protected_prefix_ring.is_some()
+                });
+            if already_ring {
+                tracing::warn!(
+                    target: "ax_engine_mlx::kv_cache",
+                    layer = idx,
+                    "KV quant spec rejected for ring layer; storing full precision",
+                );
+                *slot = None;
+            }
+        }
+        self.kv_quant = if table.iter().any(Option::is_some) {
+            Some(table)
+        } else {
+            None
+        };
+        // A table (re-)injected after prefix-restore adoption can find a
+        // spec'd layer already holding paged storage (native L1 adoption).
+        // Quantized layers never take the paged route, so demote those layers
+        // back to contiguous now; they quantize on their next append.
+        for idx in 0..self.layers.len() {
+            if self.layer_kv_quant(idx).is_some()
+                && matches!(self.layers[idx], Some(FaLayerStorage::Paged(_)))
+            {
+                tracing::debug!(
+                    target: "ax_engine_mlx::kv_cache",
+                    layer = idx,
+                    "demoting adopted paged layer to contiguous for KV quantization",
+                );
+                self.demote_paged_layer_to_contiguous(idx, self.seq_len);
+            }
+        }
+    }
+
+    /// The effective quant spec for `layer`, if quantization is active.
+    fn layer_kv_quant(&self, layer: usize) -> Option<KvQuantSpec> {
+        self.kv_quant
+            .as_ref()
+            .and_then(|table| table.get(layer).copied())
+            .flatten()
+    }
+
+    /// Test/introspection hook: whether `layer` currently holds quantized
+    /// storage.
+    pub fn layer_is_quantized(&self, layer: usize) -> bool {
+        self.layers
+            .get(layer)
+            .and_then(Option::as_ref)
+            .is_some_and(|fa| fa.as_quantized().is_some())
+    }
+
+    /// Whether any layer holds quantized storage (telemetry/tests).
+    pub fn has_quantized_layers(&self) -> bool {
+        self.layers
+            .iter()
+            .flatten()
+            .any(|fa| fa.as_quantized().is_some())
     }
 
     /// Set once a production `hard_cap` pool has exhausted. The caller must
@@ -1147,8 +1619,20 @@ impl MlxKVCache {
                 "repage supports standard FA only",
             ));
         }
+        // Quantized layers (Phase 3b) are skipped: they stay contiguous —
+        // dequantized to dense in the repaged clone — and never claim pool
+        // blocks, so they are excluded from the block count.
+        let mut dense_layers = 0u64;
         for layer in &self.layers {
-            let Some(FaLayerStorage::Contiguous(layer)) = layer else {
+            let Some(layer) = layer else {
+                return Err(FaBlockPoolError::InvalidConfig(
+                    "repage requires every layer to be dense FA",
+                ));
+            };
+            let FaLayerStorage::Contiguous(layer) = layer else {
+                if layer.as_quantized().is_some() {
+                    continue;
+                }
                 return Err(FaBlockPoolError::InvalidConfig(
                     "repage requires every layer to be dense FA",
                 ));
@@ -1168,11 +1652,17 @@ impl MlxKVCache {
                     "repage rejected incompatible FA layer geometry",
                 ));
             }
+            dense_layers = dense_layers.saturating_add(1);
+        }
+        if dense_layers == 0 {
+            return Err(FaBlockPoolError::InvalidConfig(
+                "repage requires at least one dense FA layer",
+            ));
         }
 
         let block_size = pool.config().block_size_tokens as usize;
         let per_layer = self.seq_len.div_ceil(block_size) as u64;
-        let total = per_layer.saturating_mul(self.layers.len() as u64);
+        let total = per_layer.saturating_mul(dense_layers);
         u32::try_from(total)
             .map_err(|_| FaBlockPoolError::InvalidConfig("repage layer-block count exceeds u32"))
     }
@@ -1190,13 +1680,44 @@ impl MlxKVCache {
         let mut reservation = FaBlockReservation::new(pool.clone(), required)?;
         let mut paged_layers = Vec::with_capacity(self.layers.len());
 
+        // Dense layers claim pool blocks left-to-right; quantized layers skip
+        // the pool entirely and are dequantized to dense contiguous storage in
+        // the clone (they re-quantize on the next append via the copied table).
+        let mut dense_cursor = 0usize;
         for (layer_idx, layer) in self.layers.iter().enumerate() {
-            let Some(FaLayerStorage::Contiguous(layer)) = layer else {
+            let Some(layer) = layer else {
                 return Err(FaBlockPoolError::InvalidConfig(
                     "repage layout changed after validation",
                 ));
             };
-            let id_start = layer_idx.saturating_mul(blocks_per_layer);
+            if let Some(quantized) = layer.as_quantized() {
+                tracing::debug!(
+                    target: "ax_engine_mlx::kv_cache",
+                    layer = layer_idx,
+                    "repage skips quantized layer; keeping contiguous dense storage",
+                );
+                let (k, v) = quantized.dense_view(0, self.seq_len);
+                paged_layers.push(Some(FaLayerStorage::Contiguous(LayerKV {
+                    k,
+                    v,
+                    last_k_view: None,
+                    last_v_view: None,
+                    n_kv_heads: quantized.n_kv_heads,
+                    head_dim: quantized.head_dim,
+                    capacity: self.seq_len,
+                    rotating_window: None,
+                    protected_prefix_ring: None,
+                    dtype: quantized.dtype,
+                })));
+                continue;
+            }
+            let FaLayerStorage::Contiguous(layer) = layer else {
+                return Err(FaBlockPoolError::InvalidConfig(
+                    "repage layout changed after validation",
+                ));
+            };
+            let id_start = dense_cursor.saturating_mul(blocks_per_layer);
+            dense_cursor = dense_cursor.saturating_add(1);
             let ids = reservation.ids[id_start..id_start + blocks_per_layer].to_vec();
             let slab_storage = pool.slab_storage_enabled();
             let mut k_blocks = Vec::with_capacity(if slab_storage { 0 } else { blocks_per_layer });
@@ -1282,6 +1803,7 @@ impl MlxKVCache {
         repaged.paged_attention_calls = self.paged_attention_calls;
         repaged.paged_attention_fallbacks = self.paged_attention_fallbacks;
         repaged.hard_cap_exhausted = self.hard_cap_exhausted;
+        repaged.kv_quant = self.kv_quant.clone();
         reservation.disarm();
         Ok(repaged)
     }
@@ -1300,12 +1822,15 @@ impl MlxKVCache {
         let needed_blocks = write_end.div_ceil(block_size);
         let mut additional = 0u64;
 
-        for layer in &self.layers {
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
             match layer {
+                // Quantized layers never take the paged route, so an empty
+                // layer with a quant spec will not claim pool blocks.
+                None if self.layer_kv_quant(layer_idx).is_some() => {}
                 None => {
                     additional = additional.saturating_add(needed_blocks as u64);
                 }
-                Some(FaLayerStorage::Contiguous(_)) => {}
+                Some(FaLayerStorage::Contiguous(_)) | Some(FaLayerStorage::Quantized(_)) => {}
                 Some(FaLayerStorage::Paged(paged)) => {
                     additional = additional
                         .saturating_add(needed_blocks.saturating_sub(paged.block_ids.len()) as u64);
@@ -1695,6 +2220,9 @@ impl MlxKVCache {
                 // ordered storage would make the first post-restore append
                 // treat ring slots as a token-ordered prefix.
                 // Paged FA always serializes as dense contiguous (no I-2 bump).
+                // Quantized FA also serializes dense: the wire format (v4) is
+                // dense-only, so quantized layers are dequantized here and
+                // re-quantized on the first append after restore.
                 let rotating_window = fa.rotating_window();
                 out.extend_from_slice(&(rotating_window.unwrap_or(0) as u64).to_le_bytes());
                 let logical_tokens = if rotating_window.is_none() {
@@ -1706,6 +2234,11 @@ impl MlxKVCache {
                     FaLayerStorage::Contiguous(lkv) => {
                         Self::serialize_tensor_logical(&mut out, &lkv.k, logical_tokens);
                         Self::serialize_tensor_logical(&mut out, &lkv.v, logical_tokens);
+                    }
+                    FaLayerStorage::Quantized(quantized) => {
+                        let (k, v) = quantized.dense_view(0, self.seq_len);
+                        Self::serialize_tensor_logical(&mut out, &k, logical_tokens);
+                        Self::serialize_tensor_logical(&mut out, &v, logical_tokens);
                     }
                     FaLayerStorage::Paged(paged) => {
                         // serialize is rare vs decode; time is not accumulated
@@ -1986,22 +2519,43 @@ impl MlxKVCache {
         // t % capacity — previously they took the ordered path and returned a
         // windowed view while mask builders already emitted capacity masks.
         if let Some(ring) = self.sliding_ring_layout(window, new_tokens) {
+            // Quantized rings are out of scope (Phase 3b): a quantized layer
+            // that reaches ring eligibility demotes back to dense contiguous
+            // storage and continues on the ordinary ring path.
+            self.demote_quantized_layer_to_dense(layer);
             if self.layers[layer].is_none() {
                 return self.append_rotating_cold(layer, new_k, new_v, ring, append);
             }
             return self.append_rotating_retained_window(layer, new_k, new_v, ring);
         }
 
+        let quant_spec = self.layer_kv_quant(layer);
         // Pure-FA paged path: only for empty or already-paged layers when a
         // private pool is present. Sliding retained windows stay contiguous.
+        // Quantized layers always take the dense route — they never produce
+        // paged storage or a `MlxAttentionKv::Paged` view.
         let use_paged = self.fa_pool.is_some()
             && window.is_none()
+            && quant_spec.is_none()
             && matches!(self.layers[layer], None | Some(FaLayerStorage::Paged(_)));
         if use_paged {
             return self
                 .append_paged_fa(layer, new_k, new_v, write_start..write_end, append, false)
                 .into_dense();
         }
+
+        if let Some(spec) = quant_spec
+            && let Some(views) =
+                self.append_quantized_fa(layer, &new_k, &new_v, window, &append, spec)
+        {
+            return views;
+        }
+
+        // The table can be re-injected with this layer's spec cleared (env
+        // kill-switch, ring rejection, unsupported geometry) after the layer
+        // already holds quantized storage: demote it so the dense path below
+        // never sees a `Quantized` slot.
+        self.demote_quantized_layer_to_dense(layer);
 
         let entry = &mut self.layers[layer];
         match entry {
@@ -2078,6 +2632,9 @@ impl MlxKVCache {
             }
             Some(FaLayerStorage::Paged(_)) => {
                 unreachable!("paged FA layers must use append_paged_fa");
+            }
+            Some(FaLayerStorage::Quantized(_)) => {
+                unreachable!("quantized FA layers must use append_quantized_fa");
             }
             Some(FaLayerStorage::Contiguous(lkv)) => {
                 // A rotated ring stores slots, not token order; writing at
@@ -2169,6 +2726,263 @@ impl MlxKVCache {
         (k_view, v_view)
     }
 
+    /// Quantize-on-append path for a layer whose spec is `Some` (Phase 3b).
+    ///
+    /// Handles all three entry states: `None` (fresh layer — quantize the new
+    /// slice into freshly allocated buffers, with a chunk-aligned fast path
+    /// mirroring the dense one), `Contiguous` (dense prefix — e.g. a restored
+    /// serialized snapshot — quantized wholesale on this append, then the new
+    /// slice appended quantized), and `Quantized` (steady state).
+    ///
+    /// Returns `None` when `head_dim` is not a multiple of the group size:
+    /// the spec cannot apply to this geometry, so it is dropped from the
+    /// table (warn once) and the caller falls through to dense storage.
+    fn append_quantized_fa(
+        &mut self,
+        layer: usize,
+        new_k: &MlxArray,
+        new_v: &MlxArray,
+        window: Option<usize>,
+        append: &AppendShape,
+        spec: KvQuantSpec,
+    ) -> Option<(MlxArray, MlxArray)> {
+        if append.head_dim % (spec.group_size as i32) != 0 {
+            if let Some(table) = self.kv_quant.as_mut() {
+                table[layer] = None;
+            }
+            tracing::warn!(
+                target: "ax_engine_mlx::kv_cache",
+                layer,
+                head_dim = append.head_dim,
+                group_size = spec.group_size,
+                "KV quant group size does not divide head_dim; storing layer at full precision",
+            );
+            return None;
+        }
+
+        let write_start = self.seq_len;
+        let write_end = write_start + append.new_tokens;
+        let entry = &mut self.layers[layer];
+        match entry {
+            None => {
+                let capacity = chunk_ceiling(write_end);
+                // Fresh-layer fast path: when the prompt is chunk-aligned the
+                // quantize outputs are exactly capacity-sized, so they become
+                // the backing buffers directly (no zeros + slice_update).
+                if write_start == 0 && capacity == append.new_tokens {
+                    let quantized = QuantizedLayerKV {
+                        k: QuantizedTensorKV::from_quantized(new_k, spec),
+                        v: QuantizedTensorKV::from_quantized(new_v, spec),
+                        last_k_view: None,
+                        last_v_view: None,
+                        n_kv_heads: append.n_kv_heads,
+                        head_dim: append.head_dim,
+                        capacity,
+                        dtype: append.dtype,
+                        spec,
+                    };
+                    self.growth_count = self.growth_count.saturating_add(1);
+                    *entry = Some(FaLayerStorage::Quantized(quantized));
+                } else {
+                    let mut quantized = QuantizedLayerKV {
+                        k: QuantizedTensorKV::zero_buffers(
+                            append.n_kv_heads,
+                            capacity,
+                            append.head_dim,
+                            append.dtype,
+                            spec,
+                        ),
+                        v: QuantizedTensorKV::zero_buffers(
+                            append.n_kv_heads,
+                            capacity,
+                            append.head_dim,
+                            append.dtype,
+                            spec,
+                        ),
+                        last_k_view: None,
+                        last_v_view: None,
+                        n_kv_heads: append.n_kv_heads,
+                        head_dim: append.head_dim,
+                        capacity,
+                        dtype: append.dtype,
+                        spec,
+                    };
+                    quantized.write_tokens(write_start, new_k, new_v);
+                    self.growth_count = self.growth_count.saturating_add(1);
+                    *entry = Some(FaLayerStorage::Quantized(quantized));
+                }
+            }
+            Some(FaLayerStorage::Contiguous(lkv)) => {
+                // Dense prefix with a quant spec — a restored serialized
+                // snapshot, a compiled-path replacement, or a demoted paged
+                // layer. Quantize the retained dense prefix wholesale on this
+                // append ("re-quantize on first append after restore").
+                assert!(
+                    lkv.rotating_window.is_none() && lkv.protected_prefix_ring.is_none(),
+                    "ring layers never carry a KV quant spec (rejected at injection)"
+                );
+                assert_eq!(
+                    lkv.n_kv_heads, append.n_kv_heads,
+                    "KV cache append cannot change n_kv_heads for an existing layer"
+                );
+                assert_eq!(
+                    lkv.head_dim, append.head_dim,
+                    "KV cache append cannot change head_dim for an existing layer"
+                );
+                assert_eq!(
+                    lkv.dtype, append.dtype,
+                    "KV cache append cannot change dtype for an existing layer"
+                );
+                let capacity = chunk_ceiling(write_end);
+                let mut quantized = QuantizedLayerKV {
+                    k: QuantizedTensorKV::zero_buffers(
+                        lkv.n_kv_heads,
+                        capacity,
+                        lkv.head_dim,
+                        lkv.dtype,
+                        spec,
+                    ),
+                    v: QuantizedTensorKV::zero_buffers(
+                        lkv.n_kv_heads,
+                        capacity,
+                        lkv.head_dim,
+                        lkv.dtype,
+                        spec,
+                    ),
+                    last_k_view: None,
+                    last_v_view: None,
+                    n_kv_heads: lkv.n_kv_heads,
+                    head_dim: lkv.head_dim,
+                    capacity,
+                    dtype: lkv.dtype,
+                    spec,
+                };
+                if write_start > 0 {
+                    let stop = [1i32, lkv.n_kv_heads, write_start as i32, lkv.head_dim];
+                    let strides = [1i32, 1, 1, 1];
+                    let old_k = slice(&lkv.k, &[0, 0, 0, 0], &stop, &strides, None);
+                    let old_v = slice(&lkv.v, &[0, 0, 0, 0], &stop, &strides, None);
+                    quantized.write_tokens(0, &old_k, &old_v);
+                }
+                quantized.write_tokens(write_start, new_k, new_v);
+                self.growth_count = self.growth_count.saturating_add(1);
+                *entry = Some(FaLayerStorage::Quantized(quantized));
+            }
+            Some(FaLayerStorage::Quantized(quantized)) => {
+                assert_eq!(
+                    quantized.n_kv_heads, append.n_kv_heads,
+                    "KV cache append cannot change n_kv_heads for an existing layer"
+                );
+                assert_eq!(
+                    quantized.head_dim, append.head_dim,
+                    "KV cache append cannot change head_dim for an existing layer"
+                );
+                assert_eq!(
+                    quantized.dtype, append.dtype,
+                    "KV cache append cannot change dtype for an existing layer"
+                );
+                assert_eq!(
+                    quantized.spec, spec,
+                    "KV quant spec cannot change mid-request for an existing layer"
+                );
+                quantized.ensure_capacity(write_end, &mut self.growth_count);
+                quantized.write_tokens(write_start, new_k, new_v);
+            }
+            Some(FaLayerStorage::Paged(_)) => {
+                unreachable!("quantized FA layers never take the paged route");
+            }
+        }
+
+        let quantized = self.layers[layer]
+            .as_mut()
+            .and_then(FaLayerStorage::as_quantized_mut)
+            .expect("quantized FA append path");
+        let view_start = window
+            .filter(|window| *window > 0)
+            .map(|window| write_end.saturating_sub(window))
+            .unwrap_or(0);
+        let (k_view, v_view) = quantized.dense_view(view_start, write_end);
+        quantized.last_k_view = Some(k_view.clone());
+        quantized.last_v_view = Some(v_view.clone());
+        Some((k_view, v_view))
+    }
+
+    /// Dequantize a `Quantized` layer back to dense contiguous storage,
+    /// preserving the logical prefix `[0, seq_len)`. No-op for other storage
+    /// kinds. Used when a ring would engage on a quantized layer (quantized
+    /// rings are out of scope for Phase 3b) or when the layer's spec was
+    /// retracted after storage was created.
+    fn demote_quantized_layer_to_dense(&mut self, layer: usize) {
+        if !matches!(
+            self.layers.get(layer),
+            Some(Some(FaLayerStorage::Quantized(_)))
+        ) {
+            return;
+        }
+        let taken = self.layers.get_mut(layer).map(Option::take);
+        let quantized = match taken {
+            Some(Some(FaLayerStorage::Quantized(quantized))) => quantized,
+            Some(other) => {
+                // Guard above already matched Quantized; restore defensively.
+                if let Some(slot) = self.layers.get_mut(layer) {
+                    *slot = other;
+                }
+                return;
+            }
+            None => return,
+        };
+        tracing::warn!(
+            target: "ax_engine_mlx::kv_cache",
+            layer,
+            "demoting quantized KV layer to dense storage (ring engagement or spec retraction)",
+        );
+        let logical_len = self.seq_len.min(quantized.capacity);
+        let capacity = if logical_len == 0 {
+            0
+        } else {
+            chunk_ceiling(logical_len)
+        };
+        let (k_view, v_view) = quantized.dense_view(0, logical_len);
+        let (k, v) = if logical_len == 0 || capacity == logical_len {
+            (k_view, v_view)
+        } else {
+            let buf_shape = [
+                1i32,
+                quantized.n_kv_heads,
+                capacity as i32,
+                quantized.head_dim,
+            ];
+            let k_buf = zeros(&buf_shape, quantized.dtype, None);
+            let v_buf = zeros(&buf_shape, quantized.dtype, None);
+            let start = [0i32, 0, 0, 0];
+            let stop = [
+                1i32,
+                quantized.n_kv_heads,
+                logical_len as i32,
+                quantized.head_dim,
+            ];
+            let strides = [1i32, 1, 1, 1];
+            (
+                slice_update(&k_buf, &k_view, &start, &stop, &strides, None),
+                slice_update(&v_buf, &v_view, &start, &stop, &strides, None),
+            )
+        };
+        if let Some(slot) = self.layers.get_mut(layer) {
+            *slot = Some(FaLayerStorage::Contiguous(LayerKV {
+                k,
+                v,
+                last_k_view: None,
+                last_v_view: None,
+                n_kv_heads: quantized.n_kv_heads,
+                head_dim: quantized.head_dim,
+                capacity,
+                rotating_window: None,
+                protected_prefix_ring: None,
+                dtype: quantized.dtype,
+            }));
+        }
+    }
+
     /// Standard-FA append that can return a single-slab block-table view for
     /// single-token decode. All unsupported shapes retain the dense contract.
     pub(crate) fn append_with_retained_window_for_attention(
@@ -2183,6 +2997,7 @@ impl MlxKVCache {
         let write_end = write_start + append.new_tokens;
         let use_native_paged = append.new_tokens == 1
             && window.is_none()
+            && self.layer_kv_quant(layer).is_none()
             && self
                 .fa_pool
                 .as_ref()
@@ -2224,6 +3039,9 @@ impl MlxKVCache {
         if matches!(self.layers[layer], Some(FaLayerStorage::Paged(_))) {
             self.demote_paged_layer_to_contiguous(layer, self.seq_len);
         }
+        // Protected-prefix rings over quantized storage are out of scope
+        // (Phase 3b): demote to dense before the ring engages.
+        self.demote_quantized_layer_to_dense(layer);
 
         let lkv = self.layers[layer]
             .as_mut()
@@ -2366,7 +3184,7 @@ impl MlxKVCache {
                 .expect("paged layer just created")
             {
                 FaLayerStorage::Paged(p) => p,
-                FaLayerStorage::Contiguous(_) => {
+                FaLayerStorage::Contiguous(_) | FaLayerStorage::Quantized(_) => {
                     panic!("append_paged_fa on contiguous layer {layer}")
                 }
             };
@@ -2431,7 +3249,9 @@ impl MlxKVCache {
             .expect("paged layer after write")
         {
             FaLayerStorage::Paged(p) => p,
-            FaLayerStorage::Contiguous(_) => unreachable!("paged path"),
+            FaLayerStorage::Contiguous(_) | FaLayerStorage::Quantized(_) => {
+                unreachable!("paged path")
+            }
         };
         if prefer_native_attention && let Some(view) = paged.attention_view(&pool, write_end) {
             return MlxAttentionKv::Paged(view);
@@ -2914,6 +3734,7 @@ impl MlxKVCache {
                     self.seq_len,
                 ),
             ),
+            FaLayerStorage::Quantized(quantized) => Some(quantized.dense_view(0, self.seq_len)),
         }
     }
 
@@ -2978,6 +3799,17 @@ impl MlxKVCache {
                 FaLayerStorage::Contiguous(lkv) => {
                     refs.push(&lkv.k);
                     refs.push(&lkv.v);
+                }
+                FaLayerStorage::Quantized(quantized) => {
+                    // Packed + scales + biases all mutate via slice_update on
+                    // append, so they need the same lazy-chain flattening as
+                    // dense buffers.
+                    refs.push(&quantized.k.packed);
+                    refs.push(&quantized.k.scales);
+                    refs.push(&quantized.k.biases);
+                    refs.push(&quantized.v.packed);
+                    refs.push(&quantized.v.scales);
+                    refs.push(&quantized.v.biases);
                 }
                 FaLayerStorage::Paged(paged) => {
                     for k in &paged.k_blocks {
@@ -3058,11 +3890,9 @@ impl MlxKVCache {
             if fa.rotating_window().is_some() {
                 usage.rotated_ring_layers = usage.rotated_ring_layers.saturating_add(1);
             }
-            let elements_per_token = (fa.n_kv_heads() as u64).saturating_mul(fa.head_dim() as u64);
-            let bytes_per_element = fa.dtype().size_bytes() as u64;
-            let bytes_per_token = elements_per_token
-                .saturating_mul(bytes_per_element)
-                .saturating_mul(2);
+            // Quantized layers report packed + scales + biases bytes per
+            // token; dense storages report the dense element count.
+            let bytes_per_token = fa.bytes_per_token();
             let capacity = fa.capacity();
 
             usage.full_attention_layers = usage.full_attention_layers.saturating_add(1);
@@ -3289,6 +4119,14 @@ impl MlxKVCache {
                     self.seq_len + new_tokens,
                 ),
             },
+            FaLayerStorage::Quantized(quantized) => {
+                match (&quantized.last_k_view, &quantized.last_v_view) {
+                    (Some(k), Some(v)) => (k.clone(), v.clone()),
+                    // Fallback mirrors the dense one: dequantize the logical
+                    // prefix through the current forward's write end.
+                    _ => quantized.dense_view(0, self.seq_len + new_tokens),
+                }
+            }
         }
     }
 
@@ -3356,6 +4194,13 @@ impl MlxKVCache {
                     ),
                 ),
             },
+            FaLayerStorage::Quantized(quantized) => {
+                let views = match (&quantized.last_k_view, &quantized.last_v_view) {
+                    (Some(k), Some(v)) => (k.clone(), v.clone()),
+                    _ => quantized.dense_view(0, self.seq_len),
+                };
+                Some(views)
+            }
         }
     }
 
@@ -3419,6 +4264,7 @@ impl MlxKVCache {
                     self.seq_len,
                 ),
             ),
+            FaLayerStorage::Quantized(quantized) => Some(quantized.dense_view(0, self.seq_len)),
         }
     }
 
@@ -5589,5 +6435,651 @@ mod tests {
         assert_eq!(host_f32(&actual_v), host_f32(&expected_v));
         drop(repaged);
         assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    // ── Phase 3b: per-layer KV-cache quantization ──
+
+    /// Serializes env-mutating KV-quant tests (mirrors the pattern in
+    /// `disk_prefix_cache`'s test module).
+    static KV_QUANT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct KvQuantEnvGuard {
+        previous: Option<String>,
+    }
+
+    impl KvQuantEnvGuard {
+        fn set(value: &str) -> Self {
+            let previous = std::env::var(AX_KV_QUANT_ENV).ok();
+            // SAFETY: KV_QUANT_ENV_LOCK is held for the whole test scope.
+            unsafe { std::env::set_var(AX_KV_QUANT_ENV, value) };
+            Self { previous }
+        }
+    }
+
+    impl Drop for KvQuantEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: KV_QUANT_ENV_LOCK is held for the whole test scope.
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(AX_KV_QUANT_ENV, value),
+                    None => std::env::remove_var(AX_KV_QUANT_ENV),
+                }
+            }
+        }
+    }
+
+    /// Deterministic pseudo-random `[1, heads, tokens, dim]` bf16 tensor with
+    /// values in [-2, 2) — bounded so per-bits quant error bounds are
+    /// predictable. Measured MLX affine worst case against these groups:
+    /// 4-bit ≤ 0.25 (one quantization step at group extremes), 8-bit ≤ 0.008.
+    fn kv_tokens_bf16(tokens: usize, heads: usize, dim: usize, seed: u32) -> MlxArray {
+        let total = heads * tokens * dim;
+        let mut x = seed.max(1);
+        let data: Vec<f32> = (0..total)
+            .map(|_| {
+                x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((x >> 8) % 1000) as f32 / 250.0 - 2.0
+            })
+            .collect();
+        let dense = MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[1, heads as i32, tokens as i32, dim as i32],
+            MlxDtype::Float32,
+        );
+        let bf16 = astype(&dense, MlxDtype::Bfloat16, None);
+        // Materialize before `data` drops: `from_raw_data` may borrow the
+        // caller's buffer, and eval reads it while it is still alive.
+        eval(&[&bf16]);
+        bf16
+    }
+
+    /// f32 host copy of a (possibly bf16, possibly strided) tensor.
+    fn host_values(arr: &MlxArray) -> Vec<f32> {
+        let tight = contiguous(&astype(arr, MlxDtype::Float32, None), None);
+        eval(&[&tight]);
+        tight.data_f32().to_vec()
+    }
+
+    fn max_abs_err(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len(), "error comparison needs equal lengths");
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max)
+    }
+
+    fn spec(bits: u32, group_size: u32) -> Option<KvQuantSpec> {
+        Some(KvQuantSpec { bits, group_size })
+    }
+
+    #[test]
+    fn kv_quant_mixed_table_matches_dense_within_bits_bounds() {
+        const H: usize = 2;
+        const D: usize = 128;
+        let table = vec![spec(8, 64), None, spec(4, 32)];
+        let mut quant = MlxKVCache::new_contiguous(3);
+        quant.set_kv_quant_table(table);
+        let mut dense = MlxKVCache::new_contiguous(3);
+
+        // Steps cross the 256-token chunk twice (300 → 400 → 556), exercising
+        // fresh-layer creation and quantized buffer growth on both sides.
+        let steps = [(300usize, 7u32), (100, 11), (156, 13)];
+        for (n, seed) in steps {
+            for layer in 0..3 {
+                let k = kv_tokens_bf16(n, H, D, seed + layer as u32);
+                let v = kv_tokens_bf16(n, H, D, seed + 100 + layer as u32);
+                let (qk, qv) = quant.append(layer, k.clone(), v.clone());
+                let (dk, dv) = dense.append(layer, k, v);
+                assert_eq!(qk.shape(), dk.shape());
+                assert_eq!(qv.shape(), dv.shape());
+                assert_eq!(qk.dtype(), MlxDtype::Bfloat16);
+                assert_eq!(qv.dtype(), MlxDtype::Bfloat16);
+            }
+            quant.advance(n);
+            dense.advance(n);
+        }
+        assert_eq!(quant.seq_len(), 556);
+
+        assert!(quant.layer_is_quantized(0));
+        assert!(!quant.layer_is_quantized(1));
+        assert!(quant.layer_is_quantized(2));
+        assert!(quant.has_quantized_layers());
+
+        let mut err8 = 0.0f32;
+        let mut err4 = 0.0f32;
+        for layer in 0..3 {
+            let (qk, qv) = quant.peek_layer_full_kv(layer).expect("quant view");
+            let (dk, dv) = dense.peek_layer_full_kv(layer).expect("dense view");
+            assert_eq!(qk.shape(), vec![1, H as i32, 556, D as i32]);
+            assert_eq!(qk.dtype(), MlxDtype::Bfloat16);
+            let k_err = max_abs_err(&host_values(&qk), &host_values(&dk));
+            let v_err = max_abs_err(&host_values(&qv), &host_values(&dv));
+            let err = k_err.max(v_err);
+            match layer {
+                // Full-precision layer: identical storage, exact match.
+                1 => assert_eq!(err, 0.0, "full-precision layer must match exactly"),
+                0 => err8 = err,
+                2 => err4 = err,
+                _ => unreachable!(),
+            }
+        }
+        assert!(err4 > 0.0, "4-bit quantization must measurably differ");
+        assert!(err8 > 0.0, "8-bit quantization must measurably differ");
+        assert!(
+            err8 < err4,
+            "8-bit error ({err8}) must be tighter than 4-bit ({err4})"
+        );
+        assert!(err4 <= 0.28, "4-bit error {err4} exceeds group bound 0.28");
+        assert!(err8 <= 0.03, "8-bit error {err8} exceeds group bound 0.03");
+    }
+
+    #[test]
+    fn kv_quant_decode_steps_after_prefill_stay_consistent() {
+        const H: usize = 2;
+        const D: usize = 128;
+        let table = vec![spec(8, 64), spec(4, 32)];
+        let mut quant = MlxKVCache::new_contiguous(2);
+        quant.set_kv_quant_table(table);
+        let mut dense = MlxKVCache::new_contiguous(2);
+
+        for layer in 0..2 {
+            let k = kv_tokens_bf16(128, H, D, 5 + layer as u32);
+            let v = kv_tokens_bf16(128, H, D, 105 + layer as u32);
+            let _ = quant.append(layer, k.clone(), v.clone());
+            let _ = dense.append(layer, k, v);
+        }
+        quant.advance(128);
+        dense.advance(128);
+
+        // Decode-step pattern: many single-token appends after prefill, over
+        // both the fresh-layer and steady-state quantized paths.
+        for step in 0..16u32 {
+            for layer in 0..2 {
+                let k = kv_tokens_bf16(1, H, D, 1000 + step * 10 + layer as u32);
+                let v = kv_tokens_bf16(1, H, D, 2000 + step * 10 + layer as u32);
+                let (qk, _) = quant.append(layer, k.clone(), v.clone());
+                let (dk, _) = dense.append(layer, k, v);
+                assert_eq!(qk.shape(), dk.shape());
+                assert_eq!(qk.shape()[2], 128 + step as i32 + 1);
+            }
+            quant.advance(1);
+            dense.advance(1);
+        }
+
+        for layer in 0..2 {
+            let (qk, _) = quant.peek_layer_full_kv(layer).expect("quant view");
+            let (dk, _) = dense.peek_layer_full_kv(layer).expect("dense view");
+            let err = max_abs_err(&host_values(&qk), &host_values(&dk));
+            let bound = if layer == 0 { 0.03 } else { 0.28 };
+            assert!(
+                err <= bound,
+                "layer {layer} decode drift {err} exceeds bound {bound}"
+            );
+        }
+    }
+
+    #[test]
+    fn kv_quant_trim_to_then_reappend_stays_consistent() {
+        const H: usize = 1;
+        const D: usize = 128;
+        let mut quant = MlxKVCache::new_contiguous(1);
+        quant.set_kv_quant_table(vec![spec(4, 32)]);
+        let mut dense = MlxKVCache::new_contiguous(1);
+
+        let append_both = |quant: &mut MlxKVCache, dense: &mut MlxKVCache, n: usize, seed: u32| {
+            let k = kv_tokens_bf16(n, H, D, seed);
+            let v = kv_tokens_bf16(n, H, D, seed + 50);
+            let _ = quant.append(0, k.clone(), v.clone());
+            let _ = dense.append(0, k, v);
+            quant.advance(n);
+            dense.advance(n);
+        };
+        append_both(&mut quant, &mut dense, 100, 3);
+        append_both(&mut quant, &mut dense, 20, 17);
+
+        assert!(quant.trim_to(110));
+        assert!(dense.trim_to(110));
+        assert!(quant.layer_is_quantized(0), "trim keeps quantized storage");
+
+        // Re-append over the trimmed region with corrected tokens.
+        append_both(&mut quant, &mut dense, 15, 29);
+        assert_eq!(quant.seq_len(), 125);
+        assert!(quant.layer_is_quantized(0));
+
+        let (qk, qv) = quant.peek_layer_full_kv(0).expect("quant view");
+        let (dk, dv) = dense.peek_layer_full_kv(0).expect("dense view");
+        assert_eq!(qk.shape(), vec![1, H as i32, 125, D as i32]);
+        let err = max_abs_err(&host_values(&qk), &host_values(&dk))
+            .max(max_abs_err(&host_values(&qv), &host_values(&dv)));
+        assert!(err <= 0.28, "post-trim re-append drift {err} exceeds bound");
+        // The corrected tokens must actually hold the corrected values:
+        // token 110..125 derive from seed 29, not the rejected seed 17 draft.
+        let expected = host_values(&kv_tokens_bf16(15, H, D, 29));
+        let got = host_values(&qk);
+        let tail = &got[(110 * D)..];
+        assert!(
+            max_abs_err(tail, &expected[..15 * D]) <= 0.28,
+            "re-appended region must hold corrected tokens"
+        );
+    }
+
+    #[test]
+    fn kv_quant_serialize_roundtrip_and_requantize_on_first_append() {
+        const H: usize = 2;
+        const D: usize = 128;
+        let table = vec![spec(8, 64), spec(4, 32)];
+        let mut quant = MlxKVCache::new_contiguous(2);
+        quant.set_kv_quant_table(table.clone());
+        let mut dense = MlxKVCache::new_contiguous(2);
+        for layer in 0..2 {
+            let k = kv_tokens_bf16(96, H, D, 31 + layer as u32);
+            let v = kv_tokens_bf16(96, H, D, 131 + layer as u32);
+            let _ = quant.append(layer, k.clone(), v.clone());
+            let _ = dense.append(layer, k, v);
+        }
+        quant.advance(96);
+        dense.advance(96);
+
+        let bytes = quant.serialize_to_bytes();
+        let mut restored = MlxKVCache::try_deserialize_from_bytes(&bytes).expect("round-trip");
+        // Wire format is dense-only: restored layers are contiguous dense.
+        assert!(!restored.has_quantized_layers());
+        for layer in 0..2 {
+            let (rk, rv) = restored.peek_layer_full_kv(layer).expect("restored view");
+            let (dk, dv) = dense.peek_layer_full_kv(layer).expect("dense view");
+            let bound = if layer == 0 { 0.03 } else { 0.28 };
+            let err = max_abs_err(&host_values(&rk), &host_values(&dk))
+                .max(max_abs_err(&host_values(&rv), &host_values(&dv)));
+            assert!(
+                err <= bound,
+                "layer {layer} restore drift {err} exceeds bound {bound}"
+            );
+        }
+
+        // Re-quantize on first append after restore: the dense prefix is
+        // quantized wholesale and the layer returns to quantized storage.
+        restored.set_kv_quant_table(table);
+        for layer in 0..2 {
+            let k = kv_tokens_bf16(5, H, D, 211 + layer as u32);
+            let v = kv_tokens_bf16(5, H, D, 311 + layer as u32);
+            let (rk, _) = restored.append(layer, k.clone(), v.clone());
+            let (dk, _) = dense.append(layer, k, v);
+            assert_eq!(rk.shape(), dk.shape());
+            assert!(restored.layer_is_quantized(layer));
+        }
+        restored.advance(5);
+        dense.advance(5);
+        for layer in 0..2 {
+            let (rk, _) = restored.peek_layer_full_kv(layer).expect("restored view");
+            let (dk, _) = dense.peek_layer_full_kv(layer).expect("dense view");
+            // Post-restore prefixes were quantized twice (append, then
+            // re-quantize on first post-restore append), so the compounding
+            // doubles the single-pass bound.
+            let bound = if layer == 0 { 0.06 } else { 0.4 };
+            let err = max_abs_err(&host_values(&rk), &host_values(&dk));
+            assert!(err <= bound, "layer {layer} post-restore drift {err}");
+        }
+    }
+
+    #[test]
+    fn kv_quant_usage_snapshot_reflects_packed_sizes() {
+        const H: usize = 2;
+        const D: usize = 128;
+        let mut quant = MlxKVCache::new_contiguous(1);
+        quant.set_kv_quant_table(vec![spec(4, 32)]);
+        let mut dense = MlxKVCache::new_contiguous(1);
+        let k = kv_tokens_bf16(200, H, D, 41);
+        let v = kv_tokens_bf16(200, H, D, 141);
+        let _ = quant.append(0, k.clone(), v.clone());
+        let _ = dense.append(0, k, v);
+        quant.advance(200);
+        dense.advance(200);
+
+        // Per token (K+V, H=2): packed 128*4/32 u32 = 64 B, scales+biases
+        // 2 × 128/32 bf16 = 16 B → 80 B/head/tensor → 320 B/token packed vs
+        // 2 × 128 × 2 × 2 = 1024 B/token dense.
+        let usage = quant.usage_snapshot();
+        assert_eq!(usage.logical_tokens, 200);
+        assert_eq!(usage.capacity_tokens, 256);
+        assert_eq!(usage.logical_bytes, 320 * 200);
+        assert_eq!(usage.capacity_bytes, 320 * 256);
+        let dense_usage = dense.usage_snapshot();
+        assert_eq!(dense_usage.logical_bytes, 1024 * 200);
+        assert!(
+            usage.logical_bytes * 3 < dense_usage.logical_bytes,
+            "4-bit packed storage ({} B) must be well under dense ({} B)",
+            usage.logical_bytes,
+            dense_usage.logical_bytes
+        );
+    }
+
+    #[test]
+    fn kv_quant_env_zero_disables_table() {
+        let _lock = KV_QUANT_ENV_LOCK.lock().expect("env lock");
+        let _guard = KvQuantEnvGuard::set("0");
+        let mut cache = MlxKVCache::new_contiguous(1);
+        cache.set_kv_quant_table(vec![spec(4, 32)]);
+        let k = kv_tokens_bf16(16, 1, 128, 7);
+        let v = kv_tokens_bf16(16, 1, 128, 77);
+        let (ck, _) = cache.append(0, k.clone(), v.clone());
+        cache.advance(16);
+
+        assert!(!cache.layer_is_quantized(0));
+        assert!(!cache.has_quantized_layers());
+        assert_eq!(
+            host_values(&ck),
+            host_values(&k),
+            "AX_KV_QUANT=0 must behave as if every spec were None"
+        );
+    }
+
+    #[test]
+    fn kv_quant_table_length_mismatch_is_ignored() {
+        let mut cache = MlxKVCache::new_contiguous(3);
+        cache.set_kv_quant_table(vec![spec(4, 32), None]);
+        let k = kv_tokens_bf16(8, 1, 128, 9);
+        let v = kv_tokens_bf16(8, 1, 128, 99);
+        let _ = cache.append(0, k.clone(), v.clone());
+        cache.advance(8);
+        assert!(!cache.has_quantized_layers());
+    }
+
+    #[test]
+    fn kv_quant_invalid_spec_is_rejected_per_layer() {
+        let mut cache = MlxKVCache::new_contiguous(2);
+        cache.set_kv_quant_table(vec![
+            Some(KvQuantSpec {
+                bits: 3,
+                group_size: 32,
+            }),
+            spec(8, 64),
+        ]);
+        for layer in 0..2 {
+            let k = kv_tokens_bf16(8, 1, 128, 13 + layer as u32);
+            let v = kv_tokens_bf16(8, 1, 128, 113 + layer as u32);
+            let _ = cache.append(layer, k, v);
+        }
+        cache.advance(8);
+        assert!(!cache.layer_is_quantized(0), "bits=3 spec must be rejected");
+        assert!(cache.layer_is_quantized(1));
+    }
+
+    #[test]
+    fn kv_quant_ring_engagement_demotes_layer_to_dense() {
+        const D: usize = 128;
+        let mut cache = MlxKVCache::new_contiguous(1);
+        cache.set_kv_quant_table(vec![spec(8, 64)]);
+        cache.set_rotating_sliding_decode(true);
+        let k = kv_tokens_bf16(6, 1, D, 19);
+        let v = kv_tokens_bf16(6, 1, D, 119);
+        let _ = cache.append(0, k, v);
+        cache.advance(6);
+        assert!(cache.layer_is_quantized(0));
+
+        // Ring-eligible single-token append: quantized rings are out of
+        // scope, so the layer demotes to dense and converts to a ring.
+        let k = kv_tokens_bf16(1, 1, D, 23);
+        let v = kv_tokens_bf16(1, 1, D, 123);
+        let (rk, _) = cache.append_with_retained_window(0, k, v, Some(4));
+        cache.advance(1);
+        assert!(!cache.layer_is_quantized(0));
+        assert!(cache.has_rotated_sliding_layers());
+        assert_eq!(rk.shape(), vec![1, 1, 4, D as i32]);
+        let ring = cache.layer_sliding_ring(0).expect("ring geometry");
+        assert_eq!((ring.window, ring.capacity), (4, 4));
+    }
+
+    #[test]
+    fn kv_quant_protected_prefix_ring_demotes_layer_to_dense() {
+        const D: usize = 128;
+        let mut cache = MlxKVCache::new_contiguous(1);
+        cache.set_kv_quant_table(vec![spec(8, 64)]);
+        let k = kv_tokens_bf16(3, 1, D, 29);
+        let v = kv_tokens_bf16(3, 1, D, 129);
+        let _ = cache.append(0, k, v);
+        cache.advance(3);
+        assert!(cache.layer_is_quantized(0));
+
+        let k = kv_tokens_bf16(1, 1, D, 31);
+        let v = kv_tokens_bf16(1, 1, D, 131);
+        let kv = cache.append_with_protected_prefix_window_for_attention(0, k, v, 2);
+        cache.advance(1);
+        let MlxAttentionKv::Dense { k, .. } = kv else {
+            panic!("protected-prefix decode always returns dense views");
+        };
+        assert_eq!(k.shape(), vec![1, 1, 4, D as i32]);
+        assert!(!cache.layer_is_quantized(0));
+        let lkv = contiguous_layer(&cache, 0);
+        assert!(lkv.protected_prefix_ring.is_some());
+    }
+
+    #[test]
+    fn kv_quant_layers_never_take_paged_route() {
+        let config = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 32,
+            hard_cap: false,
+        };
+        let pool_layer_cache = MlxKVCache::new_with_fa_block_pool(2, config);
+        let pool = pool_layer_cache.fa_pool.as_ref().expect("pool").clone();
+        let mut cache = pool_layer_cache;
+        cache.set_kv_quant_table(vec![spec(4, 32), None]);
+
+        for layer in 0..2 {
+            let k = kv_tokens_bf16(8, 1, 128, 37 + layer as u32);
+            let v = kv_tokens_bf16(8, 1, 128, 137 + layer as u32);
+            let _ = cache.append(layer, k, v);
+        }
+        cache.advance(8);
+        // Spec'd layer quantized contiguous; spec-less layer paged.
+        assert!(cache.layer_is_quantized(0));
+        assert!(matches!(cache.layers[1], Some(FaLayerStorage::Paged(_))));
+        assert!(!cache.is_native_fa_shareable());
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
+
+        // Single-token decode on the quantized layer must return the dense
+        // route, never a paged attention view.
+        let k = kv_tokens_bf16(1, 1, 128, 41);
+        let v = kv_tokens_bf16(1, 1, 128, 141);
+        let attention = cache.append_with_retained_window_for_attention(0, k, v, None);
+        cache.advance(1);
+        assert!(
+            matches!(attention, MlxAttentionKv::Dense { .. }),
+            "quantized layers must always take the Dense attention route"
+        );
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
+    }
+
+    #[test]
+    fn kv_quant_clone_deep_copies_buffers_and_spec() {
+        const D: usize = 128;
+        let mut cache = MlxKVCache::new_contiguous(1);
+        cache.set_kv_quant_table(vec![spec(8, 64)]);
+        let k = kv_tokens_bf16(32, 1, D, 43);
+        let v = kv_tokens_bf16(32, 1, D, 143);
+        let _ = cache.append(0, k, v);
+        cache.advance(32);
+
+        let mut branch = cache.clone();
+        assert!(branch.layer_is_quantized(0));
+        let (bk, _) = branch.peek_layer_full_kv(0).expect("branch view");
+        let (ck, _) = cache.peek_layer_full_kv(0).expect("source view");
+        assert_eq!(host_values(&bk), host_values(&ck));
+
+        // Diverging appends must not disturb each other's contents.
+        let k = kv_tokens_bf16(1, 1, D, 47);
+        let v = kv_tokens_bf16(1, 1, D, 147);
+        let _ = branch.append(0, k, v);
+        branch.advance(1);
+        let k = kv_tokens_bf16(1, 1, D, 53);
+        let v = kv_tokens_bf16(1, 1, D, 153);
+        let _ = cache.append(0, k, v);
+        cache.advance(1);
+
+        let (bk, _) = branch.peek_layer_full_kv(0).expect("branch view");
+        let (ck, _) = cache.peek_layer_full_kv(0).expect("source view");
+        let branch_tail = host_values(&bk)[(32 * D)..].to_vec();
+        let cache_tail = host_values(&ck)[(32 * D)..].to_vec();
+        let expected_branch = host_values(&kv_tokens_bf16(1, 1, D, 47));
+        let expected_cache = host_values(&kv_tokens_bf16(1, 1, D, 53));
+        assert!(max_abs_err(&branch_tail, &expected_branch) <= 0.03);
+        assert!(max_abs_err(&cache_tail, &expected_cache) <= 0.03);
+    }
+
+    #[test]
+    fn kv_quant_repage_skips_quantized_layers() {
+        const D: usize = 128;
+        let mut dense_source = MlxKVCache::new_contiguous(2);
+        dense_source.set_kv_quant_table(vec![spec(4, 32), None]);
+        let mut control = MlxKVCache::new_contiguous(2);
+        for layer in 0..2 {
+            let k = kv_tokens_bf16(5, 1, D, 59 + layer as u32);
+            let v = kv_tokens_bf16(5, 1, D, 159 + layer as u32);
+            let _ = dense_source.append(layer, k.clone(), v.clone());
+            let _ = control.append(layer, k, v);
+        }
+        dense_source.advance(5);
+        control.advance(5);
+
+        // Only the dense layer claims blocks: 5 tokens → 2 blocks of 4.
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 2,
+            hard_cap: true,
+        })
+        .expect("pool");
+        assert_eq!(dense_source.fa_blocks_required_for_repage(&pool), Ok(2));
+        let repaged = dense_source
+            .clone_repage_into_shared_fa_pool(pool.clone())
+            .expect("repage");
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
+        assert!(
+            matches!(repaged.layers[0], Some(FaLayerStorage::Contiguous(_))),
+            "quantized layer must stay contiguous in the repaged clone"
+        );
+        assert!(
+            matches!(repaged.layers[1], Some(FaLayerStorage::Paged(_))),
+            "dense layer must repage into the pool"
+        );
+        let (rk, _) = repaged.logical_layer_kv(0).expect("repaged quant layer");
+        let (ck, _) = control.logical_layer_kv(0).expect("control layer");
+        assert!(max_abs_err(&host_values(&rk), &host_values(&ck)) <= 0.28);
+        let (rk, _) = repaged.logical_layer_kv(1).expect("repaged dense layer");
+        let (ck, _) = control.logical_layer_kv(1).expect("control layer");
+        assert_eq!(host_values(&rk), host_values(&ck));
+
+        // The copied table re-quantizes the skipped layer on its next append.
+        let mut repaged = repaged;
+        let k = kv_tokens_bf16(1, 1, D, 61);
+        let v = kv_tokens_bf16(1, 1, D, 161);
+        let _ = repaged.append(0, k, v);
+        repaged.advance(1);
+        assert!(repaged.layer_is_quantized(0));
+        drop(repaged);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn kv_quant_table_injection_demotes_already_paged_layer() {
+        // Prefix-restore adoption can inject the table onto a cache whose
+        // layers already hold paged storage; the spec'd layer must demote to
+        // contiguous at injection and quantize on its next append.
+        let config = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 16,
+            hard_cap: false,
+        };
+        let mut cache = MlxKVCache::new_with_fa_block_pool(1, config);
+        let pool = cache.fa_pool.as_ref().expect("pool").clone();
+        let k = kv_tokens_bf16(8, 1, 128, 71);
+        let v = kv_tokens_bf16(8, 1, 128, 171);
+        let _ = cache.append(0, k, v);
+        cache.advance(8);
+        assert!(matches!(cache.layers[0], Some(FaLayerStorage::Paged(_))));
+        assert_eq!(pool.snapshot().allocated_blocks, 2);
+
+        cache.set_kv_quant_table(vec![spec(8, 64)]);
+        assert!(
+            matches!(cache.layers[0], Some(FaLayerStorage::Contiguous(_))),
+            "injection must demote the paged layer to contiguous"
+        );
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+
+        let k = kv_tokens_bf16(1, 1, 128, 73);
+        let v = kv_tokens_bf16(1, 1, 128, 173);
+        let (ck, _) = cache.append(0, k, v);
+        cache.advance(1);
+        assert!(cache.layer_is_quantized(0));
+        assert_eq!(ck.shape(), vec![1, 1, 9, 128]);
+    }
+
+    /// The pipeline.rs cache-creation path: a `ModelConfig` carrying a
+    /// `kv_cache_quant` table must reach the cache it creates.
+    #[test]
+    fn kv_quant_config_table_reaches_cache_via_pipeline_creation() {
+        let config = crate::model::ModelConfig {
+            compile_cache_identity: 1,
+            model_family: "qwen3".to_string(),
+            layer_count: 2,
+            hidden_size: 16,
+            intermediate_size: 32,
+            n_heads: 2,
+            n_kv_heads: 1,
+            head_dim: 128,
+            vocab_size: 32,
+            rope_theta: 10000.0,
+            rope_dims: 128,
+            attn_output_gate: false,
+            query_scale: 1.0,
+            final_logit_softcapping: None,
+            moe_expert_count: 0,
+            moe_experts_per_token: 0,
+            moe_expert_intermediate_size: 0,
+            layer_configs: Vec::new(),
+            global_sliding_window: None,
+            protected_prefix_sliding_window: None,
+            gemma4_moe_router: false,
+            uses_geglu: false,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
+            hidden_size_per_layer_input: 0,
+            linear_attention: None,
+            mla_attention: None,
+            glm_router: None,
+            rms_norm_eps: 1e-6,
+            rope_freqs: None,
+            rope_mscale: 1.0,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: 8192.0,
+            attn_temperature_scale: 0.1,
+            intermediate_size_mlp: 0,
+            moe_layer_freq: 1,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 0,
+            moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 1.0,
+            moe_n_group: 1,
+            moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
+            diffusion: None,
+            gpt_oss_uses_mxfp4_experts: false,
+            generation_kind: ax_engine_core::GenerationKind::Autoregressive,
+            kv_cache_quant: vec![spec(8, 64), None],
+        };
+
+        // Mirrors pipeline.rs `execute`'s or_insert_with closure.
+        let mut cache = MlxKVCache::new_contiguous(config.layer_count);
+        cache.set_kv_quant_table(config.kv_cache_quant.clone());
+
+        for layer in 0..2 {
+            let k = kv_tokens_bf16(8, 1, 128, 67 + layer as u32);
+            let v = kv_tokens_bf16(8, 1, 128, 167 + layer as u32);
+            let _ = cache.append(layer, k, v);
+        }
+        cache.advance(8);
+        assert!(cache.layer_is_quantized(0));
+        assert!(!cache.layer_is_quantized(1));
     }
 }

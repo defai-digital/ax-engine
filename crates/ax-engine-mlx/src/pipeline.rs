@@ -224,10 +224,13 @@ impl PipelineRankExecutor {
     ) -> Result<PipelineRankOutput, PipelineRankError> {
         self.ledger
             .begin_step(request_id, request_sequence, token_offset)?;
-        let cache = self
-            .caches
-            .entry(request_id)
-            .or_insert_with(|| MlxKVCache::new(self.config.layer_count));
+        let cache = self.caches.entry(request_id).or_insert_with(|| {
+            let mut cache = MlxKVCache::new(self.config.layer_count);
+            // Phase 3b: per-layer KV quantization from the manifest
+            // (honors the AX_KV_QUANT=0 kill-switch internally).
+            cache.set_kv_quant_table(self.config.kv_cache_quant.clone());
+            cache
+        });
         if cache.seq_len() as u64 != token_offset {
             return Err(PipelineContractError::UnexpectedTokenOffset {
                 expected: cache.seq_len() as u64,

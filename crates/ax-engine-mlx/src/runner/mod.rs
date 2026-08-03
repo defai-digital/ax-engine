@@ -4408,6 +4408,15 @@ impl MlxRunner {
             self.reclaim_native_prefix_capacity(&state.cache, item.input_token_slice.len()),
         );
 
+        // Phase 3b: per-layer KV-cache quantization from the model manifest.
+        // Injected after prefix restore because restore can adopt a serialized
+        // snapshot that replaces `state.cache` wholesale (the wire format is
+        // dense; adopted snapshots re-quantize on the first append). The call
+        // is idempotent and honors the `AX_KV_QUANT=0` kill-switch.
+        state
+            .cache
+            .set_kv_quant_table(self.cfg.kv_cache_quant.clone());
+
         // Apply the request's rotating sliding-KV decision. Prefill may rotate
         // when `AX_MLX_ROTATING_SLIDING_PREFILL=1` (default OFF): SWA layers
         // then keep O(window+slack) physical storage instead of O(context)

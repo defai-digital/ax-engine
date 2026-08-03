@@ -79,6 +79,10 @@ pub struct BatchedKvCache {
     layers: Vec<Option<BatchedLayerKv>>,
     /// Logical token count per row; `lengths.len() == allocated`.
     lengths: Vec<usize>,
+    /// Per-layer KV quantization table applied to per-request caches extracted
+    /// via `writeback_row` (Phase 3b). The batched buffers themselves stay
+    /// full precision.
+    kv_quant: Option<Vec<Option<crate::model::KvQuantSpec>>>,
 }
 
 impl BatchedKvCache {
@@ -92,6 +96,7 @@ impl BatchedKvCache {
             active: batch,
             layers: (0..num_layers).map(|_| None).collect(),
             lengths: vec![0; batch],
+            kv_quant: None,
         }
     }
 
@@ -106,7 +111,19 @@ impl BatchedKvCache {
             active: 0,
             layers: (0..num_layers).map(|_| None).collect(),
             lengths: vec![0; max_batch],
+            kv_quant: None,
         }
+    }
+
+    /// Set the per-layer KV quantization table propagated to per-request
+    /// caches extracted via `writeback_row` (Phase 3b). Length mismatches are
+    /// rejected by `MlxKVCache::set_kv_quant_table` at writeback time.
+    pub fn set_kv_quant_table(&mut self, table: Vec<Option<crate::model::KvQuantSpec>>) {
+        self.kv_quant = if table.iter().any(Option::is_some) {
+            Some(table)
+        } else {
+            None
+        };
     }
 
     pub fn num_layers(&self) -> usize {
@@ -491,6 +508,11 @@ impl BatchedKvCache {
     #[allow(dead_code)]
     pub fn writeback_row(&self, row: usize) -> MlxKVCache {
         let mut cache = MlxKVCache::new(self.num_layers());
+        if let Some(table) = &self.kv_quant {
+            // Written-back layers are dense (`set_layer_kv_logical`); each
+            // spec'd layer re-quantizes on its first append after writeback.
+            cache.set_kv_quant_table(table.clone());
+        }
         let len = self.row_len(row);
         if len == 0 {
             return cache;
@@ -782,6 +804,56 @@ mod tests {
                 assert_arrays_eq(&wv, &rv);
             }
         }
+    }
+
+    /// Phase 3b plumbing: a KV quant table set on the batched cache must reach
+    /// the per-request cache produced by `writeback_row`; written-back layers
+    /// are dense and re-quantize on their first append.
+    #[test]
+    fn writeback_row_propagates_kv_quant_table() {
+        let (heads, dim) = (1usize, 128usize);
+        let mut batched = BatchedKvCache::new(2, 1);
+        batched.set_kv_quant_table(vec![
+            Some(crate::model::KvQuantSpec {
+                bits: 8,
+                group_size: 64,
+            }),
+            None,
+        ]);
+
+        let mut keep: Vec<Vec<f32>> = Vec::new();
+        for layer in 0..2 {
+            let kd = seq_block(0, 0, 8, heads, dim);
+            let vd: Vec<f32> = kd.iter().map(|x| x + 0.5).collect();
+            keep.push(kd);
+            keep.push(vd);
+            let k = arr(keep[keep.len() - 2].as_slice(), heads as i32, 8, dim as i32);
+            let v = arr(keep[keep.len() - 1].as_slice(), heads as i32, 8, dim as i32);
+            batched.seed_row_layer(layer, 0, &k, &v);
+        }
+
+        let mut wb = batched.writeback_row(0);
+        assert!(
+            !wb.layer_is_quantized(0),
+            "writeback restores dense storage"
+        );
+        assert!(!wb.layer_is_quantized(1));
+
+        for layer in 0..2 {
+            let kd = seq_block(0, 8, 1, heads, dim);
+            let vd: Vec<f32> = kd.iter().map(|x| x + 0.5).collect();
+            keep.push(kd);
+            keep.push(vd);
+            let k = arr(keep[keep.len() - 2].as_slice(), heads as i32, 1, dim as i32);
+            let v = arr(keep[keep.len() - 1].as_slice(), heads as i32, 1, dim as i32);
+            wb.append(layer, k, v);
+        }
+        wb.advance(1);
+        assert!(
+            wb.layer_is_quantized(0),
+            "spec'd layer must re-quantize on first append after writeback"
+        );
+        assert!(!wb.layer_is_quantized(1));
     }
 
     /// Growth mid-decode must not corrupt any already-written row.
