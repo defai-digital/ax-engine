@@ -8,18 +8,18 @@ use thiserror::Error;
 pub const AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION: &str = "ax.native_model.v1";
 pub const AX_NATIVE_MODEL_MANIFEST_FILE: &str = "model-manifest.json";
 pub const QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL: u32 = 4;
-const SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[4, 5, 6, 8];
+pub const SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[4, 5, 6, 8];
 /// Set to `"1"` to allow loading affine-quantized MLX artifacts at 3-bit.
 /// Production validation rejects 3-bit by default; this gate is for
 /// experimental benchmarking only and carries no quality or correctness guarantee.
 pub const AX_ENGINE_3BIT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_3BIT_EXPERIMENTAL";
-const EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[3];
+pub const EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[3];
 /// Set to `"1"` to allow loading affine-quantized MLX artifacts at 2-bit.
 /// Same contract as the 3-bit gate: experimental benchmarking only, no
 /// quality or correctness guarantee. MLX affine kernels execute 2-bit
 /// natively; production validation still rejects it by default.
 pub const AX_ENGINE_2BIT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_2BIT_EXPERIMENTAL";
-const EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[2];
+pub const EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[2];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

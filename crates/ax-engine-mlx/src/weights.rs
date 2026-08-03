@@ -2160,22 +2160,48 @@ fn apply_draft_temperature_override(params: MlxSamplingParams) -> MlxSamplingPar
     }
 }
 
-/// Detect sidecar quantization bits from the free-text `mtp_sidecar`
-/// description in an MTP runtime JSON config (`mtplx_runtime.json` for Qwen,
-/// `glm_mtp_runtime.json` for GLM). `"INT8"`/`"8BIT"` → 8-bit; anything else
-/// present → 4-bit; the field absent entirely → `None` (caller infers from
-/// tensor shapes, defaulting to 4-bit in `mtp_take_weight`).
+/// Detect sidecar quantization bits from an MTP runtime JSON config
+/// (`mtplx_runtime.json` for Qwen, `glm_mtp_runtime.json` for GLM).
+///
+/// The structured `mtp_sidecar_bits` field wins when present: integer values
+/// in {2, 4, 6, 8, 16} are used directly; a present-but-malformed value (wrong
+/// type or outside the set) logs a warning and falls through to the free-text
+/// heuristic. The heuristic substring-matches the `mtp_sidecar` description:
+/// `"INT8"`/`"8BIT"` → 8-bit; anything else present → 4-bit; the field absent
+/// entirely → `None` (caller infers from tensor shapes, defaulting to 4-bit
+/// in `mtp_take_weight`).
 fn parse_mtp_sidecar_bits_hint(runtime_config: &serde_json::Value) -> Option<i32> {
+    if let Some(structured) = runtime_config.get("mtp_sidecar_bits") {
+        match structured
+            .as_i64()
+            .and_then(|bits| i32::try_from(bits).ok())
+        {
+            Some(bits @ (2 | 4 | 6 | 8 | 16)) => return Some(bits),
+            _ => tracing::warn!(
+                target: "ax_mlx::weights",
+                value = %structured,
+                "malformed mtp_sidecar_bits in MTP runtime config; \
+                 falling back to the mtp_sidecar free-text heuristic"
+            ),
+        }
+    }
     runtime_config
         .get("mtp_sidecar")
         .and_then(|s| s.as_str())
         .map(|s| {
             let upper = s.to_ascii_uppercase();
-            if upper.contains("INT8") || upper.contains("8BIT") {
+            let bits = if upper.contains("INT8") || upper.contains("8BIT") {
                 8
             } else {
                 4
-            }
+            };
+            tracing::debug!(
+                target: "ax_mlx::weights",
+                bits,
+                "guessed MTP sidecar bits from mtp_sidecar free text; \
+                 declare mtp_sidecar_bits to make this explicit"
+            );
+            bits
         })
 }
 
@@ -5789,6 +5815,49 @@ mod tests {
     fn parse_mtp_sidecar_bits_hint_none_when_field_absent() {
         assert_eq!(
             parse_mtp_sidecar_bits_hint(&serde_json::json!({"mtp_depth_max": 1})),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_mtp_sidecar_bits_hint_prefers_structured_field_over_free_text() {
+        for bits in [2, 4, 6, 8, 16] {
+            assert_eq!(
+                parse_mtp_sidecar_bits_hint(&serde_json::json!({"mtp_sidecar_bits": bits})),
+                Some(bits)
+            );
+        }
+        // The structured field wins even when the free text says otherwise.
+        assert_eq!(
+            parse_mtp_sidecar_bits_hint(&serde_json::json!({
+                "mtp_sidecar": "INT8 quantized projections",
+                "mtp_sidecar_bits": 4
+            })),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn parse_mtp_sidecar_bits_hint_falls_back_when_structured_field_malformed() {
+        // Out-of-set integer falls back to the free-text heuristic.
+        assert_eq!(
+            parse_mtp_sidecar_bits_hint(&serde_json::json!({
+                "mtp_sidecar": "INT8",
+                "mtp_sidecar_bits": 7
+            })),
+            Some(8)
+        );
+        // Wrong type falls back to the free-text heuristic.
+        assert_eq!(
+            parse_mtp_sidecar_bits_hint(&serde_json::json!({
+                "mtp_sidecar": "INT4",
+                "mtp_sidecar_bits": "8"
+            })),
+            Some(4)
+        );
+        // Malformed structured field with no free text yields no hint.
+        assert_eq!(
+            parse_mtp_sidecar_bits_hint(&serde_json::json!({"mtp_sidecar_bits": 3})),
             None
         );
     }

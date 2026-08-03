@@ -217,6 +217,9 @@ pub(crate) struct DoctorAxquantReport {
     pub(crate) failed_module_count: usize,
     pub(crate) fallback_module_count: usize,
     pub(crate) issues: Vec<String>,
+    /// Non-fatal concerns (e.g. bit widths the runtime cannot load
+    /// unconditionally). Warnings never affect `metadata_valid`.
+    pub(crate) warnings: Vec<String>,
 }
 
 impl DoctorAxquantReport {
@@ -244,6 +247,7 @@ impl DoctorAxquantReport {
             failed_module_count: 0,
             fallback_module_count: 0,
             issues: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 }
@@ -253,6 +257,34 @@ struct AxquantModuleSpec {
     bits: u32,
     method: String,
     group_size: Option<u64>,
+}
+
+/// Map an AXQuant assignment bit width to a runtime-support warning when the
+/// runtime cannot load it unconditionally. BF16 (16-bit) tensors and the
+/// supported affine set load without any gate, so they produce no warning.
+fn axquant_bits_runtime_support_warning(context: &str, bits: u32) -> Option<String> {
+    if ax_engine_core::SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS.contains(&bits) || bits == 16 {
+        return None;
+    }
+    let detail = if ax_engine_core::EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS.contains(&bits) {
+        format!(
+            "the runtime requires {}=1 to load it",
+            ax_engine_core::AX_ENGINE_3BIT_EXPERIMENTAL_ENV
+        )
+    } else if ax_engine_core::EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS.contains(&bits) {
+        format!(
+            "the runtime requires {}=1 to load it",
+            ax_engine_core::AX_ENGINE_2BIT_EXPERIMENTAL_ENV
+        )
+    } else {
+        format!(
+            "the runtime cannot load it (supported affine bits: {:?})",
+            ax_engine_core::SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS
+        )
+    };
+    Some(format!(
+        "{context} uses {bits}-bit affine quantization; {detail}"
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -783,6 +815,7 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
         }
 
         let mut precision_bits = BTreeSet::new();
+        let mut unsupported_plan_bits = BTreeSet::new();
         if let Some(assignments) = plan.get("assignments").and_then(Value::as_array) {
             let mut invalid_assignments = 0_usize;
             let mut duplicate_modules = 0_usize;
@@ -798,6 +831,7 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                     continue;
                 };
                 precision_bits.insert(bits);
+                unsupported_plan_bits.insert(bits);
 
                 let module_path = assignment
                     .get("module_path")
@@ -854,6 +888,11 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
         }
         report.precision_bits = precision_bits.into_iter().collect();
         report.mixed_precision = report.precision_bits.len() > 1;
+        report.warnings.extend(
+            unsupported_plan_bits
+                .into_iter()
+                .filter_map(|bits| axquant_bits_runtime_support_warning("AXQuant plan", bits)),
+        );
         if report.precision_bits.is_empty() {
             report
                 .issues
@@ -937,6 +976,7 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                         records,
                         &planned_quantized_modules,
                         &mut report.issues,
+                        &mut report.warnings,
                     );
                 } else {
                     report
@@ -1040,8 +1080,10 @@ fn validate_axquant_execution_coverage(
     records: &[Value],
     planned: &BTreeMap<String, AxquantModuleSpec>,
     issues: &mut Vec<String>,
+    warnings: &mut Vec<String>,
 ) {
     let mut seen = BTreeSet::new();
+    let mut unsupported_bits = BTreeSet::new();
     let mut malformed = 0_usize;
     let mut duplicates = 0_usize;
     let mut unexpected = 0_usize;
@@ -1070,6 +1112,7 @@ fn validate_axquant_execution_coverage(
             malformed += 1;
             continue;
         };
+        unsupported_bits.insert(bits);
         if success.is_none()
             || fallback.is_none()
             || (bits < 16 && group_size.is_none())
@@ -1121,6 +1164,11 @@ fn validate_axquant_execution_coverage(
             "quantizer execution is missing {missing} planned quantized modules"
         ));
     }
+    warnings.extend(
+        unsupported_bits
+            .into_iter()
+            .filter_map(|bits| axquant_bits_runtime_support_warning("quantizer execution", bits)),
+    );
 }
 
 fn json_optional_positive_u64(value: &Value, field: &str) -> Option<Option<u64>> {
@@ -1440,6 +1488,13 @@ fn doctor_model_performance_advice(hint: &DoctorModelArtifactsHint) -> Vec<Docto
                 "axquant_provenance_incomplete",
                 "AXQuant source-model provenance is incomplete.",
                 "Record both the source model ID and pinned revision before using this artifact in reproducible benchmark or release evidence.",
+            ));
+        }
+        for warning in &axquant.warnings {
+            advice.push(DoctorAdvice::warning(
+                "axquant_bits_runtime_support",
+                "AXQuant assignments use bit widths the runtime cannot load unconditionally.",
+                warning,
             ));
         }
     }

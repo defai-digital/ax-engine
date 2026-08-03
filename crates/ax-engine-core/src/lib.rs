@@ -82,12 +82,14 @@ pub use minicpm_v::{
     MiniCpmV46ImageRuntimeInput, MiniCpmV46RuntimeInputError, MiniCpmV46RuntimeInputs,
 };
 pub use model::{
-    AX_ENGINE_3BIT_EXPERIMENTAL_ENV, AX_NATIVE_MODEL_MANIFEST_FILE,
-    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, DroppedTensorsProvenance, NativeDiffusionConfig,
-    NativeLinearAttentionConfig, NativeMlaAttentionConfig, NativeModelArtifacts,
-    NativeModelArtifactsSummary, NativeModelError, NativeModelManifest, NativeMoeConfig,
-    NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization,
-    NativeTensorRole, NativeTensorSpec, WeightSanitize,
+    AX_ENGINE_2BIT_EXPERIMENTAL_ENV, AX_ENGINE_3BIT_EXPERIMENTAL_ENV,
+    AX_NATIVE_MODEL_MANIFEST_FILE, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+    DroppedTensorsProvenance, EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS,
+    EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS, NativeDiffusionConfig, NativeLinearAttentionConfig,
+    NativeMlaAttentionConfig, NativeModelArtifacts, NativeModelArtifactsSummary, NativeModelError,
+    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
+    NativeTensorFormat, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
+    SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, WeightSanitize,
 };
 pub use multimodal_adapter::{MultimodalPrefillAdapter, PrefillModality};
 pub use nemotron_omni::{

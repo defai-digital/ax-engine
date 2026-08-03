@@ -1043,6 +1043,55 @@ fn write_doctor_axquant_model_fixture(model_dir: &Path) {
     write_doctor_axquant_metadata(model_dir, "measured", true, false);
 }
 
+/// Change the bit width of one module in both the plan and the quantizer
+/// execution, then rebind plan_sha256 so lineage stays valid.
+fn set_doctor_axquant_assignment_bits(model_dir: &Path, module_path: &str, bits: u32) {
+    let plan_path = model_dir.join("axquant_plan.json");
+    let mut plan: Value =
+        serde_json::from_slice(&fs::read(&plan_path).expect("AXQuant plan should read"))
+            .expect("AXQuant plan should parse");
+    let assignments = plan
+        .get_mut("assignments")
+        .and_then(Value::as_array_mut)
+        .expect("AXQuant plan should have assignments");
+    for assignment in assignments.iter_mut() {
+        if assignment.get("module_path").and_then(Value::as_str) == Some(module_path) {
+            assignment["bits"] = json!(bits);
+        }
+    }
+    let plan_sha256 =
+        crate::doctor::axquant_stable_sha256(&plan).expect("plan should canonicalize");
+    rewrite_doctor_axquant_bound_json(model_dir, "axquant_plan.json", &plan);
+
+    let execution_path = model_dir.join("axquant_quantizer_execution.json");
+    let mut execution: Value = serde_json::from_slice(
+        &fs::read(&execution_path).expect("quantizer execution should read"),
+    )
+    .expect("quantizer execution should parse");
+    let records = execution
+        .get_mut("records")
+        .and_then(Value::as_array_mut)
+        .expect("quantizer execution should have records");
+    for record in records.iter_mut() {
+        if record.get("module_path").and_then(Value::as_str) == Some(module_path) {
+            record["bits"] = json!(bits);
+        }
+    }
+    execution["plan_sha256"] = json!(plan_sha256);
+    rewrite_doctor_axquant_bound_json(model_dir, "axquant_quantizer_execution.json", &execution);
+
+    let manifest_path = model_dir.join("axquant_manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("artifact manifest should read"))
+            .expect("artifact manifest should parse");
+    manifest["plan_sha256"] = json!(plan_sha256);
+    fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("artifact manifest should serialize"),
+    )
+    .expect("artifact manifest should write");
+}
+
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 fn compiled_repo_metal_build_dir() -> Option<PathBuf> {
@@ -3430,6 +3479,116 @@ fn doctor_report_rejects_axquant_metadata_sha_mismatch() {
             .issues
             .iter()
             .any(|issue| issue.contains("axquant_runtime.json SHA-256 differs"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_warns_when_axquant_bits_are_not_loadable_by_runtime() {
+    let root = unique_test_dir("doctor-axquant-unloadable-bits");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    set_doctor_axquant_assignment_bits(&model_dir, "layer.0", 7);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::Ready
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(axquant.metadata_valid);
+    assert!(axquant.lineage_valid);
+    assert!(
+        axquant
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("AXQuant plan uses 7-bit")
+                && warning.contains("the runtime cannot load it"))
+    );
+    assert!(
+        axquant
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("quantizer execution uses 7-bit")
+                && warning.contains("the runtime cannot load it"))
+    );
+    assert!(report.performance_advice.iter().any(|advice| {
+        advice.id == "axquant_bits_runtime_support"
+            && advice.severity == DoctorAdviceSeverity::Warning
+    }));
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_warns_when_axquant_bits_require_experimental_gate() {
+    let root = unique_test_dir("doctor-axquant-gated-bits");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    set_doctor_axquant_assignment_bits(&model_dir, "layer.0", 2);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::Ready
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(axquant.metadata_valid);
+    assert!(axquant.lineage_valid);
+    assert!(axquant.warnings.iter().any(
+        |warning| warning.contains("2-bit") && warning.contains("AX_ENGINE_2BIT_EXPERIMENTAL")
+    ));
+    assert!(report.performance_advice.iter().any(|advice| {
+        advice.id == "axquant_bits_runtime_support"
+            && advice.severity == DoctorAdviceSeverity::Warning
+    }));
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_emits_no_bits_warnings_for_runtime_supported_precisions() {
+    let root = unique_test_dir("doctor-axquant-supported-bits");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::Ready
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    // The fixture assigns 4/6/8-bit affine plus a 16-bit BF16 tensor.
+    assert_eq!(axquant.precision_bits, vec![4, 6, 8, 16]);
+    assert!(axquant.metadata_valid);
+    assert!(axquant.warnings.is_empty());
+    assert!(
+        !report
+            .performance_advice
+            .iter()
+            .any(|advice| advice.id == "axquant_bits_runtime_support")
     );
 
     fs::remove_dir_all(root).expect("test dir should clean up");
