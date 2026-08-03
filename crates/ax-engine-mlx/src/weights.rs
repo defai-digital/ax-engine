@@ -553,6 +553,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         name_map.extend(tensors);
     }
 
+    // AXQuant protected vision sidecar: when the quantizer extracted the
+    // vision tower into `vision.safetensors`, merge it here (provenance
+    // verified against `axquant_vision_sidecar_manifest.json`) so the vision
+    // loaders below can find the tensors. Main-file tensors always win over
+    // sidecar duplicates.
+    load_vision_sidecar(&root, &mut name_map)?;
+
     let specs = artifacts.tensor_specs();
     let layer_count = artifacts.manifest().layer_count as usize;
     // Family-specific towers need geometry that is intentionally kept in the
@@ -1802,6 +1809,195 @@ fn build_draft_lm_head(
         mode: "affine".to_string(),
         linear_bias: None,
     })
+}
+
+/// AXQuant protected vision sidecar file and provenance manifest names.
+const VISION_SIDECAR_FILE: &str = "vision.safetensors";
+const VISION_SIDECAR_MANIFEST_FILE: &str = "axquant_vision_sidecar_manifest.json";
+const VISION_SIDECAR_SCHEMA: &str = "axquant.protected-tensor-sidecar.v1";
+
+/// Provenance summary of a loaded AXQuant vision sidecar, surfaced via tracing.
+#[derive(Debug)]
+struct VisionSidecarInfo {
+    tensor_count: usize,
+    parameters: u64,
+    source_model_id: String,
+}
+
+/// Streaming SHA-256 of a file as lowercase hex (sidecars can be large; avoid
+/// reading them into memory just to hash).
+fn file_sha256_hex(path: &std::path::Path) -> Result<String, std::io::Error> {
+    use sha2::Digest as _;
+    use std::fmt::Write as _;
+
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    let digest = hasher.finalize();
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(output, "{byte:02x}");
+    }
+    Ok(output)
+}
+
+/// Load the AXQuant protected vision sidecar (`vision.safetensors`) if present.
+///
+/// AXQuant extracts vision towers into a sidecar plus a strict provenance
+/// manifest (`axquant_vision_sidecar_manifest.json`). The sidecar file on its
+/// own is not trusted: the manifest is required and its `output` binding
+/// (path, size, SHA-256) must match the actual file, and `tensor_count` must
+/// match the number of tensors the file yields. Sidecar tensors are merged
+/// into `name_map` without overwriting tensors already loaded from the main
+/// safetensors files (main file wins; duplicates are skipped with a debug
+/// log).
+///
+/// Returns `Ok(None)` when neither the sidecar nor the manifest exists
+/// (unchanged behavior for checkpoints without an extracted vision tower).
+/// Every other inconsistency fails closed with
+/// `WeightLoadError::VisionSidecarInvalid`.
+fn load_vision_sidecar(
+    root: &std::path::Path,
+    name_map: &mut HashMap<String, MlxArray>,
+) -> Result<Option<VisionSidecarInfo>, WeightLoadError> {
+    let sidecar = root.join(VISION_SIDECAR_FILE);
+    let manifest_path = root.join(VISION_SIDECAR_MANIFEST_FILE);
+    if !sidecar.exists() {
+        return if manifest_path.exists() {
+            Err(WeightLoadError::VisionSidecarInvalid(format!(
+                "provenance manifest {} exists but {VISION_SIDECAR_FILE} is missing",
+                manifest_path.display()
+            )))
+        } else {
+            Ok(None)
+        };
+    }
+
+    // The sidecar file requires its provenance manifest.
+    let invalid = |message: String| WeightLoadError::VisionSidecarInvalid(message);
+    let manifest_bytes = std::fs::read(&manifest_path).map_err(|_| {
+        invalid(format!(
+            "{VISION_SIDECAR_FILE} requires provenance manifest {} (missing or unreadable)",
+            manifest_path.display()
+        ))
+    })?;
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+        invalid(format!(
+            "vision sidecar manifest {} is not valid JSON: {error}",
+            manifest_path.display()
+        ))
+    })?;
+    let schema_version = manifest.get("schema_version").and_then(|v| v.as_str());
+    if schema_version != Some(VISION_SIDECAR_SCHEMA) {
+        return Err(invalid(format!(
+            "vision sidecar manifest schema_version must be {VISION_SIDECAR_SCHEMA:?}, \
+             found {schema_version:?}"
+        )));
+    }
+    let role = manifest.get("role").and_then(|v| v.as_str());
+    if role != Some("vision") {
+        return Err(invalid(format!(
+            "vision sidecar manifest role must be \"vision\", found {role:?}"
+        )));
+    }
+
+    // Verify the manifest's output binding against the actual file.
+    let output = manifest
+        .get("output")
+        .ok_or_else(|| invalid("vision sidecar manifest missing output binding".to_string()))?;
+    let output_path = output.get("path").and_then(|v| v.as_str());
+    if output_path
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .and_then(|n| n.to_str())
+        != Some(VISION_SIDECAR_FILE)
+    {
+        return Err(invalid(format!(
+            "vision sidecar manifest output.path must name {VISION_SIDECAR_FILE}, \
+             found {output_path:?}"
+        )));
+    }
+    let actual_size = std::fs::metadata(&sidecar)
+        .map_err(|error| invalid(format!("cannot stat {VISION_SIDECAR_FILE}: {error}")))?
+        .len();
+    let expected_size = output.get("size_bytes").and_then(|v| v.as_u64());
+    if expected_size != Some(actual_size) {
+        return Err(invalid(format!(
+            "vision sidecar size mismatch: manifest output.size_bytes {expected_size:?}, \
+             actual {actual_size}"
+        )));
+    }
+    let expected_sha = output.get("sha256").and_then(|v| v.as_str());
+    let actual_sha = file_sha256_hex(&sidecar)
+        .map_err(|error| invalid(format!("cannot hash {VISION_SIDECAR_FILE}: {error}")))?;
+    if expected_sha != Some(actual_sha.as_str()) {
+        return Err(invalid(format!(
+            "vision sidecar sha256 mismatch: manifest output.sha256 {expected_sha:?}, \
+             actual {actual_sha:?}"
+        )));
+    }
+
+    let tensors = load_safetensors(&sidecar, None)
+        .map_err(|error| invalid(format!("cannot load {VISION_SIDECAR_FILE}: {error}")))?;
+    let tensor_count = manifest
+        .get("tensor_count")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| invalid("vision sidecar manifest missing tensor_count".to_string()))?;
+    if tensor_count != tensors.len() as u64 {
+        return Err(invalid(format!(
+            "vision sidecar tensor_count mismatch: manifest {tensor_count}, \
+             file yields {}",
+            tensors.len()
+        )));
+    }
+    let parameters = manifest
+        .get("parameters")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| invalid("vision sidecar manifest missing parameters".to_string()))?;
+    let source_model_id = manifest
+        .get("source_model")
+        .and_then(|v| v.get("model_id"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            invalid("vision sidecar manifest missing source_model.model_id".to_string())
+        })?
+        .to_string();
+
+    // Same eval contract as the main-file loader: route the freshly built
+    // arrays through the lazy graph before anything consumes them.
+    if !tensors.is_empty() {
+        let refs: Vec<&MlxArray> = tensors.values().collect();
+        eval(&refs);
+    }
+    let mut skipped = 0usize;
+    for (name, array) in tensors {
+        match name_map.entry(name) {
+            Entry::Occupied(_) => skipped += 1,
+            Entry::Vacant(entry) => {
+                entry.insert(array);
+            }
+        }
+    }
+    if skipped > 0 {
+        tracing::debug!(
+            target = "ax_engine_mlx",
+            skipped,
+            "vision sidecar tensors already present from main files; main file wins"
+        );
+    }
+
+    let info = VisionSidecarInfo {
+        tensor_count: tensor_count as usize,
+        parameters,
+        source_model_id,
+    };
+    tracing::info!(
+        target = "ax_engine_mlx",
+        tensor_count = info.tensor_count,
+        parameters = info.parameters,
+        source_model_id = info.source_model_id.as_str(),
+        "loaded AXQuant vision sidecar (provenance verified)"
+    );
+    Ok(Some(info))
 }
 
 /// Load the MTP sidecar file (`mtp.safetensors`) if present alongside the main model.
@@ -4329,6 +4525,8 @@ pub enum WeightLoadError {
     UnsupportedPipelineFamily(String),
     #[error("invalid pipeline rank assignment: {0}")]
     InvalidPipelineAssignment(String),
+    #[error("invalid AXQuant vision sidecar: {0}")]
+    VisionSidecarInvalid(String),
 }
 
 #[cfg(test)]
@@ -6066,5 +6264,218 @@ mod tests {
             "expected None when glm_mtp.safetensors is absent"
         );
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn vision_sidecar_test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-weights-test-vision-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Write a minimal F32 safetensors file as `vision.safetensors` in `dir`
+    /// and return the exact bytes written (for manifest hashing).
+    fn write_vision_sidecar_fixture(dir: &Path, tensors: &[(&str, &[f32], &[usize])]) -> Vec<u8> {
+        let mut header = serde_json::Map::new();
+        let mut data: Vec<u8> = Vec::new();
+        for (name, values, shape) in tensors {
+            let start = data.len();
+            for value in *values {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+            let end = data.len();
+            header.insert(
+                (*name).to_string(),
+                serde_json::json!({
+                    "dtype": "F32",
+                    "shape": shape,
+                    "data_offsets": [start, end],
+                }),
+            );
+        }
+        let header_bytes = serde_json::to_vec(&header).unwrap();
+        let mut file_bytes = (header_bytes.len() as u64).to_le_bytes().to_vec();
+        file_bytes.extend_from_slice(&header_bytes);
+        file_bytes.extend_from_slice(&data);
+        std::fs::write(dir.join(VISION_SIDECAR_FILE), &file_bytes).unwrap();
+        file_bytes
+    }
+
+    fn vision_sidecar_manifest(
+        file_bytes: &[u8],
+        role: &str,
+        tensor_count: usize,
+        parameters: u64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": VISION_SIDECAR_SCHEMA,
+            "source_model": {"model_id": "test/vision-model", "revision": "abc123"},
+            "role": role,
+            "tensor_count": tensor_count,
+            "parameters": parameters,
+            "dtypes": ["F32"],
+            "tensor_names_sha256": "0".repeat(64),
+            "source_files": [],
+            "output": {
+                "path": VISION_SIDECAR_FILE,
+                "size_bytes": file_bytes.len(),
+                "sha256": ax_engine_core::sha256_hex(file_bytes),
+            }
+        })
+    }
+
+    fn write_vision_sidecar_manifest_fixture(dir: &Path, manifest: &serde_json::Value) {
+        std::fs::write(
+            dir.join(VISION_SIDECAR_MANIFEST_FILE),
+            serde_json::to_vec_pretty(manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn vision_sidecar_merges_tensors_without_overwriting_main_file_entries() {
+        let dir = vision_sidecar_test_dir("happy");
+        let file_bytes = write_vision_sidecar_fixture(
+            &dir,
+            &[
+                (
+                    "vision_tower.patch_embed.weight",
+                    &[1.0, 2.0, 3.0, 4.0],
+                    &[2, 2],
+                ),
+                ("shared.weight", &[9.0, 9.0, 9.0, 9.0], &[2, 2]),
+            ],
+        );
+        write_vision_sidecar_manifest_fixture(
+            &dir,
+            &vision_sidecar_manifest(&file_bytes, "vision", 2, 8),
+        );
+
+        // Simulate a tensor already loaded from the main safetensors files.
+        let mut name_map = HashMap::from([(
+            "shared.weight".to_string(),
+            zeros(&[1, 1], MlxDtype::Float32, None),
+        )]);
+
+        let info = load_vision_sidecar(&dir, &mut name_map)
+            .expect("vision sidecar should load")
+            .expect("sidecar is present");
+
+        assert_eq!(info.tensor_count, 2);
+        assert_eq!(info.parameters, 8);
+        assert_eq!(info.source_model_id, "test/vision-model");
+        assert_eq!(name_map.len(), 2);
+        let patch_embed = name_map
+            .get("vision_tower.patch_embed.weight")
+            .expect("sidecar tensor should be merged");
+        eval(&[patch_embed]);
+        assert_eq!(patch_embed.shape(), vec![2, 2]);
+        assert_eq!(patch_embed.data_f32(), &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            name_map.get("shared.weight").map(|array| array.shape()),
+            Some(vec![1, 1]),
+            "main-file tensor must win over a sidecar duplicate"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn vision_sidecar_rejects_tampered_file_sha_mismatch() {
+        let dir = vision_sidecar_test_dir("tampered");
+        let file_bytes =
+            write_vision_sidecar_fixture(&dir, &[("vision_tower.weight", &[1.0], &[1])]);
+        write_vision_sidecar_manifest_fixture(
+            &dir,
+            &vision_sidecar_manifest(&file_bytes, "vision", 1, 1),
+        );
+        // Flip a data byte in place so the size still matches but the hash does not.
+        let mut tampered = file_bytes.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xFF;
+        std::fs::write(dir.join(VISION_SIDECAR_FILE), &tampered).unwrap();
+
+        let mut name_map = HashMap::new();
+        let error = match load_vision_sidecar(&dir, &mut name_map) {
+            Ok(_) => panic!("tampered sidecar must fail provenance verification"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, WeightLoadError::VisionSidecarInvalid(_)));
+        assert!(error.to_string().contains("sha256"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn vision_sidecar_rejects_missing_manifest() {
+        let dir = vision_sidecar_test_dir("no-manifest");
+        write_vision_sidecar_fixture(&dir, &[("vision_tower.weight", &[1.0], &[1])]);
+
+        let mut name_map = HashMap::new();
+        let error = match load_vision_sidecar(&dir, &mut name_map) {
+            Ok(_) => panic!("sidecar without a manifest must fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, WeightLoadError::VisionSidecarInvalid(_)));
+        assert!(error.to_string().contains("manifest"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn vision_sidecar_rejects_wrong_schema_version_and_role() {
+        for (tag, schema, role) in [
+            ("schema", "axquant.protected-tensor-sidecar.v2", "vision"),
+            ("role", VISION_SIDECAR_SCHEMA, "mtp"),
+        ] {
+            let dir = vision_sidecar_test_dir(tag);
+            let file_bytes =
+                write_vision_sidecar_fixture(&dir, &[("vision_tower.weight", &[1.0], &[1])]);
+            let mut manifest = vision_sidecar_manifest(&file_bytes, role, 1, 1);
+            manifest["schema_version"] = serde_json::json!(schema);
+            write_vision_sidecar_manifest_fixture(&dir, &manifest);
+
+            let mut name_map = HashMap::new();
+            let result = load_vision_sidecar(&dir, &mut name_map);
+
+            assert!(
+                matches!(result, Err(WeightLoadError::VisionSidecarInvalid(_))),
+                "{tag}: expected VisionSidecarInvalid, got {result:?}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn vision_sidecar_rejects_manifest_without_sidecar_file() {
+        let dir = vision_sidecar_test_dir("no-file");
+        write_vision_sidecar_manifest_fixture(&dir, &vision_sidecar_manifest(b"", "vision", 0, 0));
+
+        let mut name_map = HashMap::new();
+        let error = match load_vision_sidecar(&dir, &mut name_map) {
+            Ok(_) => panic!("manifest without the sidecar file must fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, WeightLoadError::VisionSidecarInvalid(_)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn vision_sidecar_returns_none_when_no_sidecar_or_manifest() {
+        let dir = vision_sidecar_test_dir("absent");
+
+        let mut name_map = HashMap::new();
+        let result =
+            load_vision_sidecar(&dir, &mut name_map).expect("absent sidecar is not an error");
+
+        assert!(result.is_none());
+        assert!(name_map.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
