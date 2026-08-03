@@ -1218,6 +1218,7 @@ mod tests {
             diffusion: None,
             gpt_oss_uses_mxfp4_experts: false,
             generation_kind: ax_engine_core::GenerationKind::Autoregressive,
+            kv_cache_quant: vec![None; 2],
         }
     }
 

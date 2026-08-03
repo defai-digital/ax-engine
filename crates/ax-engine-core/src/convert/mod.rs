@@ -25,11 +25,11 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::model::{
-    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, DroppedTensorsProvenance, NativeDiffusionConfig,
-    NativeGlmRouterConfig, NativeLinearAttentionConfig, NativeMlaAttentionConfig,
-    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
-    NativeTensorFormat, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
-    WeightSanitize,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, DroppedTensorsProvenance, KvCacheQuantizationManifest,
+    NativeDiffusionConfig, NativeGlmRouterConfig, NativeLinearAttentionConfig,
+    NativeMlaAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
+    NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization, NativeTensorRole,
+    NativeTensorSpec, WeightSanitize,
 };
 
 /// Env: when set to `1`/`true`/`on`, convert hard-errors if any tensors are dropped.
@@ -280,7 +280,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         arch.layer_count,
     );
 
-    let manifest = NativeModelManifest {
+    let mut manifest = NativeModelManifest {
         schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
         model_family: family.family_name.to_string(),
         tensor_format: NativeTensorFormat::Safetensors,
@@ -366,8 +366,15 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         think_end_token_id: think_token_ids.1,
         diffusion: parse_diffusion_config(&config, &model_type),
         dropped_tensors: dropped_ledger.to_provenance(),
+        kv_cache_quantization: None,
         tensors: mapped_tensors,
     };
+
+    // Best-effort bridge: lift AXQuant's per-layer KV-cache quantization table
+    // from `axquant_runtime.json` into the manifest so runtimes that only read
+    // `model-manifest.json` can see it. A missing/malformed file or an
+    // inconsistent table must never fail conversion.
+    manifest.kv_cache_quantization = lift_axquant_kv_cache_quantization(model_dir, &manifest);
 
     validate_converted_model_contract(&config, &model_type, &manifest)?;
 
@@ -403,6 +410,98 @@ fn parse_think_token_ids(model_dir: &Path) -> (Option<u32>, Option<u32>) {
         }
     }
     (start, end)
+}
+
+/// Best-effort lift of the per-layer KV-cache quantization table from a
+/// converted checkpoint's `axquant_runtime.json` (`kv_cache` block, schema
+/// `axquant.runtime.v1`) into the manifest, so runtimes that only read
+/// `model-manifest.json` can see it.
+///
+/// Returns `None` — leaving the manifest field unset — when the file is
+/// absent, malformed, or carries no `kv_cache` block (debug-logged), and when
+/// the table is present but inconsistent with the manifest's `layer_count` or
+/// the allowed value sets (warn-logged). Conversion never fails on this
+/// bridge.
+fn lift_axquant_kv_cache_quantization(
+    model_dir: &Path,
+    manifest: &NativeModelManifest,
+) -> Option<KvCacheQuantizationManifest> {
+    let path = model_dir.join("axquant_runtime.json");
+    let Ok(bytes) = fs::read(&path) else {
+        // Absent sidecar is the common case — nothing to lift.
+        return None;
+    };
+    let value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::debug!(
+                target: "ax_engine_core::convert",
+                path = %path.display(),
+                %error,
+                "axquant_runtime_json_unparseable_skipping_kv_cache_lift"
+            );
+            return None;
+        }
+    };
+    let kv_cache = value.get("kv_cache")?;
+    let layer_bits = json_u32_array(kv_cache.get("layer_bits"));
+    let layer_group_sizes = json_u32_array(kv_cache.get("layer_group_sizes"));
+    let (Some(layer_bits), Some(layer_group_sizes)) = (layer_bits, layer_group_sizes) else {
+        tracing::warn!(
+            target: "ax_engine_core::convert",
+            path = %path.display(),
+            "axquant_runtime_kv_cache_missing_or_typed_arrays_skipping_lift"
+        );
+        return None;
+    };
+    let basis = kv_cache
+        .get("allocation_basis")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let layer_count = manifest.layer_count as usize;
+    if layer_bits.len() != layer_count || layer_group_sizes.len() != layer_count {
+        tracing::warn!(
+            target: "ax_engine_core::convert",
+            path = %path.display(),
+            layer_bits = layer_bits.len(),
+            layer_group_sizes = layer_group_sizes.len(),
+            layer_count,
+            "axquant_runtime_kv_cache_length_mismatch_skipping_lift"
+        );
+        return None;
+    }
+    let values_valid =
+        layer_bits
+            .iter()
+            .zip(layer_group_sizes.iter())
+            .all(|(&bits, &group_size)| {
+                matches!(bits, 4 | 6 | 8 | 16)
+                    && (bits == 16 || matches!(group_size, 32 | 64 | 128))
+            });
+    if !values_valid {
+        tracing::warn!(
+            target: "ax_engine_core::convert",
+            path = %path.display(),
+            "axquant_runtime_kv_cache_invalid_values_skipping_lift"
+        );
+        return None;
+    }
+
+    Some(KvCacheQuantizationManifest {
+        layer_bits,
+        layer_group_sizes,
+        basis,
+    })
+}
+
+fn json_u32_array(value: Option<&serde_json::Value>) -> Option<Vec<u32>> {
+    value?
+        .as_array()?
+        .iter()
+        .map(|entry| entry.as_u64().and_then(|n| u32::try_from(n).ok()))
+        .collect()
 }
 
 /// Write a `model-manifest.json` file in the given directory.

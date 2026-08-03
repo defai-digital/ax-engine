@@ -13,6 +13,11 @@ use crate::paged_attention::PagedAttentionView;
 /// per session is at most ceil(total_tokens / CHUNK).
 pub(crate) const KV_CHUNK_TOKENS: usize = 256;
 
+/// Env kill-switch for KV-cache quantization: set to `0` to disable KV-cache
+/// quantization even when the model manifest declares a `kv_cache_quantization`
+/// table. Read by the runtime quantization path (Phase 3b).
+pub const AX_KV_QUANT_ENV: &str = "AX_KV_QUANT";
+
 fn chunk_ceiling(n: usize) -> usize {
     n.div_ceil(KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS
 }

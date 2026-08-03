@@ -4564,3 +4564,136 @@ fn ledger_records_media_hits_and_samples() {
     assert_eq!(prov.media_role_hits, 1);
     assert!(prov.has_media_role_drops());
 }
+
+fn write_tiny_qwen3_dir(label: &str) -> PathBuf {
+    let dir = unique_test_dir(label);
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "qwen3",
+            "hidden_size": 8,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "num_hidden_layers": 2,
+            "vocab_size": 64,
+            "tie_word_embeddings": true,
+            "rope_theta": 1000000,
+        }),
+    );
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[
+            ("model.embed_tokens.weight", "F16", &[64, 8]),
+            ("model.norm.weight", "F16", &[8]),
+            ("model.layers.0.input_layernorm.weight", "F16", &[8]),
+            ("model.layers.0.self_attn.q_proj.weight", "F16", &[8, 8]),
+            ("model.layers.0.self_attn.k_proj.weight", "F16", &[4, 8]),
+            ("model.layers.0.self_attn.v_proj.weight", "F16", &[4, 8]),
+            ("model.layers.0.self_attn.o_proj.weight", "F16", &[8, 8]),
+            ("model.layers.0.self_attn.q_norm.weight", "F16", &[4]),
+            ("model.layers.0.self_attn.k_norm.weight", "F16", &[4]),
+            (
+                "model.layers.0.post_attention_layernorm.weight",
+                "F16",
+                &[8],
+            ),
+            ("model.layers.0.mlp.gate_proj.weight", "F16", &[32, 8]),
+            ("model.layers.0.mlp.up_proj.weight", "F16", &[32, 8]),
+            ("model.layers.0.mlp.down_proj.weight", "F16", &[8, 32]),
+            ("model.layers.1.input_layernorm.weight", "F16", &[8]),
+            ("model.layers.1.self_attn.q_proj.weight", "F16", &[8, 8]),
+            ("model.layers.1.self_attn.k_proj.weight", "F16", &[4, 8]),
+            ("model.layers.1.self_attn.v_proj.weight", "F16", &[4, 8]),
+            ("model.layers.1.self_attn.o_proj.weight", "F16", &[8, 8]),
+            ("model.layers.1.self_attn.q_norm.weight", "F16", &[4]),
+            ("model.layers.1.self_attn.k_norm.weight", "F16", &[4]),
+            (
+                "model.layers.1.post_attention_layernorm.weight",
+                "F16",
+                &[8],
+            ),
+            ("model.layers.1.mlp.gate_proj.weight", "F16", &[32, 8]),
+            ("model.layers.1.mlp.up_proj.weight", "F16", &[32, 8]),
+            ("model.layers.1.mlp.down_proj.weight", "F16", &[8, 32]),
+        ],
+    );
+    dir
+}
+
+#[test]
+fn lifts_axquant_runtime_kv_cache_table_into_manifest() {
+    let dir = write_tiny_qwen3_dir("axquant-kv-cache");
+    fs::write(
+        dir.join("axquant_runtime.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "axquant.runtime.v1",
+            "kv_cache": {
+                "allocation_basis": "measured",
+                "layer_bits": [8, 4],
+                "layer_group_sizes": [64, 32],
+                "advisory_mlx_lm_kv_bits": 4,
+                "advisory_mlx_lm_kv_group_size": 64,
+                "advisory": true
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let manifest = convert_hf_model_dir(&dir).expect("conversion should succeed");
+
+    let table = manifest
+        .kv_cache_quantization
+        .expect("kv_cache table should be lifted");
+    assert_eq!(table.layer_bits, vec![8, 4]);
+    assert_eq!(table.layer_group_sizes, vec![64, 32]);
+    assert_eq!(table.basis, "measured");
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn malformed_axquant_runtime_json_leaves_kv_cache_quantization_unset() {
+    let dir = write_tiny_qwen3_dir("axquant-kv-cache-malformed");
+    fs::write(dir.join("axquant_runtime.json"), b"{ not json".as_slice()).unwrap();
+
+    let manifest = convert_hf_model_dir(&dir)
+        .expect("malformed axquant_runtime.json must not fail conversion");
+
+    assert!(manifest.kv_cache_quantization.is_none());
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn mismatched_axquant_runtime_kv_cache_lengths_are_skipped() {
+    let dir = write_tiny_qwen3_dir("axquant-kv-cache-mismatch");
+    fs::write(
+        dir.join("axquant_runtime.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "axquant.runtime.v1",
+            "kv_cache": {
+                "allocation_basis": "architecture-prior",
+                "layer_bits": [8, 4, 4],
+                "layer_group_sizes": [64, 32, 32]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let manifest = convert_hf_model_dir(&dir)
+        .expect("length-mismatched kv_cache table must not fail conversion");
+
+    assert!(manifest.kv_cache_quantization.is_none());
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn absent_axquant_runtime_json_leaves_kv_cache_quantization_unset() {
+    let dir = write_tiny_qwen3_dir("axquant-kv-cache-absent");
+
+    let manifest = convert_hf_model_dir(&dir).expect("conversion should succeed");
+
+    assert!(manifest.kv_cache_quantization.is_none());
+    let _ = fs::remove_dir_all(dir);
+}

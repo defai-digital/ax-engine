@@ -386,6 +386,7 @@ mod tests {
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
             dropped_tensors: Default::default(),
+            kv_cache_quantization: None,
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",

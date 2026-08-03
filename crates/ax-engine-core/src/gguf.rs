@@ -884,6 +884,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         think_end_token_id: None,
         diffusion: NativeDiffusionConfig::default(),
         dropped_tensors: Default::default(),
+        kv_cache_quantization: None,
         tensors,
     };
 

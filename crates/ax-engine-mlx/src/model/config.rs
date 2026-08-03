@@ -366,6 +366,15 @@ impl DiffusionConfig {
     }
 }
 
+/// Per-layer KV-cache quantization parameters lifted from the manifest's
+/// `kv_cache_quantization` table (Phase 3a: plumbed only; the runtime
+/// quantization path lands in Phase 3b).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvQuantSpec {
+    pub bits: u32,
+    pub group_size: u32,
+}
+
 /// Hyperparameters extracted from the manifest.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
@@ -466,6 +475,10 @@ pub struct ModelConfig {
     /// Generation paradigm derived from the manifest (ADR-038). Prefer this over
     /// family-string checks when gating diffusion / embed / AR behavior.
     pub generation_kind: GenerationKind,
+    /// Per-layer KV-cache quantization from the manifest's
+    /// `kv_cache_quantization` table. `None` per layer = full precision
+    /// (manifest bits 16, or no table at all). Length == `layer_count`.
+    pub kv_cache_quant: Vec<Option<KvQuantSpec>>,
 }
 
 impl ModelConfig {
@@ -603,6 +616,7 @@ impl ModelConfig {
             diffusion: DiffusionConfig::from_manifest(m),
             gpt_oss_uses_mxfp4_experts: m.model_family == "gpt_oss" && m.moe.is_enabled(),
             generation_kind: GenerationKind::from_manifest(m),
+            kv_cache_quant: kv_cache_quant_from_manifest(m),
         }
     }
 
@@ -678,6 +692,27 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
         }
         _ => (None, None),
     }
+}
+
+/// Map the manifest's `kv_cache_quantization` table to per-layer specs.
+/// Bits 16 marks a full-precision layer (`None`); absent table → all `None`.
+fn kv_cache_quant_from_manifest(m: &NativeModelManifest) -> Vec<Option<KvQuantSpec>> {
+    let layer_count = m.layer_count as usize;
+    let Some(table) = &m.kv_cache_quantization else {
+        return vec![None; layer_count];
+    };
+    table
+        .layer_bits
+        .iter()
+        .zip(table.layer_group_sizes.iter())
+        .map(|(&bits, &group_size)| {
+            if bits == 16 {
+                None
+            } else {
+                Some(KvQuantSpec { bits, group_size })
+            }
+        })
+        .collect()
 }
 
 fn default_rms_norm_eps(model_family: &str) -> f32 {
@@ -836,7 +871,59 @@ fn build_gemma4_proportional_rope_freqs(
 
 #[cfg(test)]
 mod tests {
-    use super::default_rms_norm_eps;
+    use super::{KvQuantSpec, ModelConfig, default_rms_norm_eps};
+
+    fn manifest_with_kv_cache_quantization(
+        kv_cache_quantization: Option<serde_json::Value>,
+    ) -> ax_engine_core::NativeModelManifest {
+        let mut value = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "qwen3",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 16,
+            "attention_head_count": 2,
+            "attention_head_dim": 8,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "tensors": [],
+        });
+        if let Some(table) = kv_cache_quantization {
+            value["kv_cache_quantization"] = table;
+        }
+        serde_json::from_value(value).expect("manifest JSON should deserialize")
+    }
+
+    #[test]
+    fn from_manifest_maps_kv_cache_quantization_bits_16_to_none() {
+        let manifest = manifest_with_kv_cache_quantization(Some(serde_json::json!({
+            "layer_bits": [8, 16],
+            "layer_group_sizes": [64, 128],
+            "basis": "measured",
+        })));
+
+        let config = ModelConfig::from_manifest(&manifest);
+
+        assert_eq!(
+            config.kv_cache_quant,
+            vec![
+                Some(KvQuantSpec {
+                    bits: 8,
+                    group_size: 64
+                }),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn from_manifest_without_kv_cache_quantization_yields_all_none() {
+        let manifest = manifest_with_kv_cache_quantization(None);
+
+        let config = ModelConfig::from_manifest(&manifest);
+
+        assert_eq!(config.kv_cache_quant, vec![None, None]);
+    }
 
     #[test]
     fn unlimited_ocr_and_deepseek_default_to_1e_6_rms_norm_eps() {

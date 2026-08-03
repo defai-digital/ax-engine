@@ -642,6 +642,7 @@ mod tests {
             think_end_token_id: None,
             diffusion: ax_engine_core::NativeDiffusionConfig::default(),
             dropped_tensors: Default::default(),
+            kv_cache_quantization: None,
             tensors: Vec::new(),
         }
     }

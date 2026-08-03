@@ -118,7 +118,8 @@ mod config;
 use config::layer_params;
 pub use config::{
     DiffusionConfig, DiffusionSampler, DiffusionTemperatureSchedule, Gemma4AssistantSharedKvLayers,
-    GlmRouterConfig, LayerConfig, LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
+    GlmRouterConfig, KvQuantSpec, LayerConfig, LinearAttentionConfig, MlaAttentionConfig,
+    ModelConfig,
 };
 
 pub(crate) mod shared;
@@ -3806,6 +3807,7 @@ mod tests {
             diffusion: None,
             gpt_oss_uses_mxfp4_experts: false,
             generation_kind: ax_engine_core::GenerationKind::Autoregressive,
+            kv_cache_quant: vec![None; 1],
         }
     }
 
@@ -3863,6 +3865,7 @@ mod tests {
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
             dropped_tensors: Default::default(),
+            kv_cache_quantization: None,
             tensors: Vec::new(),
         }
     }
@@ -3925,6 +3928,7 @@ mod tests {
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
             dropped_tensors: Default::default(),
+            kv_cache_quantization: None,
             tensors: Vec::new(),
         }
     }
@@ -4036,6 +4040,7 @@ mod tests {
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
             dropped_tensors: Default::default(),
+            kv_cache_quantization: None,
             tensors: Vec::new(),
         }
     }

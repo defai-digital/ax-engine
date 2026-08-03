@@ -444,6 +444,17 @@ impl Default for NativeTensorQuantization {
     }
 }
 
+/// Per-layer KV-cache quantization table lifted from a converted checkpoint's
+/// `axquant_runtime.json` (`kv_cache` block, schema `axquant.runtime.v1`).
+/// `layer_bits[i]` / `layer_group_sizes[i]` apply to layer `i`; bits 16 marks a
+/// full-precision layer.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct KvCacheQuantizationManifest {
+    pub layer_bits: Vec<u32>,
+    pub layer_group_sizes: Vec<u32>,
+    pub basis: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NativeQuantizedTensorSource {
     pub format: String,
@@ -786,6 +797,10 @@ pub struct NativeModelManifest {
     /// Tensors skipped at convert time (WS-C1). Default empty for legacy manifests.
     #[serde(default, skip_serializing_if = "DroppedTensorsProvenance::is_empty")]
     pub dropped_tensors: DroppedTensorsProvenance,
+    /// Per-layer KV-cache quantization table lifted from `axquant_runtime.json`
+    /// at convert time. Absent for manifests without KV-cache quantization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_cache_quantization: Option<KvCacheQuantizationManifest>,
     pub tensors: Vec<NativeTensorSpec>,
 }
 
@@ -1034,6 +1049,7 @@ fn validate_native_model_manifest(
             message: "tensors must not be empty".to_string(),
         });
     }
+    validate_kv_cache_quantization(manifest)?;
     validate_manifest_layer_index_list(
         manifest,
         &manifest.attention_value_from_key_layers,
@@ -3097,6 +3113,53 @@ fn validate_manifest_layer_index_list(
     Ok(())
 }
 
+fn validate_kv_cache_quantization(manifest: &NativeModelManifest) -> Result<(), NativeModelError> {
+    let Some(kv_cache_quantization) = &manifest.kv_cache_quantization else {
+        return Ok(());
+    };
+    let layer_count = manifest.layer_count as usize;
+    if kv_cache_quantization.layer_bits.len() != layer_count {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "kv_cache_quantization.layer_bits length {} must equal layer_count {}",
+                kv_cache_quantization.layer_bits.len(),
+                manifest.layer_count
+            ),
+        });
+    }
+    if kv_cache_quantization.layer_group_sizes.len() != layer_count {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "kv_cache_quantization.layer_group_sizes length {} must equal layer_count {}",
+                kv_cache_quantization.layer_group_sizes.len(),
+                manifest.layer_count
+            ),
+        });
+    }
+    for (layer, (&bits, &group_size)) in kv_cache_quantization
+        .layer_bits
+        .iter()
+        .zip(kv_cache_quantization.layer_group_sizes.iter())
+        .enumerate()
+    {
+        if !matches!(bits, 4 | 6 | 8 | 16) {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "kv_cache_quantization.layer_bits[{layer}] must be one of 4, 6, 8, 16 (16 = full precision), got {bits}"
+                ),
+            });
+        }
+        if bits < 16 && !matches!(group_size, 32 | 64 | 128) {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "kv_cache_quantization.layer_group_sizes[{layer}] must be one of 32, 64, 128 when bits < 16, got {group_size}"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_interleaved_attention_metadata(
     manifest: &NativeModelManifest,
 ) -> Result<(), NativeModelError> {
@@ -4193,6 +4256,7 @@ mod tests {
             think_end_token_id: None,
             diffusion: NativeDiffusionConfig::default(),
             dropped_tensors: Default::default(),
+            kv_cache_quantization: None,
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",
@@ -4700,6 +4764,103 @@ mod tests {
             .expect("rank-0 extension tensors should remain valid safetensors");
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_load_valid_kv_cache_quantization_table() {
+        let mut manifest = packed_layer_manifest();
+        manifest.kv_cache_quantization = Some(KvCacheQuantizationManifest {
+            layer_bits: vec![8, 16],
+            layer_group_sizes: vec![64, 128],
+            basis: "measured".to_string(),
+        });
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let artifacts = NativeModelArtifacts::from_dir(&dir)
+            .expect("manifest with valid kv_cache_quantization should validate");
+
+        let table = artifacts
+            .manifest()
+            .kv_cache_quantization
+            .as_ref()
+            .expect("kv_cache_quantization should round-trip");
+        assert_eq!(table.layer_bits, vec![8, 16]);
+        assert_eq!(table.layer_group_sizes, vec![64, 128]);
+        assert_eq!(table.basis, "measured");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_kv_cache_quantization_length_mismatch() {
+        let mut manifest = packed_layer_manifest();
+        manifest.kv_cache_quantization = Some(KvCacheQuantizationManifest {
+            layer_bits: vec![8, 4, 4],
+            layer_group_sizes: vec![64, 32],
+            basis: "measured".to_string(),
+        });
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("length-mismatched kv_cache_quantization should fail");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+
+        assert!(message.contains("kv_cache_quantization.layer_bits"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_kv_cache_quantization_bad_bits() {
+        let mut manifest = packed_layer_manifest();
+        manifest.kv_cache_quantization = Some(KvCacheQuantizationManifest {
+            layer_bits: vec![8, 2],
+            layer_group_sizes: vec![64, 32],
+            basis: "measured".to_string(),
+        });
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error =
+            NativeModelArtifacts::from_dir(&dir).expect_err("bits=2 should fail validation");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+
+        assert!(message.contains("kv_cache_quantization.layer_bits"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_kv_cache_quantization_bad_group_size() {
+        let mut manifest = packed_layer_manifest();
+        manifest.kv_cache_quantization = Some(KvCacheQuantizationManifest {
+            layer_bits: vec![8, 4],
+            layer_group_sizes: vec![64, 16],
+            basis: "measured".to_string(),
+        });
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("group_size=16 with bits<16 should fail validation");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+
+        assert!(message.contains("kv_cache_quantization.layer_group_sizes"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_manifest_kv_cache_quantization_defaults_to_none_and_is_not_serialized() {
+        let manifest = packed_layer_manifest();
+        assert!(manifest.kv_cache_quantization.is_none());
+
+        let value = serde_json::to_value(&manifest).expect("manifest should serialize");
+        assert!(value.get("kv_cache_quantization").is_none());
+
+        let round_tripped: NativeModelManifest =
+            serde_json::from_value(value).expect("manifest should deserialize");
+        assert!(round_tripped.kv_cache_quantization.is_none());
     }
 
     #[test]

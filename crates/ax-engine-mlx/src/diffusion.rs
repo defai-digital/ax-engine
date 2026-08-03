@@ -2082,6 +2082,7 @@ mod tests {
             diffusion: None,
             gpt_oss_uses_mxfp4_experts: false,
             generation_kind: ax_engine_core::GenerationKind::BlockDiffusion,
+            kv_cache_quant: Vec::new(),
         };
         let mut diff = default_diff_cfg();
         diff.canvas_size = canvas;
