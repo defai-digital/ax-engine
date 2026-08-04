@@ -7,6 +7,29 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Model downloads accept Hugging Face links and pinned revisions everywhere:
+  `ax-engine download`, the Python CLI/SDK (`ax_engine.download_model()`),
+  and the TUI all parse bare `owner/repo`, `owner/repo@revision`, full
+  `https://huggingface.co/owner/repo` links (`hf.co` included), and
+  `/tree/<revision>` URLs through one shared parser
+  (`ax-engine-core/src/repo_ref.rs`, mirrored in
+  `python/ax_engine/_repo_ref.py`); file links (`/blob/...`, `/resolve/...`)
+  and non-Hugging-Face hosts fail with an actionable message instead of a
+  hub-library error. The TUI gains a download-by-link prompt (`d` on the
+  Models screen) with bracketed-paste support that queues arbitrary repos
+  through the same download queue as catalog picks.
+- Download robustness: the helper verifies free disk space against the repo
+  size before fetching, copies `--dest` atomically (temp dir + swap, so an
+  interrupted copy is never mistaken for a complete model), only treats a
+  pre-existing `--dest` as done when its contents actually validate, and
+  emits its final `ax.download_model.v1` summary as the structured
+  completion contract the TUI now prefers over log scraping.
+  `ax_engine.download_model()` delegates to the same bundled helper (with a
+  legacy fallback), so manifest semantics can no longer diverge between
+  entry points.
+
 ### Fixed
 
 - `docs/RELEASING.md` documents the fresh-notarization-ticket recovery for

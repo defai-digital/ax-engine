@@ -878,6 +878,76 @@ class WrapperContractTests(unittest.TestCase):
         ):
             self.ax_engine.Session(model_id="qwen3_dense", mlx=True)
 
+    def test_download_model_delegates_to_bundled_helper(self) -> None:
+        import json
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = Path(tmp) / "download_model.py"
+            helper.write_text("# stub")
+            summary = {
+                "schema_version": "ax.download_model.v1",
+                "repo_id": "owner/repo",
+                "dest": str(Path(tmp) / "dest"),
+                "status": "ready",
+                "errors": [],
+            }
+            commands: list[list[str]] = []
+
+            def fake_run(command, **_kwargs):
+                commands.append(list(command))
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=json.dumps(summary) + "\n", stderr=""
+                )
+
+            with (
+                patch(
+                    "ax_engine._cli._find_repo_script", return_value=helper
+                ),
+                patch("subprocess.run", side_effect=fake_run),
+            ):
+                resolved = self.ax_engine.download_model(
+                    "https://huggingface.co/owner/repo/tree/v2", dest=Path(tmp) / "dest"
+                )
+
+            self.assertEqual(resolved, Path(summary["dest"]))
+            command = commands[0]
+            self.assertIn("owner/repo", command)
+            self.assertIn("--revision", command)
+            self.assertIn("v2", command)
+            self.assertIn("--dest", command)
+
+    def test_download_model_raises_helper_errors(self) -> None:
+        import json
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = Path(tmp) / "download_model.py"
+            helper.write_text("# stub")
+            summary = {
+                "schema_version": "ax.download_model.v1",
+                "repo_id": "owner/repo",
+                "dest": str(Path(tmp) / "dest"),
+                "status": "download_failed",
+                "errors": ["insufficient disk space for owner/repo"],
+            }
+
+            def fake_run(command, **_kwargs):
+                return subprocess.CompletedProcess(
+                    command, 1, stdout=json.dumps(summary) + "\n", stderr=""
+                )
+
+            with (
+                patch(
+                    "ax_engine._cli._find_repo_script", return_value=helper
+                ),
+                patch("subprocess.run", side_effect=fake_run),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "insufficient disk space"):
+                    self.ax_engine.download_model("owner/repo")
+
     def test_download_model_accepts_embedding_repos(self) -> None:
         # Embedding repos go through the ordinary download + manifest flow
         # (they serve natively via /v1/embeddings); the readiness gate is the
@@ -889,7 +959,10 @@ class WrapperContractTests(unittest.TestCase):
             model_dir = Path(tmp)
             (model_dir / "model.safetensors").write_bytes(b"placeholder")
 
-            with self.assertRaisesRegex(RuntimeError, "config.json missing"):
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                self.assertRaisesRegex(RuntimeError, "config.json missing"),
+            ):
                 self.ax_engine.download_model(
                     "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit",
                     dest=model_dir,
@@ -902,7 +975,10 @@ class WrapperContractTests(unittest.TestCase):
             model_dir = Path(tmp)
             (model_dir / "model.safetensors").write_bytes(b"placeholder")
 
-            with self.assertRaisesRegex(RuntimeError, "config.json missing"):
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                self.assertRaisesRegex(RuntimeError, "config.json missing"),
+            ):
                 self.ax_engine.download_model(
                     "mlx-community/Qwen3-4B-4bit",
                     dest=model_dir,
@@ -923,6 +999,7 @@ class WrapperContractTests(unittest.TestCase):
                 return snapshot
 
             with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
                 patch.object(
                     self.ax_engine, "_run_hf_snapshot_download", fake_download
                 ),
@@ -952,6 +1029,7 @@ class WrapperContractTests(unittest.TestCase):
                 return snapshot
 
             with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
                 patch.object(
                     self.ax_engine, "_run_hf_snapshot_download", fake_download
                 ),
@@ -986,6 +1064,7 @@ class WrapperContractTests(unittest.TestCase):
                 return True
 
             with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
                 patch.object(
                     self.ax_engine, "_run_hf_snapshot_download", fake_download
                 ),
@@ -1029,6 +1108,7 @@ class WrapperContractTests(unittest.TestCase):
                 return snapshot
 
             with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
                 patch.object(
                     self.ax_engine, "_run_hf_snapshot_download", fake_download
                 ),
@@ -1098,8 +1178,11 @@ class WrapperContractTests(unittest.TestCase):
                 )
                 return True
 
-            with patch.object(
-                self.ax_engine, "_try_generate_manifest", side_effect=fake_generate
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(
+                    self.ax_engine, "_try_generate_manifest", side_effect=fake_generate
+                ),
             ):
                 resolved = self.ax_engine.download_model(
                     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",

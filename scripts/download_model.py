@@ -140,8 +140,20 @@ def default_mlx_lm_repo_cache_dir(repo_id: str) -> Path:
     return default_mlx_lm_cache_root() / f"models--{_slug(repo_id)}"
 
 
-def _latest_mlx_lm_snapshot(repo_id: str) -> Path | None:
+def _latest_mlx_lm_snapshot(repo_id: str, revision: str | None = None) -> Path | None:
     repo_cache = default_mlx_lm_repo_cache_dir(repo_id)
+    if revision:
+        # A branch/tag ref resolves through refs/<name>; a commit sha is the
+        # snapshot directory itself.
+        ref_file = repo_cache / "refs" / revision
+        if ref_file.is_file():
+            resolved = ref_file.read_text().strip()
+            if resolved:
+                snapshot = repo_cache / "snapshots" / resolved
+                if snapshot.is_dir():
+                    return snapshot
+        snapshot = repo_cache / "snapshots" / revision
+        return snapshot if snapshot.is_dir() else None
     refs_main = repo_cache / "refs" / "main"
     if refs_main.is_file():
         revision = refs_main.read_text().strip()
@@ -362,6 +374,7 @@ def _prefer_classic_hf_transfer() -> None:
 def _run_hf_snapshot_download(
     repo_id: str,
     *,
+    revision: str | None = None,
     quiet: bool = False,
     progress_json: bool = False,
     progress_bar: bool = False,
@@ -389,6 +402,8 @@ def _run_hf_snapshot_download(
             done, message = _download_progress_message(repo_id, started_at)
             _emit_progress(done, 100, message)
         kwargs = {"repo_id": repo_id}
+        if revision:
+            kwargs["revision"] = revision
         if max_workers := os.environ.get("AX_ENGINE_HF_MAX_WORKERS"):
             kwargs["max_workers"] = int(max_workers)
         if show_bar:
@@ -411,15 +426,76 @@ def _run_hf_snapshot_download(
 
 
 def _copy_snapshot_to_dest(snapshot: Path, dest: Path) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
-    for path in snapshot.iterdir():
-        target = dest / path.name
-        if path.is_dir():
-            shutil.copytree(path, target, dirs_exist_ok=True)
-        elif path.is_symlink():
-            shutil.copy2(path.resolve(), target)
-        else:
-            shutil.copy2(path, target)
+    """Copy the snapshot into `dest` atomically.
+
+    Builds a sibling temp directory first and swaps it into place, so an
+    interrupted copy never leaves a partial `dest` that the idempotence fast
+    path could mistake for a complete model. A pre-existing `dest` (e.g. a
+    partial copy from an older version) is replaced only after the temp build
+    succeeds.
+    """
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.parent / f".{dest.name}.download-tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    try:
+        for path in snapshot.iterdir():
+            target = tmp / path.name
+            if path.is_dir():
+                shutil.copytree(path, target)
+            elif path.is_symlink():
+                shutil.copy2(path.resolve(), target)
+            else:
+                shutil.copy2(path, target)
+        backup = None
+        if dest.exists():
+            backup = dest.parent / f".{dest.name}.previous"
+            shutil.rmtree(backup, ignore_errors=True)
+            dest.rename(backup)
+        tmp.rename(dest)
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
+def _nearest_existing_dir(path: Path) -> Path:
+    candidate = path
+    while not candidate.is_dir():
+        if candidate.parent == candidate:
+            break
+        candidate = candidate.parent
+    return candidate
+
+
+def _preflight_disk_space(repo_id: str, dest: Path | None) -> int | None:
+    """Fail fast when the download plainly does not fit.
+
+    Returns the repo's total bytes when known (also used by callers for
+    progress display). Best-effort: offline/sizeless repos skip the check.
+    """
+    total = _total_repo_bytes(repo_id)
+    if not total:
+        return None
+    targets = [default_mlx_lm_cache_root()]
+    if dest is not None:
+        targets.append(dest.parent)
+    for target in targets:
+        probe = _nearest_existing_dir(target)
+        try:
+            free = shutil.disk_usage(probe).free
+        except OSError:
+            continue
+        if free < int(total * 1.05):
+            raise RuntimeError(
+                f"insufficient disk space for {repo_id}: the download is "
+                f"~{_format_bytes(total)} but only {_format_bytes(free)} is free "
+                f"on the volume holding {probe}. Free space or pass --dest to a "
+                "larger volume."
+            )
+    return total
 
 
 def download(
@@ -427,6 +503,7 @@ def download(
     dest: Path | None,
     force: bool = False,
     *,
+    revision: str | None = None,
     quiet: bool = False,
     progress_json: bool = False,
     progress_bar: bool = False,
@@ -436,23 +513,28 @@ def download(
 
     if dest is not None and dest.exists() and not force:
         safetensors = list(dest.glob("*.safetensors"))
-        if safetensors and (dest / MODEL_MANIFEST_FILE).exists():
+        # Only trust a destination whose contents actually validate; a partial
+        # or corrupted copy (interrupted older-version download) is recopied.
+        validation_ok = bool(safetensors) and not _validation_errors(dest)
+        if validation_ok and (dest / MODEL_MANIFEST_FILE).exists():
             if not quiet:
                 print(f"  already present with manifest: {dest}")
             if progress_json:
                 _emit_progress(100, 100, "Ready")
             return dest
-        if safetensors:
+        if validation_ok:
             if not quiet:
                 print(f"  weights present but manifest missing: {dest}")
             if progress_json:
                 _emit_progress(85, 100, "Weights already present")
             return dest
+        if safetensors and not quiet:
+            print(f"  ignoring incomplete destination contents: {dest}")
 
     if force:
         shutil.rmtree(default_mlx_lm_repo_cache_dir(repo_id), ignore_errors=True)
 
-    snapshot = None if force else _latest_mlx_lm_snapshot(repo_id)
+    snapshot = None if force else _latest_mlx_lm_snapshot(repo_id, revision)
     if snapshot is not None and not _validation_errors(snapshot):
         if progress_json:
             _emit_progress(85, 100, "Using existing Hugging Face Hub cache snapshot")
@@ -469,9 +551,19 @@ def download(
             if dest is None
             else f"{dest} via Hugging Face Hub cache"
         )
-        print(f"  downloading {repo_id} -> {destination}")
+        revision_note = f" @ {revision}" if revision else ""
+        print(f"  downloading {repo_id}{revision_note} -> {destination}")
+    total_bytes = _preflight_disk_space(repo_id, dest)
+    if total_bytes and not quiet:
+        print(f"  download size: ~{_format_bytes(total_bytes)}")
+    if total_bytes and progress_json:
+        _emit_progress(5, 100, f"Download size ~{_format_bytes(total_bytes)}")
     snapshot = _run_hf_snapshot_download(
-        repo_id, quiet=quiet, progress_json=progress_json, progress_bar=progress_bar
+        repo_id,
+        revision=revision,
+        quiet=quiet,
+        progress_json=progress_json,
+        progress_bar=progress_bar,
     )
 
     if dest is None:
@@ -673,6 +765,11 @@ def main() -> int:
         help="Destination directory (default: Hugging Face Hub cache snapshot)",
     )
     parser.add_argument("--force", action="store_true", help="Re-download even if present")
+    parser.add_argument(
+        "--revision",
+        default=None,
+        help="Branch, tag, or commit sha to download (default: the repo's main branch)",
+    )
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable run summary")
     parser.add_argument(
         "--progress-json",
@@ -697,6 +794,7 @@ def main() -> int:
             args.repo_id,
             dest,
             force=args.force,
+            revision=args.revision,
             quiet=args.json,
             progress_json=args.progress_json,
             progress_bar=args.progress_bar,

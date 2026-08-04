@@ -373,6 +373,11 @@ enum Modal {
     ClearChat,
     /// Custom destination for the wizard confirm step.
     DestPicker(DirectoryPicker),
+    /// Free-form Hugging Face link / repo id entry (`d` on the Models screen).
+    DownloadByLink {
+        input: String,
+        error: Option<String>,
+    },
 }
 
 /// Server lifecycle status shown in the tab-bar summary, derived from the
@@ -1260,6 +1265,35 @@ impl App {
                 },
                 _ => self.modal = Some(Modal::DestPicker(picker)),
             },
+            Modal::DownloadByLink {
+                mut input,
+                mut error,
+            } => match code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => match self.queue_download_by_link(&input) {
+                    // Queued: the modal stays closed (taken above).
+                    Ok(()) => {}
+                    Err(message) => {
+                        self.modal = Some(Modal::DownloadByLink {
+                            input,
+                            error: Some(message),
+                        });
+                    }
+                },
+                KeyCode::Char(c) => {
+                    input.push(c);
+                    error = None;
+                    self.modal = Some(Modal::DownloadByLink { input, error });
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                    error = None;
+                    self.modal = Some(Modal::DownloadByLink { input, error });
+                }
+                _ => {
+                    self.modal = Some(Modal::DownloadByLink { input, error });
+                }
+            },
         }
     }
 
@@ -1333,9 +1367,16 @@ impl App {
     }
 
     /// Bracketed-paste payload: route to the focused text entry (chat composer,
-    /// Serve host/port fields, Models filter); ignored elsewhere and while a
-    /// modal owns input.
+    /// Serve host/port fields, Models filter, download-by-link modal); ignored
+    /// elsewhere and while another modal owns input.
     fn on_paste(&mut self, text: &str) {
+        // Single-line field: drop newlines/control chars from pastes.
+        if let Some(Modal::DownloadByLink { input, error }) = &mut self.modal {
+            let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+            input.push_str(&clean);
+            *error = None;
+            return;
+        }
         if self.modal.is_some() || self.show_help {
             return;
         }
@@ -1584,7 +1625,7 @@ impl App {
         // its usable cache snapshot. AutomatosX MTP packs are self-contained.
         let artifacts_dir = task
             .output_path()
-            .or_else(|| catalog::repo_snapshot_dir(task.repo_id));
+            .or_else(|| catalog::repo_snapshot_dir(&task.repo_id));
         let label = task.label.clone();
         self.spawn_server(task.preset, artifacts_dir, &label);
     }
@@ -2092,6 +2133,9 @@ impl App {
                         key_hint("/"),
                         key_label(" filter"),
                         key_sep(),
+                        key_hint("d"),
+                        key_label(" by link"),
+                        key_sep(),
                         key_hint("Esc"),
                         key_label(" home"),
                     ],
@@ -2278,7 +2322,9 @@ impl App {
         let popup = widgets::centered_rect(74, 22, area);
         let contextual = match self.screen {
             Screen::Home => "Home: ↑↓ move · Enter run the highlighted action",
-            Screen::Models => "Models: wizard steps · / filter · Enter next · Esc back",
+            Screen::Models => {
+                "Models: wizard steps · / filter · d download by link · Enter next · Esc back"
+            }
             Screen::Downloads => {
                 "Downloads: Enter serve when ready · x cancel · PgUp/PgDn scroll log"
             }
@@ -2606,6 +2652,31 @@ impl App {
                     ),
                     ..Default::default()
                 }
+            }
+            Modal::DownloadByLink { input, error } => {
+                let mut lines = vec![
+                    Line::raw("Hugging Face link or owner/repo id (optionally @revision):"),
+                    Line::from(Span::styled(
+                        format!("{input}_"),
+                        Style::default().fg(theme::colors().text),
+                    )),
+                ];
+                if let Some(message) = error {
+                    lines.push(Line::raw(""));
+                    lines.push(Line::from(Span::styled(message.clone(), theme::danger())));
+                }
+                widgets::draw_modal_with(
+                    frame,
+                    area,
+                    "Download by link",
+                    lines,
+                    vec![
+                        theme::key_chip("Enter download"),
+                        theme::key_sep(),
+                        theme::key_chip_dim("Esc cancel"),
+                    ],
+                    theme::colors().accent,
+                )
             }
         };
         self.modal_hits.set(hits);

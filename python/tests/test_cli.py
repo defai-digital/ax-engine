@@ -141,6 +141,64 @@ class AxEngineCliTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "not managed by ax-engine download"):
             _cli._download_repo_id("qwen36-35b")
 
+    def test_download_repo_id_accepts_urls_and_revisions(self) -> None:
+        from ax_engine._repo_ref import parse_repo_ref
+
+        cases = [
+            ("owner/repo", ("owner/repo", None)),
+            ("owner/repo@v1", ("owner/repo", "v1")),
+            (
+                "https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+                ("AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP", None),
+            ),
+            ("https://hf.co/owner/repo", ("owner/repo", None)),
+            ("huggingface.co/owner/repo/", ("owner/repo", None)),
+            ("https://huggingface.co/owner/repo.git", ("owner/repo", None)),
+            ("https://huggingface.co/owner/repo/tree/main", ("owner/repo", "main")),
+        ]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(parse_repo_ref(value), expected)
+
+    def test_download_repo_id_rejects_bad_references(self) -> None:
+        from ax_engine._repo_ref import parse_repo_ref
+
+        for bad in [
+            "",
+            "noslash",
+            "https://example.com/owner/repo",
+            "ftp://huggingface.co/owner/repo",
+            "https://huggingface.co/owner",
+            "https://huggingface.co/owner/repo/blob/main/model.safetensors",
+            "owner/repo/extra/path",
+            "owner/repo@",
+            "owner//repo",
+        ]:
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    parse_repo_ref(bad)
+
+    def test_download_url_forwards_revision_to_helper(self) -> None:
+        commands: list[list[str]] = []
+
+        class Result:
+            returncode = 0
+            stdout = json.dumps({"schema_version": "ax.download_model.v1", "status": "ready"})
+            stderr = ""
+
+        with mock.patch.object(_cli, "_run_capture", side_effect=lambda cmd: commands.append(cmd) or Result()):
+            code, summary, _ = _cli._download_summary(
+                "https://huggingface.co/owner/repo/tree/v2"
+            )
+
+        self.assertEqual(code, 0)
+        command = commands[0]
+        self.assertIn("owner/repo", command)
+        self.assertIn("--revision", command)
+        self.assertIn("v2", command)
+        assert summary is not None
+
+
     def test_serve_dry_run_json_uses_server_preset(self) -> None:
         with mock.patch.object(
             _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"

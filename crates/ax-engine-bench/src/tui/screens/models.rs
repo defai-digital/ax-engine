@@ -21,6 +21,14 @@ impl App {
     // -- wizard input -----------------------------------------------------------
 
     pub(crate) fn on_key_models(&mut self, code: KeyCode) {
+        // `d` opens the download-by-link prompt from any wizard stage.
+        if code == KeyCode::Char('d') && !self.filtering {
+            self.modal = Some(Modal::DownloadByLink {
+                input: String::new(),
+                error: None,
+            });
+            return;
+        }
         match self.stage {
             WizardStage::Families if self.filtering => match code {
                 KeyCode::Char(c) => {
@@ -275,7 +283,7 @@ impl App {
         );
         let task = DownloadTask {
             label: label.clone(),
-            repo_id,
+            repo_id: repo_id.to_string(),
             preset: variant.profile.preset,
             target: target.to_string(),
             dest,
@@ -294,6 +302,45 @@ impl App {
         self.confirm_dest = None;
         self.stage = WizardStage::Precision;
         self.screen = Screen::Downloads;
+    }
+
+    /// Queue a download from a free-form Hugging Face link or repo id (the
+    /// `d` download-by-link modal). Returns the message to show inline when
+    /// the input (or the environment) is not usable, keeping the modal open.
+    pub(crate) fn queue_download_by_link(&mut self, input: &str) -> Result<(), String> {
+        let repo_ref = ax_engine_core::repo_ref::parse_repo_ref(input)?;
+        // Same pre-flight as the wizard confirm step: fail before enqueueing
+        // so the queue does not sit on a permanent "failed" row.
+        crate::ensure_download_python_deps()?;
+        let repo_id = repo_ref.repo_id;
+        // The CLI download arg parses `@rev` itself and forwards --revision
+        // to the helper, so pass the canonical repo[@rev] form as the target.
+        let target = match &repo_ref.revision {
+            Some(revision) => format!("{repo_id}@{revision}"),
+            None => repo_id.clone(),
+        };
+        let watch_dir = catalog::repo_cache_dir(&repo_id);
+        let task = DownloadTask {
+            label: repo_id.clone(),
+            repo_id: repo_id.clone(),
+            preset: None,
+            target,
+            dest: None,
+            watch_dir,
+            resolved_path: None,
+            // No catalog size estimate for arbitrary repos: the gauge shows
+            // the bytes-only label instead of a percentage.
+            total_bytes: None,
+            phase: None,
+            job: None,
+            cancelled: false,
+        };
+        self.downloads.push(task);
+        self.select_download(self.downloads.len().saturating_sub(1));
+        self.start_next_queued_download();
+        self.toast(format!("{repo_id} queued"));
+        self.screen = Screen::Downloads;
+        Ok(())
     }
 
     /// Remove an installed variant's HF-cache directory.

@@ -1540,18 +1540,24 @@ def download_model(
     dest: str | Path | None = None,
     *,
     force: bool = False,
+    revision: str | None = None,
 ) -> Path:
     """Download an MLX model through Hugging Face Hub and generate its ax-engine manifest.
 
+    Accepts a bare ``owner/repo`` id, ``owner/repo@revision``, or a full
+    ``https://huggingface.co/owner/repo`` link (``/tree/<revision>`` included).
     Downloads the model, then generates ``model-manifest.json`` via the bundled
     ``ax-engine-bench`` (wheel), an ``ax-engine-bench`` on ``PATH``, or ``cargo run``
     (dev). The returned path is always AX-ready: if the manifest is missing and cannot
     be generated, this raises rather than returning a path to a non-ready model.
 
     Args:
-        repo_id: MLX LLM repo id, e.g. ``"mlx-community/Qwen3-4B-4bit"``.
+        repo_id: MLX LLM repo id or Hugging Face URL, e.g.
+            ``"mlx-community/Qwen3-4B-4bit"``.
         dest: Destination directory. Defaults to the Hugging Face Hub cache snapshot.
         force: Re-download the default Hugging Face Hub cache entry before resolving the snapshot.
+        revision: Branch, tag, or commit sha to download (overrides a revision
+            parsed from ``repo_id``).
 
     Returns:
         Path to the downloaded, AX-ready model directory (contains ``model-manifest.json``).
@@ -1559,6 +1565,49 @@ def download_model(
     Raises:
         RuntimeError: if the download is incomplete or the manifest cannot be generated.
     """
+    # Single source of truth: delegate to the bundled download helper (the same
+    # entry point the Rust/Python CLIs and the TUI use) so URL parsing,
+    # revision pinning, disk preflight, atomic --dest copies, and manifest
+    # semantics cannot diverge. The legacy in-process path below remains as a
+    # fallback for stripped installs missing scripts/download_model.py.
+    from ._repo_ref import parse_repo_ref
+
+    repo_id, parsed_revision = parse_repo_ref(repo_id)
+    revision = revision or parsed_revision
+
+    from ._cli import _find_repo_script
+
+    helper = _find_repo_script("download_model.py")
+    if helper is not None:
+        import json
+        import subprocess
+        import sys
+
+        command = [sys.executable, str(helper), repo_id, "--json"]
+        if revision:
+            command.extend(["--revision", revision])
+        if dest is not None:
+            command.extend(["--dest", str(dest)])
+        if force:
+            command.append("--force")
+        result = subprocess.run(command, capture_output=True, text=True)
+        summary: dict | None = None
+        for line in reversed(result.stdout.splitlines()):
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict) and parsed.get("schema_version") == "ax.download_model.v1":
+                summary = parsed
+                break
+        if result.returncode == 0 and summary is not None and summary.get("status") == "ready":
+            return Path(summary["dest"])
+        errors = (summary or {}).get("errors") or [
+            result.stderr.strip() or f"download helper exited {result.returncode}"
+        ]
+        raise RuntimeError("; ".join(str(error) for error in errors))
+
+    # ---- legacy in-process fallback (no bundled helper) ----
     if force:
         import shutil
 

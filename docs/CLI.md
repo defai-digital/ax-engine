@@ -43,8 +43,9 @@ does not return ready AX artifacts.
 Use `download` when you want model acquisition as a separate step. Managed
 aliases cover the curated [AutomatosX catalog](https://huggingface.co/AutomatosX)
 (MTP/assistant extras and `model-manifest.json` ship in the snapshot); legacy
-aliases such as `qwen36-35b` stay serve-only, and raw `org/repo` ids remain an
-explicit escape hatch:
+aliases such as `qwen36-35b` stay serve-only. Arbitrary models can be fetched
+with a bare `org/repo` id, a full Hugging Face link, or a pinned revision
+(`@rev` or `/tree/<rev>` in the link):
 
 ```text
 ax-engine download --list
@@ -59,8 +60,14 @@ ax-engine download ax-qwen3-coder-next
 ax-engine download ax-embeddinggemma-300m
 ax-engine download ax-qwen3-embedding-4b
 ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
+ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP
+ax-engine download owner/repo@revision
 ax-engine download ax-qwen3.6-35b --dest /path/to/explicit-copy
 ```
+
+Downloads verify free disk space against the repo size before fetching, copy
+`--dest` atomically (an interrupted copy never masquerades as complete), and
+resume partial snapshots through the Hugging Face Hub cache.
 
 For an interactive flow, run `ax-engine tui`. The TUI has five screens
 (switch with `1`-`5`, or `Ctrl+1`-`5` while typing in Chat/fields): Home
@@ -71,7 +78,10 @@ headroom vs RAM, top memory processes — only metrics macOS can provide without
 privileged GPU tooling), plus Quick start actions and installed models;
 Models is a three-step wizard — family → size (estimate and RAM-fit badge per
 variant) → a confirm summary before anything downloads; AutomatosX snapshots
-bundle their MTP/assistant extras, so there is no separate speed-up step. The
+bundle their MTP/assistant extras, so there is no separate speed-up step.
+Pressing `d` on Models opens a download-by-link prompt that accepts a
+Hugging Face URL or `owner/repo` (optionally with `@revision` or `/tree/<rev>`)
+and queues it like a catalog pick. The
 destination defaults to the shared Hugging Face Hub cache and can be changed
 on the confirm step with `--dest`. Downloads run in a
 background queue with a progress bar, speed, ETA, and phase labels (driven by

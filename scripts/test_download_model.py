@@ -119,15 +119,14 @@ class DownloadModelScriptTest(unittest.TestCase):
             self.assertEqual(lines[0]["event"], "progress")
             self.assertEqual(lines[-1]["status"], "ready")
 
-    def test_json_summary_for_invalid_existing_model(self) -> None:
+    def test_json_summary_for_unreachable_repo_reports_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)
-            (model_dir / "model.safetensors").write_bytes(b"placeholder")
             result = subprocess.run(
                 [
                     sys.executable,
                     str(SCRIPT_PATH),
-                    "mlx-community/Qwen3-4B-4bit",
+                    "owner/ax-engine-test-repo-that-does-not-exist-9f2c",
                     "--dest",
                     str(model_dir),
                     "--json",
@@ -139,8 +138,7 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 1)
             summary = json.loads(result.stdout)
-            self.assertEqual(summary["status"], "invalid")
-            self.assertIn("config.json missing", "\n".join(summary["errors"]))
+            self.assertEqual(summary["status"], "download_failed")
 
     def test_download_reuses_existing_cache_snapshot(self) -> None:
         repo_id = "mlx-community/Qwen3-4B-4bit"
@@ -159,6 +157,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             def fake_hf_download(
                 model: str,
                 *,
+                revision: str | None = None,
                 quiet: bool = False,
                 progress_json: bool = False,
                 progress_bar: bool = False,
@@ -168,11 +167,94 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
                 download_model, "_run_hf_snapshot_download", fake_hf_download
-            ):
+            ), patch.object(download_model, "_total_repo_bytes", lambda _repo: None):
                 resolved = download_model.download(repo_id, None, quiet=True)
 
             self.assertEqual(calls, [])
             self.assertEqual(resolved, snapshot)
+
+    def test_download_forwards_revision_and_resolves_ref(self) -> None:
+        repo_id = "owner/repo"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_cache = root / "hub" / "models--owner--repo"
+            snapshot = repo_cache / "snapshots" / "def456"
+            snapshot.mkdir(parents=True)
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model.safetensors").write_bytes(b"placeholder")
+            (repo_cache / "refs").mkdir(parents=True)
+            (repo_cache / "refs" / "v2").write_text("def456")
+
+            # Existing cache hit resolves the named ref without a download.
+            with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True):
+                resolved = download_model.download(repo_id, None, revision="v2", quiet=True)
+            self.assertEqual(resolved, snapshot)
+
+            # A miss forwards the revision to snapshot_download.
+            calls: list[tuple[str, str | None]] = []
+
+            def fake_hf_download(
+                model: str,
+                *,
+                revision: str | None = None,
+                quiet: bool = False,
+                progress_json: bool = False,
+                progress_bar: bool = False,
+            ) -> Path:
+                calls.append((model, revision))
+                return snapshot
+
+            with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
+                download_model, "_run_hf_snapshot_download", fake_hf_download
+            ), patch.object(download_model, "_total_repo_bytes", lambda _repo: None):
+                download_model.download(repo_id, None, revision="v3", quiet=True)
+
+            self.assertEqual(calls, [(repo_id, "v3")])
+
+    def test_dest_copy_is_atomic_and_repairs_partial_dest(self) -> None:
+        repo_id = "owner/repo"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / "dest"
+            dest.mkdir()
+            # Partial/corrupt contents from an interrupted older download.
+            (dest / "model.safetensors").write_bytes(b"partial")
+            snapshot = root / "snapshot"
+
+            def fake_hf_download(
+                model: str,
+                *,
+                revision: str | None = None,
+                quiet: bool = False,
+                progress_json: bool = False,
+                progress_bar: bool = False,
+            ) -> Path:
+                snapshot.mkdir(parents=True)
+                (snapshot / "config.json").write_text("{}")
+                (snapshot / "model.safetensors").write_bytes(b"complete")
+                return snapshot
+
+            with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
+                download_model, "_run_hf_snapshot_download", fake_hf_download
+            ), patch.object(download_model, "_total_repo_bytes", lambda _repo: None):
+                resolved = download_model.download(repo_id, dest, quiet=True)
+
+            self.assertEqual(resolved, dest)
+            self.assertEqual((dest / "model.safetensors").read_bytes(), b"complete")
+            self.assertTrue((dest / "config.json").is_file())
+            # No temp/backup dirs survive the swap.
+            leftovers = [p.name for p in root.iterdir() if p.name.startswith(".dest")]
+            self.assertEqual(leftovers, [])
+
+    def test_disk_preflight_aborts_when_download_does_not_fit(self) -> None:
+        repo_id = "owner/repo"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
+                download_model, "_total_repo_bytes", lambda _repo: 10**15
+            ):
+                with self.assertRaisesRegex(RuntimeError, "insufficient disk space"):
+                    download_model.download(repo_id, None, quiet=True)
 
     def test_download_uses_huggingface_hub_snapshot_download(self) -> None:
         repo_id = "mlx-community/Qwen3-4B-4bit"
@@ -188,6 +270,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             def fake_hf_download(
                 model: str,
                 *,
+                revision: str | None = None,
                 quiet: bool = False,
                 progress_json: bool = False,
                 progress_bar: bool = False,
@@ -200,7 +283,7 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
                 download_model, "_run_hf_snapshot_download", fake_hf_download
-            ):
+            ), patch.object(download_model, "_total_repo_bytes", lambda _repo: None):
                 resolved = download_model.download(repo_id, None, quiet=True)
 
             self.assertEqual(calls, [repo_id])
@@ -215,6 +298,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             def fake_hf_download(
                 model: str,
                 *,
+                revision: str | None = None,
                 quiet: bool = False,
                 progress_json: bool = False,
                 progress_bar: bool = False,
@@ -227,7 +311,7 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             with patch.dict(os.environ, {"HF_HOME": tmp}, clear=True), patch.object(
                 download_model, "_run_hf_snapshot_download", fake_hf_download
-            ):
+            ), patch.object(download_model, "_total_repo_bytes", lambda _repo: None):
                 resolved = download_model.download(repo_id, None, quiet=True)
 
             self.assertEqual(calls, [repo_id])
@@ -248,6 +332,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             def fake_hf_download(
                 model,
                 *,
+                revision=None,
                 quiet=False,
                 progress_json=False,
                 progress_bar=False,
@@ -259,7 +344,7 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
                 download_model, "_run_hf_snapshot_download", fake_hf_download
-            ):
+            ), patch.object(download_model, "_total_repo_bytes", lambda _repo: None):
                 resolved = download_model.download(repo_id, dest, force=True, quiet=True)
 
             self.assertEqual(resolved, dest)
@@ -279,6 +364,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             def fake_hf_download(
                 model,
                 *,
+                revision=None,
                 quiet=False,
                 progress_json=False,
                 progress_bar=False,
@@ -292,7 +378,7 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
                 download_model, "_run_hf_snapshot_download", fake_hf_download
-            ):
+            ), patch.object(download_model, "_total_repo_bytes", lambda _repo: None):
                 resolved = download_model.download(repo_id, dest, force=True, quiet=True)
 
             self.assertEqual(resolved, dest)
@@ -368,6 +454,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             def fake_hf_download(
                 model,
                 *,
+                revision=None,
                 quiet=False,
                 progress_json=False,
                 progress_bar=False,
@@ -382,7 +469,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 # Hermetic: the developer machine may have this AutomatosX
                 # repo in its real HF cache; force the fetch path.
                 patch.object(
-                    download_model, "_latest_mlx_lm_snapshot", lambda repo: None
+                    download_model, "_latest_mlx_lm_snapshot", lambda repo, revision=None: None
                 ),
                 patch.object(
                     download_model, "_run_hf_snapshot_download", fake_hf_download

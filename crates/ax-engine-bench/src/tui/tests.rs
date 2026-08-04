@@ -90,7 +90,7 @@ fn family_index(app: &App, key: &str) -> usize {
 fn test_task(job: Option<Job>) -> DownloadTask {
     DownloadTask {
         label: "gemma4-e2b 4-bit".into(),
-        repo_id: "mlx-community/gemma-4-e2b-it-4bit",
+        repo_id: "mlx-community/gemma-4-e2b-it-4bit".into(),
         preset: Some("gemma4-e2b"),
         target: "gemma4-e2b".into(),
         dest: Some(PathBuf::from("/tmp/gemma4-e2b")),
@@ -390,6 +390,19 @@ fn progress_ratio_and_eta_need_totals() {
 }
 
 #[test]
+fn log_parser_prefers_structured_summary_dest() {
+    let lines = vec![
+        "{\"event\":\"progress\",\"done\":1,\"total\":100,\"file\":\"x\"}".to_string(),
+        "Path: /tmp/scraped".to_string(),
+        "{\"schema_version\":\"ax.download_model.v1\",\"repo_id\":\"owner/repo\",\"dest\":\"/tmp/structured\",\"status\":\"ready\"}".to_string(),
+    ];
+    assert_eq!(
+        parse_output_path_from_log(&lines).as_deref(),
+        Some(Path::new("/tmp/structured"))
+    );
+}
+
+#[test]
 fn log_parser_finds_download_output_paths() {
     assert_eq!(
         parse_output_path_from_log(&["Path: /tmp/direct".to_string()]).as_deref(),
@@ -460,7 +473,7 @@ fn serve_without_resolved_package_path_fails_closed() {
     // snapshot-dir fallback cannot resolve a real path. AutomatosX pack
     // tasks carry no preset either — without a package path there is no
     // legitimate way to serve.
-    task.repo_id = "ax-tests/does-not-exist-anywhere";
+    task.repo_id = "ax-tests/does-not-exist-anywhere".to_string();
     task.preset = None;
     task.dest = None;
     task.resolved_path = None;
@@ -1289,6 +1302,82 @@ fn right_key_on_confirm_triggers_download() {
     app.on_key_models(KeyCode::Right);
     assert_eq!(app.screen, Screen::Downloads);
     assert_eq!(app.downloads.len(), 1);
+}
+
+#[test]
+fn download_by_link_modal_queues_parsed_repo() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.on_key(key(KeyCode::Char('d')));
+    assert!(matches!(app.modal, Some(Modal::DownloadByLink { .. })));
+    for c in "https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    app.on_key(key(KeyCode::Enter));
+    assert!(app.modal.is_none(), "a valid link closes the modal");
+    assert_eq!(app.screen, Screen::Downloads);
+    assert_eq!(app.downloads.len(), 1);
+    let task = &app.downloads[0];
+    assert_eq!(task.repo_id, "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP");
+    assert_eq!(task.target, "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP");
+    assert_eq!(task.label, task.repo_id);
+    assert!(task.preset.is_none(), "free-form repos have no preset");
+    assert_eq!(task.total_bytes, None, "no catalog size estimate");
+    assert_eq!(
+        task.watch_dir,
+        catalog::repo_cache_dir("AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP")
+    );
+}
+
+#[test]
+fn download_by_link_revision_uses_at_form_target() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.on_key(key(KeyCode::Char('d')));
+    for c in "owner/repo@v1".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.downloads.len(), 1);
+    let task = &app.downloads[0];
+    assert_eq!(task.repo_id, "owner/repo");
+    // The CLI download arg parses `@rev` and forwards --revision itself.
+    assert_eq!(task.target, "owner/repo@v1");
+}
+
+#[test]
+fn download_by_link_rejects_invalid_input() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.on_key(key(KeyCode::Char('d')));
+    for c in "not-a-repo".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    app.on_key(key(KeyCode::Enter));
+    assert!(app.downloads.is_empty(), "invalid input queues nothing");
+    let Some(Modal::DownloadByLink { input, error }) = &app.modal else {
+        panic!("modal should stay open with an inline error");
+    };
+    assert_eq!(input, "not-a-repo", "typed input survives the rejection");
+    assert!(error.is_some(), "parse error is shown inline");
+    // Editing the buffer clears the inline error.
+    app.on_key(key(KeyCode::Char('x')));
+    assert!(matches!(&app.modal, Some(Modal::DownloadByLink { error, .. }) if error.is_none()));
+}
+
+#[test]
+fn download_by_link_paste_fills_input() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.on_key(key(KeyCode::Char('d')));
+    app.on_paste("https://huggingface.co/owner/repo\n");
+    let Some(Modal::DownloadByLink { input, .. }) = &app.modal else {
+        panic!("modal should still be open");
+    };
+    assert_eq!(
+        input, "https://huggingface.co/owner/repo",
+        "paste lands in the modal buffer without control chars"
+    );
 }
 
 #[test]

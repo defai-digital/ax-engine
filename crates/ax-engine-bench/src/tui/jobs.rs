@@ -261,7 +261,8 @@ pub(super) enum DownloadStatus {
 
 pub(super) struct DownloadTask {
     pub label: String,
-    pub repo_id: &'static str,
+    /// Owned so free-form (download-by-link) repos can join the queue too.
+    pub repo_id: String,
     pub preset: Option<&'static str>,
     pub target: String,
     pub dest: Option<PathBuf>,
@@ -423,7 +424,7 @@ impl DownloadTask {
         let finished_ok = before.is_none() && job.done == Some(0);
         if finished_ok && self.resolved_path.is_none() {
             self.resolved_path = parse_output_path_from_log(&job.log)
-                .or_else(|| catalog::repo_snapshot_dir(self.repo_id));
+                .or_else(|| catalog::repo_snapshot_dir(&self.repo_id));
         }
         let outcome = match (before, job.done) {
             (None, Some(0)) => DownloadOutcome::Finished,
@@ -451,6 +452,26 @@ impl DownloadTask {
 }
 
 pub(super) fn parse_output_path_from_log(lines: &[String]) -> Option<PathBuf> {
+    // Structured contract first: the download helper's final
+    // `ax.download_model.v1` summary names the resolved dest explicitly.
+    for line in lines.iter().rev() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('{') {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if value.get("schema_version").and_then(|v| v.as_str()) != Some("ax.download_model.v1") {
+            continue;
+        }
+        if let Some(dest) = value.get("dest").and_then(|v| v.as_str()) {
+            let dest = dest.trim();
+            if !dest.is_empty() {
+                return Some(PathBuf::from(dest));
+            }
+        }
+    }
     for line in lines.iter().rev() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("Path:") {

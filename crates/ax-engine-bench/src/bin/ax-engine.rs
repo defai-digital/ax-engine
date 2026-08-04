@@ -2239,14 +2239,17 @@ fn run_download_summary(
     profile: Option<ModelProfile>,
     progress: bool,
 ) -> Result<(u8, Value, String), String> {
-    let (repo_id, profile) = download_repo_id(model, profile)?;
+    let (repo_id, profile, revision) = download_repo_id(model, profile)?;
     let helper = find_helper(
         "AX_ENGINE_DOWNLOAD_HELPER",
         "ax-engine-download-model.py",
         "download_model.py",
     )?;
     let mut command = Command::new(python());
-    command.arg(helper).arg(repo_id).arg("--json");
+    command.arg(helper).arg(&repo_id).arg("--json");
+    if let Some(revision) = &revision {
+        command.arg("--revision").arg(revision);
+    }
     if progress {
         command.arg("--progress-json");
     }
@@ -2273,6 +2276,9 @@ fn run_download_summary(
     let mut summary = parse_summary_json(&stdout).unwrap_or(Value::Null);
     if let Value::Object(map) = &mut summary {
         map.insert("input".into(), json!(model));
+        if let Some(revision) = &revision {
+            map.insert("revision".into(), json!(revision));
+        }
         if let Some(profile) = profile {
             map.insert("alias".into(), json!(profile.label));
             if let Some(preset) = profile.preset {
@@ -2661,7 +2667,7 @@ fn parse_convert_args(args: &[OsString]) -> Result<ConvertArgs, String> {
 fn download_repo_id(
     value: &str,
     profile: Option<ModelProfile>,
-) -> Result<(&'static str, Option<ModelProfile>), String> {
+) -> Result<(String, Option<ModelProfile>, Option<String>), String> {
     if let Some(profile) = profile {
         if !profile.is_downloadable() {
             return Err(format!(
@@ -2670,17 +2676,17 @@ fn download_repo_id(
                 format_download_options()
             ));
         }
-        return Ok((profile.repo_id, Some(profile)));
+        return Ok((profile.repo_id.to_string(), Some(profile), None));
     }
-    if value.contains('/') {
-        let leaked: &'static str = Box::leak(value.to_string().into_boxed_str());
-        Ok((leaked, None))
-    } else {
-        Err(format!(
-            "unknown model alias or repo id: {value:?}; pass a Hugging Face repo id or one of these targets:\n{}",
-            format_download_options()
-        ))
+    if value.contains('/') || value.contains("huggingface.co") || value.contains("hf.co") {
+        let repo_ref = ax_engine_core::repo_ref::parse_repo_ref(value)?;
+        return Ok((repo_ref.repo_id, None, repo_ref.revision));
     }
+    Err(format!(
+        "unknown model alias or repo id: {value:?}; pass a Hugging Face repo id, \
+         a https://huggingface.co/owner/repo link, or one of these targets:\n{}",
+        format_download_options()
+    ))
 }
 
 fn mtp_download_target_for_model(value: &str) -> Option<MtpDownloadTarget> {
@@ -2743,6 +2749,8 @@ fn download_options_payload() -> Value {
             "ax-engine download ax-qwen3-coder-next",
             "ax-engine download ax-embeddinggemma-300m",
             "ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json",
+            "ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+            "ax-engine download owner/repo@revision",
         ],
     })
 }
@@ -2770,6 +2778,10 @@ fn format_download_options() -> String {
     lines.push("  ax-engine download ax-qwen3-coder-next".into());
     lines.push("  ax-engine download ax-embeddinggemma-300m".into());
     lines.push("  ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json".into());
+    lines.push(
+        "  ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP".into(),
+    );
+    lines.push("  ax-engine download owner/repo@revision (or /tree/<revision> links)".into());
     lines.join("\n")
 }
 
@@ -3136,6 +3148,42 @@ mod tests {
                 .count(),
             18
         );
+    }
+
+    #[test]
+    fn download_repo_id_accepts_urls_and_revisions() {
+        let (repo, profile, rev) = download_repo_id(
+            "https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+            None,
+        )
+        .unwrap();
+        assert_eq!(repo, "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP");
+        assert!(profile.is_none());
+        assert_eq!(rev, None);
+
+        let (repo, _, rev) = download_repo_id("owner/repo@v1", None).unwrap();
+        assert_eq!(repo, "owner/repo");
+        assert_eq!(rev.as_deref(), Some("v1"));
+
+        let (repo, _, rev) = download_repo_id("https://hf.co/owner/repo/tree/main", None).unwrap();
+        assert_eq!(repo, "owner/repo");
+        assert_eq!(rev.as_deref(), Some("main"));
+
+        let (repo, _, _) = download_repo_id("owner/repo", None).unwrap();
+        assert_eq!(repo, "owner/repo");
+    }
+
+    #[test]
+    fn download_repo_id_rejects_bad_references() {
+        for bad in [
+            "noslash",
+            "https://example.com/owner/repo",
+            "https://huggingface.co/owner",
+            "https://huggingface.co/owner/repo/blob/main/model.safetensors",
+            "owner/repo/extra/path",
+        ] {
+            assert!(download_repo_id(bad, None).is_err(), "{bad:?} must fail");
+        }
     }
 
     #[test]

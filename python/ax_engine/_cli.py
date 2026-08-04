@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import _bundled_binary
+from ._repo_ref import parse_repo_ref
 
 
 @dataclass(frozen=True)
@@ -577,6 +578,8 @@ def _download_options_payload() -> dict:
             "ax-engine download ax-qwen3-coder-next",
             "ax-engine download ax-embeddinggemma-300m",
             "ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json",
+            "ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+            "ax-engine download owner/repo@revision",
         ],
     }
 
@@ -599,6 +602,8 @@ def _format_download_options() -> str:
             "  ax-engine download ax-qwen3-coder-next",
             "  ax-engine download ax-embeddinggemma-300m",
             "  ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json",
+            "  ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+            "  ax-engine download owner/repo@revision  (or /tree/<revision> links)",
             "",
             "Destination:",
             "  Default: Hugging Face Hub cache shared by mlx-lm and huggingface_hub.",
@@ -617,7 +622,7 @@ SERVER_PRESET_ALIASES = {
 }
 
 
-def _download_repo_id(value: str) -> tuple[str, ModelProfile | None]:
+def _download_repo_id(value: str) -> tuple[str, ModelProfile | None, str | None]:
     profile = _profile_for_model(value)
     if profile is not None:
         if not _is_managed_download_profile(profile):
@@ -626,12 +631,16 @@ def _download_repo_id(value: str) -> tuple[str, ModelProfile | None]:
                 "use an explicit repo id or one of these targets:\n"
                 f"{_format_download_options()}"
             )
-        return profile.repo_id, profile
-    if "/" in value:
-        return value, None
+        return profile.repo_id, profile, None
+    if "/" in value or "huggingface.co" in value or "hf.co" in value:
+        try:
+            repo_id, revision = parse_repo_ref(value)
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
+        return repo_id, None, revision
     raise SystemExit(
-        f"unknown model alias or repo id: {value!r}; pass a Hugging Face repo id "
-        "or one of these targets:\n"
+        f"unknown model alias or repo id: {value!r}; pass a Hugging Face repo id, "
+        "a https://huggingface.co/owner/repo link, or one of these targets:\n"
         f"{_format_download_options()}"
     )
 
@@ -689,7 +698,7 @@ def _download_summary(
     force: bool = False,
     progress: bool = False,
 ) -> tuple[int, dict | None, str]:
-    repo_id, profile = _download_repo_id(model)
+    repo_id, profile, revision = _download_repo_id(model)
     download_script = _find_repo_script("download_model.py")
     if download_script is None:
         raise SystemExit(
@@ -698,6 +707,8 @@ def _download_summary(
         )
 
     command = [sys.executable, str(download_script), repo_id, "--json"]
+    if revision:
+        command.extend(["--revision", revision])
     if dest:
         command.extend(["--dest", dest])
     if force:

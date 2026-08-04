@@ -21,6 +21,7 @@ pub mod multimodal_adapter;
 pub mod nemotron_omni;
 pub mod prefill_cohort;
 pub mod qwen3_vl;
+pub mod repo_ref;
 pub mod request;
 pub mod request_manager;
 pub mod runner;
