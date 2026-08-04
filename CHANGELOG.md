@@ -7,6 +7,16 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- `docs/RELEASING.md` documents the fresh-notarization-ticket recovery for
+  the publisher's final `-R=notarized` verification: standalone Mach-Os
+  cannot staple tickets and `codesign` only consults locally registered
+  ones, so a just-accepted ticket fails the check until a one-time
+  Gatekeeper install assessment registers it. The v6.13.0 publish hit this;
+  the publisher itself deliberately keeps `codesign` as the only fail-closed
+  gate.
+
 ## [6.13.0] - 2026-08-03
 
 ### Added

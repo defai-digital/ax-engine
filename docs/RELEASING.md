@@ -147,6 +147,31 @@ gh api repos/defai-digital/ax-engine/releases/latest --jq .tag_name
 Do not push version tags outside `scripts/publish-github-release.sh` unless you
 immediately create the matching GitHub release.
 
+### Fresh notarization tickets and the `-R=notarized` check
+
+The publisher's final verification asserts
+`codesign --verify --strict -R="notarized"` on every uploaded Mach-O.
+Standalone binaries cannot staple a notarization ticket, and `codesign` only
+consults tickets already registered with the local system — it never fetches
+them from Apple. A submission `notarytool` just reported **Accepted**
+therefore still fails this check (observed on the v6.13.0 publish: the
+ticket's cdhashes matched the binaries exactly, and the check kept failing
+40+ minutes later), while dylibs reused from earlier releases pass because
+their tickets were registered long ago.
+
+Recovery: trigger a one-time Gatekeeper assessment for each affected binary,
+which fetches and registers the ticket, then confirm the `codesign` gate and
+finish the draft per "Recover stuck drafts" above:
+
+```bash
+spctl --assess --type install payload/ax-engine          # registers the ticket
+codesign --verify --strict -R=notarized payload/ax-engine # must now pass
+```
+
+The publisher deliberately does not run `spctl` itself: Gatekeeper verdicts
+depend on local policy, so `codesign` stays the only fail-closed gate
+(enforced by `scripts/test_release_signing.py`).
+
 ## Build-cache policy
 
 The Rust toolchain is pinned in `rust-toolchain.toml`, and release-candidate and
