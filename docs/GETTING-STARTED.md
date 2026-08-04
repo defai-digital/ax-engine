@@ -179,7 +179,7 @@ the system interpreter:
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install --upgrade "ax-engine[download]>=6.12.1,<7"
+python3 -m pip install --upgrade "ax-engine[download]>=6.13.0,<7"
 ax-engine doctor
 ```
 
@@ -329,7 +329,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install with
-`python3 -m pip install --upgrade "ax-engine[download]>=6.12.1,<7"`.
+`python3 -m pip install --upgrade "ax-engine[download]>=6.13.0,<7"`.
 
 Or via the script:
 

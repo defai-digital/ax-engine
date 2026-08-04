@@ -7,6 +7,8 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [6.13.0] - 2026-08-03
+
 ### Added
 
 - Per-layer KV-cache quantization (AXQ-021): `NativeModelManifest` gains an
@@ -48,6 +50,27 @@ and this project adheres to Semantic Versioning.
   the supported set) log a warning and fall through to the heuristic;
   heuristic guesses are debug-logged with a hint to declare
   `mtp_sidecar_bits` explicitly.
+- KV-cache quantization and the 2-bit experimental gate now surface in route
+  telemetry: `ax_mlx_kv_quantized_layers` reports the per-request peak count
+  of layers actually holding quantized storage (so ring demotions and
+  `AX_KV_QUANT=0` are observable, not just manifest intent) and joins the
+  canonical KV counter set; `ax_mlx_experimental_2bit_gate` records the
+  `AX_ENGINE_2BIT_EXPERIMENTAL` load-time state alongside the existing
+  3-bit gate counter.
+- `docs/ROADMAP.md` gains a v7.0.0 readiness-gate table from the 2026-08-03
+  multi-model / multimodal / AXQuant maturity review.
+
+### Fixed
+
+- `docs/SERVER.md` no longer advertises a vision-feature cache
+  (`AX_MLX_VISION_FEATURE_CACHE`) that is not wired into the serving path;
+  the multimodal caching section now states the real behavior (full prefill
+  recompute unless `AX_MLX_MULTIMODAL_PREFIX_REUSE=1`). Multi-model unload
+  and idle eviction are now documented as soft-parking the retired
+  generation (weights stay resident for fast same-id reload; no TTL or cap),
+  including the memory-preflight visibility caveat.
+- The MLX eval-site baseline accepts the vision-sidecar loader's reviewed
+  load-path `eval`, restoring the `Scripts and Bench Smoke` CI gate.
 
 ## [6.12.1] - 2026-08-02
 
