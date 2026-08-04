@@ -378,6 +378,95 @@ fn queued_download_can_be_cancelled_before_spawn() {
     assert!(!task.is_queued());
 }
 
+#[cfg(unix)]
+#[test]
+fn cancelling_job_stops_long_lived_descendant() {
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after Unix epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "ax-tui-cancel-process-group-{}-{unique}",
+        process::id()
+    ));
+    let heartbeat = root.join("heartbeat");
+    let descendant_pid = root.join("descendant.pid");
+    std::fs::create_dir_all(&root).expect("create process-group test directory");
+
+    // Clean up the explicitly recorded descendant even if an assertion
+    // catches a cancellation regression, so the test itself never leaks it.
+    struct DescendantGuard {
+        pid_file: PathBuf,
+        root: PathBuf,
+    }
+    impl Drop for DescendantGuard {
+        fn drop(&mut self) {
+            if let Ok(pid) = std::fs::read_to_string(&self.pid_file) {
+                let _ = process::Command::new("/bin/kill")
+                    .args(["-s", "KILL", "--"])
+                    .arg(pid.trim())
+                    .stdout(process::Stdio::null())
+                    .stderr(process::Stdio::null())
+                    .status();
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+    let _guard = DescendantGuard {
+        pid_file: descendant_pid.clone(),
+        root: root.clone(),
+    };
+
+    let mut command = process::Command::new("sh");
+    command
+        .arg("-c")
+        .arg(
+            r#"(while :; do printf . >> "$1"; /bin/sleep 0.01; done) &
+printf '%s\n' "$!" > "$2"
+wait"#,
+        )
+        .arg("ax-tui-process-group-test")
+        .arg(&heartbeat)
+        .arg(&descendant_pid);
+    let mut job = Job::spawn(command, None).expect("spawn parent with heartbeat descendant");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let heartbeat_started =
+            std::fs::metadata(&heartbeat).is_ok_and(|metadata| metadata.len() >= 2);
+        let pid_recorded = std::fs::read_to_string(&descendant_pid)
+            .is_ok_and(|pid| pid.trim().parse::<u32>().is_ok());
+        if heartbeat_started && pid_recorded {
+            break;
+        }
+        if Instant::now() >= deadline {
+            job.cancel();
+            panic!("descendant did not start its heartbeat before the deadline");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    job.cancel();
+    assert_eq!(job.done, Some(-130));
+
+    // Allow any write already in progress at signal delivery to land, then
+    // prove the descendant can no longer advance its heartbeat.
+    std::thread::sleep(Duration::from_millis(100));
+    let settled_len = std::fs::metadata(&heartbeat)
+        .expect("heartbeat remains readable")
+        .len();
+    std::thread::sleep(Duration::from_millis(150));
+    let final_len = std::fs::metadata(&heartbeat)
+        .expect("heartbeat remains readable")
+        .len();
+    assert_eq!(
+        final_len, settled_len,
+        "cancelled job's descendant continued writing its heartbeat"
+    );
+}
+
 #[test]
 fn progress_ratio_and_eta_need_totals() {
     let mut task = test_task(None);

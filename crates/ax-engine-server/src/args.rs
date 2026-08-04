@@ -23,6 +23,17 @@ const RATE_LIMIT_BURST_ENV: &str = "AX_ENGINE_RATE_LIMIT_BURST";
 const STREAM_IDLE_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_STREAM_IDLE_TIMEOUT_SECS";
 const STREAM_MAX_DURATION_SECS_ENV: &str = "AX_ENGINE_STREAM_MAX_DURATION_SECS";
 
+fn parse_finite_f64(raw: &str) -> Result<f64, String> {
+    let value = raw
+        .parse::<f64>()
+        .map_err(|error| format!("invalid number {raw:?}: {error}"))?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(format!("{raw:?} must be a finite number"))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum PreviewSupportTier {
     MlxCertified,
@@ -240,13 +251,14 @@ pub struct ServerArgs {
     /// keyed by bearer token when present, otherwise by peer IP. Unset
     /// (or non-positive) disables rate limiting. Falls back to
     /// AX_ENGINE_RATE_LIMIT_RPS.
-    #[arg(long = "rate-limit-rps")]
+    #[arg(long = "rate-limit-rps", value_parser = parse_finite_f64)]
     pub rate_limit_rps: Option<f64>,
 
     /// Burst capacity for --rate-limit-rps, in requests. Falls back to
     /// AX_ENGINE_RATE_LIMIT_BURST; when --rate-limit-rps is set but this is
-    /// not, burst defaults to the rate itself (one second of headroom).
-    #[arg(long = "rate-limit-burst")]
+    /// not, burst defaults to the rate itself (one second of headroom), with
+    /// a minimum capacity of one request.
+    #[arg(long = "rate-limit-burst", value_parser = parse_finite_f64)]
     pub rate_limit_burst: Option<f64>,
 
     /// Idle deadline for SSE/stream responses, in seconds: if no event is
@@ -422,7 +434,7 @@ impl ServerArgs {
                 .map(str::trim)
                 .filter(|raw| !raw.is_empty())
                 .and_then(|raw| raw.parse::<f64>().ok())
-                .filter(|rate| *rate > 0.0)
+                .filter(|rate| rate.is_finite() && *rate > 0.0)
         }
 
         let rps = parse_positive_f64(
@@ -436,7 +448,7 @@ impl ServerArgs {
                 .or_else(|| std::env::var(RATE_LIMIT_BURST_ENV).ok()),
         )
         .unwrap_or(rps);
-        Some(crate::rate_limit::RateLimitConfig { rps, burst })
+        crate::rate_limit::RateLimitConfig::try_new(rps, burst)
     }
 
     /// Idle timeout for evicting non-default resident models; `None` disables.

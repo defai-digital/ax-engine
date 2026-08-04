@@ -59,6 +59,15 @@ impl Job {
         if stdin_payload.is_some() {
             cmd.stdin(Stdio::piped());
         }
+        // Downloads can launch helper processes (for example, the Python
+        // snapshot downloader). Give every job its own process group so a
+        // cancellation cannot leave those descendants running with our pipes
+        // open. `process_group` performs the child-side setpgid safely.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         let mut child = cmd.spawn()?;
         if let (Some(payload), Some(mut stdin)) = (stdin_payload, child.stdin.take()) {
             thread::spawn(move || {
@@ -225,6 +234,21 @@ impl Job {
         if self.done.is_none()
             && let Some(child) = &mut self.child
         {
+            #[cfg(unix)]
+            {
+                // std has a safe process-group spawn API but no matching
+                // signal API. The system utility accepts a negative PID as a
+                // process-group ID, keeping this crate free of unsafe FFI.
+                let process_group = format!("-{}", child.id());
+                let _ = Command::new("/bin/kill")
+                    .args(["-s", "KILL", "--"])
+                    .arg(process_group)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+            // Also target the leader directly. This is the non-Unix
+            // cancellation path and a fallback if the Unix utility is absent.
             let _ = child.kill();
             let _ = child.wait();
             self.done = Some(-130);

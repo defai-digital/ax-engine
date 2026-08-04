@@ -77,13 +77,18 @@ pub(crate) fn parse_generate_manifest_args(
     let mut force = false;
     let mut json = false;
     let mut validate = false;
+    let mut options_ended = false;
 
     for arg in args {
+        if !options_ended && arg == "--" {
+            options_ended = true;
+            continue;
+        }
         match arg.as_str() {
-            "--force" => force = true,
-            "--json" => json = true,
-            "--validate" => validate = true,
-            value if value.starts_with('-') => {
+            "--force" if !options_ended => force = true,
+            "--json" if !options_ended => json = true,
+            "--validate" if !options_ended => validate = true,
+            value if !options_ended && value.starts_with('-') => {
                 return Err(CliError::Usage(format!(
                     "unknown generate-manifest option: {value}\n\n{}",
                     generate_manifest_usage()

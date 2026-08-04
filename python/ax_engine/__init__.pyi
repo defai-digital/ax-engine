@@ -572,9 +572,14 @@ def download_model(
     dest: str | Path | None = None,
     *,
     force: bool = False,
+    revision: str | None = None,
 ) -> Path:
     """Download an MLX model through Hugging Face Hub and generate its ax-engine manifest.
 
+    Accepts ``owner/repo``, ``owner/repo@revision``, and Hugging Face model URLs.
     Requires ``huggingface-hub`` (install via ``pip install ax-engine[download]``).
+
+    Raises ``ValueError`` for an invalid repo reference or revision, and
+    ``RuntimeError`` when download or manifest preparation fails.
     """
     ...

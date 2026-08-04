@@ -1992,8 +1992,35 @@ struct DownloadMtpArgs {
 }
 
 fn cmd_download(args: &[OsString]) -> Result<u8, String> {
-    let args = parse_download_args(args)?;
+    let progress_requested = args.iter().any(|arg| arg == OsStr::new("--progress-json"));
+    let args = match parse_download_args(args) {
+        Ok(args) => args,
+        Err(error) if progress_requested => {
+            eprintln!("{error}");
+            print_download_progress_terminal(&download_error_summary(None, &error))?;
+            return Ok(2);
+        }
+        Err(error) => return Err(error),
+    };
+    match run_download(&args) {
+        Ok(code) => Ok(code),
+        Err(error) if args.progress => {
+            eprintln!("{error}");
+            print_download_progress_terminal(&download_error_summary(
+                args.model.as_deref(),
+                &error,
+            ))?;
+            Ok(2)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn run_download(args: &DownloadArgs) -> Result<u8, String> {
     if args.list {
+        if args.progress {
+            return Err("download --progress-json cannot be combined with --list".into());
+        }
         if args.json {
             print_json(&download_options_payload())?;
         } else {
@@ -2001,7 +2028,12 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
         }
         return Ok(0);
     }
-    let Some(model) = args.model else {
+    let Some(model) = args.model.as_deref() else {
+        if args.progress {
+            return Err(
+                "download --progress-json requires a model alias or Hugging Face repo id".into(),
+            );
+        }
         if args.json {
             print_json(&download_options_payload())?;
         } else {
@@ -2012,14 +2044,28 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
     };
 
     ensure_download_python_deps()?;
-    let profile = profile_for_model(&model);
+    let profile = profile_for_model(model);
     let (code, summary, stderr) = run_download_summary(
-        &model,
+        model,
         args.dest.as_deref(),
         args.force,
         profile,
         args.progress,
     )?;
+    if args.progress {
+        if !stderr.is_empty() {
+            eprint!("{stderr}");
+        }
+        if summary.is_null() {
+            return Err("download helper did not emit an ax.download_model.v1 summary".into());
+        }
+        // `--progress-json` is an NDJSON contract: live progress events have
+        // already been forwarded, and this enriched single-line summary is
+        // the one terminal record. This also takes precedence over `--json`
+        // so combining the flags cannot append a duplicate pretty document.
+        print_download_progress_terminal(&summary)?;
+        return Ok(code);
+    }
     if args.json {
         if !summary.is_null() {
             print_json(&summary)?;
@@ -2040,7 +2086,36 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
 }
 
 fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
-    let args = parse_download_mtp_args(args)?;
+    let progress_requested = args.iter().any(|arg| arg == OsStr::new("--progress-json"));
+    let args = match parse_download_mtp_args(args) {
+        Ok(args) => args,
+        Err(error) if progress_requested => {
+            eprintln!("{error}");
+            print_download_mtp_progress_terminal(&download_mtp_error_summary(
+                None,
+                "invalid_arguments",
+                &error,
+            ))?;
+            return Ok(2);
+        }
+        Err(error) => return Err(error),
+    };
+    match run_download_mtp(&args) {
+        Ok(code) => Ok(code),
+        Err(error) if args.progress => {
+            eprintln!("{error}");
+            print_download_mtp_progress_terminal(&download_mtp_error_summary(
+                Some(&args.model),
+                "error",
+                &error,
+            ))?;
+            Ok(2)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn run_download_mtp(args: &DownloadMtpArgs) -> Result<u8, String> {
     ensure_download_python_deps()?;
     let target = mtp_download_target_for_model(&args.model)
         .ok_or_else(|| format_unknown_download_mtp_target(&args.model))?;
@@ -2051,19 +2126,24 @@ fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
     }
     if download_code != 0 || download_summary.get("status").and_then(Value::as_str) != Some("ready")
     {
-        if args.json && !download_summary.is_null() {
-            print_json(&json!({
-                "schema_version": "ax.download_mtp.v1",
-                "command": "download-mtp",
-                "base_model": args.model,
-                "repo_id": target.repo_id,
-                "download": download_summary,
-                "status": "download_failed",
-            }))?;
-            return Ok(download_code);
+        let terminal = json!({
+            "schema_version": "ax.download_mtp.v1",
+            "command": "download-mtp",
+            "base_model": args.model,
+            "repo_id": target.repo_id,
+            "download": download_summary,
+            "status": "download_failed",
+        });
+        if args.progress {
+            print_download_mtp_progress_terminal(&terminal)?;
+            return Ok(download_code.max(1));
         }
-        if !download_summary.is_null() {
-            print_download_summary(&download_summary);
+        if args.json && !terminal["download"].is_null() {
+            print_json(&terminal)?;
+            return Ok(download_code.max(1));
+        }
+        if !terminal["download"].is_null() {
+            print_download_summary(&terminal["download"]);
         }
         return Err(format!(
             "base model download did not produce ready AX artifacts; run: ax-engine download {}",
@@ -2077,7 +2157,7 @@ fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
     else {
         return Err("download helper returned ready status without a dest".into());
     };
-    if !args.json {
+    if !args.json && !args.progress {
         print_download_summary(&download_summary);
     }
 
@@ -2098,27 +2178,27 @@ fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
                 "download-mtp",
                 "ax.download_mtp.v1",
                 Some(download_summary),
+                args.progress,
             )
         }
-        MtpDownloadKind::GemmaAssistant { .. } => run_download_gemma_assistant_mtp(
-            target,
-            &args,
-            &base_dir,
-            target.kind,
-            download_summary,
-        ),
+        MtpDownloadKind::GemmaAssistant { .. } => {
+            run_download_gemma_assistant_mtp(target, args, &base_dir, target.kind, download_summary)
+        }
         MtpDownloadKind::DirectOnly { reason } => {
-            if args.json {
-                print_json(&json!({
-                    "schema_version": "ax.download_mtp.v1",
-                    "command": "download-mtp",
-                    "status": "direct_only",
-                    "base_model": &args.model,
-                    "repo_id": target.repo_id,
-                    "output_dir": base_dir,
-                    "reason": reason,
-                    "download": download_summary,
-                }))?;
+            let terminal = json!({
+                "schema_version": "ax.download_mtp.v1",
+                "command": "download-mtp",
+                "status": "direct_only",
+                "base_model": &args.model,
+                "repo_id": target.repo_id,
+                "output_dir": base_dir,
+                "reason": reason,
+                "download": download_summary,
+            });
+            if args.progress {
+                print_download_mtp_progress_terminal(&terminal)?;
+            } else if args.json {
+                print_json(&terminal)?;
             } else {
                 println!("MTP status: direct-only");
                 println!("{reason}");
@@ -2248,13 +2328,13 @@ fn run_download_summary(
     let mut command = Command::new(python());
     command.arg(helper).arg(&repo_id).arg("--json");
     if let Some(revision) = &revision {
-        command.arg("--revision").arg(revision);
+        command.arg(helper_value_option("--revision", revision));
     }
     if progress {
         command.arg("--progress-json");
     }
     if let Some(dest) = dest {
-        command.arg("--dest").arg(dest);
+        command.arg(helper_value_option("--dest", dest));
     }
     if force {
         command.arg("--force");
@@ -2289,9 +2369,14 @@ fn run_download_summary(
     Ok((code, summary, stderr))
 }
 
+fn helper_value_option(flag: &str, value: &str) -> OsString {
+    OsString::from(format!("{flag}={value}"))
+}
+
 /// Run the download helper forwarding `{"event":"progress",...}` stdout lines
 /// as they arrive (so a parent process observing our stdout sees live phase
-/// updates), while still buffering all stdout for final summary parsing.
+/// updates), while buffering the helper's final summary. The caller enriches
+/// and emits that summary as the one terminal NDJSON record.
 fn run_streaming_progress(mut command: Command) -> Result<(u8, String, String), String> {
     use std::io::{BufRead, BufReader, Write};
 
@@ -2360,21 +2445,26 @@ fn run_download_gemma_assistant_mtp(
         eprint!("{assistant_stderr}");
     }
     if !assistant_download_usable(assistant_code, &assistant_summary) {
-        if args.json && !assistant_summary.is_null() {
-            print_json(&json!({
-                "schema_version": "ax.download_mtp.v1",
-                "command": "download-mtp",
-                "status": "assistant_download_failed",
-                "base_model": &args.model,
-                "repo_id": target.repo_id,
-                "assistant_repo_id": assistant_repo_id,
-                "download": target_download,
-                "assistant_download": assistant_summary,
-            }))?;
-            return Ok(assistant_code);
+        let terminal = json!({
+            "schema_version": "ax.download_mtp.v1",
+            "command": "download-mtp",
+            "status": "assistant_download_failed",
+            "base_model": &args.model,
+            "repo_id": target.repo_id,
+            "assistant_repo_id": assistant_repo_id,
+            "download": target_download,
+            "assistant_download": assistant_summary,
+        });
+        if args.progress {
+            print_download_mtp_progress_terminal(&terminal)?;
+            return Ok(assistant_code.max(1));
         }
-        if !assistant_summary.is_null() {
-            print_download_summary(&assistant_summary);
+        if args.json && !terminal["assistant_download"].is_null() {
+            print_json(&terminal)?;
+            return Ok(assistant_code.max(1));
+        }
+        if !terminal["assistant_download"].is_null() {
+            print_download_summary(&terminal["assistant_download"]);
         }
         return Err(format!(
             "assistant model download did not produce ready AX artifacts; run: ax-engine download {assistant_repo_id}"
@@ -2383,7 +2473,7 @@ fn run_download_gemma_assistant_mtp(
     let Some(assistant_dir) = assistant_summary.get("dest").and_then(Value::as_str) else {
         return Err("assistant download helper returned ready status without a dest".into());
     };
-    if !args.json {
+    if !args.json && !args.progress {
         print_download_summary(&assistant_summary);
     }
 
@@ -2414,20 +2504,36 @@ fn run_download_gemma_assistant_mtp(
         .map_err(|err| format!("failed to run prepare_gemma4_assistant_mtp helper: {err}"))?;
     let prepare_stdout = String::from_utf8_lossy(&prepare_output.stdout).into_owned();
     let prepare_stderr = String::from_utf8_lossy(&prepare_output.stderr).into_owned();
-    if !args.json {
+    if !args.json && !args.progress {
         print!("{prepare_stdout}");
+        eprint!("{prepare_stderr}");
+    } else if args.progress && !prepare_stderr.is_empty() {
         eprint!("{prepare_stderr}");
     }
     if !prepare_output.status.success() {
-        if args.json {
+        if args.json && !args.progress {
             eprint!("{prepare_stderr}");
         }
-        return Ok(prepare_output
+        let code: u8 = prepare_output
             .status
             .code()
             .unwrap_or(1)
             .try_into()
-            .unwrap_or(1));
+            .unwrap_or(1);
+        if args.progress {
+            print_download_mtp_progress_terminal(&json!({
+                "schema_version": "ax.download_mtp.v1",
+                "command": "download-mtp",
+                "status": "prepare_failed",
+                "base_model": &args.model,
+                "repo_id": target.repo_id,
+                "assistant_repo_id": assistant_repo_id,
+                "exit_code": code,
+                "download": target_download,
+                "assistant_download": assistant_summary,
+            }))?;
+        }
+        return Ok(code.max(1));
     }
     let output_dir =
         parse_output_dir(&prepare_stdout, args.output.as_deref()).ok_or_else(|| {
@@ -2435,22 +2541,25 @@ fn run_download_gemma_assistant_mtp(
                 .to_string()
         })?;
 
-    if args.json {
-        print_json(&json!({
-            "schema_version": "ax.download_mtp.v1",
-            "command": "download-mtp",
-            "status": "ready",
-            "kind": "gemma_assistant_mtp",
-            "base_model": &args.model,
-            "repo_id": target.repo_id,
-            "assistant_repo_id": assistant_repo_id,
-            "target_model_id": target_model_id,
-            "assistant_model_id": assistant_model_id,
-            "max_depth": depth.parse::<u32>().unwrap_or(max_depth),
-            "output_dir": output_dir,
-            "download": target_download,
-            "assistant_download": assistant_summary,
-        }))?;
+    let terminal = json!({
+        "schema_version": "ax.download_mtp.v1",
+        "command": "download-mtp",
+        "status": "ready",
+        "kind": "gemma_assistant_mtp",
+        "base_model": &args.model,
+        "repo_id": target.repo_id,
+        "assistant_repo_id": assistant_repo_id,
+        "target_model_id": target_model_id,
+        "assistant_model_id": assistant_model_id,
+        "max_depth": depth.parse::<u32>().unwrap_or(max_depth),
+        "output_dir": output_dir,
+        "download": target_download,
+        "assistant_download": assistant_summary,
+    });
+    if args.progress {
+        print_download_mtp_progress_terminal(&terminal)?;
+    } else if args.json {
+        print_json(&terminal)?;
     }
     Ok(0)
 }
@@ -2486,7 +2595,7 @@ struct ConvertArgs {
 
 fn cmd_convert_mtplx(args: &[OsString]) -> Result<u8, String> {
     let args = parse_convert_args(args)?;
-    run_convert_mtplx(&args, "convert-mtplx", "ax.convert_mtplx.v1", None)
+    run_convert_mtplx(&args, "convert-mtplx", "ax.convert_mtplx.v1", None, false)
 }
 
 fn run_convert_mtplx(
@@ -2494,6 +2603,7 @@ fn run_convert_mtplx(
     command_name: &str,
     schema_version: &str,
     download_summary: Option<Value>,
+    progress: bool,
 ) -> Result<u8, String> {
     let prepare = find_helper(
         "AX_ENGINE_PREPARE_MTP_SIDECAR_HELPER",
@@ -2534,20 +2644,37 @@ fn run_convert_mtplx(
         .map_err(|err| format!("failed to run prepare_mtp_sidecar helper: {err}"))?;
     let prepare_stdout = String::from_utf8_lossy(&prepare_output.stdout).into_owned();
     let prepare_stderr = String::from_utf8_lossy(&prepare_output.stderr).into_owned();
-    if !args.json {
+    if !args.json && !progress {
         print!("{prepare_stdout}");
+        eprint!("{prepare_stderr}");
+    } else if progress && !prepare_stderr.is_empty() {
         eprint!("{prepare_stderr}");
     }
     if !prepare_output.status.success() {
-        if args.json {
+        if args.json && !progress {
             eprint!("{prepare_stderr}");
         }
-        return Ok(prepare_output
+        let code: u8 = prepare_output
             .status
             .code()
             .unwrap_or(1)
             .try_into()
-            .unwrap_or(1));
+            .unwrap_or(1);
+        if progress {
+            let mut terminal = json!({
+                "schema_version": schema_version,
+                "command": command_name,
+                "status": "prepare_failed",
+                "base_model": &args.base_model,
+                "mtp_source": &args.mtp_source,
+                "exit_code": code,
+            });
+            if let Some(download_summary) = &download_summary {
+                terminal["download"] = download_summary.clone();
+            }
+            print_download_mtp_progress_terminal(&terminal)?;
+        }
+        return Ok(code.max(1));
     }
     let output_dir =
         parse_output_dir(&prepare_stdout, args.output.as_deref()).ok_or_else(|| {
@@ -2566,28 +2693,47 @@ fn run_convert_mtplx(
         .map_err(|err| format!("failed to run sidecar provenance checker: {err}"))?;
     let provenance_stdout = String::from_utf8_lossy(&provenance.stdout).into_owned();
     let provenance_stderr = String::from_utf8_lossy(&provenance.stderr).into_owned();
-    if !args.json {
+    if !args.json && !progress {
         print!("{provenance_stdout}");
+        eprint!("{provenance_stderr}");
+    } else if progress && !provenance_stderr.is_empty() {
         eprint!("{provenance_stderr}");
     }
     if !provenance.status.success() {
-        if args.json {
+        if args.json && !progress {
             eprint!("{provenance_stderr}");
         }
-        return Ok(provenance
+        let code: u8 = provenance
             .status
             .code()
             .unwrap_or(1)
             .try_into()
-            .unwrap_or(1));
+            .unwrap_or(1);
+        if progress {
+            let mut terminal = json!({
+                "schema_version": schema_version,
+                "command": command_name,
+                "status": "provenance_failed",
+                "base_model": &args.base_model,
+                "mtp_source": &args.mtp_source,
+                "output_dir": output_dir,
+                "exit_code": code,
+            });
+            if let Some(download_summary) = &download_summary {
+                terminal["download"] = download_summary.clone();
+            }
+            print_download_mtp_progress_terminal(&terminal)?;
+        }
+        return Ok(code.max(1));
     }
 
-    if args.json {
+    if args.json || progress {
         let provenance_summary = serde_json::from_str::<Value>(&provenance_stdout)
             .unwrap_or_else(|_| json!({ "raw": provenance_stdout }));
         let mut summary = json!({
             "schema_version": schema_version,
             "command": command_name,
+            "status": "ready",
             "base_model": &args.base_model,
             "mtp_source": &args.mtp_source,
             "mtp_depth_max": depth.parse::<u32>().unwrap_or(1),
@@ -2597,7 +2743,11 @@ fn run_convert_mtplx(
         if let Some(download_summary) = download_summary {
             summary["download"] = download_summary;
         }
-        print_json(&summary)?;
+        if progress {
+            print_download_mtp_progress_terminal(&summary)?;
+        } else {
+            print_json(&summary)?;
+        }
     }
     Ok(0)
 }
@@ -2907,6 +3057,21 @@ fn find_executable(name: &str) -> PathBuf {
 }
 
 fn find_helper(env_name: &str, installed_name: &str, source_name: &str) -> Result<PathBuf, String> {
+    let explicit_repo_root = env::var_os("AX_ENGINE_REPO_ROOT").map(PathBuf::from);
+    find_helper_with_repo_root(
+        env_name,
+        installed_name,
+        source_name,
+        explicit_repo_root.as_deref(),
+    )
+}
+
+fn find_helper_with_repo_root(
+    env_name: &str,
+    installed_name: &str,
+    source_name: &str,
+    explicit_repo_root: Option<&Path>,
+) -> Result<PathBuf, String> {
     if let Some(path) = env::var_os(env_name) {
         let path = PathBuf::from(path);
         if path.is_file() {
@@ -2923,27 +3088,42 @@ fn find_helper(env_name: &str, installed_name: &str, source_name: &str) -> Resul
             }
         }
     }
-    let mut roots = Vec::new();
-    if let Some(root) = env::var_os("AX_ENGINE_REPO_ROOT") {
-        roots.push(PathBuf::from(root));
+    if let Some(root) = explicit_repo_root
+        && let Some(candidate) = helper_in_repo_root(root, source_name)
+    {
+        return Ok(candidate);
     }
-    if let Ok(cwd) = env::current_dir() {
-        roots.push(cwd.clone());
-        roots.extend(cwd.ancestors().skip(1).map(Path::to_path_buf));
-    }
-    for root in roots {
-        for candidate in [
-            root.join("scripts").join(source_name),
-            root.join(source_name),
-        ] {
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
+    if let Some(root) = verified_build_source_repo_root()
+        && let Some(candidate) = helper_in_repo_root(&root, source_name)
+    {
+        return Ok(candidate);
     }
     Err(format!(
-        "cannot locate {source_name}. Reinstall ax-engine, set {env_name}, or run from a source checkout."
+        "cannot locate {source_name}. Reinstall ax-engine, set {env_name}, or set \
+         AX_ENGINE_REPO_ROOT to a source checkout."
     ))
+}
+
+fn helper_in_repo_root(root: &Path, source_name: &str) -> Option<PathBuf> {
+    [
+        root.join("scripts").join(source_name),
+        root.join(source_name),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+}
+
+fn verified_build_source_repo_root() -> Option<PathBuf> {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = crate_dir.parent()?.parent()?;
+    if root.join("Cargo.toml").is_file()
+        && root.join("crates/ax-engine-bench/Cargo.toml").is_file()
+        && root.join("scripts").is_dir()
+    {
+        Some(root.to_path_buf())
+    } else {
+        None
+    }
 }
 
 fn python() -> OsString {
@@ -3036,6 +3216,57 @@ fn print_json(value: &Value) -> Result<(), String> {
         .map_err(|error| format!("failed to serialize JSON output: {error}"))?;
     println!("{rendered}");
     Ok(())
+}
+
+fn render_json_compact(value: &Value) -> Result<String, String> {
+    serde_json::to_string(value)
+        .map_err(|error| format!("failed to serialize JSON output: {error}"))
+}
+
+fn render_download_progress_terminal(value: &Value) -> Result<String, String> {
+    if value.get("schema_version").and_then(Value::as_str) != Some("ax.download_model.v1") {
+        return Err("download progress terminal has an invalid schema_version".into());
+    }
+    render_json_compact(value)
+}
+
+fn print_download_progress_terminal(value: &Value) -> Result<(), String> {
+    println!("{}", render_download_progress_terminal(value)?);
+    Ok(())
+}
+
+fn download_error_summary(input: Option<&str>, error: &str) -> Value {
+    json!({
+        "schema_version": "ax.download_model.v1",
+        "input": input,
+        "repo_id": Value::Null,
+        "revision": Value::Null,
+        "dest": Value::Null,
+        "status": "download_failed",
+        "errors": [error],
+    })
+}
+
+fn render_download_mtp_progress_terminal(value: &Value) -> Result<String, String> {
+    if value.get("schema_version").and_then(Value::as_str) != Some("ax.download_mtp.v1") {
+        return Err("download-mtp progress terminal has an invalid schema_version".into());
+    }
+    render_json_compact(value)
+}
+
+fn print_download_mtp_progress_terminal(value: &Value) -> Result<(), String> {
+    println!("{}", render_download_mtp_progress_terminal(value)?);
+    Ok(())
+}
+
+fn download_mtp_error_summary(base_model: Option<&str>, status: &str, error: &str) -> Value {
+    json!({
+        "schema_version": "ax.download_mtp.v1",
+        "command": "download-mtp",
+        "status": status,
+        "base_model": base_model,
+        "error": error,
+    })
 }
 
 fn parse_output_dir(stdout: &str, explicit: Option<&str>) -> Option<String> {
@@ -3169,6 +3400,15 @@ mod tests {
         assert_eq!(repo, "owner/repo");
         assert_eq!(rev.as_deref(), Some("main"));
 
+        let (repo, _, rev) =
+            download_repo_id("https://hf.co/owner/repo/tree/feature%2Fdownloads", None).unwrap();
+        assert_eq!(repo, "owner/repo");
+        assert_eq!(rev.as_deref(), Some("feature/downloads"));
+
+        let (repo, _, rev) = download_repo_id("owner/repo.git@refs/pr/123", None).unwrap();
+        assert_eq!(repo, "owner/repo");
+        assert_eq!(rev.as_deref(), Some("refs/pr/123"));
+
         let (repo, _, _) = download_repo_id("owner/repo", None).unwrap();
         assert_eq!(repo, "owner/repo");
     }
@@ -3181,9 +3421,107 @@ mod tests {
             "https://huggingface.co/owner",
             "https://huggingface.co/owner/repo/blob/main/model.safetensors",
             "owner/repo/extra/path",
+            "owner/repo@../other",
+            "owner/re--po",
         ] {
             assert!(download_repo_id(bad, None).is_err(), "{bad:?} must fail");
         }
+    }
+
+    #[test]
+    fn compact_progress_summary_is_one_terminal_json_record() {
+        let summary = json!({
+            "schema_version": "ax.download_model.v1",
+            "repo_id": "owner/repo",
+            "revision": "feature/downloads",
+            "dest": "/tmp/model",
+            "status": "ready",
+        });
+        let rendered = render_json_compact(&summary).unwrap();
+        assert!(!rendered.contains('\n'));
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["schema_version"], "ax.download_model.v1");
+        assert_eq!(parsed["revision"], "feature/downloads");
+    }
+
+    #[test]
+    fn download_progress_without_model_is_a_clear_error() {
+        let args = parse_download_args(&[OsString::from("--progress-json")]).unwrap();
+        let error = run_download(&args).unwrap_err();
+        assert_eq!(
+            error,
+            "download --progress-json requires a model alias or Hugging Face repo id"
+        );
+        let terminal = download_error_summary(None, &error);
+        let rendered = render_download_progress_terminal(&terminal).unwrap();
+        assert_eq!(rendered.lines().count(), 1);
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["schema_version"], "ax.download_model.v1");
+        assert_eq!(parsed["status"], "download_failed");
+        assert_eq!(parsed["errors"][0], error);
+    }
+
+    #[test]
+    fn download_progress_parse_errors_have_a_terminal_record() {
+        let error = parse_download_args(&[
+            OsString::from("--progress-json"),
+            OsString::from("--unknown"),
+        ])
+        .unwrap_err();
+        let terminal = download_error_summary(None, &error);
+        let rendered = render_download_progress_terminal(&terminal).unwrap();
+        assert_eq!(rendered.lines().count(), 1);
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["schema_version"], "ax.download_model.v1");
+        assert_eq!(parsed["status"], "download_failed");
+        assert_eq!(parsed["errors"][0], "unknown download option: --unknown");
+        assert!(
+            render_download_progress_terminal(&json!({
+                "schema_version": "ax.download_mtp.v1"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn download_helper_value_options_preserve_leading_hyphens() {
+        assert_eq!(
+            helper_value_option("--revision", "-release"),
+            OsString::from("--revision=-release")
+        );
+        assert_eq!(
+            helper_value_option("--dest", "-models"),
+            OsString::from("--dest=-models")
+        );
+    }
+
+    #[test]
+    fn download_mtp_progress_records_enforce_schema_and_compact_terminal() {
+        let failure =
+            download_mtp_error_summary(Some("qwen3.6-27b"), "error", "prepare helper unavailable");
+        let success = json!({
+            "schema_version": "ax.download_mtp.v1",
+            "command": "download-mtp",
+            "status": "ready",
+            "base_model": "qwen3.6-27b",
+            "output_dir": "/tmp/qwen-mtp",
+        });
+        for (summary, expected_status) in [(&failure, "error"), (&success, "ready")] {
+            let rendered = render_download_mtp_progress_terminal(summary).unwrap();
+            assert_eq!(rendered.lines().count(), 1);
+            let parsed: Value = serde_json::from_str(&rendered).unwrap();
+            assert_eq!(parsed["schema_version"], "ax.download_mtp.v1");
+            assert_eq!(parsed["command"], "download-mtp");
+            assert_eq!(parsed["status"], expected_status);
+        }
+        assert_eq!(failure["base_model"], "qwen3.6-27b");
+        assert_eq!(failure["error"], "prepare helper unavailable");
+        assert!(
+            render_download_mtp_progress_terminal(&json!({
+                "schema_version": "ax.download_model.v1"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -3307,6 +3645,7 @@ mod tests {
             OsString::from("128"),
             OsString::from("--fair-base-only"),
             OsString::from("--json"),
+            OsString::from("--progress-json"),
         ])
         .unwrap();
         assert_eq!(args.model, "qwen36-35b");
@@ -3317,6 +3656,7 @@ mod tests {
         assert_eq!(args.group_size, "128");
         assert!(args.fair_base_only);
         assert!(args.json);
+        assert!(args.progress);
     }
 
     #[test]
@@ -3480,6 +3820,58 @@ mod tests {
             metal_detail(&report),
             "Bundled runtime assets available; Metal compiler only needed for kernel rebuilds"
         );
+    }
+
+    #[test]
+    fn helper_discovery_does_not_execute_a_script_from_the_current_directory() {
+        let root = unique_temp_dir("ax-engine-untrusted-helper-cwd");
+        let scripts = root.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        let unique = root
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap()
+            .replace('-', "_");
+        let source_name = format!("{unique}_download_model.py");
+        fs::write(
+            scripts.join(&source_name),
+            "raise SystemExit('untrusted')\n",
+        )
+        .unwrap();
+
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(&root).unwrap();
+        let result = find_helper_with_repo_root(
+            &format!("AX_ENGINE_{unique}_HELPER"),
+            &format!("ax-engine-{unique}-helper"),
+            &source_name,
+            None,
+        );
+        env::set_current_dir(original).unwrap();
+
+        assert!(result.is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn helper_discovery_accepts_an_explicit_source_repo_root() {
+        let root = unique_temp_dir("ax-engine-explicit-helper-root");
+        let scripts = root.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        let source_name = "explicit-download-model.py";
+        let expected = scripts.join(source_name);
+        fs::write(&expected, "# explicit trusted helper\n").unwrap();
+
+        let found = find_helper_with_repo_root(
+            "AX_ENGINE_TEST_EXPLICIT_HELPER",
+            "ax-engine-test-explicit-helper",
+            source_name,
+            Some(&root),
+        )
+        .unwrap();
+
+        assert_eq!(found, expected);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

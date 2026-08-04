@@ -6,12 +6,11 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 from unittest import mock
-
-import sys
 
 # Default to importing ax_engine from the source tree (for `maturin develop`
 # runs). When validating an installed wheel (AX_ENGINE_RUN_INSTALLED_TESTS=1),
@@ -23,7 +22,7 @@ if os.environ.get("AX_ENGINE_RUN_INSTALLED_TESTS") != "1":
     REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(REPO_ROOT / "python"))
 
-from ax_engine import _cli
+from ax_engine import _cli  # noqa: E402, I001
 
 
 EXPECTED_AUTOMATOSX_REPOS = {
@@ -68,14 +67,10 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
         self.assertEqual(payload["schema_version"], "ax.download_options.v1")
-        self.assertEqual(
-            payload["default_destination"]["kind"], "huggingface_hub_cache"
-        )
+        self.assertEqual(payload["default_destination"]["kind"], "huggingface_hub_cache")
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
-        self.assertEqual(
-            {target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS
-        )
+        self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertEqual(len(targets), 25)
         self.assertTrue(all(target["alias"].startswith("ax-") for target in targets))
         self.assertTrue(
@@ -123,6 +118,55 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("ax-gemma4-12b", stdout)
         self.assertIn("ax-diffusiongemma-26b", stdout)
 
+    def test_download_progress_json_requires_model(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code, stdout = self.capture_main(["download", "--progress-json"])
+
+        self.assertEqual(code, 2)
+        terminal = json.loads(stdout)
+        self.assertEqual(terminal["schema_version"], "ax.download_model.v1")
+        self.assertEqual(terminal["status"], "download_failed")
+        self.assertIn("--progress-json requires a model", terminal["errors"][0])
+        self.assertIn("--progress-json requires a model", stderr.getvalue())
+
+    def test_download_progress_json_normalizes_argument_errors(self) -> None:
+        for argv in (
+            ["download", "owner/repo", "--progress-json", "--unknown"],
+            ["download", "owner/repo", "--progress-json", "--dest"],
+        ):
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    code, stdout = self.capture_main(argv)
+
+                self.assertEqual(code, 2)
+                records = [json.loads(line) for line in stdout.splitlines()]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]["schema_version"], "ax.download_model.v1")
+                self.assertEqual(records[0]["status"], "download_failed")
+                self.assertTrue(records[0]["errors"])
+                self.assertIn("error:", stderr.getvalue())
+
+    def test_download_progress_json_rejects_non_streaming_modes(self) -> None:
+        for argv, conflict in (
+            (["download", "--list", "--progress-json"], "--list"),
+            (
+                ["download", "owner/repo", "--interactive", "--progress-json"],
+                "--interactive",
+            ),
+        ):
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    code, stdout = self.capture_main(argv)
+
+                self.assertEqual(code, 2)
+                terminal = json.loads(stdout)
+                self.assertEqual(terminal["status"], "download_failed")
+                self.assertIn(conflict, terminal["errors"][0])
+                self.assertIn(conflict, stderr.getvalue())
+
     def test_download_unknown_alias_shows_targets(self) -> None:
         with self.assertRaises(SystemExit) as raised:
             self.capture_main(["download", "unknown-model"])
@@ -155,6 +199,29 @@ class AxEngineCliTests(unittest.TestCase):
             ("huggingface.co/owner/repo/", ("owner/repo", None)),
             ("https://huggingface.co/owner/repo.git", ("owner/repo", None)),
             ("https://huggingface.co/owner/repo/tree/main", ("owner/repo", "main")),
+            ("owner/repo@feature/download-ui", ("owner/repo", "feature/download-ui")),
+            ("owner/repo@refs%2Fpr%2F123", ("owner/repo", "refs/pr/123")),
+            (
+                "https://huggingface.co/owner/repo/tree/feature/download-ui",
+                ("owner/repo", "feature/download-ui"),
+            ),
+            (
+                "https://huggingface.co/owner/repo/tree/refs%2Fpr%2F123",
+                ("owner/repo", "refs/pr/123"),
+            ),
+            (
+                "https://huggingface.co/owner/repo.git/tree/v2?download=true",
+                ("owner/repo", "v2"),
+            ),
+            (
+                "https://hf.co:443/owner/repo/tree/v2#files",
+                ("owner/repo", "v2"),
+            ),
+            (
+                "https://hf.co/owner/repo?ignored=\tvalue",
+                ("owner/repo", None),
+            ),
+            ("\towner/repo\n", ("owner/repo", None)),
         ]
         for value, expected in cases:
             with self.subTest(value=value):
@@ -168,15 +235,177 @@ class AxEngineCliTests(unittest.TestCase):
             "noslash",
             "https://example.com/owner/repo",
             "ftp://huggingface.co/owner/repo",
+            "https://huggingface.co:/owner/repo",
+            "https://huggingface.co:invalid/owner/repo",
+            "https://huggingface.co:65536/owner/repo",
+            "https://huggingface.co:443:extra/owner/repo",
+            "https://huggingface.\nco/owner/repo",
+            "https://huggingface.co/owner/re\tpo",
+            "\0https://huggingface.co/owner/repo",
             "https://huggingface.co/owner",
             "https://huggingface.co/owner/repo/blob/main/model.safetensors",
+            "C:/owner/repo",
+            r"owner\repo/model",
+            r"owner/repo@C:\temp",
             "owner/repo/extra/path",
             "owner/repo@",
             "owner//repo",
+            ".owner/repo",
+            "owner/.repo",
+            "owner/repo-",
+            "owner/foo..bar",
+            "owner/foo--bar",
+            f"o/{'x' * 95}",
+            "owner/repo.git.git",
+            "owner/repo@../escape",
+            "owner/repo@feature//escape",
+            "owner/repo@feature/.hidden",
+            "owner/repo@feature.lock",
+            "owner/repo@feature.LOCK",
+            "owner/repo@@",
+            "owner/repo@feature@{1}",
+            "owner/repo@feature\u0080other",
+            "\x1cowner/repo",
+            "https://huggingface.co/owner/repo/tree/%2e%2e/escape",
+            "https://huggingface.co/owner/repo/tree/feature%ZZescape",
         ]:
-            with self.subTest(bad=bad):
-                with self.assertRaises(ValueError):
-                    parse_repo_ref(bad)
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                parse_repo_ref(bad)
+
+        longest = f"o/{'x' * 94}"
+        self.assertEqual(parse_repo_ref(longest), (longest, None))
+
+    def test_find_repo_script_does_not_search_cwd_without_explicit_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            untrusted_root = root / "untrusted"
+            untrusted_script = untrusted_root / "scripts" / "download_model.py"
+            untrusted_script.parent.mkdir(parents=True)
+            untrusted_script.write_text("raise SystemExit(99)")
+            package_dir = root / "venv" / "site-packages" / "ax_engine"
+            package_dir.mkdir(parents=True)
+
+            with (
+                mock.patch.object(_cli, "__file__", str(package_dir / "_cli.py")),
+                mock.patch.object(pathlib.Path, "cwd", return_value=untrusted_root),
+                mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": ""}),
+            ):
+                self.assertIsNone(_cli._find_repo_script("download_model.py"))
+
+            with (
+                mock.patch.object(_cli, "__file__", str(package_dir / "_cli.py")),
+                mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": str(untrusted_root)}),
+            ):
+                self.assertEqual(_cli._find_repo_script("download_model.py"), untrusted_script)
+
+    def test_parse_download_summary_accepts_progress_then_pretty_json(self) -> None:
+        summary = {
+            "schema_version": "ax.download_model.v1",
+            "status": "ready",
+            "dest": "/tmp/model",
+        }
+        stdout = "\n".join(
+            [
+                json.dumps({"event": "progress", "done": 50, "total": 100}),
+                "helper note",
+                json.dumps(summary, indent=2),
+            ]
+        )
+
+        self.assertEqual(_cli._parse_download_summary(stdout), summary)
+        self.assertIsNone(_cli._parse_download_summary(json.dumps({"status": "ready"})))
+
+    def test_streaming_download_forwards_only_progress_records(self) -> None:
+        progress = {"event": "progress", "done": 50, "total": 100, "file": "weights"}
+        summary = {
+            "schema_version": "ax.download_model.v1",
+            "status": "ready",
+            "dest": "/tmp/model",
+        }
+        script = (
+            "import json;"
+            f"print(json.dumps({progress!r}));"
+            "print('helper note');"
+            f"print(json.dumps({summary!r}))"
+        )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = _cli._run_streaming_capture_stdout([sys.executable, "-c", script])
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual([json.loads(line) for line in stdout.getvalue().splitlines()], [progress])
+        self.assertEqual(_cli._parse_download_summary(result.stdout), summary)
+
+    def test_download_progress_json_emits_compact_terminal_summary(self) -> None:
+        summary = {
+            "schema_version": "ax.download_model.v1",
+            "repo_id": "owner/repo",
+            "revision": "v2",
+            "dest": "/tmp/model",
+            "status": "ready",
+        }
+        with mock.patch.object(
+            _cli,
+            "_download_summary",
+            return_value=(0, summary, ""),
+        ) as download:
+            code, stdout = self.capture_main(["download", "owner/repo@v2", "--progress-json"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout), summary)
+        self.assertNotIn("\n ", stdout)
+        self.assertTrue(download.call_args.kwargs["progress_json"])
+
+    def test_download_progress_json_normalizes_preflight_and_helper_failures(self) -> None:
+        cases = (
+            (
+                "unknown alias",
+                ["download", "unknown-model", "--progress-json"],
+                None,
+                None,
+                "unknown model alias",
+            ),
+            (
+                "missing helper",
+                ["download", "owner/repo", "--progress-json"],
+                "_find_repo_script",
+                None,
+                "cannot locate scripts/download_model.py",
+            ),
+            (
+                "missing summary",
+                ["download", "owner/repo", "--progress-json"],
+                "_run_streaming_capture_stdout",
+                subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                "did not emit an ax.download_model.v1 summary",
+            ),
+            (
+                "launch failure",
+                ["download", "owner/repo", "--progress-json"],
+                "_run_streaming_capture_stdout",
+                OSError("permission denied"),
+                "permission denied",
+            ),
+        )
+        for name, argv, patched_name, result, expected in cases:
+            with self.subTest(name=name):
+                stderr = io.StringIO()
+                if patched_name is None:
+                    patcher = contextlib.nullcontext()
+                elif isinstance(result, BaseException):
+                    patcher = mock.patch.object(_cli, patched_name, side_effect=result)
+                else:
+                    patcher = mock.patch.object(_cli, patched_name, return_value=result)
+                with patcher, contextlib.redirect_stderr(stderr):
+                    code, stdout = self.capture_main(argv)
+
+                self.assertEqual(code, 2)
+                records = [json.loads(line) for line in stdout.splitlines()]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]["schema_version"], "ax.download_model.v1")
+                self.assertEqual(records[0]["status"], "download_failed")
+                self.assertIn(expected, records[0]["errors"][0])
+                self.assertIn(expected, stderr.getvalue())
 
     def test_download_url_forwards_revision_to_helper(self) -> None:
         commands: list[list[str]] = []
@@ -186,23 +415,45 @@ class AxEngineCliTests(unittest.TestCase):
             stdout = json.dumps({"schema_version": "ax.download_model.v1", "status": "ready"})
             stderr = ""
 
-        with mock.patch.object(_cli, "_run_capture", side_effect=lambda cmd: commands.append(cmd) or Result()):
-            code, summary, _ = _cli._download_summary(
-                "https://huggingface.co/owner/repo/tree/v2"
-            )
+        def fake_capture(command: list[str]) -> Result:
+            commands.append(command)
+            return Result()
+
+        with mock.patch.object(_cli, "_run_capture", side_effect=fake_capture):
+            code, summary, _ = _cli._download_summary("https://huggingface.co/owner/repo/tree/v2")
 
         self.assertEqual(code, 0)
         command = commands[0]
         self.assertIn("owner/repo", command)
-        self.assertIn("--revision", command)
-        self.assertIn("v2", command)
+        self.assertIn("--revision=v2", command)
         assert summary is not None
+        self.assertEqual(summary["input"], "https://huggingface.co/owner/repo/tree/v2")
+        self.assertEqual(summary["revision"], "v2")
 
+    def test_download_helper_uses_equals_for_option_like_values(self) -> None:
+        class Result:
+            returncode = 0
+            stdout = json.dumps(
+                {"schema_version": "ax.download_model.v1", "status": "ready"}
+            )
+            stderr = ""
+
+        commands: list[list[str]] = []
+
+        def fake_capture(command: list[str]) -> Result:
+            commands.append(command)
+            return Result()
+
+        with mock.patch.object(_cli, "_run_capture", side_effect=fake_capture):
+            _cli._download_summary("owner/repo@-release", dest="-models")
+
+        self.assertIn("--revision=-release", commands[0])
+        self.assertIn("--dest=-models", commands[0])
+        self.assertNotIn("--revision", commands[0])
+        self.assertNotIn("--dest", commands[0])
 
     def test_serve_dry_run_json_uses_server_preset(self) -> None:
-        with mock.patch.object(
-            _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
-        ):
+        with mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"):
             code, stdout = self.capture_main(
                 [
                     "serve",
@@ -244,12 +495,8 @@ class AxEngineCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = pathlib.Path(tmp) / "model"
             model_dir.mkdir()
-            with mock.patch.object(
-                _cli, "_server_bin", return_value="ax-engine-server"
-            ):
-                code, stdout = self.capture_main(
-                    ["serve", str(model_dir), "--dry-run", "--json"]
-                )
+            with mock.patch.object(_cli, "_server_bin", return_value="ax-engine-server"):
+                code, stdout = self.capture_main(["serve", str(model_dir), "--dry-run", "--json"])
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
@@ -257,14 +504,10 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(payload["server"]["url"], "http://127.0.0.1:31418")
         self.assertIn("--mlx-model-artifacts-dir", payload["server"]["argv"])
         path_index = payload["server"]["argv"].index("--mlx-model-artifacts-dir") + 1
-        self.assertEqual(
-            payload["server"]["argv"][path_index], str(model_dir.resolve())
-        )
+        self.assertEqual(payload["server"]["argv"][path_index], str(model_dir.resolve()))
 
     def test_serve_dry_run_json_uses_gemma4_12b_server_preset(self) -> None:
-        with mock.patch.object(
-            _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
-        ):
+        with mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"):
             code, stdout = self.capture_main(
                 ["serve", "gemma4-12b", "--port", "9010", "--dry-run", "--json"]
             )
@@ -312,9 +555,7 @@ class AxEngineCliTests(unittest.TestCase):
 
         def run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
             if command[:2] == ["/opt/bin/ax-engine-bench", "doctor"]:
-                return subprocess.CompletedProcess(
-                    command, 0, json.dumps(bench_report), ""
-                )
+                return subprocess.CompletedProcess(command, 0, json.dumps(bench_report), "")
             if command[1:] == ["--help"]:
                 return subprocess.CompletedProcess(command, 0, "", "")
             if command == ["sw_vers", "-productVersion"]:
@@ -322,9 +563,7 @@ class AxEngineCliTests(unittest.TestCase):
             if command == ["sw_vers", "-buildVersion"]:
                 return subprocess.CompletedProcess(command, 0, "24F74\n", "")
             if command == ["sysctl", "-n", "hw.memsize"]:
-                return subprocess.CompletedProcess(
-                    command, 0, str(64 * 1024 * 1024 * 1024), ""
-                )
+                return subprocess.CompletedProcess(command, 0, str(64 * 1024 * 1024 * 1024), "")
             if command == ["sysctl", "-n", "hw.physicalcpu"]:
                 return subprocess.CompletedProcess(command, 0, "16\n", "")
             if command == ["sysctl", "-n", "hw.perflevel0.name"]:
@@ -335,9 +574,7 @@ class AxEngineCliTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, "Efficiency\n", "")
             if command == ["sysctl", "-n", "hw.perflevel1.physicalcpu"]:
                 return subprocess.CompletedProcess(command, 0, "4\n", "")
-            if command[0:2] == ["sysctl", "-n"] and command[2].startswith(
-                "hw.perflevel"
-            ):
+            if command[0:2] == ["sysctl", "-n"] and command[2].startswith("hw.perflevel"):
                 return subprocess.CompletedProcess(command, 1, "", "unknown oid")
             if command == ["system_profiler", "SPDisplaysDataType"]:
                 return subprocess.CompletedProcess(
@@ -350,22 +587,20 @@ class AxEngineCliTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     command,
                     0,
-                    "Hardware:\n\n    Hardware Overview:\n\n      Total Number of Cores: 16 (4 Efficiency and 12 Performance)\n      Memory: 64 GB\n",
+                    "Hardware:\n\n"
+                    "    Hardware Overview:\n\n"
+                    "      Total Number of Cores: 16 "
+                    "(4 Efficiency and 12 Performance)\n"
+                    "      Memory: 64 GB\n",
                     "",
                 )
             raise AssertionError(f"unexpected command: {command}")
 
         with (
-            mock.patch.object(
-                _cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"
-            ),
-            mock.patch.object(
-                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
-            ),
+            mock.patch.object(_cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"),
+            mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
             mock.patch.object(_cli, "_package_version", return_value="6.4.5"),
-            mock.patch.object(
-                _cli, "_run_capture", side_effect=run_capture
-            ) as run_capture_mock,
+            mock.patch.object(_cli, "_run_capture", side_effect=run_capture) as run_capture_mock,
         ):
             code, stdout = self.capture_main(
                 [
@@ -391,9 +626,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(payload["checks"][0]["id"], "server_binary")
         self.assertEqual(payload["checks"][1]["id"], "bench_binary")
         self.assertEqual(payload["checks"][-1]["status"], "ready")
-        self.assertEqual(
-            payload["source"]["schema_version"], "ax.engine_bench.doctor.v1"
-        )
+        self.assertEqual(payload["source"]["schema_version"], "ax.engine_bench.doctor.v1")
         self.assertEqual(
             payload["next_actions"], ["ax-engine serve /models/gemma4-12b --port 31418"]
         )
@@ -411,21 +644,19 @@ class AxEngineCliTests(unittest.TestCase):
 
     def test_doctor_verbose_wraps_bench_doctor(self) -> None:
         with (
-            mock.patch.object(
-                _cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"
-            ),
+            mock.patch.object(_cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"),
             mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
+            self.assertRaisesRegex(RuntimeError, "stop"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "stop"):
-                self.capture_main(
-                    [
-                        "doctor",
-                        "--verbose",
-                        "--json",
-                        "--mlx-model-artifacts-dir",
-                        "/models/gemma4-12b",
-                    ]
-                )
+            self.capture_main(
+                [
+                    "doctor",
+                    "--verbose",
+                    "--json",
+                    "--mlx-model-artifacts-dir",
+                    "/models/gemma4-12b",
+                ]
+            )
 
         self.assertEqual(execvp.call_args.args[0], "/opt/bin/ax-engine-bench")
         self.assertEqual(
@@ -459,9 +690,7 @@ class AxEngineCliTests(unittest.TestCase):
         }
         with (
             mock.patch.object(_cli, "_bench_bin", return_value="ax-engine-bench"),
-            mock.patch.object(
-                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
-            ),
+            mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
             mock.patch.object(_cli, "_package_version", return_value="6.9.0"),
             mock.patch.object(_cli, "_host_system_summary", return_value=host),
             mock.patch.object(_cli, "_run_capture", side_effect=run_capture),
@@ -515,9 +744,7 @@ class AxEngineCliTests(unittest.TestCase):
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
-                code, stdout = self.capture_main(
-                    ["download", "ax-qwen3.6-35b", "--json"]
-                )
+                code, stdout = self.capture_main(["download", "ax-qwen3.6-35b", "--json"])
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
@@ -565,15 +792,11 @@ class AxEngineCliTests(unittest.TestCase):
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
-                code, stdout = self.capture_main(
-                    ["download", "ax-qwen36-27b-6bit", "--json"]
-                )
+                code, stdout = self.capture_main(["download", "ax-qwen36-27b-6bit", "--json"])
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        self.assertEqual(
-            payload["repo_id"], "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP"
-        )
+        self.assertEqual(payload["repo_id"], "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP")
         self.assertEqual(payload["alias"], "ax-qwen3.6-27b-6bit")
         self.assertNotIn("preset", payload)
 
@@ -613,9 +836,7 @@ class AxEngineCliTests(unittest.TestCase):
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
-                code, stdout = self.capture_main(
-                    ["download", "ax-diffusiongemma-26b", "--json"]
-                )
+                code, stdout = self.capture_main(["download", "ax-diffusiongemma-26b", "--json"])
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
@@ -662,9 +883,7 @@ class AxEngineCliTests(unittest.TestCase):
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
-                code, stdout = self.capture_main(
-                    ["download", "ax-gemma4-12b", "--json"]
-                )
+                code, stdout = self.capture_main(["download", "ax-gemma4-12b", "--json"])
 
             self.assertEqual(code, 0)
             payload = json.loads(stdout)
@@ -679,9 +898,7 @@ class AxEngineCliTests(unittest.TestCase):
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
-                code, stdout = self.capture_main(
-                    ["download", "ax-gemma4-12b-6bit", "--json"]
-                )
+                code, stdout = self.capture_main(["download", "ax-gemma4-12b-6bit", "--json"])
 
             self.assertEqual(code, 0)
             payload = json.loads(stdout)
@@ -736,17 +953,11 @@ class AxEngineCliTests(unittest.TestCase):
                         "FAKE_MODEL_DIR": str(model_dir),
                     },
                 ),
-                mock.patch.object(
-                    _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
-                ),
-                mock.patch.object(
-                    os, "execvp", side_effect=RuntimeError("stop")
-                ) as execvp,
+                mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+                mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
+                self.assertRaisesRegex(RuntimeError, "stop"),
             ):
-                with self.assertRaisesRegex(RuntimeError, "stop"):
-                    self.capture_main(
-                        ["serve", "ax-qwen3.6-35b", "--download"]
-                    )
+                self.capture_main(["serve", "ax-qwen3.6-35b", "--download"])
 
             argv = execvp.call_args.args[1]
             self.assertNotIn("--preset", argv)
@@ -901,9 +1112,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
         targets = payload["targets"]
-        self.assertEqual(
-            {target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS
-        )
+        self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
         self.assertEqual(sum(target["mtp_included"] for target in targets), 18)
 
@@ -937,9 +1146,11 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         self.assertEqual(code, 0)
 
     def test_ui_downloader_requires_tty(self) -> None:
-        with mock.patch.object(_cli, "_supports_interactive", return_value=False):
-            with self.assertRaises(SystemExit) as raised:
-                self.capture_main(["ui-downloader"])
+        with (
+            mock.patch.object(_cli, "_supports_interactive", return_value=False),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            self.capture_main(["ui-downloader"])
 
         self.assertIn("interactive terminal", str(raised.exception))
 
@@ -954,9 +1165,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         with (
             mock.patch.object(_cli, "_supports_interactive", return_value=True),
             mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            mock.patch.object(
-                _cli, "_download_summary", return_value=(0, summary, "")
-            ) as download,
+            mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
         ):
             code, stdout = self.capture_main(["ui-downloader"])
 
@@ -977,10 +1186,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         summary = {
             "schema_version": "ax.download_model.v1",
             "status": "ready",
-            "repo_id": (
-                "AutomatosX/"
-                "AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP"
-            ),
+            "repo_id": ("AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP"),
             "dest": "/tmp/model",
         }
         idx = self._index_of("ax-gemma4-12b")
@@ -989,16 +1195,12 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         with (
             mock.patch.object(_cli, "_supports_interactive", return_value=True),
             mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            mock.patch.object(
-                _cli, "_download_summary", return_value=(0, summary, "")
-            ) as download,
+            mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
         ):
             code, stdout = self.capture_main(["ui-downloader"])
 
         self.assertEqual(code, 0)
-        download.assert_called_once_with(
-            "ax-gemma4-12b", dest=None, force=False, progress=True
-        )
+        download.assert_called_once_with("ax-gemma4-12b", dest=None, force=False, progress=True)
         self.assertIn("Status: ready", stdout)
 
     def test_wizard_non_mtp_snapshot_uses_standard_download(self) -> None:
@@ -1013,9 +1215,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         with (
             mock.patch.object(_cli, "_supports_interactive", return_value=True),
             mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            mock.patch.object(
-                _cli, "_download_summary", return_value=(0, summary, "")
-            ) as download,
+            mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
         ):
             code, stdout = self.capture_main(["ui-downloader"])
 

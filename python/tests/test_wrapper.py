@@ -9,13 +9,46 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 FAKE_MLX_MODEL_DIR = "/tmp/ax-engine-test-mlx-model"
 
 
+def _write_valid_test_manifest(path: Path, **overrides: object) -> None:
+    import json
+
+    tensor_defaults: dict[str, object] = {
+        "name": "model.embed_tokens.weight",
+        "role": "token_embedding",
+        "dtype": "f16",
+        "shape": [1],
+        "file": "model.safetensors",
+        "offset_bytes": 0,
+        "length_bytes": 1,
+    }
+    payload: dict[str, object] = {
+        "schema_version": "ax.native_model.v1",
+        "model_family": "qwen3_dense",
+        "tensor_format": "safetensors",
+        "layer_count": 1,
+        "hidden_size": 1,
+        "attention_head_count": 1,
+        "attention_head_dim": 1,
+        "kv_head_count": 1,
+        "vocab_size": 1,
+        "tensors": [tensor_defaults],
+    }
+    payload.update(overrides)
+    tensors = payload["tensors"]
+    if isinstance(tensors, list):
+        payload["tensors"] = [
+            {**tensor_defaults, **tensor} if isinstance(tensor, dict) else tensor
+            for tensor in tensors
+        ]
+    path.write_text(json.dumps(payload))
+
+
 class FakeNativeSession:
-    instances: list["FakeNativeSession"] = []
+    instances: list[FakeNativeSession] = []
 
     def __init__(
         self,
@@ -119,9 +152,7 @@ class FakeNativeSession:
 
     def runtime(self) -> dict[str, object]:
         selected_backend = "llama_cpp" if self.support_tier == "llama_cpp" else "mlx"
-        resolution_policy = (
-            "allow_llama_cpp" if self.support_tier == "llama_cpp" else "mlx_only"
-        )
+        resolution_policy = "allow_llama_cpp" if self.support_tier == "llama_cpp" else "mlx_only"
         runtime = {
             "selected_backend": selected_backend,
             "support_tier": self.support_tier,
@@ -216,7 +247,8 @@ class FakeNativeSession:
         if self.support_tier == "llama_cpp":
             if self.llama_server_url is None:
                 raise RuntimeError(
-                    f"llama.cpp backend LlamaCpp does not support stream_generate in this preview contract"
+                    "llama.cpp backend LlamaCpp does not support stream_generate "
+                    "in this preview contract"
                 )
 
             prompt_text = kwargs.get("input_text")
@@ -313,9 +345,7 @@ class FakeNativeSession:
                         "request_id": 11,
                         "model_id": self.model_id,
                         "prompt_tokens": tokens,
-                        "prompt_text": prompt_text
-                        if isinstance(prompt_text, str)
-                        else None,
+                        "prompt_text": prompt_text if isinstance(prompt_text, str) else None,
                         "output_tokens": [4, 5],
                         "output_text": (
                             f"llama::{prompt_text}"
@@ -814,9 +844,7 @@ class WrapperContractTests(unittest.TestCase):
             )
 
         native = FakeNativeSession.instances[-1]
-        self.assertIs(
-            native.generate_calls[0][1]["multimodal_inputs"], multimodal_inputs
-        )
+        self.assertIs(native.generate_calls[0][1]["multimodal_inputs"], multimodal_inputs)
 
     def test_generate_supports_server_backed_llama_cpp_surface(self) -> None:
         with self.ax_engine.Session(
@@ -873,9 +901,7 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(runtime.capabilities.provider_extensions, "unsupported")
 
     def test_mlx_session_requires_model_artifact_dir_or_env(self) -> None:
-        with self.assertRaisesRegex(
-            ValueError, "mlx=True requires mlx_model_artifacts_dir"
-        ):
+        with self.assertRaisesRegex(ValueError, "mlx=True requires mlx_model_artifacts_dir"):
             self.ax_engine.Session(model_id="qwen3_dense", mlx=True)
 
     def test_download_model_delegates_to_bundled_helper(self) -> None:
@@ -898,13 +924,11 @@ class WrapperContractTests(unittest.TestCase):
             def fake_run(command, **_kwargs):
                 commands.append(list(command))
                 return subprocess.CompletedProcess(
-                    command, 0, stdout=json.dumps(summary) + "\n", stderr=""
+                    command, 0, stdout=json.dumps(summary, indent=2) + "\n", stderr=""
                 )
 
             with (
-                patch(
-                    "ax_engine._cli._find_repo_script", return_value=helper
-                ),
+                patch("ax_engine._cli._find_repo_script", return_value=helper),
                 patch("subprocess.run", side_effect=fake_run),
             ):
                 resolved = self.ax_engine.download_model(
@@ -914,9 +938,817 @@ class WrapperContractTests(unittest.TestCase):
             self.assertEqual(resolved, Path(summary["dest"]))
             command = commands[0]
             self.assertIn("owner/repo", command)
-            self.assertIn("--revision", command)
-            self.assertIn("v2", command)
-            self.assertIn("--dest", command)
+            self.assertIn("--revision=v2", command)
+            self.assertIn(f"--dest={Path(tmp) / 'dest'}", command)
+
+    def test_download_model_helper_uses_equals_for_option_like_values(self) -> None:
+        import json
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = Path(tmp) / "download_model.py"
+            helper.write_text("# stub")
+            summary = {
+                "schema_version": "ax.download_model.v1",
+                "repo_id": "owner/repo",
+                "dest": "-models",
+                "status": "ready",
+            }
+            commands: list[list[str]] = []
+
+            def fake_run(command, **_kwargs):
+                commands.append(list(command))
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=json.dumps(summary), stderr=""
+                )
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=helper),
+                patch("subprocess.run", side_effect=fake_run),
+            ):
+                resolved = self.ax_engine.download_model(
+                    "owner/repo",
+                    dest="-models",
+                    revision="-release",
+                )
+
+            self.assertEqual(resolved, Path("-models"))
+            self.assertIn("--revision=-release", commands[0])
+            self.assertIn("--dest=-models", commands[0])
+            self.assertNotIn("--revision", commands[0])
+            self.assertNotIn("--dest", commands[0])
+
+    def test_download_model_fallback_forwards_revision(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model.safetensors").write_bytes(b"placeholder")
+            _write_valid_test_manifest(snapshot / "model-manifest.json")
+            calls: list[tuple[str, str | None, bool]] = []
+
+            def fake_download(
+                repo_id: str,
+                *,
+                revision: str | None = None,
+                force: bool = False,
+            ) -> Path:
+                calls.append((repo_id, revision, force))
+                return snapshot
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(
+                    self.ax_engine,
+                    "_run_hf_snapshot_download",
+                    side_effect=fake_download,
+                ),
+            ):
+                resolved = self.ax_engine.download_model(
+                    "https://huggingface.co/owner/repo/tree/feature%2Fdownload-ui"
+                )
+
+            self.assertEqual(resolved, snapshot)
+            self.assertEqual(calls, [("owner/repo", "feature/download-ui", False)])
+
+    def test_download_model_rejects_unsafe_destination_before_helper_or_network(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cwd = root / "cwd"
+            home = root / "home"
+            cwd.mkdir()
+            home.mkdir()
+            cwd_sentinel = cwd / "keep.txt"
+            home_sentinel = home / "keep.txt"
+            root_sentinel = root / "keep.txt"
+            cwd_sentinel.write_text("cwd")
+            home_sentinel.write_text("home")
+            root_sentinel.write_text("root")
+
+            with (
+                patch.object(Path, "cwd", return_value=cwd),
+                patch.object(Path, "home", return_value=home),
+                patch("ax_engine._cli._find_repo_script") as find_helper,
+                patch.object(self.ax_engine, "_run_hf_snapshot_download") as fetch,
+            ):
+                for unsafe in (Path("/"), root, cwd, home, Path(".")):
+                    with (
+                        self.subTest(unsafe=unsafe),
+                        self.assertRaisesRegex(RuntimeError, "unsafe model destination"),
+                    ):
+                        self.ax_engine.download_model(
+                            "owner/repo",
+                            dest=unsafe,
+                            force=True,
+                        )
+
+            find_helper.assert_not_called()
+            fetch.assert_not_called()
+            self.assertEqual(cwd_sentinel.read_text(), "cwd")
+            self.assertEqual(home_sentinel.read_text(), "home")
+            self.assertEqual(root_sentinel.read_text(), "root")
+
+    def test_download_model_fallback_rejects_snapshot_destination_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = [
+                (root / "source-a" / "dest", root / "source-a"),
+                (root / "container", root / "container" / "source-b"),
+                (root / "source-c", root / "source-c"),
+            ]
+            for dest, snapshot in cases:
+                snapshot.mkdir(parents=True, exist_ok=True)
+                if dest.is_dir() and dest != snapshot:
+                    (dest / "model-manifest.json").write_text("{}")
+                with (
+                    self.subTest(dest=dest, snapshot=snapshot),
+                    patch("ax_engine._cli._find_repo_script", return_value=None),
+                    patch.object(
+                        self.ax_engine,
+                        "_run_hf_snapshot_download",
+                        return_value=snapshot,
+                    ),
+                    patch.object(self.ax_engine, "_replace_with_staged_snapshot") as replace,
+                    self.assertRaisesRegex(RuntimeError, "must not overlap"),
+                ):
+                    self.ax_engine.download_model(
+                        "owner/repo",
+                        dest=dest,
+                        force=True,
+                    )
+                replace.assert_not_called()
+
+    def test_copy_mlx_snapshot_materializes_canonical_hf_blob_links(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_cache = root / "models--owner--repo"
+            blobs = repo_cache / "blobs"
+            snapshot = repo_cache / "snapshots" / "commit"
+            nested = snapshot / "nested"
+            blobs.mkdir(parents=True)
+            nested.mkdir(parents=True)
+            (blobs / "config").write_text('{"model_type":"qwen3"}')
+            (blobs / "weights").write_bytes(b"weights")
+            (snapshot / "config.json").symlink_to("../../blobs/config")
+            (nested / "model.safetensors").symlink_to("../../../blobs/weights")
+
+            dest = root / "dest"
+            self.ax_engine._copy_mlx_lm_snapshot(snapshot, dest)
+
+            self.assertEqual((dest / "config.json").read_text(), '{"model_type":"qwen3"}')
+            self.assertEqual((dest / "nested" / "model.safetensors").read_bytes(), b"weights")
+            self.assertFalse((dest / "config.json").is_symlink())
+            self.assertFalse((dest / "nested" / "model.safetensors").is_symlink())
+
+    def test_copy_mlx_snapshot_rejects_escaping_links_recursively(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "secret").write_text("secret")
+
+            for name, nested, directory_link in (
+                ("file-link", False, False),
+                ("nested-file-link", True, False),
+                ("nested-directory-link", True, True),
+            ):
+                with self.subTest(name=name):
+                    snapshot = root / f"snapshot-{name}"
+                    link_parent = snapshot / "nested" if nested else snapshot
+                    link_parent.mkdir(parents=True)
+                    link = link_parent / "escape"
+                    link.symlink_to(
+                        outside if directory_link else outside / "secret",
+                        target_is_directory=directory_link,
+                    )
+
+                    with self.assertRaisesRegex(RuntimeError, "unsafe snapshot symlink"):
+                        self.ax_engine._copy_mlx_lm_snapshot(
+                            snapshot,
+                            root / f"dest-{name}",
+                        )
+
+    def test_copy_mlx_snapshot_rejects_special_files(self) -> None:
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            try:
+                os.mkfifo(snapshot / "weights.pipe")
+            except OSError as error:
+                self.skipTest(f"FIFOs unavailable: {error}")
+
+            with self.assertRaisesRegex(RuntimeError, "only regular files and directories"):
+                self.ax_engine._copy_mlx_lm_snapshot(snapshot, root / "dest")
+
+    def test_download_model_default_dest_rejects_escaping_snapshot_link(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            outside_weights = root / "outside.safetensors"
+            outside_weights.write_bytes(b"weights")
+            (snapshot / "model.safetensors").symlink_to(outside_weights)
+            (snapshot / "config.json").write_text("{}")
+            _write_valid_test_manifest(snapshot / "model-manifest.json")
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(
+                    self.ax_engine,
+                    "_run_hf_snapshot_download",
+                    return_value=snapshot,
+                ),
+                patch.object(self.ax_engine, "_ensure_manifest") as ensure_manifest,
+                self.assertRaisesRegex(RuntimeError, "unsafe snapshot symlink"),
+            ):
+                self.ax_engine.download_model("owner/repo")
+
+            ensure_manifest.assert_not_called()
+
+    def test_download_model_force_rejects_unrelated_nonempty_directory(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "other-project"
+            dest.mkdir()
+            sentinel = dest / "keep.txt"
+            sentinel.write_text("unrelated data")
+
+            with (
+                patch("ax_engine._cli._find_repo_script") as find_helper,
+                patch.object(self.ax_engine, "_run_hf_snapshot_download") as fetch,
+                self.assertRaisesRegex(RuntimeError, "refusing to replace non-model"),
+            ):
+                self.ax_engine.download_model("owner/repo", dest=dest, force=True)
+
+            find_helper.assert_not_called()
+            fetch.assert_not_called()
+            self.assertEqual(sentinel.read_text(), "unrelated data")
+
+            (dest / ".ax-engine-download.json").write_text("not provenance")
+            with (
+                patch("ax_engine._cli._find_repo_script") as find_helper,
+                patch.object(self.ax_engine, "_run_hf_snapshot_download") as fetch,
+                self.assertRaisesRegex(RuntimeError, "refusing to replace non-model"),
+            ):
+                self.ax_engine.download_model("owner/repo", dest=dest, force=True)
+
+            find_helper.assert_not_called()
+            fetch.assert_not_called()
+            self.assertEqual(sentinel.read_text(), "unrelated data")
+
+    def test_download_model_force_replaces_file_and_broken_symlink_destinations(self) -> None:
+        import tempfile
+
+        for destination_kind in ("file", "broken-symlink"):
+            with (
+                self.subTest(destination_kind=destination_kind),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                root = Path(tmp)
+                dest = root / "dest"
+                if destination_kind == "file":
+                    dest.write_text("old file")
+                else:
+                    dest.symlink_to("missing-model")
+
+                snapshot = root / "snapshot"
+                snapshot.mkdir()
+                (snapshot / "config.json").write_text("{}")
+                (snapshot / "model.safetensors").write_bytes(b"new")
+                _write_valid_test_manifest(snapshot / "model-manifest.json")
+
+                with (
+                    patch("ax_engine._cli._find_repo_script", return_value=None),
+                    patch.object(
+                        self.ax_engine,
+                        "_run_hf_snapshot_download",
+                        return_value=snapshot,
+                    ),
+                ):
+                    resolved = self.ax_engine.download_model(
+                        "owner/repo",
+                        dest=dest,
+                        force=True,
+                    )
+
+                self.assertEqual(resolved, dest)
+                self.assertTrue(dest.is_dir())
+                self.assertEqual((dest / "model.safetensors").read_bytes(), b"new")
+
+    def test_hf_snapshot_download_sets_env_before_import_and_forces_refresh(self) -> None:
+        import builtins
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "snapshot"
+            snapshot.mkdir()
+            observed_progress_env: list[str | None] = []
+            calls: list[dict[str, object]] = []
+
+            def fake_snapshot_download(**kwargs: object) -> str:
+                calls.append(kwargs)
+                return str(snapshot)
+
+            fake_hub = types.SimpleNamespace(snapshot_download=fake_snapshot_download)
+            original_import = builtins.__import__
+
+            def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if name == "huggingface_hub":
+                    observed_progress_env.append(os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS"))
+                    return fake_hub
+                return original_import(name, globals, locals, fromlist, level)
+
+            with (
+                patch.dict(os.environ, {"HF_HUB_DISABLE_PROGRESS_BARS": "restore-me"}),
+                patch("builtins.__import__", side_effect=fake_import),
+            ):
+                resolved = self.ax_engine._run_hf_snapshot_download(
+                    "owner/repo", revision="v2", force=True
+                )
+                self.assertEqual(os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS"), "restore-me")
+
+            self.assertEqual(resolved, snapshot)
+            self.assertEqual(observed_progress_env, ["1"])
+            self.assertEqual(
+                calls,
+                [
+                    {
+                        "repo_id": "owner/repo",
+                        "revision": "v2",
+                        "force_download": True,
+                    }
+                ],
+            )
+
+    def test_download_model_force_preserves_other_cached_revisions(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_cache = root / "cache" / "models--owner--repo"
+            old_snapshot = repo_cache / "snapshots" / "old-commit"
+            old_snapshot.mkdir(parents=True)
+            sentinel = old_snapshot / "keep.txt"
+            sentinel.write_text("cached revision")
+
+            fresh_snapshot = root / "fresh"
+            fresh_snapshot.mkdir()
+            (fresh_snapshot / "config.json").write_text("{}")
+            (fresh_snapshot / "model.safetensors").write_bytes(b"fresh")
+            _write_valid_test_manifest(fresh_snapshot / "model-manifest.json")
+
+            def fake_download(
+                repo_id: str,
+                *,
+                revision: str | None = None,
+                force: bool = False,
+            ) -> Path:
+                self.assertEqual(repo_id, "owner/repo")
+                self.assertIsNone(revision)
+                self.assertTrue(force)
+                return fresh_snapshot
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(
+                    self.ax_engine,
+                    "_default_mlx_lm_cache_root",
+                    return_value=root / "cache",
+                ),
+                patch.object(
+                    self.ax_engine,
+                    "_run_hf_snapshot_download",
+                    side_effect=fake_download,
+                ),
+            ):
+                resolved = self.ax_engine.download_model("owner/repo", force=True)
+
+            self.assertEqual(resolved, fresh_snapshot)
+            self.assertEqual(sentinel.read_text(), "cached revision")
+
+    def test_download_model_regenerates_malformed_existing_manifest(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            (dest / "config.json").write_text("{}")
+            (dest / "model.safetensors").write_bytes(b"weights")
+            (dest / "model-manifest.json").write_text("{not json")
+            self.ax_engine._write_download_provenance(dest, "owner/repo", None)
+            generated: list[tuple[Path, bool]] = []
+
+            def fake_generate(target: Path, *, force: bool = False) -> bool:
+                generated.append((Path(target), force))
+                _write_valid_test_manifest(Path(target) / "model-manifest.json")
+                return True
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(self.ax_engine, "_try_generate_manifest", side_effect=fake_generate),
+                patch.object(self.ax_engine, "_run_hf_snapshot_download") as download,
+            ):
+                resolved = self.ax_engine.download_model("owner/repo", dest=dest)
+
+            self.assertEqual(resolved, dest)
+            self.assertEqual(generated, [(dest, True)])
+            download.assert_not_called()
+            self.assertTrue(
+                self.ax_engine._manifest_is_structurally_valid(dest / "model-manifest.json")
+            )
+
+    def test_manifest_structure_allows_rank_zero_other_tensor_only(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "model-manifest.json"
+            _write_valid_test_manifest(
+                manifest_path,
+                tensors=[{"role": "other", "shape": []}],
+            )
+            self.assertTrue(
+                self.ax_engine._manifest_is_structurally_valid(manifest_path)
+            )
+
+            _write_valid_test_manifest(
+                manifest_path,
+                tensors=[{"role": "token_embedding", "shape": []}],
+            )
+            self.assertFalse(
+                self.ax_engine._manifest_is_structurally_valid(manifest_path)
+            )
+
+    def test_download_model_regenerates_non_safetensors_manifest(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            (dest / "config.json").write_text("{}")
+            (dest / "model.safetensors").write_bytes(b"weights")
+            _write_valid_test_manifest(
+                dest / "model-manifest.json",
+                tensor_format="gguf",
+            )
+            self.ax_engine._write_download_provenance(dest, "owner/repo", None)
+            generated: list[tuple[Path, bool]] = []
+
+            def fake_generate(target: Path, *, force: bool = False) -> bool:
+                generated.append((Path(target), force))
+                _write_valid_test_manifest(Path(target) / "model-manifest.json")
+                return True
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(self.ax_engine, "_try_generate_manifest", side_effect=fake_generate),
+                patch.object(self.ax_engine, "_run_hf_snapshot_download") as download,
+            ):
+                resolved = self.ax_engine.download_model("owner/repo", dest=dest)
+
+            self.assertEqual(resolved, dest)
+            self.assertEqual(generated, [(dest, True)])
+            download.assert_not_called()
+
+    def test_download_model_preserves_unmarked_legacy_destination(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            (dest / "config.json").write_text("{}")
+            (dest / "model.safetensors").write_bytes(b"weights")
+            _write_valid_test_manifest(dest / "model-manifest.json")
+            sentinel = dest / "legacy.txt"
+            sentinel.write_text("keep me")
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(self.ax_engine, "_run_hf_snapshot_download") as download,
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "does not match the requested repository and revision.*force=True",
+                ),
+            ):
+                self.ax_engine.download_model("owner/repo", dest=dest)
+
+            download.assert_not_called()
+            self.assertEqual(sentinel.read_text(), "keep me")
+            self.assertFalse((dest / ".ax-engine-download.json").exists())
+
+    def test_download_model_explicit_dest_records_and_enforces_provenance(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / "dest"
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model.safetensors").write_bytes(b"weights")
+            _write_valid_test_manifest(snapshot / "model-manifest.json")
+            calls: list[tuple[str, str | None, bool]] = []
+
+            def fake_download(
+                repo_id: str,
+                *,
+                revision: str | None = None,
+                force: bool = False,
+            ) -> Path:
+                calls.append((repo_id, revision, force))
+                return snapshot
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(
+                    self.ax_engine,
+                    "_run_hf_snapshot_download",
+                    side_effect=fake_download,
+                ),
+            ):
+                installed = self.ax_engine.download_model(
+                    "owner/repo",
+                    dest=dest,
+                    revision="release/v2",
+                )
+                reused = self.ax_engine.download_model(
+                    "owner/repo",
+                    dest=dest,
+                    revision="release/v2",
+                )
+                for mismatched_repo, mismatched_revision in (
+                    ("other/repo", "release/v2"),
+                    ("owner/repo", "release/v3"),
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "does not match the requested repository and revision.*force=True",
+                    ):
+                        self.ax_engine.download_model(
+                            mismatched_repo,
+                            dest=dest,
+                            revision=mismatched_revision,
+                        )
+
+            self.assertEqual(installed, dest)
+            self.assertEqual(reused, dest)
+            self.assertEqual(calls, [("owner/repo", "release/v2", False)])
+            self.assertEqual(
+                json.loads((dest / ".ax-engine-download.json").read_text()),
+                {
+                    "schema_version": "ax.download_provenance.v1",
+                    "repo_id": "owner/repo",
+                    "revision": "release/v2",
+                },
+            )
+
+    def test_download_model_copy_failure_preserves_existing_destination(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / "dest"
+            dest.mkdir()
+            sentinel = dest / "keep.txt"
+            sentinel.write_text("previous contents")
+            (dest / "model-manifest.json").write_text("{}")
+
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model.safetensors").write_bytes(b"new")
+            _write_valid_test_manifest(snapshot / "model-manifest.json")
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(
+                    self.ax_engine,
+                    "_run_hf_snapshot_download",
+                    return_value=snapshot,
+                ),
+                patch.object(
+                    self.ax_engine,
+                    "_copy_mlx_lm_snapshot",
+                    side_effect=OSError("copy failed"),
+                ),
+                self.assertRaisesRegex(OSError, "copy failed"),
+            ):
+                self.ax_engine.download_model("owner/repo", dest=dest, force=True)
+
+            self.assertEqual(sentinel.read_text(), "previous contents")
+            self.assertEqual(
+                [path.name for path in root.iterdir() if path.name.startswith(".dest")],
+                [],
+            )
+
+    def test_staged_install_rejects_destination_created_during_prepare(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model.safetensors").write_bytes(b"new")
+            _write_valid_test_manifest(snapshot / "model-manifest.json")
+            dest = root / "dest"
+            write_provenance = self.ax_engine._write_download_provenance
+
+            def create_competing_destination(
+                stage: Path,
+                repo_id: str,
+                revision: str | None,
+            ) -> None:
+                write_provenance(stage, repo_id, revision)
+                dest.mkdir()
+                (dest / "important.txt").write_text("keep")
+
+            with (
+                patch.object(
+                    self.ax_engine,
+                    "_write_download_provenance",
+                    side_effect=create_competing_destination,
+                ),
+                self.assertRaisesRegex(RuntimeError, "no longer matches"),
+            ):
+                self.ax_engine._replace_with_staged_snapshot(
+                    snapshot,
+                    dest,
+                    repo_id="owner/repo",
+                    revision=None,
+                    force=False,
+                )
+
+            self.assertEqual((dest / "important.txt").read_text(), "keep")
+            self.assertEqual(
+                [path.name for path in root.iterdir() if path.name.startswith(".dest")],
+                [],
+            )
+
+    def test_download_model_install_failure_restores_existing_destination(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / "dest"
+            dest.mkdir()
+            sentinel = dest / "keep.txt"
+            sentinel.write_text("previous contents")
+            (dest / "model-manifest.json").write_text("{}")
+
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model.safetensors").write_bytes(b"new")
+            _write_valid_test_manifest(snapshot / "model-manifest.json")
+
+            original_rename = Path.rename
+
+            def fail_install(source: Path, target: Path) -> Path:
+                if source.name.startswith(".dest.download-") and Path(target) == dest:
+                    raise OSError("install rename failed")
+                return original_rename(source, target)
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(
+                    self.ax_engine,
+                    "_run_hf_snapshot_download",
+                    return_value=snapshot,
+                ),
+                patch.object(Path, "rename", autospec=True, side_effect=fail_install),
+                self.assertRaisesRegex(OSError, "install rename failed"),
+            ):
+                self.ax_engine.download_model("owner/repo", dest=dest, force=True)
+
+            self.assertEqual(sentinel.read_text(), "previous contents")
+            self.assertFalse((dest / "model.safetensors").exists())
+            self.assertEqual(
+                [path.name for path in root.iterdir() if path.name.startswith(".dest")],
+                [],
+            )
+
+    def test_download_model_install_failure_restores_broken_symlink_destination(
+        self,
+    ) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / "dest"
+            broken_target = Path("missing-model")
+            dest.symlink_to(broken_target)
+
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model.safetensors").write_bytes(b"new")
+            _write_valid_test_manifest(snapshot / "model-manifest.json")
+
+            original_rename = Path.rename
+
+            def fail_install(source: Path, target: Path) -> Path:
+                if source.name.startswith(".dest.download-") and Path(target) == dest:
+                    raise OSError("install rename failed")
+                return original_rename(source, target)
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(
+                    self.ax_engine,
+                    "_run_hf_snapshot_download",
+                    return_value=snapshot,
+                ),
+                patch.object(Path, "rename", autospec=True, side_effect=fail_install),
+                self.assertRaisesRegex(OSError, "install rename failed"),
+            ):
+                self.ax_engine.download_model("owner/repo", dest=dest, force=True)
+
+            self.assertTrue(dest.is_symlink())
+            self.assertEqual(dest.readlink(), broken_target)
+            self.assertEqual(
+                [path.name for path in root.iterdir() if path.name.startswith(".dest")],
+                [],
+            )
+
+    def test_download_model_reports_stranded_backup_cleanup(self) -> None:
+        import shutil
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / "dest"
+            dest.mkdir()
+            sentinel = dest / "keep.txt"
+            sentinel.write_text("previous contents")
+            (dest / "model-manifest.json").write_text("{}")
+
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model.safetensors").write_bytes(b"new")
+            _write_valid_test_manifest(snapshot / "model-manifest.json")
+
+            original_rmtree = shutil.rmtree
+
+            def fail_backup_cleanup(path, *args, **kwargs):
+                if Path(path).name.startswith(".dest.backup-"):
+                    raise PermissionError("backup is busy")
+                return original_rmtree(path, *args, **kwargs)
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(
+                    self.ax_engine,
+                    "_run_hf_snapshot_download",
+                    return_value=snapshot,
+                ),
+                patch("shutil.rmtree", side_effect=fail_backup_cleanup),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "previous destination could not be removed and remains at",
+                ),
+            ):
+                self.ax_engine.download_model("owner/repo", dest=dest, force=True)
+
+            self.assertEqual((dest / "model.safetensors").read_bytes(), b"new")
+            backups = [path for path in root.iterdir() if path.name.startswith(".dest.backup-")]
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(
+                (backups[0] / "previous" / "keep.txt").read_text(),
+                "previous contents",
+            )
+
+    def test_download_model_rejects_invalid_explicit_revision(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid revision"):
+            self.ax_engine.download_model("owner/repo", revision="../../local-model")
+
+    def test_download_model_normalizes_helper_launch_errors(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = Path(tmp) / "download_model.py"
+            helper.write_text("# stub")
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=helper),
+                patch("subprocess.run", side_effect=OSError("permission denied")),
+                self.assertRaisesRegex(RuntimeError, "failed to launch model download helper"),
+            ):
+                self.ax_engine.download_model("owner/repo")
 
     def test_download_model_raises_helper_errors(self) -> None:
         import json
@@ -940,13 +1772,11 @@ class WrapperContractTests(unittest.TestCase):
                 )
 
             with (
-                patch(
-                    "ax_engine._cli._find_repo_script", return_value=helper
-                ),
+                patch("ax_engine._cli._find_repo_script", return_value=helper),
                 patch("subprocess.run", side_effect=fake_run),
+                self.assertRaisesRegex(RuntimeError, "insufficient disk space"),
             ):
-                with self.assertRaisesRegex(RuntimeError, "insufficient disk space"):
-                    self.ax_engine.download_model("owner/repo")
+                self.ax_engine.download_model("owner/repo")
 
     def test_download_model_accepts_embedding_repos(self) -> None:
         # Embedding repos go through the ordinary download + manifest flow
@@ -991,27 +1821,35 @@ class WrapperContractTests(unittest.TestCase):
             snapshot = Path(tmp) / "snapshot"
             calls: list[str] = []
 
-            def fake_download(repo_id: str) -> Path:
+            def fake_download(
+                repo_id: str,
+                *,
+                revision: str | None = None,
+                force: bool = False,
+            ) -> Path:
+                self.assertIsNone(revision)
+                self.assertFalse(force)
                 calls.append(repo_id)
                 snapshot.mkdir()
                 (snapshot / "config.json").write_text('{"model_type":"gemma4_unified"}')
                 (snapshot / "model.safetensors").write_bytes(b"placeholder")
                 return snapshot
 
+            def fake_generate(target: Path, *, force: bool = False) -> bool:
+                self.assertFalse(force)
+                _write_valid_test_manifest(Path(target) / "model-manifest.json")
+                return True
+
             with (
                 patch("ax_engine._cli._find_repo_script", return_value=None),
-                patch.object(
-                    self.ax_engine, "_run_hf_snapshot_download", fake_download
-                ),
+                patch.object(self.ax_engine, "_run_hf_snapshot_download", fake_download),
                 patch.object(
                     self.ax_engine,
                     "_try_generate_manifest",
-                    return_value=True,
+                    side_effect=fake_generate,
                 ),
             ):
-                resolved = self.ax_engine.download_model(
-                    "mlx-community/gemma-4-12B-it-4bit"
-                )
+                resolved = self.ax_engine.download_model("mlx-community/gemma-4-12B-it-4bit")
 
         self.assertEqual(calls, ["mlx-community/gemma-4-12B-it-4bit"])
         self.assertEqual(resolved, snapshot)
@@ -1022,7 +1860,14 @@ class WrapperContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             snapshot = Path(tmp) / "snapshot"
 
-            def fake_download(repo_id: str) -> Path:
+            def fake_download(
+                repo_id: str,
+                *,
+                revision: str | None = None,
+                force: bool = False,
+            ) -> Path:
+                self.assertIsNone(revision)
+                self.assertFalse(force)
                 snapshot.mkdir()
                 (snapshot / "config.json").write_text('{"model_type":"gemma4_unified"}')
                 (snapshot / "model.safetensors").write_bytes(b"placeholder")
@@ -1030,15 +1875,11 @@ class WrapperContractTests(unittest.TestCase):
 
             with (
                 patch("ax_engine._cli._find_repo_script", return_value=None),
-                patch.object(
-                    self.ax_engine, "_run_hf_snapshot_download", fake_download
-                ),
-                patch.object(
-                    self.ax_engine, "_try_generate_manifest", return_value=False
-                ),
+                patch.object(self.ax_engine, "_run_hf_snapshot_download", fake_download),
+                patch.object(self.ax_engine, "_try_generate_manifest", return_value=False),
+                self.assertRaisesRegex(RuntimeError, "not AX-ready"),
             ):
-                with self.assertRaisesRegex(RuntimeError, "not AX-ready"):
-                    self.ax_engine.download_model("mlx-community/gemma-4-12B-it-4bit")
+                self.ax_engine.download_model("mlx-community/gemma-4-12B-it-4bit")
 
     def test_download_model_force_regenerates_stale_manifest(self) -> None:
         import tempfile
@@ -1047,9 +1888,17 @@ class WrapperContractTests(unittest.TestCase):
             dest = Path(tmp) / "dest"
             dest.mkdir()
             (dest / "model-manifest.json").write_text('{"stale":true}')
+            (dest / "old.safetensors").write_bytes(b"stale")
             snapshot = Path(tmp) / "snapshot"
 
-            def fake_download(repo_id: str) -> Path:
+            def fake_download(
+                repo_id: str,
+                *,
+                revision: str | None = None,
+                force: bool = False,
+            ) -> Path:
+                self.assertIsNone(revision)
+                self.assertTrue(force)
                 snapshot.mkdir()
                 (snapshot / "config.json").write_text('{"model_type":"qwen3"}')
                 (snapshot / "model.safetensors").write_bytes(b"new")
@@ -1060,36 +1909,28 @@ class WrapperContractTests(unittest.TestCase):
             def fake_generate(target: Path, *, force: bool = False) -> bool:
                 self.assertFalse(force)
                 manifest_calls.append(Path(target))
-                (Path(target) / "model-manifest.json").write_text('{"fresh":true}')
+                _write_valid_test_manifest(Path(target) / "model-manifest.json", fresh=True)
                 return True
 
             with (
                 patch("ax_engine._cli._find_repo_script", return_value=None),
-                patch.object(
-                    self.ax_engine, "_run_hf_snapshot_download", fake_download
-                ),
-                patch.object(
-                    self.ax_engine, "_try_generate_manifest", side_effect=fake_generate
-                ),
-                patch.object(
-                    # Keep the force-rmtree off the user's real Hugging Face cache.
-                    self.ax_engine,
-                    "_default_mlx_lm_cache_root",
-                    return_value=Path(tmp) / "cache",
-                ),
+                patch.object(self.ax_engine, "_run_hf_snapshot_download", fake_download),
+                patch.object(self.ax_engine, "_try_generate_manifest", side_effect=fake_generate),
             ):
                 resolved = self.ax_engine.download_model(
                     "mlx-community/Qwen3-4B-4bit", dest=dest, force=True
                 )
 
             self.assertEqual(resolved, dest)
-            # The stale manifest is invalidated and regenerated against the new weights.
-            self.assertEqual(manifest_calls, [dest])
-            self.assertEqual(
-                (dest / "model-manifest.json").read_text(), '{"fresh":true}'
-            )
+            # Generate and validate in staging before replacing the old destination.
+            self.assertEqual(len(manifest_calls), 1)
+            self.assertEqual(manifest_calls[0].parent, dest.parent)
+            self.assertTrue(manifest_calls[0].name.startswith(".dest.download-"))
+            self.assertFalse((dest / "old.safetensors").exists())
+            self.assertTrue((dest / "model.safetensors").exists())
 
     def test_download_model_force_preserves_published_manifest(self) -> None:
+        import json
         import tempfile
 
         repo_id = "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP"
@@ -1099,35 +1940,31 @@ class WrapperContractTests(unittest.TestCase):
             (dest / "model-manifest.json").write_text('{"stale":true}')
             snapshot = Path(tmp) / "snapshot"
 
-            def fake_download(actual_repo_id: str) -> Path:
+            def fake_download(
+                actual_repo_id: str,
+                *,
+                revision: str | None = None,
+                force: bool = False,
+            ) -> Path:
                 self.assertEqual(actual_repo_id, repo_id)
+                self.assertIsNone(revision)
+                self.assertTrue(force)
                 snapshot.mkdir()
                 (snapshot / "config.json").write_text('{"model_type":"qwen3_5"}')
                 (snapshot / "model.safetensors").write_bytes(b"new")
-                (snapshot / "model-manifest.json").write_text('{"published":true}')
+                _write_valid_test_manifest(snapshot / "model-manifest.json", published=True)
                 return snapshot
 
             with (
                 patch("ax_engine._cli._find_repo_script", return_value=None),
-                patch.object(
-                    self.ax_engine, "_run_hf_snapshot_download", fake_download
-                ),
-                patch.object(
-                    self.ax_engine,
-                    "_default_mlx_lm_cache_root",
-                    return_value=Path(tmp) / "cache",
-                ),
+                patch.object(self.ax_engine, "_run_hf_snapshot_download", fake_download),
                 patch.object(self.ax_engine, "_try_generate_manifest") as generate,
             ):
-                resolved = self.ax_engine.download_model(
-                    repo_id, dest=dest, force=True
-                )
+                resolved = self.ax_engine.download_model(repo_id, dest=dest, force=True)
 
             self.assertEqual(resolved, dest)
             generate.assert_not_called()
-            self.assertEqual(
-                (dest / "model-manifest.json").read_text(), '{"published":true}'
-            )
+            self.assertTrue(json.loads((dest / "model-manifest.json").read_text())["published"])
 
     def test_download_model_repairs_published_qwen_visual_manifest(self) -> None:
         import json
@@ -1149,40 +1986,35 @@ class WrapperContractTests(unittest.TestCase):
                     }
                 )
             )
-            (dest / "model-manifest.json").write_text(
-                json.dumps(
+            _write_valid_test_manifest(
+                dest / "model-manifest.json",
+                model_family="qwen3_5",
+                tensors=[
                     {
-                        "model_family": "qwen3_5",
-                        "tensors": [
-                            {
-                                "name": "language_model.model.embed_tokens.weight",
-                                "role": "token_embedding",
-                            }
-                        ],
+                        "name": "language_model.model.embed_tokens.weight",
+                        "role": "token_embedding",
                     }
-                )
+                ],
+            )
+            self.ax_engine._write_download_provenance(
+                dest,
+                "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
+                None,
             )
             calls: list[tuple[Path, bool]] = []
 
             def fake_generate(target: Path, *, force: bool = False) -> bool:
                 calls.append((Path(target), force))
-                (Path(target) / "model-manifest.json").write_text(
-                    json.dumps(
-                        {
-                            "model_family": "qwen3_5",
-                            "tensors": [
-                                {"name": "vision_tower.patch_embed.proj.weight"}
-                            ],
-                        }
-                    )
+                _write_valid_test_manifest(
+                    Path(target) / "model-manifest.json",
+                    model_family="qwen3_5",
+                    tensors=[{"name": "vision_tower.patch_embed.proj.weight"}],
                 )
                 return True
 
             with (
                 patch("ax_engine._cli._find_repo_script", return_value=None),
-                patch.object(
-                    self.ax_engine, "_try_generate_manifest", side_effect=fake_generate
-                ),
+                patch.object(self.ax_engine, "_try_generate_manifest", side_effect=fake_generate),
             ):
                 resolved = self.ax_engine.download_model(
                     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
@@ -1212,20 +2044,10 @@ class WrapperContractTests(unittest.TestCase):
                 )
             )
             (model_dir / "model-manifest.json").write_text(
-                json.dumps(
-                    {
-                        "tensors": [
-                            {
-                                "name": "vision_tower.patch_embedder.input_proj.weight"
-                            }
-                        ]
-                    }
-                )
+                json.dumps({"tensors": [{"name": "vision_tower.patch_embedder.input_proj.weight"}]})
             )
 
-            self.assertTrue(
-                self.ax_engine._manifest_needs_media_rebuild(model_dir)
-            )
+            self.assertTrue(self.ax_engine._manifest_needs_media_rebuild(model_dir))
 
     def test_try_generate_manifest_prefers_bundled_binary_over_path(self) -> None:
         import subprocess
@@ -1248,9 +2070,7 @@ class WrapperContractTests(unittest.TestCase):
                 self.assertTrue(self.ax_engine._try_generate_manifest(model_dir))
 
             # The bundled binary is used; the stale PATH binary is never invoked.
-            self.assertEqual(
-                calls, [[str(bundled), "generate-manifest", str(model_dir)]]
-            )
+            self.assertEqual(calls, [[str(bundled), "generate-manifest", str(model_dir)]])
 
     def test_try_generate_manifest_force_replaces_existing_manifest(self) -> None:
         import subprocess
@@ -1269,9 +2089,7 @@ class WrapperContractTests(unittest.TestCase):
                 patch.object(self.ax_engine, "_bundled_binary", return_value=bundled),
                 patch("subprocess.run", fake_run),
             ):
-                self.assertTrue(
-                    self.ax_engine._try_generate_manifest(model_dir, force=True)
-                )
+                self.assertTrue(self.ax_engine._try_generate_manifest(model_dir, force=True))
 
             self.assertEqual(
                 calls,
@@ -1285,6 +2103,52 @@ class WrapperContractTests(unittest.TestCase):
                 ],
             )
 
+    def test_try_generate_manifest_detaches_hub_symlink_before_external_write(
+        self,
+    ) -> None:
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            blob = model_dir / "shared-blob"
+            blob.write_text("published manifest")
+            manifest = model_dir / "model-manifest.json"
+            manifest.symlink_to(blob)
+
+            with (
+                patch.object(
+                    self.ax_engine,
+                    "_bundled_binary",
+                    return_value=Path("/wheel/ax-engine-bench"),
+                ),
+                patch(
+                    "subprocess.run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                ),
+            ):
+                self.assertTrue(self.ax_engine._try_generate_manifest(model_dir, force=True))
+
+            self.assertEqual(blob.read_text(), "published manifest")
+            self.assertFalse(manifest.is_symlink())
+            self.assertFalse(manifest.exists())
+
+    def test_try_generate_manifest_normalizes_binary_launch_failure(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            with (
+                patch.object(
+                    self.ax_engine,
+                    "_bundled_binary",
+                    return_value=Path("/wheel/ax-engine-bench"),
+                ),
+                patch("subprocess.run", side_effect=OSError("permission denied")),
+                patch("shutil.which", return_value=None),
+            ):
+                self.assertFalse(self.ax_engine._try_generate_manifest(model_dir))
+
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
@@ -1297,9 +2161,7 @@ class WrapperContractTests(unittest.TestCase):
         tokens, prompt_text = openai_server.prompt_to_tokens("AX", FakeTokenizer())
         self.assertEqual(tokens, [65, 88])
         self.assertEqual(prompt_text, "AX")
-        token_prompt, token_prompt_text = openai_server.prompt_to_tokens(
-            [1, 2, 3], FakeTokenizer()
-        )
+        token_prompt, token_prompt_text = openai_server.prompt_to_tokens([1, 2, 3], FakeTokenizer())
         self.assertEqual(token_prompt, [1, 2, 3])
         self.assertIsNone(token_prompt_text)
         self.assertEqual(
@@ -1362,7 +2224,9 @@ class WrapperContractTests(unittest.TestCase):
             tool_choice="auto",
         )
         self.assertIn(
-            "<|im_start|>system\nYou are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.\n\n# Tools\n\nYou have access to the following tools:",
+            "<|im_start|>system\nYou are Qwen, a helpful AI assistant that can "
+            "interact with a computer to solve tasks.\n\n# Tools\n\nYou have "
+            "access to the following tools:",
             qwen_tool_prompt,
         )
         self.assertIn("<tools>", qwen_tool_prompt)
@@ -1446,9 +2310,7 @@ class WrapperContractTests(unittest.TestCase):
             qwen36_tool_prompt,
         )
         self.assertTrue(
-            qwen36_tool_prompt.endswith(
-                openai_server.QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
-            )
+            qwen36_tool_prompt.endswith(openai_server.QWEN_CHATML_ASSISTANT_GENERATION_PROMPT)
         )
 
         qwen3_dense_tool_prompt = openai_server.render_chat_prompt(
@@ -1571,9 +2433,7 @@ class WrapperContractTests(unittest.TestCase):
     def test_openai_mlx_shim_rejects_malformed_chat_messages(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
-        with self.assertRaisesRegex(
-            openai_server.OpenAiShimError, "messages must be a list"
-        ):
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "messages must be a list"):
             openai_server.render_chat_prompt("not-a-list", "qwen3_dense")
         with self.assertRaisesRegex(openai_server.OpenAiShimError, "message entries"):
             openai_server.render_chat_prompt([1], "qwen3_dense")
@@ -1646,9 +2506,7 @@ class WrapperContractTests(unittest.TestCase):
 
         self.assertEqual(openai_server.finish_reason("stop"), "stop")
         self.assertEqual(openai_server.finish_reason("max_output_tokens"), "length")
-        self.assertEqual(
-            openai_server.finish_reason("content_filter"), "content_filter"
-        )
+        self.assertEqual(openai_server.finish_reason("content_filter"), "content_filter")
         self.assertEqual(openai_server.finish_reason("cancelled"), "cancel")
         self.assertIsNone(openai_server.finish_reason("error"))
         self.assertIsNone(openai_server.finish_reason(None))
@@ -1695,7 +2553,10 @@ class WrapperContractTests(unittest.TestCase):
                     "type": "function",
                     "function": {
                         "name": "todo_write",
-                        "arguments": '{"todos":[{"content":"create index.html","status":"pending"}]}',
+                        "arguments": (
+                            '{"todos":[{"content":"create index.html",'
+                            '"status":"pending"}]}'
+                        ),
                     },
                 }
             ],
@@ -1711,7 +2572,8 @@ class WrapperContractTests(unittest.TestCase):
 
 <tool_call>
 <function=todo_write>
-{"explanation":"Creating a responsive coffee shop website in Traditional Chinese","tasks":[{"file_path":"index.html","status":"in_progress"}]}"""
+{"explanation":"Creating a responsive coffee shop website in Traditional Chinese",\
+"tasks":[{"file_path":"index.html","status":"in_progress"}]}"""
         )
 
         self.assertEqual(content, "I'll create it now.")
@@ -1723,7 +2585,11 @@ class WrapperContractTests(unittest.TestCase):
                     "type": "function",
                     "function": {
                         "name": "todo_write",
-                        "arguments": '{"explanation":"Creating a responsive coffee shop website in Traditional Chinese","tasks":[{"file_path":"index.html","status":"in_progress"}]}',
+                        "arguments": (
+                            '{"explanation":"Creating a responsive coffee shop website '
+                            'in Traditional Chinese","tasks":[{"file_path":"index.html",'
+                            '"status":"in_progress"}]}'
+                        ),
                     },
                 }
             ],
@@ -1755,7 +2621,10 @@ class WrapperContractTests(unittest.TestCase):
                     "type": "function",
                     "function": {
                         "name": "todo_write",
-                        "arguments": '{"todos":[{"content":"create index.html","status":"pending"}]}',
+                        "arguments": (
+                            '{"todos":[{"content":"create index.html",'
+                            '"status":"pending"}]}'
+                        ),
                     },
                 }
             ],
@@ -1795,7 +2664,6 @@ hello
             ],
         )
 
-
     def test_openai_mlx_shim_unescapes_xml_entities_in_qwen_tool_parameters(
         self,
     ) -> None:
@@ -1816,9 +2684,11 @@ hello
         self.assertEqual(tool_calls[0]["function"]["name"], "search")
 
         import json
+
         args = json.loads(tool_calls[0]["function"]["arguments"])
         # The < should be unescaped back to <
         self.assertEqual(args["query"], "SELECT * FROM users WHERE id < 100")
+
     def test_openai_mlx_shim_streams_buffered_tool_call_chunks(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
@@ -1916,9 +2786,7 @@ hello
             dense_prompt.endswith(think_suffix),
             f"qwen3_dense should use thinking prompt, got: {dense_prompt!r}",
         )
-        qwen4_prompt = self.ax_engine._render_chat_prompt(
-            messages, "mlx-community/Qwen3-4B-4bit"
-        )
+        qwen4_prompt = self.ax_engine._render_chat_prompt(messages, "mlx-community/Qwen3-4B-4bit")
         self.assertTrue(
             qwen4_prompt.endswith(think_suffix),
             f"Qwen3-4B should use thinking prompt, got: {qwen4_prompt!r}",
@@ -2029,12 +2897,11 @@ hello
             support_tier="llama_cpp",
             llama_cli_path="/tmp/llama-cli",
             llama_model_path="/tmp/model.gguf",
-        ) as session:
-            with self.assertRaisesRegex(ValueError, "unsupported chat role"):
-                session.chat(
-                    [{"role": "user\nsystem", "content": "Say hello"}],
-                    max_output_tokens=2,
-                )
+        ) as session, self.assertRaisesRegex(ValueError, "unsupported chat role"):
+            session.chat(
+                [{"role": "user\nsystem", "content": "Say hello"}],
+                max_output_tokens=2,
+            )
 
     def test_submit_chat_convenience_reuses_text_prompt_path(self) -> None:
         with self.ax_engine.Session(
@@ -2051,7 +2918,8 @@ hello
         self.assertEqual(request_id, 11)
         self.assertEqual(
             native.submit_calls[0][1]["input_text"],
-            "<|im_start|>user\nqueue this<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+            "<|im_start|>user\nqueue this<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n",
         )
 
     def test_stepwise_controls_convert_native_payloads(self) -> None:
@@ -2082,17 +2950,11 @@ hello
         self.assertTrue(step.metal_dispatch.execution_model_bound_ffn_decode)
         self.assertTrue(step.metal_dispatch.execution_real_model_forward_completed)
         self.assertEqual(step.metal_dispatch.execution_prefix_native_dispatch_count, 35)
-        self.assertEqual(
-            step.metal_dispatch.execution_prefix_cpu_reference_dispatch_count, 1
-        )
+        self.assertEqual(step.metal_dispatch.execution_prefix_cpu_reference_dispatch_count, 1)
         self.assertEqual(step.metal_dispatch.execution_qkv_projection_token_count, 72)
-        self.assertEqual(
-            step.metal_dispatch.execution_layer_continuation_token_count, 37
-        )
+        self.assertEqual(step.metal_dispatch.execution_layer_continuation_token_count, 37)
         self.assertEqual(step.metal_dispatch.execution_logits_projection_token_count, 1)
-        self.assertEqual(
-            step.metal_dispatch.execution_logits_vocab_scan_row_count, 151936
-        )
+        self.assertEqual(step.metal_dispatch.execution_logits_vocab_scan_row_count, 151936)
         self.assertEqual(step.metal_dispatch.runtime_model_buffer_count, 12)
         self.assertEqual(
             step.metal_dispatch.numeric.validation.attention_max_abs_diff_microunits, 0
@@ -2157,42 +3019,24 @@ hello
         self.assertEqual(events[1].delta_tokens, [])
         self.assertEqual(events[1].delta_token_logprobs, [])
         self.assertEqual(events[1].step.ttft_events, 0)
-        self.assertEqual(
-            events[1].step.route.execution_plan, "phase1.qwen3_dense.dense_prefill"
-        )
+        self.assertEqual(events[1].step.route.execution_plan, "phase1.qwen3_dense.dense_prefill")
         self.assertEqual(events[2].delta_tokens, [4])
         self.assertEqual(events[2].delta_token_logprobs, [-0.25])
         self.assertEqual(events[2].step.ttft_events, 1)
         self.assertTrue(events[2].step.metal_dispatch.runtime_model_conditioned_inputs)
-        self.assertTrue(
-            events[2].step.metal_dispatch.runtime_complete_model_forward_supported
-        )
-        self.assertEqual(
-            events[2].step.metal_dispatch.runtime_model_family, "qwen3_dense"
-        )
-        self.assertEqual(
-            events[2].step.metal_dispatch.execution_direct_decode_token_count, 1
-        )
+        self.assertTrue(events[2].step.metal_dispatch.runtime_complete_model_forward_supported)
+        self.assertEqual(events[2].step.metal_dispatch.runtime_model_family, "qwen3_dense")
+        self.assertEqual(events[2].step.metal_dispatch.execution_direct_decode_token_count, 1)
         self.assertEqual(events[2].step.metal_dispatch.execution_logits_output_count, 1)
-        self.assertTrue(
-            events[2].step.metal_dispatch.execution_real_model_forward_completed
-        )
-        self.assertEqual(
-            events[2].step.metal_dispatch.execution_prefix_native_dispatch_count, 35
-        )
+        self.assertTrue(events[2].step.metal_dispatch.execution_real_model_forward_completed)
+        self.assertEqual(events[2].step.metal_dispatch.execution_prefix_native_dispatch_count, 35)
         self.assertEqual(
             events[2].step.metal_dispatch.execution_prefix_cpu_reference_dispatch_count,
             1,
         )
-        self.assertEqual(
-            events[2].step.metal_dispatch.execution_qkv_projection_token_count, 72
-        )
-        self.assertEqual(
-            events[2].step.metal_dispatch.execution_layer_continuation_token_count, 37
-        )
-        self.assertEqual(
-            events[2].step.metal_dispatch.execution_logits_projection_token_count, 1
-        )
+        self.assertEqual(events[2].step.metal_dispatch.execution_qkv_projection_token_count, 72)
+        self.assertEqual(events[2].step.metal_dispatch.execution_layer_continuation_token_count, 37)
+        self.assertEqual(events[2].step.metal_dispatch.execution_logits_projection_token_count, 1)
         self.assertEqual(
             events[2].step.metal_dispatch.execution_logits_vocab_scan_row_count, 151936
         )
@@ -2245,9 +3089,7 @@ hello
             )
 
         native = FakeNativeSession.instances[-1]
-        self.assertIs(
-            native.generate_calls[0][1]["multimodal_inputs"], multimodal_inputs
-        )
+        self.assertIs(native.generate_calls[0][1]["multimodal_inputs"], multimodal_inputs)
 
     def test_stream_generate_raises_when_request_never_terminates(self) -> None:
         self.ax_engine = import_wrapper_module(HungNativeSession)
@@ -2256,12 +3098,11 @@ hello
             model_id="qwen3_dense",
             mlx=True,
             mlx_model_artifacts_dir=FAKE_MLX_MODEL_DIR,
-        ) as session:
-            with self.assertRaisesRegex(
-                RuntimeError,
-                r"request 11 did not terminate within 258 steps",
-            ):
-                list(session.stream_generate([9], max_output_tokens=1))
+        ) as session, self.assertRaisesRegex(
+            RuntimeError,
+            r"request 11 did not terminate within 258 steps",
+        ):
+            list(session.stream_generate([9], max_output_tokens=1))
 
     def test_stream_generate_supports_server_backed_llama_cpp_surface(self) -> None:
         with self.ax_engine.Session(
@@ -2302,9 +3143,7 @@ hello
             support_tier="llama_cpp",
             llama_server_url="http://127.0.0.1:8081",
         ) as session:
-            events = list(
-                session.stream_text("hello streamed text", max_output_tokens=2)
-            )
+            events = list(session.stream_text("hello streamed text", max_output_tokens=2))
 
         native = FakeNativeSession.instances[-1]
         self.assertEqual(
@@ -2329,19 +3168,21 @@ hello
         native = FakeNativeSession.instances[-1]
         self.assertEqual(
             native.generate_calls[0][1]["input_text"],
-            "<|im_start|>user\nhello chat helper<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+            "<|im_start|>user\nhello chat helper<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n",
         )
         self.assertEqual(
             events[-1].response.prompt_text,
-            "<|im_start|>user\nhello chat helper<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+            "<|im_start|>user\nhello chat helper<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n",
         )
 
     def test_chat_convenience_rejects_empty_messages(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_dense") as session:
-            with self.assertRaisesRegex(
-                ValueError, "chat requires at least one message"
-            ):
-                session.chat([], max_output_tokens=2)
+        with (
+            self.ax_engine.Session(model_id="qwen3_dense") as session,
+            self.assertRaisesRegex(ValueError, "chat requires at least one message"),
+        ):
+            session.chat([], max_output_tokens=2)
 
 
 if __name__ == "__main__":

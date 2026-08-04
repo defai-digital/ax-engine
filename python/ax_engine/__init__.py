@@ -1362,6 +1362,8 @@ def _normalize_chat_message(message: ChatMessage | dict[str, str]) -> ChatMessag
 
 
 _MODEL_MANIFEST_FILE = "model-manifest.json"
+_DOWNLOAD_PROVENANCE_FILE = ".ax-engine-download.json"
+_DOWNLOAD_PROVENANCE_SCHEMA_VERSION = "ax.download_provenance.v1"
 _MAX_SAFETENSORS_HEADER_BYTES = 64 * 1024 * 1024
 
 
@@ -1392,9 +1394,7 @@ def _weight_tensor_names(model_dir: Path) -> set[str]:
                 header = json.loads(handle.read(header_size))
                 if isinstance(header, dict):
                     names.update(
-                        name
-                        for name in header
-                        if isinstance(name, str) and name != "__metadata__"
+                        name for name in header if isinstance(name, str) and name != "__metadata__"
                     )
         except (OSError, ValueError, TypeError):
             continue
@@ -1423,9 +1423,7 @@ def _manifest_needs_media_rebuild(model_dir: Path) -> bool:
         "qwen3-vl",
         "qwen3-vl-moe",
     }:
-        required_prefix_groups = (
-            ("vision_tower.", "visual.", "model.visual."),
-        )
+        required_prefix_groups = (("vision_tower.", "visual.", "model.visual."),)
     elif model_type in {"gemma4", "gemma4_vl", "gemma4-vl"}:
         required_prefix_groups = (
             ("vision_tower.", "model.vision_tower."),
@@ -1444,8 +1442,7 @@ def _manifest_needs_media_rebuild(model_dir: Path) -> bool:
         manifest_names = {
             name
             for tensor in tensors
-            if isinstance(tensor, dict)
-            and isinstance((name := tensor.get("name")), str)
+            if isinstance(tensor, dict) and isinstance((name := tensor.get("name")), str)
         }
     return any(
         any(name.startswith(prefixes) for name in source_names)
@@ -1485,25 +1482,44 @@ def _latest_mlx_lm_snapshot(repo_id: str) -> Path | None:
     return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
 
 
-def _run_hf_snapshot_download(repo_id: str) -> Path:
+def _run_hf_snapshot_download(
+    repo_id: str,
+    *,
+    revision: str | None = None,
+    force: bool = False,
+) -> Path:
     import os
 
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError as error:
-        raise RuntimeError(
-            "huggingface_hub is required for download_model(). Install it with:\n"
-            "  pip install huggingface_hub\n"
-            "or:\n"
-            "  pip install 'ax-engine[download]'"
-        ) from error
-
     previous = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
+    # huggingface_hub reads this setting during import, so it must be installed
+    # before importing the module rather than immediately before the call.
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     try:
-        return Path(snapshot_download(repo_id=repo_id))
-    except Exception as error:
-        raise RuntimeError(f"Hugging Face Hub download failed for {repo_id}: {error}") from error
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError as error:
+            raise RuntimeError(
+                "huggingface_hub is required for download_model(). Install it with:\n"
+                "  pip install huggingface_hub\n"
+                "or:\n"
+                "  pip install 'ax-engine[download]'"
+            ) from error
+
+        # Ask the Hub client to refresh only the selected revision when forced.
+        # Removing the whole repo cache would discard unrelated revisions and
+        # shared blobs.
+        try:
+            return Path(
+                snapshot_download(
+                    repo_id=repo_id,
+                    revision=revision,
+                    force_download=force,
+                )
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"Hugging Face Hub download failed for {repo_id}: {error}"
+            ) from error
     finally:
         if previous is None:
             os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
@@ -1511,18 +1527,346 @@ def _run_hf_snapshot_download(repo_id: str) -> Path:
             os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = previous
 
 
+def _snapshot_allowed_link_roots(snapshot: Path) -> tuple[Path, ...]:
+    """Return roots from which a canonical Hub snapshot may materialize file links."""
+    try:
+        snapshot_root = snapshot.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError(f"cannot resolve Hugging Face snapshot {snapshot}: {error}") from error
+    if snapshot.is_symlink() or not snapshot_root.is_dir():
+        raise RuntimeError(f"Hugging Face snapshot is not a real directory: {snapshot}")
+
+    allowed_link_roots = [snapshot_root]
+    if snapshot_root.parent.name == "snapshots":
+        blobs = snapshot_root.parent.parent / "blobs"
+        if blobs.is_dir() and not blobs.is_symlink():
+            try:
+                allowed_link_roots.append(blobs.resolve(strict=True))
+            except OSError as error:
+                raise RuntimeError(
+                    f"cannot resolve Hugging Face blob directory {blobs}: {error}"
+                ) from error
+    return tuple(allowed_link_roots)
+
+
+def _validated_snapshot_entry(
+    source: Path, allowed_link_roots: tuple[Path, ...]
+) -> tuple[str, Path]:
+    import stat
+
+    if source.is_symlink():
+        try:
+            resolved = source.resolve(strict=True)
+        except OSError as error:
+            raise RuntimeError(f"cannot resolve snapshot symlink {source}: {error}") from error
+        contained = any(resolved == root or root in resolved.parents for root in allowed_link_roots)
+        if not contained or not resolved.is_file():
+            raise RuntimeError(
+                f"unsafe snapshot symlink {source}: target {resolved} must be a regular "
+                "file inside the snapshot or its Hugging Face blob directory"
+            )
+        return "file", resolved
+
+    try:
+        mode = source.stat(follow_symlinks=False).st_mode
+    except OSError as error:
+        raise RuntimeError(f"cannot inspect snapshot entry {source}: {error}") from error
+    if stat.S_ISDIR(mode):
+        return "directory", source
+    if stat.S_ISREG(mode):
+        return "file", source
+    raise RuntimeError(
+        f"unsafe snapshot entry {source}: only regular files and directories are allowed"
+    )
+
+
+def _validate_mlx_lm_snapshot(snapshot: Path) -> None:
+    allowed_link_roots = _snapshot_allowed_link_roots(snapshot)
+
+    def validate_entry(source: Path) -> None:
+        kind, _resolved = _validated_snapshot_entry(source, allowed_link_roots)
+        if kind == "directory":
+            for child in source.iterdir():
+                validate_entry(child)
+
+    for path in snapshot.iterdir():
+        validate_entry(path)
+
+
 def _copy_mlx_lm_snapshot(snapshot: Path, dest: Path) -> None:
     import shutil
 
+    allowed_link_roots = _snapshot_allowed_link_roots(snapshot)
+
+    def copy_entry(source: Path, target: Path) -> None:
+        kind, resolved = _validated_snapshot_entry(source, allowed_link_roots)
+        if kind == "directory":
+            target.mkdir()
+            for child in source.iterdir():
+                copy_entry(child, target / child.name)
+            shutil.copystat(source, target, follow_symlinks=False)
+        else:
+            shutil.copy2(resolved, target, follow_symlinks=False)
+
     dest.mkdir(parents=True, exist_ok=True)
     for path in snapshot.iterdir():
-        target = dest / path.name
-        if path.is_dir():
-            shutil.copytree(path, target, dirs_exist_ok=True)
-        elif path.is_symlink():
-            shutil.copy2(path.resolve(), target)
-        else:
-            shutil.copy2(path, target)
+        copy_entry(path, dest / path.name)
+
+
+def _path_lexists(path: Path) -> bool:
+    import os
+
+    return os.path.lexists(path)
+
+
+def _validate_model_destination(dest: Path) -> Path:
+    """Reject destinations whose atomic replacement could erase broad user data."""
+    dest = Path(dest).expanduser()
+    try:
+        cwd = Path.cwd().resolve(strict=False)
+        home = Path.home().resolve(strict=False)
+        resolved = (
+            dest.resolve(strict=False) if dest.is_absolute() else (cwd / dest).resolve(strict=False)
+        )
+    except OSError as error:
+        raise RuntimeError(f"cannot resolve model destination {dest}: {error}") from error
+
+    if not dest.name or resolved.parent == resolved:
+        raise RuntimeError(f"unsafe model destination {dest}: choose a dedicated model directory")
+    if resolved == cwd or resolved in cwd.parents:
+        raise RuntimeError(
+            f"unsafe model destination {dest}: the current working directory "
+            "or one of its ancestors cannot be replaced"
+        )
+    if resolved == home or resolved in home.parents:
+        raise RuntimeError(
+            f"unsafe model destination {dest}: the home directory or one of its "
+            "ancestors cannot be replaced"
+        )
+    return dest
+
+
+def _validate_forced_model_destination(dest: Path) -> None:
+    """Only replace non-empty real directories that look owned by a model download."""
+    if not _path_lexists(dest) or dest.is_symlink() or not dest.is_dir():
+        return
+    try:
+        next(dest.iterdir())
+    except StopIteration:
+        return
+    except OSError as error:
+        raise RuntimeError(f"cannot inspect existing model destination {dest}: {error}") from error
+
+    has_download_provenance = _has_valid_download_provenance(dest)
+    has_manifest = (dest / _MODEL_MANIFEST_FILE).is_file()
+    has_weights = any(path.is_file() for path in dest.glob("*.safetensors"))
+    if has_download_provenance or has_manifest or has_weights:
+        return
+    raise RuntimeError(
+        f"refusing to replace non-model destination {dest}: the directory is non-empty "
+        f"but contains no {_DOWNLOAD_PROVENANCE_FILE}, {_MODEL_MANIFEST_FILE}, or "
+        ".safetensors files"
+    )
+
+
+def _has_valid_download_provenance(dest: Path) -> bool:
+    import json
+
+    from ._repo_ref import parse_repo_ref, validate_revision
+
+    try:
+        payload = json.loads((dest / _DOWNLOAD_PROVENANCE_FILE).read_bytes())
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    repo_id = payload.get("repo_id")
+    revision = payload.get("revision")
+    if not isinstance(repo_id, str) or not (revision is None or isinstance(revision, str)):
+        return False
+    try:
+        parsed_repo_id, embedded_revision = parse_repo_ref(repo_id)
+        if revision is not None:
+            revision = validate_revision(revision, reference=repo_id)
+    except ValueError:
+        return False
+    return (
+        embedded_revision is None
+        and parsed_repo_id == repo_id
+        and payload == _download_provenance(repo_id, revision)
+    )
+
+
+def _validate_model_snapshot_destination(snapshot: Path, dest: Path) -> None:
+    try:
+        resolved_snapshot = snapshot.resolve(strict=True)
+        resolved_dest = dest.resolve(strict=False)
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot validate model snapshot {snapshot} against destination {dest}: {error}"
+        ) from error
+    if (
+        resolved_snapshot == resolved_dest
+        or resolved_snapshot in resolved_dest.parents
+        or resolved_dest in resolved_snapshot.parents
+    ):
+        raise RuntimeError(
+            f"model destination {dest} must not overlap the Hugging Face snapshot {snapshot}"
+        )
+
+
+def _download_provenance(repo_id: str, revision: str | None) -> dict[str, object]:
+    return {
+        "schema_version": _DOWNLOAD_PROVENANCE_SCHEMA_VERSION,
+        "repo_id": repo_id,
+        "revision": revision,
+    }
+
+
+def _write_download_provenance(dest: Path, repo_id: str, revision: str | None) -> None:
+    import json
+
+    (dest / _DOWNLOAD_PROVENANCE_FILE).write_text(
+        json.dumps(_download_provenance(repo_id, revision), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _destination_matches(dest: Path, repo_id: str, revision: str | None) -> bool:
+    import json
+
+    try:
+        payload = json.loads((dest / _DOWNLOAD_PROVENANCE_FILE).read_bytes())
+    except (OSError, ValueError, TypeError):
+        return False
+    return payload == _download_provenance(repo_id, revision)
+
+
+def _validate_model_destination_before_activation(
+    dest: Path,
+    *,
+    repo_id: str,
+    revision: str | None,
+    force: bool,
+) -> None:
+    """Revalidate the destination after staging to close download-time races."""
+    if not _path_lexists(dest):
+        return
+    if force:
+        _validate_forced_model_destination(dest)
+        return
+    if dest.is_symlink() or not dest.is_dir():
+        raise RuntimeError(
+            f"refusing to replace model destination {dest}: it appeared or changed "
+            "while the model was being prepared"
+        )
+    try:
+        next(dest.iterdir())
+    except StopIteration:
+        return
+    except OSError as error:
+        raise RuntimeError(f"cannot inspect model destination {dest}: {error}") from error
+    if not _destination_matches(dest, repo_id, revision):
+        raise RuntimeError(
+            f"refusing to replace model destination {dest}: it no longer matches "
+            f"{repo_id} at revision {revision!r}"
+        )
+    try:
+        _validate_downloaded_model_dir(dest)
+    except RuntimeError:
+        return
+    manifest_path = dest / _MODEL_MANIFEST_FILE
+    if _manifest_is_structurally_valid(
+        manifest_path
+    ) and not _manifest_needs_media_rebuild(dest):
+        raise RuntimeError(
+            f"refusing to replace model destination {dest}: another process made it "
+            "ready while this model was being prepared"
+        )
+
+
+def _replace_with_staged_snapshot(
+    snapshot: Path,
+    dest: Path,
+    *,
+    repo_id: str,
+    revision: str | None,
+    force: bool,
+) -> None:
+    """Build and validate an explicit destination before replacing it.
+
+    Staging and backup directories are unique siblings owned by this call. The
+    previous destination remains in place through copy/manifest generation and
+    is restored if the final rename fails.
+    """
+    import shutil
+    import tempfile
+
+    dest = _validate_model_destination(dest)
+    _validate_model_snapshot_destination(snapshot, dest)
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{dest.name}.download-", dir=str(dest.parent)))
+    backup_root: Path | None = None
+    backup: Path | None = None
+    try:
+        _copy_mlx_lm_snapshot(snapshot, stage)
+        _validate_downloaded_model_dir(stage)
+        _ensure_manifest(stage)
+        _write_download_provenance(stage, repo_id, revision)
+
+        try:
+            _validate_model_destination_before_activation(
+                dest,
+                repo_id=repo_id,
+                revision=revision,
+                force=force,
+            )
+            if _path_lexists(dest):
+                backup_root = Path(
+                    tempfile.mkdtemp(prefix=f".{dest.name}.backup-", dir=str(dest.parent))
+                )
+                backup = backup_root / "previous"
+                dest.rename(backup)
+            stage.rename(dest)
+        except BaseException as swap_error:
+            if backup is not None and _path_lexists(backup):
+                if not _path_lexists(dest):
+                    try:
+                        backup.rename(dest)
+                    except BaseException as restore_error:
+                        stranded_backup = backup
+                        # Preserve the user's previous destination instead of
+                        # deleting it in the cleanup block below.
+                        backup_root = None
+                        raise RuntimeError(
+                            f"failed to install model at {dest} and could not restore "
+                            f"the previous destination; it remains at {stranded_backup}: "
+                            f"{restore_error}"
+                        ) from swap_error
+                if _path_lexists(backup):
+                    # An unexpected destination appeared before rollback.
+                    # Keep the previous contents in their unique backup.
+                    backup_root = None
+            raise
+        if backup_root is not None:
+            try:
+                shutil.rmtree(backup_root)
+            except OSError as cleanup_error:
+                stranded_backup = backup if backup is not None else backup_root
+                # The new destination is ready. Preserve and report the old copy
+                # rather than hiding a potentially model-sized cleanup failure.
+                backup_root = None
+                raise RuntimeError(
+                    f"model installed at {dest}, but the previous destination could not "
+                    f"be removed and remains at {stranded_backup}: {cleanup_error}"
+                ) from cleanup_error
+            else:
+                backup_root = None
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+        if backup_root is not None and (backup is None or not _path_lexists(backup)):
+            shutil.rmtree(backup_root, ignore_errors=True)
 
 
 def _validate_downloaded_model_dir(dest: Path) -> None:
@@ -1533,6 +1877,76 @@ def _validate_downloaded_model_dir(dest: Path) -> None:
         errors.append(f"config.json missing in {dest}")
     if errors:
         raise RuntimeError("; ".join(errors))
+
+
+def _manifest_is_structurally_valid(path: Path) -> bool:
+    import json
+
+    try:
+        payload = json.loads(path.read_bytes())
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("schema_version") != "ax.native_model.v1":
+        return False
+    model_family = payload.get("model_family")
+    if not isinstance(model_family, str) or not model_family.strip():
+        return False
+    if payload.get("tensor_format") != "safetensors":
+        return False
+    for field_name in (
+        "layer_count",
+        "hidden_size",
+        "attention_head_count",
+        "attention_head_dim",
+        "kv_head_count",
+        "vocab_size",
+    ):
+        value = payload.get(field_name)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            return False
+
+    runtime_status = payload.get("runtime_status")
+    if runtime_status is not None:
+        if not isinstance(runtime_status, dict):
+            return False
+        ready = runtime_status.get("ready", True)
+        blockers = runtime_status.get("blockers", [])
+        if ready is not True or not isinstance(blockers, list) or blockers:
+            return False
+
+    tensors = payload.get("tensors")
+    if not isinstance(tensors, list) or not tensors:
+        return False
+    for tensor in tensors:
+        if not isinstance(tensor, dict):
+            return False
+        for field_name in ("name", "role", "dtype", "file"):
+            value = tensor.get(field_name)
+            if not isinstance(value, str) or not value:
+                return False
+        shape = tensor.get("shape")
+        if (
+            not isinstance(shape, list)
+            or any(
+                not isinstance(dimension, int)
+                or isinstance(dimension, bool)
+                or dimension <= 0
+                for dimension in shape
+            )
+            or (not shape and tensor.get("role") != "other")
+        ):
+            return False
+        for field_name in ("offset_bytes", "length_bytes"):
+            value = tensor.get(field_name)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < (1 if field_name == "length_bytes" else 0)
+            ):
+                return False
+    return True
 
 
 def download_model(
@@ -1555,7 +1969,8 @@ def download_model(
         repo_id: MLX LLM repo id or Hugging Face URL, e.g.
             ``"mlx-community/Qwen3-4B-4bit"``.
         dest: Destination directory. Defaults to the Hugging Face Hub cache snapshot.
-        force: Re-download the default Hugging Face Hub cache entry before resolving the snapshot.
+        force: Re-download the default Hugging Face Hub cache entry before
+            resolving the snapshot.
         revision: Branch, tag, or commit sha to download (overrides a revision
             parsed from ``repo_id``).
 
@@ -1563,6 +1978,8 @@ def download_model(
         Path to the downloaded, AX-ready model directory (contains ``model-manifest.json``).
 
     Raises:
+        ValueError: if ``repo_id`` or ``revision`` is not a valid Hugging Face
+            model reference.
         RuntimeError: if the download is incomplete or the manifest cannot be generated.
     """
     # Single source of truth: delegate to the bundled download helper (the same
@@ -1570,90 +1987,94 @@ def download_model(
     # revision pinning, disk preflight, atomic --dest copies, and manifest
     # semantics cannot diverge. The legacy in-process path below remains as a
     # fallback for stripped installs missing scripts/download_model.py.
-    from ._repo_ref import parse_repo_ref
+    from ._repo_ref import parse_repo_ref, validate_revision
 
+    input_repo_ref = repo_id
     repo_id, parsed_revision = parse_repo_ref(repo_id)
-    revision = revision or parsed_revision
+    if revision is None:
+        revision = parsed_revision
+    else:
+        revision = validate_revision(revision, reference=input_repo_ref)
+    if dest is not None:
+        dest = _validate_model_destination(Path(dest))
+        if force:
+            _validate_forced_model_destination(dest)
 
-    from ._cli import _find_repo_script
+    from ._cli import _find_repo_script, _parse_download_summary
 
     helper = _find_repo_script("download_model.py")
     if helper is not None:
-        import json
         import subprocess
         import sys
 
         command = [sys.executable, str(helper), repo_id, "--json"]
         if revision:
-            command.extend(["--revision", revision])
+            command.append(f"--revision={revision}")
         if dest is not None:
-            command.extend(["--dest", str(dest)])
+            command.append(f"--dest={dest}")
         if force:
             command.append("--force")
-        result = subprocess.run(command, capture_output=True, text=True)
-        summary: dict | None = None
-        for line in reversed(result.stdout.splitlines()):
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict) and parsed.get("schema_version") == "ax.download_model.v1":
-                summary = parsed
-                break
+        try:
+            result = subprocess.run(command, capture_output=True, text=True)
+        except OSError as error:
+            raise RuntimeError(
+                f"failed to launch model download helper {helper}: {error}"
+            ) from error
+        summary = _parse_download_summary(result.stdout)
         if result.returncode == 0 and summary is not None and summary.get("status") == "ready":
-            return Path(summary["dest"])
-        errors = (summary or {}).get("errors") or [
-            result.stderr.strip() or f"download helper exited {result.returncode}"
-        ]
+            summary_dest = summary.get("dest")
+            if isinstance(summary_dest, str) and summary_dest:
+                return Path(summary_dest)
+            raise RuntimeError("download helper returned ready status without a destination")
+        raw_errors = (summary or {}).get("errors")
+        if isinstance(raw_errors, list):
+            errors = raw_errors
+        elif isinstance(raw_errors, str) and raw_errors:
+            errors = [raw_errors]
+        else:
+            errors = [result.stderr.strip() or f"download helper exited {result.returncode}"]
         raise RuntimeError("; ".join(str(error) for error in errors))
 
     # ---- legacy in-process fallback (no bundled helper) ----
-    if force:
-        import shutil
-
-        shutil.rmtree(
-            _default_mlx_lm_cache_root() / f"models--{_slug_repo_id(repo_id)}",
-            ignore_errors=True,
-        )
-
     if dest is None:
-        dest = _run_hf_snapshot_download(repo_id)
+        dest = _run_hf_snapshot_download(repo_id, revision=revision, force=force)
+        _validate_mlx_lm_snapshot(dest)
         _validate_downloaded_model_dir(dest)
         _ensure_manifest(dest)
         return dest
 
     dest = Path(dest)
-    if dest.exists() and not force:
-        safetensors = list(dest.glob("*.safetensors"))
-        if safetensors and (dest / _MODEL_MANIFEST_FILE).exists():
+    if _path_lexists(dest) and not force:
+        if not dest.is_dir():
+            raise RuntimeError(f"model destination exists and is not a directory: {dest}")
+        try:
             _validate_downloaded_model_dir(dest)
-            _ensure_manifest(dest)
-            return dest
-        if safetensors:
-            _validate_downloaded_model_dir(dest)
+        except RuntimeError as error:
+            if any(dest.iterdir()):
+                raise RuntimeError(
+                    f"{error}; refusing to merge into incomplete destination {dest}. "
+                    "Pass force=True to replace it."
+                ) from error
+        else:
+            if not _destination_matches(dest, repo_id, revision):
+                raise RuntimeError(
+                    f"existing model destination {dest} does not match the requested "
+                    f"repository and revision ({repo_id}, revision={revision!r}); "
+                    "refusing to reuse it. Pass force=True to replace it."
+                )
             _ensure_manifest(dest)
             return dest
 
-    snapshot = _run_hf_snapshot_download(repo_id)
-    snapshot_has_manifest = (snapshot / _MODEL_MANIFEST_FILE).is_file()
-    if force and dest.exists():
-        # A forced refresh must not merge fresh weights into a stale directory:
-        # shard names differ across models, so leftovers from a previous model
-        # would survive the copy, pass validation (some safetensors exist), and
-        # poison the regenerated manifest. Drop old weight shards and their
-        # index before copying.
-        for stale in dest.glob("*.safetensors"):
-            stale.unlink()
-        (dest / "model.safetensors.index.json").unlink(missing_ok=True)
-    _copy_mlx_lm_snapshot(snapshot, dest)
-    if force and not snapshot_has_manifest:
-        # Weights were refreshed; drop any manifest left from a prior model so it is
-        # regenerated against the new weights rather than reused stale. Preserve a
-        # manifest shipped by the freshly downloaded AutomatosX snapshot.
-        (dest / _MODEL_MANIFEST_FILE).unlink(missing_ok=True)
-    _validate_downloaded_model_dir(dest)
-    _ensure_manifest(dest)
+    snapshot = _run_hf_snapshot_download(repo_id, revision=revision, force=force)
+    _validate_model_snapshot_destination(snapshot, dest)
 
+    _replace_with_staged_snapshot(
+        snapshot,
+        dest,
+        repo_id=repo_id,
+        revision=revision,
+        force=force,
+    )
     return dest
 
 
@@ -1680,11 +2101,23 @@ def _ensure_manifest(dest: Path) -> None:
             actually AX-ready.
     """
     manifest_path = dest / _MODEL_MANIFEST_FILE
-    rebuild_media_manifest = manifest_path.exists() and _manifest_needs_media_rebuild(dest)
-    if manifest_path.exists() and not rebuild_media_manifest:
+    manifest_valid = _manifest_is_structurally_valid(manifest_path)
+    rebuild_media_manifest = manifest_valid and _manifest_needs_media_rebuild(dest)
+    if manifest_valid and not rebuild_media_manifest:
         return
-    if _try_generate_manifest(dest, force=rebuild_media_manifest):
-        return
+    if _try_generate_manifest(dest, force=manifest_path.exists()):
+        if _manifest_is_structurally_valid(manifest_path) and not _manifest_needs_media_rebuild(
+            dest
+        ):
+            return
+        raise RuntimeError(
+            f"manifest generator reported success but wrote an invalid manifest: {manifest_path}"
+        )
+    if manifest_path.exists() and not manifest_valid:
+        raise RuntimeError(
+            f"invalid {_MODEL_MANIFEST_FILE} in {dest}; regeneration failed, "
+            "so the model is not AX-ready"
+        )
     raise RuntimeError(_manifest_failure_message(dest))
 
 
@@ -1695,6 +2128,16 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
     """
     import shutil
     import subprocess
+
+    manifest_path = dest / _MODEL_MANIFEST_FILE
+    if manifest_path.is_symlink():
+        # A cached Hub manifest may point into the shared blob store. Detach
+        # the snapshot entry before invoking older external generators that
+        # might otherwise open the symlink target for writing.
+        manifest_path.unlink()
+    # Make option-looking relative paths unambiguous without resolving cache
+    # symlinks or changing the user-visible path spelling.
+    manifest_dest = os.path.abspath(dest)
 
     # Prefer the ax-engine-bench bundled in this exact release. A bare PATH lookup can
     # resolve to a stale ax-engine-bench from an unrelated install (e.g. an old
@@ -1709,19 +2152,26 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
         command = [bench, "generate-manifest"]
         if force:
             command.append("--force")
-        command.append(str(dest))
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
-            return True
-        # The binary exists but failed — surface its error rather than silently
-        # falling back to a different (and likely equally unable) generator.
-        print(f"{bench} generate-manifest failed:\n{result.stderr.strip()}")
-        return False
+        command.append(manifest_dest)
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            # A stale or non-executable PATH entry should not prevent the
+            # source-checkout cargo fallback below.
+            print(f"failed to launch {bench} generate-manifest: {error}")
+        else:
+            if result.returncode == 0:
+                print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
+                return True
+            # The binary ran and rejected the model. Surface that result rather
+            # than trying a different generator with potentially different
+            # model support.
+            print(f"{bench} generate-manifest failed:\n{result.stderr.strip()}")
+            return False
 
     # Dev environment fallback: cargo run (slow on first call but works).
     if shutil.which("cargo"):
@@ -1737,23 +2187,27 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
                 except OSError:
                     pass
         if repo_root:
-            generate_args = ["--force", str(dest)] if force else [str(dest)]
-            result = subprocess.run(
-                [
-                    "cargo",
-                    "run",
-                    "-q",
-                    "-p",
-                    "ax-engine-core",
-                    "--bin",
-                    "generate-manifest",
-                    "--",
-                    *generate_args,
-                ],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-            )
+            generate_args = ["--force", manifest_dest] if force else [manifest_dest]
+            try:
+                result = subprocess.run(
+                    [
+                        "cargo",
+                        "run",
+                        "-q",
+                        "-p",
+                        "ax-engine-core",
+                        "--bin",
+                        "generate-manifest",
+                        "--",
+                        *generate_args,
+                    ],
+                    cwd=str(repo_root),
+                    capture_output=True,
+                    text=True,
+                )
+            except OSError as error:
+                print(f"failed to launch cargo generate-manifest: {error}")
+                return False
             if result.returncode == 0:
                 print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
                 return True

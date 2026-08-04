@@ -25,6 +25,23 @@ pub(crate) struct RateLimitConfig {
     pub(crate) burst: f64,
 }
 
+impl RateLimitConfig {
+    /// Build a finite, positive token-bucket configuration.
+    ///
+    /// Every request costs one token, so capacities below one can never admit
+    /// a request. Preserve fractional refill rates while keeping at least one
+    /// token of usable burst capacity.
+    pub(crate) fn try_new(rps: f64, burst: f64) -> Option<Self> {
+        if !rps.is_finite() || rps <= 0.0 || !burst.is_finite() || burst <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            rps,
+            burst: burst.max(1.0),
+        })
+    }
+}
+
 /// A single token bucket (one client).
 struct TokenBucket {
     tokens: f64,
@@ -173,6 +190,35 @@ mod tests {
         assert!(
             !limiter.try_acquire(&request, &cfg),
             "bucket should be exhausted"
+        );
+    }
+
+    #[test]
+    fn rejects_non_finite_config_values() {
+        assert!(RateLimitConfig::try_new(f64::INFINITY, 1.0).is_none());
+        assert!(RateLimitConfig::try_new(1.0, f64::INFINITY).is_none());
+        assert!(RateLimitConfig::try_new(f64::NAN, 1.0).is_none());
+        assert!(RateLimitConfig::try_new(1.0, f64::NAN).is_none());
+    }
+
+    #[test]
+    fn fractional_rps_starts_with_one_token_and_refills() {
+        let cfg =
+            RateLimitConfig::try_new(0.5, 0.5).expect("fractional RPS should remain supported");
+        assert_eq!(cfg.rps, 0.5);
+        assert_eq!(cfg.burst, 1.0);
+
+        let mut bucket = TokenBucket::new(cfg.burst);
+        assert!(bucket.try_acquire(&cfg), "the initial token should admit");
+        assert!(
+            !bucket.try_acquire(&cfg),
+            "the initial token should be consumed"
+        );
+
+        bucket.last = Instant::now() - std::time::Duration::from_secs(2);
+        assert!(
+            bucket.try_acquire(&cfg),
+            "0.5 RPS should refill one token after two seconds"
         );
     }
 

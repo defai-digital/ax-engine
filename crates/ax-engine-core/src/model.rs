@@ -1304,7 +1304,12 @@ fn validate_native_model_manifest(
         }
         validate_tensor_path(root_dir, tensor)?;
         validate_quantized_source_path(root_dir, tensor)?;
-        validate_tensor_quantization(tensor, allow_experimental_3bit, allow_experimental_2bit)?;
+        validate_tensor_quantization(
+            tensor,
+            manifest.tensor_format,
+            allow_experimental_3bit,
+            allow_experimental_2bit,
+        )?;
 
         if tensor.role == NativeTensorRole::Other {
             // Extension/sidecar roles (e.g. MTP): skip layer_index validation entirely.
@@ -1456,6 +1461,7 @@ fn validate_native_model_manifest(
         let has_any_attention = roles.contains(&NativeTensorRole::AttentionO)
             || roles.contains(&NativeTensorRole::AttentionQ)
             || roles.contains(&NativeTensorRole::AttentionK)
+            || roles.contains(&NativeTensorRole::AttentionV)
             || roles.contains(&NativeTensorRole::AttentionQkvPacked)
             || has_any_glm_mla_attention_role(roles);
         let has_any_linear_attention = roles.contains(&NativeTensorRole::LinearAttentionInProjQkv)
@@ -2193,6 +2199,40 @@ fn validate_native_model_tensor_shapes(
                 "attention_norm",
             )?;
             expect_vector_shape(attention_norm, hidden_size, "attention_norm")?;
+            if manifest_tensor(manifest, NativeTensorRole::AttentionQ, Some(layer_index)).is_some()
+            {
+                let head_dim = configured_attention_head_dim(manifest, layer_index);
+                let q_rows = u64::from(manifest.attention_head_count) * head_dim;
+                let kv_rows = u64::from(manifest.kv_head_count) * head_dim;
+                let attention_q = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::AttentionQ,
+                    "attention_q",
+                )?;
+                let attention_k = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::AttentionK,
+                    "attention_k",
+                )?;
+                let attention_v = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::AttentionV,
+                    "attention_v",
+                )?;
+                let attention_o = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::AttentionO,
+                    "attention_o",
+                )?;
+                expect_matrix_shape(attention_q, q_rows, hidden_size, "attention_q")?;
+                expect_matrix_shape(attention_k, kv_rows, hidden_size, "attention_k")?;
+                expect_matrix_shape(attention_v, kv_rows, hidden_size, "attention_v")?;
+                expect_matrix_shape(attention_o, hidden_size, q_rows, "attention_o")?;
+            }
         }
         return Ok(());
     }
@@ -2300,7 +2340,7 @@ fn validate_native_model_tensor_shapes(
             })
             .transpose()?;
         if let (Some(ffn_down), Some(ffn_down_shape)) = (ffn_down, ffn_down_shape) {
-            if !ffn_down.source_quantized && ffn_down_shape.0 != hidden_size {
+            if ffn_down_shape.0 != hidden_size {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
                         "layer {} tensor ffn_down must have shape [{}, intermediate_dim], got {:?}",
@@ -2322,7 +2362,11 @@ fn validate_native_model_tensor_shapes(
             } else {
                 q_rows
             };
-            let kv_rows = u64::from(manifest.kv_head_count) * head_dim;
+            // `kv_head_count` describes the base-attention geometry. Gemma4
+            // global layers widen each head while preserving the total KV
+            // projection width (for example 8×128 becomes 4×256).
+            let kv_rows =
+                u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
             expect_matrix_shape(
                 attention_qkv,
                 packed_q_rows + kv_rows + kv_rows,
@@ -2524,6 +2568,28 @@ fn validate_native_model_tensor_shapes(
             ) {
                 expect_vector_shape(gate_inp_scale, hidden_size, "ffn_gate_inp_scale")?;
             }
+            if let Some(gate_inp_correction_bias) = manifest_tensor(
+                manifest,
+                NativeTensorRole::FfnGateInpCorrectionBias,
+                Some(layer_index),
+            ) {
+                expect_vector_shape(
+                    gate_inp_correction_bias,
+                    moe_dims.expert_count,
+                    "ffn_gate_inp_correction_bias",
+                )?;
+            }
+            if let Some(gate_inp_expert_scale) = manifest_tensor(
+                manifest,
+                NativeTensorRole::FfnGateInpExpertScale,
+                Some(layer_index),
+            ) {
+                expect_vector_shape(
+                    gate_inp_expert_scale,
+                    moe_dims.expert_count,
+                    "ffn_gate_inp_expert_scale",
+                )?;
+            }
             if manifest_tensor(
                 manifest,
                 NativeTensorRole::FfnGateUpExpsMxfp4Blocks,
@@ -2621,7 +2687,7 @@ fn validate_native_model_tensor_shapes(
                     ),
                 }
             })?;
-            if ffn_gate_up_packed.source_quantized {
+            if uses_packed_u32_storage(ffn_gate_up_packed) {
                 let expected_cols = expected_packed_cols(hidden_size, ffn_gate_up_packed)?;
                 if cols != expected_cols {
                     return Err(NativeModelError::InvalidManifest {
@@ -2676,7 +2742,7 @@ fn validate_native_model_tensor_shapes(
                         layer_index
                     ),
                 })?;
-            if ffn_gate.source_quantized {
+            if uses_packed_u32_storage(ffn_gate) {
                 let expected_cols = expected_packed_cols(hidden_size, ffn_gate)?;
                 if gate_shape.1 != expected_cols {
                     return Err(NativeModelError::InvalidManifest {
@@ -2694,7 +2760,7 @@ fn validate_native_model_tensor_shapes(
                     ),
                 });
             }
-            if ffn_up.source_quantized {
+            if uses_packed_u32_storage(ffn_up) {
                 let expected_cols = expected_packed_cols(hidden_size, ffn_up)?;
                 if up_shape.1 != expected_cols {
                     return Err(NativeModelError::InvalidManifest {
@@ -2729,7 +2795,7 @@ fn validate_native_model_tensor_shapes(
             manifest_tensor(manifest, NativeTensorRole::FfnDown, Some(layer_index)),
             ffn_down_shape,
         ) {
-            if ffn_down.source_quantized {
+            if uses_packed_u32_storage(ffn_down) {
                 let expected_cols = expected_packed_cols(dense_intermediate_dim, ffn_down)?;
                 if ffn_down_shape.1 != expected_cols {
                     return Err(NativeModelError::InvalidManifest {
@@ -3428,7 +3494,7 @@ fn resolved_split_attention_dims(
     // Apply raw-column checks per tensor. Mixed-precision plans can preserve Q
     // while packing K/V/O, so one projection's storage must not determine the
     // layout validation applied to another projection.
-    if !attention_q.source_quantized && q_cols != hidden_size {
+    if !uses_packed_u32_storage(attention_q) && q_cols != hidden_size {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
                 "layer {} tensor attention_q must have shape [q_rows, {}], got {:?}",
@@ -3436,7 +3502,7 @@ fn resolved_split_attention_dims(
             ),
         });
     }
-    if !attention_k.source_quantized && k_cols != hidden_size {
+    if !uses_packed_u32_storage(attention_k) && k_cols != hidden_size {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
                 "layer {} tensor attention_k must have shape [kv_rows, {}], got {:?}",
@@ -3527,6 +3593,30 @@ fn resolved_split_attention_dims(
     }
     let q_heads = effective_q_rows / head_dim;
     let kv_heads = k_rows / head_dim;
+    let expected_q_heads = u64::from(manifest.attention_head_count);
+    // The manifest stores the base KV head count and base head width, plus an
+    // optional wider head width for global-attention layers. Preserve the
+    // configured total KV projection width and derive the per-layer head
+    // count, matching the runtime's projection-shape inference.
+    let configured_kv_rows =
+        u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
+    if !configured_kv_rows.is_multiple_of(head_dim) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} configured KV projection width {} must be divisible by head_dim {}",
+                layer_index, configured_kv_rows, head_dim
+            ),
+        });
+    }
+    let expected_kv_heads = configured_kv_rows / head_dim;
+    if q_heads != expected_q_heads || kv_heads != expected_kv_heads {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} split attention head counts must match manifest q_heads={} kv_heads={}, resolved q_heads={} kv_heads={}",
+                layer_index, expected_q_heads, expected_kv_heads, q_heads, kv_heads
+            ),
+        });
+    }
     if q_heads == 0 || kv_heads == 0 || q_heads < kv_heads || !q_heads.is_multiple_of(kv_heads) {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
@@ -3546,7 +3636,7 @@ fn resolved_split_attention_dims(
                     layer_index
                 ),
             })?;
-        if !attention_v.source_quantized && v_cols != hidden_size {
+        if !uses_packed_u32_storage(attention_v) && v_cols != hidden_size {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "layer {} tensor attention_v must have shape [kv_rows, {}], got {:?}",
@@ -3593,7 +3683,7 @@ fn validate_q_only_attention_tensor(
             ),
         })?;
     let hidden_size = u64::from(manifest.hidden_size);
-    if !attention_q.source_quantized && q_cols != hidden_size {
+    if !uses_packed_u32_storage(attention_q) && q_cols != hidden_size {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
                 "layer {} tensor attention_q must have shape [q_rows, {}], got {:?}",
@@ -3646,7 +3736,17 @@ fn validate_q_only_attention_tensor(
             ),
         });
     }
-    Ok(())
+    let q_heads = effective_q_rows / head_dim;
+    let expected_q_heads = u64::from(manifest.attention_head_count);
+    if q_heads != expected_q_heads {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} Q-only attention head count must match manifest q_heads={}, resolved q_heads={}",
+                layer_index, expected_q_heads, q_heads
+            ),
+        });
+    }
+    expect_matrix_shape(attention_q, q_rows, hidden_size, "attention_q")
 }
 
 fn manifest_tensor(
@@ -3724,10 +3824,10 @@ fn expect_matrix_shape(
     expected_cols: u64,
     label: &str,
 ) -> Result<(), NativeModelError> {
-    // Quantized tensors (e.g. MLX affine) pack columns. Validate the row count
-    // and the packed column count derived from bits instead of accepting any
-    // second dimension.
-    if tensor.source_quantized {
+    // MLX affine weights pack logical columns into U32 words. GGUF block
+    // dtypes retain their logical tensor shape even though their byte storage
+    // is quantized.
+    if uses_packed_u32_storage(tensor) {
         let Some((rows, cols)) = matrix_shape(tensor) else {
             return Err(NativeModelError::InvalidManifest {
                 message: format!("tensor {} must be a rank-2 quantized matrix", label),
@@ -3761,7 +3861,7 @@ fn expect_tensor_shape(
     expected_shape: &[u64],
     label: &str,
 ) -> Result<(), NativeModelError> {
-    if tensor.source_quantized {
+    if uses_packed_u32_storage(tensor) {
         if tensor.shape.len() != expected_shape.len() {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
@@ -3803,11 +3903,48 @@ fn tensor_quantization_or_default(tensor: &NativeTensorSpec) -> NativeTensorQuan
     tensor.quantization.clone().unwrap_or_default()
 }
 
+fn uses_packed_u32_storage(tensor: &NativeTensorSpec) -> bool {
+    tensor.source_quantized && tensor.dtype == NativeTensorDataType::U32
+}
+
+fn is_gguf_block_dtype(dtype: NativeTensorDataType) -> bool {
+    matches!(
+        dtype,
+        NativeTensorDataType::Q4Km
+            | NativeTensorDataType::Q5Km
+            | NativeTensorDataType::Q6Km
+            | NativeTensorDataType::Q8Zero
+    )
+}
+
+fn uses_gguf_block_storage(tensor: &NativeTensorSpec) -> bool {
+    tensor.source_quantized && is_gguf_block_dtype(tensor.dtype)
+}
+
 fn validate_tensor_quantization(
     tensor: &NativeTensorSpec,
+    tensor_format: NativeTensorFormat,
     allow_experimental_3bit: bool,
     allow_experimental_2bit: bool,
 ) -> Result<(), NativeModelError> {
+    if is_gguf_block_dtype(tensor.dtype) {
+        if tensor_format != NativeTensorFormat::Gguf {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "tensor {} uses GGUF block dtype {:?} but tensor_format is {:?}, expected gguf",
+                    tensor.name, tensor.dtype, tensor_format
+                ),
+            });
+        }
+        if !tensor.source_quantized {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "tensor {} uses GGUF block dtype {:?} but source_quantized is false",
+                    tensor.name, tensor.dtype
+                ),
+            });
+        }
+    }
     if tensor.dtype == NativeTensorDataType::U32 && !tensor.source_quantized {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
@@ -3817,7 +3954,18 @@ fn validate_tensor_quantization(
         });
     }
     let Some(quantization) = &tensor.quantization else {
-        return Ok(());
+        if !tensor.source_quantized
+            || uses_packed_u32_storage(tensor)
+            || uses_gguf_block_storage(tensor)
+        {
+            return Ok(());
+        }
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} is source_quantized but dtype is {:?}, expected u32 or a supported GGUF block dtype",
+                tensor.name, tensor.dtype
+            ),
+        });
     };
     if !tensor.source_quantized {
         return Err(NativeModelError::InvalidManifest {
@@ -4432,6 +4580,77 @@ mod tests {
                 "model.layers.1.self_attn.k_proj.weight",
                 NativeTensorRole::AttentionK,
                 Some(1),
+                vec![1024, 2048],
+            ),
+        ]);
+        manifest
+    }
+
+    fn q_only_kv_shared_manifest() -> NativeModelManifest {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+        ];
+        manifest.kv_shared_source_layers.insert(1, 0);
+        manifest.tensors.retain(|tensor| {
+            !(tensor.layer_index == Some(1)
+                && matches!(
+                    tensor.role,
+                    NativeTensorRole::AttentionQkvPacked
+                        | NativeTensorRole::AttentionK
+                        | NativeTensorRole::AttentionV
+                ))
+        });
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.1.self_attn.q_proj.weight",
+                NativeTensorRole::AttentionQ,
+                Some(1),
+                vec![2048, 2048],
+            ),
+            tensor(
+                "model.layers.1.self_attn.q_norm.weight",
+                NativeTensorRole::AttentionQNorm,
+                Some(1),
+                vec![128],
+            ),
+        ]);
+        manifest
+    }
+
+    fn nemotron_attention_manifest() -> NativeModelManifest {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "nemotron_h".to_string();
+        manifest.layer_count = 1;
+        manifest.layer_types = vec!["attention".to_string()];
+        manifest.tensors.retain(|tensor| {
+            tensor.layer_index.is_none()
+                || (tensor.layer_index == Some(0)
+                    && matches!(
+                        tensor.role,
+                        NativeTensorRole::AttentionNorm | NativeTensorRole::AttentionO
+                    ))
+        });
+        manifest.tensors.extend([
+            tensor(
+                "backbone.layers.0.mixer.q_proj.weight",
+                NativeTensorRole::AttentionQ,
+                Some(0),
+                vec![2048, 2048],
+            ),
+            tensor(
+                "backbone.layers.0.mixer.k_proj.weight",
+                NativeTensorRole::AttentionK,
+                Some(0),
+                vec![1024, 2048],
+            ),
+            tensor(
+                "backbone.layers.0.mixer.v_proj.weight",
+                NativeTensorRole::AttentionV,
+                Some(0),
                 vec![1024, 2048],
             ),
         ]);
@@ -5248,6 +5467,38 @@ mod tests {
     }
 
     #[test]
+    fn native_model_artifacts_reject_bad_moe_router_sidecar_lengths() {
+        for (role, name, label) in [
+            (
+                NativeTensorRole::FfnGateInpCorrectionBias,
+                "model.layers.0.router.correction_bias",
+                "ffn_gate_inp_correction_bias",
+            ),
+            (
+                NativeTensorRole::FfnGateInpExpertScale,
+                "model.layers.0.router.per_expert_scale",
+                "ffn_gate_inp_expert_scale",
+            ),
+        ] {
+            let mut manifest = moe_layer_manifest();
+            manifest
+                .tensors
+                .push(tensor(name, role, Some(0), vec![127]));
+            let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+            let error = NativeModelArtifacts::from_dir(&dir)
+                .expect_err("MoE router sidecars must match expert_count");
+            let NativeModelError::InvalidManifest { message } = error else {
+                panic!("expected invalid manifest error");
+            };
+            assert!(message.contains(label), "unexpected error: {message}");
+            assert!(message.contains("128"), "unexpected error: {message}");
+
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
     fn native_model_artifacts_allow_gemma4_dense_without_moe_only_norms() {
         let mut manifest = packed_layer_manifest();
         manifest.model_family = "gemma4".to_string();
@@ -5312,6 +5563,37 @@ mod tests {
     }
 
     #[test]
+    fn native_model_artifacts_reject_bad_quantized_ffn_down_output_rows() {
+        let mut manifest = packed_layer_manifest();
+        let down = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.role == NativeTensorRole::FfnDown && tensor.layer_index == Some(0)
+            })
+            .expect("fixture should include ffn down");
+        down.dtype = NativeTensorDataType::U32;
+        down.source_quantized = true;
+        down.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 4,
+        });
+        down.shape = vec![2047, 512];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("quantized ffn_down must still output hidden_size rows");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("ffn_down"), "unexpected error: {message}");
+        assert!(message.contains("2048"), "unexpected error: {message}");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn native_model_artifacts_allow_5_and_6_bit_quantized_packed_columns() {
         for bits in [5, 6] {
             let mut manifest = packed_layer_manifest();
@@ -5349,6 +5631,45 @@ mod tests {
             result.is_ok(),
             "BF16 Q must not force packed K/V/O to use raw column shapes"
         );
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_split_attention_head_count_mismatches() {
+        for (projection_group, q_rows, kv_rows) in
+            [("query", 1024_u64, 512_u64), ("key/value", 2048, 256)]
+        {
+            let mut manifest = mixed_split_projection_manifest();
+            for projection in manifest.tensors.iter_mut().filter(|tensor| {
+                tensor.layer_index == Some(1)
+                    && matches!(
+                        tensor.role,
+                        NativeTensorRole::AttentionQ
+                            | NativeTensorRole::AttentionK
+                            | NativeTensorRole::AttentionV
+                    )
+            }) {
+                match projection.role {
+                    NativeTensorRole::AttentionQ => projection.shape[0] = q_rows,
+                    NativeTensorRole::AttentionK | NativeTensorRole::AttentionV => {
+                        projection.shape[0] = kv_rows;
+                    }
+                    _ => {}
+                }
+            }
+            let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+            let error = NativeModelArtifacts::from_dir(&dir)
+                .expect_err("split projection head counts must match manifest metadata");
+            let NativeModelError::InvalidManifest { message } = error else {
+                panic!("expected invalid manifest error");
+            };
+            assert!(
+                message.contains("head counts must match manifest"),
+                "{projection_group} mismatch produced unexpected error: {message}"
+            );
+
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
@@ -5569,9 +5890,9 @@ mod tests {
             length_bytes: 192 * 8192 * 4,
         };
 
-        validate_tensor_quantization(&spec, true, false)
+        validate_tensor_quantization(&spec, NativeTensorFormat::Safetensors, true, false)
             .expect("3-bit should be accepted when experimental gate is enabled");
-        validate_tensor_quantization(&spec, false, false)
+        validate_tensor_quantization(&spec, NativeTensorFormat::Safetensors, false, false)
             .expect_err("3-bit should be rejected when experimental gate is disabled");
     }
 
@@ -5596,7 +5917,7 @@ mod tests {
             length_bytes: 128 * 2880 * 360 * 4,
         };
 
-        validate_tensor_quantization(&spec, false, false)
+        validate_tensor_quantization(&spec, NativeTensorFormat::Safetensors, false, false)
             .expect("MXFP4 weights should be accepted with their fixed layout");
     }
 
@@ -5709,12 +6030,22 @@ mod tests {
             length_bytes: 256 * 4096 * 4,
         };
 
-        validate_tensor_quantization(&low_layer, true, false)
+        validate_tensor_quantization(&low_layer, NativeTensorFormat::Safetensors, true, false)
             .expect("3-bit low layer with gate should be accepted");
-        validate_tensor_quantization(&sensitive_layer, true, false)
-            .expect("4-bit sensitive layer should always be accepted");
-        validate_tensor_quantization(&sensitive_layer, false, false)
-            .expect("4-bit sensitive layer should always be accepted without gate");
+        validate_tensor_quantization(
+            &sensitive_layer,
+            NativeTensorFormat::Safetensors,
+            true,
+            false,
+        )
+        .expect("4-bit sensitive layer should always be accepted");
+        validate_tensor_quantization(
+            &sensitive_layer,
+            NativeTensorFormat::Safetensors,
+            false,
+            false,
+        )
+        .expect("4-bit sensitive layer should always be accepted without gate");
     }
 
     #[test]
@@ -5770,6 +6101,233 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_source_quantized_non_u32_without_metadata() {
+        let mut manifest = packed_layer_manifest();
+        let gate = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateUpPacked)
+            .expect("fixture should include packed ffn gate/up");
+        gate.dtype = NativeTensorDataType::Bf16;
+        gate.source_quantized = true;
+        gate.quantization = None;
+        gate.shape = vec![8192, 256];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("source-quantized storage must use packed u32 even without metadata");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("source_quantized") && message.contains("expected u32"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_gguf_block_dtype_in_safetensors_manifest() {
+        let mut manifest = packed_layer_manifest();
+        let gate = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateUpPacked)
+            .expect("fixture should include packed ffn gate/up");
+        gate.dtype = NativeTensorDataType::Q4Km;
+        gate.source_quantized = true;
+        gate.quantization = None;
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("GGUF block dtypes must not be admitted by a safetensors manifest");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("tensor_format") && message.contains("expected gguf"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_gguf_block_dtype_in_gguf_manifest() {
+        let mut manifest = packed_layer_manifest();
+        manifest.tensor_format = NativeTensorFormat::Gguf;
+        for tensor in &mut manifest.tensors {
+            tensor.file = PathBuf::from("model.gguf");
+        }
+        let gate = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateUpPacked)
+            .expect("fixture should include packed ffn gate/up");
+        gate.dtype = NativeTensorDataType::Q4Km;
+        gate.source_quantized = true;
+        gate.quantization = None;
+        let (dir, _) = write_fixture(manifest, &["model.gguf"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("GGUF block dtype with logical columns should validate in a GGUF manifest");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_shape_helpers_use_logical_columns_for_gguf_block_dtypes() {
+        for dtype in [
+            NativeTensorDataType::Q4Km,
+            NativeTensorDataType::Q5Km,
+            NativeTensorDataType::Q6Km,
+            NativeTensorDataType::Q8Zero,
+        ] {
+            let mut matrix = tensor(
+                "model.layers.0.self_attn.q_proj.weight",
+                NativeTensorRole::AttentionQ,
+                Some(0),
+                vec![128, 2048],
+            );
+            matrix.dtype = dtype;
+            matrix.source_quantized = true;
+
+            validate_tensor_quantization(&matrix, NativeTensorFormat::Gguf, false, false)
+                .unwrap_or_else(|error| panic!("{dtype:?} should be valid GGUF storage: {error}"));
+            expect_matrix_shape(&matrix, 128, 2048, "attention_q").unwrap_or_else(|error| {
+                panic!("{dtype:?} should retain logical matrix columns: {error}")
+            });
+
+            matrix.shape[1] = 256;
+            let error = expect_matrix_shape(&matrix, 128, 2048, "attention_q")
+                .expect_err("packed-U32 columns must not be accepted for GGUF block dtypes");
+            assert!(
+                error.to_string().contains("[128, 2048]"),
+                "unexpected {dtype:?} matrix error: {error}"
+            );
+
+            let mut experts = matrix.clone();
+            experts.role = NativeTensorRole::FfnGateExps;
+            experts.shape = vec![4, 512, 2048];
+            expect_tensor_shape(&experts, &[4, 512, 2048], "ffn_gate_exps").unwrap_or_else(
+                |error| panic!("{dtype:?} should retain logical expert columns: {error}"),
+            );
+
+            experts.shape[2] = 256;
+            let error = expect_tensor_shape(&experts, &[4, 512, 2048], "ffn_gate_exps")
+                .expect_err("packed-U32 expert columns must not be accepted for GGUF block dtypes");
+            assert!(
+                error.to_string().contains("[4, 512, 2048]"),
+                "unexpected {dtype:?} expert error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_model_tensor_shapes_use_logical_gguf_dense_ffn_columns() {
+        let mut manifest = packed_layer_manifest();
+        manifest.tensor_format = NativeTensorFormat::Gguf;
+        for tensor in manifest.tensors.iter_mut().filter(|tensor| {
+            tensor.layer_index == Some(0)
+                && matches!(
+                    tensor.role,
+                    NativeTensorRole::FfnGateUpPacked | NativeTensorRole::FfnDown
+                )
+        }) {
+            tensor.dtype = NativeTensorDataType::Q4Km;
+            tensor.source_quantized = true;
+            tensor.quantization = None;
+        }
+
+        validate_native_model_tensor_shapes(&manifest)
+            .expect("GGUF FFN weights should validate with logical columns");
+
+        manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.layer_index == Some(0) && tensor.role == NativeTensorRole::FfnGateUpPacked
+            })
+            .expect("fixture should include FFN gate/up")
+            .shape[1] = 256;
+        let error = validate_native_model_tensor_shapes(&manifest)
+            .expect_err("packed-U32 columns must not be accepted for a GGUF FFN weight");
+        assert!(
+            error.to_string().contains("hidden_size 2048 columns"),
+            "unexpected FFN error: {error}"
+        );
+    }
+
+    #[test]
+    fn native_model_tensor_shapes_use_logical_gguf_split_and_q_only_columns() {
+        let mut split = mixed_split_projection_manifest();
+        split.tensor_format = NativeTensorFormat::Gguf;
+        for projection in split.tensors.iter_mut().filter(|tensor| {
+            tensor.layer_index == Some(1)
+                && matches!(
+                    tensor.role,
+                    NativeTensorRole::AttentionQ
+                        | NativeTensorRole::AttentionK
+                        | NativeTensorRole::AttentionV
+                        | NativeTensorRole::AttentionO
+                )
+        }) {
+            projection.dtype = NativeTensorDataType::Q4Km;
+            projection.source_quantized = true;
+            projection.quantization = None;
+            projection.shape[1] = 2048;
+        }
+        validate_native_model_tensor_shapes(&split)
+            .expect("GGUF split projections should validate with logical columns");
+
+        split
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.layer_index == Some(1) && tensor.role == NativeTensorRole::AttentionK
+            })
+            .expect("fixture should include split K projection")
+            .shape[1] = 256;
+        let error = validate_native_model_tensor_shapes(&split)
+            .expect_err("packed-U32 columns must not be accepted for a GGUF split projection");
+        assert!(
+            error.to_string().contains("attention_k"),
+            "unexpected split projection error: {error}"
+        );
+
+        let mut q_only = q_only_kv_shared_manifest();
+        q_only.tensor_format = NativeTensorFormat::Gguf;
+        let attention_q = q_only
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.layer_index == Some(1) && tensor.role == NativeTensorRole::AttentionQ
+            })
+            .expect("fixture should include Q-only projection");
+        attention_q.dtype = NativeTensorDataType::Q4Km;
+        attention_q.source_quantized = true;
+        attention_q.quantization = None;
+        validate_native_model_tensor_shapes(&q_only)
+            .expect("GGUF Q-only projection should validate with logical columns");
+
+        q_only
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.layer_index == Some(1) && tensor.role == NativeTensorRole::AttentionQ
+            })
+            .expect("fixture should include Q-only projection")
+            .shape[1] = 256;
+        let error = validate_native_model_tensor_shapes(&q_only)
+            .expect_err("packed-U32 columns must not be accepted for a GGUF Q-only projection");
+        assert!(
+            error.to_string().contains("attention_q"),
+            "unexpected Q-only projection error: {error}"
+        );
     }
 
     #[test]
@@ -5939,41 +6497,101 @@ mod tests {
     }
 
     #[test]
-    fn native_model_artifacts_allow_q_only_kv_shared_layer() {
+    fn native_model_artifacts_reject_orphan_attention_v_projection() {
         let mut manifest = packed_layer_manifest();
-        manifest.model_family = "gemma4".to_string();
-        manifest.sliding_window_size = Some(1024);
-        manifest.layer_types = vec![
-            "sliding_attention".to_string(),
-            "sliding_attention".to_string(),
-        ];
-        manifest.kv_shared_source_layers.insert(1, 0);
         manifest.tensors.retain(|tensor| {
             !(tensor.layer_index == Some(1)
                 && matches!(
                     tensor.role,
-                    NativeTensorRole::AttentionQkvPacked
-                        | NativeTensorRole::AttentionK
-                        | NativeTensorRole::AttentionV
+                    NativeTensorRole::AttentionQkvPacked | NativeTensorRole::AttentionO
                 ))
         });
-        manifest.tensors.extend([
-            tensor(
-                "model.layers.1.self_attn.q_proj.weight",
-                NativeTensorRole::AttentionQ,
-                Some(1),
-                vec![2048, 2048],
-            ),
-            tensor(
-                "model.layers.1.self_attn.q_norm.weight",
-                NativeTensorRole::AttentionQNorm,
-                Some(1),
-                vec![128],
-            ),
-        ]);
+        manifest.tensors.push(tensor(
+            "model.layers.1.self_attn.v_proj.weight",
+            NativeTensorRole::AttentionV,
+            Some(1),
+            vec![1024, 2048],
+        ));
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("an orphan V projection must trigger the full-attention contract");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("attention_o"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_q_only_kv_shared_layer() {
+        let manifest = q_only_kv_shared_manifest();
         let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
 
         NativeModelArtifacts::from_dir(&dir).expect("Q-only KV-shared layer should validate");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_q_only_attention_head_count_mismatch() {
+        let mut manifest = q_only_kv_shared_manifest();
+        manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.role == NativeTensorRole::AttentionQ && tensor.layer_index == Some(1)
+            })
+            .expect("fixture should include Q-only projection")
+            .shape[0] = 1024;
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("Q-only projection heads must match manifest metadata");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("Q-only attention head count must match manifest"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_bad_q_only_quantized_columns() {
+        let mut manifest = q_only_kv_shared_manifest();
+        let attention_q = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.role == NativeTensorRole::AttentionQ && tensor.layer_index == Some(1)
+            })
+            .expect("fixture should include Q-only projection");
+        attention_q.dtype = NativeTensorDataType::U32;
+        attention_q.source_quantized = true;
+        attention_q.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 4,
+        });
+        attention_q.shape = vec![2048, 255];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("Q-only quantized projections must validate packed columns");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("attention_q must have packed quantized shape [2048, 256]"),
+            "unexpected error: {message}"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -6268,6 +6886,42 @@ mod tests {
         assert!(message.contains("128"));
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_bad_nemotron_attention_projection_shapes() {
+        for (role, bad_shape, label) in [
+            (
+                NativeTensorRole::AttentionQ,
+                vec![1024, 2048],
+                "attention_q",
+            ),
+            (NativeTensorRole::AttentionK, vec![512, 2048], "attention_k"),
+            (NativeTensorRole::AttentionV, vec![512, 2048], "attention_v"),
+            (
+                NativeTensorRole::AttentionO,
+                vec![2048, 1024],
+                "attention_o",
+            ),
+        ] {
+            let mut manifest = nemotron_attention_manifest();
+            manifest
+                .tensors
+                .iter_mut()
+                .find(|tensor| tensor.role == role && tensor.layer_index == Some(0))
+                .expect("fixture should include Nemotron attention projection")
+                .shape = bad_shape;
+            let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+            let error = NativeModelArtifacts::from_dir(&dir)
+                .expect_err("Nemotron attention projections must match runtime reshape dimensions");
+            let NativeModelError::InvalidManifest { message } = error else {
+                panic!("expected invalid manifest error");
+            };
+            assert!(message.contains(label), "unexpected error: {message}");
+
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[test]

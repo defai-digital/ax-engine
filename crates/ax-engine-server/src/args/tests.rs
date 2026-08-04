@@ -1222,6 +1222,78 @@ fn rate_limit_burst_defaults_to_rps_when_unset() {
 }
 
 #[test]
+fn rate_limit_rejects_non_finite_rps_and_burst_values() {
+    for raw in ["inf", "+inf"] {
+        let infinity = raw
+            .parse::<f64>()
+            .unwrap_or_else(|error| panic!("{raw} should parse as f64 infinity: {error}"));
+        assert!(infinity.is_infinite() && infinity.is_sign_positive());
+
+        let invalid_rps = ServerArgs {
+            rate_limit_rps: Some(infinity),
+            ..base_args()
+        };
+        assert_eq!(
+            invalid_rps.resolved_rate_limit(),
+            None,
+            "{raw} RPS must not enable an unbounded limiter"
+        );
+
+        let invalid_burst = ServerArgs {
+            rate_limit_rps: Some(5.0),
+            rate_limit_burst: Some(infinity),
+            ..base_args()
+        };
+        let cfg = invalid_burst
+            .resolved_rate_limit()
+            .expect("a valid RPS should fall back from an invalid burst");
+        assert_eq!(cfg.rps, 5.0);
+        assert_eq!(
+            cfg.burst, 5.0,
+            "{raw} burst must be discarded rather than propagated"
+        );
+    }
+}
+
+#[test]
+fn rate_limit_cli_rejects_non_finite_numbers() {
+    for flag in ["--rate-limit-rps", "--rate-limit-burst"] {
+        for raw in ["NaN", "inf", "-inf"] {
+            let argument = format!("{flag}={raw}");
+            let error = ServerArgs::try_parse_from(["ax-engine-server", argument.as_str()])
+                .expect_err("non-finite rate-limit CLI values must be rejected");
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("finite number"),
+                "{flag} {raw} produced unexpected error: {rendered}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rate_limit_sub_one_rps_and_burst_keep_one_usable_token() {
+    let default_burst = ServerArgs {
+        rate_limit_rps: Some(0.5),
+        ..base_args()
+    }
+    .resolved_rate_limit()
+    .expect("fractional RPS should enable rate limiting");
+    assert_eq!(default_burst.rps, 0.5);
+    assert_eq!(default_burst.burst, 1.0);
+
+    let explicit_sub_token_burst = ServerArgs {
+        rate_limit_rps: Some(0.5),
+        rate_limit_burst: Some(0.25),
+        ..base_args()
+    }
+    .resolved_rate_limit()
+    .expect("a positive fractional burst should be normalized");
+    assert_eq!(explicit_sub_token_burst.rps, 0.5);
+    assert_eq!(explicit_sub_token_burst.burst, 1.0);
+}
+
+#[test]
 fn stream_deadlines_reflect_explicit_flags() {
     let args = ServerArgs {
         stream_idle_timeout_secs: Some(15),

@@ -765,6 +765,30 @@ fn generate_manifest_args_accept_force_flag() {
 }
 
 #[test]
+fn generate_manifest_args_accept_dash_prefixed_model_dir_after_end_of_options() {
+    let args = parse_generate_manifest_args(&[
+        "--force".to_string(),
+        "--".to_string(),
+        "-model".to_string(),
+    ])
+    .expect("generate-manifest args should parse");
+
+    assert_eq!(args.model_dir, PathBuf::from("-model"));
+    assert!(args.force);
+    assert!(!args.json);
+    assert!(!args.validate);
+}
+
+#[test]
+fn generate_manifest_args_treat_option_like_value_as_dir_after_end_of_options() {
+    let args = parse_generate_manifest_args(&["--".to_string(), "--validate".to_string()])
+        .expect("generate-manifest args should parse");
+
+    assert_eq!(args.model_dir, PathBuf::from("--validate"));
+    assert!(!args.validate);
+}
+
+#[test]
 fn generate_manifest_args_reject_missing_model_dir() {
     let error = parse_generate_manifest_args(&["--json".to_string()])
         .expect_err("missing model directory should fail");

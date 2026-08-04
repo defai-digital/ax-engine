@@ -19,8 +19,10 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Read;
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Deserialize;
 
@@ -36,6 +38,10 @@ use crate::model::{
 pub const AX_CONVERT_STRICT_TENSORS: &str = "AX_CONVERT_STRICT_TENSORS";
 /// Env: when not explicitly off, emit dropped-tensor warnings (default on).
 pub const AX_CONVERT_DROPPED_TENSOR_REPORT: &str = "AX_CONVERT_DROPPED_TENSOR_REPORT";
+
+const MANIFEST_TEMP_FILE_PREFIX: &str = ".ax-engine-manifest.tmp-";
+const MANIFEST_TEMP_CREATE_ATTEMPTS: usize = 128;
+static MANIFEST_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Case-insensitive substrings that indicate media-role weights (WS-C1).
 const MEDIA_ROLE_NAME_MARKERS: &[&str] = &[
@@ -514,10 +520,83 @@ pub fn write_manifest(
         path: manifest_path.clone(),
         source,
     })?;
-    fs::write(&manifest_path, json).map_err(|source| ConvertError::ReadFile {
+    let (temp_path, mut temp_file) =
+        create_manifest_temp_file(model_dir).map_err(|source| ConvertError::ReadFile {
+            path: manifest_path.clone(),
+            source,
+        })?;
+    let mut temp_guard = ManifestTempGuard::new(temp_path);
+    temp_file
+        .write_all(&json)
+        .and_then(|()| temp_file.flush())
+        .and_then(|()| temp_file.sync_all())
+        .map_err(|source| ConvertError::ReadFile {
+            path: manifest_path.clone(),
+            source,
+        })?;
+    drop(temp_file);
+
+    // On Unix, renaming a file over a symlink replaces the symlink directory
+    // entry itself. It never opens or writes through the symlink target.
+    fs::rename(temp_guard.path(), &manifest_path).map_err(|source| ConvertError::ReadFile {
         path: manifest_path,
         source,
-    })
+    })?;
+    temp_guard.disarm();
+    Ok(())
+}
+
+fn create_manifest_temp_file(model_dir: &Path) -> std::io::Result<(PathBuf, fs::File)> {
+    for _ in 0..MANIFEST_TEMP_CREATE_ATTEMPTS {
+        let sequence = MANIFEST_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp_path = model_dir.join(format!(
+            "{MANIFEST_TEMP_FILE_PREFIX}{}-{sequence}",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "could not create a unique manifest temp file after {MANIFEST_TEMP_CREATE_ATTEMPTS} attempts"
+        ),
+    ))
+}
+
+struct ManifestTempGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl ManifestTempGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ManifestTempGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 #[cfg(test)]

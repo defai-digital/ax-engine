@@ -12,10 +12,22 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 from . import _bundled_binary
 from ._repo_ref import parse_repo_ref
+
+
+class _ArgumentParseFailure(Exception):
+    def __init__(self, parser: argparse.ArgumentParser, message: str) -> None:
+        super().__init__(message)
+        self.parser = parser
+        self.message = message
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise _ArgumentParseFailure(self, message)
 
 
 @dataclass(frozen=True)
@@ -259,9 +271,7 @@ MODEL_PROFILES: tuple[ModelProfile, ...] = (
 )
 
 
-def _automatosx_profile(
-    label: str, repo_name: str, aliases: tuple[str, ...] = ()
-) -> ModelProfile:
+def _automatosx_profile(label: str, repo_name: str, aliases: tuple[str, ...] = ()) -> ModelProfile:
     """Build one exact-repository alias from the curated AutomatosX catalog."""
     return ModelProfile(
         label=label,
@@ -649,17 +659,16 @@ def _find_repo_script(name: str) -> pathlib.Path | None:
     explicit_root = os.environ.get("AX_ENGINE_REPO_ROOT")
     roots: list[pathlib.Path] = []
     if explicit_root:
-        roots.append(pathlib.Path(explicit_root))
+        roots.append(pathlib.Path(explicit_root).expanduser())
 
-    cwd = pathlib.Path.cwd()
-    roots.extend([cwd, *cwd.parents])
-
-    file_path = pathlib.Path(__file__).resolve()
-    roots.extend(file_path.parents)
+    package_dir = pathlib.Path(__file__).resolve().parent
+    roots.append(package_dir.parent)
+    if package_dir.parent.name == "python":
+        roots.append(package_dir.parent.parent)
 
     for root in roots:
         for candidate in (root / "scripts" / name, root / name):
-            if candidate.exists():
+            if candidate.is_file():
                 return candidate
     return None
 
@@ -673,22 +682,20 @@ def _strip_remainder_separator(values: list[str]) -> list[str]:
 def _parse_download_summary(stdout: str) -> dict | None:
     if not stdout.strip():
         return None
-    try:
-        parsed = json.loads(stdout)
-        if isinstance(parsed, dict):
-            return parsed
-    except json.JSONDecodeError:
-        pass
-    for line in reversed(stdout.splitlines()):
-        if not line.strip():
-            continue
+
+    decoder = json.JSONDecoder()
+    summaries: list[dict] = []
+    index = 0
+    while (start := stdout.find("{", index)) >= 0:
         try:
-            parsed = json.loads(line)
+            parsed, end = decoder.raw_decode(stdout, start)
         except json.JSONDecodeError:
+            index = start + 1
             continue
         if isinstance(parsed, dict) and parsed.get("schema_version") == "ax.download_model.v1":
-            return parsed
-    return None
+            summaries.append(parsed)
+        index = max(end, start + 1)
+    return summaries[-1] if summaries else None
 
 
 def _download_summary(
@@ -697,6 +704,7 @@ def _download_summary(
     dest: str | None = None,
     force: bool = False,
     progress: bool = False,
+    progress_json: bool = False,
 ) -> tuple[int, dict | None, str]:
     repo_id, profile, revision = _download_repo_id(model)
     download_script = _find_repo_script("download_model.py")
@@ -708,13 +716,17 @@ def _download_summary(
 
     command = [sys.executable, str(download_script), repo_id, "--json"]
     if revision:
-        command.extend(["--revision", revision])
-    if dest:
-        command.extend(["--dest", dest])
+        command.append(f"--revision={revision}")
+    if dest is not None:
+        command.append(f"--dest={dest}")
     if force:
         command.append("--force")
+    if progress_json:
+        command.append("--progress-json")
 
-    if progress:
+    if progress_json:
+        result = _run_streaming_capture_stdout(command)
+    elif progress:
         # Let the helper render its live progress bar straight to our stderr while we
         # still capture the stdout JSON summary.
         command.append("--progress-bar")
@@ -724,6 +736,8 @@ def _download_summary(
     summary = _parse_download_summary(result.stdout)
     if summary is not None:
         summary["input"] = model
+        if revision is not None:
+            summary["revision"] = revision
         if profile is not None:
             summary["alias"] = profile.label
             if profile.preset is not None:
@@ -748,6 +762,22 @@ def _print_download_summary(summary: dict) -> None:
     elif dest:
         print("Next:")
         print(f"  ax-engine-bench generate-manifest {dest}")
+
+
+def _download_error_summary(model: str | None, error: str) -> dict[str, object]:
+    return {
+        "schema_version": "ax.download_model.v1",
+        "input": model,
+        "repo_id": None,
+        "revision": None,
+        "dest": None,
+        "status": "download_failed",
+        "errors": [error],
+    }
+
+
+def _print_download_progress_terminal(summary: dict[str, object]) -> None:
+    print(json.dumps(summary, separators=(",", ":")))
 
 
 def _supports_interactive() -> bool:
@@ -968,12 +998,20 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 
 def _cmd_download(args: argparse.Namespace) -> int:
+    if args.progress_json and args.list:
+        raise SystemExit("download --progress-json cannot be combined with --list")
+    if args.progress_json and args.interactive:
+        raise SystemExit("download --progress-json cannot be combined with --interactive")
+
     if args.list:
         if args.json:
             _json_dump(_download_options_payload())
         else:
             print(_format_download_options())
         return 0
+
+    if args.progress_json and not args.model:
+        raise SystemExit("--progress-json requires a model alias or repo id")
 
     interactive = args.interactive or (
         not args.model and not args.no_interactive and not args.json and _supports_interactive()
@@ -993,7 +1031,15 @@ def _cmd_download(args: argparse.Namespace) -> int:
         args.model,
         dest=args.dest,
         force=args.force,
+        progress_json=args.progress_json,
     )
+    if args.progress_json:
+        if stderr:
+            sys.stderr.write(stderr)
+        if summary is None:
+            raise SystemExit("download helper did not emit an ax.download_model.v1 summary")
+        print(json.dumps(summary, separators=(",", ":")))
+        return code
     if args.json:
         if summary is not None:
             _json_dump(summary)
@@ -1028,6 +1074,38 @@ def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
 def _run_capture_stdout(command: list[str]) -> subprocess.CompletedProcess[str]:
     """Capture stdout but let stderr pass through to the terminal (live progress)."""
     return subprocess.run(command, stdout=subprocess.PIPE, stderr=None, text=True)
+
+
+def _run_streaming_capture_stdout(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """Forward progress NDJSON while retaining the helper's terminal summary."""
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=None,
+        text=True,
+    )
+    stdout_lines: list[str] = []
+    if process.stdout is not None:
+        for line in process.stdout:
+            stdout_lines.append(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                payload = None
+            is_summary = (
+                isinstance(payload, dict)
+                and payload.get("schema_version") == "ax.download_model.v1"
+            )
+            is_progress = isinstance(payload, dict) and payload.get("event") == "progress"
+            if is_progress and not is_summary:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+    return subprocess.CompletedProcess(
+        command,
+        process.wait(),
+        "".join(stdout_lines),
+        "",
+    )
 
 
 def _value_at(value: dict, path: tuple[str, ...]) -> object | None:
@@ -1425,9 +1503,7 @@ def _user_doctor_report(bench_report: dict) -> dict:
     }
 
 
-def _unavailable_bench_doctor_report(
-    bench_bin: pathlib.Path | str, exc: OSError
-) -> dict:
+def _unavailable_bench_doctor_report(bench_bin: pathlib.Path | str, exc: OSError) -> dict:
     path = str(bench_bin)
     version = _package_version()
     detail = f"{path}: {exc}"
@@ -1611,9 +1687,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         try:
             os.execvp(argv[0], argv)
         except OSError as exc:
-            return _emit_unavailable_bench_doctor_report(
-                bench_bin, exc, as_json=args.json
-            )
+            return _emit_unavailable_bench_doctor_report(bench_bin, exc, as_json=args.json)
         return 0
 
     argv.append("--json")
@@ -1639,7 +1713,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ax-engine")
+    parser = _ArgumentParser(prog="ax-engine")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     serve_parser = subparsers.add_parser("serve", help="Launch ax-engine-server for a model")
@@ -1686,6 +1760,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Never prompt; require a model argument",
     )
     download_parser.add_argument("--json", action="store_true")
+    download_parser.add_argument(
+        "--progress-json",
+        action="store_true",
+        help="Emit newline-delimited progress events and a final download summary",
+    )
     download_parser.set_defaults(func=_cmd_download)
 
     tui_parser = subparsers.add_parser(
@@ -1764,6 +1843,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    download_progress_requested = bool(argv and argv[0] == "download" and "--progress-json" in argv)
     extra_server_args: list[str] = []
     if argv and argv[0] == "serve" and "--" in argv:
         separator = argv.index("--")
@@ -1771,10 +1851,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv = argv[:separator]
 
     parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except _ArgumentParseFailure as error:
+        message = f"{error.parser.prog}: error: {error.message}"
+        if download_progress_requested:
+            print(message, file=sys.stderr)
+            _print_download_progress_terminal(_download_error_summary(None, message))
+            return 2
+        error.parser.print_usage(sys.stderr)
+        error.parser.exit(2, f"{message}\n")
     if args.command == "serve":
         args.extra_server_args = extra_server_args
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except SystemExit as error:
+        if not download_progress_requested:
+            raise
+        if isinstance(error.code, str) and error.code:
+            message = error.code
+        elif isinstance(error.code, int):
+            message = f"download failed with exit code {error.code}"
+        else:
+            message = "download failed"
+        print(message, file=sys.stderr)
+        _print_download_progress_terminal(
+            _download_error_summary(getattr(args, "model", None), message)
+        )
+        return error.code if isinstance(error.code, int) and error.code > 0 else 2
+    except Exception as error:
+        if not download_progress_requested:
+            raise
+        message = str(error) or type(error).__name__
+        print(message, file=sys.stderr)
+        _print_download_progress_terminal(
+            _download_error_summary(getattr(args, "model", None), message)
+        )
+        return 2
 
 
 if __name__ == "__main__":

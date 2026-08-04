@@ -32,6 +32,20 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- Model manifests now fail closed on missing or mismatched safetensors
+  metadata, overlapping tensor ranges, invalid scalar roles, inconsistent
+  attention geometry, and incorrect dense, MoE, or quantized projection
+  shapes. Manifest replacement is atomic and cannot overwrite a shared Hub
+  blob through a symlink.
+- Model downloads now validate every cached snapshot entry before use,
+  materialize only links into the requested snapshot or its Hub blob store,
+  protect unrelated destinations during forced and concurrent installs, and
+  emit one terminal structured-progress record on every failure path. Rust,
+  Python, and standalone reference parsing also agree on URLs, revisions,
+  option-looking values, control characters, and invalid ports.
+- Download cancellation now terminates the complete child process group, and
+  server rate limits reject non-finite values while keeping fractional request
+  rates usable with a one-request minimum burst.
 - `docs/RELEASING.md` documents the fresh-notarization-ticket recovery for
   the publisher's final `-R=notarized` verification: standalone Mach-Os
   cannot staple tickets and `codesign` only consults locally registered

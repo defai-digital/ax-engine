@@ -4,10 +4,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::{
-    ConvertError, DroppedTensorLedger, NativeTensorDataType, NativeTensorRole,
-    compute_attention_value_from_key_layers, config_quantization, convert_hf_model_dir,
-    llama4_no_rope_layer_interval, match_tensor, model_family_for_type, moe_config,
-    parse_layer_types, parse_rope_params, tensor_name_looks_like_media_role,
+    ConvertError, DroppedTensorLedger, MANIFEST_TEMP_FILE_PREFIX, NativeTensorDataType,
+    NativeTensorRole, compute_attention_value_from_key_layers, config_quantization,
+    convert_hf_model_dir, llama4_no_rope_layer_interval, match_tensor, model_family_for_type,
+    moe_config, parse_layer_types, parse_rope_params, tensor_name_looks_like_media_role,
     tensor_quantization_override, validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling,
     with_real_model_manifest_lock, write_manifest,
 };
@@ -59,6 +59,105 @@ fn unique_test_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("ax-convert-{label}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+fn write_test_manifest(model_family: &str) -> crate::model::NativeModelManifest {
+    serde_json::from_value(serde_json::json!({
+        "schema_version": crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+        "model_family": model_family,
+        "tensor_format": "safetensors",
+        "layer_count": 1,
+        "hidden_size": 8,
+        "attention_head_count": 2,
+        "attention_head_dim": 4,
+        "kv_head_count": 1,
+        "vocab_size": 16,
+        "tensors": []
+    }))
+    .expect("write-test manifest should deserialize")
+}
+
+fn manifest_temp_paths(dir: &Path) -> Vec<PathBuf> {
+    let entries = fs::read_dir(dir).expect("test directory should be readable");
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.expect("test directory entry should be readable");
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(MANIFEST_TEMP_FILE_PREFIX)
+        {
+            paths.push(entry.path());
+        }
+    }
+    paths
+}
+
+#[cfg(unix)]
+#[test]
+fn write_manifest_replaces_symlink_without_modifying_its_target() {
+    use std::os::unix::fs::symlink;
+
+    let dir = unique_test_dir("manifest-symlink");
+    let blob_path = dir.join("content-addressed-blob");
+    let original_blob = b"original manifest blob";
+    fs::write(&blob_path, original_blob).expect("blob should write");
+    let manifest_path = dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    symlink("content-addressed-blob", &manifest_path).expect("manifest symlink should create");
+    let manifest = write_test_manifest("replacement");
+
+    write_manifest(&dir, &manifest).expect("manifest replacement should succeed");
+
+    assert_eq!(
+        fs::read(&blob_path).expect("blob should remain readable"),
+        original_blob,
+        "writing the manifest must not follow the destination symlink"
+    );
+    assert!(
+        !fs::symlink_metadata(&manifest_path)
+            .expect("replacement manifest metadata should load")
+            .file_type()
+            .is_symlink(),
+        "the destination symlink itself should be replaced"
+    );
+    let written: crate::model::NativeModelManifest = serde_json::from_slice(
+        &fs::read(&manifest_path).expect("replacement manifest should be readable"),
+    )
+    .expect("replacement manifest should contain complete JSON");
+    assert_eq!(written, manifest);
+    assert!(
+        manifest_temp_paths(&dir).is_empty(),
+        "successful replacement must not leak temp files"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn write_manifest_cleans_temp_file_when_atomic_replace_fails() {
+    let dir = unique_test_dir("manifest-rename-error");
+    let manifest_path = dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    fs::create_dir(&manifest_path).expect("blocking destination directory should create");
+    let sentinel = manifest_path.join("sentinel");
+    fs::write(&sentinel, b"keep").expect("sentinel should write");
+
+    let error = write_manifest(&dir, &write_test_manifest("rename-error"))
+        .expect_err("renaming a file over a directory should fail");
+    let ConvertError::ReadFile { path, .. } = error else {
+        panic!("rename failure should preserve the ReadFile error contract");
+    };
+    assert_eq!(path, manifest_path);
+    assert_eq!(
+        fs::read(&sentinel).expect("destination sentinel should remain"),
+        b"keep"
+    );
+    assert!(
+        manifest_temp_paths(&dir).is_empty(),
+        "failed replacement must clean its same-directory temp file"
+    );
+
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -4082,7 +4181,7 @@ fn converts_nemotron_h_hybrid_mamba_attention_moe() {
             ("lm_head.weight", "BF16", &[32, 8]),
             // layer 0 mamba
             ("backbone.layers.0.norm.weight", "BF16", &[8]),
-            ("backbone.layers.0.mixer.in_proj.weight", "U32", &[26, 8]),
+            ("backbone.layers.0.mixer.in_proj.weight", "U32", &[26, 2]),
             ("backbone.layers.0.mixer.in_proj.scales", "BF16", &[26, 1]),
             ("backbone.layers.0.mixer.in_proj.biases", "BF16", &[26, 1]),
             ("backbone.layers.0.mixer.conv1d.weight", "BF16", &[16, 4, 1]),
@@ -4090,21 +4189,21 @@ fn converts_nemotron_h_hybrid_mamba_attention_moe() {
             ("backbone.layers.0.mixer.A_log", "F32", &[2]),
             ("backbone.layers.0.mixer.D", "F32", &[2]),
             ("backbone.layers.0.mixer.norm.weight", "BF16", &[8]),
-            ("backbone.layers.0.mixer.out_proj.weight", "U32", &[8, 8]),
+            ("backbone.layers.0.mixer.out_proj.weight", "U32", &[8, 2]),
             ("backbone.layers.0.mixer.out_proj.scales", "BF16", &[8, 1]),
             ("backbone.layers.0.mixer.out_proj.biases", "BF16", &[8, 1]),
             // layer 1 attention
             ("backbone.layers.1.norm.weight", "BF16", &[8]),
-            ("backbone.layers.1.mixer.q_proj.weight", "U32", &[8, 8]),
+            ("backbone.layers.1.mixer.q_proj.weight", "U32", &[8, 2]),
             ("backbone.layers.1.mixer.q_proj.scales", "BF16", &[8, 1]),
             ("backbone.layers.1.mixer.q_proj.biases", "BF16", &[8, 1]),
-            ("backbone.layers.1.mixer.k_proj.weight", "U32", &[4, 8]),
+            ("backbone.layers.1.mixer.k_proj.weight", "U32", &[4, 2]),
             ("backbone.layers.1.mixer.k_proj.scales", "BF16", &[4, 1]),
             ("backbone.layers.1.mixer.k_proj.biases", "BF16", &[4, 1]),
-            ("backbone.layers.1.mixer.v_proj.weight", "U32", &[4, 8]),
+            ("backbone.layers.1.mixer.v_proj.weight", "U32", &[4, 2]),
             ("backbone.layers.1.mixer.v_proj.scales", "BF16", &[4, 1]),
             ("backbone.layers.1.mixer.v_proj.biases", "BF16", &[4, 1]),
-            ("backbone.layers.1.mixer.o_proj.weight", "U32", &[8, 8]),
+            ("backbone.layers.1.mixer.o_proj.weight", "U32", &[8, 2]),
             ("backbone.layers.1.mixer.o_proj.scales", "BF16", &[8, 1]),
             ("backbone.layers.1.mixer.o_proj.biases", "BF16", &[8, 1]),
             // layer 2 moe
@@ -4118,7 +4217,7 @@ fn converts_nemotron_h_hybrid_mamba_attention_moe() {
             (
                 "backbone.layers.2.mixer.switch_mlp.fc1.weight",
                 "U32",
-                &[4, 16, 8],
+                &[4, 16, 2],
             ),
             (
                 "backbone.layers.2.mixer.switch_mlp.fc1.scales",
@@ -4133,7 +4232,7 @@ fn converts_nemotron_h_hybrid_mamba_attention_moe() {
             (
                 "backbone.layers.2.mixer.switch_mlp.fc2.weight",
                 "U32",
-                &[4, 8, 16],
+                &[4, 8, 3],
             ),
             (
                 "backbone.layers.2.mixer.switch_mlp.fc2.scales",
@@ -4148,7 +4247,7 @@ fn converts_nemotron_h_hybrid_mamba_attention_moe() {
             (
                 "backbone.layers.2.mixer.shared_experts.up_proj.weight",
                 "U32",
-                &[16, 8],
+                &[16, 2],
             ),
             (
                 "backbone.layers.2.mixer.shared_experts.up_proj.scales",
@@ -4163,7 +4262,7 @@ fn converts_nemotron_h_hybrid_mamba_attention_moe() {
             (
                 "backbone.layers.2.mixer.shared_experts.down_proj.weight",
                 "U32",
-                &[8, 16],
+                &[8, 3],
             ),
             (
                 "backbone.layers.2.mixer.shared_experts.down_proj.scales",
