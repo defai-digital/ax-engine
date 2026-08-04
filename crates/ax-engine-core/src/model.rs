@@ -3425,24 +3425,24 @@ fn resolved_split_attention_dims(
             ),
         })?;
     let hidden_size = u64::from(manifest.hidden_size);
-    // Skip input-dimension checks for quantized tensors (columns are packed).
-    if !attention_q.source_quantized {
-        if q_cols != hidden_size {
-            return Err(NativeModelError::InvalidManifest {
-                message: format!(
-                    "layer {} tensor attention_q must have shape [q_rows, {}], got {:?}",
-                    layer_index, hidden_size, attention_q.shape
-                ),
-            });
-        }
-        if k_cols != hidden_size {
-            return Err(NativeModelError::InvalidManifest {
-                message: format!(
-                    "layer {} tensor attention_k must have shape [kv_rows, {}], got {:?}",
-                    layer_index, hidden_size, attention_k.shape
-                ),
-            });
-        }
+    // Apply raw-column checks per tensor. Mixed-precision plans can preserve Q
+    // while packing K/V/O, so one projection's storage must not determine the
+    // layout validation applied to another projection.
+    if !attention_q.source_quantized && q_cols != hidden_size {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} tensor attention_q must have shape [q_rows, {}], got {:?}",
+                layer_index, hidden_size, attention_q.shape
+            ),
+        });
+    }
+    if !attention_k.source_quantized && k_cols != hidden_size {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} tensor attention_k must have shape [kv_rows, {}], got {:?}",
+                layer_index, hidden_size, attention_k.shape
+            ),
+        });
     }
 
     let mut head_dim = None;
@@ -4350,6 +4350,69 @@ mod tests {
                 ),
             ],
         }
+    }
+
+    fn mixed_split_projection_manifest() -> NativeModelManifest {
+        let mut manifest = packed_layer_manifest();
+        manifest.kv_head_count = 4;
+        let mut found_layer_zero_qkv = false;
+        for projection in &mut manifest.tensors {
+            if projection.layer_index == Some(0)
+                && projection.role == NativeTensorRole::AttentionQkvPacked
+            {
+                projection.shape = vec![3072, 2048];
+                found_layer_zero_qkv = true;
+                break;
+            }
+        }
+        assert!(
+            found_layer_zero_qkv,
+            "fixture should include layer-0 packed QKV"
+        );
+        manifest.tensors.retain(|tensor| {
+            !(tensor.layer_index == Some(1) && tensor.role == NativeTensorRole::AttentionQkvPacked)
+        });
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.1.self_attn.q_proj.weight",
+                NativeTensorRole::AttentionQ,
+                Some(1),
+                vec![2048, 2048],
+            ),
+            tensor(
+                "model.layers.1.self_attn.k_proj.weight",
+                NativeTensorRole::AttentionK,
+                Some(1),
+                vec![512, 256],
+            ),
+            tensor(
+                "model.layers.1.self_attn.v_proj.weight",
+                NativeTensorRole::AttentionV,
+                Some(1),
+                vec![512, 256],
+            ),
+        ]);
+        for projection in manifest.tensors.iter_mut().filter(|tensor| {
+            tensor.layer_index == Some(1)
+                && matches!(
+                    tensor.role,
+                    NativeTensorRole::AttentionK
+                        | NativeTensorRole::AttentionV
+                        | NativeTensorRole::AttentionO
+                )
+        }) {
+            projection.dtype = NativeTensorDataType::U32;
+            projection.source_quantized = true;
+            projection.quantization = Some(NativeTensorQuantization {
+                mode: "affine".to_string(),
+                group_size: 64,
+                bits: 4,
+            });
+            if projection.role == NativeTensorRole::AttentionO {
+                projection.shape = vec![2048, 256];
+            }
+        }
+        manifest
     }
 
     fn split_layer_manifest_with_value_from_key() -> NativeModelManifest {
@@ -5273,6 +5336,148 @@ mod tests {
 
             let _ = fs::remove_dir_all(dir);
         }
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_bf16_q_with_packed_k_v_o() {
+        let manifest = mixed_split_projection_manifest();
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let result = NativeModelArtifacts::from_dir(&dir);
+        let _ = fs::remove_dir_all(dir);
+        assert!(
+            result.is_ok(),
+            "BF16 Q must not force packed K/V/O to use raw column shapes"
+        );
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_raw_k_with_mixed_packed_q_v_o() {
+        let mut manifest = mixed_split_projection_manifest();
+        for projection in manifest.tensors.iter_mut().filter(|tensor| {
+            tensor.layer_index == Some(1)
+                && matches!(
+                    tensor.role,
+                    NativeTensorRole::AttentionQ
+                        | NativeTensorRole::AttentionK
+                        | NativeTensorRole::AttentionV
+                )
+        }) {
+            match projection.role {
+                NativeTensorRole::AttentionQ => {
+                    projection.dtype = NativeTensorDataType::U32;
+                    projection.source_quantized = true;
+                    projection.quantization = Some(NativeTensorQuantization {
+                        mode: "affine".to_string(),
+                        group_size: 64,
+                        bits: 6,
+                    });
+                    projection.shape = vec![2048, 384];
+                }
+                NativeTensorRole::AttentionK => {
+                    projection.dtype = NativeTensorDataType::Bf16;
+                    projection.source_quantized = false;
+                    projection.quantization = None;
+                    projection.shape = vec![512, 2048];
+                }
+                NativeTensorRole::AttentionV => {
+                    projection.quantization = Some(NativeTensorQuantization {
+                        mode: "affine".to_string(),
+                        group_size: 64,
+                        bits: 8,
+                    });
+                    projection.shape = vec![512, 512];
+                }
+                _ => {}
+            }
+        }
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let result = NativeModelArtifacts::from_dir(&dir);
+        let _ = fs::remove_dir_all(dir);
+        assert!(
+            result.is_ok(),
+            "raw K must validate independently of mixed 6/8/4-bit Q/V/O storage"
+        );
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_bad_packed_k_columns_with_bf16_q() {
+        let mut manifest = mixed_split_projection_manifest();
+        let mut found_attention_k = false;
+        for projection in &mut manifest.tensors {
+            if projection.layer_index == Some(1) && projection.role == NativeTensorRole::AttentionK
+            {
+                projection.shape = vec![512, 255];
+                found_attention_k = true;
+                break;
+            }
+        }
+        assert!(
+            found_attention_k,
+            "fixture should include packed K projection"
+        );
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let result = NativeModelArtifacts::from_dir(&dir);
+        let rejected_bad_packed_k = matches!(
+            &result,
+            Err(NativeModelError::InvalidManifest { message })
+                if message.contains("attention_k must have packed quantized shape [512, 256]")
+        );
+        let _ = fs::remove_dir_all(dir);
+        assert!(
+            rejected_bad_packed_k,
+            "incorrect packed K columns must fail closed with the expected validation error"
+        );
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_bad_raw_k_columns_with_packed_q() {
+        let mut manifest = mixed_split_projection_manifest();
+        let mut found_attention_q = false;
+        let mut found_attention_k = false;
+        for projection in &mut manifest.tensors {
+            if projection.layer_index != Some(1) {
+                continue;
+            }
+            match projection.role {
+                NativeTensorRole::AttentionQ => {
+                    projection.dtype = NativeTensorDataType::U32;
+                    projection.source_quantized = true;
+                    projection.quantization = Some(NativeTensorQuantization {
+                        mode: "affine".to_string(),
+                        group_size: 64,
+                        bits: 4,
+                    });
+                    projection.shape = vec![2048, 256];
+                    found_attention_q = true;
+                }
+                NativeTensorRole::AttentionK => {
+                    projection.dtype = NativeTensorDataType::Bf16;
+                    projection.source_quantized = false;
+                    projection.quantization = None;
+                    projection.shape = vec![512, 2047];
+                    found_attention_k = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(found_attention_q, "fixture should include Q projection");
+        assert!(found_attention_k, "fixture should include K projection");
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let result = NativeModelArtifacts::from_dir(&dir);
+        let rejected_bad_raw_k = matches!(
+            &result,
+            Err(NativeModelError::InvalidManifest { message })
+                if message.contains("attention_k must have shape [kv_rows, 2048]")
+        );
+        let _ = fs::remove_dir_all(dir);
+        assert!(
+            rejected_bad_raw_k,
+            "incorrect raw K columns must fail with the expected validation error"
+        );
     }
 
     #[test]
