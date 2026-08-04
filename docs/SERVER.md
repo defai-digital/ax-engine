@@ -605,8 +605,10 @@ Multimodal serving contract limits:
   Gemma video can also be disabled with `AX_MLX_GEMMA4_VIDEO=off`. Otherwise
   video is rejected with `unsupported_modality`.
 - **Caching.** Prefix caching is disabled for multimodal requests unless
-  `AX_MLX_MULTIMODAL_PREFIX_REUSE` is promoted after fixtures; vision-feature
-  cache may skip tower recompute on digest hits (`AX_MLX_VISION_FEATURE_CACHE`).
+  `AX_MLX_MULTIMODAL_PREFIX_REUSE=1` is set (default off until fixtures
+  promote). With the gate off, every media request recomputes its full
+  prefill, including the vision-tower forward; no vision-feature cache is
+  wired into the serving path today.
 - **Chat output.** Gemma 4 thinking-channel framing (`<|channel>thought…`)
   is stripped from chat content; raw `/v1/completions` output stays
   verbatim.
@@ -1075,6 +1077,14 @@ Other rules:
   registry lock. Unload and replacement close admission and drain only the
   selected generation; sibling models continue accepting requests.
 - Concurrent load/unload while another is in progress → `409 model_loading`.
+- Unload (and idle eviction) removes the model from the live registry and
+  closes its admission, but **soft-parks** the generation instead of freeing
+  it: weights stay resident in unified memory so a same-id, same-path reload
+  republishes in ~250 ms instead of paying a multi-second weight rebuild that
+  stalls sibling decode gaps. A parked generation is retired only when a newer
+  generation of the same model id is parked, or on process exit; there is no
+  parking TTL or cap today. Restart the server to reclaim parked memory
+  deterministically.
 
 ### Execution model
 
@@ -1117,14 +1127,18 @@ resident set (on-disk safetensors × 9/8, plus worst-case KV from manifest
 geometry and a runtime floor) vs Metal `max_recommended_working_set_size`.
 Over budget → `422 insufficient_memory` with GiB numbers. Skips (does not
 block) when budget or weight layout is unknowable; disable with
-`AX_SERVER_LOAD_MEMORY_PREFLIGHT=off`.
+`AX_SERVER_LOAD_MEMORY_PREFLIGHT=off`. When the Metal device probe is
+available the preflight measures the actual process footprint, which includes
+parked (soft-unloaded) generations; the manifest-based fallback sums live
+registry models only and does not see parked weights.
 
 ### Idle eviction and metrics
 
 Optional `--model-idle-timeout-secs` / `AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS`
-retires non-default models that have not admitted a request within the
-timeout (same drain path as unload). The default model is never evicted;
-sweeps run only while the server is otherwise idle.
+evicts non-default models that have not admitted a request within the
+timeout (same drain path as unload, including the soft-park behavior above —
+eviction frees the live registry slot, not the parked weights). The default
+model is never evicted; sweeps run only while the server is otherwise idle.
 
 Engine-step `/metrics` series carry a `model` label per loaded model, plus
 unlabeled aggregates for single-model dashboards. Unload/replace drop the

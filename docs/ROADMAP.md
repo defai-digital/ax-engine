@@ -28,6 +28,26 @@ The next optimization tracks are:
 | Speculative decoding software tuning | Adaptive n-gram length, dynamic draft windows, acceptance-rate prediction, fallback thresholds, prompt-pattern-aware speculation, and better cache sharing between draft and verify paths |
 | Kernel fusion and quantization path | Fused RMSNorm/matmul, attention projection fusion, fused dequant/matmul, group-wise quantization kernels, Apple AMX/Metal mixed paths, and prepacked weight layouts |
 
+## v7.0.0 Readiness Gates
+
+A major version is a product claim, not a counter. v7.0.0 ships when every
+gate below is closed or explicitly descoped in this file (review of record:
+2026-08-03, main `42bf581e`):
+
+| Area | Gate |
+|---|---|
+| CI | `main` green, including the scripts/bench smoke gates |
+| Multi-model | A CI or QA gate loads two real MLX models via `POST /v1/model/load` and serves both concurrently (today all co-residency tests use mock or delegated backends) |
+| Multi-model | Unload/idle eviction either frees parked weights (TTL / cap / sweeper) or the soft-park contract is promoted to a documented guarantee with memory-preflight awareness |
+| Multi-model | Soak/SLO matrix from `designs/multimodel-execution-priorities-2026-07-23.md` "Next phases": p95/p99 stream gaps, load/unload churn, memory-pressure behavior |
+| Multimodal | Numeric parity fixtures and at least one published benchmark for a P0 VLM family (Qwen3-VL or Qwen 3.6), beyond the existing Gemma 4 unified coverage |
+| Multimodal | Multimodal prefix reuse (`AX_MLX_MULTIMODAL_PREFIX_REUSE`) promoted via fixtures or descoped; serving docs match actual wiring |
+| AXQuant | Per-layer KV-cache quantization engages on the batched serving path (Gate 2 writeback wired into the runner) or is documented as single-sequence-only |
+| AXQuant | KV-cache quantization has runtime telemetry and a generation-quality gate on a real artifact (current evidence is synthetic-tensor error bounds only) |
+| AXQuant | AXQuant metadata integrity is verified at model load, or doctor-only verification is recorded as the explicit contract; MTP sidecar gains provenance parity with the vision sidecar |
+| Performance | The cross-family MTP prefill regression and the steady-state eval-wall drift are resolved or explicitly accepted in `PERFORMANCE-RESULTS.md` |
+| Positioning | The `docs/SERVER.md` "not yet a production server surface" caveat can be removed honestly |
+
 ## Evidence Gates
 
 Roadmap items become public support claims only after the matching evidence is
