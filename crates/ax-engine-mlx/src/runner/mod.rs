@@ -30,8 +30,8 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SHARED_BLOCKS,
     ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLAB_GROW_EVENTS,
     ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLAB_KIB, ROUTE_DECISION_AX_MLX_KV_PAGED_POOL_SLABS,
-    ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS, ROUTE_DECISION_AX_MLX_KV_ROTATED_RING_LAYERS,
-    ROUTE_DECISION_AX_MLX_KV_ROTATING_RING_SLACK,
+    ROUTE_DECISION_AX_MLX_KV_QUANTIZED_LAYERS, ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS,
+    ROUTE_DECISION_AX_MLX_KV_ROTATED_RING_LAYERS, ROUTE_DECISION_AX_MLX_KV_ROTATING_RING_SLACK,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
@@ -16170,6 +16170,7 @@ mod tests {
             logical_bytes: 96,
             capacity_bytes: 8192,
             full_attention_layers: 1,
+            quantized_layers: 1,
             linear_state_layers: 0,
             linear_state_bytes: 0,
             growth_count: 1,
@@ -16189,6 +16190,7 @@ mod tests {
             logical_bytes: 160,
             capacity_bytes: 16384,
             full_attention_layers: 2,
+            quantized_layers: 2,
             sliding_window_layers: 1,
             sliding_window_retained_tokens: 4,
             sliding_window_reclaimable_capacity_tokens: 256,
@@ -16236,6 +16238,11 @@ mod tests {
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS),
             Some(&3)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_QUANTIZED_LAYERS),
+            Some(&2),
+            "quantized layers merge as a per-request peak gauge, not a sum"
         );
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS),

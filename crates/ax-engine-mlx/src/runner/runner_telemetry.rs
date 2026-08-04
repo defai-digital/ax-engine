@@ -631,6 +631,8 @@ pub(crate) struct AffineQuantBitsTelemetry {
     pub(crate) affine_8bit_count: u32,
     /// 1 when `AX_ENGINE_3BIT_EXPERIMENTAL=1` was set at load time, else 0.
     pub(crate) experimental_3bit_gate: u32,
+    /// 1 when `AX_ENGINE_2BIT_EXPERIMENTAL=1` was set at load time, else 0.
+    pub(crate) experimental_2bit_gate: u32,
 }
 
 impl AffineQuantBitsTelemetry {
@@ -638,6 +640,10 @@ impl AffineQuantBitsTelemetry {
         let mut t = Self {
             experimental_3bit_gate: u32::from(
                 std::env::var(ax_engine_core::AX_ENGINE_3BIT_EXPERIMENTAL_ENV).as_deref()
+                    == Ok("1"),
+            ),
+            experimental_2bit_gate: u32::from(
+                std::env::var(ax_engine_core::AX_ENGINE_2BIT_EXPERIMENTAL_ENV).as_deref()
                     == Ok("1"),
             ),
             ..Default::default()
@@ -697,5 +703,31 @@ impl AffineQuantBitsTelemetry {
         // Always emit gate state so artifacts explicitly record experimental mode status.
         decisions
             .upsert_route_decision("ax_mlx_experimental_3bit_gate", self.experimental_3bit_gate);
+        decisions
+            .upsert_route_decision("ax_mlx_experimental_2bit_gate", self.experimental_2bit_gate);
+    }
+}
+
+#[cfg(test)]
+mod affine_quant_bits_tests {
+    use super::*;
+
+    #[test]
+    fn affine_gate_states_are_always_emitted() {
+        let telemetry = AffineQuantBitsTelemetry {
+            experimental_3bit_gate: 0,
+            experimental_2bit_gate: 1,
+            ..Default::default()
+        };
+        let mut decisions: Vec<(String, u32)> = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        // No affine tensors -> no per-bit counters, but both experimental
+        // gate states must still land in the artifact.
+        assert_eq!(decisions.get("ax_mlx_affine_tensor_count"), None);
+        assert_eq!(decisions.get("ax_mlx_experimental_3bit_gate"), Some(&0));
+        assert_eq!(decisions.get("ax_mlx_experimental_2bit_gate"), Some(&1));
     }
 }

@@ -204,6 +204,10 @@ pub struct MlxKVCacheUsage {
     /// Bounded-rollback slack configured for this cache's rings (0 = pure
     /// window-sized rings).
     pub rotating_ring_slack: usize,
+    /// Full-attention layers currently holding quantized packed storage.
+    /// Zero when no manifest table applies, `AX_KV_QUANT=0`, or every table
+    /// layer was demoted back to dense (ring engagement, repage).
+    pub quantized_layers: usize,
     pub linear_state_layers: usize,
     pub linear_state_bytes: u64,
     pub growth_count: u64,
@@ -3890,6 +3894,9 @@ impl MlxKVCache {
             if fa.rotating_window().is_some() {
                 usage.rotated_ring_layers = usage.rotated_ring_layers.saturating_add(1);
             }
+            if fa.as_quantized().is_some() {
+                usage.quantized_layers = usage.quantized_layers.saturating_add(1);
+            }
             // Quantized layers report packed + scales + biases bytes per
             // token; dense storages report the dense element count.
             let bytes_per_token = fa.bytes_per_token();
@@ -6744,8 +6751,10 @@ mod tests {
         assert_eq!(usage.capacity_tokens, 256);
         assert_eq!(usage.logical_bytes, 320 * 200);
         assert_eq!(usage.capacity_bytes, 320 * 256);
+        assert_eq!(usage.quantized_layers, 1);
         let dense_usage = dense.usage_snapshot();
         assert_eq!(dense_usage.logical_bytes, 1024 * 200);
+        assert_eq!(dense_usage.quantized_layers, 0);
         assert!(
             usage.logical_bytes * 3 < dense_usage.logical_bytes,
             "4-bit packed storage ({} B) must be well under dense ({} B)",

@@ -2347,6 +2347,9 @@ pub(super) struct KvCacheTelemetry {
     pub(super) rotated_ring_layers_max: u64,
     /// Bounded-rollback ring slack observed on rotating requests (gauge).
     pub(super) rotating_ring_slack: u64,
+    /// Peak quantized-layer count across this step's request snapshots
+    /// (gauge, max-merged — layer counts are per-request, not additive).
+    pub(super) quantized_layers_max: u64,
     pub(super) linear_state_layers: u64,
     pub(super) linear_state_bytes: u64,
     pub(super) growth_count: u64,
@@ -2395,6 +2398,7 @@ impl KvCacheTelemetry {
         if usage.rotated_ring_layers > 0 {
             self.rotating_ring_slack = usage.rotating_ring_slack as u64;
         }
+        self.quantized_layers_max = self.quantized_layers_max.max(usage.quantized_layers as u64);
         self.linear_state_layers = self
             .linear_state_layers
             .saturating_add(usage.linear_state_layers as u64);
@@ -2485,6 +2489,10 @@ impl KvCacheTelemetry {
             (
                 ROUTE_DECISION_AX_MLX_KV_ROTATING_RING_SLACK,
                 saturating_u32_from_u64(self.rotating_ring_slack),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_QUANTIZED_LAYERS,
+                saturating_u32_from_u64(self.quantized_layers_max),
             ),
             (
                 ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,

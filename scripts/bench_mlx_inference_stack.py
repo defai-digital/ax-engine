@@ -459,6 +459,7 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_kv_sliding_reclaimable_capacity_kib",
     "ax_mlx_kv_rotated_ring_layers",
     "ax_mlx_kv_rotating_ring_slack",
+    "ax_mlx_kv_quantized_layers",
     "ax_mlx_kv_linear_state_layers",
     "ax_mlx_kv_linear_state_kib",
     "ax_mlx_kv_growth_count",
