@@ -1,0 +1,36 @@
+[capsON] rep1: prefill 919.1 tok/s ttft 298 ms gen 400 decode~45.3 tok/s
+[capsON] rep2: prefill 912.3 tok/s ttft 300 ms gen 400 decode~45.9 tok/s
+[capsON] rep3: prefill 903.8 tok/s ttft 303 ms gen 400 decode~45.9 tok/s
+[capsON] rep4: prefill 860.1 tok/s ttft 318 ms gen 400 decode~45.9 tok/s
+[capsON] rep5: prefill 837.0 tok/s ttft 327 ms gen 400 decode~44.6 tok/s
+[capsON] rep6: prefill 793.6 tok/s ttft 345 ms gen 400 decode~45.3 tok/s
+[capsON] rep7: prefill 870.6 tok/s ttft 314 ms gen 400 decode~46.1 tok/s
+[capsON] rep8: prefill 900.5 tok/s ttft 304 ms gen 400 decode~46.2 tok/s
+[capsON] SUMMARY prefill tok/s: rep1=919.1 plateau_mean=868.3 mean=874.6
+[capsOFF] rep1: prefill 984.0 tok/s ttft 278 ms gen 400 decode~45.9 tok/s
+[capsOFF] rep2: prefill 973.2 tok/s ttft 281 ms gen 400 decode~45.4 tok/s
+[capsOFF] rep3: prefill 976.6 tok/s ttft 280 ms gen 400 decode~46.3 tok/s
+[capsOFF] rep4: prefill 966.3 tok/s ttft 283 ms gen 400 decode~46.3 tok/s
+[capsOFF] rep5: prefill 980.5 tok/s ttft 279 ms gen 400 decode~46.3 tok/s
+[capsOFF] rep6: prefill 983.5 tok/s ttft 278 ms gen 400 decode~45.8 tok/s
+[capsOFF] rep7: prefill 978.5 tok/s ttft 280 ms gen 400 decode~45.7 tok/s
+[capsOFF] rep8: prefill 977.1 tok/s ttft 280 ms gen 400 decode~45.8 tok/s
+[capsOFF] SUMMARY prefill tok/s: rep1=984.0 plateau_mean=976.5 mean=977.5
+[capsON] rep1: prefill 931.2 tok/s ttft 294 ms gen 400 decode~45.7 tok/s
+[capsON] rep2: prefill 914.6 tok/s ttft 299 ms gen 400 decode~45.6 tok/s
+[capsON] rep3: prefill 908.4 tok/s ttft 301 ms gen 400 decode~45.7 tok/s
+[capsON] rep4: prefill 911.4 tok/s ttft 304 ms gen 400 decode~45.4 tok/s
+[capsON] rep5: prefill 925.8 tok/s ttft 296 ms gen 400 decode~45.9 tok/s
+[capsON] rep6: prefill 928.4 tok/s ttft 295 ms gen 400 decode~46.0 tok/s
+[capsON] rep7: prefill 917.2 tok/s ttft 298 ms gen 400 decode~46.0 tok/s
+[capsON] rep8: prefill 903.0 tok/s ttft 303 ms gen 400 decode~45.5 tok/s
+[capsON] SUMMARY prefill tok/s: rep1=931.2 plateau_mean=915.5 mean=917.5
+[capsOFF] rep1: prefill 964.2 tok/s ttft 284 ms gen 400 decode~45.1 tok/s
+[capsOFF] rep2: prefill 970.6 tok/s ttft 282 ms gen 400 decode~46.2 tok/s
+[capsOFF] rep3: prefill 968.7 tok/s ttft 282 ms gen 400 decode~45.9 tok/s
+[capsOFF] rep4: prefill 977.7 tok/s ttft 280 ms gen 400 decode~45.8 tok/s
+[capsOFF] rep5: prefill 976.4 tok/s ttft 280 ms gen 400 decode~45.8 tok/s
+[capsOFF] rep6: prefill 972.9 tok/s ttft 281 ms gen 400 decode~46.4 tok/s
+[capsOFF] rep7: prefill 970.1 tok/s ttft 282 ms gen 400 decode~46.7 tok/s
+[capsOFF] rep8: prefill 977.3 tok/s ttft 280 ms gen 400 decode~46.1 tok/s
+[capsOFF] SUMMARY prefill tok/s: rep1=964.2 plateau_mean=973.4 mean=972.2

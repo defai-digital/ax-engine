@@ -1,0 +1,18 @@
+[FIXED-35B] rep1: prefill 970.2 tok/s ttft 282 ms gen 400 decode~45.9 tok/s
+[FIXED-35B] rep2: prefill 975.6 tok/s ttft 280 ms gen 400 decode~46.5 tok/s
+[FIXED-35B] rep3: prefill 956.0 tok/s ttft 286 ms gen 400 decode~46.3 tok/s
+[FIXED-35B] rep4: prefill 911.3 tok/s ttft 300 ms gen 400 decode~46.6 tok/s
+[FIXED-35B] rep5: prefill 871.9 tok/s ttft 314 ms gen 400 decode~43.3 tok/s
+[FIXED-35B] rep6: prefill 874.2 tok/s ttft 313 ms gen 400 decode~45.7 tok/s
+[FIXED-35B] rep7: prefill 913.8 tok/s ttft 299 ms gen 400 decode~46.3 tok/s
+[FIXED-35B] rep8: prefill 948.3 tok/s ttft 289 ms gen 400 decode~46.3 tok/s
+[FIXED-35B] SUMMARY prefill tok/s: rep1=970.2 plateau_mean=921.6 mean=927.7
+[FIXED-27B] rep1: prefill 152.2 tok/s ttft 1794 ms gen 400 decode~9.2 tok/s
+[FIXED-27B] rep2: prefill 152.1 tok/s ttft 1795 ms gen 400 decode~9.1 tok/s
+[FIXED-27B] rep3: prefill 154.8 tok/s ttft 1765 ms gen 400 decode~9.0 tok/s
+[FIXED-27B] rep4: prefill 159.0 tok/s ttft 1718 ms gen 400 decode~9.1 tok/s
+[FIXED-27B] rep5: prefill 153.5 tok/s ttft 1779 ms gen 400 decode~9.3 tok/s
+[FIXED-27B] rep6: prefill 158.6 tok/s ttft 1722 ms gen 400 decode~9.4 tok/s
+[FIXED-27B] rep7: prefill 158.3 tok/s ttft 1725 ms gen 400 decode~9.4 tok/s
+[FIXED-27B] rep8: prefill 155.8 tok/s ttft 1753 ms gen 400 decode~9.4 tok/s
+[FIXED-27B] SUMMARY prefill tok/s: rep1=152.2 plateau_mean=156.0 mean=155.6

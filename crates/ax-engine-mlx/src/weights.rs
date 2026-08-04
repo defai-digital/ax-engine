@@ -432,10 +432,24 @@ const BUFFER_CAP_TARGET_OPS: u32 = 1000;
 /// overlapping host graph build with GPU execution on the dual-path
 /// dense+MoE layer shape. A pure loss both ways, so Gemma keeps MLX's
 /// defaults.
+///
+/// `qwen3_5` (Qwen3.5/Qwen3.6 hybrids) is excluded on the same mechanism with
+/// server-path A/B evidence on Qwen3.6-35B-A3B-6bit-MTP (M3 Max, 2 warmups +
+/// 5 reps, 273-token prompt, sampled decode): with the raise, prefill
+/// degrades one-way across requests (816 -> 579 tok/s and still falling,
+/// warmups 856-890); with MLX defaults it stays flat (937 -> 895, mean
+/// +26%). The published 6-bit MTP matrix shows the same signature on M5 Max
+/// (35B-A3B prefill 971 -> 517 tok/s from the pre-caps 6.9.0 build to the
+/// capped 6.12.1 build) while MTP decode stayed flat (143-145 tok/s), so the
+/// decode win the raise was promoted on does not materialize for this family
+/// on the server path. `qwen3_next` (Coder-Next) keeps the raise despite a
+/// measured ~5-6% prefill cost (interleaved A/B, sampled decode parity): its
+/// promotion evidence is the greedy server decode path (+28%), which
+/// dominates the coding workload. `glm4_moe_lite` measured parity.
 fn auto_buffer_caps_supported_for_family(model_family: &str) -> bool {
     !matches!(
         model_family,
-        "unlimited_ocr" | "unlimited-ocr" | "deepseekocr"
+        "unlimited_ocr" | "unlimited-ocr" | "deepseekocr" | "qwen3_5"
     ) && !model_family.contains("gemma")
 }
 
@@ -4557,12 +4571,20 @@ mod tests {
 
     #[test]
     fn auto_buffer_caps_keep_proven_moe_families_enabled() {
-        for family in ["qwen3_next", "qwen3_5", "qwen3"] {
+        for family in ["qwen3_next", "qwen3"] {
             assert!(
                 auto_buffer_caps_supported_for_family(family),
                 "{family} must retain the measured gather-QMM overlap optimization"
             );
         }
+    }
+
+    #[test]
+    fn auto_buffer_caps_exclude_qwen3_5_family() {
+        // Server-path A/B on Qwen3.6-35B-A3B measures the raise as a one-way
+        // prefill degradation with no decode win; see the doc comment on
+        // auto_buffer_caps_supported_for_family.
+        assert!(!auto_buffer_caps_supported_for_family("qwen3_5"));
     }
 
     fn spec(role: NativeTensorRole) -> NativeTensorSpec {

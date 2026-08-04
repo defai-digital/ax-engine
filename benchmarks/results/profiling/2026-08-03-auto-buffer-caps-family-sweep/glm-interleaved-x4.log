@@ -1,0 +1,28 @@
+[GLM-capsON] rep1: prefill 284.1 tok/s ttft 1676 ms gen 400 decode~98.9 tok/s
+[GLM-capsON] rep2: prefill 281.1 tok/s ttft 1694 ms gen 400 decode~98.8 tok/s
+[GLM-capsON] rep3: prefill 282.4 tok/s ttft 1687 ms gen 400 decode~98.3 tok/s
+[GLM-capsON] rep4: prefill 279.3 tok/s ttft 1705 ms gen 400 decode~98.1 tok/s
+[GLM-capsON] rep5: prefill 282.4 tok/s ttft 1686 ms gen 400 decode~97.7 tok/s
+[GLM-capsON] rep6: prefill 275.6 tok/s ttft 1728 ms gen 400 decode~98.2 tok/s
+[GLM-capsON] SUMMARY prefill_us: rep1=1675481 plateau_mean=1699304 mean=1695334
+[GLM-capsOFF] rep1: prefill 281.1 tok/s ttft 1694 ms gen 400 decode~106.2 tok/s
+[GLM-capsOFF] rep2: prefill 285.1 tok/s ttft 1670 ms gen 400 decode~105.3 tok/s
+[GLM-capsOFF] rep3: prefill 275.3 tok/s ttft 1730 ms gen 400 decode~105.2 tok/s
+[GLM-capsOFF] rep4: prefill 275.9 tok/s ttft 1726 ms gen 400 decode~105.9 tok/s
+[GLM-capsOFF] rep5: prefill 292.1 tok/s ttft 1630 ms gen 400 decode~106.4 tok/s
+[GLM-capsOFF] rep6: prefill 269.5 tok/s ttft 1767 ms gen 400 decode~104.2 tok/s
+[GLM-capsOFF] SUMMARY prefill_us: rep1=1693534 plateau_mean=1703910 mean=1702180
+[GLM-capsON] rep1: prefill 235.8 tok/s ttft 2019 ms gen 400 decode~96.2 tok/s
+[GLM-capsON] rep2: prefill 238.5 tok/s ttft 1996 ms gen 400 decode~94.9 tok/s
+[GLM-capsON] rep3: prefill 237.8 tok/s ttft 2003 ms gen 400 decode~91.8 tok/s
+[GLM-capsON] rep4: prefill 226.6 tok/s ttft 2101 ms gen 400 decode~91.3 tok/s
+[GLM-capsON] rep5: prefill 226.3 tok/s ttft 2104 ms gen 400 decode~90.5 tok/s
+[GLM-capsON] rep6: prefill 224.4 tok/s ttft 2122 ms gen 400 decode~88.0 tok/s
+[GLM-capsON] SUMMARY prefill_us: rep1=2018780 plateau_mean=2064534 mean=2056909
+[GLM-capsOFF] rep1: prefill 205.7 tok/s ttft 2315 ms gen 400 decode~86.2 tok/s
+[GLM-capsOFF] rep2: prefill 217.8 tok/s ttft 2186 ms gen 400 decode~92.3 tok/s
+[GLM-capsOFF] rep3: prefill 218.2 tok/s ttft 2183 ms gen 400 decode~89.0 tok/s
+[GLM-capsOFF] rep4: prefill 205.6 tok/s ttft 2316 ms gen 400 decode~91.1 tok/s
+[GLM-capsOFF] rep5: prefill 208.0 tok/s ttft 2289 ms gen 400 decode~90.9 tok/s
+[GLM-capsOFF] rep6: prefill 201.1 tok/s ttft 2367 ms gen 400 decode~90.9 tok/s
+[GLM-capsOFF] SUMMARY prefill_us: rep1=2313975 plateau_mean=2267456 mean=2275210

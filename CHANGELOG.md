@@ -16,6 +16,19 @@ and this project adheres to Semantic Versioning.
   Gatekeeper install assessment registers it. The v6.13.0 publish hit this;
   the publisher itself deliberately keeps `codesign` as the only fail-closed
   gate.
+- Qwen3.5/Qwen3.6 hybrid models (`qwen3_5` family, including
+  Qwen3.6-35B-A3B) no longer receive the optimistic
+  `MLX_MAX_MB_PER_BUFFER=1024` / `MLX_MAX_OPS_PER_BUFFER=1000`
+  command-buffer raise. On the server path the raise cost prefill
+  throughput and caused a one-way per-request prefill degradation (M5 Max
+  6-bit MTP matrix: 35B-A3B prefill 971 → 517 tok/s from the pre-caps
+  v6.9.0 build to v6.12.1, decode flat; M3 Max interleaved A/B: caps-off
+  prefill flat at ~970 tok/s vs caps-on wobble/decline, decode identical
+  ~45.5–46 tok/s). The family now keeps MLX defaults, following the
+  existing Gemma/unlimited-OCR exclusions; `qwen3_next` (Coder-Next)
+  retains the raise its greedy-decode evidence was measured on despite a
+  ~5–6% sampled-prefill cost. Explicit `MLX_MAX_*_PER_BUFFER` values still
+  win and `AX_MLX_AUTO_BUFFER_CAPS=0` remains the global kill switch.
 
 ## [6.13.0] - 2026-08-03
 

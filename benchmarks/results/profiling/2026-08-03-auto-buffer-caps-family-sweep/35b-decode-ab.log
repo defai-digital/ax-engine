@@ -1,0 +1,16 @@
+[HEAD-capsON] warmup1: prefill 809.1 tok/s ttft 339 ms gen 1000
+[HEAD-capsON] warmup2: prefill 921.1 tok/s ttft 297 ms gen 1000
+[HEAD-capsON] rep1: prefill 871.5 tok/s ttft 314 ms gen 1000 decode~45.6 tok/s
+[HEAD-capsON] rep2: prefill 899.3 tok/s ttft 304 ms gen 1000 decode~45.2 tok/s
+[HEAD-capsON] rep3: prefill 888.6 tok/s ttft 308 ms gen 1000 decode~45.8 tok/s
+[HEAD-capsON] rep4: prefill 910.4 tok/s ttft 301 ms gen 1000 decode~45.4 tok/s
+[HEAD-capsON] rep5: prefill 925.0 tok/s ttft 296 ms gen 1000 decode~45.5 tok/s
+[HEAD-capsON] SUMMARY prefill tok/s: rep1=871.5 plateau_mean=905.8 mean=899.0
+[HEAD-capsOFF] warmup1: prefill 886.3 tok/s ttft 309 ms gen 1000
+[HEAD-capsOFF] warmup2: prefill 926.2 tok/s ttft 295 ms gen 1000
+[HEAD-capsOFF] rep1: prefill 968.7 tok/s ttft 282 ms gen 1000 decode~44.7 tok/s
+[HEAD-capsOFF] rep2: prefill 835.9 tok/s ttft 327 ms gen 1000 decode~44.5 tok/s
+[HEAD-capsOFF] rep3: prefill 788.7 tok/s ttft 347 ms gen 1000 decode~42.1 tok/s
+[HEAD-capsOFF] rep4: prefill 858.1 tok/s ttft 319 ms gen 1000 decode~46.2 tok/s
+[HEAD-capsOFF] rep5: prefill 862.4 tok/s ttft 317 ms gen 1000 decode~44.8 tok/s
+[HEAD-capsOFF] SUMMARY prefill tok/s: rep1=968.7 plateau_mean=836.3 mean=862.8

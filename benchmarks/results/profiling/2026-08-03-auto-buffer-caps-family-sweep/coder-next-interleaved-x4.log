@@ -1,0 +1,24 @@
+[CN-capsON] rep1: prefill 757.7 tok/s ttft 630 ms gen 400 decode~62.7 tok/s
+[CN-capsON] rep2: prefill 805.4 tok/s ttft 593 ms gen 400 decode~62.8 tok/s
+[CN-capsON] rep3: prefill 808.1 tok/s ttft 591 ms gen 400 decode~63.3 tok/s
+[CN-capsON] rep4: prefill 805.9 tok/s ttft 593 ms gen 400 decode~62.9 tok/s
+[CN-capsON] rep5: prefill 795.3 tok/s ttft 600 ms gen 400 decode~62.9 tok/s
+[CN-capsON] SUMMARY prefill_us: rep1=629578 plateau_mean=593542 mean=600749
+[CN-capsOFF] rep1: prefill 845.2 tok/s ttft 565 ms gen 400 decode~63.2 tok/s
+[CN-capsOFF] rep2: prefill 843.1 tok/s ttft 566 ms gen 400 decode~63.1 tok/s
+[CN-capsOFF] rep3: prefill 847.7 tok/s ttft 563 ms gen 400 decode~63.0 tok/s
+[CN-capsOFF] rep4: prefill 847.5 tok/s ttft 563 ms gen 400 decode~62.7 tok/s
+[CN-capsOFF] rep5: prefill 845.0 tok/s ttft 565 ms gen 400 decode~63.3 tok/s
+[CN-capsOFF] SUMMARY prefill_us: rep1=564347 plateau_mean=563938 mean=564020
+[CN-capsON] rep1: prefill 803.6 tok/s ttft 594 ms gen 400 decode~62.8 tok/s
+[CN-capsON] rep2: prefill 804.5 tok/s ttft 594 ms gen 400 decode~62.7 tok/s
+[CN-capsON] rep3: prefill 803.3 tok/s ttft 594 ms gen 400 decode~62.9 tok/s
+[CN-capsON] rep4: prefill 806.2 tok/s ttft 592 ms gen 400 decode~62.7 tok/s
+[CN-capsON] rep5: prefill 804.9 tok/s ttft 593 ms gen 400 decode~62.9 tok/s
+[CN-capsON] SUMMARY prefill_us: rep1=593606 plateau_mean=592748 mean=592919
+[CN-capsOFF] rep1: prefill 845.5 tok/s ttft 565 ms gen 400 decode~60.6 tok/s
+[CN-capsOFF] rep2: prefill 845.2 tok/s ttft 565 ms gen 400 decode~62.5 tok/s
+[CN-capsOFF] rep3: prefill 847.8 tok/s ttft 563 ms gen 400 decode~62.5 tok/s
+[CN-capsOFF] rep4: prefill 841.6 tok/s ttft 567 ms gen 400 decode~62.5 tok/s
+[CN-capsOFF] rep5: prefill 844.2 tok/s ttft 566 ms gen 400 decode~62.7 tok/s
+[CN-capsOFF] SUMMARY prefill_us: rep1=564173 plateau_mean=564691 mean=564588

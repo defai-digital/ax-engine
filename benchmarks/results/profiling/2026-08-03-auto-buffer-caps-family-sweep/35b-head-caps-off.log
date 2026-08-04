@@ -1,0 +1,8 @@
+[HEAD-nocaps] warmup1: prefill 965.2 tok/s ttft 283 ms gen 1000
+[HEAD-nocaps] warmup2: prefill 908.4 tok/s ttft 301 ms gen 1000
+[HEAD-nocaps] rep1: prefill 937.2 tok/s ttft 292 ms gen 1000
+[HEAD-nocaps] rep2: prefill 935.8 tok/s ttft 292 ms gen 1000
+[HEAD-nocaps] rep3: prefill 877.2 tok/s ttft 312 ms gen 1000
+[HEAD-nocaps] rep4: prefill 956.0 tok/s ttft 286 ms gen 1000
+[HEAD-nocaps] rep5: prefill 895.2 tok/s ttft 306 ms gen 1000
+[HEAD-nocaps] SUMMARY prefill tok/s: rep1=937.2 plateau_mean=916.1 mean=920.3

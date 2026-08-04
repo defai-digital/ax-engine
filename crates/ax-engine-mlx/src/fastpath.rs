@@ -1382,18 +1382,19 @@ env_flag_default_on!(
     /// [`crate::weights::BUFFER_CAP_MIN_BIG_TENSORS`] tensors above the MLX
     /// default cap and the user has not set the MLX variables themselves,
     /// the loader raises them to 1024 MB / 1000 ops before the first GPU op.
-    /// Unlimited-OCR retains MLX's defaults: on MLX 0.32 / M5 Max, an
-    /// interleaved end-to-end OCR check measured the raised caps slower while
-    /// producing identical tokens. Explicit `MLX_MAX_*_PER_BUFFER` values
-    /// remain authoritative for every family.
-    /// Greedy token streams are bit-identical; measured on M3 Max:
-    /// Qwen3-Coder-Next-4bit +22–25%, Qwen3.6-35B-A3B-4bit +14.5% (A/B/A).
-    /// For eligible families, caps raise **optimistically on first process
-    /// decision** (including dense-first loads) so multi-model servers that load
-    /// Llama then MoE still get the MoE win; dense impact is measured neutral
-    /// (Gemma ≈ 0.998).
-    /// Evidence: `docs/performance/gather-qmm-async-serialization.md` and
-    /// the interleaved A/B artifact recorded alongside it.
+    /// Explicit `MLX_MAX_*_PER_BUFFER` values remain authoritative for every
+    /// family. The raise applies only to families with positive server-path
+    /// evidence (`qwen3_next`/Coder-Next: +22–25% decode, bit-identical);
+    /// Gemma, unlimited-OCR, and `qwen3_5` (Qwen3.5/3.6 hybrids) retain MLX
+    /// defaults — on the server path the giant command buffers cost those
+    /// families prefill throughput and (for `qwen3_5` MoE) a one-way
+    /// per-request prefill degradation, with no decode win materializing
+    /// outside decode-trace. For eligible families, caps raise
+    /// **optimistically on first process decision** (including dense-first
+    /// loads) so multi-model servers that load Llama then MoE still get the
+    /// MoE win.
+    /// Evidence and exclusion A/Bs:
+    /// `docs/performance/gather-qmm-async-serialization.md`.
     auto_buffer_caps_enabled,
     "AX_MLX_AUTO_BUFFER_CAPS"
 );

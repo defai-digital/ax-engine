@@ -248,3 +248,48 @@ MLX_MAX_MB_PER_BUFFER=4096 MLX_MAX_OPS_PER_BUFFER=1000 \
 AX_DECODE_TRACE_HOST_SLEEP_US=4000 target/release/decode-trace <moe_model_dir> 128
 MLX_MAX_MB_PER_BUFFER=1024 target/release/decode-trace <moe_model_dir> 128
 ```
+
+## Update (2026-08-03): `qwen3_5` excluded from the auto-raise — prefill harm, no server decode win
+
+The 6-bit MTP matrix (M5 Max, `benchmarks/results/speculative/mtp-6bit/`)
+showed Qwen3.6-35B-A3B prefill falling 971 → 775 → 517 tok/s across the
+v6.9.0 → v6.12.0 → v6.12.1 builds while MTP decode stayed flat at
+143–145 tok/s. The v6.9.0 matrix build predates 6cf02b11, the commit that
+made the raise effective on the server path — so that comparison is
+uncapped-vs-capped. Direct (non-MTP) rows fell by the same amount, putting
+the cost in the shared prefill path, not MTP.
+
+Same-contract server A/B on Qwen3.6-35B-A3B-6bit-MTP (M3 Max, 273-token
+prompt, sampled T=0.6 decode, 2 warmups + 5–8 reps, interleaved
+`AX_MLX_AUTO_BUFFER_CAPS` on/off):
+
+- caps ON: prefill means 731 / 899 / 875 / 918 tok/s across four processes,
+  with one-way within-run degradation in three of them (worst 816 → 579).
+- caps OFF: prefill means 920 / 863 / 978 / 972, flat across reps
+  (rep-to-rep spread < 2% in the two 8-rep runs).
+- Decode identical both ways (~45.5–46 tok/s), matching the M5 matrix's
+  flat 143–145: the +11–14% gather-QMM decode win measured on decode-trace
+  (greedy, 4-bit) does not materialize on the server MTP sampled path.
+
+Gemma families were already excluded by 8c91b059 on the same mechanism
+(giant command buffers cost prefill −32% on M5 Max). The `qwen3_5` family
+(Qwen3.5/Qwen3.6 hybrids) now keeps MLX defaults for the same reason;
+`qwen3_next` (Coder-Next) retains the raise, which is where the decode
+promotion evidence lives. Kill switch unchanged: explicit
+`MLX_MAX_*_PER_BUFFER` always wins, `AX_MLX_AUTO_BUFFER_CAPS=0` disables
+the raise globally.
+
+### Family sweep completion (2026-08-03, same M3 Max probe, 4-6 interleaved pairs)
+
+- `qwen3_next` (Qwen3-Coder-Next-4bit, 477-token code prompt, sampled):
+  the raise costs prefill ~5-6% in both interleaved pairs (ON 600.7/592.9 ms
+  vs OFF 564.0/564.6 ms mean) while sampled decode is parity (~63 tok/s).
+  Kept raised: the family's promotion evidence is the greedy server decode
+  path (+28%, 70.19 vs 54.88 tok/s python-Session A/B), which dominates its
+  code-generation workload; prefill-first deployments can set
+  `AX_MLX_AUTO_BUFFER_CAPS=0`.
+- `glm4_moe_lite` (GLM-4.7-Flash-4bit): prefill and decode both parity
+  across two interleaved pairs (within thermal drift); kept raised.
+
+Raw probe artifacts:
+`benchmarks/results/profiling/2026-08-03-auto-buffer-caps-family-sweep/`.
