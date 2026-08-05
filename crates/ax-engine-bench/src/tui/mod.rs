@@ -1390,7 +1390,7 @@ impl App {
             Screen::Chat if self.server.as_ref().is_some_and(|job| job.done.is_some()) => {
                 self.toast_warn("server stopped — start one on Serve (4)");
             }
-            Screen::Models if self.filtering => {
+            Screen::Models if self.stage == WizardStage::Families && self.filtering => {
                 self.filter.push_str(text);
                 self.clamp_family_idx_to_filter();
             }

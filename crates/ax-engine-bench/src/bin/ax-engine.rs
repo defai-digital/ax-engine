@@ -2328,7 +2328,13 @@ fn run_download_summary(
     let mut command = Command::new(python());
     command.arg(helper).arg(&repo_id).arg("--json");
     if let Some(revision) = &revision {
-        command.arg(helper_value_option("--revision", revision));
+        // The resolved revision is already percent-decoded; the helper decodes
+        // its --revision once more, so re-escape literal `%` to hand it
+        // exactly this value.
+        command.arg(helper_value_option(
+            "--revision",
+            &revision.replace('%', "%25"),
+        ));
     }
     if progress {
         command.arg("--progress-json");
@@ -3206,9 +3212,19 @@ fn absolute_path(path: &Path) -> PathBuf {
 }
 
 fn require_value(args: &[OsString], index: usize, flag: &str) -> Result<String, String> {
-    args.get(index)
+    let value = args
+        .get(index)
         .map(|value| value.to_string_lossy().to_string())
-        .ok_or_else(|| format!("{flag} requires a value"))
+        .ok_or_else(|| format!("{flag} requires a value"))?;
+    // A missing value must not silently consume the next flag (e.g.
+    // `--dest --force` downloading into a directory literally named
+    // `--force`). Dash-led paths are still reachable via a `./` prefix.
+    if value.starts_with('-') {
+        return Err(format!(
+            "{flag} requires a value, got option-like {value:?}"
+        ));
+    }
+    Ok(value)
 }
 
 fn print_json(value: &Value) -> Result<(), String> {

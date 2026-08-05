@@ -21,8 +21,10 @@ impl App {
     // -- wizard input -----------------------------------------------------------
 
     pub(crate) fn on_key_models(&mut self, code: KeyCode) {
-        // `d` opens the download-by-link prompt from any wizard stage.
-        if code == KeyCode::Char('d') && !self.filtering {
+        // `d` opens the download-by-link prompt from any wizard stage. The
+        // filter box only consumes keys on the Families stage, so a stale
+        // `filtering` flag must not disable the shortcut elsewhere.
+        if code == KeyCode::Char('d') && !(self.stage == WizardStage::Families && self.filtering) {
             self.modal = Some(Modal::DownloadByLink {
                 input: String::new(),
                 error: None,

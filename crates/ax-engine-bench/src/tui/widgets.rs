@@ -133,15 +133,24 @@ pub(super) fn draw_modal_with(
         area,
     );
     let width = 64.min(area.width.saturating_sub(4)).max(20);
-    let height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
+    let inner_width = usize::from(width.saturating_sub(2)).max(1);
+    let chip_widths: Vec<u16> = hints.iter().map(|span| span.width() as u16).collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(hints));
+    // Size from post-wrap row counts so long body lines (pasted URLs, parser
+    // errors) cannot push the key-chip row out of the popup.
+    let content_rows: u16 = lines
+        .iter()
+        .map(|line| estimated_wrapped_rows(line, inner_width))
+        .sum();
+    let height = (content_rows + 2).min(area.height.saturating_sub(2));
     let popup = centered_rect(width, height, area);
     // Chip hit-rects: the hint spans render on the last content row, laid out
     // consecutively from the left inner edge.
     let hints_y = popup.y + popup.height.saturating_sub(2);
     let mut chip_x = popup.x + 1;
     let mut chip_rects: Vec<Rect> = Vec::new();
-    for span in &hints {
-        let w = span.width() as u16;
+    for w in chip_widths {
         chip_rects.push(Rect {
             x: chip_x,
             y: hints_y,
@@ -156,8 +165,6 @@ pub(super) fn draw_modal_with(
         1 => (None, chip_rects.first().copied()),
         _ => (chip_rects.first().copied(), chip_rects.last().copied()),
     };
-    lines.push(Line::raw(""));
-    lines.push(Line::from(hints));
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines)
@@ -180,6 +187,41 @@ pub(super) fn draw_modal_with(
         confirm,
         cancel,
     }
+}
+
+/// Rows a line occupies after ratatui's word wrapping at `inner` columns.
+/// Greedy word-wrap estimate: exact for single-spaced text, never less than
+/// one row, and splits words wider than the popup across rows like ratatui.
+fn estimated_wrapped_rows(line: &Line, inner: usize) -> u16 {
+    let inner = inner.max(1);
+    if line.width() == 0 {
+        return 1;
+    }
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let mut rows: u16 = 1;
+    let mut used: usize = 0;
+    for word in text.split(' ') {
+        let len = word.chars().count();
+        let sep = usize::from(used > 0);
+        if used + sep + len <= inner {
+            used += sep + len;
+        } else if len <= inner {
+            rows = rows.saturating_add(1);
+            used = len;
+        } else {
+            if used > 0 {
+                rows = rows.saturating_add(1);
+            }
+            let chunks = len.div_ceil(inner);
+            rows = rows.saturating_add((chunks - 1) as u16);
+            used = len - (chunks - 1) * inner;
+        }
+    }
+    rows
 }
 
 pub(super) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

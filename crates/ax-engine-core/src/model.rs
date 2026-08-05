@@ -1477,6 +1477,8 @@ fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::LinearAttentionOutProj);
         let has_any_moe = roles.contains(&NativeTensorRole::FfnGateInp)
             || roles.contains(&NativeTensorRole::FfnGateInpScale)
+            || roles.contains(&NativeTensorRole::FfnGateInpCorrectionBias)
+            || roles.contains(&NativeTensorRole::FfnGateInpExpertScale)
             || roles.contains(&NativeTensorRole::FfnNorm2)
             || roles.contains(&NativeTensorRole::FfnPostNorm1)
             || roles.contains(&NativeTensorRole::FfnPostNorm2)
@@ -2203,7 +2205,11 @@ fn validate_native_model_tensor_shapes(
             {
                 let head_dim = configured_attention_head_dim(manifest, layer_index);
                 let q_rows = u64::from(manifest.attention_head_count) * head_dim;
-                let kv_rows = u64::from(manifest.kv_head_count) * head_dim;
+                // `kv_head_count` × the base head width fixes the total KV
+                // projection width even on layers with a wider per-layer head
+                // dim, matching resolved_split_attention_dims.
+                let kv_rows =
+                    u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
                 let attention_q = required_layer_tensor_spec(
                     manifest,
                     layer_index,
@@ -2552,6 +2558,32 @@ fn validate_native_model_tensor_shapes(
                 linear_dims.conv_kernel_dim,
             )?;
         }
+        // Router sidecars are validated independently of `ffn_gate_inp` so a
+        // layer cannot smuggle in an unchecked expert-indexed vector.
+        if let Some(gate_inp_correction_bias) = manifest_tensor(
+            manifest,
+            NativeTensorRole::FfnGateInpCorrectionBias,
+            Some(layer_index),
+        ) {
+            let moe_dims = resolved_moe_dims(manifest)?;
+            expect_vector_shape(
+                gate_inp_correction_bias,
+                moe_dims.expert_count,
+                "ffn_gate_inp_correction_bias",
+            )?;
+        }
+        if let Some(gate_inp_expert_scale) = manifest_tensor(
+            manifest,
+            NativeTensorRole::FfnGateInpExpertScale,
+            Some(layer_index),
+        ) {
+            let moe_dims = resolved_moe_dims(manifest)?;
+            expect_vector_shape(
+                gate_inp_expert_scale,
+                moe_dims.expert_count,
+                "ffn_gate_inp_expert_scale",
+            )?;
+        }
         if manifest_tensor(manifest, NativeTensorRole::FfnGateInp, Some(layer_index)).is_some() {
             let moe_dims = resolved_moe_dims(manifest)?;
             let gate_inp = required_layer_tensor_spec(
@@ -2567,28 +2599,6 @@ fn validate_native_model_tensor_shapes(
                 Some(layer_index),
             ) {
                 expect_vector_shape(gate_inp_scale, hidden_size, "ffn_gate_inp_scale")?;
-            }
-            if let Some(gate_inp_correction_bias) = manifest_tensor(
-                manifest,
-                NativeTensorRole::FfnGateInpCorrectionBias,
-                Some(layer_index),
-            ) {
-                expect_vector_shape(
-                    gate_inp_correction_bias,
-                    moe_dims.expert_count,
-                    "ffn_gate_inp_correction_bias",
-                )?;
-            }
-            if let Some(gate_inp_expert_scale) = manifest_tensor(
-                manifest,
-                NativeTensorRole::FfnGateInpExpertScale,
-                Some(layer_index),
-            ) {
-                expect_vector_shape(
-                    gate_inp_expert_scale,
-                    moe_dims.expert_count,
-                    "ffn_gate_inp_expert_scale",
-                )?;
             }
             if manifest_tensor(
                 manifest,

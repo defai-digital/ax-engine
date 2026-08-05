@@ -318,7 +318,10 @@ const INVARIANT_DENSE_PROJECTION_KERNEL_SOURCE: &str = r#"
 
 pub(crate) fn qkv_slices(cfg: &ModelConfig, head_dim: usize) -> QkvSlices {
     let q_size = (cfg.n_heads * head_dim) as i32;
-    let kv_size = (cfg.n_kv_heads * head_dim) as i32;
+    // The KV section width is fixed by the base geometry (`kv_head_count` ×
+    // base head dim) even on layers whose per-layer `head_dim` is wider; the
+    // manifest validator sizes packed tensors with the same rule.
+    let kv_size = (cfg.n_kv_heads * cfg.head_dim) as i32;
     let gate = cfg.attn_output_gate.then_some((q_size, q_size * 2));
     let kv_start = if cfg.attn_output_gate {
         q_size * 2

@@ -804,6 +804,12 @@ def _validate_explicit_destination(dest: Path) -> Path:
             f"refusing unsafe destination {dest}: the home directory or one of its "
             "ancestors cannot be replaced"
         )
+    if dest.is_symlink() and dest.is_dir():
+        # A symlinked directory (e.g. a link onto an external volume) is a
+        # valid destination: operate on its target so the emptiness checks,
+        # staging, disk-space preflight, and atomic swap all happen on the real
+        # directory instead of replacing the link itself.
+        return resolved
     return dest
 
 
@@ -1208,6 +1214,12 @@ def _copy_snapshot_to_dest(
             dir=dest.parent,
         )
     )
+    # mkdtemp creates mode 0700; restore the umask-derived mode a plain mkdir
+    # would have used so the activated destination stays readable by other
+    # users and services.
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    os.chmod(tmp, 0o777 & ~current_umask)
     backup: Path | None = None
     activated = False
     try:
@@ -1259,9 +1271,27 @@ def _copy_snapshot_to_dest(
                         f"failed to activate {dest}; the previous destination is preserved "
                         f"at {backup}, but automatic rollback failed: {restore_error}"
                     ) from activate_error
+            if backup is not None:
+                # An unexpected destination appeared before rollback; tell the
+                # user where their previous contents went instead of stranding
+                # them in a hidden temp-named sibling.
+                raise RuntimeError(
+                    f"failed to activate {dest}; the previous destination is "
+                    f"preserved at {backup}: {activate_error}"
+                ) from activate_error
             raise
         if backup is not None:
-            _remove_path(backup)
+            try:
+                _remove_path(backup)
+            except OSError as cleanup_error:
+                # The new destination is fully activated; a leftover backup is
+                # not a download failure. Report it and succeed.
+                print(
+                    f"warning: model installed at {dest}, but the previous "
+                    f"destination could not be removed and remains at "
+                    f"{backup}: {cleanup_error}",
+                    file=sys.stderr,
+                )
             backup = None
     except BaseException:
         if not activated:
@@ -1403,11 +1433,14 @@ def download(
 ) -> Path:
     parsed_repo_id, embedded_revision = _parse_repo_ref(repo_id)
     repo_id = parsed_repo_id
-    revision = revision if revision is not None else embedded_revision
     if revision is not None:
         # Reuse the shared parser for explicit revisions too. This blocks
         # absolute/traversal refs before they are joined into local cache paths.
         _, revision = _parse_repo_ref(f"{repo_id}@{revision}")
+    else:
+        # Already normalized by the reference parse above; running it through
+        # the parser again would percent-decode a second time.
+        revision = embedded_revision
 
     if dest is not None:
         dest = _validate_explicit_destination(Path(dest))
@@ -1595,8 +1628,16 @@ def _try_generate_manifest(dest: Path, *, quiet: bool = False, force: bool = Fal
     if manifest_path.is_symlink():
         # HF snapshot entries commonly point into the shared content-addressed
         # blob store. A generator opening the symlink for writing would corrupt
-        # every snapshot that references that blob.
+        # every snapshot that references that blob, so break the link — but
+        # keep the current content as a regular file so a run where every
+        # generator is unavailable does not destroy the only manifest.
+        try:
+            preserved = manifest_path.read_bytes()
+        except OSError:
+            preserved = None
         manifest_path.unlink()
+        if preserved is not None:
+            manifest_path.write_bytes(preserved)
     # Keep relative destinations beginning with "-" from being interpreted as
     # generator options, without resolving any directory symlinks.
     manifest_dest = os.path.abspath(dest)
@@ -1876,20 +1917,24 @@ def main() -> int:
 
     try:
         repo_id, parsed_revision = _parse_repo_ref(args.repo_id)
-        revision = args.revision if args.revision is not None else parsed_revision
-        if revision is not None:
-            _, revision = _parse_repo_ref(f"{repo_id}@{revision}")
+        if args.revision is not None:
+            _, revision = _parse_repo_ref(f"{repo_id}@{args.revision}")
+        else:
+            revision = parsed_revision
         summary_dest = dest or default_mlx_lm_repo_cache_dir(repo_id)
         if not machine_json:
             revision_note = f" @ {revision}" if revision else ""
             print(f"\n[{repo_id}{revision_note}]")
         if args.progress_json:
             _emit_progress(0, 100, "Starting Hugging Face Hub download")
+        # Pass the raw reference and revision through: download() applies the
+        # same single normalization pass as above, so its effective revision
+        # matches the one reported in the summary.
         dest = download(
-            repo_id,
+            args.repo_id,
             dest,
             force=args.force,
-            revision=revision,
+            revision=args.revision,
             quiet=machine_json,
             progress_json=args.progress_json,
             progress_bar=args.progress_bar,

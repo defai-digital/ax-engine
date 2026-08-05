@@ -716,7 +716,10 @@ def _download_summary(
 
     command = [sys.executable, str(download_script), repo_id, "--json"]
     if revision:
-        command.append(f"--revision={revision}")
+        # The resolved revision is already percent-decoded; the helper decodes
+        # its --revision once more, so re-escape literal `%` to hand it
+        # exactly this value.
+        command.append(f"--revision={revision.replace('%', '%25')}")
     if dest is not None:
         command.append(f"--dest={dest}")
     if force:

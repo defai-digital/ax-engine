@@ -1687,7 +1687,11 @@ def _has_valid_download_provenance(dest: Path) -> bool:
     try:
         parsed_repo_id, embedded_revision = parse_repo_ref(repo_id)
         if revision is not None:
-            revision = validate_revision(revision, reference=repo_id)
+            # The stored revision was already percent-decoded when it was
+            # written; re-escape `%` so validation checks the stored value
+            # itself instead of decoding it a second time (which rejects any
+            # revision containing a literal percent sign).
+            revision = validate_revision(revision.replace("%", "%25"), reference=repo_id)
     except ValueError:
         return False
     return (
@@ -1807,6 +1811,12 @@ def _replace_with_staged_snapshot(
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{dest.name}.download-", dir=str(dest.parent)))
+    # mkdtemp creates mode 0700; restore the umask-derived mode a plain mkdir
+    # would have used so the activated destination stays readable by other
+    # users and services.
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    os.chmod(stage, 0o777 & ~current_umask)
     backup_root: Path | None = None
     backup: Path | None = None
     try:
@@ -1846,8 +1856,13 @@ def _replace_with_staged_snapshot(
                         ) from swap_error
                 if _path_lexists(backup):
                     # An unexpected destination appeared before rollback.
-                    # Keep the previous contents in their unique backup.
+                    # Keep the previous contents in their unique backup, and
+                    # tell the user where they went.
                     backup_root = None
+                    raise RuntimeError(
+                        f"failed to install model at {dest}; the previous "
+                        f"destination was preserved at {backup}: {swap_error}"
+                    ) from swap_error
             raise
         if backup_root is not None:
             try:
@@ -2009,7 +2024,10 @@ def download_model(
 
         command = [sys.executable, str(helper), repo_id, "--json"]
         if revision:
-            command.append(f"--revision={revision}")
+            # The resolved revision is already percent-decoded; the helper
+            # decodes its --revision once more, so re-escape literal `%` to
+            # hand it exactly this value.
+            command.append(f"--revision={revision.replace('%', '%25')}")
         if dest is not None:
             command.append(f"--dest={dest}")
         if force:
