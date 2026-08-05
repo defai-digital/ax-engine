@@ -2201,21 +2201,10 @@ fn validate_native_model_tensor_shapes(
                 "attention_norm",
             )?;
             expect_vector_shape(attention_norm, hidden_size, "attention_norm")?;
-            if manifest_tensor(manifest, NativeTensorRole::AttentionQ, Some(layer_index)).is_some()
+            if let Some(attention_q) =
+                manifest_tensor(manifest, NativeTensorRole::AttentionQ, Some(layer_index))
             {
-                let head_dim = configured_attention_head_dim(manifest, layer_index);
-                let q_rows = u64::from(manifest.attention_head_count) * head_dim;
-                // `kv_head_count` × the base head width fixes the total KV
-                // projection width even on layers with a wider per-layer head
-                // dim, matching resolved_split_attention_dims.
-                let kv_rows =
-                    u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
-                let attention_q = required_layer_tensor_spec(
-                    manifest,
-                    layer_index,
-                    NativeTensorRole::AttentionQ,
-                    "attention_q",
-                )?;
+                let (q_rows, kv_rows) = configured_attention_projection_dims(manifest, layer_index);
                 let attention_k = required_layer_tensor_spec(
                     manifest,
                     layer_index,
@@ -2361,18 +2350,12 @@ fn validate_native_model_tensor_shapes(
             NativeTensorRole::AttentionQkvPacked,
             Some(layer_index),
         ) {
-            let head_dim = configured_attention_head_dim(manifest, layer_index);
-            let q_rows = u64::from(manifest.attention_head_count) * head_dim;
+            let (q_rows, kv_rows) = configured_attention_projection_dims(manifest, layer_index);
             let packed_q_rows = if manifest.attn_output_gate {
                 q_rows.saturating_mul(2)
             } else {
                 q_rows
             };
-            // `kv_head_count` describes the base-attention geometry. Gemma4
-            // global layers widen each head while preserving the total KV
-            // projection width (for example 8×128 becomes 4×256).
-            let kv_rows =
-                u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
             expect_matrix_shape(
                 attention_qkv,
                 packed_q_rows + kv_rows + kv_rows,
@@ -2560,29 +2543,20 @@ fn validate_native_model_tensor_shapes(
         }
         // Router sidecars are validated independently of `ffn_gate_inp` so a
         // layer cannot smuggle in an unchecked expert-indexed vector.
-        if let Some(gate_inp_correction_bias) = manifest_tensor(
-            manifest,
-            NativeTensorRole::FfnGateInpCorrectionBias,
-            Some(layer_index),
-        ) {
-            let moe_dims = resolved_moe_dims(manifest)?;
-            expect_vector_shape(
-                gate_inp_correction_bias,
-                moe_dims.expert_count,
+        for (role, label) in [
+            (
+                NativeTensorRole::FfnGateInpCorrectionBias,
                 "ffn_gate_inp_correction_bias",
-            )?;
-        }
-        if let Some(gate_inp_expert_scale) = manifest_tensor(
-            manifest,
-            NativeTensorRole::FfnGateInpExpertScale,
-            Some(layer_index),
-        ) {
-            let moe_dims = resolved_moe_dims(manifest)?;
-            expect_vector_shape(
-                gate_inp_expert_scale,
-                moe_dims.expert_count,
+            ),
+            (
+                NativeTensorRole::FfnGateInpExpertScale,
                 "ffn_gate_inp_expert_scale",
-            )?;
+            ),
+        ] {
+            if let Some(sidecar) = manifest_tensor(manifest, role, Some(layer_index)) {
+                let moe_dims = resolved_moe_dims(manifest)?;
+                expect_vector_shape(sidecar, moe_dims.expert_count, label)?;
+            }
         }
         if manifest_tensor(manifest, NativeTensorRole::FfnGateInp, Some(layer_index)).is_some() {
             let moe_dims = resolved_moe_dims(manifest)?;
@@ -3454,6 +3428,23 @@ fn resolved_moe_dims(manifest: &NativeModelManifest) -> Result<NativeMoeDims, Na
     })
 }
 
+/// Per-layer attention projection widths as (q_rows, kv_rows).
+///
+/// Q rows widen with the layer's configured head dim, while `kv_head_count`
+/// × the base head width fixes the total KV projection width even on layers
+/// with a wider per-layer head dim (Gemma4 global layers widen each KV head
+/// while preserving the total, e.g. 8×128 becomes 4×256). The MLX runtime's
+/// `qkv_slices` sizes packed tensors with the same rule.
+fn configured_attention_projection_dims(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+) -> (u64, u64) {
+    let head_dim = configured_attention_head_dim(manifest, layer_index);
+    let q_rows = u64::from(manifest.attention_head_count) * head_dim;
+    let kv_rows = u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
+    (q_rows, kv_rows)
+}
+
 fn configured_attention_head_dim(manifest: &NativeModelManifest, layer_index: u32) -> u64 {
     if manifest
         .layer_types
@@ -3604,12 +3595,9 @@ fn resolved_split_attention_dims(
     let q_heads = effective_q_rows / head_dim;
     let kv_heads = k_rows / head_dim;
     let expected_q_heads = u64::from(manifest.attention_head_count);
-    // The manifest stores the base KV head count and base head width, plus an
-    // optional wider head width for global-attention layers. Preserve the
-    // configured total KV projection width and derive the per-layer head
-    // count, matching the runtime's projection-shape inference.
-    let configured_kv_rows =
-        u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
+    // Preserve the configured total KV projection width and derive the
+    // per-layer head count, matching the runtime's projection-shape inference.
+    let (_, configured_kv_rows) = configured_attention_projection_dims(manifest, layer_index);
     if !configured_kv_rows.is_multiple_of(head_dim) {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
@@ -3627,7 +3615,9 @@ fn resolved_split_attention_dims(
             ),
         });
     }
-    if q_heads == 0 || kv_heads == 0 || q_heads < kv_heads || !q_heads.is_multiple_of(kv_heads) {
+    // q_heads/kv_heads are non-zero here: both equal manifest-derived counts
+    // already validated as positive.
+    if q_heads < kv_heads || !q_heads.is_multiple_of(kv_heads) {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
                 "layer {} requires q_heads >= kv_heads and divisible; resolved q_heads={} kv_heads={}",
@@ -3927,10 +3917,6 @@ fn is_gguf_block_dtype(dtype: NativeTensorDataType) -> bool {
     )
 }
 
-fn uses_gguf_block_storage(tensor: &NativeTensorSpec) -> bool {
-    tensor.source_quantized && is_gguf_block_dtype(tensor.dtype)
-}
-
 fn validate_tensor_quantization(
     tensor: &NativeTensorSpec,
     tensor_format: NativeTensorFormat,
@@ -3964,9 +3950,10 @@ fn validate_tensor_quantization(
         });
     }
     let Some(quantization) = &tensor.quantization else {
+        // source_quantized is already proven true for GGUF block dtypes above.
         if !tensor.source_quantized
             || uses_packed_u32_storage(tensor)
-            || uses_gguf_block_storage(tensor)
+            || is_gguf_block_dtype(tensor.dtype)
         {
             return Ok(());
         }

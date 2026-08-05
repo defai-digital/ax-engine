@@ -3239,11 +3239,22 @@ fn render_json_compact(value: &Value) -> Result<String, String> {
         .map_err(|error| format!("failed to serialize JSON output: {error}"))
 }
 
-fn render_download_progress_terminal(value: &Value) -> Result<String, String> {
-    if value.get("schema_version").and_then(Value::as_str) != Some("ax.download_model.v1") {
-        return Err("download progress terminal has an invalid schema_version".into());
+/// One NDJSON terminal record per stream: schema-checked, compact-rendered.
+fn render_progress_terminal(
+    value: &Value,
+    expected_schema: &str,
+    label: &str,
+) -> Result<String, String> {
+    if value.get("schema_version").and_then(Value::as_str) != Some(expected_schema) {
+        return Err(format!(
+            "{label} progress terminal has an invalid schema_version"
+        ));
     }
     render_json_compact(value)
+}
+
+fn render_download_progress_terminal(value: &Value) -> Result<String, String> {
+    render_progress_terminal(value, "ax.download_model.v1", "download")
 }
 
 fn print_download_progress_terminal(value: &Value) -> Result<(), String> {
@@ -3264,10 +3275,7 @@ fn download_error_summary(input: Option<&str>, error: &str) -> Value {
 }
 
 fn render_download_mtp_progress_terminal(value: &Value) -> Result<String, String> {
-    if value.get("schema_version").and_then(Value::as_str) != Some("ax.download_mtp.v1") {
-        return Err("download-mtp progress terminal has an invalid schema_version".into());
-    }
-    render_json_compact(value)
+    render_progress_terminal(value, "ax.download_mtp.v1", "download-mtp")
 }
 
 fn print_download_mtp_progress_terminal(value: &Value) -> Result<(), String> {

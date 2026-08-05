@@ -2269,9 +2269,10 @@ def download_model(
             return dest
 
     snapshot = _run_hf_snapshot_download(repo_id, revision=revision, force=force)
+    # Fail before any staging work begins; _replace_with_staged_snapshot
+    # re-checks the same precondition for its own callers.
+    _validate_model_snapshot_destination(snapshot, dest)
 
-    # _replace_with_staged_snapshot re-validates the destination and its
-    # overlap with the snapshot before touching anything.
     _replace_with_staged_snapshot(
         snapshot,
         dest,

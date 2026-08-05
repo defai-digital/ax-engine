@@ -1080,12 +1080,18 @@ impl App {
         }
     }
 
+    /// The family filter box owns keyboard input only on the Families stage;
+    /// the `filtering` flag can go stale across stage/screen switches.
+    pub(crate) fn family_filter_active(&self) -> bool {
+        self.stage == WizardStage::Families && self.filtering
+    }
+
     /// True while a screen is consuming plain characters (filter, host/port,
     /// chat input), so global single-letter shortcuts must stay inert.
     /// Screen switches remain available via Ctrl+1–5.
     fn typing(&self) -> bool {
         match self.screen {
-            Screen::Models => self.stage == WizardStage::Families && self.filtering,
+            Screen::Models => self.family_filter_active(),
             Screen::Serve => matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port),
             Screen::Chat => {
                 self.server_ready && !self.server.as_ref().is_some_and(|job| job.done.is_some())
@@ -1280,17 +1286,18 @@ impl App {
                         });
                     }
                 },
-                KeyCode::Char(c) => {
-                    input.push(c);
-                    error = None;
-                    self.modal = Some(Modal::DownloadByLink { input, error });
-                }
-                KeyCode::Backspace => {
-                    input.pop();
-                    error = None;
-                    self.modal = Some(Modal::DownloadByLink { input, error });
-                }
                 _ => {
+                    match code {
+                        KeyCode::Char(c) => {
+                            input.push(c);
+                            error = None;
+                        }
+                        KeyCode::Backspace => {
+                            input.pop();
+                            error = None;
+                        }
+                        _ => {}
+                    }
                     self.modal = Some(Modal::DownloadByLink { input, error });
                 }
             },
@@ -1390,7 +1397,7 @@ impl App {
             Screen::Chat if self.server.as_ref().is_some_and(|job| job.done.is_some()) => {
                 self.toast_warn("server stopped — start one on Serve (4)");
             }
-            Screen::Models if self.stage == WizardStage::Families && self.filtering => {
+            Screen::Models if self.family_filter_active() => {
                 self.filter.push_str(text);
                 self.clamp_family_idx_to_filter();
             }

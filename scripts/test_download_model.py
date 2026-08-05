@@ -362,6 +362,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 quiet: bool = False,
                 progress_json: bool = False,
                 progress_bar: bool = False,
+                total_bytes: int | None = None,
             ) -> Path:
                 calls.append(model)
                 return snapshot
@@ -406,6 +407,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 quiet: bool = False,
                 progress_json: bool = False,
                 progress_bar: bool = False,
+                total_bytes: int | None = None,
             ) -> Path:
                 calls.append((model, revision))
                 return snapshot
@@ -437,6 +439,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 quiet: bool = False,
                 progress_json: bool = False,
                 progress_bar: bool = False,
+                total_bytes: int | None = None,
             ) -> Path:
                 calls.append((repo_id, revision))
                 return snapshot
@@ -486,6 +489,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 quiet: bool = False,
                 progress_json: bool = False,
                 progress_bar: bool = False,
+                total_bytes: int | None = None,
             ) -> Path:
                 snapshot.mkdir(parents=True)
                 (snapshot / "config.json").write_text("{}")
@@ -1092,6 +1096,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 quiet: bool = False,
                 progress_json: bool = False,
                 progress_bar: bool = False,
+                total_bytes: int | None = None,
             ) -> Path:
                 calls.append(model)
                 snapshot.mkdir(parents=True)
@@ -1125,6 +1130,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 quiet: bool = False,
                 progress_json: bool = False,
                 progress_bar: bool = False,
+                total_bytes: int | None = None,
             ) -> Path:
                 calls.append(model)
                 snapshot.mkdir(parents=True)
@@ -1174,6 +1180,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 quiet=False,
                 progress_json=False,
                 progress_bar=False,
+                total_bytes=None,
             ):
                 self.assertTrue(force_download)
                 snapshot.mkdir(parents=True)
@@ -1213,6 +1220,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 quiet=False,
                 progress_json=False,
                 progress_bar=False,
+                total_bytes=None,
             ):
                 self.assertEqual(model, repo_id)
                 snapshot.mkdir(parents=True)
@@ -1294,6 +1302,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 quiet=False,
                 progress_json=False,
                 progress_bar=False,
+                total_bytes=None,
             ):
                 self.assertEqual(model, repo_id)
                 snapshot.mkdir()

@@ -21,10 +21,9 @@ impl App {
     // -- wizard input -----------------------------------------------------------
 
     pub(crate) fn on_key_models(&mut self, code: KeyCode) {
-        // `d` opens the download-by-link prompt from any wizard stage. The
-        // filter box only consumes keys on the Families stage, so a stale
-        // `filtering` flag must not disable the shortcut elsewhere.
-        if code == KeyCode::Char('d') && !(self.stage == WizardStage::Families && self.filtering) {
+        // `d` opens the download-by-link prompt from any wizard stage, unless
+        // the family filter box is consuming keys.
+        if code == KeyCode::Char('d') && !self.family_filter_active() {
             self.modal = Some(Modal::DownloadByLink {
                 input: String::new(),
                 error: None,
@@ -296,13 +295,19 @@ impl App {
             job: None,
             cancelled: false,
         };
-        self.downloads.push(task);
-        self.select_download(self.downloads.len().saturating_sub(1));
-        self.start_next_queued_download();
-        self.toast(format!("{label} queued"));
+        self.enqueue_download(task, &label);
         self.pending = None;
         self.confirm_dest = None;
         self.stage = WizardStage::Precision;
+    }
+
+    /// Queue admission is order-sensitive: select the new row, start the
+    /// queue, then land on Downloads so the user sees it running.
+    fn enqueue_download(&mut self, task: DownloadTask, toast_label: &str) {
+        self.downloads.push(task);
+        self.select_download(self.downloads.len().saturating_sub(1));
+        self.start_next_queued_download();
+        self.toast(format!("{toast_label} queued"));
         self.screen = Screen::Downloads;
     }
 
@@ -317,8 +322,10 @@ impl App {
         let repo_id = repo_ref.repo_id;
         // The CLI download arg parses `@rev` itself and forwards --revision
         // to the helper, so pass the canonical repo[@rev] form as the target.
+        // The parsed revision is already percent-decoded; re-escape literal
+        // `%` so the round trip through the parser is lossless.
         let target = match &repo_ref.revision {
-            Some(revision) => format!("{repo_id}@{revision}"),
+            Some(revision) => format!("{repo_id}@{}", revision.replace('%', "%25")),
             None => repo_id.clone(),
         };
         let watch_dir = catalog::repo_cache_dir(&repo_id);
@@ -337,11 +344,7 @@ impl App {
             job: None,
             cancelled: false,
         };
-        self.downloads.push(task);
-        self.select_download(self.downloads.len().saturating_sub(1));
-        self.start_next_queued_download();
-        self.toast(format!("{repo_id} queued"));
-        self.screen = Screen::Downloads;
+        self.enqueue_download(task, &repo_id);
         Ok(())
     }
 

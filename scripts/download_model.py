@@ -1090,11 +1090,7 @@ def _latest_mlx_lm_snapshot(repo_id: str, revision: str | None = None) -> Path |
     if not snapshots_root.is_dir():
         return None
     candidates = [
-        path
-        for path in snapshots_root.iterdir()
-        if path.is_dir()
-        and not path.is_symlink()
-        and _contained_path(snapshots_root, path.name) is not None
+        path for path in snapshots_root.iterdir() if path.is_dir() and not path.is_symlink()
     ]
     return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
 
@@ -1339,6 +1335,7 @@ def _run_hf_snapshot_download(
     quiet: bool = False,
     progress_json: bool = False,
     progress_bar: bool = False,
+    total_bytes: int | None = None,
 ) -> Path:
     # Must run before importing huggingface_hub (constants read env at import).
     _prefer_classic_hf_transfer()
@@ -1378,8 +1375,9 @@ def _run_hf_snapshot_download(
         if max_workers := os.environ.get("AX_ENGINE_HF_MAX_WORKERS"):
             kwargs["max_workers"] = int(max_workers)
         if show_bar:
-            total = _total_repo_bytes(repo_id, revision)
-            with _ProgressBarReporter(repo_id, total, sys.stderr):
+            # The caller's disk preflight already sized the repo; reuse it
+            # instead of a second repo_info round trip.
+            with _ProgressBarReporter(repo_id, total_bytes, sys.stderr):
                 snapshot = Path(snapshot_download(**kwargs))
         else:
             snapshot = Path(snapshot_download(**kwargs))
@@ -1749,6 +1747,7 @@ def download(
             quiet=quiet,
             progress_json=progress_json,
             progress_bar=progress_bar,
+            total_bytes=total_bytes,
         )
     finally:
         if suppress_hub_bars:
@@ -1910,10 +1909,6 @@ def _print_manifest_hint(dest: Path) -> None:
     )
 
 
-def _validate(dest: Path) -> bool:
-    return not _validation_errors(dest)
-
-
 def _validation_errors(dest: Path) -> list[str]:
     errors = []
     safetensors = list(dest.glob("*.safetensors"))
@@ -1964,6 +1959,24 @@ def _validation_errors(dest: Path) -> list[str]:
     return errors
 
 
+def _manifest_rebuild_plan(dest: Path) -> tuple[bool, bool]:
+    """Return (rebuild_needed, force) for regenerating ``dest``'s manifest.
+
+    ``force`` is set when an existing manifest must be replaced rather than
+    created, so the generator overwrites it.
+    """
+    manifest_path = dest / MODEL_MANIFEST_FILE
+    rebuild_manifest = _manifest_needs_rebuild(dest)
+    replace_invalid_manifest = manifest_path.exists() and rebuild_manifest
+    rebuild_media_manifest = (
+        not rebuild_manifest and manifest_path.exists() and manifest_needs_media_rebuild(dest)
+    )
+    return (
+        rebuild_manifest or rebuild_media_manifest,
+        replace_invalid_manifest or rebuild_media_manifest,
+    )
+
+
 def _prepare_staged_destination(
     dest: Path,
     *,
@@ -1975,13 +1988,8 @@ def _prepare_staged_destination(
     if errors:
         raise RuntimeError("staged model is invalid: " + "; ".join(errors))
 
-    manifest_path = dest / MODEL_MANIFEST_FILE
-    rebuild_manifest = _manifest_needs_rebuild(dest)
-    replace_invalid_manifest = manifest_path.exists() and rebuild_manifest
-    rebuild_media_manifest = (
-        not rebuild_manifest and manifest_path.exists() and manifest_needs_media_rebuild(dest)
-    )
-    if not (rebuild_manifest or rebuild_media_manifest):
+    rebuild_needed, force_rebuild = _manifest_rebuild_plan(dest)
+    if not rebuild_needed:
         return
 
     if not quiet:
@@ -1991,7 +1999,7 @@ def _prepare_staged_destination(
     if not _try_generate_manifest(
         dest,
         quiet=quiet,
-        force=replace_invalid_manifest or rebuild_media_manifest,
+        force=force_rebuild,
     ):
         raise RuntimeError(
             "model manifest is missing or invalid and regeneration failed; "
@@ -2112,6 +2120,9 @@ def main() -> int:
         _print_json_line(_download_argument_error_summary())
         return int(error.code)
     machine_json = args.json or args.progress_json
+    # --progress-json takes precedence over --json: one NDJSON line, never a
+    # second pretty document on the same stream.
+    emit_summary = _print_json_line if args.progress_json else _print_json
 
     dest = args.dest
     repo_id = args.repo_id
@@ -2159,10 +2170,7 @@ def main() -> int:
                 status=DOWNLOAD_FAILED_STATUS,
                 errors=[str(error)],
             )
-            if args.progress_json:
-                _print_json_line(summary)
-            else:
-                _print_json(summary)
+            emit_summary(summary)
         else:
             print(f"error: {error}", file=sys.stderr)
         return 1
@@ -2177,10 +2185,7 @@ def main() -> int:
                 status=INVALID_STATUS,
                 errors=errors,
             )
-            if args.progress_json:
-                _print_json_line(summary)
-            else:
-                _print_json(summary)
+            emit_summary(summary)
         else:
             for error in errors:
                 print(f"warning: {error}", file=sys.stderr)
@@ -2188,13 +2193,8 @@ def main() -> int:
     if not machine_json:
         print(f"  safetensors shards: {len(list(dest.glob('*.safetensors')))}")
 
-    manifest_path = dest / MODEL_MANIFEST_FILE
-    rebuild_manifest = _manifest_needs_rebuild(dest)
-    replace_invalid_manifest = manifest_path.exists() and rebuild_manifest
-    rebuild_media_manifest = (
-        not rebuild_manifest and manifest_path.exists() and manifest_needs_media_rebuild(dest)
-    )
-    if rebuild_manifest or rebuild_media_manifest:
+    rebuild_needed, force_rebuild = _manifest_rebuild_plan(dest)
+    if rebuild_needed:
         if not machine_json:
             print("  generating manifest...")
         if args.progress_json:
@@ -2202,7 +2202,7 @@ def main() -> int:
         if not _try_generate_manifest(
             dest,
             quiet=machine_json,
-            force=replace_invalid_manifest or rebuild_media_manifest,
+            force=force_rebuild,
         ):
             if machine_json:
                 summary = _summary(
@@ -2212,10 +2212,7 @@ def main() -> int:
                     status=MANIFEST_MISSING_STATUS,
                     errors=["model manifest is missing or invalid and regeneration failed"],
                 )
-                if args.progress_json:
-                    _print_json_line(summary)
-                else:
-                    _print_json(summary)
+                emit_summary(summary)
             else:
                 _print_manifest_hint(dest)
             # The weights downloaded but the model is not AX-ready without a manifest.
@@ -2232,12 +2229,9 @@ def main() -> int:
                 status=MANIFEST_MISSING_STATUS,
                 errors=[error],
             )
-            if args.progress_json:
-                _print_json_line(summary)
-            else:
-                _print_json(summary)
+            emit_summary(summary)
         else:
-            print(f"error: {error}: {manifest_path}", file=sys.stderr)
+            print(f"error: {error}: {dest / MODEL_MANIFEST_FILE}", file=sys.stderr)
         return 1
 
     if machine_json:
@@ -2249,9 +2243,7 @@ def main() -> int:
         )
         if args.progress_json:
             _emit_progress(100, 100, "Ready")
-            _print_json_line(summary)
-        else:
-            _print_json(summary)
+        emit_summary(summary)
     else:
         print(f"\nReady - model artifacts at: {dest}")
         print(f"  ax-engine-server --mlx --mlx-model-artifacts-dir {dest} --port 31418")
