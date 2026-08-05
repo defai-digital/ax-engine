@@ -13,6 +13,35 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1]
 FAKE_MLX_MODEL_DIR = "/tmp/ax-engine-test-mlx-model"
 
 
+def _minimal_ready_tensors() -> list[dict[str, object]]:
+    """Complete dense role set accepted by the AX-ready readiness gate."""
+    roles: list[tuple[str, int | None]] = [
+        ("token_embedding", None),
+        ("final_norm", None),
+        ("attention_norm", 0),
+        ("ffn_norm", 0),
+        ("attention_qkv_packed", 0),
+        ("attention_o", 0),
+        ("ffn_gate_up_packed", 0),
+        ("ffn_down", 0),
+    ]
+    tensors: list[dict[str, object]] = []
+    for index, (role, layer_index) in enumerate(roles):
+        tensor: dict[str, object] = {
+            "name": f"t{index}_{role}",
+            "role": role,
+            "dtype": "f16",
+            "shape": [1],
+            "file": "model.safetensors",
+            "offset_bytes": index,
+            "length_bytes": 1,
+        }
+        if layer_index is not None:
+            tensor["layer_index"] = layer_index
+        tensors.append(tensor)
+    return tensors
+
+
 def _write_valid_test_manifest(path: Path, **overrides: object) -> None:
     import json
 
@@ -35,7 +64,8 @@ def _write_valid_test_manifest(path: Path, **overrides: object) -> None:
         "attention_head_dim": 1,
         "kv_head_count": 1,
         "vocab_size": 1,
-        "tensors": [tensor_defaults],
+        "tie_word_embeddings": True,
+        "tensors": _minimal_ready_tensors(),
     }
     payload.update(overrides)
     tensors = payload["tensors"]
@@ -1378,21 +1408,61 @@ class WrapperContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             manifest_path = Path(tmp) / "model-manifest.json"
-            _write_valid_test_manifest(
-                manifest_path,
-                tensors=[{"role": "other", "shape": []}],
+            complete = _minimal_ready_tensors()
+            complete.append(
+                {
+                    "name": "scalar_other",
+                    "role": "other",
+                    "dtype": "f16",
+                    "shape": [],
+                    "file": "model.safetensors",
+                    "offset_bytes": 100,
+                    "length_bytes": 1,
+                }
             )
+            _write_valid_test_manifest(manifest_path, tensors=complete)
             self.assertTrue(
                 self.ax_engine._manifest_is_structurally_valid(manifest_path)
             )
 
+            # Language roles must stay rank-positive even when other tensors may not.
+            bad = _minimal_ready_tensors()
+            bad[0]["shape"] = []
+            _write_valid_test_manifest(manifest_path, tensors=bad)
+            self.assertFalse(
+                self.ax_engine._manifest_is_structurally_valid(manifest_path)
+            )
+
+    def test_manifest_rejects_token_embedding_only_as_incomplete(self) -> None:
+        """P1: token_embedding alone is not enough for AX-ready."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "model-manifest.json"
             _write_valid_test_manifest(
                 manifest_path,
-                tensors=[{"role": "token_embedding", "shape": []}],
+                tensors=[
+                    {
+                        "name": "model.embed_tokens.weight",
+                        "role": "token_embedding",
+                        "dtype": "f16",
+                        "shape": [1],
+                        "file": "model.safetensors",
+                        "offset_bytes": 0,
+                        "length_bytes": 1,
+                    }
+                ],
             )
             self.assertFalse(
                 self.ax_engine._manifest_is_structurally_valid(manifest_path)
             )
+            import json
+
+            reason = self.ax_engine._manifest_missing_required_roles(
+                json.loads(manifest_path.read_text())
+            )
+            self.assertIsNotNone(reason)
+            self.assertIn("final_norm", reason)
 
     def test_download_model_regenerates_non_safetensors_manifest(self) -> None:
         import tempfile
@@ -1986,15 +2056,14 @@ class WrapperContractTests(unittest.TestCase):
                     }
                 )
             )
+            # Structurally/role-complete language tensors, but no vision tower
+            # names — media rebuild must still fire.
+            language_tensors = _minimal_ready_tensors()
+            language_tensors[0]["name"] = "language_model.model.embed_tokens.weight"
             _write_valid_test_manifest(
                 dest / "model-manifest.json",
                 model_family="qwen3_5",
-                tensors=[
-                    {
-                        "name": "language_model.model.embed_tokens.weight",
-                        "role": "token_embedding",
-                    }
-                ],
+                tensors=language_tensors,
             )
             self.ax_engine._write_download_provenance(
                 dest,
@@ -2005,10 +2074,23 @@ class WrapperContractTests(unittest.TestCase):
 
             def fake_generate(target: Path, *, force: bool = False) -> bool:
                 calls.append((Path(target), force))
+                repaired = _minimal_ready_tensors()
+                repaired[0]["name"] = "language_model.model.embed_tokens.weight"
+                repaired.append(
+                    {
+                        "name": "vision_tower.patch_embed.proj.weight",
+                        "role": "other",
+                        "dtype": "f16",
+                        "shape": [1],
+                        "file": "model.safetensors",
+                        "offset_bytes": 200,
+                        "length_bytes": 1,
+                    }
+                )
                 _write_valid_test_manifest(
                     Path(target) / "model-manifest.json",
                     model_family="qwen3_5",
-                    tensors=[{"name": "vision_tower.patch_embed.proj.weight"}],
+                    tensors=repaired,
                 )
                 return True
 
@@ -2070,7 +2152,9 @@ class WrapperContractTests(unittest.TestCase):
                 self.assertTrue(self.ax_engine._try_generate_manifest(model_dir))
 
             # The bundled binary is used; the stale PATH binary is never invoked.
-            self.assertEqual(calls, [[str(bundled), "generate-manifest", str(model_dir)]])
+            self.assertEqual(
+                calls, [[str(bundled), "generate-manifest", "--validate", str(model_dir)]]
+            )
 
     def test_try_generate_manifest_force_replaces_existing_manifest(self) -> None:
         import subprocess
@@ -2098,6 +2182,7 @@ class WrapperContractTests(unittest.TestCase):
                         str(bundled),
                         "generate-manifest",
                         "--force",
+                        "--validate",
                         str(model_dir),
                     ]
                 ],

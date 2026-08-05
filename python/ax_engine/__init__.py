@@ -1646,16 +1646,22 @@ def _validate_model_destination(dest: Path) -> Path:
     return dest
 
 
+def _model_destination_is_empty(dest: Path, *, error_context: str) -> bool:
+    try:
+        next(dest.iterdir())
+    except StopIteration:
+        return True
+    except OSError as error:
+        raise RuntimeError(f"cannot inspect {error_context} {dest}: {error}") from error
+    return False
+
+
 def _validate_forced_model_destination(dest: Path) -> None:
     """Only replace non-empty real directories that look owned by a model download."""
     if not _path_lexists(dest) or dest.is_symlink() or not dest.is_dir():
         return
-    try:
-        next(dest.iterdir())
-    except StopIteration:
+    if _model_destination_is_empty(dest, error_context="existing model destination"):
         return
-    except OSError as error:
-        raise RuntimeError(f"cannot inspect existing model destination {dest}: {error}") from error
 
     has_download_provenance = _has_valid_download_provenance(dest)
     has_manifest = (dest / _MODEL_MANIFEST_FILE).is_file()
@@ -1669,15 +1675,19 @@ def _validate_forced_model_destination(dest: Path) -> None:
     )
 
 
-def _has_valid_download_provenance(dest: Path) -> bool:
+def _read_download_provenance(dest: Path) -> object | None:
     import json
 
+    try:
+        return json.loads((dest / _DOWNLOAD_PROVENANCE_FILE).read_bytes())
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _has_valid_download_provenance(dest: Path) -> bool:
     from ._repo_ref import parse_repo_ref, validate_revision
 
-    try:
-        payload = json.loads((dest / _DOWNLOAD_PROVENANCE_FILE).read_bytes())
-    except (OSError, ValueError, TypeError):
-        return False
+    payload = _read_download_provenance(dest)
     if not isinstance(payload, dict):
         return False
     repo_id = payload.get("repo_id")
@@ -1697,7 +1707,7 @@ def _has_valid_download_provenance(dest: Path) -> bool:
     return (
         embedded_revision is None
         and parsed_repo_id == repo_id
-        and payload == _download_provenance(repo_id, revision)
+        and _destination_matches(dest, repo_id, revision)
     )
 
 
@@ -1737,13 +1747,7 @@ def _write_download_provenance(dest: Path, repo_id: str, revision: str | None) -
 
 
 def _destination_matches(dest: Path, repo_id: str, revision: str | None) -> bool:
-    import json
-
-    try:
-        payload = json.loads((dest / _DOWNLOAD_PROVENANCE_FILE).read_bytes())
-    except (OSError, ValueError, TypeError):
-        return False
-    return payload == _download_provenance(repo_id, revision)
+    return _read_download_provenance(dest) == _download_provenance(repo_id, revision)
 
 
 def _validate_model_destination_before_activation(
@@ -1764,12 +1768,8 @@ def _validate_model_destination_before_activation(
             f"refusing to replace model destination {dest}: it appeared or changed "
             "while the model was being prepared"
         )
-    try:
-        next(dest.iterdir())
-    except StopIteration:
+    if _model_destination_is_empty(dest, error_context="model destination"):
         return
-    except OSError as error:
-        raise RuntimeError(f"cannot inspect model destination {dest}: {error}") from error
     if not _destination_matches(dest, repo_id, revision):
         raise RuntimeError(
             f"refusing to replace model destination {dest}: it no longer matches "
@@ -1894,6 +1894,195 @@ def _validate_downloaded_model_dir(dest: Path) -> None:
         raise RuntimeError("; ".join(errors))
 
 
+def _manifest_missing_required_roles(manifest: dict) -> str | None:
+    """Return a reason when the manifest lacks roles the native loader requires.
+
+    Mirrors the essential checks in ``NativeModelArtifacts::from_dir`` so the
+    Python download path cannot report a model as AX-ready when it only has a
+    structurally intact but role-incomplete manifest.
+    """
+    model_family = manifest.get("model_family")
+    if not isinstance(model_family, str) or not model_family:
+        return "missing model_family"
+
+    tensors = manifest.get("tensors")
+    if not isinstance(tensors, list) or not tensors:
+        return "missing tensors"
+
+    if model_family == "whisper":
+        if any(
+            not isinstance(tensor, dict) or tensor.get("role") != "other"
+            for tensor in tensors
+        ):
+            return "whisper tensors must use role=other"
+        return None
+
+    layer_count = manifest.get("layer_count")
+    if not isinstance(layer_count, int) or isinstance(layer_count, bool) or layer_count <= 0:
+        return "invalid layer_count"
+
+    global_roles: set[str] = set()
+    layer_roles: dict[int, set[str]] = {}
+    for tensor in tensors:
+        if not isinstance(tensor, dict):
+            return "tensor entry is not an object"
+        role = tensor.get("role")
+        if not isinstance(role, str) or not role:
+            return "tensor missing role"
+        layer_index = tensor.get("layer_index")
+        if layer_index is None:
+            global_roles.add(role)
+            continue
+        if not isinstance(layer_index, int) or isinstance(layer_index, bool) or layer_index < 0:
+            return f"invalid layer_index for role {role}"
+        if layer_index >= layer_count:
+            return f"layer_index {layer_index} exceeds layer_count {layer_count}"
+        layer_roles.setdefault(layer_index, set()).add(role)
+
+    if "token_embedding" not in global_roles:
+        return "missing required tensor role token_embedding"
+    if "final_norm" not in global_roles:
+        return "missing required tensor role final_norm"
+
+    if model_family == "embeddinggemma":
+        if "embedding_dense0" not in global_roles:
+            return "missing required tensor role embedding_dense0"
+        if "embedding_dense1" not in global_roles:
+            return "missing required tensor role embedding_dense1"
+    elif not manifest.get("tie_word_embeddings", False) and "lm_head" not in global_roles:
+        return "missing required tensor role lm_head"
+
+    if model_family == "gemma4_assistant":
+        if "assistant_pre_projection" not in global_roles:
+            return "missing required tensor role assistant_pre_projection"
+        if "assistant_post_projection" not in global_roles:
+            return "missing required tensor role assistant_post_projection"
+
+    is_nemotron_h = model_family == "nemotron_h"
+    for layer_index in range(layer_count):
+        roles = layer_roles.get(layer_index)
+        if not roles:
+            return f"missing tensors for layer {layer_index}"
+        if "attention_norm" not in roles:
+            return f"layer {layer_index} is missing required tensor role attention_norm"
+        if is_nemotron_h:
+            continue
+        if "ffn_norm" not in roles and "attention_post_norm" not in roles:
+            return (
+                f"layer {layer_index} is missing required tensor role "
+                "ffn_norm or attention_post_norm"
+            )
+
+        has_packed_gate_up = "ffn_gate_up_packed" in roles
+        has_split_gate_up = "ffn_gate" in roles and "ffn_up" in roles
+        has_dense_ffn = "ffn_down" in roles and (has_packed_gate_up or has_split_gate_up)
+        has_shared_expert_ffn = (
+            "ffn_shared_expert_gate_inp" in roles
+            and "ffn_shared_expert_gate" in roles
+            and "ffn_shared_expert_up" in roles
+            and "ffn_shared_expert_down" in roles
+        )
+        has_mla_shared_expert_ffn = model_family in {
+            "glm4_moe_lite",
+            "deepseek_v3",
+            "deepseek_v32",
+            "unlimited_ocr",
+        } and (
+            "ffn_shared_expert_gate" in roles
+            and "ffn_shared_expert_up" in roles
+            and "ffn_shared_expert_down" in roles
+        )
+        has_gpt_oss_mxfp4_moe = model_family == "gpt_oss" and (
+            "ffn_gate_up_exps_mxfp4_blocks" in roles
+            and "ffn_gate_up_exps_mxfp4_scales" in roles
+            and "ffn_down_exps_mxfp4_blocks" in roles
+            and "ffn_down_exps_mxfp4_scales" in roles
+        )
+        has_moe_expert_ffn = "ffn_gate_inp" in roles and (
+            has_gpt_oss_mxfp4_moe
+            or (
+                "ffn_down_exps" in roles
+                and (
+                    "ffn_gate_up_exps_packed" in roles
+                    or "ffn_gate_exps" in roles
+                    or "ffn_up_exps" in roles
+                )
+            )
+        )
+        if not (
+            has_dense_ffn
+            or has_shared_expert_ffn
+            or has_mla_shared_expert_ffn
+            or has_moe_expert_ffn
+        ):
+            return f"layer {layer_index} must provide dense FFN tensors or MoE expert tensors"
+
+        has_any_attention = any(
+            role in roles
+            for role in (
+                "attention_o",
+                "attention_q",
+                "attention_k",
+                "attention_v",
+                "attention_qkv_packed",
+                "attention_qa",
+                "attention_qb",
+                "attention_kv_a",
+                "attention_kv_b",
+                "attention_embed_q",
+                "attention_unembed_out",
+            )
+        )
+        has_any_linear_attention = any(
+            role in roles
+            for role in (
+                "linear_attention_in_proj_qkv",
+                "linear_attention_in_proj_qkvz",
+                "linear_attention_in_proj_z",
+                "linear_attention_in_proj_a",
+                "linear_attention_in_proj_b",
+                "linear_attention_in_proj_ba",
+                "linear_attention_conv1d",
+                "linear_attention_dt_bias",
+                "linear_attention_a_log",
+                "linear_attention_norm",
+                "linear_attention_out_proj",
+            )
+        )
+        if has_any_attention:
+            if "attention_o" not in roles:
+                return f"layer {layer_index} is missing required tensor role attention_o"
+            has_packed_qkv = "attention_qkv_packed" in roles
+            has_split_qkv = (
+                "attention_q" in roles
+                and "attention_k" in roles
+                and "attention_v" in roles
+            )
+            has_mla = any(
+                role in roles
+                for role in (
+                    "attention_qa",
+                    "attention_qb",
+                    "attention_kv_a",
+                    "attention_kv_b",
+                    "attention_embed_q",
+                    "attention_unembed_out",
+                )
+            )
+            if not (has_packed_qkv or has_split_qkv or has_mla):
+                return (
+                    f"layer {layer_index} must provide attention_qkv_packed or "
+                    "attention_q/attention_k/attention_v"
+                )
+        elif not has_any_linear_attention and not has_moe_expert_ffn:
+            return (
+                f"layer {layer_index} must provide attention, linear attention, "
+                "or MoE expert tensors"
+            )
+
+    return None
+
+
 def _manifest_is_structurally_valid(path: Path) -> bool:
     import json
 
@@ -1961,6 +2150,10 @@ def _manifest_is_structurally_valid(path: Path) -> bool:
                 or value < (1 if field_name == "length_bytes" else 0)
             ):
                 return False
+    # Structural fields alone are not enough for AX-ready: require the same
+    # essential tensor roles the native loader enforces.
+    if _manifest_missing_required_roles(payload) is not None:
+        return False
     return True
 
 
@@ -2015,23 +2208,15 @@ def download_model(
         if force:
             _validate_forced_model_destination(dest)
 
-    from ._cli import _find_repo_script, _parse_download_summary
+    from ._cli import _download_helper_command, _find_repo_script, _parse_download_summary
 
     helper = _find_repo_script("download_model.py")
     if helper is not None:
         import subprocess
-        import sys
 
-        command = [sys.executable, str(helper), repo_id, "--json"]
-        if revision:
-            # The resolved revision is already percent-decoded; the helper
-            # decodes its --revision once more, so re-escape literal `%` to
-            # hand it exactly this value.
-            command.append(f"--revision={revision.replace('%', '%25')}")
-        if dest is not None:
-            command.append(f"--dest={dest}")
-        if force:
-            command.append("--force")
+        command = _download_helper_command(
+            helper, repo_id, revision=revision, dest=dest, force=force
+        )
         try:
             result = subprocess.run(command, capture_output=True, text=True)
         except OSError as error:
@@ -2170,6 +2355,9 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
         command = [bench, "generate-manifest"]
         if force:
             command.append("--force")
+        # Re-read through NativeModelArtifacts::from_dir so incomplete manifests
+        # never count as generation success.
+        command.append("--validate")
         command.append(manifest_dest)
         try:
             result = subprocess.run(
@@ -2205,7 +2393,11 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
                 except OSError:
                     pass
         if repo_root:
-            generate_args = ["--force", manifest_dest] if force else [manifest_dest]
+            generate_args = (
+                ["--force", "--validate", manifest_dest]
+                if force
+                else ["--validate", manifest_dest]
+            )
             try:
                 result = subprocess.run(
                     [

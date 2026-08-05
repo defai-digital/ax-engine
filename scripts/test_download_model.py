@@ -21,29 +21,68 @@ assert spec.loader is not None
 spec.loader.exec_module(download_model)
 
 
-def write_safetensors(path: Path, payload: bytes = b"\0\0\0\0") -> None:
-    if len(payload) % 4 != 0:
-        raise ValueError("F32 safetensors test payload must contain complete elements")
-    header = json.dumps(
-        {
-            "weight": {
-                "dtype": "F32",
-                "shape": [len(payload) // 4],
-                "data_offsets": [0, len(payload)],
-            }
-        },
-        separators=(",", ":"),
-    ).encode()
-    padding = (-len(header)) % 8
-    header += b" " * padding
-    path.write_bytes(len(header).to_bytes(8, "little") + header + payload)
+# Minimal dense language-model roles the native readiness gate requires.
+# Packed attention/FFN keeps fixture size small while still passing role checks.
+_MINIMAL_READY_ROLES: list[tuple[str, int | None]] = [
+    ("token_embedding", None),
+    ("final_norm", None),
+    ("attention_norm", 0),
+    ("ffn_norm", 0),
+    ("attention_qkv_packed", 0),
+    ("attention_o", 0),
+    ("ffn_gate_up_packed", 0),
+    ("ffn_down", 0),
+]
+
+
+def write_safetensors(path: Path, payload: bytes | None = None) -> None:
+    """Write a multi-tensor safetensors file matching ``write_manifest``.
+
+    ``payload`` is ignored for shape (kept for call-site compatibility); each
+    required role gets a single F32 element so binding checks stay exact.
+    """
+    del payload  # historical API; fixtures always use one F32 per role
+    element_bytes = 4
+    header: dict[str, object] = {}
+    body = bytearray()
+    for index, (role, _layer) in enumerate(_MINIMAL_READY_ROLES):
+        name = f"t{index}_{role}"
+        start = len(body)
+        body.extend(b"\0" * element_bytes)
+        end = len(body)
+        header[name] = {
+            "dtype": "F32",
+            "shape": [1],
+            "data_offsets": [start, end],
+        }
+    header_bytes = json.dumps(header, separators=(",", ":")).encode()
+    header_bytes += b" " * ((-len(header_bytes)) % 8)
+    path.write_bytes(len(header_bytes).to_bytes(8, "little") + header_bytes + bytes(body))
 
 
 def write_manifest(path: Path) -> None:
     weights = path.parent / "model.safetensors"
-    header_size = int.from_bytes(weights.read_bytes()[:8], "little")
-    offset_bytes = 8 + header_size
-    length_bytes = weights.stat().st_size - offset_bytes
+    raw = weights.read_bytes()
+    header_size = int.from_bytes(raw[:8], "little")
+    data_base_offset = 8 + header_size
+    header = json.loads(raw[8 : 8 + header_size])
+    tensors: list[dict[str, object]] = []
+    for index, (role, layer_index) in enumerate(_MINIMAL_READY_ROLES):
+        name = f"t{index}_{role}"
+        entry = header[name]
+        start, end = entry["data_offsets"]
+        tensor: dict[str, object] = {
+            "name": name,
+            "role": role,
+            "dtype": "f32",
+            "shape": entry["shape"],
+            "file": weights.name,
+            "offset_bytes": data_base_offset + start,
+            "length_bytes": end - start,
+        }
+        if layer_index is not None:
+            tensor["layer_index"] = layer_index
+        tensors.append(tensor)
     path.write_text(
         json.dumps(
             {
@@ -56,17 +95,8 @@ def write_manifest(path: Path) -> None:
                 "attention_head_dim": 4,
                 "kv_head_count": 1,
                 "vocab_size": 1,
-                "tensors": [
-                    {
-                        "name": "weight",
-                        "role": "token_embedding",
-                        "dtype": "f32",
-                        "shape": [1],
-                        "file": weights.name,
-                        "offset_bytes": offset_bytes,
-                        "length_bytes": length_bytes,
-                    }
-                ],
+                "tie_word_embeddings": True,
+                "tensors": tensors,
             }
         )
     )
@@ -472,7 +502,9 @@ class DownloadModelScriptTest(unittest.TestCase):
                 resolved = download_model.download(repo_id, dest, quiet=True)
 
             self.assertEqual(resolved, dest)
-            self.assertTrue((dest / "model.safetensors").read_bytes().endswith(b"complete"))
+            # The staged snapshot replaced the partial dest; payload markers are
+            # ignored by write_safetensors, so assert structural readiness instead.
+            self.assertGreater((dest / "model.safetensors").stat().st_size, len(b"partial"))
             self.assertIsNone(download_model._safetensors_file_error(dest / "model.safetensors"))
             self.assertTrue((dest / "config.json").is_file())
             # No temp/backup dirs survive the swap.
@@ -1311,7 +1343,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             ):
                 self.assertTrue(download_model._try_generate_manifest(model_dir, quiet=True))
 
-            self.assertEqual(calls, [[str(local_bin), str(model_dir)]])
+            self.assertEqual(calls, [[str(local_bin), "--validate", str(model_dir)]])
 
     def test_manifest_generation_falls_back_after_installed_bench_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1345,8 +1377,8 @@ class DownloadModelScriptTest(unittest.TestCase):
             self.assertEqual(
                 calls,
                 [
-                    ["ax-engine-bench", "generate-manifest", str(model_dir)],
-                    [str(local_bin), str(model_dir)],
+                    ["ax-engine-bench", "generate-manifest", "--validate", str(model_dir)],
+                    [str(local_bin), "--validate", str(model_dir)],
                 ],
             )
 
@@ -1373,7 +1405,9 @@ class DownloadModelScriptTest(unittest.TestCase):
                 self.assertTrue(download_model._try_generate_manifest(model_dir, quiet=True))
 
             # The bundled binary is used; the stale PATH binary is never invoked.
-            self.assertEqual(calls, [[bundled, "generate-manifest", str(model_dir)]])
+            self.assertEqual(
+                calls, [[bundled, "generate-manifest", "--validate", str(model_dir)]]
+            )
 
     def test_manifest_generation_absolutizes_option_like_destination(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1396,7 +1430,7 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             self.assertEqual(
                 calls,
-                [[bundled, "generate-manifest", str(root / "-models")]],
+                [[bundled, "generate-manifest", "--validate", str(root / "-models")]],
             )
 
     def test_manifest_command_launch_failure_allows_fallback(self) -> None:
@@ -1478,6 +1512,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                         bundled,
                         "generate-manifest",
                         "--force",
+                        "--validate",
                         str(model_dir),
                     ]
                 ],
@@ -1766,6 +1801,7 @@ class ManifestHeaderBindingTest(unittest.TestCase):
         source_length: int | None = None,
         include_unrelated: bool = False,
         overlap_unrelated: bool = False,
+        include_rank_zero_other: bool = False,
     ) -> dict[str, object]:
         dtype_widths = {
             "F16": 2,
@@ -1778,19 +1814,61 @@ class ManifestHeaderBindingTest(unittest.TestCase):
         }
         weight_shape = [1] if source_shape is None else source_shape
         weight_length = dtype_widths[source_dtype] if source_length is None else source_length
-        entries = [("weight", source_dtype, weight_shape, bytes(weight_length))]
+        # Primary binding tensor first so mutation tests still target tensors[0].
+        entries: list[tuple[str, str, list[int], bytes, str, int | None]] = [
+            ("weight", source_dtype, weight_shape, bytes(weight_length), "token_embedding", None)
+        ]
+        for role, layer_index in _MINIMAL_READY_ROLES[1:]:
+            name = f"{role}_w"
+            entries.append(
+                (
+                    name,
+                    source_dtype,
+                    [1],
+                    bytes(dtype_widths[source_dtype]),
+                    role,
+                    layer_index,
+                )
+            )
+        if include_rank_zero_other:
+            # Rank-0 scalars are only legal for role=other (extension tensors).
+            # Empty product still occupies one element of storage in safetensors.
+            entries.append(
+                (
+                    "scalar_other",
+                    source_dtype,
+                    [],
+                    bytes(dtype_widths[source_dtype]),
+                    "other",
+                    None,
+                )
+            )
         if include_unrelated:
             entries.extend(
                 [
-                    ("unused_float", "F16", [1], bytes(dtype_widths["F16"])),
-                    ("unused_counter", "I64", [1], bytes(dtype_widths["I64"])),
+                    (
+                        "unused_float",
+                        "F16",
+                        [1],
+                        bytes(dtype_widths["F16"]),
+                        "__unrelated__",
+                        None,
+                    ),
+                    (
+                        "unused_counter",
+                        "I64",
+                        [1],
+                        bytes(dtype_widths["I64"]),
+                        "__unrelated__",
+                        None,
+                    ),
                 ]
             )
 
         payload = bytearray()
         header: dict[str, object] = {}
         relative_offsets: dict[str, tuple[int, int]] = {}
-        for name, dtype, shape, tensor_bytes in entries:
+        for name, dtype, shape, tensor_bytes, _role, _layer in entries:
             start = len(payload)
             payload.extend(tensor_bytes)
             end = len(payload)
@@ -1810,7 +1888,23 @@ class ManifestHeaderBindingTest(unittest.TestCase):
         weights.write_bytes(len(header_bytes).to_bytes(8, "little") + header_bytes + bytes(payload))
 
         data_base_offset = 8 + len(header_bytes)
-        weight_start, weight_end = relative_offsets["weight"]
+        tensors: list[dict[str, object]] = []
+        for name, _dtype, shape, _tensor_bytes, role, layer_index in entries:
+            if role == "__unrelated__":
+                continue
+            start, end = relative_offsets[name]
+            tensor: dict[str, object] = {
+                "name": name,
+                "role": role,
+                "dtype": manifest_dtype,
+                "shape": shape,
+                "file": weights.name,
+                "offset_bytes": data_base_offset + start,
+                "length_bytes": end - start,
+            }
+            if layer_index is not None:
+                tensor["layer_index"] = layer_index
+            tensors.append(tensor)
         manifest: dict[str, object] = {
             "schema_version": download_model.NATIVE_MANIFEST_SCHEMA_VERSION,
             "model_family": "qwen3",
@@ -1821,17 +1915,8 @@ class ManifestHeaderBindingTest(unittest.TestCase):
             "attention_head_dim": 4,
             "kv_head_count": 1,
             "vocab_size": 1,
-            "tensors": [
-                {
-                    "name": "weight",
-                    "role": "token_embedding",
-                    "dtype": manifest_dtype,
-                    "shape": weight_shape,
-                    "file": weights.name,
-                    "offset_bytes": data_base_offset + weight_start,
-                    "length_bytes": weight_end - weight_start,
-                }
-            ],
+            "tie_word_embeddings": True,
+            "tensors": tensors,
         }
         (model_dir / "model-manifest.json").write_text(json.dumps(manifest))
         return manifest
@@ -1872,15 +1957,35 @@ class ManifestHeaderBindingTest(unittest.TestCase):
     def test_manifest_allows_rank_zero_other_tensor_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)
-            manifest = self._write_bound_fixture(model_dir, source_shape=[])
-            manifest["tensors"][0]["role"] = "other"
-            (model_dir / "model-manifest.json").write_text(json.dumps(manifest))
-
+            manifest = self._write_bound_fixture(model_dir, include_rank_zero_other=True)
             self.assertFalse(download_model._manifest_needs_rebuild(model_dir))
 
-            manifest["tensors"][0]["role"] = "token_embedding"
+            # Language roles must stay rank-positive.
+            for tensor in manifest["tensors"]:
+                if tensor["role"] == "other":
+                    tensor["role"] = "token_embedding"
+                    break
             (model_dir / "model-manifest.json").write_text(json.dumps(manifest))
             self.assertTrue(download_model._manifest_needs_rebuild(model_dir))
+
+    def test_manifest_rejects_token_embedding_only_as_incomplete(self) -> None:
+        """P1: structural binding alone must not mark a role-incomplete manifest ready."""
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            manifest = self._write_bound_fixture(model_dir)
+            self.assertFalse(download_model._manifest_needs_rebuild(model_dir))
+
+            # Drop every role except token_embedding; bindings stay exact.
+            manifest["tensors"] = [
+                tensor
+                for tensor in manifest["tensors"]
+                if tensor["role"] == "token_embedding"
+            ]
+            (model_dir / "model-manifest.json").write_text(json.dumps(manifest))
+            self.assertTrue(download_model._manifest_needs_rebuild(model_dir))
+            reason = download_model._manifest_missing_required_roles(manifest)
+            self.assertIsNotNone(reason)
+            self.assertIn("final_norm", reason)
 
     def test_manifest_may_omit_unrelated_source_tensors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

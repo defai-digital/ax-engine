@@ -499,6 +499,199 @@ def _root_safetensors_header_metadata(
     return metadata
 
 
+def _manifest_missing_required_roles(manifest: dict) -> str | None:
+    """Return a reason when the manifest lacks roles the native loader requires.
+
+    Mirrors the essential checks in ``NativeModelArtifacts::from_dir`` /
+    ``validate_manifest_roles`` so download tooling does not report AX-ready
+    for a structurally intact but semantically incomplete manifest (e.g. only
+    ``token_embedding``). Full shape / quantization validation still belongs
+    to the native path; this is a fail-closed readiness gate.
+    """
+    model_family = manifest.get("model_family")
+    if not isinstance(model_family, str) or not model_family:
+        return "missing model_family"
+
+    tensors = manifest.get("tensors")
+    if not isinstance(tensors, list) or not tensors:
+        return "missing tensors"
+
+    # Whisper preserves checkpoint names as role=other; skip language-model
+    # role requirements here (native validates Whisper against config.json).
+    if model_family == "whisper":
+        if any(
+            not isinstance(tensor, dict) or tensor.get("role") != "other"
+            for tensor in tensors
+        ):
+            return "whisper tensors must use role=other"
+        return None
+
+    layer_count = manifest.get("layer_count")
+    if not isinstance(layer_count, int) or isinstance(layer_count, bool) or layer_count <= 0:
+        return "invalid layer_count"
+
+    global_roles: set[str] = set()
+    layer_roles: dict[int, set[str]] = {}
+    for tensor in tensors:
+        if not isinstance(tensor, dict):
+            return "tensor entry is not an object"
+        role = tensor.get("role")
+        if not isinstance(role, str) or not role:
+            return "tensor missing role"
+        layer_index = tensor.get("layer_index")
+        if layer_index is None:
+            global_roles.add(role)
+            continue
+        if not isinstance(layer_index, int) or isinstance(layer_index, bool) or layer_index < 0:
+            return f"invalid layer_index for role {role}"
+        if layer_index >= layer_count:
+            return f"layer_index {layer_index} exceeds layer_count {layer_count}"
+        layer_roles.setdefault(layer_index, set()).add(role)
+
+    if "token_embedding" not in global_roles:
+        return "missing required tensor role token_embedding"
+    if "final_norm" not in global_roles:
+        return "missing required tensor role final_norm"
+
+    if model_family == "embeddinggemma":
+        if "embedding_dense0" not in global_roles:
+            return "missing required tensor role embedding_dense0"
+        if "embedding_dense1" not in global_roles:
+            return "missing required tensor role embedding_dense1"
+    elif not manifest.get("tie_word_embeddings", False) and "lm_head" not in global_roles:
+        return "missing required tensor role lm_head"
+
+    if model_family == "gemma4_assistant":
+        if "assistant_pre_projection" not in global_roles:
+            return "missing required tensor role assistant_pre_projection"
+        if "assistant_post_projection" not in global_roles:
+            return "missing required tensor role assistant_post_projection"
+
+    is_nemotron_h = model_family == "nemotron_h"
+    for layer_index in range(layer_count):
+        roles = layer_roles.get(layer_index)
+        if not roles:
+            return f"missing tensors for layer {layer_index}"
+        if "attention_norm" not in roles:
+            return f"layer {layer_index} is missing required tensor role attention_norm"
+        if is_nemotron_h:
+            continue
+        if "ffn_norm" not in roles and "attention_post_norm" not in roles:
+            return (
+                f"layer {layer_index} is missing required tensor role "
+                "ffn_norm or attention_post_norm"
+            )
+
+        has_packed_gate_up = "ffn_gate_up_packed" in roles
+        has_split_gate_up = "ffn_gate" in roles and "ffn_up" in roles
+        has_dense_ffn = "ffn_down" in roles and (has_packed_gate_up or has_split_gate_up)
+        has_shared_expert_ffn = (
+            "ffn_shared_expert_gate_inp" in roles
+            and "ffn_shared_expert_gate" in roles
+            and "ffn_shared_expert_up" in roles
+            and "ffn_shared_expert_down" in roles
+        )
+        has_mla_shared_expert_ffn = model_family in {
+            "glm4_moe_lite",
+            "deepseek_v3",
+            "deepseek_v32",
+            "unlimited_ocr",
+        } and (
+            "ffn_shared_expert_gate" in roles
+            and "ffn_shared_expert_up" in roles
+            and "ffn_shared_expert_down" in roles
+        )
+        has_gpt_oss_mxfp4_moe = model_family == "gpt_oss" and (
+            "ffn_gate_up_exps_mxfp4_blocks" in roles
+            and "ffn_gate_up_exps_mxfp4_scales" in roles
+            and "ffn_down_exps_mxfp4_blocks" in roles
+            and "ffn_down_exps_mxfp4_scales" in roles
+        )
+        has_moe_expert_ffn = "ffn_gate_inp" in roles and (
+            has_gpt_oss_mxfp4_moe
+            or (
+                "ffn_down_exps" in roles
+                and (
+                    "ffn_gate_up_exps_packed" in roles
+                    or "ffn_gate_exps" in roles
+                    or "ffn_up_exps" in roles
+                )
+            )
+        )
+        if not (
+            has_dense_ffn
+            or has_shared_expert_ffn
+            or has_mla_shared_expert_ffn
+            or has_moe_expert_ffn
+        ):
+            return f"layer {layer_index} must provide dense FFN tensors or MoE expert tensors"
+
+        has_any_attention = any(
+            role in roles
+            for role in (
+                "attention_o",
+                "attention_q",
+                "attention_k",
+                "attention_v",
+                "attention_qkv_packed",
+                "attention_qa",
+                "attention_qb",
+                "attention_kv_a",
+                "attention_kv_b",
+                "attention_embed_q",
+                "attention_unembed_out",
+            )
+        )
+        has_any_linear_attention = any(
+            role in roles
+            for role in (
+                "linear_attention_in_proj_qkv",
+                "linear_attention_in_proj_qkvz",
+                "linear_attention_in_proj_z",
+                "linear_attention_in_proj_a",
+                "linear_attention_in_proj_b",
+                "linear_attention_in_proj_ba",
+                "linear_attention_conv1d",
+                "linear_attention_dt_bias",
+                "linear_attention_a_log",
+                "linear_attention_norm",
+                "linear_attention_out_proj",
+            )
+        )
+        if has_any_attention:
+            if "attention_o" not in roles:
+                return f"layer {layer_index} is missing required tensor role attention_o"
+            has_packed_qkv = "attention_qkv_packed" in roles
+            has_split_qkv = (
+                "attention_q" in roles
+                and "attention_k" in roles
+                and "attention_v" in roles
+            )
+            has_mla = any(
+                role in roles
+                for role in (
+                    "attention_qa",
+                    "attention_qb",
+                    "attention_kv_a",
+                    "attention_kv_b",
+                    "attention_embed_q",
+                    "attention_unembed_out",
+                )
+            )
+            if not (has_packed_qkv or has_split_qkv or has_mla):
+                return (
+                    f"layer {layer_index} must provide attention_qkv_packed or "
+                    "attention_q/attention_k/attention_v"
+                )
+        elif not has_any_linear_attention and not has_moe_expert_ffn:
+            return (
+                f"layer {layer_index} must provide attention, linear attention, "
+                "or MoE expert tensors"
+            )
+
+    return None
+
+
 def _manifest_needs_rebuild(model_dir: Path) -> bool:
     manifest_path = model_dir / MODEL_MANIFEST_FILE
     if not manifest_path.is_file():
@@ -538,6 +731,8 @@ def _manifest_needs_rebuild(model_dir: Path) -> bool:
 
     tensors = manifest.get("tensors")
     if not isinstance(tensors, list) or not tensors:
+        return True
+    if _manifest_missing_required_roles(manifest) is not None:
         return True
     source_metadata = _root_safetensors_header_metadata(model_dir)
     if source_metadata is None:
@@ -1641,9 +1836,12 @@ def _try_generate_manifest(dest: Path, *, quiet: bool = False, force: bool = Fal
     # Keep relative destinations beginning with "-" from being interpreted as
     # generator options, without resolving any directory symlinks.
     manifest_dest = os.path.abspath(dest)
+    # Always re-read through NativeModelArtifacts::from_dir after generate so
+    # incomplete / family-mismatched manifests cannot be reported as ready.
     force_args = ["--force"] if force else []
+    validate_args = ["--validate"]
     if (bundled := _bundled_bench_bin()) is not None:
-        command = [bundled, "generate-manifest", *force_args, manifest_dest]
+        command = [bundled, "generate-manifest", *force_args, *validate_args, manifest_dest]
         if _run_manifest_command(
             command,
             quiet=quiet,
@@ -1652,7 +1850,13 @@ def _try_generate_manifest(dest: Path, *, quiet: bool = False, force: bool = Fal
             return True
 
     if shutil.which("ax-engine-bench"):
-        command = ["ax-engine-bench", "generate-manifest", *force_args, manifest_dest]
+        command = [
+            "ax-engine-bench",
+            "generate-manifest",
+            *force_args,
+            *validate_args,
+            manifest_dest,
+        ]
         if _run_manifest_command(command, quiet=quiet, label="ax-engine-bench generate-manifest"):
             return True
 
@@ -1661,7 +1865,7 @@ def _try_generate_manifest(dest: Path, *, quiet: bool = False, force: bool = Fal
         REPO_ROOT / "target" / "debug" / "generate-manifest",
     ):
         if local_bin.is_file() and _run_manifest_command(
-            [str(local_bin), *force_args, manifest_dest],
+            [str(local_bin), *force_args, *validate_args, manifest_dest],
             quiet=quiet,
             label=str(local_bin),
         ):
@@ -1679,6 +1883,7 @@ def _try_generate_manifest(dest: Path, *, quiet: bool = False, force: bool = Fal
                 "generate-manifest",
                 "--",
                 *force_args,
+                *validate_args,
                 manifest_dest,
             ],
             quiet=quiet,
